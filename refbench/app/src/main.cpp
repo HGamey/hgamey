@@ -231,6 +231,23 @@ static void write_output_json() {
     LOGI("REFBENCH_JSON %s", path.c_str());
 }
 
+// 渲染循环开始前落地的标记文件 — harness 用它轮询"已进入渲染"。
+// 设备端 logcat 不可靠 (实测会整个哑掉), 所以进度信号全走文件系统。
+static void write_started_marker() {
+    const char* base = g.app && g.app->activity && g.app->activity->externalDataPath
+                           ? g.app->activity->externalDataPath
+                           : (g.app && g.app->activity ? g.app->activity->internalDataPath : nullptr);
+    if (!base) return;
+    mkdirs(base);
+    std::string path = std::string(base) + "/refbench_started";
+    FILE* f = fopen(path.c_str(), "w");
+    if (!f) return;
+    fprintf(f, "%s %s\n", g.cfg.scene.c_str(), g.cfg.run_id.c_str());
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+}
+
 static void finish_and_exit(int code) {
     if (g.dev) vkDeviceWaitIdle(g.dev);
     write_output_json();
@@ -1065,6 +1082,7 @@ void android_main(android_app* app) {
     }
 
     init_vulkan();
+    write_started_marker();
     LOGI("REFBENCH_START scene=%s frames=%d", g.cfg.scene.c_str(), g.cfg.frames);
     render_all_frames();
     finish_and_exit(0);

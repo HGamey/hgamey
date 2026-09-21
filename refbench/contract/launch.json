@@ -21,6 +21,11 @@
     "written": "fsync'd before process exit",
     "schema": "output.schema.json"
   },
+  "started_marker": {
+    "device_path": "/storage/emulated/0/Android/data/io.github.hgamey.refbench/files/refbench_started",
+    "written": "right before entering the render loop; content = '<scene> <run_id>'",
+    "note": "harness polls this file for run-start; logcat is deliberately NOT part of the contract (observed to go completely silent on the bench device)"
+  },
   "render_thread_name": "RefbenchRender",
   "driver_submit_thread_name": "RefbenchDrv",
   "trace_comm_filter": "RefbenchDrv",
