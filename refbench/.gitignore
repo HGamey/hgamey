@@ -1,0 +1,4 @@
+build/out/
+*.spv
+*.o
+.DS_Store

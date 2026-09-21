@@ -1,0 +1,34 @@
+{
+  "contract_version": 1,
+  "package": "io.github.hgamey.refbench",
+  "activity": "android.app.NativeActivity",
+  "launch_template": "am start -W -n io.github.hgamey.refbench/android.app.NativeActivity --es scene {scene} --es run_id {run_id} --es frames {frames} --es intensity {intensity} --es knob.loadop {loadop}",
+  "extras_are_all_string": true,
+  "extras": {
+    "scene": { "required": true, "enum": ["bw_pingpong", "frag_alu", "idle_cap"] },
+    "run_id": { "required": false, "default": "unset", "note": "echoed verbatim into output json for evidence chain" },
+    "frames": { "required": false, "default": "3600", "parsed_as": "int", "range": [60, 100000] },
+    "intensity": { "required": false, "default": "8", "parsed_as": "int", "range": [1, 64], "semantics": { "bw_pingpong": "number of pingpong passes", "frag_alu": "ALU loop = intensity*64 iterations", "idle_cap": "ignored" } },
+    "knob.loadop": { "required": false, "default": "off", "enum": ["on", "off"], "applies_to": ["bw_pingpong"], "route": "MOBILE_GPU_OPT_ROUTES.md A-2 LoadOp/StoreOp DONT_CARE vs LOAD" }
+  },
+  "process": {
+    "self_terminates": true,
+    "liveness_probe": "adb shell pidof io.github.hgamey.refbench",
+    "exit_codes": { "0": "clean: all frames submitted, json written", "2": "aborted: window lost or vulkan error, json may still be written with clean_exit=false" }
+  },
+  "output": {
+    "device_path": "/storage/emulated/0/Android/data/io.github.hgamey.refbench/files/refbench_out.json",
+    "written": "fsync'd before process exit",
+    "schema": "output.schema.json"
+  },
+  "render_thread_name": "RefbenchRender",
+  "driver_submit_thread_name": "RefbenchDrv",
+  "trace_comm_filter": "RefbenchDrv",
+  "trace_comm_note": "Adreno Vulkan driver submits kgsl cmdbatches from its own in-process threads (Thread-N), not the caller. refbench renames them via /proc/self/task/<tid>/comm so parse_trace.py --comm RefbenchDrv is stable.",
+  "submits_per_frame": 1,
+  "scenes": {
+    "bw_pingpong": { "declared_bottleneck": "bandwidth", "present_mode_preference": ["MAILBOX", "IMMEDIATE", "FIFO"] },
+    "frag_alu":    { "declared_bottleneck": "fragment",  "present_mode_preference": ["MAILBOX", "IMMEDIATE", "FIFO"] },
+    "idle_cap":    { "declared_bottleneck": "none",      "present_mode_preference": ["FIFO"] }
+  }
+}
