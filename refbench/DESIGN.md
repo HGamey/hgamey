@@ -1,7 +1,7 @@
 # refbench — 白盒基准靶场 设计文档
 
 > 立项 2026-09-21 · 驱动方: [BH3GEI/phonefarm](https://github.com/BH3GEI/phonefarm) 的 `loop_v1/`
-> 状态: M0 开发中
+> 状态: **M0 通过 (2026-09-21)** — 六判据全绿, 证据见 [`evidence/`](evidence/)
 
 ## 0. 定位
 

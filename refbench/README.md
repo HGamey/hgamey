@@ -4,6 +4,11 @@
 一个**已知答案的考场**：确定性极高的 Vulkan 渲染负载，每条优化路线一个外部开关，
 自带 render pass 标记，瓶颈类型可定向构造。
 
+**状态: M0 通过（2026-09-21）** — 被 loop_v1 实跑一轮，六条判据全绿。
+证据（含 `report.json`）在 [`evidence/`](evidence/)：可重复 frame_p95 离散 0.45%（原神
+1.37%/5.35%）、旋钮 p=0.008、归因与自报瓶颈一致（带宽/片元总线投票分离 30.7×）、
+快照 38 行零差异、离线回放字节一致。
+
 - 为什么存在、边界、场景与判据 → [`DESIGN.md`](DESIGN.md)
 - 接口契约（进: intent extras；出: JSON）→ [`contract/`](contract/)
 - 出包 → `bash build/build.sh`（零交互，产物 `build/out/refbench.apk`，arm64-v8a）
