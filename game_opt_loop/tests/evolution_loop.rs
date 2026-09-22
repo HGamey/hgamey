@@ -36,6 +36,10 @@ fn config(track: TrackMode, out: PathBuf, seed: u64, generations: u32) -> Evolut
         use_llm: false,
         llm_timeout_s: None,
         device: NX809J_1080P,
+        carrier: "headless".into(),
+        scene_frames: 900,
+        scene_intensity: 5,
+        cool_c: 32.0,
     }
 }
 

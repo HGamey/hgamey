@@ -146,6 +146,16 @@ type Runner = Box<dyn Fn(&Path) -> Result<RunOutcome> + Send + Sync>;
 /// phonefarm 驱动。
 pub struct PhonefarmDriver {
     binary: PathBuf,
+    /// 评测载体: headless 孤立工装, 或 refbench 真实渲染场景。
+    ///
+    /// refbench 载体下 archive 里存的是**场景内**的代价 —— 真实帧时 p95、
+    /// 场景内整机瓦数、算子挂进管线后的边际 GPU 开销。孤立跑出来的微秒数
+    /// 不等于它在真实渲染上下文里的代价 (实测同一算子 0.942 vs 0.477 ms)。
+    carrier: String,
+    /// refbench 每臂渲染帧数。
+    frames: u32,
+    /// refbench 场景的 fragment 负载强度。
+    intensity: u32,
     /// 下发评测用的子命令。phonefarm 侧新增算子评测能力后从这里对接。
     subcommand: String,
     package: String,
@@ -172,7 +182,34 @@ impl PhonefarmDriver {
             serial: None,
             protocol: EvalProtocol::default(),
             runner: None,
+            carrier: "refbench".to_string(),
+            frames: 900,
+            intensity: 5,
         }
+    }
+
+    pub fn with_carrier(mut self, carrier: impl Into<String>) -> Self {
+        self.carrier = carrier.into();
+        self
+    }
+
+    /// 覆盖冷机门槛。
+    ///
+    /// 冻结协议的 <32C 假定挂了外置风扇; 没有风扇的台子上那个门槛等不到。
+    /// 放宽它就是在改冻结判据, 调用方有义务在报告里说明。
+    pub fn with_cool_c(mut self, cool_c: f32) -> Self {
+        self.protocol.cool_c = cool_c;
+        self
+    }
+
+    pub fn with_scene(mut self, frames: u32, intensity: u32) -> Self {
+        self.frames = frames;
+        self.intensity = intensity;
+        self
+    }
+
+    pub fn carrier(&self) -> &str {
+        &self.carrier
     }
 
     /// 注入一个替身执行器 (只供测试用)。
@@ -326,6 +363,12 @@ impl PhonefarmDriver {
                     .arg(&self.subcommand)
                     .arg("--request")
                     .arg(request_path)
+                    .arg("--carrier")
+                    .arg(&self.carrier)
+                    .arg("--frames")
+                    .arg(self.frames.to_string())
+                    .arg("--intensity")
+                    .arg(self.intensity.to_string())
                     .arg("--json")
                     .output()
                     .with_context(|| {

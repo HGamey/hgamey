@@ -63,6 +63,28 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     no_llm: bool,
 
+    /// 冷机门槛 (摄氏度)。
+    ///
+    /// DESIGN 的防噪声协议写的是 <32C, 那个数**假定挂了外置风扇强吹**。
+    /// 没有风扇时, 屏幕亮着加上渲染场景循环跑, 机器稳定在 38~47C,
+    /// 32C 永远等不到 —— 会直接耗尽等冷超时。
+    /// 这个参数把该前提显式化: 改了它就是在放宽冻结协议, 必须在报告里说明。
+    #[arg(long, default_value_t = 32.0)]
+    cool_c: f32,
+
+    /// 真机评测载体: refbench (真实渲染场景, 缺省) 或 headless (孤立工装)。
+    /// refbench 下档案里存的是场景内的真实代价 —— 帧时 p95 与整机瓦数
+    #[arg(long, default_value = "refbench")]
+    carrier: String,
+
+    /// refbench 每臂渲染帧数
+    #[arg(long, default_value_t = 900)]
+    scene_frames: u32,
+
+    /// refbench 场景 fragment 负载强度
+    #[arg(long, default_value_t = 5)]
+    scene_intensity: u32,
+
     /// secrets.env 路径
     #[arg(long, default_value = "../phonefarm/secrets.env")]
     secrets: PathBuf,
@@ -232,6 +254,10 @@ fn main() -> Result<()> {
         use_llm: !cli.no_llm,
         llm_timeout_s: cli.llm_timeout_s,
         device: evolution::default_device(),
+        carrier: cli.carrier.clone(),
+        scene_frames: cli.scene_frames,
+        scene_intensity: cli.scene_intensity,
+        cool_c: cli.cool_c,
     };
 
     let mut evo = Evolution::new(config)?;

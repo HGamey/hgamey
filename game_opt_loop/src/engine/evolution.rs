@@ -59,6 +59,13 @@ pub struct EvolutionConfig {
     pub llm_timeout_s: Option<u64>,
     /// 设备成本模型 (dry-run 用)。
     pub device: DeviceModel,
+    /// 真机评测载体: refbench (真实渲染场景) 或 headless (孤立工装)。
+    pub carrier: String,
+    /// refbench 每臂帧数与场景负载强度。
+    pub scene_frames: u32,
+    pub scene_intensity: u32,
+    /// 冷机门槛 (摄氏度)。见 CLI --cool-c 的说明。
+    pub cool_c: f32,
 }
 
 impl EvolutionConfig {
@@ -211,7 +218,12 @@ impl Evolution {
         let driver = if config.dry_run {
             None
         } else {
-            Some(PhonefarmDriver::new())
+            Some(
+                PhonefarmDriver::new()
+                    .with_carrier(config.carrier.clone())
+                    .with_scene(config.scene_frames, config.scene_intensity)
+                    .with_cool_c(config.cool_c),
+            )
         };
 
         Ok(Self {
