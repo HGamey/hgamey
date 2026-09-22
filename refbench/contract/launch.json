@@ -2,19 +2,88 @@
   "contract_version": 1,
   "package": "io.github.hgamey.refbench",
   "activity": "android.app.NativeActivity",
-  "launch_template": "am start -W -n io.github.hgamey.refbench/android.app.NativeActivity --es scene {scene} --es run_id {run_id} --es frames {frames} --es intensity {intensity} --es knob.loadop {loadop}",
+  "launch_template": "am start -W -n io.github.hgamey.refbench/android.app.NativeActivity --es scene {scene} --es run_id {run_id} --es frames {frames} --es intensity {intensity} --es knob.loadop {loadop} [--es knob.postfx {postfx} --es postfx.shader {postfx_shader}]",
   "extras_are_all_string": true,
   "extras": {
-    "scene": { "required": true, "enum": ["bw_pingpong", "frag_alu", "idle_cap"] },
-    "run_id": { "required": false, "default": "unset", "note": "echoed verbatim into output json for evidence chain" },
-    "frames": { "required": false, "default": "3600", "parsed_as": "int", "range": [60, 100000] },
-    "intensity": { "required": false, "default": "8", "parsed_as": "int", "range": [1, 64], "semantics": { "bw_pingpong": "number of pingpong passes", "frag_alu": "ALU loop = intensity*64 iterations", "idle_cap": "ignored" } },
-    "knob.loadop": { "required": false, "default": "off", "enum": ["on", "off"], "applies_to": ["bw_pingpong"], "route": "MOBILE_GPU_OPT_ROUTES.md A-2 LoadOp/StoreOp DONT_CARE vs LOAD" }
+    "scene": {
+      "required": true,
+      "enum": [
+        "bw_pingpong",
+        "frag_alu",
+        "idle_cap",
+        "sr_pipeline"
+      ]
+    },
+    "run_id": {
+      "required": false,
+      "default": "unset",
+      "note": "echoed verbatim into output json for evidence chain"
+    },
+    "frames": {
+      "required": false,
+      "default": "3600",
+      "parsed_as": "int",
+      "range": [
+        60,
+        100000
+      ]
+    },
+    "intensity": {
+      "required": false,
+      "default": "8",
+      "parsed_as": "int",
+      "range": [
+        1,
+        64
+      ],
+      "semantics": {
+        "bw_pingpong": "number of pingpong passes",
+        "frag_alu": "ALU loop = intensity*64 iterations",
+        "idle_cap": "ignored",
+        "sr_pipeline": "低分辨率场景 pass 的 ALU loop = intensity*64 iterations"
+      }
+    },
+    "knob.loadop": {
+      "required": false,
+      "default": "off",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "applies_to": [
+        "bw_pingpong"
+      ],
+      "route": "MOBILE_GPU_OPT_ROUTES.md A-2 LoadOp/StoreOp DONT_CARE vs LOAD"
+    },
+    "knob.postfx": {
+      "required": false,
+      "default": "off",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "applies_to": [
+        "sr_pipeline"
+      ],
+      "note": "off = present blit 直接采样低分辨率 RT (驱动双线性放大), 作 A 臂对照; on = 在管线尾部插入外部 compute 算子, 低分辨率 RT -> 送显分辨率 RT"
+    },
+    "postfx.shader": {
+      "required": false,
+      "default": "",
+      "applies_to": [
+        "sr_pipeline"
+      ],
+      "note": "设备侧 candidate.spv 绝对路径。binding 0 = readonly 低分辨率图, binding 1 = writeonly 送显分辨率图, 工作组 16x16, 与 game_opt_loop 赛道契约一致",
+      "failure": "knob.postfx=on 时装载失败 (文件缺失 / 非 SPIR-V / 建管线失败 / 未给路径) 一律退出码 2 且 clean_exit=false。**绝不静默退回 off** —— 那会让 A/B 两臂变成 A 和 A, 而上层还以为在对照算子"
+    }
   },
   "process": {
     "self_terminates": true,
     "liveness_probe": "adb shell pidof io.github.hgamey.refbench",
-    "exit_codes": { "0": "clean: all frames submitted, json written", "2": "aborted: window lost or vulkan error, json may still be written with clean_exit=false" }
+    "exit_codes": {
+      "0": "clean: all frames submitted, json written",
+      "2": "aborted: window lost or vulkan error, json may still be written with clean_exit=false"
+    }
   },
   "output": {
     "device_path": "/storage/emulated/0/Android/data/io.github.hgamey.refbench/files/refbench_out.json",
@@ -32,8 +101,36 @@
   "trace_comm_note": "Adreno Vulkan driver submits kgsl cmdbatches from its own in-process threads (Thread-N), not the caller. refbench renames them via /proc/self/task/<tid>/comm so parse_trace.py --comm RefbenchDrv is stable.",
   "submits_per_frame": 1,
   "scenes": {
-    "bw_pingpong": { "declared_bottleneck": "bandwidth", "present_mode_preference": ["MAILBOX", "IMMEDIATE", "FIFO"] },
-    "frag_alu":    { "declared_bottleneck": "fragment",  "present_mode_preference": ["MAILBOX", "IMMEDIATE", "FIFO"] },
-    "idle_cap":    { "declared_bottleneck": "none",      "present_mode_preference": ["FIFO"] }
+    "bw_pingpong": {
+      "declared_bottleneck": "bandwidth",
+      "present_mode_preference": [
+        "MAILBOX",
+        "IMMEDIATE",
+        "FIFO"
+      ]
+    },
+    "frag_alu": {
+      "declared_bottleneck": "fragment",
+      "present_mode_preference": [
+        "MAILBOX",
+        "IMMEDIATE",
+        "FIFO"
+      ]
+    },
+    "idle_cap": {
+      "declared_bottleneck": "none",
+      "present_mode_preference": [
+        "FIFO"
+      ]
+    },
+    "sr_pipeline": {
+      "declared_bottleneck": "fragment+compute",
+      "present_mode_preference": [
+        "MAILBOX",
+        "IMMEDIATE",
+        "FIFO"
+      ],
+      "note": "游戏以 1280x720 渲染 -> 管线尾部 compute 算子重构到 1920x1080 -> 呈现。算子与场景 pass 抢同一份带宽与功耗预算, 因此这里量到的 fps_p95 与整机瓦数才是算子在真实渲染上下文里的代价"
+    }
   }
 }

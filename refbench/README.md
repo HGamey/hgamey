@@ -16,6 +16,23 @@
 跑测分离：本仓库只提供负载、旋钮、ground truth。驱动、采集、归因、统计判定全部在
 phonefarm 侧（`loop_v1/refbench/`）。**本仓库内没有也不允许有任何测量或判定逻辑。**
 
+## 场景 sr_pipeline：算子挂进真实管线
+
+```bash
+# A 臂: 不挂算子, present blit 直接放大低分辨率 RT
+adb shell am start -n io.github.hgamey.refbench/android.app.NativeActivity \
+  --es scene sr_pipeline --es run_id a_off --es frames 3000 --es intensity 6 --es knob.postfx off
+
+# B 臂: 管线尾部挂外部 candidate.spv
+adb push candidate.spv /data/local/tmp/postfx/cand.spv
+adb shell am start -n io.github.hgamey.refbench/android.app.NativeActivity \
+  --es scene sr_pipeline --es run_id b_on --es frames 3000 --es intensity 6 \
+  --es knob.postfx on --es postfx.shader /data/local/tmp/postfx/cand.spv
+```
+
+两臂唯一的差别就是那个算子。算子装不上时**退出码 2 且 clean_exit=false**，
+绝不静默退回 off —— 否则 A/B 会悄悄变成 A 和 A。
+
 ## 快速验证（手动冒烟，正式流程走 loop_v1）
 
 ```bash

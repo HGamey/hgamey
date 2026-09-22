@@ -53,6 +53,11 @@ struct Cfg {
     int frames = 3600;
     int intensity = 8;
     std::string knob_loadop = "off";  // 只作用于 bw_pingpong
+    // 只作用于 sr_pipeline: 管线尾部的 compute 后处理算子
+    //   off = 不挂算子, present blit 直接采样低分辨率 RT (驱动双线性放大) —— A 臂
+    //   on  = 挂 postfx_shader 指定的 SPIR-V, 低分辨率 RT -> 高分辨率 RT       —— B 臂
+    std::string knob_postfx = "off";
+    std::string postfx_shader;  // 外部 candidate.spv 的设备侧绝对路径
 };
 
 struct PassInfo {
@@ -83,6 +88,26 @@ struct State {
     std::vector<VkImage> swap_images;
     std::vector<VkImageView> swap_views;
     std::vector<VkFramebuffer> swap_fbs;
+
+    // sr_pipeline: 游戏以低分辨率渲染, 算子在管线尾部重构到送显分辨率
+    static const uint32_t SR_LO_W = 1280, SR_LO_H = 720;
+    static const uint32_t SR_HI_W = 1920, SR_HI_H = 1080;
+    VkImage imgLo = VK_NULL_HANDLE, imgHi = VK_NULL_HANDLE;
+    VkDeviceMemory memLo = VK_NULL_HANDLE, memHi = VK_NULL_HANDLE;
+    VkImageView viewLo = VK_NULL_HANDLE, viewHi = VK_NULL_HANDLE;
+    VkFramebuffer fbLo = VK_NULL_HANDLE;
+    VkDescriptorSet setLo = VK_NULL_HANDLE, setHi = VK_NULL_HANDLE;
+    bool hi_initialised = false;  // imgHi 首次使用前需要一次 layout 过渡
+
+    // 外部装入的 compute 后处理算子
+    VkShaderModule postfx_module = VK_NULL_HANDLE;
+    VkDescriptorSetLayout postfx_dsl = VK_NULL_HANDLE;
+    VkDescriptorPool postfx_dpool = VK_NULL_HANDLE;
+    VkDescriptorSet postfx_set = VK_NULL_HANDLE;
+    VkPipelineLayout postfx_playout = VK_NULL_HANDLE;
+    VkPipeline postfx_pipe = VK_NULL_HANDLE;
+    long postfx_bytes = 0;
+    bool postfx_active = false;
 
     // 离屏
     static const uint32_t BW_RT = 2048, ALU_RT = 1024;
@@ -160,6 +185,8 @@ static const char* format_name(VkFormat f) {
 static const char* declared_bottleneck() {
     if (g.cfg.scene == "bw_pingpong") return "bandwidth";
     if (g.cfg.scene == "frag_alu") return "fragment";
+    // sr_pipeline: 低分辨率场景 pass (fragment) + 管线尾部 compute 后处理
+    if (g.cfg.scene == "sr_pipeline") return "fragment+compute";
     return "none";  // idle_cap
 }
 
@@ -190,12 +217,26 @@ static void write_output_json() {
     j += " \"declared_bottleneck\": \""; j += declared_bottleneck(); j += "\",\n";
     j += " \"effective_knobs\": {";
     if (g.cfg.scene == "bw_pingpong") { j += "\"loadop\": \""; j += g.cfg.knob_loadop; j += "\""; }
+    if (g.cfg.scene == "sr_pipeline") { j += "\"postfx\": \""; j += g.cfg.knob_postfx; j += "\""; }
     j += "},\n";
+    // postfx 的配置事实。只记"装了什么、几字节、进出多大", 不含任何时间量 ——
+    // 测量与判定是 phonefarm 侧的事 (DESIGN.md §1 跑测分离)。
+    if (g.cfg.scene == "sr_pipeline") {
+        char pb[512];
+        std::string esc;
+        json_escape_into(esc, g.cfg.postfx_shader);
+        snprintf(pb, sizeof pb,
+                 " \"postfx\": {\"active\": %s, \"shader_path\": \"%s\", \"shader_bytes\": %ld, "
+                 "\"lo\": [%u, %u], \"hi\": [%u, %u], \"workgroup\": [16, 16, 1]},\n",
+                 g.postfx_active ? "true" : "false", esc.c_str(), g.postfx_bytes,
+                 State::SR_LO_W, State::SR_LO_H, State::SR_HI_W, State::SR_HI_H);
+        j += pb;
+    }
     char buf[256];
     snprintf(buf, sizeof buf, " \"params\": {\"frames\": %d, \"intensity\": %d, \"rt_width\": %u, \"rt_height\": %u},\n",
              g.cfg.frames, g.cfg.intensity,
-             g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : 0),
-             g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : 0));
+             g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : (g.cfg.scene == "sr_pipeline" ? State::SR_LO_W : 0)),
+             g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : (g.cfg.scene == "sr_pipeline" ? State::SR_LO_H : 0)));
     j += buf;
     j += " \"render_thread_name\": \""; j += RENDER_THREAD_NAME; j += "\",\n";
     j += " \"driver_submit_thread_name\": \""; j += DRIVER_THREAD_NAME; j += "\",\n";
@@ -306,20 +347,25 @@ static void read_cfg_from_intent(android_app* app) {
         if (!fr.empty()) g.cfg.frames = atoi(fr.c_str());
         if (!in.empty()) g.cfg.intensity = atoi(in.c_str());
         g.cfg.knob_loadop = getS("knob.loadop", g.cfg.knob_loadop);
+        g.cfg.knob_postfx = getS("knob.postfx", g.cfg.knob_postfx);
+        g.cfg.postfx_shader = getS("postfx.shader", g.cfg.postfx_shader);
     }
     vm->DetachCurrentThread();
     if (g.cfg.frames < 60) g.cfg.frames = 60;
     if (g.cfg.frames > 100000) g.cfg.frames = 100000;
     if (g.cfg.intensity < 1) g.cfg.intensity = 1;
     if (g.cfg.intensity > 64) g.cfg.intensity = 64;
-    if (g.cfg.scene != "bw_pingpong" && g.cfg.scene != "frag_alu" && g.cfg.scene != "idle_cap") {
+    if (g.cfg.scene != "bw_pingpong" && g.cfg.scene != "frag_alu" &&
+        g.cfg.scene != "idle_cap" && g.cfg.scene != "sr_pipeline") {
         LOGE("unknown scene '%s', falling back to bw_pingpong", g.cfg.scene.c_str());
         g.cfg.scene = "bw_pingpong";
     }
     if (g.cfg.knob_loadop != "on" && g.cfg.knob_loadop != "off") g.cfg.knob_loadop = "off";
-    LOGI("REFBENCH_CFG scene=%s run_id=%s frames=%d intensity=%d loadop=%s",
+    if (g.cfg.knob_postfx != "on" && g.cfg.knob_postfx != "off") g.cfg.knob_postfx = "off";
+    LOGI("REFBENCH_CFG scene=%s run_id=%s frames=%d intensity=%d loadop=%s postfx=%s shader=%s",
          g.cfg.scene.c_str(), g.cfg.run_id.c_str(), g.cfg.frames, g.cfg.intensity,
-         g.cfg.knob_loadop.c_str());
+         g.cfg.knob_loadop.c_str(), g.cfg.knob_postfx.c_str(),
+         g.cfg.postfx_shader.empty() ? "-" : g.cfg.postfx_shader.c_str());
 }
 
 // ── vulkan 搭建 ───────────────────────────────────────────────────────
@@ -373,6 +419,71 @@ static void make_rt(uint32_t w, uint32_t h, VkFormat fmt, VkImage* img, VkDevice
     vc.format = fmt;
     vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VKC(vkCreateImageView(g.dev, &vc, nullptr, view));
+}
+
+// 与 make_rt 同, 额外带 STORAGE usage: compute 后处理要把它当 image2D 读写。
+static void make_storage_rt(uint32_t w, uint32_t h, VkFormat fmt, bool color_attachment,
+                            VkImage* img, VkDeviceMemory* mem, VkImageView* view) {
+    VkImageCreateInfo ic{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ic.imageType = VK_IMAGE_TYPE_2D;
+    ic.format = fmt;
+    ic.extent = {w, h, 1};
+    ic.mipLevels = 1;
+    ic.arrayLayers = 1;
+    ic.samples = VK_SAMPLE_COUNT_1_BIT;
+    ic.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ic.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (color_attachment) ic.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    ic.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VKC(vkCreateImage(g.dev, &ic, nullptr, img));
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g.dev, *img, &mr);
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = mr.size;
+    ai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VKC(vkAllocateMemory(g.dev, &ai, nullptr, mem));
+    VKC(vkBindImageMemory(g.dev, *img, *mem, 0));
+    VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vc.image = *img;
+    vc.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vc.format = fmt;
+    vc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VKC(vkCreateImageView(g.dev, &vc, nullptr, view));
+}
+
+// 从设备文件系统装入外部 SPIR-V (candidate.spv)。
+//
+// 失败**不静默降级**: postfx 开着却装不上算子, 就直接让整局失败。
+// 悄悄退回 off 的话, A/B 两臂会变成 A 和 A, 而上层还以为自己在对照算子 —— 
+// 那比跑不起来危险得多。
+static bool load_external_spirv(const std::string& path, VkShaderModule* out, long* bytes) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) { LOGE("postfx: 打不开 %s", path.c_str()); return false; }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || (sz % 4) != 0) {
+        LOGE("postfx: %s 长度 %ld 非法 (必须为正且是 4 的倍数)", path.c_str(), sz);
+        fclose(f);
+        return false;
+    }
+    std::vector<uint32_t> words((size_t)sz / 4);
+    size_t got = fread(words.data(), 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) { LOGE("postfx: %s 读取不全", path.c_str()); return false; }
+    if (words[0] != 0x07230203u) { LOGE("postfx: %s 魔数不对", path.c_str()); return false; }
+
+    VkShaderModuleCreateInfo sc{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    sc.codeSize = (size_t)sz;
+    sc.pCode = words.data();
+    if (vkCreateShaderModule(g.dev, &sc, nullptr, out) != VK_SUCCESS) {
+        LOGE("postfx: vkCreateShaderModule 失败 (%s)", path.c_str());
+        return false;
+    }
+    *bytes = sz;
+    return true;
 }
 
 // 离屏 renderpass: 可选 LOAD / DONT_CARE, final=SHADER_READ_ONLY, 带前后外部依赖
@@ -840,6 +951,105 @@ static void init_vulkan() {
                             "R8G8B8A8_UNORM", State::ALU_RT, State::ALU_RT});
         g.passes.push_back({"present_blit", "swapchain", "DONT_CARE", "STORE",
                             format_name(g.swap_format), g.swap_extent.width, g.swap_extent.height});
+    } else if (g.cfg.scene == "sr_pipeline") {
+        // 游戏以低分辨率渲染 -> 管线尾部 compute 算子重构到送显分辨率 -> 呈现。
+        // 这一支的存在意义: 算子不再是孤立跑在空设备上的一次 dispatch,
+        // 而是挂在一整套真实渲染负载的尾巴上, 和场景 pass 抢同一份带宽、
+        // 同一份功耗预算、同一条呈现时序。
+        const VkFormat F = VK_FORMAT_R8G8B8A8_UNORM;
+        make_storage_rt(State::SR_LO_W, State::SR_LO_H, F, true, &g.imgLo, &g.memLo, &g.viewLo);
+        make_storage_rt(State::SR_HI_W, State::SR_HI_H, F, false, &g.imgHi, &g.memHi, &g.viewHi);
+        g.rp_alu = make_offscreen_rp(F, false);
+        g.fbLo = make_fb(g.rp_alu, g.viewLo, State::SR_LO_W, State::SR_LO_H);
+        g.setLo = alloc_set(); write_set(g.setLo, g.viewLo);
+        g.setHi = alloc_set(); write_set(g.setHi, g.viewHi);
+
+        VkShaderModule fs_alu = make_shader(g_alu_frag, g_alu_frag_len);
+        g.pipe_alu = make_pipeline(vs_full, fs_alu, g.rp_alu, State::SR_LO_W, State::SR_LO_H);
+        g.pipe_blit = make_pipeline(vs_full, fs_blit, g.rp_swap_dont,
+                                    g.swap_extent.width, g.swap_extent.height);
+        vkDestroyShaderModule(g.dev, fs_alu, nullptr);
+        init_clear({g.imgLo, g.imgHi});
+
+        g.passes.push_back({"scene_lowres", "rtLo", "DONT_CARE", "STORE",
+                            "R8G8B8A8_UNORM", State::SR_LO_W, State::SR_LO_H});
+
+        if (g.cfg.knob_postfx == "on") {
+            if (g.cfg.postfx_shader.empty()) {
+                LOGE("postfx=on 但没给 postfx.shader");
+                g.clean_exit = false;
+                finish_and_exit(2);
+            }
+            if (!load_external_spirv(g.cfg.postfx_shader, &g.postfx_module, &g.postfx_bytes)) {
+                // 不静默降级: 悄悄退回 off 会让 A/B 变成 A 和 A
+                g.clean_exit = false;
+                finish_and_exit(2);
+            }
+            // 两个 storage image, 与上游赛道契约一致 (binding 0 进 / 1 出)
+            VkDescriptorSetLayoutBinding cb[2]{};
+            for (int i = 0; i < 2; i++) {
+                cb[i].binding = (uint32_t)i;
+                cb[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                cb[i].descriptorCount = 1;
+                cb[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            }
+            VkDescriptorSetLayoutCreateInfo cl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            cl.bindingCount = 2;
+            cl.pBindings = cb;
+            VKC(vkCreateDescriptorSetLayout(g.dev, &cl, nullptr, &g.postfx_dsl));
+
+            VkDescriptorPoolSize cps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2};
+            VkDescriptorPoolCreateInfo cpc2{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+            cpc2.maxSets = 1;
+            cpc2.poolSizeCount = 1;
+            cpc2.pPoolSizes = &cps;
+            VKC(vkCreateDescriptorPool(g.dev, &cpc2, nullptr, &g.postfx_dpool));
+
+            VkDescriptorSetAllocateInfo cda{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            cda.descriptorPool = g.postfx_dpool;
+            cda.descriptorSetCount = 1;
+            cda.pSetLayouts = &g.postfx_dsl;
+            VKC(vkAllocateDescriptorSets(g.dev, &cda, &g.postfx_set));
+
+            VkDescriptorImageInfo cii[2]{};
+            cii[0].imageView = g.viewLo;
+            cii[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            cii[1].imageView = g.viewHi;
+            cii[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            VkWriteDescriptorSet cw[2]{};
+            for (int i = 0; i < 2; i++) {
+                cw[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                cw[i].dstSet = g.postfx_set;
+                cw[i].dstBinding = (uint32_t)i;
+                cw[i].descriptorCount = 1;
+                cw[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                cw[i].pImageInfo = &cii[i];
+            }
+            vkUpdateDescriptorSets(g.dev, 2, cw, 0, nullptr);
+
+            VkPipelineLayoutCreateInfo cpl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            cpl.setLayoutCount = 1;
+            cpl.pSetLayouts = &g.postfx_dsl;
+            VKC(vkCreatePipelineLayout(g.dev, &cpl, nullptr, &g.postfx_playout));
+
+            VkComputePipelineCreateInfo ccp{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            ccp.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            ccp.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            ccp.stage.module = g.postfx_module;
+            ccp.stage.pName = "main";
+            ccp.layout = g.postfx_playout;
+            if (vkCreateComputePipelines(g.dev, VK_NULL_HANDLE, 1, &ccp, nullptr, &g.postfx_pipe) != VK_SUCCESS) {
+                LOGE("postfx: vkCreateComputePipelines 失败");
+                g.clean_exit = false;
+                finish_and_exit(2);
+            }
+            g.postfx_active = true;
+            g.passes.push_back({"postfx_compute", "rtHi", "NONE", "STORE",
+                                "R8G8B8A8_UNORM", State::SR_HI_W, State::SR_HI_H});
+        }
+
+        g.passes.push_back({"present_blit", "swapchain", "DONT_CARE", "STORE",
+                            format_name(g.swap_format), g.swap_extent.width, g.swap_extent.height});
     } else {  // idle_cap
         VkShaderModule vs_tri = make_shader(g_tri_vert, g_tri_vert_len);
         VkShaderModule fs_tri = make_shader(g_tri_frag, g_tri_frag_len);
@@ -959,6 +1169,91 @@ static void record_frame(VkCommandBuffer cb, uint32_t image_idx, int frame_idx) 
         vkCmdBeginRenderPass(cb, &rb2, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pipe_blit);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.playout, 0, 1, &g.setC, 0, nullptr);
+        vkCmdPushConstants(cb, g.playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &pc);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cb);
+        label_end(cb);
+    } else if (g.cfg.scene == "sr_pipeline") {
+        pc.iters = g.cfg.intensity * 64;  // 低分辨率场景 pass 的 fragment 负载
+
+        // 1) 场景以低分辨率渲染 (这是"游戏内部降载到 720p")
+        label_begin(cb, "scene_lowres");
+        VkRenderPassBeginInfo rb{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        rb.renderPass = g.rp_alu;
+        rb.framebuffer = g.fbLo;
+        rb.renderArea = {{0, 0}, {State::SR_LO_W, State::SR_LO_H}};
+        vkCmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pipe_alu);
+        vkCmdPushConstants(cb, g.playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &pc);
+        vkCmdDraw(cb, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cb);
+        label_end(cb);
+
+        VkDescriptorSet present_src = g.setLo;  // postfx=off 时直接放大低分辨率图
+
+        if (g.postfx_active) {
+            // 2) 管线尾部的 compute 算子: rtLo -> rtHi, 全程在显存里
+            label_begin(cb, "postfx_compute");
+
+            // rtLo: renderpass 结束时是 SHADER_READ_ONLY, compute 要当 storage image 读
+            VkImageMemoryBarrier tb[2]{};
+            for (int i = 0; i < 2; i++) {
+                tb[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                tb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                tb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                tb[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            }
+            tb[0].image = g.imgLo;
+            tb[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            tb[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            tb[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            tb[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            // rtHi: 上一帧末尾是 SHADER_READ_ONLY (被 blit 采样过), 首帧是 init_clear 之后的同一 layout
+            tb[1].image = g.imgHi;
+            tb[1].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            tb[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            tb[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            tb[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, tb);
+
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.postfx_pipe);
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g.postfx_playout,
+                                    0, 1, &g.postfx_set, 0, nullptr);
+            // 工作组 16x16, 与上游赛道契约一致; 向上取整覆盖整幅输出
+            vkCmdDispatch(cb, (State::SR_HI_W + 15) / 16, (State::SR_HI_H + 15) / 16, 1);
+
+            // rtHi 交还给 blit 采样; rtLo 回到 renderpass 期望的 initialLayout
+            VkImageMemoryBarrier bb[2]{};
+            for (int i = 0; i < 2; i++) {
+                bb[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                bb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                bb[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+                bb[i].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+            bb[0].image = g.imgHi;
+            bb[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            bb[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            bb[1].image = g.imgLo;
+            bb[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            bb[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, bb);
+            label_end(cb);
+            present_src = g.setHi;
+        }
+
+        // 3) 呈现
+        label_begin(cb, "present_blit");
+        VkRenderPassBeginInfo rb2{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        rb2.renderPass = g.rp_swap_dont;
+        rb2.framebuffer = g.swap_fbs[image_idx];
+        rb2.renderArea = {{0, 0}, g.swap_extent};
+        vkCmdBeginRenderPass(cb, &rb2, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.pipe_blit);
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.playout, 0, 1, &present_src, 0, nullptr);
         vkCmdPushConstants(cb, g.playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8, &pc);
         vkCmdDraw(cb, 3, 1, 0, 0);
         vkCmdEndRenderPass(cb);
