@@ -535,7 +535,7 @@ mod tests {
     fn system_prompt_states_every_hard_constraint() {
         let p = system_prompt(&SR);
         assert!(p.contains("1.50 ms"), "没写死耗时预算");
-        assert!(p.contains("37.286"), "没写死画质基线");
+        assert!(p.contains("38.666"), "没写死画质基线");
         assert!(p.contains("u_InputTexture") && p.contains("u_OutputTexture"));
         assert!(p.contains("静态可定界"));
         assert!(p.contains("SSBO"));

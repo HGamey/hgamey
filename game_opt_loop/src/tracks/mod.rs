@@ -92,8 +92,14 @@ pub const SR: TrackSpec = TrackSpec {
     id: "sr",
     display: "超分辨率 (Super Resolution)",
     budget_ms: 1.5,
-    // 来源: phonefarm docs/SPEC_SR_LOOP.md §7, NX809J 数据集 A 锁定的 Bicubic 基线。
-    quality_baseline_db: 37.286,
+    // 2026-09-22 真机实测: 赛道基线模板 (1 tap 直通) 在当前参考图上的 PSNR。
+    //
+    // 这里刻意**不用** sr_loop 那个 37.286 (原神数据集 A 的 Bicubic 基线):
+    // 那是另一把尺子上的数, 和本仓库成本模型的画质估计不同源。混用过一次,
+    // 结果是可行域直接塌成空集 —— 见 engine/cost_model.rs 模块头。
+    //
+    // 换参考帧 (真实大世界帧) 之后这个数必须重测。绝对 dB 不可跨参考图比较。
+    quality_baseline_db: 38.666,
     power_baseline_watt: 5.60,
     bindings: &[
         BindingSlot {

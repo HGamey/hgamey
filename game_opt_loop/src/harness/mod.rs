@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(req.track, "sr");
         assert_eq!(req.serial.as_deref(), Some("R5CT30ABCDE"));
         assert_eq!(req.budget_ms, 1.5);
-        assert!((req.quality_baseline_db - 37.286).abs() < 1e-4);
+        assert!((req.quality_baseline_db - 38.666).abs() < 1e-4);
         assert!(req.spirv_path.ends_with(".spv"));
 
         // 请求必须能原样序列化成契约 JSON。
