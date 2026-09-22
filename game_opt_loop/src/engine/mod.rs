@@ -1,8 +1,33 @@
-use crate::TrackMode;
-use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
-use std::path::Path;
+//! 进化中枢: 候选算子的数据模型、防爆门禁、变异、评测与 Pareto 归档。
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+pub mod analysis;
+pub mod archive;
+pub mod cost_model;
+pub mod evolution;
+pub mod generator;
+pub mod mutate;
+pub mod pareto;
+pub mod validator;
+
+pub use archive::{ArchiveEntry, ParetoArchive};
+pub use validator::{GateReport, GateStage, Validator, Violation, ViolationCode};
+
+/// 候选算子从哪来的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateOrigin {
+    /// 赛道基线模板。
+    Baseline,
+    /// 大模型变异产物。
+    Llm,
+    /// 本地确定性变异器产物 (LLM 不可用时的兜底, 也是 dry-run 的来源)。
+    LocalMutation,
+}
+
+/// 一个待评测的算子。字段与 `contracts/candidate.schema.json` 对齐。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub id: String,
@@ -11,63 +36,219 @@ pub struct Candidate {
     pub parent_id: Option<String>,
     pub budget_ms: f32,
     pub shader_source: String,
+    /// 规范化源码的 sha256 前 16 位, 用于跨代去重 (同构算子不重复上真机)。
+    pub fingerprint: String,
+    pub origin: CandidateOrigin,
+    /// 一行人类可读的形态描述。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
 }
 
-pub struct Validator;
-
-impl Validator {
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// 语法与防爆静态检查
-    pub fn verify_syntax(&self, source: &str) -> Result<()> {
-        if !source.contains("#version 450") {
-            bail!("Shader 缺少必须的 #version 450 标头");
+impl Candidate {
+    // 参数多是因为它就是契约字段的逐项映射; 拆成 builder 只会让调用点更啰嗦。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: impl Into<String>,
+        generation: u32,
+        track: &str,
+        parent_id: Option<String>,
+        budget_ms: f32,
+        shader_source: String,
+        origin: CandidateOrigin,
+        notes: Option<String>,
+    ) -> Self {
+        let fingerprint = fingerprint(&shader_source);
+        Self {
+            id: id.into(),
+            generation,
+            track: track.to_string(),
+            parent_id,
+            budget_ms,
+            shader_source,
+            fingerprint,
+            origin,
+            notes,
         }
-        if !source.contains("void main()") {
-            bail!("Shader 缺少 void main() 入口函数");
-        }
-        if source.contains("while(true)") || source.contains("for(;;)") {
-            bail!("检测到无界死循环危险指令，触发沙盒直杀");
-        }
-        Ok(())
     }
 }
 
-pub fn mock_generate_candidates(track: TrackMode, template: &str, n: u32) -> Result<Vec<Candidate>> {
-    let mut out = Vec::new();
-    for i in 0..n {
-        let source = if i == 0 {
-            template.replace("// [LLM 变异插槽: 高频重构与边缘自适应锐化]", "color = clamp(color * 1.05, 0.0, 1.0);")
-        } else if i == 1 {
-            template.replace("void main()", "void broken_func()")
-        } else {
-            template.to_string()
-        };
+/// 源码指纹。先折叠空白与注释再哈希: 只改了排版或注释的算子是同一个算子,
+/// 不值得再占一次真机 60s 回放。
+pub fn fingerprint(source: &str) -> String {
+    let normalized: String = source
+        .lines()
+        .map(|l| {
+            let l = match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            };
+            l.split_whitespace().collect::<Vec<_>>().join(" ")
+        })
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
 
-        out.push(Candidate {
-            id: format!("gen0_cand{}", i + 1),
-            generation: 0,
-            track: match track {
-                TrackMode::Sr => "sr".to_string(),
-                TrackMode::FrameGen => "frame_gen".to_string(),
+    let digest = Sha256::digest(normalized.as_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// 真机 (或成本模型) 给出的多维指标。字段与 `contracts/eval_report.schema.json` 对齐。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Metrics {
+    /// 算子自身的 GPU compute pass 耗时。硬预算就卡这个数。
+    pub operator_latency_ms: f32,
+    /// 整帧时间 p95 (ms)。
+    pub fps_p95_ms: f32,
+    /// 整机功耗 (W)。
+    pub power_watt: f32,
+    /// 画质 (dB)。必须 >= 赛道基线。
+    pub psnr_db: f32,
+}
+
+/// 指标从哪来 —— 这一条**绝不能**丢。
+///
+/// 成本模型产出的数字是**静态估计**, 不是测量; 它只能用于本地排序与冒烟,
+/// 不能拿来下任何性能结论。真机数据才带 p 值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricSource {
+    /// phonefarm 真机物理采样 + 冻结规则 t 检验。
+    Phonefarm,
+    /// 本地静态成本模型的估计值 (dry-run 专用, 非测量)。
+    StaticCostModel,
+}
+
+impl MetricSource {
+    pub fn is_measured(&self) -> bool {
+        matches!(self, MetricSource::Phonefarm)
+    }
+}
+
+/// 评测结论。取值与 `contracts/eval_report.schema.json` 的 status 枚举一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EvalStatus {
+    Pass,
+    /// 超出耗时硬预算。
+    Slow,
+    /// PSNR 低于基线 —— 画质一票否决。
+    PoorQuality,
+    Crash,
+    Reverted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Verdict {
+    pub is_pareto_improvement: bool,
+    /// 两样本 t 检验的 p 值。成本模型不产出 p 值, 记 NaN 之外的哨兵 1.0。
+    pub p_value: f64,
+}
+
+/// 一份完整评测报告。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalReport {
+    pub candidate_id: String,
+    pub status: EvalStatus,
+    pub metrics: Metrics,
+    pub verdict: Verdict,
+    /// 数据来源。序列化后依然带着, 归档里一眼能分辨真机数与估计值。
+    pub source: MetricSource,
+}
+
+impl EvalReport {
+    /// 是否有资格进入 Pareto 前沿。
+    ///
+    /// 三条硬约束同时成立才算数:
+    /// - 耗时在预算内 (§3 赛道硬约束)
+    /// - PSNR >= 基线 (§2 红线 3: 画质是约束, 不是目标)
+    /// - 真机数据还要显著 (p < 0.01; §2 红线 4: 防硬件噪声欺骗)
+    pub fn is_admissible(&self, budget_ms: f32, quality_baseline_db: f32) -> bool {
+        if self.status != EvalStatus::Pass {
+            return false;
+        }
+        if self.metrics.operator_latency_ms > budget_ms {
+            return false;
+        }
+        if self.metrics.psnr_db < quality_baseline_db {
+            return false;
+        }
+        if self.source.is_measured() && self.verdict.p_value >= 0.01 {
+            return false;
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_ignores_comments_and_whitespace() {
+        let a = "#version 450\nvoid main() { int x = 1; }";
+        let b = "#version 450\n\n  void  main()   {  int x = 1; }  // 换了注释\n";
+        assert_eq!(fingerprint(a), fingerprint(b));
+    }
+
+    #[test]
+    fn fingerprint_separates_real_changes() {
+        let a = "#version 450\nvoid main() { int x = 1; }";
+        let b = "#version 450\nvoid main() { int x = 2; }";
+        assert_ne!(fingerprint(a), fingerprint(b));
+    }
+
+    fn report(status: EvalStatus, latency: f32, psnr: f32, p: f64, src: MetricSource) -> EvalReport {
+        EvalReport {
+            candidate_id: "t".into(),
+            status,
+            metrics: Metrics {
+                operator_latency_ms: latency,
+                fps_p95_ms: 16.0,
+                power_watt: 4.8,
+                psnr_db: psnr,
             },
-            parent_id: None,
-            budget_ms: 1.5,
-            shader_source: source,
-        });
+            verdict: Verdict {
+                is_pareto_improvement: false,
+                p_value: p,
+            },
+            source: src,
+        }
     }
-    Ok(out)
-}
 
-pub fn run_evolution_loop(
-    _track: TrackMode,
-    _generations: u32,
-    _children: u32,
-    _budget: f32,
-    _out: &Path,
-) -> Result<()> {
-    println!("进化循环运行中 (待与真实 phonefarm 物理机联调)...");
-    Ok(())
+    #[test]
+    fn admissibility_enforces_the_latency_budget() {
+        let r = report(EvalStatus::Pass, 1.9, 38.0, 0.001, MetricSource::Phonefarm);
+        assert!(!r.is_admissible(1.5, 37.286));
+    }
+
+    #[test]
+    fn admissibility_enforces_the_quality_floor() {
+        let r = report(EvalStatus::Pass, 0.9, 37.0, 0.001, MetricSource::Phonefarm);
+        assert!(!r.is_admissible(1.5, 37.286));
+    }
+
+    /// 真机数据不显著 = 被硬件噪声忽悠, 不算数。
+    #[test]
+    fn admissibility_requires_significance_for_measured_data() {
+        let r = report(EvalStatus::Pass, 0.9, 38.5, 0.20, MetricSource::Phonefarm);
+        assert!(!r.is_admissible(1.5, 37.286));
+        let ok = report(EvalStatus::Pass, 0.9, 38.5, 0.004, MetricSource::Phonefarm);
+        assert!(ok.is_admissible(1.5, 37.286));
+    }
+
+    /// 成本模型的估计值没有 p 值可言, 不能拿显著性去卡它 (也永远不该被当成真机结论)。
+    #[test]
+    fn simulated_reports_are_not_judged_on_significance() {
+        let r = report(EvalStatus::Pass, 0.9, 38.5, 1.0, MetricSource::StaticCostModel);
+        assert!(r.is_admissible(1.5, 37.286));
+        assert!(!r.source.is_measured());
+    }
+
+    #[test]
+    fn non_pass_status_is_never_admissible() {
+        for s in [EvalStatus::Slow, EvalStatus::PoorQuality, EvalStatus::Crash, EvalStatus::Reverted] {
+            let r = report(s, 0.5, 40.0, 0.0001, MetricSource::Phonefarm);
+            assert!(!r.is_admissible(1.5, 37.286), "{s:?} 不该被接纳");
+        }
+    }
 }

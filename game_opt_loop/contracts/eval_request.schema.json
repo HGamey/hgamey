@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EvaluationRequest",
+  "description": "game_opt_loop 下发给 phonefarm 的真机评测请求。protocol 字段在看到任何候选数据之前就已冻结, 事后不得调整 —— 这是防硬件噪声欺骗的前提。",
+  "type": "object",
+  "required": ["version", "candidate_id", "track", "package", "replay_script", "shader_path", "spirv_path", "budget_ms", "quality_baseline_db", "protocol"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "candidate_id": { "type": "string" },
+    "track": { "type": "string", "enum": ["sr", "frame_gen"] },
+    "serial": { "type": ["string", "null"], "description": "目标设备序列号; 省略则由 phonefarm 选择唯一在线设备" },
+    "package": { "type": "string", "description": "被测游戏包名" },
+    "replay_script": { "type": "string", "description": "确定性回放脚本 id 或路径" },
+    "shader_path": { "type": "string", "description": "算子 GLSL 源码路径" },
+    "spirv_path": { "type": "string", "description": "本地门禁已编译好的 SPIR-V 路径; 真机不必再编一遍" },
+    "budget_ms": { "type": "number", "exclusiveMinimum": 0 },
+    "quality_baseline_db": { "type": "number" },
+    "protocol": {
+      "type": "object",
+      "description": "冻结的评测协议。",
+      "required": ["cool_c", "replay_seconds", "rounds", "alternating", "p_threshold"],
+      "properties": {
+        "cool_c": { "type": "number", "description": "冷机门槛: SoC 结温低于此值才放行 (摄氏度)" },
+        "replay_seconds": { "type": "integer", "minimum": 1, "description": "单次确定性回放时长 (秒)" },
+        "rounds": { "type": "integer", "minimum": 1, "description": "A/B 交替组数" },
+        "alternating": { "type": "boolean", "description": "是否严格 A/B/A/B 交替 (而非跑完 A 再跑 B)" },
+        "p_threshold": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "两样本 t 检验显著性门槛" }
+      }
+    }
+  }
+}

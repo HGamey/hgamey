@@ -1,0 +1,985 @@
+//! 多代自主演化闭环
+//!
+//! 一代的状态机 (与 phonefarm `SPEC_SR_LOOP` §5.1 同构):
+//!
+//! ```text
+//!   选亲本 (Pareto 前沿 + 拥挤距离)
+//!        ↓
+//!   变异 (LLM 优先, 失败逐个降级到本地确定性变异器)
+//!        ↓
+//!   去重 (指纹, 同构算子不重复占真机名额)
+//!        ↓
+//!   防爆门禁 (语法 / 零拷贝契约 / 循环有界 / SPIR-V)   ← 打回的不上真机
+//!        ↓
+//!   评测 (真机 phonefarm  或  dry-run 静态成本模型)
+//!        ↓
+//!   归档 (Pareto 支配排序, 原子写)
+//! ```
+//!
+//! 两条贯穿始终的规矩:
+//! - **单个候选出错不中断整代**。LLM 空回包、某个算子编不过、某次真机崩了,
+//!   都只让那一个候选作废。整代靠本地变异器兜底推进 —— 零人工介入的底线。
+//! - **估计值与实测值永不混淆**。每条记录都带 `MetricSource`, 汇总先按来源分组。
+
+use crate::engine::archive::ParetoArchive;
+use crate::engine::cost_model::{self, DeviceModel, NX809J_1080P};
+use crate::engine::generator::{
+    EliteSummary, Generator, MutationContext, RejectionSummary,
+};
+use crate::engine::mutate::{Genome, Rng};
+use crate::engine::validator::{GateReport, Validator, ViolationCode};
+use crate::engine::{Candidate, CandidateOrigin, EvalReport, MetricSource};
+use crate::harness::PhonefarmDriver;
+use crate::tracks::{self, TrackSpec};
+use crate::TrackMode;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// 演化的运行参数。
+#[derive(Debug, Clone)]
+pub struct EvolutionConfig {
+    pub track: TrackMode,
+    pub generations: u32,
+    pub children: u32,
+    pub budget_ms: f32,
+    pub out_dir: PathBuf,
+    /// true = 不连真机, 用静态成本模型估分。
+    pub dry_run: bool,
+    /// 随机种子。固定种子 → 同样的 dry-run 结果, 归档可复现。
+    pub seed: u64,
+    /// LLM 服务名。None = 按密钥可用性自动挑。
+    pub prefer_provider: Option<String>,
+    /// secrets.env 路径。
+    pub secrets_path: PathBuf,
+    /// 是否启用 LLM 变异通道。false = 只用本地确定性变异器。
+    pub use_llm: bool,
+    /// LLM 单次请求超时 (秒)。None = 用服务表里的默认值。
+    pub llm_timeout_s: Option<u64>,
+    /// 设备成本模型 (dry-run 用)。
+    pub device: DeviceModel,
+}
+
+impl EvolutionConfig {
+    pub fn spec(&self) -> &'static TrackSpec {
+        tracks::spec(self.track)
+    }
+}
+
+/// 一个候选走完整条流水线之后的结局。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateOutcome {
+    pub id: String,
+    pub origin: CandidateOrigin,
+    pub fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub stage: OutcomeStage,
+    /// 门禁结论 (被门禁打回时必定存在)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateReport>,
+    /// 评测结果 (上了机/过了成本模型才有)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report: Option<EvalReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutcomeStage {
+    /// 指纹与既有算子重复, 没必要再评一次。
+    DuplicateSkipped,
+    /// 被本地防爆门禁打回, 从未上真机。
+    GateRejected,
+    /// 评测过程本身出错 (真机掉线 / 回包不合契约)。
+    EvalError,
+    /// 走完全程。
+    Evaluated,
+}
+
+/// 一代的完整记录, 落盘为 `gen_N.json`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationRecord {
+    pub generation: u32,
+    pub track: String,
+    pub started_at: String,
+    /// 本代子代从哪来的统计。
+    pub origin_counts: BTreeMap<String, usize>,
+    /// 门禁拦截统计: 违规码 → 次数。
+    pub gate_rejections: BTreeMap<String, usize>,
+    pub outcomes: Vec<CandidateOutcome>,
+    /// 本代评测数据的来源。
+    pub metric_source: MetricSource,
+    /// 归档中可行域内的历史最优 PSNR。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_psnr_so_far: Option<f32>,
+    /// 本代最优 PSNR。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_best_psnr: Option<f32>,
+    /// 归档中可行域内的历史最低延迟。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_latency_so_far: Option<f32>,
+    pub front_size: usize,
+    /// LLM 这一代的情况。
+    pub llm: LlmStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmStatus {
+    pub attempted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub produced: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 整轮演化的汇总。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvolutionSummary {
+    pub track: String,
+    pub generations: u32,
+    pub children_per_generation: u32,
+    pub seed: u64,
+    pub dry_run: bool,
+    pub metric_source: MetricSource,
+    pub total_candidates: usize,
+    pub gate_rejected: usize,
+    pub duplicates_skipped: usize,
+    pub eval_errors: usize,
+    pub evaluated: usize,
+    /// 门禁拦截率 = 打回数 / 送检数。
+    pub gate_rejection_rate: f64,
+    pub gate_rejections_by_code: BTreeMap<String, usize>,
+    pub archive_size: usize,
+    pub front_size: usize,
+    /// 逐代的累计最优 PSNR 序列 (Gate 4 那条曲线)。
+    pub best_psnr_series: Vec<Option<f32>>,
+    pub gen_best_psnr_series: Vec<Option<f32>>,
+    pub archive_path: String,
+    pub generation_records: Vec<String>,
+}
+
+/// 演化引擎。
+pub struct Evolution {
+    config: EvolutionConfig,
+    validator: Validator,
+    archive: ParetoArchive,
+    archive_path: PathBuf,
+    rng: Rng,
+    /// 候选 id → 基因组。只有本地变异产物有基因组 (LLM 产物只有源码),
+    /// 所以这张表是「档案条目」到「可继续变异的亲本」的索引。
+    genome_pool: BTreeMap<String, Genome>,
+    driver: Option<PhonefarmDriver>,
+    generator: Option<Generator>,
+    llm_error: Option<String>,
+}
+
+impl Evolution {
+    pub fn new(config: EvolutionConfig) -> Result<Self> {
+        let spec = config.spec();
+        let archive_path = config.out_dir.join("archive.json");
+        std::fs::create_dir_all(&config.out_dir)
+            .with_context(|| format!("创建输出目录失败: {}", config.out_dir.display()))?;
+
+        let archive = ParetoArchive::load_or_new(
+            &archive_path,
+            spec.id,
+            config.budget_ms,
+            spec.quality_baseline_db,
+        );
+
+        // LLM 是尽力而为: 拿不到就记下原因, 整代照样用本地变异器推进。
+        let (generator, llm_error) = if config.use_llm {
+            let secrets = crate::engine::generator::load_secrets(&config.secrets_path);
+            match Generator::from_secrets_with_timeout(
+                &secrets,
+                config.prefer_provider.as_deref(),
+                config.llm_timeout_s,
+            ) {
+                Ok(g) => (Some(g), None),
+                Err(e) => (None, Some(format!("{e:#}"))),
+            }
+        } else {
+            (None, None)
+        };
+
+        let driver = if config.dry_run {
+            None
+        } else {
+            Some(PhonefarmDriver::new())
+        };
+
+        Ok(Self {
+            rng: Rng::new(config.seed),
+            genome_pool: BTreeMap::new(),
+            validator: Validator::new(),
+            archive,
+            archive_path,
+            driver,
+            generator,
+            llm_error,
+            config,
+        })
+    }
+
+    pub fn archive(&self) -> &ParetoArchive {
+        &self.archive
+    }
+
+    pub fn archive_path(&self) -> &Path {
+        &self.archive_path
+    }
+
+    pub fn llm_available(&self) -> bool {
+        self.generator.is_some()
+    }
+
+    pub fn llm_error(&self) -> Option<&str> {
+        self.llm_error.as_deref()
+    }
+
+    /// 跑完全部代际。
+    pub fn run(&mut self) -> Result<EvolutionSummary> {
+        let spec = self.config.spec();
+        let mut records = Vec::new();
+        let mut record_paths = Vec::new();
+        let mut best_series = Vec::new();
+        let mut gen_best_series = Vec::new();
+        let mut last_rejections: Vec<RejectionSummary> = Vec::new();
+
+        // Gen 0 是基线: 先把模板本身评一次, 后面的代才有参照。
+        self.seed_baseline()?;
+
+        for gen in 1..=self.config.generations {
+            let (record, rejections) = self.run_generation(gen, &last_rejections)?;
+            last_rejections = rejections;
+
+            let path = self.config.out_dir.join(format!("gen_{gen}.json"));
+            std::fs::write(&path, serde_json::to_string_pretty(&record)?)
+                .with_context(|| format!("写入 {} 失败", path.display()))?;
+            record_paths.push(path.display().to_string());
+
+            best_series.push(record.best_psnr_so_far);
+            gen_best_series.push(record.gen_best_psnr);
+            records.push(record);
+
+            self.archive.save(&self.archive_path)?;
+        }
+
+        let metric_source = if self.config.dry_run {
+            MetricSource::StaticCostModel
+        } else {
+            MetricSource::Phonefarm
+        };
+
+        let mut gate_rejections_by_code: BTreeMap<String, usize> = BTreeMap::new();
+        let (mut gate_rejected, mut duplicates, mut errors, mut evaluated) = (0, 0, 0, 0);
+        for r in &records {
+            for (code, n) in &r.gate_rejections {
+                *gate_rejections_by_code.entry(code.clone()).or_insert(0) += n;
+            }
+            for o in &r.outcomes {
+                match o.stage {
+                    OutcomeStage::GateRejected => gate_rejected += 1,
+                    OutcomeStage::DuplicateSkipped => duplicates += 1,
+                    OutcomeStage::EvalError => errors += 1,
+                    OutcomeStage::Evaluated => evaluated += 1,
+                }
+            }
+        }
+        let total: usize = records.iter().map(|r| r.outcomes.len()).sum();
+        // 拦截率只在「真正送检的」里面算: 指纹重复的根本没进门禁。
+        let screened = total - duplicates;
+
+        Ok(EvolutionSummary {
+            track: spec.id.to_string(),
+            generations: self.config.generations,
+            children_per_generation: self.config.children,
+            seed: self.config.seed,
+            dry_run: self.config.dry_run,
+            metric_source,
+            total_candidates: total,
+            gate_rejected,
+            duplicates_skipped: duplicates,
+            eval_errors: errors,
+            evaluated,
+            gate_rejection_rate: if screened == 0 {
+                0.0
+            } else {
+                gate_rejected as f64 / screened as f64
+            },
+            gate_rejections_by_code,
+            archive_size: self.archive.entries.len(),
+            front_size: self.archive.front().len(),
+            best_psnr_series: best_series,
+            gen_best_psnr_series: gen_best_series,
+            archive_path: self.archive_path.display().to_string(),
+            generation_records: record_paths,
+        })
+    }
+
+    /// 把赛道基线模板作为 Gen 0 收进档案。
+    fn seed_baseline(&mut self) -> Result<()> {
+        if !self.archive.entries.is_empty() {
+            return Ok(());
+        }
+        let spec = self.config.spec();
+        let source = tracks::load_template(self.config.track)?;
+        let candidate = Candidate::new(
+            "gen0_baseline",
+            0,
+            spec.id,
+            None,
+            self.config.budget_ms,
+            source,
+            CandidateOrigin::Baseline,
+            Some("赛道基线模板".to_string()),
+        );
+        let gate = self.validator.gate(&candidate.shader_source, spec);
+        if !gate.passed {
+            anyhow::bail!("赛道基线模板自身过不了门禁: {}", gate.feedback_line());
+        }
+        if let Ok(report) = self.evaluate(&candidate, &gate, &Genome::baseline(self.config.track)) {
+            self.archive.insert(&candidate, report, now());
+        }
+        self.archive.save(&self.archive_path)?;
+        Ok(())
+    }
+
+    /// 跑一代。
+    fn run_generation(
+        &mut self,
+        generation: u32,
+        prev_rejections: &[RejectionSummary],
+    ) -> Result<(GenerationRecord, Vec<RejectionSummary>)> {
+        let spec = self.config.spec();
+        let started_at = now();
+
+        // ---- 变异 ----
+        let (mut batch, llm) = self.breed(generation, prev_rejections);
+
+        // ---- 逐个过流水线 ----
+        let mut outcomes = Vec::new();
+        let mut gate_rejections: BTreeMap<String, usize> = BTreeMap::new();
+        let mut rejections = Vec::new();
+        let mut gen_best_psnr: Option<f32> = None;
+
+        for (candidate, genome) in batch.drain(..) {
+            if self.archive.contains_fingerprint(&candidate.fingerprint) {
+                outcomes.push(CandidateOutcome {
+                    id: candidate.id.clone(),
+                    origin: candidate.origin,
+                    fingerprint: candidate.fingerprint.clone(),
+                    parent_id: candidate.parent_id.clone(),
+                    notes: candidate.notes.clone(),
+                    stage: OutcomeStage::DuplicateSkipped,
+                    gate: None,
+                    report: None,
+                    error: None,
+                });
+                continue;
+            }
+
+            let gate = self.validator.gate(&candidate.shader_source, spec);
+            if !gate.passed {
+                for code in gate.codes() {
+                    *gate_rejections.entry(code.to_string()).or_insert(0) += 1;
+                }
+                rejections.push(RejectionSummary {
+                    id: candidate.id.clone(),
+                    reason: gate.feedback_line(),
+                });
+                outcomes.push(CandidateOutcome {
+                    id: candidate.id.clone(),
+                    origin: candidate.origin,
+                    fingerprint: candidate.fingerprint.clone(),
+                    parent_id: candidate.parent_id.clone(),
+                    notes: candidate.notes.clone(),
+                    stage: OutcomeStage::GateRejected,
+                    gate: Some(gate),
+                    report: None,
+                    error: None,
+                });
+                continue;
+            }
+
+            // 门禁过了才写盘 —— 非法算子连落盘的资格都没有。
+            self.persist_candidate(&candidate)?;
+
+            match self.evaluate(&candidate, &gate, &genome) {
+                Ok(report) => {
+                    if report.is_admissible(spec.budget_ms, spec.quality_baseline_db) {
+                        let psnr = report.metrics.psnr_db;
+                        gen_best_psnr = Some(gen_best_psnr.map_or(psnr, |b: f32| b.max(psnr)));
+                    } else {
+                        rejections.push(RejectionSummary {
+                            id: candidate.id.clone(),
+                            reason: format!(
+                                "{:?}: 耗时 {:.3} ms (预算 {:.2}), 画质 {:.3} dB (基线 {:.3})",
+                                report.status,
+                                report.metrics.operator_latency_ms,
+                                spec.budget_ms,
+                                report.metrics.psnr_db,
+                                spec.quality_baseline_db,
+                            ),
+                        });
+                    }
+                    self.archive.insert(&candidate, report.clone(), now());
+                    // 只有本地变异产物才有真基因组可以传给下一代;
+                    // LLM 算子只有源码, 它的「遗传」走的是 prompt 里的优胜范例。
+                    if candidate.origin == CandidateOrigin::LocalMutation {
+                        self.genome_pool
+                            .insert(candidate.id.clone(), genome.clone());
+                    }
+                    outcomes.push(CandidateOutcome {
+                        id: candidate.id.clone(),
+                        origin: candidate.origin,
+                        fingerprint: candidate.fingerprint.clone(),
+                        parent_id: candidate.parent_id.clone(),
+                        notes: candidate.notes.clone(),
+                        stage: OutcomeStage::Evaluated,
+                        gate: Some(gate),
+                        report: Some(report),
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    // 单个候选评测失败不中断整代。
+                    outcomes.push(CandidateOutcome {
+                        id: candidate.id.clone(),
+                        origin: candidate.origin,
+                        fingerprint: candidate.fingerprint.clone(),
+                        parent_id: candidate.parent_id.clone(),
+                        notes: candidate.notes.clone(),
+                        stage: OutcomeStage::EvalError,
+                        gate: Some(gate),
+                        report: None,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+
+        let mut origin_counts: BTreeMap<String, usize> = BTreeMap::new();
+        for o in &outcomes {
+            let key = match o.origin {
+                CandidateOrigin::Baseline => "baseline",
+                CandidateOrigin::Llm => "llm",
+                CandidateOrigin::LocalMutation => "local_mutation",
+            };
+            *origin_counts.entry(key.to_string()).or_insert(0) += 1;
+        }
+
+        let record = GenerationRecord {
+            generation,
+            track: spec.id.to_string(),
+            started_at,
+            origin_counts,
+            gate_rejections,
+            outcomes,
+            metric_source: if self.config.dry_run {
+                MetricSource::StaticCostModel
+            } else {
+                MetricSource::Phonefarm
+            },
+            best_psnr_so_far: self.archive.best_psnr(),
+            gen_best_psnr,
+            best_latency_so_far: self.archive.best_latency(),
+            front_size: self.archive.front().len(),
+            llm,
+        };
+
+        Ok((record, rejections))
+    }
+
+    /// 生成本代的子代。LLM 优先, 不足的用本地变异器补齐。
+    fn breed(
+        &mut self,
+        generation: u32,
+        prev_rejections: &[RejectionSummary],
+    ) -> (Vec<(Candidate, Genome)>, LlmStatus) {
+        let spec = self.config.spec();
+        let want = self.config.children as usize;
+        let mut out: Vec<(Candidate, Genome)> = Vec::new();
+
+        let mut llm = LlmStatus {
+            attempted: false,
+            provider: self.generator.as_ref().map(|g| g.provider_name().to_string()),
+            produced: 0,
+            error: self.llm_error.clone(),
+        };
+
+        if let Some(generator) = self.generator.as_ref() {
+            llm.attempted = true;
+            let elites: Vec<EliteSummary> = self
+                .archive
+                .select_parents(3)
+                .into_iter()
+                .map(|e| EliteSummary {
+                    id: e.id.clone(),
+                    notes: e.notes.clone(),
+                    report: e.report.clone(),
+                    shader_source: e.shader_source.clone(),
+                })
+                .collect();
+
+            let template = tracks::load_template(self.config.track).unwrap_or_default();
+            let ctx = MutationContext {
+                track: spec,
+                generation,
+                children: self.config.children,
+                device: self.config.device.name,
+                elites,
+                rejections: prev_rejections
+                    .iter()
+                    .map(|r| RejectionSummary {
+                        id: r.id.clone(),
+                        reason: r.reason.clone(),
+                    })
+                    .collect(),
+                template: &template,
+            };
+
+            let mut counter = 0u32;
+            let mut next_id = || {
+                counter += 1;
+                format!("gen{generation}_llm{counter}")
+            };
+            match generator.mutate(&ctx, &mut next_id) {
+                Ok(cands) => {
+                    llm.produced = cands.len();
+                    // LLM 没有基因组; 用一个基线占位, 它不会进基因池。
+                    for c in cands {
+                        out.push((c, Genome::baseline(self.config.track)));
+                    }
+                }
+                Err(e) => llm.error = Some(format!("{e:#}")),
+            }
+        }
+
+        // 本地变异器补齐余量 —— 这是「整代照样推进」的兜底。
+        let mut idx = 0u32;
+        while out.len() < want {
+            idx += 1;
+            let parent = self.pick_genome();
+            let child = parent.mutate(&mut self.rng);
+            let source = child.to_glsl();
+            let cand = Candidate::new(
+                format!("gen{generation}_loc{idx}"),
+                generation,
+                spec.id,
+                None,
+                self.config.budget_ms,
+                source,
+                CandidateOrigin::LocalMutation,
+                Some(child.describe()),
+            );
+            out.push((cand, child));
+            // 极端情况下 (基因池退化) 防止无限循环。
+            if idx > want as u32 * 8 {
+                break;
+            }
+        }
+
+        (out, llm)
+    }
+
+    /// 挑一个亲本。
+    ///
+    /// 亲本必须来自档案的 Pareto 前沿 (不够再往下一层取, 同层按拥挤距离排),
+    /// 而不是「所有评测过的算子」里均匀抽。
+    ///
+    /// 这个区别不是细节: 均匀抽会反复抽到早就被判 POOR_QUALITY 的基线基因组,
+    /// 于是整代又生成一遍同样的东西, 指纹去重把它们丢掉, 搜索原地打转 ——
+    /// 实测 12 个候选里有 4 个是这么浪费掉的。
+    fn pick_genome(&mut self) -> Genome {
+        let parents: Vec<Genome> = self
+            .archive
+            .select_parents(8)
+            .into_iter()
+            .filter_map(|e| self.genome_pool.get(&e.id).cloned())
+            .collect();
+
+        if !parents.is_empty() {
+            let i = (self.rng.next_u64() % parents.len() as u64) as usize;
+            return parents[i].clone();
+        }
+
+        // 前沿里还没有本地变异产物 (开局第一代, 或前沿全是 LLM 算子):
+        // 退回到池子里任意一个, 再不行才用赛道基线。
+        if self.genome_pool.is_empty() {
+            return Genome::baseline(self.config.track);
+        }
+        let i = (self.rng.next_u64() % self.genome_pool.len() as u64) as usize;
+        self.genome_pool
+            .values()
+            .nth(i)
+            .cloned()
+            .unwrap_or_else(|| Genome::baseline(self.config.track))
+    }
+
+    /// 把通过门禁的算子源码落盘, 留作证据。
+    fn persist_candidate(&self, candidate: &Candidate) -> Result<PathBuf> {
+        let path = self.shader_path(candidate);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, &candidate.shader_source)
+            .with_context(|| format!("写入 {} 失败", path.display()))?;
+        Ok(path)
+    }
+
+    fn shader_path(&self, candidate: &Candidate) -> PathBuf {
+        self.config
+            .out_dir
+            .join("candidates")
+            .join(format!("{}.comp", candidate.id))
+    }
+
+    /// 评测一个候选。
+    ///
+    /// dry-run 走静态成本模型 (估计值), 否则下发 phonefarm (实测值)。
+    /// 两条路径产出的报告都带明确的 `MetricSource`。
+    fn evaluate(
+        &self,
+        candidate: &Candidate,
+        gate: &GateReport,
+        genome: &Genome,
+    ) -> Result<EvalReport> {
+        let spec = self.config.spec();
+
+        if let Some(driver) = self.driver.as_ref() {
+            let shader_path = self.shader_path(candidate);
+            let spirv_path = shader_path.with_extension("spv");
+            let request_path = shader_path.with_extension("request.json");
+            let request = driver.build_request(candidate, spec, &shader_path, &spirv_path);
+            return driver.evaluate(&request, &request_path);
+        }
+
+        // 成本模型需要知道锐化参数; 本地基因组能直接给, LLM 算子只能从静态特征推。
+        let (sharpen, adaptive, clamped) = match genome {
+            Genome::Sr(g) if candidate.origin == CandidateOrigin::LocalMutation => {
+                (g.sharpen, g.adaptive, g.clamp_ringing)
+            }
+            _ => infer_quality_traits(&candidate.shader_source),
+        };
+
+        let (report, _cost) = cost_model::evaluate(
+            &candidate.id,
+            &gate.features,
+            self.config.track,
+            spec,
+            &self.config.device,
+            sharpen,
+            adaptive,
+            clamped,
+        );
+        Ok(report)
+    }
+}
+
+/// 从源码里粗推画质相关特征 (只用于成本模型对 LLM 算子的估分)。
+///
+/// 这是一个**弱启发**: 它看的是源码里有没有出现锐化/夹紧的典型写法。
+/// 真 PSNR 必须由真机截帧算, 这里只是给 dry-run 排序用。
+fn infer_quality_traits(source: &str) -> (f32, bool, bool) {
+    let lower = source.to_lowercase();
+    let sharpen = if lower.contains("sharpen") || lower.contains("unsharp") {
+        0.30
+    } else {
+        0.0
+    };
+    let adaptive = lower.contains("smoothstep") || lower.contains("contrast");
+    let clamped = lower.contains("nmin") || lower.contains("nmax");
+    (sharpen, adaptive, clamped)
+}
+
+pub fn now() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+/// 默认的设备成本模型。
+pub fn default_device() -> DeviceModel {
+    NX809J_1080P
+}
+
+/// 防爆门禁的红队语料。
+///
+/// 每一条都对应一类真实会把设备搞挂或把帧数据搬出显存的写法。
+/// `--self-check` 跑这批语料, 产出的拦截率是 M0 验收的硬证据 ——
+/// 一个只会放行的门禁和没有门禁是一回事。
+pub struct RedTeamCase {
+    pub name: &'static str,
+    pub track: TrackMode,
+    pub source: String,
+    pub expect: ViolationCode,
+}
+
+pub fn red_team_corpus() -> Vec<RedTeamCase> {
+    let hdr = "#version 450\nlayout(local_size_x = 16, local_size_y = 16) in;\n\
+layout(binding = 0, rgba8) uniform readonly image2D u_InputTexture;\n\
+layout(binding = 1, rgba8) uniform writeonly image2D u_OutputTexture;\n";
+    let guard = "    ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n\
+    ivec2 o = imageSize(u_OutputTexture);\n\
+    if (p.x >= o.x || p.y >= o.y) return;\n";
+    let sr = |body: &str| format!("{hdr}void main() {{\n{guard}{body}\n}}\n");
+
+    vec![
+        RedTeamCase {
+            name: "while_true",
+            track: TrackMode::Sr,
+            source: sr("    vec4 c = vec4(0.0);\n    while (true) { c += vec4(0.01); }\n    imageStore(u_OutputTexture, p, c);"),
+            expect: ViolationCode::UnboundedLoop,
+        },
+        RedTeamCase {
+            name: "for_ever",
+            track: TrackMode::Sr,
+            source: sr("    vec4 c = vec4(0.0);\n    for (;;) { c += vec4(0.01); }\n    imageStore(u_OutputTexture, p, c);"),
+            expect: ViolationCode::UnboundedLoop,
+        },
+        RedTeamCase {
+            name: "do_while_true",
+            track: TrackMode::Sr,
+            source: sr("    vec4 c = vec4(0.0);\n    do { c += vec4(0.01); } while (true);\n    imageStore(u_OutputTexture, p, c);"),
+            expect: ViolationCode::UnboundedLoop,
+        },
+        RedTeamCase {
+            name: "tautological_condition",
+            track: TrackMode::Sr,
+            source: sr("    vec4 c = vec4(0.0);\n    while (2 > 1) { c += vec4(0.01); }\n    imageStore(u_OutputTexture, p, c);"),
+            expect: ViolationCode::UnboundedLoop,
+        },
+        RedTeamCase {
+            name: "counter_moves_away_from_bound",
+            track: TrackMode::Sr,
+            source: sr("    vec4 c = vec4(0.0);\n    for (int i = 0; i < 16; i--) { c += vec4(0.01); }\n    imageStore(u_OutputTexture, p, c);"),
+            expect: ViolationCode::UnboundedLoop,
+        },
+        RedTeamCase {
+            name: "runtime_sized_loop",
+            track: TrackMode::Sr,
+            source: sr("    vec4 c = vec4(0.0);\n    int n = imageSize(u_InputTexture).x;\n    for (int i = 0; i < n; i++) { c += imageLoad(u_InputTexture, ivec2(i, 0)); }\n    imageStore(u_OutputTexture, p, c);"),
+            expect: ViolationCode::UnboundedLoop,
+        },
+        RedTeamCase {
+            name: "loop_trip_explosion",
+            track: TrackMode::Sr,
+            source: sr("    vec4 c = vec4(0.0);\n    for (int i = 0; i < 100000; i++) { c += vec4(1e-6); }\n    imageStore(u_OutputTexture, p, c);"),
+            expect: ViolationCode::LoopTripTooLarge,
+        },
+        RedTeamCase {
+            name: "staging_buffer_breaks_zero_copy",
+            track: TrackMode::Sr,
+            source: format!(
+                "{hdr}layout(binding = 5, std430) buffer Staging {{ vec4 px[]; }} staging;\nvoid main() {{\n{guard}    staging.px[0] = imageLoad(u_InputTexture, p);\n    imageStore(u_OutputTexture, p, staging.px[0]);\n}}\n"
+            ),
+            expect: ViolationCode::NonZeroCopyResource,
+        },
+        RedTeamCase {
+            name: "undeclared_binding",
+            track: TrackMode::Sr,
+            source: format!(
+                "{hdr}layout(binding = 9, rgba8) uniform readonly image2D u_Rogue;\nvoid main() {{\n{guard}    imageStore(u_OutputTexture, p, imageLoad(u_Rogue, p));\n}}\n"
+            ),
+            expect: ViolationCode::UnknownBinding,
+        },
+        RedTeamCase {
+            name: "renamed_contract_slot",
+            track: TrackMode::Sr,
+            source: "#version 450\nlayout(local_size_x = 16, local_size_y = 16) in;\nlayout(binding = 0, rgba8) uniform readonly image2D u_Src;\nlayout(binding = 1, rgba8) uniform writeonly image2D u_OutputTexture;\nvoid main() {\n    ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n    ivec2 o = imageSize(u_OutputTexture);\n    if (p.x >= o.x || p.y >= o.y) return;\n    imageStore(u_OutputTexture, p, imageLoad(u_Src, p));\n}\n".to_string(),
+            expect: ViolationCode::BindingNameMismatch,
+        },
+        RedTeamCase {
+            name: "divergent_barrier",
+            track: TrackMode::Sr,
+            source: format!(
+                "{hdr}shared vec4 tile[16][16];\nvoid main() {{\n{guard}    uvec2 l = gl_LocalInvocationID.xy;\n    tile[l.y][l.x] = imageLoad(u_InputTexture, p);\n    if (l.x > 3u) {{ barrier(); }}\n    imageStore(u_OutputTexture, p, tile[l.y][l.x]);\n}}\n"
+            ),
+            expect: ViolationCode::DivergentBarrier,
+        },
+        RedTeamCase {
+            name: "unguarded_store",
+            track: TrackMode::Sr,
+            source: format!(
+                "{hdr}void main() {{\n    ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n    imageStore(u_OutputTexture, p, imageLoad(u_InputTexture, p));\n}}\n"
+            ),
+            expect: ViolationCode::UnguardedImageStore,
+        },
+        RedTeamCase {
+            name: "oversized_workgroup",
+            track: TrackMode::Sr,
+            source: "#version 450\nlayout(local_size_x = 64, local_size_y = 64) in;\nlayout(binding = 0, rgba8) uniform readonly image2D u_InputTexture;\nlayout(binding = 1, rgba8) uniform writeonly image2D u_OutputTexture;\nvoid main() {\n    ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n    ivec2 o = imageSize(u_OutputTexture);\n    if (p.x >= o.x || p.y >= o.y) return;\n    imageStore(u_OutputTexture, p, imageLoad(u_InputTexture, p));\n}\n".to_string(),
+            expect: ViolationCode::WorkgroupTooLarge,
+        },
+        RedTeamCase {
+            name: "syntax_error",
+            track: TrackMode::Sr,
+            source: sr("    imageStore(u_OutputTexture, p imageLoad(u_InputTexture, p));"),
+            expect: ViolationCode::SyntaxError,
+        },
+        RedTeamCase {
+            name: "missing_version",
+            track: TrackMode::Sr,
+            source: "layout(local_size_x = 16, local_size_y = 16) in;\nvoid main() {}\n".to_string(),
+            expect: ViolationCode::MissingVersionDirective,
+        },
+        RedTeamCase {
+            name: "sr_shader_on_frame_gen_track",
+            track: TrackMode::FrameGen,
+            source: tracks::embedded_template(TrackMode::Sr).to_string(),
+            expect: ViolationCode::MissingRequiredBinding,
+        },
+    ]
+}
+
+/// 红队语料的运行结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfCheckResult {
+    pub total: usize,
+    pub intercepted: usize,
+    pub interception_rate: f64,
+    /// 违规码命中预期的条数。
+    pub exact_code_matches: usize,
+    pub cases: Vec<SelfCheckCase>,
+    /// 合规样本全部放行才算门禁没有过度杀伤。
+    pub benign_total: usize,
+    pub benign_passed: usize,
+    pub max_gate_us: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfCheckCase {
+    pub name: String,
+    pub track: String,
+    pub expected: String,
+    pub intercepted: bool,
+    pub actual_codes: Vec<String>,
+    pub gate_us: u128,
+}
+
+/// 跑红队语料 + 合规样本, 产出拦截率证据。
+pub fn self_check() -> SelfCheckResult {
+    let validator = Validator::new();
+    let mut cases = Vec::new();
+    let mut intercepted = 0usize;
+    let mut exact = 0usize;
+    let mut max_us = 0u128;
+
+    for case in red_team_corpus() {
+        let spec = tracks::spec(case.track);
+        let report = validator.gate(&case.source, spec);
+        let codes: Vec<String> = report.codes().iter().map(|c| c.to_string()).collect();
+        let hit = !report.passed;
+        if hit {
+            intercepted += 1;
+        }
+        if codes.contains(&case.expect.to_string()) {
+            exact += 1;
+        }
+        max_us = max_us.max(report.elapsed_us);
+        cases.push(SelfCheckCase {
+            name: case.name.to_string(),
+            track: spec.id.to_string(),
+            expected: case.expect.to_string(),
+            intercepted: hit,
+            actual_codes: codes,
+            gate_us: report.elapsed_us,
+        });
+    }
+
+    // 合规样本: 两条赛道的基线模板 + 一批本地变异产物。
+    let mut benign_total = 0usize;
+    let mut benign_passed = 0usize;
+    for track in [TrackMode::Sr, TrackMode::FrameGen] {
+        let spec = tracks::spec(track);
+        let mut rng = Rng::new(0x5EED);
+        let mut genome = Genome::baseline(track);
+        for _ in 0..24 {
+            let r = validator.gate(&genome.to_glsl(), spec);
+            benign_total += 1;
+            if r.passed {
+                benign_passed += 1;
+            }
+            max_us = max_us.max(r.elapsed_us);
+            genome = genome.mutate(&mut rng);
+        }
+    }
+
+    let total = cases.len();
+    SelfCheckResult {
+        total,
+        intercepted,
+        interception_rate: if total == 0 {
+            0.0
+        } else {
+            intercepted as f64 / total as f64
+        },
+        exact_code_matches: exact,
+        cases,
+        benign_total,
+        benign_passed,
+        max_gate_us: max_us,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 红队语料必须 100% 被拦下, 且命中预期的违规码。
+    /// 只统计「拦下了」不够 —— 拦对原因才说明分析真的生效了。
+    #[test]
+    fn red_team_corpus_is_fully_intercepted_with_the_right_reason() {
+        let r = self_check();
+        assert!(r.total >= 15, "红队语料太少, 覆盖不足");
+        assert_eq!(
+            r.intercepted, r.total,
+            "有 {} 条恶意算子漏网",
+            r.total - r.intercepted
+        );
+        assert_eq!(
+            r.exact_code_matches, r.total,
+            "拦是拦下了, 但有 {} 条的违规码与预期不符",
+            r.total - r.exact_code_matches
+        );
+        assert_eq!(r.interception_rate, 1.0);
+    }
+
+    /// 门禁不能靠「全杀」刷拦截率。
+    #[test]
+    fn the_gate_does_not_over_kill_benign_operators() {
+        let r = self_check();
+        assert!(r.benign_total >= 40);
+        assert_eq!(
+            r.benign_passed, r.benign_total,
+            "{} 个合规算子被误杀",
+            r.benign_total - r.benign_passed
+        );
+    }
+
+    #[test]
+    fn the_gate_stays_fast_across_the_whole_corpus() {
+        let r = self_check();
+        assert!(
+            r.max_gate_us < 500_000,
+            "最慢一次门禁 {} us, 称不上秒级打回",
+            r.max_gate_us
+        );
+    }
+
+    #[test]
+    fn quality_trait_inference_is_conservative() {
+        let (s, a, c) = infer_quality_traits("#version 450\nvoid main() {}");
+        assert_eq!(s, 0.0);
+        assert!(!a && !c);
+
+        let (s2, a2, _) =
+            infer_quality_traits("float gain = SHARPEN * smoothstep(0.0, 0.2, contrast);");
+        assert!(s2 > 0.0 && a2);
+    }
+}

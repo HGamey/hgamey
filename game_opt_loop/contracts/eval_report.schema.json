@@ -1,64 +1,41 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "EvaluationReport",
+  "description": "一份评测报告。source 字段区分真机实测与本地成本模型估计 —— 两者绝不可混用, 只有 phonefarm 的记录带统计显著性。",
   "type": "object",
-  "required": [
-    "candidate_id",
-    "status",
-    "metrics",
-    "verdict"
-  ],
+  "required": ["candidate_id", "status", "metrics", "verdict", "source"],
   "properties": {
-    "candidate_id": {
-      "type": "string"
-    },
+    "candidate_id": { "type": "string" },
     "status": {
       "type": "string",
-      "enum": [
-        "PASS",
-        "SLOW",
-        "POOR_QUALITY",
-        "CRASH",
-        "REVERTED"
-      ]
+      "enum": ["PASS", "SLOW", "POOR_QUALITY", "CRASH", "REVERTED"],
+      "description": "SLOW = 超出耗时硬预算; POOR_QUALITY = PSNR 低于基线 (画质一票否决)"
     },
     "metrics": {
       "type": "object",
-      "required": [
-        "operator_latency_ms",
-        "fps_p95_ms",
-        "power_watt",
-        "psnr_db"
-      ],
+      "required": ["operator_latency_ms", "fps_p95_ms", "power_watt", "psnr_db"],
       "properties": {
-        "operator_latency_ms": {
-          "type": "number"
-        },
-        "fps_p95_ms": {
-          "type": "number"
-        },
-        "power_watt": {
-          "type": "number"
-        },
-        "psnr_db": {
-          "type": "number"
-        }
+        "operator_latency_ms": { "type": "number", "description": "算子自身的 GPU compute pass 耗时" },
+        "fps_p95_ms": { "type": "number", "description": "整帧时间 p95" },
+        "power_watt": { "type": "number", "description": "整机功耗" },
+        "psnr_db": { "type": "number", "description": "画质; 必须 >= 赛道基线" }
       }
     },
     "verdict": {
       "type": "object",
-      "required": [
-        "is_pareto_improvement",
-        "p_value"
-      ],
+      "required": ["is_pareto_improvement", "p_value"],
       "properties": {
-        "is_pareto_improvement": {
-          "type": "boolean"
-        },
+        "is_pareto_improvement": { "type": "boolean" },
         "p_value": {
-          "type": "number"
+          "type": "number",
+          "description": "两样本 t 检验 p 值。成本模型不做检验, 固定记 1.0 作为「未检验」哨兵, 不伪造小 p 值。"
         }
       }
+    },
+    "source": {
+      "type": "string",
+      "enum": ["phonefarm", "static_cost_model"],
+      "description": "phonefarm = 真机物理采样; static_cost_model = 本地静态估计, 不是测量值, 不可作为性能结论"
     }
   }
 }

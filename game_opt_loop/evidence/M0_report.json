@@ -1,0 +1,277 @@
+{
+  "schema": "game_opt_loop/M0_report@1",
+  "tool": "game_opt_loop",
+  "version": "0.2.0",
+  "generated_at": "2026-09-22T08:05:46.326815+00:00",
+  "track": "sr",
+  "metric_source": "static_cost_model",
+  "data_disclaimer": "metric_source = static_cost_model 时, latency/power/psnr 全部是静态估计值, 不是真机测量, 不带统计显著性, 不可用于任何对外性能结论; 只有 metric_source = phonefarm 的记录才是实测数据。",
+  "host": {
+    "os": "macos",
+    "arch": "aarch64",
+    "rustc_target": "game_opt_loop"
+  },
+  "harness": {
+    "phonefarm_binary": "../phonefarm/phonefarm",
+    "probe": "就绪 — 1 台在线设备: 91253241019A",
+    "device_online": true,
+    "operator_eval_subcommand": {
+      "state": "unsupported",
+      "subcommand": "gpu-op"
+    },
+    "can_evaluate_on_device": false,
+    "llm_provider": "configured",
+    "llm_error": null
+  },
+  "gate_self_check": {
+    "total": 16,
+    "intercepted": 16,
+    "interception_rate": 1.0,
+    "exact_code_matches": 16,
+    "cases": [
+      {
+        "name": "while_true",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 728
+      },
+      {
+        "name": "for_ever",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 574
+      },
+      {
+        "name": "do_while_true",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 269
+      },
+      {
+        "name": "tautological_condition",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 219
+      },
+      {
+        "name": "counter_moves_away_from_bound",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 259
+      },
+      {
+        "name": "runtime_sized_loop",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 270
+      },
+      {
+        "name": "loop_trip_explosion",
+        "track": "sr",
+        "expected": "LOOP_TRIP_TOO_LARGE",
+        "intercepted": true,
+        "actual_codes": [
+          "LOOP_TRIP_TOO_LARGE"
+        ],
+        "gate_us": 315
+      },
+      {
+        "name": "staging_buffer_breaks_zero_copy",
+        "track": "sr",
+        "expected": "NON_ZERO_COPY_RESOURCE",
+        "intercepted": true,
+        "actual_codes": [
+          "NON_ZERO_COPY_RESOURCE"
+        ],
+        "gate_us": 606
+      },
+      {
+        "name": "undeclared_binding",
+        "track": "sr",
+        "expected": "UNKNOWN_BINDING",
+        "intercepted": true,
+        "actual_codes": [
+          "UNKNOWN_BINDING"
+        ],
+        "gate_us": 250
+      },
+      {
+        "name": "renamed_contract_slot",
+        "track": "sr",
+        "expected": "BINDING_NAME_MISMATCH",
+        "intercepted": true,
+        "actual_codes": [
+          "BINDING_NAME_MISMATCH"
+        ],
+        "gate_us": 283
+      },
+      {
+        "name": "divergent_barrier",
+        "track": "sr",
+        "expected": "DIVERGENT_BARRIER",
+        "intercepted": true,
+        "actual_codes": [
+          "DIVERGENT_BARRIER"
+        ],
+        "gate_us": 278
+      },
+      {
+        "name": "unguarded_store",
+        "track": "sr",
+        "expected": "UNGUARDED_IMAGE_STORE",
+        "intercepted": true,
+        "actual_codes": [
+          "UNGUARDED_IMAGE_STORE"
+        ],
+        "gate_us": 142
+      },
+      {
+        "name": "oversized_workgroup",
+        "track": "sr",
+        "expected": "WORKGROUP_TOO_LARGE",
+        "intercepted": true,
+        "actual_codes": [
+          "WORKGROUP_TOO_LARGE"
+        ],
+        "gate_us": 180
+      },
+      {
+        "name": "syntax_error",
+        "track": "sr",
+        "expected": "SYNTAX_ERROR",
+        "intercepted": true,
+        "actual_codes": [
+          "SYNTAX_ERROR"
+        ],
+        "gate_us": 175
+      },
+      {
+        "name": "missing_version",
+        "track": "sr",
+        "expected": "MISSING_VERSION_DIRECTIVE",
+        "intercepted": true,
+        "actual_codes": [
+          "MISSING_VERSION_DIRECTIVE"
+        ],
+        "gate_us": 0
+      },
+      {
+        "name": "sr_shader_on_frame_gen_track",
+        "track": "frame_gen",
+        "expected": "MISSING_REQUIRED_BINDING",
+        "intercepted": true,
+        "actual_codes": [
+          "BINDING_NAME_MISMATCH",
+          "BINDING_NAME_MISMATCH",
+          "BINDING_ACCESS_MISMATCH",
+          "MISSING_REQUIRED_BINDING"
+        ],
+        "gate_us": 305
+      }
+    ],
+    "benign_total": 48,
+    "benign_passed": 48,
+    "max_gate_us": 2297
+  },
+  "evolution": {
+    "track": "sr",
+    "generations": 3,
+    "children_per_generation": 4,
+    "seed": 20260921,
+    "dry_run": true,
+    "metric_source": "static_cost_model",
+    "total_candidates": 12,
+    "gate_rejected": 2,
+    "duplicates_skipped": 0,
+    "eval_errors": 0,
+    "evaluated": 10,
+    "gate_rejection_rate": 0.16666666666666666,
+    "gate_rejections_by_code": {
+      "SYNTAX_ERROR": 2
+    },
+    "archive_size": 11,
+    "front_size": 4,
+    "best_psnr_series": [
+      38.33166,
+      38.429222,
+      38.429222
+    ],
+    "gen_best_psnr_series": [
+      38.33166,
+      38.429222,
+      38.429222
+    ],
+    "archive_path": "runs/evo/archive.json",
+    "generation_records": [
+      "runs/evo/gen_1.json",
+      "runs/evo/gen_2.json",
+      "runs/evo/gen_3.json"
+    ]
+  },
+  "pareto_front": [
+    {
+      "id": "gen1_llm1",
+      "generation": 1,
+      "origin": "llm",
+      "notes": "llm:glm-4.7",
+      "operator_latency_ms": 1.1070647,
+      "power_watt": 4.7646985,
+      "psnr_db": 38.33166,
+      "source": "static_cost_model"
+    },
+    {
+      "id": "gen2_llm1",
+      "generation": 2,
+      "origin": "llm",
+      "notes": "llm:glm-4.7",
+      "operator_latency_ms": 1.3517207,
+      "power_watt": 4.802864,
+      "psnr_db": 38.429222,
+      "source": "static_cost_model"
+    },
+    {
+      "id": "gen2_llm4",
+      "generation": 2,
+      "origin": "llm",
+      "notes": "llm:glm-4.7",
+      "operator_latency_ms": 0.7616087,
+      "power_watt": 4.7108083,
+      "psnr_db": 37.86012,
+      "source": "static_cost_model"
+    },
+    {
+      "id": "gen3_llm4",
+      "generation": 3,
+      "origin": "llm",
+      "notes": "llm:glm-4.7",
+      "operator_latency_ms": 1.1406168,
+      "power_watt": 4.7699327,
+      "psnr_db": 38.35964,
+      "source": "static_cost_model"
+    }
+  ]
+}
