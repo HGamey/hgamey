@@ -108,7 +108,7 @@ fn a_full_dry_run_produces_the_expected_artifacts() {
 fn assert_spirv_module(path: &std::path::Path) {
     let bytes = std::fs::read(path).unwrap();
     assert!(
-        bytes.len() >= 20 && bytes.len() % 4 == 0,
+        bytes.len() >= 20 && bytes.len().is_multiple_of(4),
         "{}: SPIR-V 长度 {} 不合法 (至少 20 字节且为 4 的倍数)",
         path.display(),
         bytes.len()
