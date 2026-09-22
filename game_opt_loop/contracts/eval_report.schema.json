@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EvaluationReport",
+  "type": "object",
+  "required": [
+    "candidate_id",
+    "status",
+    "metrics",
+    "verdict"
+  ],
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "SLOW",
+        "POOR_QUALITY",
+        "CRASH",
+        "REVERTED"
+      ]
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "operator_latency_ms",
+        "fps_p95_ms",
+        "power_watt",
+        "psnr_db"
+      ],
+      "properties": {
+        "operator_latency_ms": {
+          "type": "number"
+        },
+        "fps_p95_ms": {
+          "type": "number"
+        },
+        "power_watt": {
+          "type": "number"
+        },
+        "psnr_db": {
+          "type": "number"
+        }
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "required": [
+        "is_pareto_improvement",
+        "p_value"
+      ],
+      "properties": {
+        "is_pareto_improvement": {
+          "type": "boolean"
+        },
+        "p_value": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

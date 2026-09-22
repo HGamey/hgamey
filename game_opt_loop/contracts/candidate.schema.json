@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CandidateOperator",
+  "type": "object",
+  "required": [
+    "id",
+    "generation",
+    "track",
+    "shader_source",
+    "budget_ms"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "\u552f\u4e00\u7b97\u5b50ID"
+    },
+    "generation": {
+      "type": "integer",
+      "description": "\u6f14\u5316\u4ee3\u6570"
+    },
+    "track": {
+      "type": "string",
+      "enum": [
+        "sr",
+        "frame_gen"
+      ]
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "budget_ms": {
+      "type": "number",
+      "description": "\u771f\u673a\u7269\u7406\u8017\u65f6\u786c\u7ea6\u675f"
+    },
+    "shader_source": {
+      "type": "string",
+      "description": "GLSL 450 Compute Shader \u6e90\u7801"
+    }
+  }
+}
