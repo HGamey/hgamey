@@ -125,9 +125,19 @@ pub struct GateReport {
     pub passed: bool,
     pub violations: Vec<Violation>,
     pub features: ShaderFeatures,
-    /// 生成的 SPIR-V 字节码 (仅在全部通过时非空)。
+    /// 生成的 SPIR-V 字节数 (仅在全部通过时非空)。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spirv_bytes: Option<usize>,
+    /// 生成的 SPIR-V 机器码本体。
+    ///
+    /// 不进 JSON: 门禁报告是逐代归档的 (`gen_N.json`), 把几 KB 的字节码塞进去
+    /// 会让归档膨胀几十倍, 而它本来就该以 `.spv` 文件的形式落盘。
+    ///
+    /// 这里必须留住 words: 之前只记了个字节数就把它丢了, 于是
+    /// `eval_request.spirv_path` 指向一个从来没被写出来的文件 ——
+    /// 真机下发第一步就会死在「文件不存在」上。
+    #[serde(skip)]
+    pub spirv: Option<Vec<u32>>,
     /// 门禁耗时 (微秒) —— 「秒级打回」的证据。
     pub elapsed_us: u128,
 }
@@ -268,10 +278,10 @@ impl Validator {
         // ---- 闸 4: 真出 SPIR-V ----
         let spv_options = naga::back::spv::Options::default();
         let mut features = ir.features;
-        let spirv_bytes = match naga::back::spv::write_vec(&module, &info, &spv_options, None) {
+        let spirv = match naga::back::spv::write_vec(&module, &info, &spv_options, None) {
             Ok(words) => {
                 features.spirv_words = words.len() as u32;
-                Some(words.len() * 4)
+                Some(words)
             }
             Err(e) => {
                 violations.push(Violation {
@@ -283,21 +293,22 @@ impl Validator {
             }
         };
 
-        self.finish(violations, features, spirv_bytes, started)
+        self.finish(violations, features, spirv, started)
     }
 
     fn finish(
         &self,
         violations: Vec<Violation>,
         features: ShaderFeatures,
-        spirv_bytes: Option<usize>,
+        spirv: Option<Vec<u32>>,
         started: Instant,
     ) -> GateReport {
         GateReport {
             passed: violations.is_empty(),
+            spirv_bytes: spirv.as_ref().map(|w| w.len() * 4),
+            spirv,
             violations,
             features,
-            spirv_bytes,
             elapsed_us: started.elapsed().as_micros(),
         }
     }

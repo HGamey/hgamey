@@ -344,6 +344,10 @@ impl Evolution {
         if !gate.passed {
             anyhow::bail!("赛道基线模板自身过不了门禁: {}", gate.feedback_line());
         }
+        // 基线自己也要落盘: 它既是 gen0 的档案条目, 也是真机 A/B 的 A 臂。
+        self.persist_candidate(&candidate, &gate)?;
+        self.persist_baseline_spirv(&gate)?;
+
         if let Ok(report) = self.evaluate(&candidate, &gate, &Genome::baseline(self.config.track)) {
             self.archive.insert(&candidate, report, now());
         }
@@ -409,7 +413,7 @@ impl Evolution {
             }
 
             // 门禁过了才写盘 —— 非法算子连落盘的资格都没有。
-            self.persist_candidate(&candidate)?;
+            self.persist_candidate(&candidate, &gate)?;
 
             match self.evaluate(&candidate, &gate, &genome) {
                 Ok(report) => {
@@ -623,14 +627,32 @@ impl Evolution {
             .unwrap_or_else(|| Genome::baseline(self.config.track))
     }
 
-    /// 把通过门禁的算子源码落盘, 留作证据。
-    fn persist_candidate(&self, candidate: &Candidate) -> Result<PathBuf> {
+    /// 把通过门禁的算子源码与 SPIR-V 机器码一并落盘。
+    ///
+    /// `.spv` 必须真的写出来: `eval_request.spirv_path` 指的就是它, phonefarm
+    /// 拿这个路径把字节码推上真机。只写 `.comp` 的话, 真机下发第一步就死在
+    /// 「文件不存在」上 —— 而且本地门禁已经编译过一次了, 没有理由让真机再编一遍。
+    fn persist_candidate(&self, candidate: &Candidate, gate: &GateReport) -> Result<PathBuf> {
         let path = self.shader_path(candidate);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(&path, &candidate.shader_source)
             .with_context(|| format!("写入 {} 失败", path.display()))?;
+        write_spirv(&path.with_extension("spv"), gate)?;
+        Ok(path)
+    }
+
+    /// 把赛道基线模板的 SPIR-V 落到候选目录, 作为 A/B 对照的 A 臂。
+    ///
+    /// phonefarm 的 `gpu-op` 按「候选 spv 的同目录下的 baseline.spv」找 A 臂;
+    /// 没有 A 臂就没有对照, 整条 A/B/A/B 与 t 检验都无从谈起。
+    fn persist_baseline_spirv(&self, gate: &GateReport) -> Result<PathBuf> {
+        let path = self.config.out_dir.join("candidates").join("baseline.spv");
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        write_spirv(&path, gate)?;
         Ok(path)
     }
 
@@ -697,6 +719,24 @@ fn infer_quality_traits(source: &str) -> (f32, bool, bool) {
     let adaptive = lower.contains("smoothstep") || lower.contains("contrast");
     let clamped = lower.contains("nmin") || lower.contains("nmax");
     (sharpen, adaptive, clamped)
+}
+
+/// SPIR-V words 按小端写成 `.spv`。
+///
+/// 字节序必须是小端: SPIR-V 规范允许两种, 但所有实际的 Android/Adreno 驱动
+/// 都按小端读, 而 naga 产出的就是 host-order words (x86_64/aarch64 均为小端)。
+/// 这里显式转换, 不依赖宿主机字节序。
+fn write_spirv(path: &Path, gate: &GateReport) -> Result<()> {
+    let words = gate
+        .spirv
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("门禁未产出 SPIR-V, 无法落盘 {}", path.display()))?;
+    let mut bytes = Vec::with_capacity(words.len() * 4);
+    for w in words {
+        bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    std::fs::write(path, &bytes).with_context(|| format!("写入 {} 失败", path.display()))?;
+    Ok(())
 }
 
 pub fn now() -> String {

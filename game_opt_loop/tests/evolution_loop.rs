@@ -81,7 +81,83 @@ fn a_full_dry_run_produces_the_expected_artifacts() {
             entry.file_name(),
             report.violations
         );
+
+        // 每个 .comp 旁边必须有同名 .spv —— eval_request.spirv_path 指的就是它,
+        // phonefarm 拿这个路径把字节码推上真机。
+        let spv = entry.path().with_extension("spv");
+        assert!(
+            spv.is_file(),
+            "{:?} 没有对应的 .spv, 真机下发会死在文件不存在上",
+            entry.file_name()
+        );
+        assert_spirv_module(&spv);
     }
+
+    // A/B 对照的 A 臂必须存在, 否则 t 检验无从谈起。
+    let baseline = candidates.join("baseline.spv");
+    assert!(baseline.is_file(), "缺少 baseline.spv, A/B 对照没有 A 臂");
+    assert_spirv_module(&baseline);
+
+    let _ = std::fs::remove_dir_all(&out);
+}
+
+/// 断言这是一份真的 SPIR-V 模块, 而不仅仅是个非空文件。
+///
+/// 只检查"文件存在且不为空"是不够的: 写错字节序、写进 words 的十进制文本、
+/// 或者写了半截, 都能通过那种检查, 然后在真机上变成驱动报错甚至 GPU 挂起。
+fn assert_spirv_module(path: &std::path::Path) {
+    let bytes = std::fs::read(path).unwrap();
+    assert!(
+        bytes.len() >= 20 && bytes.len() % 4 == 0,
+        "{}: SPIR-V 长度 {} 不合法 (至少 20 字节且为 4 的倍数)",
+        path.display(),
+        bytes.len()
+    );
+    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    assert_eq!(
+        magic,
+        0x0723_0203,
+        "{}: SPIR-V 魔数不对 (读到 0x{magic:08X}), 字节序或内容写错了",
+        path.display()
+    );
+    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    assert_eq!((version >> 16) & 0xFF, 1, "{}: SPIR-V 主版本应为 1", path.display());
+}
+
+/// 落盘的字节码必须与门禁当场编出来的那一份逐字节相同 ——
+/// 真机跑的和本地验过的不是同一个东西, 整条闭环的结论就不成立。
+#[test]
+fn the_persisted_spirv_matches_what_the_gate_compiled() {
+    let (_archive, out) = run(TrackMode::Sr, "spvmatch", 20260921, 2);
+    let candidates = out.join("candidates");
+    let validator = Validator::new();
+
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir(&candidates).unwrap().filter_map(Result::ok) {
+        let path = entry.path();
+        if path.extension().is_none_or(|x| x != "comp") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        let gate = validator.gate(&src, &tracks::SR);
+        let words = gate.spirv.as_ref().expect("门禁应当产出 SPIR-V");
+        let expected: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+
+        let actual = std::fs::read(path.with_extension("spv")).unwrap();
+        assert_eq!(
+            actual,
+            expected,
+            "{}: 落盘的 SPIR-V 与门禁编出来的不一致",
+            path.display()
+        );
+        assert_eq!(
+            gate.spirv_bytes,
+            Some(expected.len()),
+            "spirv_bytes 与实际字节数对不上"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "一个候选都没检查到");
 
     let _ = std::fs::remove_dir_all(&out);
 }
