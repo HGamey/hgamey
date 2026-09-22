@@ -144,7 +144,7 @@ fn sample_report(source: MetricSource) -> EvalReport {
             operator_latency_ms: 1.12,
             fps_p95_ms: Some(16.9),
             power_watt: 4.71,
-            psnr_db: 38.62,
+            psnr_db: Some(38.62),
         },
         verdict: Verdict {
             is_pareto_improvement: true,
@@ -211,6 +211,34 @@ fn eval_request_matches_its_contract() {
     );
     let v = serde_json::to_value(&request).unwrap();
     assert_conforms(&v, "eval_request.schema.json");
+    // 第 0 代没有冠军可比, 该字段就不该出现 —— 不拿 0 冒充"冠军耗时 0ms"。
+    assert!(
+        v.get("incumbent_latency_ms").is_none(),
+        "没有在位冠军时不该下发这个字段"
+    );
+}
+
+/// 带在位冠军耗时的请求同样合契约, 且数字原样送达。
+///
+/// 这个字段是给 refbench 载体用的: 那边 A 臂不挂算子, 基线臂的算子耗时
+/// 按定义为 0, 不带冠军耗时的话"候选更快吗"恒假。
+#[test]
+fn eval_request_carries_the_incumbent_when_there_is_one() {
+    let driver = PhonefarmDriver::new();
+    let candidate = sample_candidate();
+    let request = driver.build_request_against(
+        &candidate,
+        &SR,
+        Path::new("runs/evo/candidates/gen2_llm1.comp"),
+        Path::new("runs/evo/candidates/gen2_llm1.spv"),
+        Some(0.187),
+    );
+    let v = serde_json::to_value(&request).unwrap();
+    assert_conforms(&v, "eval_request.schema.json");
+    assert_eq!(
+        v["incumbent_latency_ms"].as_f64().map(|x| (x * 1000.0).round()),
+        Some(187.0)
+    );
 }
 
 #[test]

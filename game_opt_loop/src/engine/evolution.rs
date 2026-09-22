@@ -430,8 +430,10 @@ impl Evolution {
             match self.evaluate(&candidate, &gate, &genome) {
                 Ok(report) => {
                     if report.is_admissible(spec.budget_ms, spec.quality_baseline_db) {
-                        let psnr = report.metrics.psnr_db;
-                        gen_best_psnr = Some(gen_best_psnr.map_or(psnr, |b: f32| b.max(psnr)));
+                        if let Some(psnr) = report.metrics.psnr_db {
+                            gen_best_psnr =
+                                Some(gen_best_psnr.map_or(psnr, |b: f32| b.max(psnr)));
+                        }
                     } else {
                         rejections.push(RejectionSummary {
                             id: candidate.id.clone(),
@@ -440,7 +442,7 @@ impl Evolution {
                                 report.status,
                                 report.metrics.operator_latency_ms,
                                 spec.budget_ms,
-                                report.metrics.psnr_db,
+                                report.metrics.psnr_db.unwrap_or(f32::NAN),
                                 spec.quality_baseline_db,
                             ),
                         });
@@ -691,7 +693,15 @@ impl Evolution {
             let shader_path = self.shader_path(candidate);
             let spirv_path = shader_path.with_extension("spv");
             let request_path = shader_path.with_extension("request.json");
-            let request = driver.build_request(candidate, spec, &shader_path, &spirv_path);
+            // 在位冠军的实测耗时一并下发 —— 接收端拿它回答"比现任便宜吗",
+            // 而不是在 refbench 上拿 `正数 < 0` 这个恒假的问题糊弄过去。
+            let request = driver.build_request_against(
+                candidate,
+                spec,
+                &shader_path,
+                &spirv_path,
+                self.archive.best_latency(),
+            );
             return driver.evaluate(&request, &request_path);
         }
 

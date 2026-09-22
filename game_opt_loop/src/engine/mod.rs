@@ -107,7 +107,13 @@ pub struct Metrics {
     /// 整机功耗 (W)。
     pub power_watt: f32,
     /// 画质 (dB)。必须 >= 赛道基线。
-    pub psnr_db: f32,
+    ///
+    /// `None` = **本次没有量到**, 不是 0。refbench 载体只跑真实渲染场景,
+    /// 画质由 headless 载体负责 (refbench 的边界不允许它自带测量逻辑)。
+    ///
+    /// 这是第二次踩同一个坑: `fps_p95_ms` 已经因为同样的原因改成 Option 了,
+    /// 当时只改了那一个字段, 没有把"指标可能量不到"这件事推广到整个 Metrics。
+    pub psnr_db: Option<f32>,
 }
 
 /// 指标从哪来 —— 这一条**绝不能**丢。
@@ -174,8 +180,12 @@ impl EvalReport {
         if self.metrics.operator_latency_ms > budget_ms {
             return false;
         }
-        if self.metrics.psnr_db < quality_baseline_db {
-            return false;
+        // 量不到画质时不否决 —— "没量" 和 "不合格" 是两回事。
+        // 该载体的画质由另一条载体负责, 在这里当成不合格会把好算子全毙掉。
+        if let Some(q) = self.metrics.psnr_db {
+            if q < quality_baseline_db {
+                return false;
+            }
         }
         if self.source.is_measured() && self.verdict.p_value >= 0.01 {
             return false;
@@ -210,7 +220,7 @@ mod tests {
                 operator_latency_ms: latency,
                 fps_p95_ms: Some(16.0),
                 power_watt: 4.8,
-                psnr_db: psnr,
+                psnr_db: Some(psnr),
             },
             verdict: Verdict {
                 is_pareto_improvement: false,
