@@ -142,7 +142,7 @@ fn sample_report(source: MetricSource) -> EvalReport {
         status: EvalStatus::Pass,
         metrics: Metrics {
             operator_latency_ms: 1.12,
-            fps_p95_ms: 16.9,
+            fps_p95_ms: Some(16.9),
             power_watt: 4.71,
             psnr_db: 38.62,
         },

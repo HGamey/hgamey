@@ -98,7 +98,12 @@ pub struct Metrics {
     /// 算子自身的 GPU compute pass 耗时。硬预算就卡这个数。
     pub operator_latency_ms: f32,
     /// 整帧时间 p95 (ms)。
-    pub fps_p95_ms: f32,
+    ///
+    /// `None` = **本次没有量到**, 不是 0。headless 算子标尺量的是算子自身的
+    /// GPU 耗时, 帧时 p95 需要真实渲染上下文才有意义; 真机 2026-09-22 回的
+    /// 第一份报告这一项就是 null, 而当时它是 `f32`, 上游直接解析失败。
+    /// 契约必须容得下「未测量」这个状态。
+    pub fps_p95_ms: Option<f32>,
     /// 整机功耗 (W)。
     pub power_watt: f32,
     /// 画质 (dB)。必须 >= 赛道基线。
@@ -203,7 +208,7 @@ mod tests {
             status,
             metrics: Metrics {
                 operator_latency_ms: latency,
-                fps_p95_ms: 16.0,
+                fps_p95_ms: Some(16.0),
                 power_watt: 4.8,
                 psnr_db: psnr,
             },

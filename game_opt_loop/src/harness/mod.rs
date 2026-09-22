@@ -740,7 +740,7 @@ mod tests {
             status: EvalStatus::Slow,
             metrics: Metrics {
                 operator_latency_ms: 2.2,
-                fps_p95_ms: 17.1,
+                fps_p95_ms: Some(17.1),
                 power_watt: 5.0,
                 psnr_db: 38.0,
             },

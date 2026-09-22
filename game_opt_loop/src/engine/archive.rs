@@ -234,7 +234,7 @@ mod tests {
             status: EvalStatus::Pass,
             metrics: Metrics {
                 operator_latency_ms: latency,
-                fps_p95_ms: 16.7,
+                fps_p95_ms: Some(16.7),
                 power_watt: power,
                 psnr_db: psnr,
             },

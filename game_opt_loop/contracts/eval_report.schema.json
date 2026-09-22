@@ -16,7 +16,7 @@
       "required": ["operator_latency_ms", "fps_p95_ms", "power_watt", "psnr_db"],
       "properties": {
         "operator_latency_ms": { "type": "number", "description": "算子自身的 GPU compute pass 耗时" },
-        "fps_p95_ms": { "type": "number", "description": "整帧时间 p95" },
+        "fps_p95_ms": { "type": ["number", "null"], "description": "整帧时间 p95; null = 本次未测量 (headless 算子标尺量不到帧时), 不可当成 0" },
         "power_watt": { "type": "number", "description": "整机功耗" },
         "psnr_db": { "type": "number", "description": "画质; 必须 >= 赛道基线" }
       }

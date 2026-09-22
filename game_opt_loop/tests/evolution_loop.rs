@@ -339,3 +339,21 @@ fn a_second_run_resumes_from_the_existing_archive() {
 
     let _ = std::fs::remove_dir_all(&out);
 }
+
+/// 真机 2026-09-22 产出的那份报告, 上游必须读得进来。
+/// headless 算子标尺量不到帧时 p95, 该字段是 null —— 契约必须容得下「未测量」。
+#[test]
+fn the_upstream_can_parse_a_real_device_report() {
+    let raw = r#"{
+      "candidate_id":"gen1_loc1","status":"PASS",
+      "metrics":{"operator_latency_ms":0.922552,"fps_p95_ms":null,
+                 "power_watt":2.9701035,"psnr_db":42.826},
+      "verdict":{"is_pareto_improvement":false,"p_value":1.5344861816377811e-6},
+      "source":"phonefarm"}"#;
+    let r = game_opt_loop::harness::parse_eval_report(raw)
+        .expect("真机报告解析失败 —— 两仓库的契约对不上");
+    assert!(r.metrics.fps_p95_ms.is_none(), "未测量的帧时必须是 None, 不能被当成 0");
+    assert_eq!(r.candidate_id, "gen1_loc1");
+    assert!((r.metrics.operator_latency_ms - 0.922552).abs() < 1e-6);
+    assert!(r.verdict.p_value < 0.01);
+}

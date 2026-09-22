@@ -226,7 +226,7 @@ pub fn evaluate(
         status,
         metrics: Metrics {
             operator_latency_ms: latency_ms,
-            fps_p95_ms: fps_p95,
+            fps_p95_ms: Some(fps_p95),
             power_watt: power as f32,
             psnr_db: psnr,
         },
