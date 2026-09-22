@@ -45,6 +45,11 @@ pub struct ShaderFeatures {
     pub workgroup_size: [u32; 3],
     /// SPIR-V 字数 (由 validator 填)。
     pub spirv_words: u32,
+    /// 被 imageLoad 真正读过的全局变量下标。
+    ///
+    /// 用来判「声明了却没读」: 插帧算子若只抄当前帧, binding 契约全满足、
+    /// 耗时还特别漂亮, 但它根本没在插帧。
+    pub images_read: Vec<u32>,
 }
 
 impl ShaderFeatures {
@@ -475,8 +480,14 @@ impl<'a> Walker<'a> {
             return;
         };
         match expr {
-            Expression::ImageLoad { .. } => {
+            Expression::ImageLoad { image, .. } => {
                 self.features.image_loads = self.features.image_loads.saturating_add(r);
+                if let Ok(Expression::GlobalVariable(g)) = self.func.expressions.try_get(*image) {
+                    let idx = g.index() as u32;
+                    if !self.features.images_read.contains(&idx) {
+                        self.features.images_read.push(idx);
+                    }
+                }
             }
             Expression::ImageSample { .. } => {
                 self.features.image_loads = self.features.image_loads.saturating_add(r);

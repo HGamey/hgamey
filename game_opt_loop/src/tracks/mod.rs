@@ -33,6 +33,12 @@ pub struct BindingSlot {
     pub role: &'static str,
     /// 是否必须出现。可选槽位允许算子不用 (例如只用当前帧的插帧算子)。
     pub required: bool,
+    /// 是否必须被真正读取。
+    ///
+    /// 只声明不读是插帧赛道特有的失效: 一个宣称插帧、实际只把当前帧抄一遍的
+    /// 算子, binding 契约全都满足, 耗时还特别漂亮 —— 但它根本没在插帧。
+    /// 声明必读的槽位至少要有一次 imageLoad。
+    pub must_read: bool,
 }
 
 /// 赛道的完整实现契约。
@@ -108,6 +114,7 @@ pub const SR: TrackSpec = TrackSpec {
             access: SlotAccess::ReadOnly,
             role: "游戏低分辨率颜色缓冲 (常驻显存)",
             required: true,
+            must_read: true,
         },
         BindingSlot {
             binding: 1,
@@ -115,6 +122,7 @@ pub const SR: TrackSpec = TrackSpec {
             access: SlotAccess::WriteOnly,
             role: "送显高分辨率目标 (常驻显存)",
             required: true,
+            must_read: false,
         },
     ],
     mutation_slot: "// [LLM 变异插槽: 高频重构与边缘自适应锐化]",
@@ -141,6 +149,7 @@ pub const FRAME_GEN: TrackSpec = TrackSpec {
             access: SlotAccess::ReadOnly,
             role: "上一帧颜色缓冲 (常驻显存)",
             required: true,
+            must_read: true,
         },
         BindingSlot {
             binding: 1,
@@ -148,6 +157,7 @@ pub const FRAME_GEN: TrackSpec = TrackSpec {
             access: SlotAccess::ReadOnly,
             role: "当前帧颜色缓冲 (常驻显存)",
             required: true,
+            must_read: true,
         },
         BindingSlot {
             binding: 2,
@@ -155,6 +165,7 @@ pub const FRAME_GEN: TrackSpec = TrackSpec {
             access: SlotAccess::WriteOnly,
             role: "插入的中间帧 (常驻显存)",
             required: true,
+            must_read: false,
         },
     ],
     mutation_slot: "// [LLM 变异插槽: 块匹配运动估计与双向混帧]",

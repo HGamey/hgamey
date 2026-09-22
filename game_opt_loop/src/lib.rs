@@ -26,6 +26,11 @@ pub enum TrackMode {
     /// 超分辨率: 低分辨率颜色缓冲 → 高分辨率送显。
     Sr,
     /// 双倍插帧: 相邻两帧 → 中间帧。
+    ///
+    /// 同时接受 `frame_gen`: clap 缺省把枚举名 kebab 化成 `frame-gen`,
+    /// 而契约 (`candidate.schema.json` / `eval_request.schema.json`) 里的
+    /// 赛道 id 是 `frame_gen`。两种写法都收, 免得命令行与契约对不上。
+    #[value(alias = "frame_gen")]
     FrameGen,
 }
 

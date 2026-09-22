@@ -69,6 +69,11 @@ pub enum ViolationCode {
     UnguardedImageStore,
     /// 一次写回都没有 —— 算子没产出。
     NoImageStore,
+    /// 契约要求必读的槽位从来没被读过。
+    ///
+    /// 插帧赛道特有: 声明了 prev/curr 两帧却只用其中一帧, binding 契约全满足、
+    /// 耗时还特别漂亮, 但它根本没在插帧。
+    DeclaredButUnreadBinding,
     /// SPIR-V 生成失败。
     SpirvEmitFailed,
 }
@@ -95,6 +100,7 @@ impl ViolationCode {
             DivergentBarrier => "DIVERGENT_BARRIER",
             UnguardedImageStore => "UNGUARDED_IMAGE_STORE",
             NoImageStore => "NO_IMAGE_STORE",
+            DeclaredButUnreadBinding => "DECLARED_BUT_UNREAD_BINDING",
             SpirvEmitFailed => "SPIRV_EMIT_FAILED",
         }
     }
@@ -268,7 +274,7 @@ impl Validator {
 
         // ---- 闸 3: 策略层 (零拷贝契约 + 静态安全) ----
         let ir = analysis::analyse(&module);
-        self.check_bindings(&module, track, &mut violations);
+        self.check_bindings(&module, track, &ir.features.images_read, &mut violations);
         self.check_static_safety(&ir, &mut violations);
 
         if !violations.is_empty() {
@@ -356,12 +362,18 @@ impl Validator {
 
     // ---------- 闸 3a: 零拷贝 binding 契约 ----------
 
-    fn check_bindings(&self, module: &naga::Module, track: &TrackSpec, out: &mut Vec<Violation>) {
+    fn check_bindings(
+        &self,
+        module: &naga::Module,
+        track: &TrackSpec,
+        images_read: &[u32],
+        out: &mut Vec<Violation>,
+    ) {
         use naga::AddressSpace;
 
         let mut seen: Vec<u32> = Vec::new();
 
-        for (_, var) in module.global_variables.iter() {
+        for (_handle, var) in module.global_variables.iter() {
             let name = var.name.clone().unwrap_or_default();
 
             match var.space {
@@ -421,6 +433,26 @@ impl Validator {
                 });
                 continue;
             };
+
+            // 必读槽位: 声明了就得真的读, 否则这个算子名不副实。
+            if slot.must_read {
+                let gi = module
+                    .global_variables
+                    .iter()
+                    .position(|(h, _)| h == _handle)
+                    .unwrap_or(usize::MAX) as u32;
+                if !images_read.contains(&gi) {
+                    out.push(Violation {
+                        code: ViolationCode::DeclaredButUnreadBinding,
+                        stage: GateStage::Policy,
+                        message: format!(
+                            "`{name}` (binding = {}, {}) 被声明却从未 imageLoad —— \
+                             契约要求必读; 只声明不读的算子并没有在做它声称的事",
+                            slot.binding, slot.role
+                        ),
+                    });
+                }
+            }
 
             if name != slot.name {
                 out.push(Violation {
@@ -910,6 +942,49 @@ void main() {
     }
 
     // ---------- 其它静态安全 ----------
+
+    /// 插帧赛道特有的失效: 声明了 prev/curr 两帧却只读一帧。
+    /// binding 契约全满足、耗时还特别漂亮, 但它根本没在插帧 ——
+    /// 只靠耗时和 PSNR 是抓不住的, 必须靠静态分析。
+    #[test]
+    fn rejects_a_frame_gen_operator_that_ignores_one_history_frame() {
+        let src = "#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba8) uniform readonly image2D u_PrevFrame;
+layout(binding = 1, rgba8) uniform readonly image2D u_CurrFrame;
+layout(binding = 2, rgba8) uniform writeonly image2D u_InterpFrame;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 o = imageSize(u_InterpFrame);
+    if (p.x >= o.x || p.y >= o.y) return;
+    // 只抄当前帧, 前帧碰都没碰
+    imageStore(u_InterpFrame, p, imageLoad(u_CurrFrame, p));
+}";
+        let r = Validator::new().gate(src, &FRAME_GEN);
+        assert!(!r.passed, "只读一帧的假插帧算子被放行了");
+        assert!(
+            r.codes().contains(&ViolationCode::DeclaredButUnreadBinding),
+            "{:?}",
+            r.codes()
+        );
+    }
+
+    /// 真的读了两帧就该放行。
+    #[test]
+    fn accepts_a_frame_gen_operator_that_reads_both_history_frames() {
+        let r = Validator::new()
+            .gate(crate::tracks::embedded_template(crate::TrackMode::FrameGen), &FRAME_GEN);
+        assert!(r.passed, "{:?}", r.violations);
+        assert_eq!(r.features.images_read.len(), 2, "应当记录到两张被读的图");
+    }
+
+    /// 输出槽位不要求必读 —— writeonly 本来就读不了。
+    #[test]
+    fn the_write_only_output_slot_is_not_required_to_be_read() {
+        let r = Validator::new()
+            .gate(crate::tracks::embedded_template(crate::TrackMode::Sr), &SR);
+        assert!(r.passed, "{:?}", r.violations);
+    }
 
     #[test]
     fn rejects_divergent_barrier() {
