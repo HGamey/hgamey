@@ -285,5 +285,12 @@
       "psnr_db": 41.4554,
       "source": "phonefarm"
     }
-  ]
+  ],
+  "retraction": {
+    "date": "2026-09-23",
+    "scope": "power_watt",
+    "statement": "本报告里的 power_watt 已撤回, 不可作为功耗结论。smartperf-android 查实: 采样时设备插着 USB 充电, 量到的是 USB 输入轨, 其中约 46% 是给电池充电, 且随电量漂移 —— 这条轨上的跨候选功耗比较不成立。据此得出的 '6.26 W -> 5.94 W' 一并撤回。",
+    "still_valid": "operator_latency_ms / fps_p95_ms / psnr_db 不受影响, 仍是实测值。但 psnr_db 是对着 runner 内置程序化图案量的, 绝对 dB 不可与用真机参考帧的报告 (M2_realframes_report.json) 相比。",
+    "superseded_by": "evidence/M2_realframes_conditions.md"
+  }
 }
