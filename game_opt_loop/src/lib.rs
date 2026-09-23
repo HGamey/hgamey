@@ -11,12 +11,14 @@
 //! - [`engine::pareto`] / [`engine::archive`] — 三目标支配排序与优胜档案
 //! - [`engine::evolution`] — 多代闭环
 //! - [`harness`] — phonefarm 物理底座驱动
+//! - [`optimize`] — `optimize` 子命令: 摸底 → 三层自动开路 → 统一测评 → 总报告
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 pub mod engine;
 pub mod harness;
+pub mod optimize;
 pub mod tracks;
 
 /// 优化赛道。

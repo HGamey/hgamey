@@ -1,10 +1,11 @@
 //! game_opt_loop CLI
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use game_opt_loop::engine::evolution::{self, Evolution, EvolutionConfig, EvolutionSummary};
 use game_opt_loop::engine::MetricSource;
 use game_opt_loop::harness::PhonefarmDriver;
+use game_opt_loop::optimize;
 use game_opt_loop::{tracks, TrackMode, VERSION};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -13,6 +14,92 @@ use std::path::PathBuf;
 #[command(name = "game_opt_loop", version = VERSION)]
 #[command(about = "移动游戏自主优化与画质跃升闭环 (Rust 原生)", long_about = None)]
 pub struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    #[command(flatten)]
+    legacy: LegacyArgs,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// 一条命令跑完整条优化链路: 摸底 → 三层自动开路 → 真机评测 → 统一档案 + 总报告。
+    ///
+    /// 三层是: ③ 系统参数 (要 root)、② 画面流程改写 (要能挂 Vulkan 层)、
+    /// ① 画面算子 (要白盒载体, 或能挂层的黑盒)。能开哪层由摸底结果决定,
+    /// 一层都开不了就只测量并写清原因。
+    Optimize(OptimizeArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct OptimizeArgs {
+    /// 游戏名 ("原神" / "genshin"), 白盒载体名 ("refbench"), 或直接给包名。
+    #[arg(long)]
+    game: String,
+
+    /// 目标设备序列号。不给则要求恰好只有一台在线 —— 多台时不猜,
+    /// 挑错设备的代价是在别人的机器上写 sysfs。
+    #[arg(long)]
+    device: Option<String>,
+
+    /// 包名。名字认不出来时用它指定; 给了就压过内置表的推断。
+    #[arg(long)]
+    package: Option<String>,
+
+    /// 真机时长预算: `45m` / `2h` / `900s` / 裸数字(按分钟)。
+    ///
+    /// 默认刻意定小 —— 这条链路一跑就是几十分钟真机时间, 默认值应该是
+    /// "先看看"。预算不够时砍掉整层, 而不是降轮数: 降轮数会让统计判定
+    /// 够不着显著性, 换回一整轮"什么都不显著"。
+    #[arg(long)]
+    budget: Option<String>,
+
+    /// 只摸底 + 打印计划, 一个字节都不往设备上写。
+    #[arg(long, default_value_t = false)]
+    plan: bool,
+
+    /// 产物目录 (caps.json / report.json / report.md / requests/)。
+    #[arg(long, default_value = "runs/optimize")]
+    out: PathBuf,
+
+    /// phonefarm 二进制路径。
+    #[arg(long, default_value = "../phonefarm/phonefarm")]
+    phonefarm: PathBuf,
+
+    /// secrets.env 路径 (出主意用的大模型密钥)。
+    #[arg(long, default_value = "../phonefarm/secrets.env")]
+    secrets: PathBuf,
+
+    /// 完全不走大模型, 只用本地确定性变异器。
+    #[arg(long, default_value_t = false)]
+    no_llm: bool,
+
+    /// 指定大模型服务名。
+    #[arg(long)]
+    llm_provider: Option<String>,
+
+    /// 大模型单次请求超时 (秒)。
+    #[arg(long)]
+    llm_timeout_s: Option<u64>,
+
+    /// 本地变异器的随机种子 (固定种子 → 可复现的降级产出)。
+    #[arg(long, default_value_t = 20260923)]
+    seed: u64,
+
+    /// 画质真值: 真机截帧目录或单张 PNG。
+    #[arg(long)]
+    quality_reference: Option<String>,
+
+    /// 已采好的系统参数探测结果 (`probe.txt`)。
+    ///
+    /// 白名单是真机探测结果的函数, 而探测要写节点再还原 —— 那归接收端。
+    /// 接收端补上之前, 用这个参数喂一份已有的探测结果, 先把出主意那一半跑通。
+    #[arg(long)]
+    sysparam_probe: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct LegacyArgs {
     /// 目标优化赛道: sr (超分辨率) 或 frame_gen (双倍插帧)
     #[arg(short, long, value_enum, default_value_t = TrackMode::Sr)]
     track: TrackMode,
@@ -178,6 +265,12 @@ fn main() -> Result<()> {
     println!("==================================================");
     println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
     println!("==================================================");
+
+    if let Some(Command::Optimize(args)) = cli.command {
+        return run_optimize(args);
+    }
+    // 没给子命令 = 老的单赛道演化入口, 原样保留。
+    let cli = cli.legacy;
 
     if cli.self_check {
         return run_self_check();
@@ -354,6 +447,37 @@ fn main() -> Result<()> {
         println!("\n验收报告: {}", cli.evidence.display());
     }
 
+    Ok(())
+}
+
+/// `optimize` 子命令。
+fn run_optimize(args: OptimizeArgs) -> Result<()> {
+    let budget = match args.budget.as_deref() {
+        Some(s) => optimize::plan::Budget::parse(s)?,
+        None => optimize::plan::Budget::default(),
+    };
+
+    let cfg = optimize::Config {
+        game: args.game,
+        package: args.package,
+        serial: args.device,
+        budget,
+        plan_only: args.plan,
+        out_dir: args.out,
+        phonefarm: args.phonefarm,
+        secrets: args.secrets,
+        use_llm: !args.no_llm,
+        llm_provider: args.llm_provider,
+        llm_timeout_s: args.llm_timeout_s,
+        seed: args.seed,
+        quality_reference: args.quality_reference,
+        sysparam_probe: args.sysparam_probe,
+    };
+
+    let outcome = optimize::run(&cfg)?;
+    if outcome.plan_only {
+        println!("\n(--plan: 只摸底 + 排计划, 没有对设备做任何写入)");
+    }
     Ok(())
 }
 

@@ -55,6 +55,7 @@
         },
         "ingame_fps_setting": { "type": ["string", "null"], "description": "游戏内帧率/画质设置的原样记录 (如 \"60fps/高\")。游戏自己的设置改了, 之前所有基线全部作废; 不记下来就查不出为什么两批数据对不上。量不到写 null。" },
         "screen_brightness": { "type": ["integer", "null"], "description": "屏幕亮度原值。屏幕是整机功耗的大头, 亮度变了功耗就不可比。" },
+        "quality_reference": { "type": ["string", "null"], "description": "画质真值: 一张 PNG, 或一整个装着真机截帧的目录。放在信封上而不是 shader 的 payload 里, 是因为**不止 shader 会动画面** —— 灰档的每一个改写 (LoadOp / 精度 / 渲染分辨率) 都改画面, 那一层的 psnr 约束没有真值就判不了。payload 里的同名字段优先 (那是单个候选的一次性覆盖); 两处都没有时接收端退回程序化图案, 并在报告的 quality_reference.kind 里如实写 procedural。" },
         "notes": { "type": ["string", "null"], "description": "其它人工记录的条件" }
       }
     },
