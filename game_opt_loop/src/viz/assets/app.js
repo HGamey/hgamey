@@ -490,14 +490,156 @@ function bar(x, y, w, h, fill, tip) {
 }
 
 /* ── 设备 ─────────────────────────────────────────── */
+/* ── 手机卡片 ──────────────────────────────────────
+   数据来自 phonefarm fleet --json (面板自己不碰设备)。
+   每个字段都可能是 null —— 一律走 val() 渲染成「未知/未测」。 */
+function fleetSection() {
+  var f = DASH.fleet;
+  if (!f) {
+    return '<h2 class="section">手机</h2><div class="card">' +
+      '<span class="unknown">这次启动关掉了手机状态读取 (--no-fleet)</span></div>';
+  }
+  var head = '<h2 class="section">手机 · ' +
+    (f.fleet && f.fleet.devices ? f.fleet.devices.length + ' 台' : '读不到') +
+    '<span class="dim" style="font-weight:400;letter-spacing:0"> &nbsp; ' +
+    esc(shortTime(f.probed_at)) + ' 探的' + (f.age_s > 0 ? '（' + f.age_s + ' 秒前）' : '') +
+    ' · 用时 ' + f.took_ms + ' ms</span></h2>';
+
+  if (f.problem) {
+    return head + '<div class="card"><div class="err">' + esc(f.problem) + '</div>' +
+      '<div class="dim" style="margin-top:8px;font-size:12px">命令: ' + esc(f.command) + '</div></div>';
+  }
+  var fl = f.fleet || {};
+  var devices = fl.devices || [];
+  var notes = (fl.notes || []).length
+    ? '<div class="card" style="margin-bottom:12px;padding:12px 18px"><ul class="notes" style="margin:0">' +
+      (fl.notes || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') +
+      '</ul></div>'
+    : '';
+
+  if (!devices.length) {
+    return head + notes + '<div class="card"><span class="unknown">农场里一台机器都没有</span></div>';
+  }
+  return head + notes + '<div class="grid2">' + devices.map(phoneCard).join('') + '</div>';
+}
+
+function phoneCard(d) {
+  var depth = d.probe_depth || 'none';
+  var online = d.online
+    ? '<span class="badge qualified">在线</span>'
+    : '<span class="badge eliminated">' + esc(d.state || '离线') + '</span>';
+  /* 轻量档不是故障, 是"别人在用这台机器, 我们刻意少读了"。用黄色, 不用红色。 */
+  var depthBadge = depth === 'light'
+    ? '<span class="badge invalid" title="设备锁被别人持有, 这一轮只读了 sysfs">轻量档</span>'
+    : (depth === 'full' ? '<span class="badge evidence">完整档</span>' : '');
+
+  var stats = [
+    tile('电量', d.battery.level_pct === null || d.battery.level_pct === undefined
+      ? null : d.battery.level_pct, '%',
+      d.battery.level_pct === null || d.battery.level_pct === undefined ? 'plain'
+        : (d.battery.level_pct >= 40 ? 'good' : 'bad')),
+    tile('电池温度', fixed(d.battery.temp_c, 1), '℃', tempTone(d.battery.temp_c, 42, 45)),
+    tile('GPU 温度', fixed(d.thermal.gpu_c, 1), '℃', tempTone(d.thermal.gpu_c, 50, 60)),
+    tile('SoC 温度', fixed(d.thermal.soc_max_c, 1), '℃', tempTone(d.thermal.soc_max_c, 50, 60))
+  ].join('');
+
+  var chargeText = d.battery.status
+    ? esc(d.battery.status) + (d.battery.on_battery === true ? '（靠电池）'
+        : (d.battery.on_battery === false ? '（外部供电）' : ''))
+    : null;
+
+  var fanText = !d.fan ? null
+    : (d.fan.supported
+        ? (d.fan.enabled === true ? '开' + (d.fan.speed_level !== null && d.fan.speed_level !== undefined
+             ? '  L' + d.fan.speed_level : '')
+           : (d.fan.enabled === false ? '关' : null))
+        : null);
+
+  var rows = [
+    ['系统', d.os],
+    ['通道', d.transport],
+    ['供电', chargeText],
+    ['风扇', fanText],
+    ['亮屏', yesNo(d.screen_on)],
+    ['前台应用', d.foreground],
+    ['root', yesNo(d.root)],
+    ['不息屏策略', yesNo(d.keepalive ? d.keepalive.policy_ok : null)],
+    ['开机时长', uptime(d.uptime_s)],
+    /* phonefarm 的对局记录里不带 serial, 所以"这台机器上一次被谁动过"回溯不出来。
+       下面的锁日志是全场共用的那把锁, 不是按设备分的 —— 不拿它冒充。 */
+    ['最近一次操作', null]
+  ].map(function (kv) {
+    var note = kv[0] === '最近一次操作'
+      ? '<span class="from">对局记录不带 serial, 按设备回溯不了; 全场锁事件见下方</span>' : '';
+    return '<div class="k">' + esc(kv[0]) + '</div><div>' + val(kv[1]) + note + '</div>';
+  }).join('');
+
+  var shot = d.screenshot
+    ? '<div style="margin-top:12px"><img class="shot" alt="屏幕" src="/api/file?path=' +
+      encodeURIComponent(d.screenshot.path) + '">' +
+      '<div class="dim" style="font-size:11px">截于 ' + esc(shortTime(d.screenshot.at)) +
+      (d.screenshot.fresh ? '' : '（沿用上一张）') + '</div></div>'
+    : '';
+
+  var unknown = (d.unknown || []).length
+    ? '<ul class="notes" style="margin-top:10px">' + d.unknown.map(function (u) {
+        return '<li>' + esc(u) + '</li>';
+      }).join('') + '</ul>'
+    : '';
+
+  return '<div class="card phone' + (d.online ? '' : ' off') + '">' +
+    '<div class="phone-head">' +
+      '<div><div class="phone-name">' + val(d.model) + '</div>' +
+      '<div class="dim" style="font-size:12px">' + esc(d.serial) + '</div></div>' +
+      '<div>' + online + ' ' + depthBadge + '</div>' +
+    '</div>' +
+    '<div class="stats">' + stats + '</div>' +
+    '<div class="kv" style="grid-template-columns:100px 1fr;margin-top:12px">' + rows + '</div>' +
+    shot + unknown +
+  '</div>';
+}
+
+function tile(label, value, unit, tone) {
+  return '<div class="stat ' + tone + '"><div class="l">' + esc(label) + '</div>' +
+    '<div class="v">' + val(value, unit) + '</div></div>';
+}
+
+function fixed(v, n) {
+  return (v === null || v === undefined) ? null : Number(v).toFixed(n);
+}
+
+/* 温度的颜色: 冷机门槛之下是绿的, 过了就转黄再转红。
+   阈值取自证据文档里实际用过的冷机门槛 (电池 42℃) 与热区经验值。 */
+function tempTone(v, warn, bad) {
+  if (v === null || v === undefined) return 'plain';
+  if (v >= bad) return 'bad';
+  if (v >= warn) return 'warn';
+  return 'good';
+}
+
+function yesNo(v) {
+  if (v === true) return '是';
+  if (v === false) return '否';
+  return null;   /* null → val() 印「未知/未测」 */
+}
+
+function uptime(s) {
+  if (s === null || s === undefined) return null;
+  var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
+  return d > 0 ? d + ' 天 ' + h + ' 小时' : h + ' 小时';
+}
+
+/* 「手机」这一页把两件事摆在一起: 每台机器现在什么样, 以及现在归谁用。
+   刻意不另开一个「设备锁」标签 —— 锁是手机的属性, 分成两页看要来回跳。 */
 function renderDevice() {
   var d = DASH.device;
+  var html = fleetSection();
   var cls = d.holder ? (d.holder.stale ? 'stale' : 'busy') : 'free';
   var who = d.holder ? d.holder.label : '空闲';
   var hb = d.holder && d.holder.heartbeat_age_s !== null && d.holder.heartbeat_age_s !== undefined
     ? d.holder.heartbeat_age_s + ' 秒前' : null;
 
-  var html = '<h2 class="section">谁在用手机</h2><div class="card">' +
+  html += '<h2 class="section">谁在用手机 · 全场共用一把锁</h2><div class="card">' +
     '<div class="holder ' + cls + '">' +
       '<div><div class="dim" style="font-size:13px">当前持有者</div><div class="who">' + esc(who) + '</div></div>' +
       '<div class="kv" style="grid-template-columns:110px 1fr">' +
