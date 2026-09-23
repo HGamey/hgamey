@@ -308,6 +308,29 @@ fn the_device_lock_is_read_from_its_files_and_not_by_running_the_script() {
     )));
 }
 
+/// 带 serial 的对局记录要能按设备回溯出「最近一次操作」;
+/// 旧日志没记 serial, 照旧不进这张表 (面板那边显示未知)。
+#[test]
+fn last_touch_is_looked_up_by_serial_and_old_logs_stay_unknown() {
+    let d = dashboard();
+    let touch = d
+        .device
+        .last_touch
+        .get("91253241019A")
+        .expect("夹具里有一份带 serial 的对局记录");
+    assert_eq!(touch.task, "loop_v1_smoke");
+    assert!(touch.at.is_some(), "得说得出是什么时候");
+
+    // 夹具里两份记录, 只有一份带 serial —— 另一份不该凭空进表
+    assert_eq!(d.device.last_touch.len(), 1);
+    assert!(
+        d.device.scanned_runs >= 2,
+        "两份都要翻过, 才谈得上「翻了但那份没记 serial」: {}",
+        d.device.scanned_runs
+    );
+    assert!(!d.device.last_touch.contains_key("从来没出现过的机器"));
+}
+
 #[test]
 fn recent_device_tasks_carry_their_goal() {
     let d = dashboard();
