@@ -1,0 +1,261 @@
+{
+  "schema": "game_opt_loop/M0_report@1",
+  "tool": "game_opt_loop",
+  "version": "0.2.0",
+  "generated_at": "2026-09-22T16:13:10.002171+00:00",
+  "track": "sr",
+  "metric_source": "phonefarm",
+  "data_disclaimer": "metric_source = static_cost_model 时, latency/power/psnr 全部是静态估计值, 不是真机测量, 不带统计显著性, 不可用于任何对外性能结论; 只有 metric_source = phonefarm 的记录才是实测数据。",
+  "host": {
+    "os": "macos",
+    "arch": "aarch64",
+    "rustc_target": "game_opt_loop"
+  },
+  "harness": {
+    "phonefarm_binary": "../phonefarm/phonefarm",
+    "probe": "就绪 — 1 台在线设备: 91253241019A",
+    "device_online": true,
+    "operator_eval_subcommand": {
+      "state": "supported"
+    },
+    "can_evaluate_on_device": true,
+    "llm_provider": "configured",
+    "llm_error": null
+  },
+  "gate_self_check": {
+    "total": 16,
+    "intercepted": 16,
+    "interception_rate": 1.0,
+    "exact_code_matches": 16,
+    "cases": [
+      {
+        "name": "while_true",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "DECLARED_BUT_UNREAD_BINDING",
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 118
+      },
+      {
+        "name": "for_ever",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "DECLARED_BUT_UNREAD_BINDING",
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 93
+      },
+      {
+        "name": "do_while_true",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "DECLARED_BUT_UNREAD_BINDING",
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 127
+      },
+      {
+        "name": "tautological_condition",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "DECLARED_BUT_UNREAD_BINDING",
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 84
+      },
+      {
+        "name": "counter_moves_away_from_bound",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "DECLARED_BUT_UNREAD_BINDING",
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 56
+      },
+      {
+        "name": "runtime_sized_loop",
+        "track": "sr",
+        "expected": "UNBOUNDED_LOOP",
+        "intercepted": true,
+        "actual_codes": [
+          "UNBOUNDED_LOOP"
+        ],
+        "gate_us": 50
+      },
+      {
+        "name": "loop_trip_explosion",
+        "track": "sr",
+        "expected": "LOOP_TRIP_TOO_LARGE",
+        "intercepted": true,
+        "actual_codes": [
+          "DECLARED_BUT_UNREAD_BINDING",
+          "LOOP_TRIP_TOO_LARGE"
+        ],
+        "gate_us": 35
+      },
+      {
+        "name": "staging_buffer_breaks_zero_copy",
+        "track": "sr",
+        "expected": "NON_ZERO_COPY_RESOURCE",
+        "intercepted": true,
+        "actual_codes": [
+          "NON_ZERO_COPY_RESOURCE"
+        ],
+        "gate_us": 42
+      },
+      {
+        "name": "undeclared_binding",
+        "track": "sr",
+        "expected": "UNKNOWN_BINDING",
+        "intercepted": true,
+        "actual_codes": [
+          "DECLARED_BUT_UNREAD_BINDING",
+          "UNKNOWN_BINDING"
+        ],
+        "gate_us": 35
+      },
+      {
+        "name": "renamed_contract_slot",
+        "track": "sr",
+        "expected": "BINDING_NAME_MISMATCH",
+        "intercepted": true,
+        "actual_codes": [
+          "BINDING_NAME_MISMATCH"
+        ],
+        "gate_us": 32
+      },
+      {
+        "name": "divergent_barrier",
+        "track": "sr",
+        "expected": "DIVERGENT_BARRIER",
+        "intercepted": true,
+        "actual_codes": [
+          "DIVERGENT_BARRIER"
+        ],
+        "gate_us": 47
+      },
+      {
+        "name": "unguarded_store",
+        "track": "sr",
+        "expected": "UNGUARDED_IMAGE_STORE",
+        "intercepted": true,
+        "actual_codes": [
+          "UNGUARDED_IMAGE_STORE"
+        ],
+        "gate_us": 21
+      },
+      {
+        "name": "oversized_workgroup",
+        "track": "sr",
+        "expected": "WORKGROUP_TOO_LARGE",
+        "intercepted": true,
+        "actual_codes": [
+          "WORKGROUP_TOO_LARGE"
+        ],
+        "gate_us": 41
+      },
+      {
+        "name": "syntax_error",
+        "track": "sr",
+        "expected": "SYNTAX_ERROR",
+        "intercepted": true,
+        "actual_codes": [
+          "SYNTAX_ERROR"
+        ],
+        "gate_us": 31
+      },
+      {
+        "name": "missing_version",
+        "track": "sr",
+        "expected": "MISSING_VERSION_DIRECTIVE",
+        "intercepted": true,
+        "actual_codes": [
+          "MISSING_VERSION_DIRECTIVE"
+        ],
+        "gate_us": 0
+      },
+      {
+        "name": "sr_shader_on_frame_gen_track",
+        "track": "frame_gen",
+        "expected": "MISSING_REQUIRED_BINDING",
+        "intercepted": true,
+        "actual_codes": [
+          "BINDING_NAME_MISMATCH",
+          "DECLARED_BUT_UNREAD_BINDING",
+          "BINDING_NAME_MISMATCH",
+          "BINDING_ACCESS_MISMATCH",
+          "MISSING_REQUIRED_BINDING"
+        ],
+        "gate_us": 40
+      }
+    ],
+    "benign_total": 48,
+    "benign_passed": 48,
+    "max_gate_us": 1040
+  },
+  "evolution": {
+    "track": "sr",
+    "generations": 2,
+    "children_per_generation": 3,
+    "seed": 20260921,
+    "dry_run": false,
+    "metric_source": "phonefarm",
+    "total_candidates": 6,
+    "gate_rejected": 1,
+    "duplicates_skipped": 0,
+    "eval_errors": 0,
+    "evaluated": 5,
+    "gate_rejection_rate": 0.16666666666666666,
+    "gate_rejections_by_code": {
+      "SYNTAX_ERROR": 1
+    },
+    "archive_size": 6,
+    "front_size": 2,
+    "best_psnr_series": [
+      null,
+      null
+    ],
+    "gen_best_psnr_series": [
+      null,
+      null
+    ],
+    "archive_path": "runs/evo/archive.json",
+    "generation_records": [
+      "runs/evo/gen_1.json",
+      "runs/evo/gen_2.json"
+    ]
+  },
+  "pareto_front": [
+    {
+      "id": "gen0_baseline",
+      "generation": 0,
+      "origin": "baseline",
+      "notes": "赛道基线模板",
+      "operator_latency_ms": 0.18715101,
+      "power_watt": 6.350335,
+      "psnr_db": null,
+      "source": "phonefarm"
+    },
+    {
+      "id": "gen2_llm3",
+      "generation": 2,
+      "origin": "llm",
+      "notes": "llm:glm-4.7",
+      "operator_latency_ms": 0.9842882,
+      "power_watt": 6.2291894,
+      "psnr_db": null,
+      "source": "phonefarm"
+    }
+  ]
+}

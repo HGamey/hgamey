@@ -146,7 +146,7 @@ struct FrontRow {
     notes: Option<String>,
     operator_latency_ms: f32,
     power_watt: f32,
-    psnr_db: f32,
+    psnr_db: Option<f32>,
     source: MetricSource,
 }
 
@@ -448,11 +448,15 @@ fn print_summary(s: &EvolutionSummary, evo: &Evolution) {
     });
     for e in front {
         println!(
-            "{:<18} {:>10.3} {:>9.3} {:>9.3}  {:<18} {}",
+            "{:<18} {:>10.3} {:>9.3} {:>9}  {:<18} {}",
             e.id,
             e.report.metrics.operator_latency_ms,
             e.report.metrics.power_watt,
-            e.report.metrics.psnr_db,
+            e.report
+                .metrics
+                .psnr_db
+                .map(|q| format!("{q:.3}"))
+                .unwrap_or_else(|| "未测量".into()),
             match e.report.source {
                 MetricSource::Phonefarm => "phonefarm(实测)",
                 MetricSource::StaticCostModel => "cost_model(估计)",

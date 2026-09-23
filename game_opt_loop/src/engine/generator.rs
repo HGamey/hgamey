@@ -236,12 +236,16 @@ pub fn user_prompt(ctx: &MutationContext) -> String {
         s.push_str("== 历史优胜 (Pareto 前沿; 请在它们的基础上继续推进) ==\n");
         for e in &ctx.elites {
             s.push_str(&format!(
-                "--- {} [{}] 耗时 {:.3} ms | 功耗 {:.2} W | 画质 {:.3} dB | 数据来源 {:?} ---\n```glsl\n{}\n```\n",
+                "--- {} [{}] 耗时 {:.3} ms | 功耗 {:.2} W | 画质 {} | 数据来源 {:?} ---\n```glsl\n{}\n```\n",
                 e.id,
                 e.notes.as_deref().unwrap_or("-"),
                 e.report.metrics.operator_latency_ms,
                 e.report.metrics.power_watt,
-                e.report.metrics.psnr_db,
+                e.report
+                    .metrics
+                    .psnr_db
+                    .map(|q| format!("{q:.3} dB"))
+                    .unwrap_or_else(|| "未测量".to_string()),
                 e.report.source,
                 e.shader_source.trim(),
             ));

@@ -217,13 +217,16 @@ fn every_front_entry_satisfies_the_hard_constraints() {
             m.operator_latency_ms,
             spec.budget_ms
         );
-        assert!(
-            m.psnr_db >= spec.quality_baseline_db,
-            "{} 画质 {:.3} dB 低于基线 {:.3}",
-            e.id,
-            m.psnr_db,
-            spec.quality_baseline_db
-        );
+        // 画质没量到时 (真机链路可能回 null) 这条约束无从校验, 不拿默认值冒充。
+        if let Some(q) = m.psnr_db {
+            assert!(
+                q >= spec.quality_baseline_db,
+                "{} 画质 {:.3} dB 低于基线 {:.3}",
+                e.id,
+                q,
+                spec.quality_baseline_db
+            );
+        }
     }
 
     // 前沿内部必须互不支配。

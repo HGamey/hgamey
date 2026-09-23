@@ -15,6 +15,7 @@
     "spirv_path": { "type": "string", "description": "本地门禁已编译好的 SPIR-V 路径; 真机不必再编一遍" },
     "budget_ms": { "type": "number", "exclusiveMinimum": 0 },
     "quality_baseline_db": { "type": "number" },
+    "incumbent_latency_ms": { "type": ["number", "null"], "description": "在位冠军算子的实测耗时; 省略/null = 还没有冠军。refbench 载体的 A 臂不挂算子 (耗时按定义为 0), 接收端必须拿这个值来判候选是否比现任更便宜, 否则该判断恒假" },
     "protocol": {
       "type": "object",
       "description": "冻结的评测协议。",

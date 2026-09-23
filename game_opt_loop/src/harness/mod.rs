@@ -65,6 +65,18 @@ pub struct EvalRequest {
     pub spirv_path: String,
     pub budget_ms: f32,
     pub quality_baseline_db: f32,
+    /// 在位冠军算子的实测耗时 (ms)。None = 还没有冠军 (第 0 代)。
+    ///
+    /// 为什么要带这个: refbench 载体的 A 臂是**不挂任何算子**的场景
+    /// (`knob.postfx off`), 所以 A 臂的"算子耗时"按定义是 0。接收端原本拿
+    /// `候选 < 基线` 判"变快没有", 在这个载体下等价于 `正数 < 0` —— 恒假。
+    /// 于是 `is_pareto_improvement` 在 refbench 上**永远是 false**, 哪怕候选
+    /// 确实比上一代冠军便宜一半。
+    ///
+    /// 把冠军耗时显式带下去, 那个判断才问得出真问题:
+    /// "它在真实场景里比现任冠军便宜吗"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incumbent_latency_ms: Option<f32>,
     pub protocol: EvalProtocol,
 }
 
@@ -330,6 +342,18 @@ impl PhonefarmDriver {
         shader_path: &Path,
         spirv_path: &Path,
     ) -> EvalRequest {
+        self.build_request_against(candidate, track, shader_path, spirv_path, None)
+    }
+
+    /// 带在位冠军耗时的请求。见 `EvalRequest::incumbent_latency_ms`。
+    pub fn build_request_against(
+        &self,
+        candidate: &Candidate,
+        track: &TrackSpec,
+        shader_path: &Path,
+        spirv_path: &Path,
+        incumbent_latency_ms: Option<f32>,
+    ) -> EvalRequest {
         EvalRequest {
             version: 1,
             candidate_id: candidate.id.clone(),
@@ -341,6 +365,7 @@ impl PhonefarmDriver {
             spirv_path: spirv_path.display().to_string(),
             budget_ms: track.budget_ms,
             quality_baseline_db: track.quality_baseline_db,
+            incumbent_latency_ms,
             protocol: self.protocol,
         }
     }
@@ -383,7 +408,13 @@ impl PhonefarmDriver {
             }
         };
 
-        if !outcome.success {
+        // phonefarm 的退出码契约 (docs/SPEC_GPU_OP.md):
+        //   0 = PASS
+        //   1 = **测量有效但判定失败** (SLOW / POOR_QUALITY / CRASH) —— 回包是完整报告
+        //   2 = 用法/设备/测量本身出错 —— 没有可信数字
+        // 把 1 当成错误会把"这个算子确实变慢了"误报成"评测坏了",
+        // 演化就永远学不到负样本。只有 2 (及其它非契约码) 才是真的出错。
+        if !matches!(outcome.exit_code, Some(0) | Some(1)) {
             bail!(
                 "phonefarm {} 退出码 {:?}\nstderr: {}",
                 self.subcommand,
@@ -392,7 +423,14 @@ impl PhonefarmDriver {
             );
         }
 
-        parse_eval_report(&outcome.stdout)
+        parse_eval_report(&outcome.stdout).with_context(|| {
+            format!(
+                "phonefarm {} 退出码 {:?}, 回包无法解析\nstderr: {}",
+                self.subcommand,
+                outcome.exit_code,
+                outcome.stderr.lines().take(10).collect::<Vec<_>>().join("\n")
+            )
+        })
     }
 }
 
@@ -562,8 +600,26 @@ mod tests {
         let r = parse_eval_report(&sample_report_json("phonefarm")).unwrap();
         assert_eq!(r.candidate_id, "gen1_c1");
         assert_eq!(r.status, EvalStatus::Pass);
-        assert!((r.metrics.psnr_db - 38.62).abs() < 1e-4);
+        assert!((r.metrics.psnr_db.unwrap() - 38.62).abs() < 1e-4);
         assert!((r.verdict.p_value - 0.0031).abs() < 1e-9);
+    }
+
+    /// 画质**没量到**时接收端如实回 null, 不拿默认值填补。
+    ///
+    /// 这是第二次踩同一个坑: `fps_p95_ms` 先前也声明成 `f32`, 直到真机上
+    /// 头一次回 null 才暴露 —— 于是整批候选全被打成 `eval_error`,
+    /// 明明 0.29ms / 7.28ms / 6.34W 的真实数字就躺在回包里。
+    #[test]
+    fn an_unmeasured_psnr_comes_back_as_null_not_as_a_parse_error() {
+        let raw = r#"{"candidate_id":"gen1_llm1","status":"PASS",
+            "metrics":{"operator_latency_ms":0.29027405,"fps_p95_ms":7.2842,
+                       "power_watt":6.3387156,"psnr_db":null},
+            "verdict":{"is_pareto_improvement":true,"p_value":0.00064},
+            "source":"phonefarm"}"#;
+        let r = parse_eval_report(raw).unwrap();
+        assert_eq!(r.metrics.psnr_db, None);
+        assert!((r.metrics.fps_p95_ms.unwrap() - 7.2842).abs() < 1e-4);
+        assert!((r.metrics.operator_latency_ms - 0.29027405).abs() < 1e-6);
     }
 
     /// 来源由接收端判定。真机链路回来的东西就是实测数据,
@@ -696,6 +752,60 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 退出码 1 = 量到了、但判定没过。这是**有效负样本**, 不是评测故障。
+    ///
+    /// 把它当错误的后果: 演化只看得见"变快了"的候选, 看不见"变慢了"的,
+    /// 相当于把 Pareto 前沿的另一半直接蒙上眼睛。
+    #[test]
+    fn exit_code_one_is_a_measured_rejection_not_a_harness_failure() {
+        use crate::tracks::SR;
+        let dir = scratch("verdictfail");
+        let driver = PhonefarmDriver::new().with_runner(|_: &Path| {
+            Ok(RunOutcome {
+                exit_code: Some(1),
+                success: false,
+                stdout: r#"{"candidate_id":"gen2_llm2","status":"SLOW",
+                    "metrics":{"operator_latency_ms":2.81,"fps_p95_ms":9.44,
+                               "power_watt":7.02,"psnr_db":null},
+                    "verdict":{"is_pareto_improvement":false,"p_value":0.0004},
+                    "source":"phonefarm"}"#
+                    .into(),
+                stderr: "载体 refbench: 场景内帧时显著变慢\n".into(),
+            })
+        });
+        let request =
+            driver.build_request(&a_candidate(), &SR, Path::new("x.comp"), Path::new("x.spv"));
+        let report = driver.evaluate(&request, &dir.join("r.json")).unwrap();
+        assert_eq!(report.status, EvalStatus::Slow);
+        assert!(!report.verdict.is_pareto_improvement);
+        assert!((report.metrics.operator_latency_ms - 2.81).abs() < 1e-5);
+        assert!(report.source.is_measured(), "负样本同样是实测数据");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 退出码 1 但回包也是垃圾 —— 这就真是坏了, 而且要能看见 stderr。
+    #[test]
+    fn exit_code_one_with_an_unparseable_body_still_surfaces_stderr() {
+        use crate::tracks::SR;
+        let dir = scratch("verdictgarbage");
+        let driver = PhonefarmDriver::new().with_runner(|_: &Path| {
+            Ok(RunOutcome {
+                exit_code: Some(1),
+                success: false,
+                stdout: "判定失败".into(),
+                stderr: "ERROR: runner 段错误".into(),
+            })
+        });
+        let request =
+            driver.build_request(&a_candidate(), &SR, Path::new("x.comp"), Path::new("x.spv"));
+        let err = driver
+            .evaluate(&request, &dir.join("r.json"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("退出码 Some(1)"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 退出码 0 但回包是垃圾 —— 不能当成成功。
     #[test]
     fn a_zero_exit_with_an_unparseable_body_is_still_an_error() {
@@ -785,7 +895,7 @@ mod tests {
                 operator_latency_ms: 2.2,
                 fps_p95_ms: Some(17.1),
                 power_watt: 5.0,
-                psnr_db: 38.0,
+                psnr_db: Some(38.0),
             },
             verdict: Verdict {
                 is_pareto_improvement: false,

@@ -38,7 +38,9 @@ impl ArchiveEntry {
         Objectives {
             latency_ms: self.report.metrics.operator_latency_ms,
             power_watt: self.report.metrics.power_watt,
-            psnr_db: self.report.metrics.psnr_db,
+            // 量不到画质时用 -inf 参与支配比较: 在「越大越好」那一维上它
+            // 永远显不出优越, 也就不会靠「没量」去挤占前沿。
+            psnr_db: self.report.metrics.psnr_db.unwrap_or(f32::NEG_INFINITY),
         }
     }
 }
@@ -187,7 +189,7 @@ impl ParetoArchive {
     pub fn best_psnr(&self) -> Option<f32> {
         self.admissible()
             .iter()
-            .map(|e| e.report.metrics.psnr_db)
+            .filter_map(|e| e.report.metrics.psnr_db)
             .fold(None, |acc: Option<f32>, v| Some(acc.map_or(v, |a| a.max(v))))
     }
 
@@ -236,7 +238,7 @@ mod tests {
                 operator_latency_ms: latency,
                 fps_p95_ms: Some(16.7),
                 power_watt: power,
-                psnr_db: psnr,
+                psnr_db: Some(psnr),
             },
             verdict: Verdict {
                 is_pareto_improvement: false,

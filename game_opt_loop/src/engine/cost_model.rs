@@ -282,7 +282,7 @@ pub fn evaluate(
             operator_latency_ms: latency_ms,
             fps_p95_ms: Some(fps_p95),
             power_watt: power as f32,
-            psnr_db: psnr,
+            psnr_db: Some(psnr),
         },
         verdict: Verdict {
             is_pareto_improvement: false,
