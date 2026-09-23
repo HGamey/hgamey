@@ -27,6 +27,13 @@ pub struct ArchiveEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub report: EvalReport,
+    /// 功耗为什么没参与这条记录的支配排序; None = 参与了。
+    ///
+    /// 落盘而不是每次现算: 档案是**跨轮追加**的历史。事后翻档案时,
+    /// 一条 `power_watt: 7.203` 旁边如果不写清楚它当时算没算数,
+    /// 就分不清"当时比过了"和"当时被排除了"—— 而这两者会得出完全不同的前沿。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_excluded_reason: Option<String>,
     /// 写入时刻 (RFC3339)。
     pub recorded_at: String,
     /// 算子源码。档案要能独立复现, 不能只存一个指纹。
@@ -37,7 +44,9 @@ impl ArchiveEntry {
     pub fn objectives(&self) -> Objectives {
         Objectives {
             latency_ms: self.report.metrics.operator_latency_ms,
-            power_watt: self.report.metrics.power_watt,
+            // 只有确实由电池供电时功耗才可比; 否则这一维不参与支配排序。
+            // 原因记在 `power_exclusion_reason`, 跟着档案落盘。
+            power_watt: self.report.comparable_power_watt().ok(),
             // 量不到画质时用 -inf 参与支配比较: 在「越大越好」那一维上它
             // 永远显不出优越, 也就不会靠「没量」去挤占前沿。
             psnr_db: self.report.metrics.psnr_db.unwrap_or(f32::NEG_INFINITY),
@@ -110,6 +119,7 @@ impl ParetoArchive {
             fingerprint: candidate.fingerprint.clone(),
             origin: candidate.origin,
             notes: candidate.notes.clone(),
+            power_excluded_reason: report.power_exclusion_reason().map(str::to_string),
             report,
             recorded_at: now,
             shader_source: candidate.shader_source.clone(),
@@ -237,7 +247,7 @@ mod tests {
             metrics: Metrics {
                 operator_latency_ms: latency,
                 fps_p95_ms: Some(16.7),
-                power_watt: power,
+                power_watt: Some(power),
                 psnr_db: Some(psnr),
             },
             verdict: Verdict {
@@ -246,8 +256,80 @@ mod tests {
             },
             source,
             quality_reference: None,
+            // 默认放电态: 让既有用例照常在三维上比较。
+            // 充电态 (功耗不参与) 单独有用例覆盖。
+            power_source: Some(crate::engine::PowerSource {
+                rail: "battery".into(),
+                battery_status: "Discharging".into(),
+                battery_current_now_ua: Some(-1_200_000),
+                battery_capacity_pct: Some(84),
+                on_battery: true,
+                charging_suspended_via: Some("qcom-battery".into()),
+            }),
         };
         (cand, report)
+    }
+
+    /// 充电态: 功耗不进支配排序, 且档案里写清楚为什么。
+    ///
+    /// 这条同时钉死两件事:
+    /// 1. **前沿真的会变** —— 一个只在功耗上占优的候选, 充电态下不再靠它支配别人;
+    /// 2. **原因跟着档案落盘** —— 事后翻档案时, 一条 `power_watt: 7.2` 旁边
+    ///    不写清楚它当时算没算数, 就分不清"比过了"和"被排除了"。
+    #[test]
+    fn charging_state_keeps_power_out_of_the_sort_and_says_so() {
+        let charging = crate::engine::PowerSource {
+            rail: "usb".into(),
+            battery_status: "Charging".into(),
+            battery_current_now_ua: Some(1_500_000),
+            battery_capacity_pct: Some(84),
+            on_battery: false,
+            charging_suspended_via: None,
+        };
+
+        // 两个候选: 延迟与画质完全打平, 只有功耗不同。
+        let mut discharging_archive = ParetoArchive::new("sr", 1.5, 37.286);
+        let mut charging_archive = ParetoArchive::new("sr", 1.5, 37.286);
+        for (i, (id, pow)) in [("thirsty", 9.0f32), ("frugal", 4.0f32)].iter().enumerate() {
+            let (c, r) = entry(id, i as u32, 1.0, *pow, 38.0, MetricSource::Phonefarm);
+            discharging_archive.insert(&c, r.clone(), "2026-09-23T00:00:00Z".into());
+            let mut rc = r;
+            rc.metrics.power_watt = Some(*pow);
+            rc.power_source = Some(charging.clone());
+            charging_archive.insert(&c, rc, "2026-09-23T00:00:00Z".into());
+        }
+
+        // 放电态: 省电的那个凭功耗支配另一个, 前沿只剩它。
+        let front: Vec<&str> = discharging_archive.front().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(front, vec!["frugal"], "放电态下功耗应当分得出胜负");
+        assert!(discharging_archive
+            .entries
+            .iter()
+            .all(|e| e.power_excluded_reason.is_none()));
+
+        // 充电态: 功耗不参与, 两个候选在剩下两维上打平 -> 都留在前沿。
+        let mut front: Vec<&str> = charging_archive.front().iter().map(|e| e.id.as_str()).collect();
+        front.sort_unstable();
+        assert_eq!(front, vec!["frugal", "thirsty"], "充电态下功耗不该分出胜负");
+
+        // 原因落盘, 且数字本身照样留着 (排除的是比较资格, 不是读数)。
+        for e in &charging_archive.entries {
+            let why = e.power_excluded_reason.as_deref().expect("应当记下排除原因");
+            assert!(why.contains("非放电态"), "{why}");
+            assert!(e.report.metrics.power_watt.is_some());
+        }
+
+        // 落盘再读回来, 原因不能丢。
+        let dir = std::env::temp_dir().join(format!("gol_pw_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("archive.json");
+        charging_archive.save(&path).unwrap();
+        let back = ParetoArchive::load(&path).unwrap();
+        assert!(back
+            .entries
+            .iter()
+            .all(|e| e.power_excluded_reason.as_deref().is_some_and(|w| w.contains("非放电态"))));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn archive_with(

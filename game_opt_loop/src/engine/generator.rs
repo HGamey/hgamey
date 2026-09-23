@@ -236,11 +236,16 @@ pub fn user_prompt(ctx: &MutationContext) -> String {
         s.push_str("== 历史优胜 (Pareto 前沿; 请在它们的基础上继续推进) ==\n");
         for e in &ctx.elites {
             s.push_str(&format!(
-                "--- {} [{}] 耗时 {:.3} ms | 功耗 {:.2} W | 画质 {} | 数据来源 {:?} ---\n```glsl\n{}\n```\n",
+                "--- {} [{}] 耗时 {:.3} ms | 功耗 {} | 画质 {} | 数据来源 {:?} ---\n```glsl\n{}\n```\n",
                 e.id,
                 e.notes.as_deref().unwrap_or("-"),
                 e.report.metrics.operator_latency_ms,
-                e.report.metrics.power_watt,
+                // 没量到就照实说。给 LLM 看一个 "0.00 W" 会让它以为这个算子不耗电。
+                e.report
+                    .metrics
+                    .power_watt
+                    .map(|w| format!("{w:.2} W"))
+                    .unwrap_or_else(|| "未测量".to_string()),
                 e.report
                     .metrics
                     .psnr_db

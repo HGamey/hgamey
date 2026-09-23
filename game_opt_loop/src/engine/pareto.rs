@@ -13,8 +13,12 @@
 pub struct Objectives {
     /// 越小越好。
     pub latency_ms: f32,
-    /// 越小越好。
-    pub power_watt: f32,
+    /// 越小越好。`None` = 这一维**本次不可比**, 不参与支配判断。
+    ///
+    /// 不可比不等于"差"也不等于 0: 充电态下量到的瓦数不是整机功耗, 且随电量单调漂移
+    /// (见 `EvalReport::comparable_power_watt`)。把这种数放进比较, 测量顺序会变成
+    /// 选择压力。拿不到可比读数时就少比这一维 —— 少比只会让前沿更宽, 不会造出假改进。
+    pub power_watt: Option<f32>,
     /// 越大越好。
     pub psnr_db: f32,
 }
@@ -27,15 +31,19 @@ const EPS_PSNR: f32 = 1e-2;
 impl Objectives {
     /// self 是否 **支配** other: 每一维都不差, 且至少一维确实更好。
     pub fn dominates(&self, other: &Objectives) -> bool {
+        // 只有两边都拿得到可比读数时, 功耗才参与。任一边不可比 = 这一维整体跳过,
+        // 而不是把不可比的那个当成"无穷大/无穷小"—— 那等于凭空给它一个胜负。
+        let power_pair = self.power_watt.zip(other.power_watt);
+
         let lat_worse = self.latency_ms > other.latency_ms + EPS_LATENCY;
-        let pow_worse = self.power_watt > other.power_watt + EPS_POWER;
+        let pow_worse = power_pair.is_some_and(|(a, b)| a > b + EPS_POWER);
         let psnr_worse = self.psnr_db < other.psnr_db - EPS_PSNR;
         if lat_worse || pow_worse || psnr_worse {
             return false;
         }
 
         let lat_better = self.latency_ms < other.latency_ms - EPS_LATENCY;
-        let pow_better = self.power_watt < other.power_watt - EPS_POWER;
+        let pow_better = power_pair.is_some_and(|(a, b)| a < b - EPS_POWER);
         let psnr_better = self.psnr_db > other.psnr_db + EPS_PSNR;
         lat_better || pow_better || psnr_better
     }
@@ -102,9 +110,11 @@ pub fn crowding_distance(points: &[Objectives], front: &[usize]) -> Vec<f32> {
     }
 
     // 三个目标各扫一遍。方向无关紧要: 拥挤距离只看间距。
+    // 功耗不可比时记 NaN: 下面的排序用 `partial_cmp(...).unwrap_or(Equal)`,
+    // 于是这一维整体退化成"全部打平", 对距离没有贡献 —— 与支配判断里跳过它一致。
     let extractors: [fn(&Objectives) -> f32; 3] = [
         |o| o.latency_ms,
-        |o| o.power_watt,
+        |o| o.power_watt.unwrap_or(f32::NAN),
         |o| o.psnr_db,
     ];
 
@@ -122,7 +132,11 @@ pub fn crowding_distance(points: &[Objectives], front: &[usize]) -> Vec<f32> {
         let lo = get(&points[front[order[0]]]);
         let hi = get(&points[front[order[m - 1]]]);
         let span = hi - lo;
-        if span.abs() < f32::EPSILON {
+        // `!is_finite()` 这一半是给"这一维本次不可比"用的 (功耗 NaN)。
+        // 少了它, `span` 是 NaN 又躲过 `< EPSILON` 的判断 (NaN 比较恒假),
+        // 于是 `(next-prev)/span` 把**所有**距离污染成 NaN, 亲本选择随之失灵 ——
+        // 一个不可比的维度会连带毁掉另外两个可比维度的多样性保护。
+        if !span.is_finite() || span.abs() < f32::EPSILON {
             continue;
         }
 
@@ -143,7 +157,7 @@ mod tests {
     fn o(latency: f32, power: f32, psnr: f32) -> Objectives {
         Objectives {
             latency_ms: latency,
-            power_watt: power,
+            power_watt: Some(power),
             psnr_db: psnr,
         }
     }
@@ -178,6 +192,56 @@ mod tests {
     #[test]
     fn differences_within_noise_do_not_count_as_domination() {
         assert!(!o(1.0000, 4.80, 38.50).dominates(&o(1.0001, 4.80, 38.50)));
+    }
+
+    /// 功耗不可比时, 这一维整体跳过 —— 不是当成"无穷差"也不是当成 0。
+    ///
+    /// 把不可比的那一侧当成极值, 等于凭空给它一个胜负; 当成 0 则让它无脑碾压
+    /// 所有真实读数。两种都会造出假的支配关系。
+    #[test]
+    fn an_incomparable_power_axis_is_skipped_not_guessed() {
+        let no_pow = |lat: f32, psnr: f32| Objectives {
+            latency_ms: lat,
+            power_watt: None,
+            psnr_db: psnr,
+        };
+
+        // 只有功耗不同, 但有一边不可比 -> 谁也不支配谁。
+        assert!(!no_pow(1.0, 38.0).dominates(&o(1.0, 99.0, 38.0)));
+        assert!(!o(1.0, 0.1, 38.0).dominates(&no_pow(1.0, 38.0)));
+
+        // 另外两维仍然照常比。
+        assert!(no_pow(0.5, 39.0).dominates(&no_pow(1.0, 38.0)));
+        assert!(no_pow(0.5, 39.0).dominates(&o(1.0, 0.1, 38.0)));
+
+        // 同一组点: 功耗可比时能分出支配, 不可比时分不出。
+        let a_cmp = o(1.0, 4.0, 38.0);
+        let b_cmp = o(1.0, 9.0, 38.0);
+        assert!(a_cmp.dominates(&b_cmp), "功耗可比时应当分得出");
+        assert!(!no_pow(1.0, 38.0).dominates(&no_pow(1.0, 38.0)));
+    }
+
+    /// 功耗不可比不能把拥挤距离污染成 NaN。
+    ///
+    /// NaN 会躲过 `span.abs() < EPSILON` 的判断 (NaN 比较恒假), 于是
+    /// `(next-prev)/span` 把**所有**距离变成 NaN —— 一个不可比的维度会连带
+    /// 毁掉另外两维的多样性保护, 亲本选择退化成按下标取。
+    #[test]
+    fn an_incomparable_power_axis_does_not_poison_crowding_distance() {
+        let pts: Vec<Objectives> = [(0.4, 37.0), (0.8, 38.0), (1.2, 39.0), (1.6, 40.0)]
+            .iter()
+            .map(|&(lat, psnr)| Objectives {
+                latency_ms: lat,
+                power_watt: None,
+                psnr_db: psnr,
+            })
+            .collect();
+        let front: Vec<usize> = (0..pts.len()).collect();
+        let dist = crowding_distance(&pts, &front);
+        assert!(dist.iter().all(|d| !d.is_nan()), "距离被 NaN 污染了: {dist:?}");
+        // 端点无穷, 中间两点拿到了来自延迟与画质两维的真实间距。
+        assert!(dist[0].is_infinite() && dist[3].is_infinite());
+        assert!(dist[1] > 0.0 && dist[2] > 0.0, "{dist:?}");
     }
 
     #[test]

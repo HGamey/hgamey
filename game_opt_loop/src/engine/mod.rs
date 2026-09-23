@@ -105,7 +105,14 @@ pub struct Metrics {
     /// 契约必须容得下「未测量」这个状态。
     pub fps_p95_ms: Option<f32>,
     /// 整机功耗 (W)。
-    pub power_watt: f32,
+    ///
+    /// `None` = **本次没有量到**, 不是 0。接收端在非放电态下这一项回 null ——
+    /// 充电时两条轨量到的都不是整机功耗 (电池轨是充放相抵的余量, USB 轨含着
+    /// 灌进电池的那一份), 与其回一个看着正常的假数字, 不如如实留空。
+    ///
+    /// 这是第三次踩同一个坑 (`fps_p95_ms` / `psnr_db` 之后)。声明成 `f32` 的话,
+    /// 一份充电态回包会让**整份报告**解析失败, 而不是只丢掉功耗这一项。
+    pub power_watt: Option<f32>,
     /// 画质 (dB)。必须 >= 赛道基线。
     ///
     /// `None` = **本次没有量到**, 不是 0。refbench 载体只跑真实渲染场景,
@@ -173,6 +180,30 @@ pub struct EvalReport {
     /// None = 接收端没报 (旧版 phonefarm, 或成本模型估计值)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_reference: Option<QualityReference>,
+    /// `metrics.power_watt` 是在什么供电状态下量的。
+    ///
+    /// None = 接收端没报 (旧版 phonefarm, 或成本模型估计值)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_source: Option<PowerSource>,
+}
+
+/// 供电状态, 由 phonefarm 随报告回传。字段与
+/// `contracts/eval_report.schema.json` 的 `power_source` 一致。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PowerSource {
+    /// `usb` | `battery`
+    pub rail: String,
+    /// `/sys/class/power_supply/battery/status` 原值
+    pub battery_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery_current_now_ua: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery_capacity_pct: Option<i64>,
+    /// 整机是不是真由电池供电。只有 true 时 `power_watt` 才是整机功耗。
+    pub on_battery: bool,
+    /// 这一轮有没有用 root 停充, 停的是哪个节点。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charging_suspended_via: Option<String>,
 }
 
 /// 画质真值的出处, 由 phonefarm 随报告回传。字段与
@@ -246,6 +277,38 @@ impl QualityReference {
 }
 
 impl EvalReport {
+    /// 这一份的功耗能不能参与支配排序 —— 能就给值, 不能就说明为什么。
+    ///
+    /// 只有**确实由电池供电**时 `power_watt` 才是整机功耗。充电态下电池轨量到的是
+    /// 充放相抵的余量、USB 轨含着灌进电池的那一份, 两个读数都落在可信区间内,
+    /// 光看数字分辨不出来。
+    ///
+    /// 危害不止于"误差大一点": 充电电流随电量上升自己衰减 (CC→CV), 是一条**单调漂移**。
+    /// 把这样一个量放进支配排序, **测量顺序**就变成了选择压力 —— 先跑的候选系统性地
+    /// 占便宜, 而每一条记录单看都是"实测值"。M1 那轮 6.26W→5.94W 就是这么来的。
+    ///
+    /// 所以判据是 `on_battery == true`, 不是"有没有数字"。接收端没报 `power_source`
+    /// 时也不参与: 旧版接收端不记供电状态, 分辨不出它是哪种情况, 默认排除是安全的一侧
+    /// (少比一维只会让前沿更宽, 不会造出假的改进)。
+    pub fn comparable_power_watt(&self) -> Result<f32, &'static str> {
+        let Some(w) = self.metrics.power_watt else {
+            return Err("本次未测量");
+        };
+        if !w.is_finite() {
+            return Err("本次未测量");
+        }
+        match self.power_source.as_ref() {
+            None => Err("接收端未报供电状态"),
+            Some(p) if !p.on_battery => Err("非放电态 (充电中, 瓦数含充电分量且随电量漂移)"),
+            Some(_) => Ok(w),
+        }
+    }
+
+    /// 功耗被排除在支配排序之外的原因; 参与比较时为 None。
+    pub fn power_exclusion_reason(&self) -> Option<&'static str> {
+        self.comparable_power_watt().err()
+    }
+
     /// 这份报告该用哪个画质地板。
     ///
     /// 优先用**本场基线臂的实测值** (随报告带回的 `quality_reference`),
@@ -318,7 +381,7 @@ mod tests {
             metrics: Metrics {
                 operator_latency_ms: latency,
                 fps_p95_ms: Some(16.0),
-                power_watt: 4.8,
+                power_watt: Some(4.8),
                 psnr_db: Some(psnr),
             },
             verdict: Verdict {
@@ -327,7 +390,70 @@ mod tests {
             },
             source: src,
             quality_reference: None,
+            power_source: None,
         }
+    }
+
+    fn power_source(on_battery: bool, status: &str) -> PowerSource {
+        PowerSource {
+            rail: if on_battery { "battery".into() } else { "usb".into() },
+            battery_status: status.into(),
+            battery_current_now_ua: None,
+            battery_capacity_pct: None,
+            on_battery,
+            charging_suspended_via: None,
+        }
+    }
+
+    /// 只有确实由电池供电时功耗才进支配排序。
+    ///
+    /// 判据是 `on_battery`, 不是"有没有数字": 充电态下两条轨的读数都落在
+    /// 可信区间内, 光看数字分辨不出来, 而充电电流随电量单调漂移会让
+    /// **测量顺序**变成选择压力。
+    #[test]
+    fn power_only_counts_when_the_device_is_actually_on_battery() {
+        let mut r = report(EvalStatus::Pass, 1.0, 38.0, 0.001, MetricSource::Phonefarm);
+
+        // 放电态: 参与。
+        r.power_source = Some(power_source(true, "Discharging"));
+        assert_eq!(r.comparable_power_watt(), Ok(4.8));
+        assert_eq!(r.power_exclusion_reason(), None);
+
+        // 充电态: 不参与, 且说得出为什么。数字本身照样留在 metrics 里。
+        r.power_source = Some(power_source(false, "Charging"));
+        assert!(r.comparable_power_watt().is_err());
+        assert!(r.power_exclusion_reason().unwrap().contains("非放电态"));
+        assert_eq!(r.metrics.power_watt, Some(4.8), "排除的是比较资格, 不是数字本身");
+
+        // 接收端没报供电状态 (旧版): 默认排除 —— 分辨不出是哪种情况时,
+        // 少比一维只会让前沿更宽, 不会造出假改进。
+        r.power_source = None;
+        assert!(r.power_exclusion_reason().unwrap().contains("未报供电状态"));
+
+        // 压根没量到。
+        r.power_source = Some(power_source(true, "Discharging"));
+        r.metrics.power_watt = None;
+        assert!(r.power_exclusion_reason().unwrap().contains("未测量"));
+    }
+
+    /// 非放电态的回包里 `power_watt` 是 null —— 整份报告必须照样解析得动。
+    ///
+    /// 声明成 `f32` 的话一份充电态回包会让整代候选打成 eval_error,
+    /// 那是 §6.5 那个坑的第四次重演。
+    #[test]
+    fn a_charging_report_with_null_power_still_parses() {
+        let raw = r#"{"candidate_id":"c","status":"PASS",
+            "metrics":{"operator_latency_ms":0.5,"fps_p95_ms":7.3,"power_watt":null,"psnr_db":31.3},
+            "verdict":{"is_pareto_improvement":false,"p_value":0.004},"source":"phonefarm",
+            "power_source":{"rail":"usb","battery_status":"Charging","on_battery":false,
+                            "battery_capacity_pct":84}}"#;
+        let r: EvalReport = serde_json::from_str(raw).unwrap();
+        assert_eq!(r.metrics.power_watt, None);
+        assert!(!r.power_source.as_ref().unwrap().on_battery);
+        assert!(r.power_exclusion_reason().is_some());
+        // 其余指标不受连坐。
+        assert_eq!(r.metrics.psnr_db, Some(31.3));
+        assert_eq!(r.metrics.fps_p95_ms, Some(7.3));
     }
 
     /// 画质地板优先用本场基线臂实测值, 赛道常数只兜底。

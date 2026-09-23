@@ -155,7 +155,10 @@ struct FrontRow {
     origin: game_opt_loop::engine::CandidateOrigin,
     notes: Option<String>,
     operator_latency_ms: f32,
-    power_watt: f32,
+    power_watt: Option<f32>,
+    /// 功耗为什么没参与支配排序; None = 参与了。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    power_excluded_reason: Option<String>,
     psnr_db: Option<f32>,
     source: MetricSource,
 }
@@ -332,6 +335,10 @@ fn main() -> Result<()> {
                     notes: e.notes.clone(),
                     operator_latency_ms: e.report.metrics.operator_latency_ms,
                     power_watt: e.report.metrics.power_watt,
+                    power_excluded_reason: e
+                        .report
+                        .power_exclusion_reason()
+                        .map(str::to_string),
                     psnr_db: e.report.metrics.psnr_db,
                     source: e.report.source,
                 })
@@ -530,12 +537,31 @@ fn print_summary(s: &EvolutionSummary, evo: &Evolution) {
             .partial_cmp(&b.report.metrics.operator_latency_ms)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    // 前沿里只要有一条功耗没参与比较, 就把原因讲清楚 —— 否则表里那一列
+    // 看着像是也在被优化, 而它其实没有。
+    let excluded: Vec<String> = front
+        .iter()
+        .filter_map(|e| e.report.power_exclusion_reason().map(str::to_string))
+        .fold(Vec::new(), |mut acc, r| {
+            if !acc.contains(&r) {
+                acc.push(r);
+            }
+            acc
+        });
+    if !excluded.is_empty() {
+        println!("  * = 该功耗未参与支配排序: {}", excluded.join("; "));
+    }
     for e in front {
         println!(
-            "{:<18} {:>10.3} {:>9.3} {:>9}  {:<18} {}",
+            "{:<18} {:>10.3} {:>9} {:>9}  {:<18} {}",
             e.id,
             e.report.metrics.operator_latency_ms,
-            e.report.metrics.power_watt,
+            // 没参与支配排序的功耗后面缀个 *, 免得表格看着像它也在被比较。
+            match (e.report.metrics.power_watt, e.report.power_exclusion_reason()) {
+                (Some(w), None) => format!("{w:.3}"),
+                (Some(w), Some(_)) => format!("{w:.3}*"),
+                (None, _) => "未测量".to_string(),
+            },
             e.report
                 .metrics
                 .psnr_db

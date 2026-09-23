@@ -1167,7 +1167,7 @@ mod tests {
             metrics: crate::engine::Metrics {
                 operator_latency_ms: 0.5,
                 fps_p95_ms: Some(7.3),
-                power_watt: 6.5,
+                power_watt: Some(6.5),
                 psnr_db: Some(31.3),
             },
             verdict: crate::engine::Verdict {
@@ -1176,6 +1176,7 @@ mod tests {
             },
             source: MetricSource::Phonefarm,
             quality_reference: q,
+            power_source: None,
         }
     }
 

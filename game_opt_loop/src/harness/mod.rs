@@ -920,7 +920,7 @@ mod tests {
             metrics: Metrics {
                 operator_latency_ms: 2.2,
                 fps_p95_ms: Some(17.1),
-                power_watt: 5.0,
+                power_watt: Some(5.0),
                 psnr_db: Some(38.0),
             },
             verdict: Verdict {
@@ -929,6 +929,7 @@ mod tests {
             },
             source: MetricSource::Phonefarm,
             quality_reference: None,
+            power_source: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("\"SLOW\""), "status 必须序列化成契约枚举值");

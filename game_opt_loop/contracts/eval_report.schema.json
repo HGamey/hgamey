@@ -17,7 +17,7 @@
       "properties": {
         "operator_latency_ms": { "type": "number", "description": "算子自身的 GPU compute pass 耗时" },
         "fps_p95_ms": { "type": ["number", "null"], "description": "整帧时间 p95; null = 本次未测量 (headless 算子标尺量不到帧时), 不可当成 0" },
-        "power_watt": { "type": "number", "description": "整机功耗" },
+        "power_watt": { "type": ["number", "null"], "description": "整机功耗。null = 本次未测量, 不可当成 0。接收端在非放电态下这一项回 null —— 充电时电池轨量到的是充放相抵的余量, USB 轨含着灌进电池的那一份, 两者都不是整机功耗; 与其回一个看着正常的假数字, 不如如实留空。该项是否可比看 power_source.on_battery" },
         "psnr_db": { "type": ["number", "null"], "description": "画质; 必须 >= 赛道基线。null = 本次未测量 (refbench 载体不量画质), 不可当成 0" }
       }
     },
@@ -36,6 +36,19 @@
       "type": "string",
       "enum": ["phonefarm", "static_cost_model"],
       "description": "phonefarm = 真机物理采样; static_cost_model = 本地静态估计, 不是测量值, 不可作为性能结论"
+    },
+    "power_source": {
+      "type": ["object", "null"],
+      "description": "metrics.power_watt 是在什么供电状态下量的。只有 on_battery=true 时那个瓦数才是整机功耗, 也才允许进入 Pareto 支配排序 —— 充电电流随电量上升自己衰减 (CC→CV) 是一条单调漂移, 把它放进支配排序会让「测量顺序」变成选择压力, 先跑的候选系统性占便宜。省略/null = 接收端没报 (旧版 phonefarm), 或指标来自成本模型 (它没连过设备)。",
+      "required": ["rail", "battery_status", "on_battery"],
+      "properties": {
+        "rail": { "type": "string", "enum": ["usb", "battery"], "description": "读的是哪条功耗轨" },
+        "battery_status": { "type": "string", "description": "/sys/class/power_supply/battery/status 原值" },
+        "battery_current_now_ua": { "type": ["integer", "null"], "description": "current_now (μA)。正 = 在往电池里充, 负 = 电池在放电" },
+        "battery_capacity_pct": { "type": ["integer", "null"] },
+        "on_battery": { "type": "boolean", "description": "整机是不是真由电池供电。false 时 power_watt 必为 null" },
+        "charging_suspended_via": { "type": ["string", "null"], "description": "这一轮有没有用 root 停充, 停的是哪个节点" }
+      }
     },
     "quality_reference": {
       "type": ["object", "null"],

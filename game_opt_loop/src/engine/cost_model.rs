@@ -281,7 +281,7 @@ pub fn evaluate(
         metrics: Metrics {
             operator_latency_ms: latency_ms,
             fps_p95_ms: Some(fps_p95),
-            power_watt: power as f32,
+            power_watt: Some(power as f32),
             psnr_db: Some(psnr),
         },
         verdict: Verdict {
@@ -294,6 +294,9 @@ pub fn evaluate(
         // 成本模型根本没看过任何图像, 它的 psnr 是从 tap 数推出来的估计值,
         // 没有"参考图"这回事。留 None, 不编一个来源出来。
         quality_reference: None,
+        // 同理: 它没连过设备, 谈不上"在什么供电状态下量的"。留 None ——
+        // 于是它的功耗也不会参与支配排序, 这是对的: 估计值本来就不该跟实测值同台比。
+        power_source: None,
     };
 
     (report, cost)

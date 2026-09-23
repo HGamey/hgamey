@@ -143,7 +143,7 @@ fn sample_report(source: MetricSource) -> EvalReport {
         metrics: Metrics {
             operator_latency_ms: 1.12,
             fps_p95_ms: Some(16.9),
-            power_watt: 4.71,
+            power_watt: Some(4.71),
             psnr_db: Some(38.62),
         },
         verdict: Verdict {
@@ -152,6 +152,7 @@ fn sample_report(source: MetricSource) -> EvalReport {
         },
         source,
         quality_reference: None,
+        power_source: None,
     }
 }
 
@@ -310,6 +311,50 @@ fn eval_report_carries_where_the_quality_truth_came_from() {
         "verdict":{"is_pareto_improvement":false,"p_value":0.004},"source":"phonefarm"}"#;
     let back: EvalReport = serde_json::from_str(legacy).unwrap();
     assert!(back.quality_reference.is_none());
+}
+
+/// 供电状态随报告回传, 且合契约。非放电态下 power_watt 为 null。
+#[test]
+fn eval_report_carries_the_power_source() {
+    let mut report = sample_report(MetricSource::Phonefarm);
+
+    // 放电态 (停充成功): 有瓦数, 且可比。
+    report.power_source = Some(game_opt_loop::engine::PowerSource {
+        rail: "battery".into(),
+        battery_status: "Discharging".into(),
+        battery_current_now_ua: Some(-1_200_000),
+        battery_capacity_pct: Some(84),
+        on_battery: true,
+        charging_suspended_via: Some("qcom-battery".into()),
+    });
+    let v = serde_json::to_value(&report).unwrap();
+    assert_conforms(&v, "eval_report.schema.json");
+    assert_eq!(v["power_source"]["on_battery"], true);
+    assert!(report.power_exclusion_reason().is_none());
+
+    // 充电态: 契约要求 power_watt 为 null, 且这一项不参与支配排序。
+    report.metrics.power_watt = None;
+    report.power_source = Some(game_opt_loop::engine::PowerSource {
+        rail: "usb".into(),
+        battery_status: "Charging".into(),
+        battery_current_now_ua: Some(1_500_000),
+        battery_capacity_pct: Some(84),
+        on_battery: false,
+        charging_suspended_via: None,
+    });
+    let v = serde_json::to_value(&report).unwrap();
+    assert_conforms(&v, "eval_report.schema.json");
+    assert!(v["metrics"]["power_watt"].is_null());
+    assert!(report.power_exclusion_reason().is_some());
+
+    // 旧版接收端不报这一项, 照样解析得动。
+    let legacy = r#"{"candidate_id":"c","status":"PASS",
+        "metrics":{"operator_latency_ms":0.5,"fps_p95_ms":7.3,"power_watt":6.5,"psnr_db":31.3},
+        "verdict":{"is_pareto_improvement":false,"p_value":0.004},"source":"phonefarm"}"#;
+    let back: EvalReport = serde_json::from_str(legacy).unwrap();
+    assert!(back.power_source.is_none());
+    // 没报供电状态时默认排除 —— 分辨不出情况时, 少比一维是安全的一侧。
+    assert!(back.power_exclusion_reason().is_some());
 }
 
 #[test]
