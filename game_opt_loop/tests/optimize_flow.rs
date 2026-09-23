@@ -73,7 +73,8 @@ fn a_plan_run_produces_caps_and_a_report_that_explain_themselves() {
     assert!(plan
         .skipped
         .iter()
-        .any(|s| s.blockers.iter().any(|b| b.contains("--track sr"))));
+        .any(|s| s.layer == game_opt_loop::optimize::eval::Kind::Shader
+            && !s.blockers.is_empty()));
 
     let layers: Vec<report::LayerOutcome> = plan
         .skipped

@@ -124,7 +124,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     }
 
     // ---- 1. 摸底 (只读) ----
-    println!("\n[1/4] 摸底 (只读, 不动设备)...");
+    println!("\n[1/3] 摸底 (只读, 不动设备)...");
     let prober = caps::Prober::new(&cfg.phonefarm);
     let serial = pick_serial(&prober, cfg.serial.as_deref())?;
     println!("      设备 {serial}");
@@ -137,12 +137,19 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     println!("      caps: {}", caps_path.display());
 
     // ---- 2. 开路 + 排计划 ----
-    println!("\n[2/4] 按能力开路...");
+    //
+    // 接收端探活放在这里而不是真跑之前: `--plan` 也要交代它。计划上写着
+    // "要跑 ③ 系统参数", 而接收端还没有 `eval --request` 的话, 真跑那一刻
+    // 这一层会当场停下 —— 计划与真跑对不上, 读的人会以为说明书过期了。
+    // 探活本身不碰设备 (拿一个不存在的请求路径去问), 所以 --plan 仍然是只读的。
+    println!("\n[2/3] 按能力开路 + 接收端探活...");
+    let driver = eval::EvalDriver::new(&cfg.phonefarm);
+    let support = driver.probe();
     let mut plan = plan::build(&caps, cfg.budget, cfg.use_llm);
     // 画质真值跟着冻结条件走, 不是某一层的私有参数: 灰档的每一个改写都动画面,
     // 那一层的 psnr 约束没有真值就判不了。
     plan.conditions.quality_reference = cfg.quality_reference.clone();
-    println!("\n{}", plan::render(&plan, &caps));
+    println!("\n{}", plan::render(&plan, &caps, Some(&support.describe())));
 
     if cfg.plan_only {
         let layers = plan
@@ -153,7 +160,13 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
                 layer_display: s.layer_display,
                 used: false,
                 reason: format!("{} (--plan: 只排计划, 没跑)", s.why),
-                blockers: vec![],
+                blockers: if support.is_supported() {
+                    vec![]
+                } else {
+                    // 计划说要跑、真跑却会当场停下 —— 这一条必须出现在 --plan 的
+                    // 产物里, 否则两边对不上账。
+                    vec![format!("真跑时这一层会停在接收端: {}", support.describe())]
+                },
                 route: Some(s.route.clone()),
                 proposer: None,
                 llm_error: None,
@@ -182,14 +195,8 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         });
     }
 
-    // ---- 3. 接收端探活 ----
-    println!("\n[3/4] 统一测评接口探活...");
-    let driver = eval::EvalDriver::new(&cfg.phonefarm);
-    let support = driver.probe();
-    println!("      {}", support.describe());
-
-    // ---- 4. 逐层跑 ----
-    println!("\n[4/4] 逐层出主意 + 真机评测...");
+    // ---- 3. 逐层跑 ----
+    println!("\n[3/3] 逐层出主意 + 真机评测...");
     let generator = if cfg.use_llm {
         let secrets = crate::engine::generator::load_secrets(&cfg.secrets);
         match crate::engine::generator::Generator::from_secrets_with_timeout(

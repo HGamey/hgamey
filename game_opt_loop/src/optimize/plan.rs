@@ -253,6 +253,20 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
         // ① 有自己的入口 (`game_opt_loop --track sr ...`), optimize 不代跑,
         // 所以它也不该从预算里拿钱 —— 拿了就等于替一件不会发生的事占着时间。
         if !drives(*kind) {
+            // 独立入口只打得到**白盒载体** —— 它要把算子编进载体自己的管线。
+            // 黑盒游戏上的那条注入路线归 optimize, 等接收端。不说清这一条的话,
+            // 读的人会拿着 `--track sr --carrier refbench` 去"优化原神",
+            // 实际上量的是 refbench。
+            let handoff = match caps.carrier.box_kind {
+                super::games::BoxKind::WhiteBox => format!(
+                    "用 `game_opt_loop --track sr --carrier refbench --generations 3 --children 4` 单独跑 ({})",
+                    caps.target.display
+                ),
+                super::games::BoxKind::BlackBox => format!(
+                    "独立入口只打得到白盒载体 (refbench), 打不到 {} 本身;                      要在这个黑盒游戏上挂算子, 走的是这里排的灰档注入那条路, 等接收端",
+                    caps.target.display
+                ),
+            };
             skipped.push(Skipped {
                 layer: *kind,
                 layer_display: kind.display(),
@@ -260,10 +274,7 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
                     "{} —— 但画面算子的自主进化闭环在本仓库另有入口, optimize 只把它排进计划, 不代跑",
                     verdict.reason
                 ),
-                blockers: vec![
-                    "用 `game_opt_loop --track sr --carrier refbench --generations 3 --children 4` 单独跑"
-                        .into(),
-                ],
+                blockers: vec![handoff],
             });
             continue;
         }
@@ -363,7 +374,11 @@ pub fn protocol_for(step: &Step, caps: &Caps) -> Protocol {
 }
 
 /// 把计划渲染成给人看的文本。
-pub fn render(plan: &Plan, caps: &Caps) -> String {
+///
+/// `receiver` 是接收端探活的结论。`--plan` 也要把它打出来: 计划上写着
+/// "要跑 ③ 系统参数", 而接收端还没有 `eval --request` 的话, 真跑那一刻这一层
+/// 会当场停下 —— 计划与真跑对不上, 读的人会以为说明书过期了。
+pub fn render(plan: &Plan, caps: &Caps, receiver: Option<&str>) -> String {
     let mut o = String::new();
     o.push_str(&format!(
         "目标: {} ({})\n",
@@ -432,6 +447,10 @@ pub fn render(plan: &Plan, caps: &Caps) -> String {
 
     if plan.measure_only {
         o.push_str("\n三层全都开不了 —— 这一轮只测量, 不改动设备。原因见下。\n");
+    }
+
+    if let Some(r) = receiver {
+        o.push_str(&format!("\n统一测评接口: {r}\n"));
     }
 
     o.push_str("\n要跑的层:\n");
@@ -584,7 +603,9 @@ pkg_path=package:/data/app/x/base.apk\n";
             .find(|s| s.layer == Kind::Shader)
             .expect("① 不该从计划里消失");
         assert!(shader.reason.contains("不代跑"), "{}", shader.reason);
-        assert!(shader.blockers.iter().any(|b| b.contains("--track sr")));
+        // 黑盒目标上, 交接话术说的是"独立入口打不到它" —— 具体措辞见
+        // the_handoff_for_the_image_operator_layer_tells_the_truth_about_its_target
+        assert!(!shader.blockers.is_empty());
     }
 
     /// ① 不从预算里拿钱 —— 拿了就等于替一件不会发生的事占着真机时间,
@@ -694,12 +715,45 @@ pkg_path=package:/data/app/x/base.apk\n";
         assert_eq!(conditions_from(&caps_for(ROOTED)).fan, "unknown");
     }
 
+    /// 计划要把接收端的状态一起打出来。
+    ///
+    /// 计划上写着"要跑 ③ 系统参数", 而接收端还没有 `eval --request` 的话,
+    /// 真跑那一刻这一层会当场停下。两边对不上时, 读的人会以为说明书过期了,
+    /// 而不是"这条链路还差最后一段"。
+    #[test]
+    fn the_rendered_plan_states_the_receiver_status() {
+        let c = caps_for(ROOTED);
+        let p = build(&c, Budget::parse("6h").unwrap(), true);
+        let text = render(&p, &c, Some("phonefarm 还不认 `eval --request`"));
+        assert!(text.contains("统一测评接口"), "{text}");
+        assert!(text.contains("还不认"), "{text}");
+        // 不给状态时也不该凭空编一个。
+        assert!(!render(&p, &c, None).contains("统一测评接口"));
+    }
+
+    /// ① 的交接话术要看目标是不是白盒。
+    ///
+    /// 独立入口只打得到白盒载体, 打不到黑盒游戏本身。不说清这一条, 读的人会
+    /// 拿着 `--track sr --carrier refbench` 去"优化原神", 实际上量的是 refbench。
+    #[test]
+    fn the_handoff_for_the_image_operator_layer_tells_the_truth_about_its_target() {
+        let black = build(&caps_for(ROOTED), Budget::parse("6h").unwrap(), true);
+        let shader = black
+            .skipped
+            .iter()
+            .find(|s| s.layer == Kind::Shader)
+            .unwrap();
+        let b = shader.blockers.join(" ");
+        assert!(b.contains("打不到"), "{b}");
+        assert!(b.contains("原神"), "{b}");
+    }
+
     /// 渲染出来的计划必须把"为什么不跑这一层"讲出来 ——
     /// 那是用户唯一能拿到的交代。
     #[test]
     fn the_rendered_plan_explains_every_closed_layer() {
         let c = caps_for(UNROOTED);
-        let text = render(&build(&c, Budget::default(), true), &c);
+        let text = render(&build(&c, Budget::default(), true), &c, None);
         assert!(text.contains("不跑的层"));
         assert!(text.contains("root"));
         assert!(text.contains("冻结的测试条件"));

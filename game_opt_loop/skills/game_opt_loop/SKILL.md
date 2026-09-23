@@ -1,9 +1,9 @@
 ---
 name: game_opt_loop
-description: Optimize one game on one real Android/OpenHarmony phone, end to end. Use when asked to make a game run faster, smoother, or cooler on a device — `game_opt_loop optimize --game <name>` probes what the device actually allows (root, charge suspend, Vulkan layer injection, white-box carrier), opens whichever of the three change surfaces are available (system parameters / render-flow rewrites / image operators), has an LLM propose candidates for each, gets every candidate measured and judged on the real device by phonefarm, and writes one unified archive plus report.json + report.md. Also covers `--plan` (read-only survey, no device writes), the device lock used to share one phone between agents, and the known traps on Genshin Impact 7.1.0.
+description: Optimize one game on one real Android/OpenHarmony phone, end to end. Use when asked to make a game run faster, smoother, or cooler on a device — `game_opt_loop optimize --game <name>` probes what the device actually allows (root, charge suspend, Vulkan layer injection, white-box carrier), opens whichever of the three change surfaces are available (system parameters / render-flow rewrites / image operators), has an LLM propose candidates for each, gets every candidate measured and judged on the real device by phonefarm, and writes one unified archive plus report.json + report.md. Also covers `--plan` (read-only survey, no device writes), the device lock used to share one phone between agents (including how a lead-assigned queue decides which label you must use), and the known traps on Genshin Impact 7.1.0.
 license: MIT
 metadata:
-  version: 1.0
+  version: 1.1
   source-repo: github.com/HGamey/game_opt_loop
   requires: phonefarm (github.com/BH3GEI/phonefarm), optionally refbench
 ---
@@ -120,10 +120,20 @@ Artifacts:
 
 ## What `--plan` is for
 
-`--plan` is safe to run on a shared phone, at any time, mid-experiment. It runs
-one read-only shell command (`getprop` / `cat` / `pm path` / `id`) and stops.
-A unit test asserts the generated probe script contains no `setprop`, no
-`settings put`, no redirect-to-file, no `am start` — that test is the guarantee.
+`--plan` is safe to run on a shared phone, at any time, mid-experiment. It sends
+the device **one** shell script built only from reads — `getprop`, `cat`,
+`pm path`, `id`, `[ -e … ]` (the last under `su`, because the charge-control
+nodes live in root-only directories) — and stops. A unit test asserts that
+script contains no `setprop`, no `settings put`, no redirect-to-file, no
+`am start`; that test is the guarantee.
+
+It does write on **the host**: `caps.json`, `report.json` and `report.md` land
+in `--out` (default `runs/optimize/`, which is gitignored). Nothing else in the
+repo is touched.
+
+It also probes whether phonefarm accepts `eval --request` and prints the answer,
+so the plan cannot claim a layer will run when the receiver would stop it. That
+probe passes a non-existent request path and never reaches the device.
 
 Read the output top down:
 
@@ -144,17 +154,66 @@ including `--plan` — goes through the lock at `/private/tmp/claude-501/devlock
 /private/tmp/claude-501/devlock run <label> -- <cmd> # take it, run, release
 ```
 
-`run` acquires, heartbeats every 60s in the background, runs the command, and
-releases. **If the lock is held it returns 1 and puts your label at the end of
-the queue** — that is the normal case, not an error. Wait for your turn and
-re-issue; do not steal the lock and do not busy-poll it in a tight loop. A lock
-whose heartbeat is older than 600s is considered abandoned and can be taken over
-(the takeover is logged).
+**Read `status` before you do anything else, and take your label from it.**
+
+```
+held: wb-vksamples since 2026-09-23 10:56:13 (heartbeat 45s ago)
+queue: gol-probe sysknob-loop knobs-layer
+```
+
+That `queue:` line is not a record of who happened to show up — a lead can
+pre-assign it with `devlock queue <l1> <l2> …`. While the queue is non-empty,
+**only the label at its head may acquire, even when the lock is completely
+free.** So:
+
+- If a label in the queue is obviously the slot for your job, **use exactly
+  that label**. Inventing a new one appends you to the back and can cost hours.
+  In the run this section was written from, the queue already held `gol-probe`;
+  using `gol` instead meant waiting ~1 h 50 m.
+- If the queue is empty and the lock is free, any label works.
+- `run` acquires, heartbeats every 60 s in the background, runs your command,
+  and releases.
+- **If it is not your turn, `run` prints `not your turn (已自动排进队尾)` and
+  exits 1.** That is the normal case, not an error.
+- **Re-issuing does not lose your place** — `acquire` only appends a label that
+  is not already queued. So a retry loop is safe.
+- Poll at **30–60 s**, not faster, and expect to wait: on a shared phone a
+  single holder legitimately runs 45 minutes or more. Do not steal the lock; a
+  holder whose heartbeat is older than 600 s is considered abandoned and may be
+  taken over (the takeover is logged).
 
 ```bash
-/private/tmp/claude-501/devlock run gol -- \
-  cargo run --release -- optimize --game 原神 --plan
+# Take the label from `status`; retry until it is your turn.
+for i in $(seq 1 90); do
+  /private/tmp/claude-501/devlock run gol-probe -- \
+    ./target/release/game_opt_loop optimize --game 原神 --plan && break
+  sleep 40
+done
 ```
+
+### Picking the device
+
+`--device` is optional only when exactly one device is online; with several
+online the tool refuses rather than guessing. To see what is online:
+
+```bash
+adb devices -l        # e.g. 91253241019A  model:NX809J  → NX809J is the 红魔 (Red Magic)
+```
+
+Device nicknames are not in the tool. `NX809J` = 红魔 / Red Magic; that is the
+phone every number in this skill was measured on. Listing devices is read-only
+and does not need the lock; anything that talks *to* a device does.
+
+### Running it
+
+Examples use `cargo run --release --`, but if `target/release/game_opt_loop`
+is already built, invoke it directly — you are holding a shared device lock
+while cargo decides whether to rebuild. **Build before you take the lock.**
+
+The tool's own output is Chinese. The five sections map onto the English
+headings used above in the order they print: 设备 (device) → 要跑的层 (layers to
+run) → 不跑的层 (layers not to run) → 冻结的测试条件 (frozen test conditions) →
+已知的坑 (known traps).
 
 ## Known traps
 
@@ -198,6 +257,14 @@ but read them before you start.
 - **Record the fan state.** With and without an external fan the same phone
   settles ten-plus degrees apart, so frame times and watts are not comparable
   across fan states. When unknown the report says `unknown` — it never guesses.
+- **Survey a rested phone, and sanity-check the temperature it reports.** The
+  frozen cool-down target and temperature cap are derived from whatever the
+  survey measured. Survey a phone that has just spent 45 minutes under another
+  agent's load and you freeze a cool-down target above any temperature it will
+  ever reach — no gate at all, printed as a perfectly normal line. On this
+  hardware an idle-ish reading is 40–55 °C; anything near or above 100 °C means
+  the survey caught it hot or read the wrong zone. Re-run `--plan` once it has
+  settled rather than starting a real run off that number.
 - **A cool-down target is not an absolute temperature.** After dozens of rounds
   the device simply does not return to a fixed low temperature; a constant
   threshold starves every candidate on cool-down timeout. Targets are derived
@@ -264,14 +331,21 @@ A/B alternating, tests significance, keeps or drops, restores, and reports.
 
 Stated plainly so you do not mistake a gap for a bug:
 
-- **`phonefarm eval --request` is new.** Until the receiving end lands,
-  `optimize` probes for it and reports honestly that layers ③ and ② cannot run
-  — it does not fabricate a report. The image-operator path still works today
-  through the existing `phonefarm gpu-op`.
+- **`phonefarm eval --request` is new.** Until the receiving end lands, layers ③
+  and ② cannot actually be measured. `optimize` probes for it and prints the
+  answer — in `--plan` as a `统一测评接口:` line and as a per-layer note, in a
+  real run by stopping that layer with the reason recorded in `report.json`.
+  It never fabricates a report. Note that `--plan` still *lists* those layers
+  under "layers to run": the plan says what it would do, the receiver line says
+  whether it could. The image-operator path still works today through the
+  existing `phonefarm gpu-op`.
 - **The system-parameter whitelist needs a real-device probe** (write a value,
   read it back, confirm the kernel did not bounce it). That write belongs to
   phonefarm. Until that path lands, feed an already-collected probe with
-  `--sysparam-probe <probe.txt>`.
+  `--sysparam-probe <probe.txt>` — there are collected ones under
+  `~/projects/phonefarm/loop_v1/runs_sysparam/*/probe.txt`. `--plan` does not
+  need it: the plan lists layer ③ as runnable regardless, because whether a
+  whitelist can be built is a question for the run, not the survey.
 - **Layer ① is planned but not driven by `optimize`.** The image-operator
   evolution loop has its own entry point in this repo:
   `game_opt_loop --track sr --carrier refbench --generations 3 --children 4`.
