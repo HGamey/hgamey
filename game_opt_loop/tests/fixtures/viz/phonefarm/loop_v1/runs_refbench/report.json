@@ -1,0 +1,211 @@
+{
+ "goal": "refbench M0 — 白盒基准靶场首轮闭环",
+ "rules": {
+  "primary_metric": "frame_p95",
+  "dispersion_gate_pct": 0.5,
+  "repeatability_metric": "frame_p50",
+  "drift_slope_gate_pct": 0.15,
+  "drift_monotonic_gate": 0.9,
+  "intensity_min_step_pct": 10.0,
+  "alpha": 0.05,
+  "bw_separation_x": 3.0,
+  "expected_declared": {
+   "bw_pingpong": "bandwidth",
+   "frag_alu": "fragment",
+   "idle_cap": "none"
+  },
+  "verdict_gpu": "GPU 计算受限",
+  "verdict_cap_prefix": "限帧器封顶"
+ },
+ "rules_sha256": "eb4b235f959c54b06e1a86f5cf146cd2da46068bc791a308add7b9234223e91b",
+ "criterion_1_repeatable": {
+  "pass": true,
+  "gated_metric": "frame_p50",
+  "dispersion_pct": 0.2658,
+  "gate_pct": 0.5,
+  "systematic_drift_flagged": false,
+  "drift": {
+   "slope_per_run": -0.00175,
+   "slope_pct_per_run": -0.0211,
+   "monotonic_frac": 0.25
+  },
+  "drift_slope_gate_pct": 0.15,
+  "observed_all_metrics": {
+   "frame_p50": {
+    "dispersion_pct": 0.2658,
+    "slope_pct_per_run": -0.0211,
+    "monotonic_frac": 0.25,
+    "values": [
+     8.289,
+     8.2765,
+     8.267,
+     8.289,
+     8.274
+    ]
+   },
+   "frame_mean": {
+    "dispersion_pct": 0.7098,
+    "slope_pct_per_run": 0.0806,
+    "monotonic_frac": 0.5,
+    "values": [
+     8.4778,
+     8.4813,
+     8.4637,
+     8.5239,
+     8.4907
+    ]
+   },
+   "frame_p95": {
+    "dispersion_pct": 0.4526,
+    "slope_pct_per_run": 0.1065,
+    "monotonic_frac": 0.75,
+    "values": [
+     9.9364,
+     9.9303,
+     9.9422,
+     9.9585,
+     9.9753
+    ]
+   }
+  },
+  "note": "负载可重复性以中位帧时判 (平台尾抖动不计入负载确定性); frame_p95 离散 0.4526% 如实报出作原神对照 (原神深夜 1.37% / 跨黄昏 5.35%)。漂移以最小二乘斜率判, 非仅单调比。",
+  "runs": [
+   "bw_ctrl1",
+   "bw_ctrl2",
+   "bw_ctrl3",
+   "bw_ctrl4",
+   "bw_ctrl5"
+  ]
+ },
+ "criterion_2_ceiling_real": {
+  "pass": true,
+  "points": [
+   {
+    "label": "inten_i06",
+    "intensity": 6,
+    "frame_p50": 6.505,
+    "verdict": "GPU 计算受限"
+   },
+   {
+    "label": "inten_i08",
+    "intensity": 8,
+    "frame_p50": 8.2485,
+    "verdict": "GPU 计算受限"
+   },
+   {
+    "label": "inten_i10",
+    "intensity": 10,
+    "frame_p50": 9.999,
+    "verdict": "GPU 计算受限"
+   }
+  ],
+  "monotone_with_min_step": true,
+  "min_step_pct": 10.0,
+  "pinned_runs": []
+ },
+ "criterion_3_knob_effective": {
+  "pass": true,
+  "effective_knobs_ctrl": [
+   "{\"loadop\": \"off\"}"
+  ],
+  "effective_knobs_knob": [
+   "{\"loadop\": \"on\"}"
+  ],
+  "knobs_differ": true,
+  "comparison": {
+   "metric": "frame_p95",
+   "a_values": [
+    9.9364,
+    9.9303,
+    9.9422,
+    9.9585,
+    9.9753
+   ],
+   "b_values": [
+    9.6334,
+    9.6231,
+    9.688,
+    9.6935,
+    9.626
+   ],
+   "a_mean": 9.9485,
+   "b_mean": 9.6528,
+   "diff_mean": -0.2957,
+   "diff_pct": -2.973,
+   "hodges_lehmann": -0.3043,
+   "cohens_d": -10.6166,
+   "perm_p_two_sided": 0.007937,
+   "perm_enumerated": 252,
+   "ci95": [
+    -0.331,
+    -0.2535
+   ],
+   "significant_at_0.05": true
+  },
+  "alpha": 0.05
+ },
+ "criterion_4_attribution_falsifiable": {
+  "pass": true,
+  "mapping": {
+   "bandwidth": "verdict==GPU 计算受限 且 bus vote ≥ frag 的 3 倍",
+   "fragment": "verdict==GPU 计算受限 且 bus vote 为分离的低端",
+   "none": "verdict 以「限帧器封顶」开头"
+  },
+  "declared_sanity": true,
+  "bw_verdicts": [
+   "GPU 计算受限",
+   "GPU 计算受限",
+   "GPU 计算受限",
+   "GPU 计算受限",
+   "GPU 计算受限"
+  ],
+  "frag_verdicts": [
+   "GPU 计算受限",
+   "GPU 计算受限",
+   "GPU 计算受限"
+  ],
+  "idle_verdicts": [
+   "限帧器封顶 @120fps",
+   "限帧器封顶 @120fps",
+   "限帧器封顶 @120fps"
+  ],
+  "bw_all_gpu": true,
+  "frag_all_gpu": true,
+  "idle_all_cap": true,
+  "bus_vote_median_bw": 39950,
+  "bus_vote_median_frag": 1300.0,
+  "bus_separation_x": 30.73,
+  "bus_separated": true,
+  "n_runs": {
+   "bw": 5,
+   "frag": 3,
+   "idle": 3
+  }
+ },
+ "criterion_5_no_residue": {
+  "pass": true,
+  "checked": true,
+  "n_lines": 38,
+  "n_diff": 0,
+  "identical": true,
+  "diffs": []
+ },
+ "criterion_6_offline_replay": {
+  "pass": true,
+  "exit_code": "0",
+  "note": "逐轮 summary/attribution 重算字节一致; 报告自身的重放一致性由 replay_exit2.txt 另证"
+ },
+ "summary": {
+  "criteria_total": 6,
+  "criteria_passed": 6,
+  "all_pass": true,
+  "per_criterion": {
+   "criterion_1_repeatable": true,
+   "criterion_2_ceiling_real": true,
+   "criterion_3_knob_effective": true,
+   "criterion_4_attribution_falsifiable": true,
+   "criterion_5_no_residue": true,
+   "criterion_6_offline_replay": true
+  }
+ }
+}

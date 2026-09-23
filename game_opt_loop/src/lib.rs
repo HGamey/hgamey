@@ -12,6 +12,7 @@
 //! - [`engine::evolution`] — 多代闭环
 //! - [`harness`] — phonefarm 物理底座驱动
 //! - [`optimize`] — `optimize` 子命令: 摸底 → 三层自动开路 → 统一测评 → 总报告
+//! - [`viz`] — 本地只读可视化面板 (`serve` 子命令)
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,7 @@ pub mod engine;
 pub mod harness;
 pub mod optimize;
 pub mod tracks;
+pub mod viz;
 
 /// 优化赛道。
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
