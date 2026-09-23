@@ -20,6 +20,8 @@ env_logger = "0.11"
 # 注: naga 30.0.1 的 `glsl-in` 漏了 `front::interpolator` 的 feature gate
 # (它被 gate 在 spv-in/wgsl-in 上), 故必须连带开启 `wgsl-in` 才能编译。
 naga = { version = "30.0", default-features = false, features = ["glsl-in", "wgsl-in", "spv-out"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "signal", "time"] }
 
 [lib]
 name = "game_opt_loop"

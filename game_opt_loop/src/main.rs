@@ -29,6 +29,28 @@ enum Command {
     /// ① 画面算子 (要白盒载体, 或能挂层的黑盒)。能开哪层由摸底结果决定,
     /// 一层都开不了就只测量并写清原因。
     Optimize(OptimizeArgs),
+
+    /// 起一个本机只读可视化面板, 把三层闭环的产物摊在浏览器里。
+    ///
+    /// 只读: 不碰设备, 不碰设备锁, 没有任何写接口。
+    /// 前端资源内嵌进二进制, 不引外网资源, 断网可用。
+    Serve {
+        /// 监听端口 (只绑 127.0.0.1)
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+
+        /// game_opt_loop 仓库根 (层① 数据与 evidence)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// phonefarm 仓库根 (层②③ 数据)。缺省取 `<root>/../phonefarm`
+        #[arg(long)]
+        phonefarm_root: Option<PathBuf>,
+
+        /// devlock.d / devlock.log 所在目录
+        #[arg(long, default_value = "/private/tmp/claude-501")]
+        lock_root: PathBuf,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -195,6 +217,48 @@ pub struct LegacyArgs {
     no_evidence: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// 起一个本机只读可视化面板, 把三层闭环的产物摊在浏览器里。
+    ///
+    /// 只读: 不碰设备, 不碰设备锁, 没有任何写接口。
+    /// 前端资源内嵌进二进制, 不引外网资源, 断网可用。
+    Serve {
+        /// 监听端口 (只绑 127.0.0.1)
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+
+        /// game_opt_loop 仓库根 (层① 数据与 evidence)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+
+        /// phonefarm 仓库根 (层②③ 数据)。缺省取 `<root>/../phonefarm`
+        #[arg(long)]
+        phonefarm_root: Option<PathBuf>,
+
+        /// devlock.d / devlock.log 所在目录
+        #[arg(long, default_value = "/private/tmp/claude-501")]
+        lock_root: PathBuf,
+    },
+}
+
+fn run_serve(
+    port: u16,
+    root: PathBuf,
+    phonefarm_root: Option<PathBuf>,
+    lock_root: PathBuf,
+) -> Result<()> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("--root {} 不存在", root.display()))?;
+    let mut paths = game_opt_loop::viz::VizPaths::from_gol_root(root);
+    if let Some(p) = phonefarm_root {
+        paths.phonefarm_root = p;
+    }
+    paths.lock_root = lock_root;
+    game_opt_loop::viz::serve::run(paths, port)
+}
+
 /// M0 验收报告。
 #[derive(Debug, Serialize)]
 struct M0Report {
@@ -266,8 +330,15 @@ fn main() -> Result<()> {
     println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
     println!("==================================================");
 
-    if let Some(Command::Optimize(args)) = cli.command {
-        return run_optimize(args);
+    match cli.command {
+        Some(Command::Optimize(args)) => return run_optimize(args),
+        Some(Command::Serve {
+            port,
+            root,
+            phonefarm_root,
+            lock_root,
+        }) => return run_serve(port, root, phonefarm_root, lock_root),
+        None => {}
     }
     // 没给子命令 = 老的单赛道演化入口, 原样保留。
     let cli = cli.legacy;
