@@ -565,12 +565,12 @@ function phoneCard(d) {
     ['root', yesNo(d.root)],
     ['不息屏策略', yesNo(d.keepalive ? d.keepalive.policy_ok : null)],
     ['开机时长', uptime(d.uptime_s)],
-    /* phonefarm 的对局记录里不带 serial, 所以"这台机器上一次被谁动过"回溯不出来。
-       下面的锁日志是全场共用的那把锁, 不是按设备分的 —— 不拿它冒充。 */
-    ['最近一次操作', null]
+    ['最近一次操作', lastTouchText(d.serial)]
   ].map(function (kv) {
-    var note = kv[0] === '最近一次操作'
-      ? '<span class="from">对局记录不带 serial, 按设备回溯不了; 全场锁事件见下方</span>' : '';
+    /* 回溯不到时说清楚为什么: 是这台机器还没有带 serial 的对局记录,
+       而不是"面板不会算"。旧日志没记 serial, phonefarm 是后来才写进去的。 */
+    var note = (kv[0] === '最近一次操作' && kv[1] === null)
+      ? '<span class="from">这台机器还没有带 serial 的对局记录（旧日志没记）</span>' : '';
     return '<div class="k">' + esc(kv[0]) + '</div><div>' + val(kv[1]) + note + '</div>';
   }).join('');
 
@@ -597,6 +597,15 @@ function phoneCard(d) {
     '<div class="kv" style="grid-template-columns:100px 1fr;margin-top:12px">' + rows + '</div>' +
     shot + unknown +
   '</div>';
+}
+
+/* 某台机器最近一次被动过 —— 按 serial 从对局记录里回溯出来的。 */
+function lastTouchText(serial) {
+  var map = DASH.device && DASH.device.last_touch;
+  if (!map || !serial) return null;
+  var t = map[serial];
+  if (!t) return null;
+  return shortTime(t.at) + ' · ' + t.task;
 }
 
 function tile(label, value, unit, tone) {

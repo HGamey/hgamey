@@ -10,6 +10,7 @@
 //! ```
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -23,6 +24,10 @@ pub struct DeviceView {
     pub queue: Vec<String>,
     pub history: Vec<LockEvent>,
     pub recent_tasks: Vec<TaskRun>,
+    /// serial → 这台机器最近一次操作。没记 serial 的旧日志不进这个表。
+    pub last_touch: BTreeMap<String, LastTouch>,
+    /// 一共翻了多少份对局记录 —— 空表时能分清"没翻到"和"翻了但都没记 serial"。
+    pub scanned_runs: usize,
     /// 读不到锁目录时说清楚是哪条路径, 别让人对着空白页猜。
     pub problems: Vec<String>,
 }
@@ -53,7 +58,19 @@ pub struct TaskRun {
     pub task: String,
     pub run: String,
     pub goal: Option<String>,
+    /// 这一局落在哪台机器上。`None` = 旧日志没记 (phonefarm 是后来才写进去的)。
+    pub serial: Option<String>,
     pub modified: Option<String>,
+}
+
+/// 某台机器最近一次被动过是什么时候。
+#[derive(Debug, Clone, Serialize)]
+pub struct LastTouch {
+    pub task: String,
+    pub run: String,
+    pub at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
 }
 
 /// 解析 owner 文件内容: `"sysknob-loop since 2026-09-23 10:12:31"`。
@@ -142,23 +159,43 @@ pub fn load(lock_root: &Path, phonefarm_root: &Path, max_tasks: usize) -> Device
     history.reverse(); // 最新的排最前
     history.truncate(20);
 
+    let scan = scan_runs(phonefarm_root, max_tasks, LAST_TOUCH_SCAN_RUNS);
     DeviceView {
         holder,
         queue,
         history,
-        recent_tasks: recent_tasks(phonefarm_root, max_tasks),
+        recent_tasks: scan.recent,
+        last_touch: scan.last_touch,
+        scanned_runs: scan.scanned,
         problems,
     }
 }
 
-/// 最近的几次真机任务回放。
+/// 回溯「最近一次操作」时最多翻多少份对局记录。
 ///
-/// 只按目录 mtime 取最新的几个, 并且**每个只读日志的前几行**
-/// (`goal` 就在开头)。tasks 下有上百个 run, 全读一遍纯属浪费。
-fn recent_tasks(phonefarm_root: &Path, max: usize) -> Vec<TaskRun> {
+/// 只翻最新的那些: 按 mtime 倒序扫, 每台机器第一次命中就是它最近那一次。
+/// 封顶是因为 tasks 下有上百个 run, 而面板 30 秒刷一次。
+const LAST_TOUCH_SCAN_RUNS: usize = 200;
+
+pub struct RunScan {
+    pub recent: Vec<TaskRun>,
+    pub last_touch: BTreeMap<String, LastTouch>,
+    pub scanned: usize,
+}
+
+/// 扫一遍对局记录, 一次产出两样东西: 最近几次任务, 以及每台机器最近一次被动过。
+///
+/// 按目录 mtime 倒序扫, 所以每台机器**第一次**命中就是它最近那一次, 后面的不用管。
+/// 每份日志**只读开头几十 KB** (start 与 goal 都在前几行) —— 任务日志能到几十 MB,
+/// 为了两行字把整个文件读进内存不值当。
+fn scan_runs(phonefarm_root: &Path, max_recent: usize, max_scan: usize) -> RunScan {
     let tasks_dir = phonefarm_root.join("tasks");
     let Ok(tasks) = std::fs::read_dir(&tasks_dir) else {
-        return Vec::new();
+        return RunScan {
+            recent: Vec::new(),
+            last_touch: BTreeMap::new(),
+            scanned: 0,
+        };
     };
     let mut found: Vec<(SystemTime, TaskRun)> = Vec::new();
     for task in tasks.filter_map(Result::ok) {
@@ -180,22 +217,45 @@ fn recent_tasks(phonefarm_root: &Path, max: usize) -> Vec<TaskRun> {
                     task: task.file_name().to_string_lossy().to_string(),
                     run: run.file_name().to_string_lossy().to_string(),
                     goal: None,
+                    serial: None,
                     modified: mtime_rfc3339(&log),
                 },
             ));
         }
     }
     found.sort_by_key(|a| std::cmp::Reverse(a.0));
-    found.truncate(max);
+    found.truncate(max_scan);
+    let scanned = found.len();
 
-    found
-        .into_iter()
-        .map(|(_, mut t)| {
-            let log = tasks_dir.join(&t.task).join("runs").join(&t.run).join("log.jsonl");
-            t.goal = head_of(&log, GOAL_SCAN_BYTES).as_deref().and_then(goal_from_log);
-            t
-        })
-        .collect()
+    let mut recent = Vec::new();
+    let mut last_touch: BTreeMap<String, LastTouch> = BTreeMap::new();
+    for (i, (_, mut t)) in found.into_iter().enumerate() {
+        let log = tasks_dir
+            .join(&t.task)
+            .join("runs")
+            .join(&t.run)
+            .join("log.jsonl");
+        let head = head_of(&log, GOAL_SCAN_BYTES);
+        t.goal = head.as_deref().and_then(goal_from_log);
+        t.serial = head.as_deref().and_then(serial_from_log);
+        if let Some(serial) = &t.serial {
+            // 倒序扫, 所以第一次见到这台机器就是它最近那一次 —— 不覆盖。
+            last_touch.entry(serial.clone()).or_insert_with(|| LastTouch {
+                task: t.task.clone(),
+                run: t.run.clone(),
+                at: t.modified.clone(),
+                goal: t.goal.clone(),
+            });
+        }
+        if i < max_recent {
+            recent.push(t);
+        }
+    }
+    RunScan {
+        recent,
+        last_touch,
+        scanned,
+    }
 }
 
 /// 读文件开头至多 `limit` 字节。
@@ -213,6 +273,26 @@ fn head_of(path: &Path, limit: usize) -> Option<String> {
 }
 
 const GOAL_SCAN_BYTES: usize = 64 * 1024;
+
+/// 从 `log.jsonl` 里找 start 行的 `serial`。
+///
+/// `None` 有两种可能, 对读的人来说是同一件事 —— 这份记录说不出是哪台机器:
+/// 旧日志压根没这个字段, 或者当时在线的机器不止一台, phonefarm 判不出就记了 null。
+pub fn serial_from_log(text: &str) -> Option<String> {
+    for line in text.lines().take(8) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("r").and_then(|r| r.as_str()) == Some("start") {
+            return v
+                .get("serial")
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+        }
+    }
+    None
+}
 
 /// 从 `log.jsonl` 里找 `{"r":"goal","t":"…"}`。只扫前若干行 —— goal 就在开头。
 pub fn goal_from_log(text: &str) -> Option<String> {
@@ -282,6 +362,23 @@ mod tests {
     }
 
     #[test]
+    fn serial_is_read_from_the_start_line() {
+        let log = "{\"v\":1}\n{\"r\":\"start\",\"pid\":1,\"serial\":\"91253241019A\",\"ts\":1}\n";
+        assert_eq!(serial_from_log(log).as_deref(), Some("91253241019A"));
+
+        // 旧日志压根没这个字段
+        assert_eq!(serial_from_log("{\"v\":1}\n{\"r\":\"start\",\"pid\":1}\n"), None);
+        // phonefarm 判不出是哪台时会记 null —— 同样当未知
+        assert_eq!(serial_from_log("{\"r\":\"start\",\"serial\":null}\n"), None);
+        assert_eq!(serial_from_log("{\"r\":\"start\",\"serial\":\"  \"}\n"), None);
+        // 开头有非 JSON 行也要能继续往下找
+        assert_eq!(
+            serial_from_log("不是 JSON\n{\"r\":\"start\",\"serial\":\"hdc:abc\"}\n").as_deref(),
+            Some("hdc:abc")
+        );
+    }
+
+    #[test]
     fn missing_lock_root_is_reported_as_free_not_crashed() {
         let view = load(
             Path::new("/nonexistent/lock"),
@@ -291,5 +388,7 @@ mod tests {
         assert!(view.holder.is_none());
         assert!(view.queue.is_empty());
         assert!(view.recent_tasks.is_empty());
+        assert!(view.last_touch.is_empty());
+        assert_eq!(view.scanned_runs, 0);
     }
 }
