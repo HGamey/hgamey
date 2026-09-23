@@ -262,7 +262,12 @@ fn carrier_dispersion_matches_the_numbers_in_the_reports() {
     assert_eq!(refbench.n_runs, 5);
     let p50 = refbench.p50_dispersion_pct.expect("该算得出 p50 离散度");
     assert!((p50 - 0.2658).abs() < 0.002, "算出来是 {p50}, 报告是 0.2658");
+    // refbench 的 0.5% 卡的是**中位**帧时 (report.json 的 repeatability_metric)。
+    // 它的 p95 离散度是 0.4526%, 贴着 0.5% —— 若错拿 p95 去判, 一次更抖的尾巴
+    // 就会让面板说"偏大", 而报告里写的是通过。
+    assert_eq!(refbench.gate_metric, Some("frame_p50"));
     assert_eq!(refbench.status, "pass");
+    assert!(refbench.problems.is_empty());
 
     // 原神世界场景: ab_report.json 里 frame_p95 离散度是 2.673%。
     let genshin = find("原神", "世界场景 · 60fps");
@@ -273,6 +278,7 @@ fn carrier_dispersion_matches_the_numbers_in_the_reports() {
     let mc = find("Megacity", "城市巡航 · 基线");
     assert_eq!(mc.n_runs, 3);
     assert_eq!(mc.gate_pct, None);
+    assert_eq!(mc.gate_metric, None);
     assert_eq!(mc.status, "unknown", "没有阈值就不该给出合格/不合格");
     assert!(mc.p95_dispersion_pct.is_some(), "没阈值也要把离散度报出来");
 }
@@ -314,7 +320,6 @@ fn recent_device_tasks_carry_their_goal() {
         "目标应从 log.jsonl 的 goal 行读出来: {:?}",
         t.goal
     );
-    assert!(t.log_lines.is_some_and(|n| n > 0));
 }
 
 // ───────────────────────── 撤回提示 ─────────────────────────

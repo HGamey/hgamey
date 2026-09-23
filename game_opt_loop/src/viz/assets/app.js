@@ -146,10 +146,13 @@ function carrierTable() {
       '<td class="num">' + num(c.p50_dispersion_pct, 2) + ' %</td>' +
       '<td class="num">' + num(c.p95_median_ms, 2) + ' ms</td>' +
       '<td class="num">' + num(c.fps_median, 1) + '</td>' +
-      '<td class="num">' + (c.gate_pct === null ? '<span class="unknown">无</span>' : c.gate_pct + ' %') + '</td>' +
+      '<td class="num">' + (c.gate_pct === null ? '<span class="unknown">无</span>'
+        : c.gate_pct + ' %<br><span class="dim" style="font-size:11px">' + esc(c.gate_metric || '') + '</span>') + '</td>' +
       '<td><span class="dot ' + esc(c.status) + '"></span>' + esc(statusText) + '</td>' +
-      '<td class="dim">' + esc(c.note || '') + '</td>' +
-      '</tr>';
+      '<td class="dim">' + esc(c.note || '') +
+        ((c.problems && c.problems.length)
+          ? '<br><span class="err">' + esc(c.problems.join('; ')) + '</span>' : '') +
+      '</td></tr>';
   }).join('');
   return '<div class="card"><table><thead><tr>' +
     '<th>载体</th><th>窗口</th><th>轮数</th><th>p95 离散度</th><th>p50 离散度</th>' +
@@ -518,10 +521,10 @@ function renderDevice() {
     }).join('') + '</tbody></table>' : '<span class="unknown">没有锁日志</span>') + '</div>';
 
   html += '<div class="card"><h2 class="section">最近的真机任务</h2>' +
-    (d.recent_tasks.length ? '<table><thead><tr><th>任务</th><th>批次</th><th>目标</th><th>日志行</th><th>时间</th></tr></thead><tbody>' +
+    (d.recent_tasks.length ? '<table><thead><tr><th>任务</th><th>批次</th><th>目标</th><th>时间</th></tr></thead><tbody>' +
       d.recent_tasks.map(function (t) {
         return '<tr><td><b>' + esc(t.task) + '</b></td><td class="dim">' + esc(t.run) + '</td>' +
-          '<td>' + val(t.goal) + '</td><td class="num">' + val(t.log_lines) + '</td>' +
+          '<td>' + val(t.goal) + '</td>' +
           '<td class="dim" style="white-space:nowrap">' + esc(shortTime(t.modified)) + '</td></tr>';
       }).join('') + '</tbody></table>' : '<span class="unknown">没读到任务记录</span>') + '</div>';
   html += '</div>';

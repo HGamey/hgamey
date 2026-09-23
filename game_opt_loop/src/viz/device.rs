@@ -53,8 +53,6 @@ pub struct TaskRun {
     pub task: String,
     pub run: String,
     pub goal: Option<String>,
-    /// 日志行数 —— 步数的下界, 不做二次解释。
-    pub log_lines: Option<usize>,
     pub modified: Option<String>,
 }
 
@@ -182,7 +180,6 @@ fn recent_tasks(phonefarm_root: &Path, max: usize) -> Vec<TaskRun> {
                     task: task.file_name().to_string_lossy().to_string(),
                     run: run.file_name().to_string_lossy().to_string(),
                     goal: None,
-                    log_lines: None,
                     modified: mtime_rfc3339(&log),
                 },
             ));
@@ -195,19 +192,36 @@ fn recent_tasks(phonefarm_root: &Path, max: usize) -> Vec<TaskRun> {
         .into_iter()
         .map(|(_, mut t)| {
             let log = tasks_dir.join(&t.task).join("runs").join(&t.run).join("log.jsonl");
-            if let Ok(text) = std::fs::read_to_string(&log) {
-                t.log_lines = Some(text.lines().count());
-                t.goal = goal_from_log(&text);
-            }
+            t.goal = head_of(&log, GOAL_SCAN_BYTES).as_deref().and_then(goal_from_log);
             t
         })
         .collect()
 }
 
+/// 读文件开头至多 `limit` 字节。
+///
+/// 任务日志能到几十 MB (每帧一条), 而 goal 就在头几行 —— 面板 30 秒刷一次,
+/// 没必要为了一行字把整个文件读进内存。
+fn head_of(path: &Path, limit: usize) -> Option<String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; limit];
+    let n = f.read(&mut buf).ok()?;
+    buf.truncate(n);
+    // 可能正好截断在一个多字节字符中间, 用 lossy 而不是让整次读取失败。
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+const GOAL_SCAN_BYTES: usize = 64 * 1024;
+
 /// 从 `log.jsonl` 里找 `{"r":"goal","t":"…"}`。只扫前若干行 —— goal 就在开头。
 pub fn goal_from_log(text: &str) -> Option<String> {
     for line in text.lines().take(8) {
-        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        // 解析不了的行跳过, **不能**中断整次扫描:
+        // 开头多一个空行就让这条任务变成「未知」, 那是把能读的数据丢掉。
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         if v.get("r").and_then(|r| r.as_str()) == Some("goal") {
             return v.get("t").and_then(|t| t.as_str()).map(str::to_string);
         }
@@ -262,6 +276,9 @@ mod tests {
         let log = "{\"v\":1}\n{\"r\":\"goal\",\"t\":\"玩2048\"}\n{\"r\":\"screen\"}\n";
         assert_eq!(goal_from_log(log).as_deref(), Some("玩2048"));
         assert_eq!(goal_from_log("{\"v\":1}\n"), None);
+        // 开头有非 JSON 行时不能就此罢手 —— 后面那行 goal 还在。
+        let noisy = "\n不是 JSON\n{\"r\":\"goal\",\"t\":\"玩2048\"}\n";
+        assert_eq!(goal_from_log(noisy).as_deref(), Some("玩2048"));
     }
 
     #[test]

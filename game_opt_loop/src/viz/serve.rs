@@ -27,10 +27,18 @@ const APP_JS: &str = include_str!("assets/app.js");
 /// 没有上限的话, 演示时手一滑点到它, 浏览器直接卡死。
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// `/api/file` 肯交出的扩展名。
+///
+/// 白名单而不是黑名单, 原因很具体: phonefarm 根目录下躺着 `secrets.env`
+/// (LLM 密钥, 就是 `--secrets` 的缺省值), 还有 `.git` 里的凭据。
+/// 面板只需要那几类证据文件, 那就只给那几类 —— 不必去猜下一个敏感文件叫什么。
+const READABLE_EXTENSIONS: &[&str] = &[
+    "json", "jsonl", "md", "txt", "log", "tsv", "csv", "png", "jpg", "jpeg", "glsl", "spvasm",
+];
+
 #[derive(Clone)]
 struct AppState {
     paths: Arc<VizPaths>,
-    allowed_roots: Arc<Vec<PathBuf>>,
 }
 
 /// 起服务并阻塞, 直到 Ctrl-C。
@@ -52,7 +60,6 @@ async fn serve(paths: VizPaths, port: u16) -> anyhow::Result<()> {
     println!("  设备锁       ← {}", paths.lock_root.display());
 
     let state = AppState {
-        allowed_roots: Arc::new(paths.allowed_roots()),
         paths: Arc::new(paths),
     };
     axum::serve(listener, router(state)).await?;
@@ -141,8 +148,30 @@ pub fn resolve_allowed(raw: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, 
             "这个路径不在允许读取的仓库目录之内".to_string(),
         ));
     }
+    // 点开头的目录 (`.git` / `.cargo` …) 里没有面板要的东西, 却有一堆不该外传的。
+    if canonical
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "隐藏目录里的文件不对面板开放".to_string(),
+        ));
+    }
+    // 先判在不在、是不是文件 (给 404), 再判类型 (给 403) —— 两种拒绝要分得清。
     if !canonical.is_file() {
         return Err((StatusCode::NOT_FOUND, "不是一个文件".to_string()));
+    }
+    let ext = canonical
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !READABLE_EXTENSIONS.contains(&ext.as_str()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("面板只读证据类文件 ({}), 不读 .{ext}", READABLE_EXTENSIONS.join("/")),
+        ));
     }
     let size = std::fs::metadata(&canonical)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?
@@ -176,7 +205,10 @@ fn content_type_for(path: &Path) -> &'static str {
 }
 
 async fn file(State(state): State<AppState>, Query(q): Query<FileQuery>) -> Response {
-    let resolved = match resolve_allowed(&q.path, &state.allowed_roots) {
+    // 每次现算白名单, 不用启动时的快照: 面板起在前、phonefarm 挂在后的话,
+    // 快照会把层②③ 的证据文件一直拒到重启为止。
+    let roots = state.paths.allowed_roots();
+    let resolved = match resolve_allowed(&q.path, &roots) {
         Ok(p) => p,
         Err((code, msg)) => return (code, msg).into_response(),
     };
@@ -200,16 +232,47 @@ mod tests {
     }
 
     #[test]
-    fn allows_a_file_inside_the_root() {
+    fn allows_an_evidence_file_inside_the_root() {
         let roots = vec![manifest()];
-        let p = manifest().join("Cargo.toml");
+        let p = manifest().join("evidence/M1_report.json");
         assert!(resolve_allowed(p.to_str().unwrap(), &roots).is_ok());
+    }
+
+    /// phonefarm 根下就躺着 `secrets.env` (LLM 密钥)。面板绝不能把它交出去。
+    #[test]
+    fn refuses_files_outside_the_evidence_extensions() {
+        let roots = vec![manifest()];
+        let secrets = manifest().join("secrets.env");
+        std::fs::write(&secrets, "GLM_API_KEY=不该被面板读到\n").unwrap();
+        let got = resolve_allowed(secrets.to_str().unwrap(), &roots);
+        std::fs::remove_file(&secrets).unwrap();
+        let (code, _) = got.expect_err("密钥文件必须被拒");
+        assert_eq!(code, StatusCode::FORBIDDEN);
+
+        // Cargo.toml 也不是证据文件 —— 白名单之外一律不给。
+        let p = manifest().join("Cargo.toml");
+        assert_eq!(
+            resolve_allowed(p.to_str().unwrap(), &roots).unwrap_err().0,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn refuses_anything_under_a_dot_directory() {
+        let roots = vec![manifest()];
+        let p = manifest().join(".git/config");
+        if p.exists() {
+            assert_eq!(
+                resolve_allowed(p.to_str().unwrap(), &roots).unwrap_err().0,
+                StatusCode::FORBIDDEN
+            );
+        }
     }
 
     #[test]
     fn rejects_traversal_out_of_the_root() {
         let roots = vec![manifest().join("contracts")];
-        let escape = manifest().join("contracts/../Cargo.toml");
+        let escape = manifest().join("contracts/../evidence/M1_report.json");
         let (code, _) = resolve_allowed(escape.to_str().unwrap(), &roots)
             .expect_err("穿出白名单必须被拒");
         assert_eq!(code, StatusCode::FORBIDDEN);
@@ -274,7 +337,6 @@ mod tests {
             lock_root: fixtures.join("lock"),
         };
         let state = AppState {
-            allowed_roots: Arc::new(paths.allowed_roots()),
             paths: Arc::new(paths),
         };
         // 端口 0 = 让内核挑一个空闲端口, 测试之间不会抢端口。

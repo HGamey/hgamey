@@ -217,31 +217,6 @@ pub struct LegacyArgs {
     no_evidence: bool,
 }
 
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// 起一个本机只读可视化面板, 把三层闭环的产物摊在浏览器里。
-    ///
-    /// 只读: 不碰设备, 不碰设备锁, 没有任何写接口。
-    /// 前端资源内嵌进二进制, 不引外网资源, 断网可用。
-    Serve {
-        /// 监听端口 (只绑 127.0.0.1)
-        #[arg(long, default_value_t = 8765)]
-        port: u16,
-
-        /// game_opt_loop 仓库根 (层① 数据与 evidence)
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-
-        /// phonefarm 仓库根 (层②③ 数据)。缺省取 `<root>/../phonefarm`
-        #[arg(long)]
-        phonefarm_root: Option<PathBuf>,
-
-        /// devlock.d / devlock.log 所在目录
-        #[arg(long, default_value = "/private/tmp/claude-501")]
-        lock_root: PathBuf,
-    },
-}
-
 fn run_serve(
     port: u16,
     root: PathBuf,

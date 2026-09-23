@@ -27,10 +27,18 @@ pub struct Carrier {
     pub fps_median: Option<f64>,
     /// 判据阈值 (报告里写明的才有)。`None` = 这一组没有冻结阈值, 只报数。
     pub gate_pct: Option<f64>,
+    /// 阈值卡的是哪个指标。`None` = 没有阈值。
+    ///
+    /// 必须跟着阈值一起带: refbench 的 0.5% 卡的是**中位**帧时
+    /// (`repeatability_metric: frame_p50`), 拿它去卡 p95 会把报告里明明
+    /// 判过的一组显示成不合格 —— 面板与报告打架, 演示时没法解释。
+    pub gate_metric: Option<&'static str>,
     /// `pass` / `fail` / `unknown`
     pub status: &'static str,
     pub note: Option<String>,
     pub runs: Vec<String>,
+    /// 读这一组时跳过了哪些目录 —— 静悄悄少算几轮比算错更难发现。
+    pub problems: Vec<String>,
     pub evidence: Vec<EvidenceFile>,
 }
 
@@ -44,6 +52,8 @@ pub struct Group {
     pub prefix: &'static str,
     /// 冻结判据里的离散度阈值; `None` = 这一组没有冻结阈值。
     pub gate_pct: Option<f64>,
+    /// 阈值卡在哪个指标上 (`frame_p50` / `frame_p95`)。
+    pub gate_metric: Option<&'static str>,
     pub note: Option<&'static str>,
 }
 
@@ -58,6 +68,7 @@ pub const GROUPS: &[Group] = &[
         parent: "loop_v1/runs_refbench",
         prefix: "bw_ctrl",
         gate_pct: Some(0.5),
+        gate_metric: Some("frame_p50"),
         note: Some("自研载体, 冻结阈值按中位帧时判 0.5%"),
     },
     Group {
@@ -66,7 +77,8 @@ pub const GROUPS: &[Group] = &[
         parent: "loop_v1/runs_refbench",
         prefix: "frag",
         gate_pct: Some(0.5),
-        note: None,
+        gate_metric: Some("frame_p50"),
+        note: Some("同上, 阈值卡中位帧时"),
     },
     Group {
         carrier: "Megacity",
@@ -74,6 +86,7 @@ pub const GROUPS: &[Group] = &[
         parent: "loop_v1/runs",
         prefix: "mc_base",
         gate_pct: None,
+        gate_metric: None,
         note: Some("尚无冻结判据, 只报离散度"),
     },
     Group {
@@ -82,6 +95,7 @@ pub const GROUPS: &[Group] = &[
         parent: "loop_v1/runs_graylayer/ab",
         prefix: "ctrl",
         gate_pct: Some(5.0),
+        gate_metric: Some("frame_p95"),
         note: None,
     },
     Group {
@@ -90,6 +104,7 @@ pub const GROUPS: &[Group] = &[
         parent: "loop_v1/runs",
         prefix: "night",
         gate_pct: Some(5.0),
+        gate_metric: Some("frame_p95"),
         note: None,
     },
     Group {
@@ -98,6 +113,7 @@ pub const GROUPS: &[Group] = &[
         parent: "loop_v1/runs",
         prefix: "base",
         gate_pct: Some(5.0),
+        gate_metric: Some("frame_p95"),
         note: Some("跨天色变化, 场景本身在变 —— 散得最开的一组"),
     },
 ];
@@ -152,11 +168,15 @@ fn one(phonefarm_root: &Path, group: &Group) -> Option<Carrier> {
     let mut p50 = Vec::new();
     let mut fps = Vec::new();
     let mut evidence = Vec::new();
+    let mut problems = Vec::new();
     for d in &dirs {
+        let name = d.file_name()?.to_string_lossy().to_string();
         let Some(s) = RunSummary::load(d) else {
+            // 目录在、汇总读不出来 —— 说出来, 不要让这一轮无声地从统计里消失。
+            problems.push(format!("{name}/summary.json 读不出来, 这一轮没进统计"));
             continue;
         };
-        runs.push(d.file_name()?.to_string_lossy().to_string());
+        runs.push(name);
         // 按指标名取 —— 与前端切换指标、与报告里的键名走同一套名字。
         for (name, bucket) in [
             ("frame_p95", &mut p95),
@@ -180,24 +200,40 @@ fn one(phonefarm_root: &Path, group: &Group) -> Option<Carrier> {
     }
 
     let p95_disp = dispersion_pct(&p95).map(|v| round_to(v, 3));
-    let status = match (p95_disp, group.gate_pct) {
+    let p50_disp = dispersion_pct(&p50).map(|v| round_to(v, 3));
+    // 判的是阈值指定的那个指标, 不是永远拿 p95 去判。
+    let gated = match group.gate_metric {
+        Some("frame_p50") => p50_disp,
+        Some("frame_p95") => p95_disp,
+        _ => None,
+    };
+    let status = match (gated, group.gate_pct) {
         (Some(d), Some(gate)) if d <= gate => "pass",
         (Some(_), Some(_)) => "fail",
         _ => "unknown",
     };
+    if runs.len() != p95.len() {
+        problems.push(format!(
+            "{} 轮里有 {} 轮没有 frame_p95, 离散度只按剩下的算",
+            runs.len(),
+            runs.len() - p95.len()
+        ));
+    }
 
     Some(Carrier {
         carrier: group.carrier.to_string(),
         window: group.window.to_string(),
         n_runs: runs.len(),
         p95_dispersion_pct: p95_disp,
-        p50_dispersion_pct: dispersion_pct(&p50).map(|v| round_to(v, 3)),
+        p50_dispersion_pct: p50_disp,
         p95_median_ms: median(&p95).map(|v| round_to(v, 3)),
         fps_median: median(&fps).map(|v| round_to(v, 2)),
         gate_pct: group.gate_pct,
+        gate_metric: group.gate_metric,
         status,
         note: group.note.map(str::to_string),
         runs,
+        problems,
         evidence,
     })
 }
@@ -220,6 +256,29 @@ mod tests {
     fn base_prefix_does_not_swallow_mc_base() {
         assert!(!matches("mc_base1", "base"));
         assert!(matches("base1", "base"));
+    }
+
+    /// 每一组阈值都必须写明卡的是哪个指标 —— 否则拿 p95 去套 p50 的阈值,
+    /// 面板会把报告里明明判过的一组显示成不合格。
+    #[test]
+    fn every_gate_declares_which_metric_it_gates() {
+        for g in GROUPS {
+            assert_eq!(
+                g.gate_pct.is_some(),
+                g.gate_metric.is_some(),
+                "{} / {} 的阈值与指标必须同时有或同时无",
+                g.carrier,
+                g.window
+            );
+            if let Some(m) = g.gate_metric {
+                assert!(
+                    m == "frame_p50" || m == "frame_p95",
+                    "{} / {} 卡了一个判不了的指标 {m}",
+                    g.carrier,
+                    g.window
+                );
+            }
+        }
     }
 
     #[test]

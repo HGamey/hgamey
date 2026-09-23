@@ -102,6 +102,20 @@ impl AbReport {
             _ => true,
         };
         if all_pass {
+            // `all_pass` 只说明"评过的都过了"。还有判据没评时, 结论就还没成立 ——
+            // 这里若直接判合格, 会印出"4/5 条判据全部通过"这种自相矛盾的话,
+            // 而且是往**好**的方向骗人, 比判错负更危险。
+            if !evaluated_all {
+                return (
+                    RoundVerdict::Invalid,
+                    format!(
+                        "已评的 {} 条都通过了, 但还有 {} 条没评, 结论还下不出来",
+                        self.criteria_passed.unwrap_or_default(),
+                        self.criteria_total.unwrap_or_default()
+                            - self.criteria_evaluated.unwrap_or_default()
+                    ),
+                );
+            }
             return (
                 RoundVerdict::Qualified,
                 format!(
@@ -142,14 +156,22 @@ impl AbReport {
         (RoundVerdict::Eliminated, text)
     }
 
-    /// 主指标的两臂对比。没有 `primary_metric` 时退回第一个 comparison。
+    /// 主指标的两臂对比。
+    ///
+    /// 报告没写 `primary_metric` 时**不能**退回"第一个 comparison": comparisons
+    /// 是按名字排序的, 第一个会是 `bw_median` (带宽) —— 把带宽降了当成帧时变快,
+    /// 方向上的解释就全反了。所以退而求其次也只在帧时类指标里挑。
     pub fn primary(&self) -> Option<&Comparison> {
         if let Some(name) = &self.primary_metric {
             if let Some(c) = self.comparisons.iter().find(|c| &c.metric == name) {
                 return Some(c);
             }
         }
-        self.comparisons.first()
+        self.comparisons
+            .iter()
+            .find(|c| c.metric == "frame_p95")
+            .or_else(|| self.comparisons.iter().find(|c| is_frame_time(&c.metric)))
+            .or_else(|| self.comparisons.first())
     }
 
     /// 组装成前端的两臂图数据。
@@ -190,14 +212,19 @@ impl AbReport {
     }
 }
 
+/// 这个指标是不是"时间, 越小越好"。
+///
+/// 决定前端能不能说「负数 = 更好」—— 带宽、帧率这类不是, 说反了就是误导。
+pub fn is_frame_time(metric: &str) -> bool {
+    metric.starts_with("frame_") || metric.starts_with("gpu_active") || metric.starts_with("queue_")
+}
+
 /// 指标单位。查不到就留空字符串, 不瞎猜。
 pub fn unit_for(metric: &str) -> &'static str {
     match metric {
         "fps_mean" => "fps",
         "bw_median" | "bw_max" => "MB/s",
-        m if m.starts_with("frame_") || m.starts_with("gpu_active") || m.starts_with("queue_") => {
-            "ms"
-        }
+        m if is_frame_time(m) => "ms",
         _ => "",
     }
 }
@@ -429,6 +456,46 @@ mod tests {
         let arms = r.arms().expect("探针式也要出得来对比图数据");
         assert_eq!(arms.metric, "frame_p95");
         assert_eq!(r.verdict().0, RoundVerdict::Qualified);
+    }
+
+    /// `all_pass` 只说明"评过的都过了"。还有判据没评时不能判合格 ——
+    /// 那会印出"4/5 条判据全部通过"这种自相矛盾的话, 而且是往好的方向骗人。
+    #[test]
+    fn all_pass_with_unevaluated_criteria_is_invalid_not_qualified() {
+        let v = json!({
+            "criterion_1_repeatable": {"pass": true},
+            "summary": {"criteria_total": 5, "criteria_evaluated": 4,
+                "criteria_passed": 4, "all_pass": true}
+        });
+        let (verdict, text) = AbReport::from_value(&v).verdict();
+        assert_eq!(verdict, RoundVerdict::Invalid);
+        assert!(text.contains("没评"), "要说清楚为什么下不出结论: {text}");
+        assert!(!text.contains("全部通过"));
+    }
+
+    /// comparisons 是按名字排序的, 第一个是 `bw_median`。把带宽降了当成
+    /// "帧时变快" 会让整个方向反过来 —— 没写主指标时也只能在帧时类里挑。
+    #[test]
+    fn primary_never_falls_back_to_a_bandwidth_metric() {
+        let v = json!({
+            "comparison": {
+                "bw_median": {"metric": "bw_median", "a_values": [7000.0], "b_values": [6000.0]},
+                "frame_p95": {"metric": "frame_p95", "a_values": [20.0], "b_values": [19.8]}
+            },
+            "summary": {"criteria_total": 1, "criteria_passed": 1, "all_pass": true}
+        });
+        let r = AbReport::from_value(&v);
+        assert_eq!(r.primary_metric, None, "这份报告没写主指标");
+        assert_eq!(r.primary().unwrap().metric, "frame_p95");
+    }
+
+    #[test]
+    fn only_time_like_metrics_are_smaller_is_better() {
+        assert!(is_frame_time("frame_p95"));
+        assert!(is_frame_time("gpu_active_mean"));
+        assert!(is_frame_time("queue_p50"));
+        assert!(!is_frame_time("bw_median"), "带宽不是越小越好");
+        assert!(!is_frame_time("fps_mean"), "帧率是越大越好");
     }
 
     #[test]

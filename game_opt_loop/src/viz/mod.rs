@@ -173,22 +173,25 @@ fn ab_round(paths: &VizPaths, spec: &AbSpec) -> Option<Round> {
 
     let mut headline = Vec::new();
     if let Some(cmp) = primary {
-        let improved = cmp.diff_pct.is_some_and(|d| d < 0.0);
-        headline.push(
-            Stat::toned(
-                format!("{} 变化", cmp.metric),
-                cmp.diff_pct.map(|d| format!("{d:+.2}")),
-                Some("%"),
-                if cmp.significant == Some(true) && improved {
-                    "good"
-                } else if improved {
-                    "warn"
-                } else {
-                    "bad"
-                },
-            )
-            .with_hint("负数 = 帧时变小 = 更好"),
+        // "负数 = 更好" 只对帧时类指标成立。带宽、帧率不是这么读的 ——
+        // 主指标不是时间时, 不给方向判断, 只把数字摆出来。
+        let time_like = abtest::is_frame_time(&cmp.metric);
+        let improved = time_like && cmp.diff_pct.is_some_and(|d| d < 0.0);
+        let mut stat = Stat::toned(
+            format!("{} 变化", cmp.metric),
+            cmp.diff_pct.map(|d| format!("{d:+.2}")),
+            Some("%"),
+            match (time_like, improved, cmp.significant) {
+                (false, _, _) => "plain",
+                (true, true, Some(true)) => "good",
+                (true, true, _) => "warn",
+                (true, false, _) => "bad",
+            },
         );
+        if time_like {
+            stat = stat.with_hint("负数 = 帧时变小 = 更好");
+        }
+        headline.push(stat);
         headline.push(Stat::toned(
             "p 值",
             cmp.p_value.map(|p| format!("{p:.4}")),
