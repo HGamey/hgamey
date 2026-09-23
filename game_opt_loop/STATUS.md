@@ -9,7 +9,7 @@
 | 仓库 | 最后核对的 PR |
 |---|---|
 | game_opt_loop | [#14](https://github.com/HGamey/game_opt_loop/pull/14) |
-| phonefarm（对外 BH3GEI/phonefarm） | [#52](https://github.com/BH3GEI/phonefarm/pull/52) |
+| phonefarm（对外 BH3GEI/phonefarm） | [#54](https://github.com/BH3GEI/phonefarm/pull/54) |
 | refbench | [#1](https://github.com/HGamey/refbench/pull/1) |
 | .github（组织主页） | [#3](https://github.com/HGamey/.github/pull/3) |
 
@@ -53,11 +53,12 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 | 已完成 | loop_v1 最小可信闭环（五条判据实测通过） | [#24](https://github.com/BH3GEI/phonefarm/pull/24) |
 | 已完成 | 灰档只读层 + LoadOp 改写 + passdump 描述符溯源（原 HGamey/knobs 并入） | [#31](https://github.com/BH3GEI/phonefarm/pull/31)、[#42](https://github.com/BH3GEI/phonefarm/pull/42)、[#47](https://github.com/BH3GEI/phonefarm/pull/47)、[#49](https://github.com/BH3GEI/phonefarm/pull/49) |
 | 已完成 | 灰档超分算子可行性（只读观测确认可行：放大 = 帧内最后一个 pass 的第一笔 draw，采样图可读） | [#47](https://github.com/BH3GEI/phonefarm/pull/47) |
+| 已完成 | 灰档超分机制全链路预演（copyprobe 1:1 拷贝探针）：反作弊放行、帧时无损、画面构造性逐位不变 | [#51](https://github.com/BH3GEI/phonefarm/pull/51) |
 | 已完成 | 农场只读快照 `fleet --json` | [#43](https://github.com/BH3GEI/phonefarm/pull/43) |
 | 已完成 | 系统参数自动调参在真原神上跑通（两组候选走完统计判定，均被淘汰且有道理） | [#52](https://github.com/BH3GEI/phonefarm/pull/52) |
-| 进行中 | loop_v1 的 Python 与 knobs 的 shell 脚本往 Rust 内核收（统计层与判据、解析与归因已收） | [#39](https://github.com/BH3GEI/phonefarm/pull/39)、[#45](https://github.com/BH3GEI/phonefarm/pull/45) |
+| 进行中 | loop_v1 往 Rust 内核收：判定口径（解析→归因→统计→判据收口→白名单→判定→画面判据→模型交互/本地变异器）已全部收完，剩 autoloop.py（编排/设备驱动）、报告类、设备端 shell | [#39](https://github.com/BH3GEI/phonefarm/pull/39)、[#45](https://github.com/BH3GEI/phonefarm/pull/45)、[#48](https://github.com/BH3GEI/phonefarm/pull/48)、[#50](https://github.com/BH3GEI/phonefarm/pull/50)、[#54](https://github.com/BH3GEI/phonefarm/pull/54) |
 | 计划 | ③ 系统参数白名单的接收端真机探测（`--sysparam-probe`） | — |
-| 计划 | 灰档真正投算子（先探反作弊，再改描述符/建 pipeline） | — |
+| 计划 | 灰档真正投算子（copyprobe 已验反作弊放行与帧时无损，下一步改描述符/建 pipeline 投真超分） | — |
 
 ### refbench（白盒靶子）
 
@@ -95,6 +96,13 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 
 - LoadOp `LOAD→DONT_CARE` 改写命中 4.4–5.2 万次（确实绑上了），主指标 `frame_p95` 差值 −0.51%，置换检验 p = 0.325，判无效。
 
+### 灰档 copyprobe 1:1 拷贝探针（phonefarm knobs，原神大世界）
+
+条件：原神 7.1.0，5 个探针臂（两批）跑满 36 s 转视角负载，`debug.knobs.copyprobe=1`；算子是 texelFetch 逐纹素 1:1 拷贝（无过滤无舍入），画面应逐像素不变。
+
+- 反作弊放行：5 臂全过，层自报 copies ≈ frames（4791–5392），从未停用。
+- 帧时无损：探针臂 `frame_p50` 16.636–16.674 ms，与无层臂（16.661 / 16.680 ms）差 < 0.05 ms，顶满 60 帧档；每帧一次 2140×968 拷贝 + 一次克隆替换的开销淹没在噪声里。
+
 ### 停充之后的功耗对照（phonefarm）
 
 条件：原神固定场景两通路并排采 30 秒、全窗口停充。
@@ -117,4 +125,5 @@ refbench 0.45%，Megacity 0.987%，原神 1.37%（跨黄昏那一批 5.35%）。
 
 ## 变更记录
 
+- **2026-09-24（第二次核对）**：核对到 phonefarm #48、#50、#54、#51。更新 loop_v1 收进 Rust 的进度（判定口径已全收，剩 autoloop.py / 报告类 / 设备端 shell）；补上灰档 copyprobe 探针的已完成结论与帧时数字；同步五处其它文档里的「Rust 化」说法。
 - **2026-09-24**：首次建立本页。核对到 game_opt_loop #14、phonefarm #52、refbench #1、.github #3；把四处过时的「现状 / 进行中 / 下一步」段落同步到本页口径（详见各仓当次提交）。

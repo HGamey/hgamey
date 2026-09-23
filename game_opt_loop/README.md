@@ -118,7 +118,7 @@ cargo run --release -- optimize --game 原神 --device 91253241019A --budget 2h
 
 - `optimize` 总入口：摸底、选路、排计划、出方案、统一档案与总报告都已接上（见上面「怎么用」）。
   还差最后一段——系统参数与画面流程改写两路的真机评测要等 phonefarm 的统一测评接口。
-- phonefarm 那边 loop_v1 的 Python 与 knobs 的 shell 脚本逐步 Rust 化。
+- phonefarm 那边 loop_v1 的判定口径已经全部收进 Rust，剩下 autoloop.py（编排/设备驱动）、报告类与设备端 shell 还没收。
 
 **还没接上的**
 
