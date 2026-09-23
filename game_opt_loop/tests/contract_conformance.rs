@@ -110,6 +110,24 @@ fn validate(instance: &Value, schema: &Value, path: &str, out: &mut Vec<String>)
             validate(v, items, &format!("{path}[{i}]"), out);
         }
     }
+
+    // allOf + if/then: 契约 v2 用它们做「按 kind 分叉」的判别式联合。
+    // 不支持这两个关键字的话, 校验器会把每一类 payload 都当成「没写要求」,
+    // 于是 kind 与 payload 形状对不上也照样过 —— 那正是这份契约最需要钉住的一件事。
+    if let Some(all) = schema.get("allOf").and_then(Value::as_array) {
+        for (i, sub) in all.iter().enumerate() {
+            match (sub.get("if"), sub.get("then")) {
+                (Some(cond), Some(then)) => {
+                    let mut scratch = Vec::new();
+                    validate(instance, cond, path, &mut scratch);
+                    if scratch.is_empty() {
+                        validate(instance, then, path, out);
+                    }
+                }
+                _ => validate(instance, sub, &format!("{path}#allOf[{i}]"), out),
+            }
+        }
+    }
 }
 
 fn assert_conforms(instance: &Value, schema_name: &str) {
@@ -414,4 +432,234 @@ fn the_mini_validator_actually_catches_violations() {
         problems.iter().any(|p| p.contains("类型")),
         "类型错误没被抓到: {problems:?}"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2 契约: 三类改动面 (shader / sysparam / gray) 走同一个信封
+//
+// 这一组测试只吃 JSON 字面量, 不经过任何 Rust 结构体。故意的: 契约是给
+// **phonefarm 那侧**看的, 它写的是回包长什么样, 而不是本仓库的 struct 长什么样。
+// 拿 struct 序列化出来的东西去校验契约, 只能证明两边自洽; 拿一份手写的、
+// 对面将来会真的发过来的 JSON 去校验, 才能证明契约本身说得清楚。
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn v2_request_json(kind: &str, payload: Value) -> Value {
+    serde_json::json!({
+        "version": 2,
+        "kind": kind,
+        "candidate_id": "g1c1",
+        "serial": "91253241019A",
+        "package": "com.miHoYo.Yuanshen",
+        "workload": {
+            "carrier": "game_replay",
+            "script": "../phonefarm/knobs/gray/workload_spin_touch_v1.json",
+            "seconds": 36
+        },
+        "conditions": {
+            "cool_c": 42.3,
+            "temp_cap_c": 45.0,
+            "require_root": true,
+            "require_discharging": true,
+            "charging_suspend": {
+                "enabled": true,
+                "node": "/sys/class/qcom-battery/charging_enabled"
+            },
+            "fan": "unknown",
+            "ingame_fps_setting": null
+        },
+        "protocol": {
+            "cool_c": 42.3,
+            "replay_seconds": 36,
+            "rounds": 5,
+            "alternating": true,
+            "p_threshold": 0.05,
+            "stat": "exact_permutation",
+            "multiple_comparison": "bonferroni_on_wins",
+            "metrics": [
+                {"id": "fps_p95_ms", "better": "lower"},
+                {"id": "fps_mean", "better": "higher"},
+                {"id": "power_watt", "better": "lower"}
+            ]
+        },
+        "payload": payload
+    })
+}
+
+fn shader_payload() -> Value {
+    serde_json::json!({
+        "track": "sr",
+        "shader_path": "runs/evo/candidates/g1c1.comp",
+        "spirv_path": "runs/evo/candidates/g1c1.spv",
+        "budget_ms": 1.5,
+        "quality_baseline_db": 34.5,
+        "incumbent_latency_ms": 0.477,
+        "quality_reference": "../phonefarm/tasks/genshin_refframes",
+        "inject": { "via": "vulkan_layer", "layer": "VK_LAYER_refknobs_readonly" }
+    })
+}
+
+fn sysparam_payload() -> Value {
+    serde_json::json!({
+        "why": "这台机器上访存下限吃紧",
+        "params": { "bus.DDR.boost_freq": "5333000" },
+        "plan": [{
+            "kind": "sysfs",
+            "path": "/sys/devices/system/cpu/bus_dcvs/DDR/boost_freq",
+            "value": "5333000"
+        }],
+        "whitelist": {
+            "bus.DDR.boost_freq": {
+                "kind": "sysfs",
+                "path": "/sys/devices/system/cpu/bus_dcvs/DDR/boost_freq",
+                "values": ["547000", "1555000", "5333000"],
+                "current": "547000",
+                "group": null
+            }
+        },
+        "deny_keywords": ["thermal", "trip_point", "cooling", "fan", "tsens", "bcl", "throttl"]
+    })
+}
+
+fn gray_payload() -> Value {
+    serde_json::json!({
+        "why": "省一次 tile 回读",
+        "layer": null,
+        "rewrites": [{ "knob": "loadop_dont_care", "scope": null, "args": null }],
+        "require_hit": true,
+        "side_effect_ack": "层加载成功后立刻清属性"
+    })
+}
+
+/// 三类请求都得合同一份契约 —— 这就是「统一测评接口」那句话的全部含义。
+#[test]
+fn every_v2_request_kind_matches_the_contract() {
+    for (kind, payload) in [
+        ("shader", shader_payload()),
+        ("sysparam", sysparam_payload()),
+        ("gray", gray_payload()),
+    ] {
+        assert_conforms(&v2_request_json(kind, payload), "eval_request.schema.json");
+    }
+}
+
+/// 契约里的分叉必须真的把 payload 钉住: kind=gray 却塞一份 shader 的 payload
+/// 要被抓出来。不然「三类走同一个信封」就只是个说法。
+#[test]
+fn the_contract_actually_pins_each_payload_to_its_kind() {
+    let schema = load_schema("eval_request.schema.json");
+
+    let v = v2_request_json("gray", shader_payload());
+    let mut problems = Vec::new();
+    validate(&v, &schema, "req", &mut problems);
+    assert!(
+        problems.iter().any(|p| p.contains("rewrites")),
+        "gray 的 payload 少了 rewrites 却没被抓到: {problems:?}"
+    );
+
+    let v = v2_request_json("sysparam", gray_payload());
+    let mut problems = Vec::new();
+    validate(&v, &schema, "req", &mut problems);
+    assert!(
+        problems.iter().any(|p| p.contains("params")),
+        "sysparam 的 payload 少了 params 却没被抓到: {problems:?}"
+    );
+}
+
+/// v2 信封少了 conditions 要被抓到 —— 没有测试条件的数字跨轮不可比。
+#[test]
+fn a_v2_request_without_conditions_is_refused() {
+    let mut v = v2_request_json("sysparam", sysparam_payload());
+    v.as_object_mut().unwrap().remove("conditions");
+    let mut problems = Vec::new();
+    validate(&v, &load_schema("eval_request.schema.json"), "req", &mut problems);
+    assert!(
+        problems.iter().any(|p| p.contains("conditions")),
+        "{problems:?}"
+    );
+}
+
+/// v1 的扁平请求仍然合契约 —— `phonefarm gpu-op` 那条路还在跑,
+/// 加 v2 不能把它作废。
+#[test]
+fn the_v1_request_shape_is_still_accepted() {
+    let driver = PhonefarmDriver::new();
+    let request = driver.build_request(
+        &sample_candidate(),
+        &SR,
+        Path::new("a.comp"),
+        Path::new("a.spv"),
+    );
+    let v = serde_json::to_value(&request).unwrap();
+    assert_eq!(v["version"], 1);
+    assert_conforms(&v, "eval_request.schema.json");
+
+    // 而且 v1 缺了它自己那几个必填字段时照样会被抓出来。
+    let mut broken = v.clone();
+    broken.as_object_mut().unwrap().remove("shader_path");
+    let mut problems = Vec::new();
+    validate(&broken, &load_schema("eval_request.schema.json"), "req", &mut problems);
+    assert!(problems.iter().any(|p| p.contains("shader_path")), "{problems:?}");
+}
+
+/// v2 报告合契约, 而且 null 原样是 null。
+#[test]
+fn a_v2_report_matches_the_contract() {
+    let raw = r#"{
+      "version": 2, "kind": "sysparam", "candidate_id": "g1c1", "status": "REJECT",
+      "metrics": {
+        "operator_latency_ms": null, "fps_p95_ms": 36.28, "fps_mean": 29.83,
+        "power_watt": null, "psnr_db": null, "soc_temp_max_c": 43.1,
+        "unavailable": [{"field":"power_watt","reason":"设备在充电, 电池轨量到的是流入功率"}]
+      },
+      "verdict": {
+        "is_pareto_improvement": false, "p_value": 0.4127, "stat": "exact_permutation",
+        "alpha_win": 0.025, "alpha_regression": 0.05, "reachable": true,
+        "wins": [], "regressions": [],
+        "per_metric": {"fps_p95_ms": {"status":"无显著变化","a_mean":36.3,"b_mean":36.28,
+                       "diff_mean":-0.02,"diff_pct":-0.06,"p":0.4127}},
+        "reason": "没有任何指标显著改善"
+      },
+      "source": "phonefarm",
+      "power_source": {"rail":"battery","battery_status":"Charging","on_battery":false,
+                       "battery_current_now_ua":1072000,"battery_capacity_pct":91,
+                       "charging_suspended_via":null},
+      "conditions_observed": {"cool_reached_c":42.0,"cool_timeout":false,"apply_ok":true,
+                              "snapshot_identical":true,"restored":true,"fan":"unknown"},
+      "evidence_dir": "runs_sysparam/x/gen1/cand1"
+    }"#;
+    let v: Value = serde_json::from_str(raw).unwrap();
+    assert_conforms(&v, "eval_report.schema.json");
+    assert!(v["metrics"]["power_watt"].is_null(), "null 不能变成 0");
+}
+
+/// ABORT 报告同样合契约。它是「这次没量准」, 与 REJECT 的「量到了, 不好」
+/// 是两件事 —— 契约必须容得下它, 上层才分得开。
+#[test]
+fn an_abort_report_is_contract_valid() {
+    let raw = r#"{
+      "version": 2, "kind": "gray", "candidate_id": "gray_g1c1", "status": "ABORT",
+      "metrics": {"operator_latency_ms": null, "fps_p95_ms": null,
+                  "power_watt": null, "psnr_db": null},
+      "verdict": {"is_pareto_improvement": false, "p_value": 1.0,
+                  "reason": "改写一次都没命中 (hits=0), 本轮作废"},
+      "source": "phonefarm",
+      "conditions_observed": {"hits": 0, "apply_ok": false, "restored": true}
+    }"#;
+    assert_conforms(
+        &serde_json::from_str::<Value>(raw).unwrap(),
+        "eval_report.schema.json",
+    );
+}
+
+/// 契约的 status 枚举必须覆盖上层会遇到的每一个取值。
+#[test]
+fn every_status_the_upper_layer_understands_is_in_the_contract() {
+    let schema = load_schema("eval_report.schema.json");
+    let allowed = schema["properties"]["status"]["enum"].as_array().unwrap();
+    for s in ["PASS", "REJECT", "SLOW", "POOR_QUALITY", "CRASH", "REVERTED", "ABORT"] {
+        assert!(
+            allowed.contains(&Value::String(s.into())),
+            "契约的 status 枚举里少了 {s}"
+        );
+    }
 }
