@@ -291,6 +291,9 @@ pub fn evaluate(
             p_value: 1.0,
         },
         source: MetricSource::StaticCostModel,
+        // 成本模型根本没看过任何图像, 它的 psnr 是从 tap 数推出来的估计值,
+        // 没有"参考图"这回事。留 None, 不编一个来源出来。
+        quality_reference: None,
     };
 
     (report, cost)

@@ -85,6 +85,16 @@ pub struct Cli {
     #[arg(long, default_value_t = 5)]
     scene_intensity: u32,
 
+    /// 画质真值: 真机截帧目录 (或单张 PNG)。
+    ///
+    /// 不给就退回 runner 内置的程序化图案 —— 那是没有真实帧时的确定性替代品,
+    /// 高频细节远少于真实游戏画面。实测同一算子在两者上差约 11 dB
+    /// (程序化 42.826 dB / 真机截帧 31.333 dB), 用合成图案挑出来的
+    /// "画质更好的算子", 未必在真实画面上也更好。
+    /// 帧集用 `../phonefarm/phonefarm capture` 采。
+    #[arg(long)]
+    quality_reference: Option<String>,
+
     /// secrets.env 路径
     #[arg(long, default_value = "../phonefarm/secrets.env")]
     secrets: PathBuf,
@@ -233,6 +243,15 @@ fn main() -> Result<()> {
         );
     }
 
+    // 画质真值在本地先看一眼再开跑。这条路径要等到真机跑起来、画质补测那一步
+    // 才会被接收端读到 —— 打错一个字母的代价是几小时之后拿到一批对着程序化图案
+    // 量出来的 dB, 而终端上那行配置照样写着漂亮的目录名。
+    if let Some(r) = cli.quality_reference.as_ref() {
+        let n = count_reference_frames(r)
+            .with_context(|| format!("画质真值 --quality-reference {r} 不可用"))?;
+        println!("      画质真值: {r} ({n} 张参考帧)");
+    }
+
     // ---- 4. 演化 ----
     println!("\n[4/4] 启动自主进化闭环...");
     if cli.dry_run {
@@ -258,6 +277,7 @@ fn main() -> Result<()> {
         scene_frames: cli.scene_frames,
         scene_intensity: cli.scene_intensity,
         cool_c: cli.cool_c,
+        quality_reference: cli.quality_reference.clone(),
     };
 
     let mut evo = Evolution::new(config)?;
@@ -412,6 +432,37 @@ fn run_self_check() -> Result<()> {
     Ok(())
 }
 
+/// 数一眼 `--quality-reference` 指到的地方有几张图。
+///
+/// 只做本地存在性检查, 不解码 —— 尺寸合不合格 (必须 >= 1920x1080) 由接收端
+/// 在裁剪时判, 这里的目的只是别让一个打错的路径拖到几小时之后才暴露。
+fn count_reference_frames(path: &str) -> Result<usize> {
+    let p = std::path::Path::new(path);
+    if p.is_file() {
+        return Ok(1);
+    }
+    if !p.is_dir() {
+        anyhow::bail!("既不是文件也不是目录 (当前工作目录 {:?})", std::env::current_dir()?);
+    }
+    let n = std::fs::read_dir(p)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|f| {
+            f.is_file()
+                && matches!(
+                    f.extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_ascii_lowercase())
+                        .as_deref(),
+                    Some("png" | "jpg" | "jpeg")
+                )
+        })
+        .count();
+    if n == 0 {
+        anyhow::bail!("目录里没有 png/jpg 图片");
+    }
+    Ok(n)
+}
+
 fn print_summary(s: &EvolutionSummary, evo: &Evolution) {
     println!("\n---------- 演化汇总 ----------");
     println!(
@@ -432,6 +483,39 @@ fn print_summary(s: &EvolutionSummary, evo: &Evolution) {
         .map(|v| v.map_or("-".to_string(), |x| format!("{x:.3}")))
         .collect();
     println!("累计最优画质序列 (dB): {}", series.join(" → "));
+
+    // 画质真值是什么必须跟着 dB 一起说: 绝对 dB 不可跨参考图比较,
+    // 同一算子在程序化图案上 42.8 dB, 换成真机截帧只剩 31.3 dB。
+    let q = &s.quality_reference;
+    if q.observed.is_empty() {
+        println!(
+            "画质真值: 接收端未报 (成本模型估计值, 或旧版 phonefarm){}",
+            q.requested
+                .as_deref()
+                .map(|r| format!("; 本次请求的是 {r}"))
+                .unwrap_or_default()
+        );
+    } else {
+        println!(
+            "画质真值: {} (真实帧报告 {} 份 / 程序化图案 {} 份{})",
+            q.observed.join(" + "),
+            q.real_frame_reports,
+            q.procedural_reports,
+            if q.unknown_kind_reports > 0 {
+                format!(" / 不认识的来源 {} 份", q.unknown_kind_reports)
+            } else {
+                String::new()
+            }
+        );
+        // 要了真实帧却一份都没用上 = 那些 dB 不是你以为的那把尺子量的。
+        if q.requested.is_some() && q.real_frame_reports == 0 {
+            println!(
+                "      ⚠ 请求了真机参考帧 {}, 但没有一份报告用上它 —— \
+                 上面的 dB 仍然来自程序化图案, 不是真实画面",
+                q.requested.as_deref().unwrap_or("?")
+            );
+        }
+    }
 
     println!("\n---------- Pareto 前沿 ----------");
     println!(

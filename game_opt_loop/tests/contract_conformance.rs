@@ -151,6 +151,7 @@ fn sample_report(source: MetricSource) -> EvalReport {
             p_value: 0.0031,
         },
         source,
+        quality_reference: None,
     }
 }
 
@@ -239,6 +240,76 @@ fn eval_request_carries_the_incumbent_when_there_is_one() {
         v["incumbent_latency_ms"].as_f64().map(|x| (x * 1000.0).round()),
         Some(187.0)
     );
+}
+
+/// 画质真值的来源随请求下发, 且合契约。
+///
+/// 不带这一项的话接收端退回 runner 内置的程序化图案 —— 那把尺子跟真实画面
+/// 差约 11 dB, 按它挑出来的"画质更好的算子"未必在真实画面上也更好。
+#[test]
+fn eval_request_carries_the_quality_reference() {
+    let candidate = sample_candidate();
+    let paths = (
+        Path::new("runs/evo/candidates/gen2_llm1.comp"),
+        Path::new("runs/evo/candidates/gen2_llm1.spv"),
+    );
+
+    let bare = PhonefarmDriver::new().build_request(&candidate, &SR, paths.0, paths.1);
+    let v = serde_json::to_value(&bare).unwrap();
+    assert_conforms(&v, "eval_request.schema.json");
+    assert!(
+        v.get("quality_reference").is_none(),
+        "没指定时不该凭空写一个来源进去"
+    );
+
+    let with_ref = PhonefarmDriver::new()
+        .with_quality_reference(Some("../phonefarm/tasks/genshin_refframes".into()))
+        .build_request(&candidate, &SR, paths.0, paths.1);
+    let v = serde_json::to_value(&with_ref).unwrap();
+    assert_conforms(&v, "eval_request.schema.json");
+    assert_eq!(
+        v["quality_reference"],
+        "../phonefarm/tasks/genshin_refframes"
+    );
+}
+
+/// 接收端回报的画质真值出处合契约, 并被原样解析进档案。
+#[test]
+fn eval_report_carries_where_the_quality_truth_came_from() {
+    let mut report = sample_report(MetricSource::Phonefarm);
+    report.quality_reference = Some(game_opt_loop::engine::QualityReference {
+        kind: "real_frames".into(),
+        source: Some("../phonefarm/tasks/genshin_refframes".into()),
+        frames: 12,
+        frame_files: vec!["frame_00000.png".into(), "frame_00001.png".into()],
+        candidate_psnr_db: vec![Some(31.2), None],
+        baseline_psnr_db: vec![Some(29.1), Some(28.7)],
+    });
+    let v = serde_json::to_value(&report).unwrap();
+    assert_conforms(&v, "eval_report.schema.json");
+    assert_eq!(v["quality_reference"]["kind"], "real_frames");
+    assert_eq!(v["quality_reference"]["frames"], 12);
+
+    // 程序化图案也是一个合法的、必须被说出来的来源。
+    report.quality_reference = Some(game_opt_loop::engine::QualityReference {
+        kind: "procedural".into(),
+        source: None,
+        frames: 1,
+        frame_files: vec![],
+        candidate_psnr_db: vec![],
+        baseline_psnr_db: vec![],
+    });
+    assert_conforms(
+        &serde_json::to_value(&report).unwrap(),
+        "eval_report.schema.json",
+    );
+
+    // 旧版接收端不报这一项, 照样解析得动 —— 加字段不能把已有回包变成解析错误。
+    let legacy = r#"{"candidate_id":"c","status":"PASS",
+        "metrics":{"operator_latency_ms":0.5,"fps_p95_ms":7.3,"power_watt":6.5,"psnr_db":31.3},
+        "verdict":{"is_pareto_improvement":false,"p_value":0.004},"source":"phonefarm"}"#;
+    let back: EvalReport = serde_json::from_str(legacy).unwrap();
+    assert!(back.quality_reference.is_none());
 }
 
 #[test]

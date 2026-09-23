@@ -16,6 +16,7 @@
     "budget_ms": { "type": "number", "exclusiveMinimum": 0 },
     "quality_baseline_db": { "type": "number" },
     "incumbent_latency_ms": { "type": ["number", "null"], "description": "在位冠军算子的实测耗时; 省略/null = 还没有冠军。refbench 载体的 A 臂不挂算子 (耗时按定义为 0), 接收端必须拿这个值来判候选是否比现任更便宜, 否则该判断恒假" },
+    "quality_reference": { "type": ["string", "null"], "description": "画质真值: 一张 PNG, 或一整个装着真机截帧的目录 (目录里的图全部参与, 逐帧 PSNR 取均值)。省略/null = 接收端退回 runner 内置的程序化图案 —— 那只是没有真实帧时的确定性替代品, 高频细节远少于真实游戏画面, 同一算子在两者上的绝对 dB 差约 11 dB, 不可互相比较" },
     "protocol": {
       "type": "object",
       "description": "冻结的评测协议。",

@@ -245,6 +245,7 @@ mod tests {
                 p_value: if source.is_measured() { 0.002 } else { 1.0 },
             },
             source,
+            quality_reference: None,
         };
         (cand, report)
     }

@@ -36,6 +36,23 @@
       "type": "string",
       "enum": ["phonefarm", "static_cost_model"],
       "description": "phonefarm = 真机物理采样; static_cost_model = 本地静态估计, 不是测量值, 不可作为性能结论"
+    },
+    "quality_reference": {
+      "type": ["object", "null"],
+      "description": "metrics.psnr_db 是对着哪张 (哪组) 参考图量出来的。绝对 dB 不可跨参考图比较 —— 同一算子在 runner 内置程序化图案上 42.826 dB, 换成真机截帧只剩 31.333 dB。不记来源, 档案里那堆 dB 之间就没法比。省略/null = 接收端没报 (旧版 phonefarm), 或指标来自成本模型 (它根本没看过任何图像)。",
+      "required": ["kind", "frames"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["real_frames", "procedural"],
+          "description": "real_frames = 真机截帧; procedural = runner 内置程序化图案 (没有真实帧时的退路)"
+        },
+        "source": { "type": ["string", "null"], "description": "真值的本地来源路径 (单张图或整个目录)" },
+        "frames": { "type": "integer", "minimum": 1, "description": "参与平均的帧数" },
+        "frame_files": { "type": "array", "items": { "type": "string" }, "description": "逐帧文件名, 按使用顺序" },
+        "candidate_psnr_db": { "type": "array", "items": { "type": ["number", "null"] }, "description": "候选臂逐帧 PSNR, 与 frame_files **逐位对齐** (那一张没量到就记 null, 不塌缩 —— 塌缩会让下标跟 frame_files 错开)。均值即 metrics.psnr_db; 均值看不出「一组帧里某一张特别差」" },
+        "baseline_psnr_db": { "type": "array", "items": { "type": ["number", "null"] }, "description": "基线臂逐帧 PSNR, 与 frame_files 逐位对齐" }
+      }
     }
   }
 }

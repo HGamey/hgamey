@@ -77,6 +77,14 @@ pub struct EvalRequest {
     /// "它在真实场景里比现任冠军便宜吗"。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incumbent_latency_ms: Option<f32>,
+    /// 画质真值: 一张 PNG, 或一整个装着真机截帧的目录。
+    ///
+    /// None = 接收端退回 runner 内置的程序化图案。那只是没有真实帧时的
+    /// 确定性替代品: 合成图案的高频细节远少于真实游戏画面, 同一个算子在它上面
+    /// 量出来的绝对 dB 高了约 11 dB (2026-09-22 实测 42.826 vs 31.333)。
+    /// 用合成图案挑出来的"画质更好的算子", 未必在真实画面上也更好。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quality_reference: Option<String>,
     pub protocol: EvalProtocol,
 }
 
@@ -174,6 +182,8 @@ pub struct PhonefarmDriver {
     replay_script: String,
     serial: Option<String>,
     protocol: EvalProtocol,
+    /// 画质真值的来源, 随请求下发。见 `EvalRequest::quality_reference`。
+    quality_reference: Option<String>,
     /// 测试用替身。None = 真的去 fork phonefarm 进程。
     runner: Option<Runner>,
 }
@@ -197,11 +207,21 @@ impl PhonefarmDriver {
             carrier: "refbench".to_string(),
             frames: 900,
             intensity: 5,
+            quality_reference: None,
         }
     }
 
     pub fn with_carrier(mut self, carrier: impl Into<String>) -> Self {
         self.carrier = carrier.into();
+        self
+    }
+
+    /// 指定画质真值 (真机截帧目录或单张 PNG)。
+    ///
+    /// 不指定时接收端用程序化图案 —— 演化会按那把尺子挑算子, 而它跟真实画面
+    /// 差了约 11 dB。见 `EvalRequest::quality_reference`。
+    pub fn with_quality_reference(mut self, path: Option<String>) -> Self {
+        self.quality_reference = path;
         self
     }
 
@@ -366,8 +386,14 @@ impl PhonefarmDriver {
             budget_ms: track.budget_ms,
             quality_baseline_db: track.quality_baseline_db,
             incumbent_latency_ms,
+            quality_reference: self.quality_reference.clone(),
             protocol: self.protocol,
         }
+    }
+
+    /// 本次下发用的画质真值来源。
+    pub fn quality_reference(&self) -> Option<&str> {
+        self.quality_reference.as_deref()
     }
 
     /// 下发一次真机评测并解析回包。
@@ -902,6 +928,7 @@ mod tests {
                 p_value: 0.4,
             },
             source: MetricSource::Phonefarm,
+            quality_reference: None,
         };
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("\"SLOW\""), "status 必须序列化成契约枚举值");

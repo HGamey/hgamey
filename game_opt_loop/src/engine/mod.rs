@@ -164,9 +164,108 @@ pub struct EvalReport {
     pub verdict: Verdict,
     /// 数据来源。序列化后依然带着, 归档里一眼能分辨真机数与估计值。
     pub source: MetricSource,
+    /// `metrics.psnr_db` 是对着哪张 (哪组) 参考图量出来的。
+    ///
+    /// 绝对 dB 不可跨参考图比较: 同一个算子在 runner 内置程序化图案上是 42.8 dB,
+    /// 换成真机截帧只剩 31.3 dB —— 真实画面的高频细节远多于合成图案。
+    /// 档案里存了一堆 dB 而不记它们各自的真值出处, 那些数字之间就没法比。
+    ///
+    /// None = 接收端没报 (旧版 phonefarm, 或成本模型估计值)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_reference: Option<QualityReference>,
+}
+
+/// 画质真值的出处, 由 phonefarm 随报告回传。字段与
+/// `contracts/eval_report.schema.json` 的 `quality_reference` 一致。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityReference {
+    /// `real_frames` = 真机截帧; `procedural` = runner 内置程序化图案。
+    pub kind: String,
+    /// 真值的本地来源路径 (单张图或整个目录)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// 参与平均的帧数。
+    pub frames: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_files: Vec<String>,
+    /// 候选臂逐帧 PSNR, 与 `frame_files` **逐位对齐**。
+    ///
+    /// `None` = 那一张没量到。必须是 `Option` 而不是 `f64`: 接收端用 null
+    /// 占位来保持下标对齐 (塌缩会让"第 3 张最差"指到另一张图上),
+    /// 声明成 `f64` 的话一张量不到就让**整份报告**解析失败 ——
+    /// 那是 §6.5 那个坑的第三次重演。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_psnr_db: Vec<Option<f64>>,
+    /// 基线臂逐帧 PSNR, 与 `frame_files` 逐位对齐。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub baseline_psnr_db: Vec<Option<f64>>,
+}
+
+impl QualityReference {
+    /// 画质真值是不是真实游戏画面。
+    pub fn is_real_frames(&self) -> bool {
+        self.kind == "real_frames"
+    }
+
+    /// 画质真值是不是 runner 内置的程序化图案。
+    ///
+    /// 注意它**不是** `!is_real_frames()`: `kind` 是接收端传过来的字符串,
+    /// 写错了或者将来多一种真值, 两个判断都该是 false, 而不是把一个不认识的
+    /// 来源当成程序化图案报出去。
+    pub fn is_procedural(&self) -> bool {
+        self.kind == "procedural"
+    }
+
+    /// 一句话的来源描述, 给报告与终端输出用。
+    pub fn describe(&self) -> String {
+        if self.is_real_frames() {
+            format!(
+                "真机参考帧 x{} ({})",
+                self.frames,
+                self.source.as_deref().unwrap_or("来源未标注")
+            )
+        } else if self.is_procedural() {
+            "runner 内置程序化图案 (非真实游戏帧)".to_string()
+        } else {
+            format!("未知真值类型 {:?} (接收端报了本仓库不认识的来源)", self.kind)
+        }
+    }
+
+    /// 本场基线臂的画质 (逐帧均值)。`None` = 接收端没报。
+    ///
+    /// 这是画质地板该用的那个数: A/B 本来就同场同参考图跑, 用 A 臂的实测值
+    /// 当地板是自洽的, 且换参考图不会让判据错位。赛道契约里的常数是在**另一张**
+    /// 参考图上得到的, 只能兜底。
+    pub fn baseline_floor_db(&self) -> Option<f32> {
+        let v: Vec<f64> = self.baseline_psnr_db.iter().flatten().copied().collect();
+        if v.is_empty() {
+            return None;
+        }
+        Some((v.iter().sum::<f64>() / v.len() as f64) as f32)
+    }
 }
 
 impl EvalReport {
+    /// 这份报告该用哪个画质地板。
+    ///
+    /// 优先用**本场基线臂的实测值** (随报告带回的 `quality_reference`),
+    /// 赛道契约里的 `quality_baseline_db` 只作兜底。
+    ///
+    /// 为什么必须这样: 绝对 dB 不可跨参考图比较。赛道常数 38.666 dB 是在
+    /// runner 内置程序化图案上得到的; 换成真机截帧, 同一个算子只有 31.3 dB。
+    /// 拿前者去卡后者, **每一个**候选都会被判成画质不合格 —— 前沿清空,
+    /// 亲本池清空, 演化退化成反复生成基线。接收端 (SPEC §4.1) 早就改用
+    /// 本场基线了, 上游这一侧原本还在用常数, 等于同一条判据两把尺子。
+    ///
+    /// 判据本身没有放松: 规则仍然是「候选画质不得低于基线」, 只是基线值
+    /// 改为同场实测。
+    pub fn quality_floor_db(&self, track_baseline_db: f32) -> f32 {
+        self.quality_reference
+            .as_ref()
+            .and_then(|q| q.baseline_floor_db())
+            .unwrap_or(track_baseline_db)
+    }
+
     /// 是否有资格进入 Pareto 前沿。
     ///
     /// 三条硬约束同时成立才算数:
@@ -183,7 +282,7 @@ impl EvalReport {
         // 量不到画质时不否决 —— "没量" 和 "不合格" 是两回事。
         // 该载体的画质由另一条载体负责, 在这里当成不合格会把好算子全毙掉。
         if let Some(q) = self.metrics.psnr_db {
-            if q < quality_baseline_db {
+            if q < self.quality_floor_db(quality_baseline_db) {
                 return false;
             }
         }
@@ -227,7 +326,62 @@ mod tests {
                 p_value: p,
             },
             source: src,
+            quality_reference: None,
         }
+    }
+
+    /// 画质地板优先用本场基线臂实测值, 赛道常数只兜底。
+    ///
+    /// 这条不成立的话, 换上真机参考帧之后**每一个**候选都会被判画质不合格:
+    /// 赛道常数 38.666 dB 是在程序化图案上量的, 真机截帧上同一个算子只有 31 dB。
+    /// 前沿清空 → 亲本池清空 → 演化退化成反复生成基线。
+    #[test]
+    fn the_quality_floor_comes_from_this_run_s_baseline_arm() {
+        let real = QualityReference {
+            kind: "real_frames".into(),
+            source: Some("tasks/genshin_refframes".into()),
+            frames: 2,
+            frame_files: vec!["a.png".into(), "b.png".into()],
+            candidate_psnr_db: vec![Some(31.2), Some(31.4)],
+            baseline_psnr_db: vec![Some(29.0), Some(29.4)],
+        };
+        let mut r = report(EvalStatus::Pass, 1.0, 31.3, 0.001, MetricSource::Phonefarm);
+        r.quality_reference = Some(real);
+
+        assert!((r.quality_floor_db(38.666) - 29.2).abs() < 1e-4, "该用本场基线 29.2");
+        assert!(
+            r.is_admissible(1.5, 38.666),
+            "31.3 dB 比本场基线 29.2 好 2.1 dB, 不该被程序化图案的 38.666 卡掉"
+        );
+
+        // 判据没有放松: 低于本场基线照样出局。
+        let mut worse = r.clone();
+        worse.metrics.psnr_db = Some(28.0);
+        assert!(!worse.is_admissible(1.5, 38.666));
+
+        // 接收端没报基线画质时退回赛道常数 (原语义)。
+        let bare = report(EvalStatus::Pass, 1.0, 31.3, 0.001, MetricSource::Phonefarm);
+        assert!((bare.quality_floor_db(38.666) - 38.666).abs() < 1e-4);
+        assert!(!bare.is_admissible(1.5, 38.666));
+    }
+
+    /// 逐帧 dB 允许 null 占位 —— 一张量不到不该让**整份报告**解析失败。
+    #[test]
+    fn a_report_with_a_missing_per_frame_reading_still_parses() {
+        let raw = r#"{"candidate_id":"c","status":"PASS",
+            "metrics":{"operator_latency_ms":0.5,"fps_p95_ms":7.3,"power_watt":6.5,"psnr_db":31.3},
+            "verdict":{"is_pareto_improvement":false,"p_value":0.004},"source":"phonefarm",
+            "quality_reference":{"kind":"real_frames","source":"d","frames":3,
+              "frame_files":["a.png","b.png","c.png"],
+              "candidate_psnr_db":[31.0,null,31.6],
+              "baseline_psnr_db":[29.0,null,29.4]}}"#;
+        let r: EvalReport = serde_json::from_str(raw).unwrap();
+        let q = r.quality_reference.as_ref().unwrap();
+        // 位置留着, 下标仍与 frame_files 对得上。
+        assert_eq!(q.candidate_psnr_db.len(), 3);
+        assert_eq!(q.candidate_psnr_db[1], None);
+        // 地板只用量到的那些。
+        assert!((q.baseline_floor_db().unwrap() - 29.2).abs() < 1e-4);
     }
 
     #[test]
