@@ -395,10 +395,13 @@ pub fn render(plan: &Plan, caps: &Caps) -> String {
             .capacity_pct
             .map(|c| c.to_string())
             .unwrap_or_else(|| "?".into()),
-        caps.device
-            .soc_temp_c
-            .map(|t| format!("{t:.1}C"))
-            .unwrap_or_else(|| "未测到".into()),
+        // 温度要带着热区名一起说 —— 这个数最容易出的错就是"取错了热区",
+        // 而一个光秃秃的 105.0C 看起来跟一个对的数没有任何区别。
+        match (caps.device.soc_temp_c, caps.device.soc_temp_zone.as_deref()) {
+            (Some(t), Some(z)) => format!("{t:.1}C ({z})"),
+            (Some(t), None) => format!("{t:.1}C"),
+            (None, _) => "未测到 (没有 cpu-/cpullc/gpuss 热区)".into(),
+        },
     ));
     o.push_str(&format!(
         "  载体: {}\n",
@@ -528,10 +531,10 @@ mod tests {
 
     const ROOTED: &str = "model=NX809J\nroot_uid=0\nvklayers=\nbattery_status=Discharging\n\
 battery_capacity=84\nbattery_current_now=-1200000\n\
-charge_node=/sys/class/qcom-battery/charging_enabled\ntemp_mc=41300\n\
+charge_node=/sys/class/qcom-battery/charging_enabled\nzone=cpu-0-0 41300\nzone=gpuss-0 38900\nzone=skin-therm 33000\nzone=pm8550b-bcl 105000\n\
 pkg_path=package:/data/app/x/base.apk\n";
 
-    const UNROOTED: &str = "model=Pixel\nroot_uid=NA\nbattery_status=Charging\ntemp_mc=38000\n\
+    const UNROOTED: &str = "model=Pixel\nroot_uid=NA\nbattery_status=Charging\nzone=cpu-0-0 38000\n\
 pkg_path=package:/data/app/x/base.apk\n";
 
     #[test]
@@ -661,13 +664,13 @@ pkg_path=package:/data/app/x/base.apk\n";
     /// 等冷目标与温度上限从实测温度推, 不是常数。
     #[test]
     fn thermal_targets_follow_the_measured_temperature() {
-        let hot = caps_for(&ROOTED.replace("temp_mc=41300", "temp_mc=52000"));
+        let hot = caps_for(&ROOTED.replace("zone=cpu-0-0 41300", "zone=cpu-0-0 52000"));
         let c = conditions_from(&hot);
         assert_eq!(c.temp_cap_c, Some(55.0));
         assert_eq!(c.cool_c, Some(53.0));
 
         // 凉机上有下限兜底, 不会把目标定到一个永远等不到的低温。
-        let cool = caps_for(&ROOTED.replace("temp_mc=41300", "temp_mc=25000"));
+        let cool = caps_for(&ROOTED.replace("zone=cpu-0-0 41300", "zone=cpu-0-0 25000"));
         let c = conditions_from(&cool);
         assert_eq!(c.temp_cap_c, Some(45.0));
         assert_eq!(c.cool_c, Some(40.0));

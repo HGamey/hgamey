@@ -24,7 +24,9 @@ battery_status=Discharging
 battery_capacity=84
 battery_current_now=-1200000
 charge_node=/sys/class/qcom-battery/charging_enabled
-temp_mc=41300
+zone=cpu-0-0 41300
+zone=gpuss-0 38900
+zone=pm8550b-bcl 105000
 pkg_path=package:/data/app/~~abc/com.miHoYo.Yuanshen-1/base.apk
 ";
 
@@ -38,7 +40,7 @@ vklayers=
 battery_status=Charging
 battery_capacity=91
 battery_current_now=1072000
-temp_mc=38000
+zone=cpu-0-0 38000
 pkg_path=package:/data/app/x/base.apk
 ";
 

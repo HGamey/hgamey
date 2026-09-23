@@ -120,6 +120,11 @@ pub struct DeviceCaps {
     pub vulkan_layers_prop: Option<String>,
     /// SoC 最高结温 (摄氏度)。用来定等冷目标与温度上限, 不是优化目标。
     pub soc_temp_c: Option<f32>,
+    /// 上面那个温度是从哪个热区读的。不记的话, 报告里那个数说不出出处,
+    /// 而"取错了热区"正是它最容易出的错。
+    pub soc_temp_zone: Option<String>,
+    /// 全部热区的原始读数 (类型, 毫摄氏度)。留在证据里, 便于事后复核挑得对不对。
+    pub thermal_zones: Vec<(String, i64)>,
 }
 
 /// 载体能力: 白盒靶场在不在, 算子能不能挂进去。
@@ -196,6 +201,45 @@ impl Caps {
     }
 }
 
+/// 算 SoC 结温时认哪些热区, 与 phonefarm `src/hwcond.rs` 的 `SOC_ZONE_PREFIXES` 同源。
+///
+/// 一台手机上有几十个热区: 电池、外壳、充电口、调制解调器……取全局最大值量到的
+/// 是"这台机器上最热的那个点", 不是 SoC 结温。两者能差几十度, 而等冷目标与
+/// 温度上限都是从这个数推出来的。
+pub const SOC_ZONE_PREFIXES: [&str; 3] = ["cpu-", "cpullc", "gpuss"];
+
+/// 一个热区的读数 (毫摄氏度) → SoC 结温。
+///
+/// 与 phonefarm `hwcond::soc_max_c` 同一套规则: 只看 SoC 前缀,
+/// 0 与 >=100C 都是哨兵值不是测量结果。返回 (热区名, 摄氏度) ——
+/// 热区名要跟着走, 不然报告里那个温度说不出是从哪读的。
+pub fn soc_max_c(zones: &[(String, i64)]) -> Option<(String, f32)> {
+    zones
+        .iter()
+        .filter(|(ty, t)| {
+            SOC_ZONE_PREFIXES.iter().any(|p| ty.starts_with(p)) && *t > 0 && *t < 100_000
+        })
+        .max_by_key(|(_, t)| *t)
+        .map(|(ty, t)| (ty.clone(), *t as f32 / 1000.0))
+}
+
+/// 从探测输出里抠出热区表。`zone=<类型> <毫摄氏度>`。
+pub fn zones_from(kv: &BTreeMap<String, Vec<String>>) -> Vec<(String, i64)> {
+    kv.get("zone")
+        .map(|lines| {
+            lines
+                .iter()
+                .filter_map(|l| {
+                    let mut it = l.rsplitn(2, char::is_whitespace);
+                    let temp = it.next()?.trim().parse::<i64>().ok()?;
+                    let ty = it.next()?.trim().to_string();
+                    (!ty.is_empty()).then_some((ty, temp))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 停充候选节点, 与 phonefarm `src/hwcond.rs` 的 `CHARGE_CTL_NODES` 同源同序。
 ///
 /// 这里只做**存在性**检查。真机实测的结论 (2026-09-23) 是: `power_supply`
@@ -231,12 +275,25 @@ pub fn probe_script(package: Option<&str>) -> String {
     s.push_str(
         "echo \"battery_current_now=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null)\";",
     );
+    // 停充节点要用 **root** 测存在性。`/sys/class/qcom-battery/` 这类目录对
+    // shell uid 不可遍历, 于是 `[ -e ]` 会对一个真实存在的节点回 false ——
+    // 2026-09-23 在 NX809J 上就是这样: 6 个候选全报"不存在", 而 phonefarm 早就
+    // 在这台机器上用 /sys/class/qcom-battery/charging_enabled 成功停过充。
+    // 探不到就会一路传成"停不了充", 于是每一轮功耗都白量。
+    s.push_str("su -c '");
     for node in CHARGE_CTL_NODES {
-        s.push_str(&format!("[ -e {node} ] && echo \"charge_node={node}\";"));
+        s.push_str(&format!("[ -e {node} ] && echo charge_node={node};"));
     }
-    // 结温: 取所有热区里的最大值 (毫摄氏度)。挑热区名的活留给 phonefarm,
-    // 这里只要一个"现在大概多热"用来定等冷目标。
-    s.push_str("echo \"temp_mc=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1)\";");
+    s.push_str("true' 2>/dev/null;");
+    // 结温: 把**每个热区的类型与读数**都带回来, 挑哪个由主机端按类型决定。
+    //
+    // 早先这里是 `cat thermal_zone*/temp | sort -n | tail -1` —— 取全部热区的
+    // 最大值。2026-09-23 在 NX809J 上量出 105.0C: 那不是 SoC 结温, 是某个
+    // 非 SoC 热区 (或哨兵值)。而等冷目标是从这个数推出来的, 于是变成 106C,
+    // 等于把冷机门槛整个取消了, 报告上却还写着一行像模像样的温度。
+    s.push_str(
+        "for z in /sys/class/thermal/thermal_zone*; do          echo \"zone=$(cat $z/type 2>/dev/null) $(cat $z/temp 2>/dev/null)\"; done;",
+    );
     if let Some(pkg) = package {
         // pm path 只读, 查不到就什么都不输出。
         s.push_str(&format!(
@@ -456,11 +513,12 @@ pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
         )
     };
 
-    let soc_temp_c = first(&kv, "temp_mc")
-        .and_then(|s| s.parse::<f64>().ok())
-        // 热区读数是毫摄氏度。0 与超出量程的值都不是测量结果, 丢掉而不是记 0。
-        .filter(|mc| *mc > 0.0 && *mc < 150_000.0)
-        .map(|mc| (mc / 1000.0) as f32);
+    let zones = zones_from(&kv);
+    let soc = soc_max_c(&zones);
+    let (soc_temp_zone, soc_temp_c) = match soc {
+        Some((z, t)) => (Some(z), Some(t)),
+        None => (None, None),
+    };
 
     let device = DeviceCaps {
         serial: serial.to_string(),
@@ -475,6 +533,8 @@ pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
         vulkan_layer,
         vulkan_layers_prop,
         soc_temp_c,
+        soc_temp_zone,
+        thermal_zones: zones,
     };
 
     let workload_ready = match (target.box_kind, &target.workload.script) {
@@ -606,11 +666,11 @@ mod tests {
     const ROOTED: &str = "model=NX809J\nsdk=36\nabi=arm64-v8a\nroot_uid=0\nvklayers=\n\
 battery_status=Discharging\nbattery_capacity=84\nbattery_current_now=-1200000\n\
 charge_node=/sys/class/qcom-battery/charging_enabled\n\
-temp_mc=41300\npkg_path=package:/data/app/~~x/com.miHoYo.Yuanshen-1/base.apk\n";
+zone=cpu-0-0 41300\nzone=gpuss-0 38900\nzone=skin-therm 33000\nzone=pm8550b-bcl 105000\npkg_path=package:/data/app/~~x/com.miHoYo.Yuanshen-1/base.apk\n";
 
     const UNROOTED: &str = "model=Pixel\nsdk=34\nabi=arm64-v8a\nroot_uid=NA\nvklayers=\n\
 battery_status=Charging\nbattery_capacity=91\nbattery_current_now=1072000\n\
-temp_mc=38000\npkg_path=package:/data/app/x/base.apk\n";
+zone=cpu-0-0 38000\npkg_path=package:/data/app/x/base.apk\n";
 
     #[test]
     fn probe_script_is_read_only() {
@@ -728,10 +788,61 @@ temp_mc=38000\npkg_path=package:/data/app/x/base.apk\n";
     /// 温度读数是毫摄氏度; 0 不是测量结果。
     #[test]
     fn zero_temperature_is_not_a_measurement() {
-        let caps = assemble(&blackbox_target(), "s", "root_uid=0\ntemp_mc=0\n");
+        let caps = assemble(&blackbox_target(), "s", "root_uid=0\nzone=cpu-0-0 0\n");
         assert!(caps.device.soc_temp_c.is_none());
-        let caps = assemble(&blackbox_target(), "s", "root_uid=0\ntemp_mc=41300\n");
+        let caps = assemble(&blackbox_target(), "s", "root_uid=0\nzone=cpu-0-0 41300\n");
         assert_eq!(caps.device.soc_temp_c, Some(41.3));
+        assert_eq!(caps.device.soc_temp_zone.as_deref(), Some("cpu-0-0"));
+    }
+
+    /// SoC 结温只认 SoC 热区, 不取全局最大值。
+    ///
+    /// 2026-09-23 在 NX809J 上真机跑出来的那一条: 取全局最大量到 105.0C,
+    /// 于是等冷目标被推成 106C —— 冷机门槛整个失效, 而报告上还印着一行
+    /// 像模像样的温度。一台手机上有几十个热区 (电池、外壳、充电口、调制解调器),
+    /// "最热的那个点"不是 SoC 结温。
+    #[test]
+    fn a_hot_non_soc_zone_is_not_mistaken_for_the_soc_temperature() {
+        let raw = "root_uid=0\n\
+zone=cpu-0-0 41300\n\
+zone=gpuss-0 38900\n\
+zone=skin-therm 33000\n\
+zone=pm8550b-bcl 105000\n";
+        let caps = assemble(&blackbox_target(), "s", raw);
+        assert_eq!(caps.device.soc_temp_c, Some(41.3));
+        assert_eq!(caps.device.soc_temp_zone.as_deref(), Some("cpu-0-0"));
+        // 原始读数留在证据里, 事后能复核挑得对不对。
+        assert_eq!(caps.device.thermal_zones.len(), 4);
+    }
+
+    /// 一个 SoC 热区都读不到时就是读不到 —— 不拿别的热区顶上。
+    #[test]
+    fn without_a_soc_zone_the_temperature_stays_unknown() {
+        let caps = assemble(
+            &blackbox_target(),
+            "s",
+            "root_uid=0\nzone=skin-therm 33000\nzone=battery 31000\n",
+        );
+        assert!(caps.device.soc_temp_c.is_none());
+        assert!(caps.device.soc_temp_zone.is_none());
+    }
+
+    /// 停充节点的存在性要用 root 测。
+    ///
+    /// `/sys/class/qcom-battery/` 这类目录对 shell uid 不可遍历, 非 root 的
+    /// `[ -e ]` 会对一个真实存在的节点回 false。2026-09-23 在 NX809J 上就是
+    /// 这样: 6 个候选全报"不存在", 而 phonefarm 早就在同一台机器上用
+    /// `/sys/class/qcom-battery/charging_enabled` 成功停过充。探错的后果是
+    /// 一路传成"停不了充", 于是每一轮功耗都白量。
+    #[test]
+    fn charge_control_nodes_are_probed_as_root() {
+        let s = probe_script(None);
+        let idx = s.find("charge_node=").expect("探测脚本里没有停充节点检查");
+        let before = &s[..idx];
+        assert!(
+            before.rfind("su -c '").is_some_and(|su| su > before.rfind("';").unwrap_or(0)),
+            "停充节点的存在性检查不在 su 里: {s}"
+        );
     }
 
     /// 别人正挂着层的时候要提醒 —— 那个属性是全局的, 抢着挂会互相踩。

@@ -314,10 +314,11 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
     ));
     o.push_str(&format!(
         "| 摸底时 SoC 温度 | {} |\n",
-        caps.device
-            .soc_temp_c
-            .map(|t| format!("{t:.1}C"))
-            .unwrap_or("未测到".into())
+        match (caps.device.soc_temp_c, caps.device.soc_temp_zone.as_deref()) {
+            (Some(t), Some(z)) => format!("{t:.1}C（热区 `{z}`）"),
+            (Some(t), None) => format!("{t:.1}C"),
+            (None, _) => "未测到（没有 cpu-/cpullc/gpuss 热区）".into(),
+        }
     ));
 
     // ── 每层用没用 ──
@@ -441,7 +442,7 @@ mod tests {
     use std::path::PathBuf;
 
     const ROOTED: &str = "model=NX809J\nroot_uid=0\nvklayers=\nbattery_status=Discharging\n\
-battery_capacity=84\nbattery_current_now=-1200000\ntemp_mc=41300\n\
+battery_capacity=84\nbattery_current_now=-1200000\nzone=cpu-0-0 41300\nzone=gpuss-0 38900\nzone=skin-therm 33000\nzone=pm8550b-bcl 105000\n\
 charge_node=/sys/class/qcom-battery/charging_enabled\n\
 pkg_path=package:/data/app/x/base.apk\n";
 

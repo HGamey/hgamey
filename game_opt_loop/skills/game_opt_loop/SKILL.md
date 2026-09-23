@@ -204,6 +204,20 @@ but read them before you start.
   from the temperature measured during the survey. Cool-down timeout does *not*
   void a candidate (ABBA alternation makes residual thermal drift hit both arms
   equally); the temperature **cap** is the separate safety gate that does.
+- **"SoC temperature" means specific thermal zones, not the hottest one.** A
+  phone exposes dozens of zones — battery, skin, charge port, modem. Taking the
+  global maximum measured **105.0 °C** on NX809J where the SoC was actually
+  **41.3 °C (`cpu-0-0`)**, and since the cool-down target is derived from that
+  number it became 106 °C — a gate the device is always below, i.e. no gate at
+  all, printed as a perfectly normal-looking line. Only `cpu-` / `cpullc` /
+  `gpuss` zones count; `0` and `>=100 °C` are sentinels, not readings. The
+  survey records **which zone** the number came from, because a wrong zone looks
+  exactly like a right one.
+- **Root-only paths need a root existence check.** `/sys/class/qcom-battery/`
+  is not traversable by the shell uid, so a plain `[ -e ]` returns false for a
+  node that is really there. That reads downstream as "charging cannot be
+  suspended", and then every watt measured that session is worthless while the
+  report's explanation looks entirely reasonable.
 - **Thermal protection is never a knob.** Anything matching
   `thermal / trip_point / cooling / fan / tsens / bcl / throttl` is refused — not
   probed, not proposed, not applied. Turning off thermal protection buys pretty
