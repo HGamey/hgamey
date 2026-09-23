@@ -50,6 +50,32 @@ enum Command {
         /// devlock.d / devlock.log 所在目录
         #[arg(long, default_value = "/private/tmp/claude-501")]
         lock_root: PathBuf,
+
+        /// phonefarm 可执行文件。缺省取 `<phonefarm-root>/phonefarm`。
+        ///
+        /// 「手机」那一页靠它: 面板调 `phonefarm fleet --json` 拿每台手机的现状,
+        /// 自己不碰设备。
+        #[arg(long)]
+        phonefarm_bin: Option<PathBuf>,
+
+        /// 手机状态的缓存时长 (秒)。页面 30 秒自刷新, 这个值略小于它即可。
+        #[arg(long, default_value_t = game_opt_loop::viz::fleet::DEFAULT_TTL_S)]
+        fleet_ttl_s: u64,
+
+        /// 完全不去读手机 (只看历史产物时用)。
+        #[arg(long, default_value_t = false)]
+        no_fleet: bool,
+
+        /// 在手机卡片上显示屏幕缩略图。
+        ///
+        /// 默认关。开了也受两道闸: 别人持有设备锁时不截, 以及最小间隔
+        /// (`--phone-screenshot-every`)。图落在 `<phonefarm-root>/tasks/_fleet/`。
+        #[arg(long, default_value_t = false)]
+        phone_screenshots: bool,
+
+        /// 截图最小间隔 (秒)。
+        #[arg(long, default_value_t = 300)]
+        phone_screenshot_every: u64,
     },
 }
 
@@ -217,11 +243,17 @@ pub struct LegacyArgs {
     no_evidence: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_serve(
     port: u16,
     root: PathBuf,
     phonefarm_root: Option<PathBuf>,
     lock_root: PathBuf,
+    phonefarm_bin: Option<PathBuf>,
+    fleet_ttl_s: u64,
+    no_fleet: bool,
+    phone_screenshots: bool,
+    phone_screenshot_every: u64,
 ) -> Result<()> {
     let root = root
         .canonicalize()
@@ -230,7 +262,27 @@ fn run_serve(
     if let Some(p) = phonefarm_root {
         paths.phonefarm_root = p;
     }
-    paths.lock_root = lock_root;
+    paths.lock_root = lock_root.clone();
+    // 路径是上面几个参数算出来的, 所以 fleet 配置要在它们定完之后重建一遍。
+    paths.fleet = if no_fleet {
+        None
+    } else {
+        Some(game_opt_loop::viz::fleet::FleetConfig {
+            bin: phonefarm_bin.unwrap_or_else(|| paths.phonefarm_root.join("phonefarm")),
+            cwd: paths.phonefarm_root.clone(),
+            ttl: std::time::Duration::from_secs(fleet_ttl_s),
+            timeout: std::time::Duration::from_secs(
+                game_opt_loop::viz::fleet::DEFAULT_TIMEOUT_S,
+            ),
+            lock_dir: Some(lock_root),
+            // 图必须落在 phonefarm 仓库之内 —— /api/file 的白名单只认两个仓库根,
+            // 落在别处的话卡片上那个 <img> 会 403。
+            screenshot_dir: phone_screenshots
+                .then(|| paths.phonefarm_root.join("tasks/_fleet")),
+            screenshot_every_s: phone_screenshot_every,
+            enabled: true,
+        })
+    };
     game_opt_loop::viz::serve::run(paths, port)
 }
 
@@ -312,7 +364,24 @@ fn main() -> Result<()> {
             root,
             phonefarm_root,
             lock_root,
-        }) => return run_serve(port, root, phonefarm_root, lock_root),
+            phonefarm_bin,
+            fleet_ttl_s,
+            no_fleet,
+            phone_screenshots,
+            phone_screenshot_every,
+        }) => {
+            return run_serve(
+                port,
+                root,
+                phonefarm_root,
+                lock_root,
+                phonefarm_bin,
+                fleet_ttl_s,
+                no_fleet,
+                phone_screenshots,
+                phone_screenshot_every,
+            )
+        }
         None => {}
     }
     // 没给子命令 = 老的单赛道演化入口, 原样保留。

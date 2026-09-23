@@ -179,6 +179,21 @@ svg .grid { stroke: #20242d; }
 .legend { display: flex; gap: 18px; font-size: 13px; color: var(--dim); margin-top: 8px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; }
 
+/* ── 手机卡片 ───────────────────────────────────────── */
+.phone { display: flex; flex-direction: column; }
+.phone.off { opacity: .62; border-style: dashed; }
+.phone-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; margin-bottom: 4px;
+}
+.phone-name { font-size: 24px; font-weight: 700; line-height: 1.2; }
+.phone .stats { gap: 10px; margin: 14px 0 0; }
+.phone .stat { min-width: 108px; padding: 10px 14px; flex: 1; }
+.phone .stat .v { font-size: 26px; }
+.shot {
+  max-width: 260px; border-radius: 8px; border: 1px solid var(--line);
+}
+
 /* ── 设备 ───────────────────────────────────────────── */
 .holder { display: flex; align-items: center; gap: 22px; }
 .holder .who { font-size: 40px; font-weight: 800; }

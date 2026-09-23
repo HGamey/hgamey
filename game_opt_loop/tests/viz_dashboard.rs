@@ -17,6 +17,8 @@ fn fixture_paths() -> VizPaths {
         gol_root: base.join("gol"),
         phonefarm_root: base.join("phonefarm"),
         lock_root: base.join("lock"),
+        // 夹具测试不碰设备 —— 手机那条通路另有单测。
+        fleet: None,
     }
 }
 
@@ -354,6 +356,7 @@ fn the_tracked_evidence_report_still_declares_its_retraction() {
         gol_root: repo.clone(),
         phonefarm_root: repo.join("绝不存在的目录"),
         lock_root: repo.join("绝不存在的目录"),
+        fleet: None,
     };
     let d = viz::build(&paths);
     assert!(d.notices.iter().any(|n| n.level == "retracted"));

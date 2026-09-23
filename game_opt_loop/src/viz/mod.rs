@@ -11,12 +11,16 @@
 //! | ② 图形接口改写 | Vulkan 灰档层改写应用的 render pass | `phonefarm/loop_v1/runs_graylayer/` |
 //! | ③ 系统参数 | 内核/总线旋钮 | `phonefarm/loop_v1/runs*/` |
 //!
+//! 「手机」那一页是另一条通路: 设备的事归 phonefarm 管, 面板调
+//! `phonefarm fleet --json` 拿回每台手机的现状 (见 [`fleet`]), 自己不碰设备。
+//!
 //! 贯穿全模块的一条规矩: **读不到就是读不到**。缺字段一律 `None`,
 //! 前端渲染成「未知/未测」。不编数, 不用 0 填空。
 
 pub mod abtest;
 pub mod carrier;
 pub mod device;
+pub mod fleet;
 pub mod model;
 pub mod operator;
 pub mod runlog;
@@ -38,6 +42,8 @@ pub struct VizPaths {
     pub phonefarm_root: PathBuf,
     /// `devlock.d` / `devlock.log` 所在目录。
     pub lock_root: PathBuf,
+    /// 手机状态怎么取。`None` = 不取 (只看历史产物)。
+    pub fleet: Option<fleet::FleetConfig>,
 }
 
 impl VizPaths {
@@ -48,10 +54,21 @@ impl VizPaths {
             .parent()
             .map(|p| p.join("phonefarm"))
             .unwrap_or_else(|| PathBuf::from("../phonefarm"));
+        let lock_root = PathBuf::from("/private/tmp/claude-501");
         VizPaths {
+            fleet: Some(fleet::FleetConfig {
+                bin: phonefarm_root.join("phonefarm"),
+                cwd: phonefarm_root.clone(),
+                ttl: std::time::Duration::from_secs(fleet::DEFAULT_TTL_S),
+                timeout: std::time::Duration::from_secs(fleet::DEFAULT_TIMEOUT_S),
+                lock_dir: Some(lock_root.clone()),
+                screenshot_dir: None,
+                screenshot_every_s: 300,
+                enabled: true,
+            }),
             gol_root,
             phonefarm_root,
-            lock_root: PathBuf::from("/private/tmp/claude-501"),
+            lock_root,
         }
     }
 
@@ -73,6 +90,9 @@ pub struct Dashboard {
     pub layers: Vec<Layer>,
     pub carriers: Vec<carrier::Carrier>,
     pub device: device::DeviceView,
+    /// 农场里每台手机的现状。`None` = 这条通路关着。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fleet: Option<fleet::FleetView>,
     pub notices: Vec<Notice>,
 }
 
@@ -104,6 +124,7 @@ pub fn build(paths: &VizPaths) -> Dashboard {
         ],
         carriers: carrier::collect(&paths.phonefarm_root),
         device: device::load(&paths.lock_root, &paths.phonefarm_root, 8),
+        fleet: paths.fleet.as_ref().and_then(fleet::get),
         notices: notices(paths),
     }
 }
@@ -742,6 +763,8 @@ mod tests {
             gol_root: PathBuf::from("/nonexistent/gol"),
             phonefarm_root: PathBuf::from("/nonexistent/phonefarm"),
             lock_root: PathBuf::from("/nonexistent/lock"),
+            // 单测不碰设备。
+            fleet: None,
         };
         let dash = build(&paths);
         assert_eq!(dash.layers.len(), 3);
@@ -757,6 +780,8 @@ mod tests {
             gol_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
             phonefarm_root: PathBuf::from("/nonexistent/phonefarm"),
             lock_root: PathBuf::from("/nonexistent/lock"),
+            // 单测不碰设备。
+            fleet: None,
         };
         let roots = paths.allowed_roots();
         assert_eq!(roots.len(), 1, "不存在的根不该进白名单");

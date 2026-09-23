@@ -335,6 +335,7 @@ mod tests {
             gol_root: fixtures.join("gol"),
             phonefarm_root: fixtures.join("phonefarm"),
             lock_root: fixtures.join("lock"),
+            fleet: None,
         };
         let state = AppState {
             paths: Arc::new(paths),
