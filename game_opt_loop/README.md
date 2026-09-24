@@ -118,7 +118,7 @@ cargo run --release -- optimize --game 原神 --device 91253241019A --budget 2h
 
 - `optimize` 总入口：摸底、选路、排计划、出方案、统一档案与总报告都已接上（见上面「怎么用」）。
   ②③ 两路的真机评测已经跑通：③ 系统参数已端到端出报告（首候选 REJECT），② 灰档机械链路已通、命中口径已对齐（真机实测命中 27 处 / begins 9195）。
-- phonefarm 那边 loop_v1 的判定口径、两通路对照、Vulkan-Samples 三道闸与两臂判读面、refbench/vks 报告都已经收进 Rust，`autoloop` 编排也已收进（`phonefarm autoloop`），剩下载体构建/路线工具、设备端 shell 与 knobs/ 那批还没收。
+- phonefarm 那边 loop_v1 的判定口径、两通路对照、Vulkan-Samples 三道闸与两臂判读面、refbench/vks 报告都已经收进 Rust，`autoloop` 编排（`phonefarm autoloop`）与灰档主机侧编排（`phonefarm gray-layer` / `gray-ab` / `shot-diff`）也已收进，剩下载体构建/路线工具、设备端 shell 与 knobs/ 超分那批实验脚本还没收。
 
 **还没接上的**
 
