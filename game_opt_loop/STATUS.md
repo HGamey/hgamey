@@ -9,7 +9,7 @@
 | 仓库 | 最后核对的 PR |
 |---|---|
 | game_opt_loop | [#14](https://github.com/HGamey/game_opt_loop/pull/14) |
-| phonefarm（对外 BH3GEI/phonefarm） | [#62](https://github.com/BH3GEI/phonefarm/pull/62) |
+| phonefarm（对外 BH3GEI/phonefarm） | [#64](https://github.com/BH3GEI/phonefarm/pull/64) |
 | refbench | [#1](https://github.com/HGamey/refbench/pull/1) |
 | .github（组织主页） | [#3](https://github.com/HGamey/.github/pull/3) |
 
@@ -54,12 +54,13 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 | 已完成 | 灰档只读层 + LoadOp 改写 + passdump 描述符溯源（原 HGamey/knobs 并入） | [#31](https://github.com/BH3GEI/phonefarm/pull/31)、[#42](https://github.com/BH3GEI/phonefarm/pull/42)、[#47](https://github.com/BH3GEI/phonefarm/pull/47)、[#49](https://github.com/BH3GEI/phonefarm/pull/49) |
 | 已完成 | 灰档超分算子可行性（只读观测确认可行：放大 = 帧内最后一个 pass 的第一笔 draw，采样图可读） | [#47](https://github.com/BH3GEI/phonefarm/pull/47) |
 | 已完成 | 灰档超分机制全链路预演（copyprobe 1:1 拷贝探针）：反作弊放行、帧时无损、画面构造性逐位不变 | [#51](https://github.com/BH3GEI/phonefarm/pull/51) |
+| 已完成 | 灰档真超分算子投原神大世界（gen1_loc3，2×2 bilinear）：替换「渲染精度低」档下游戏自带放大，5 对 A/B 无指标显著变差（零成本通过），画质比游戏自带放大接近原生 3–4 倍 | [#64](https://github.com/BH3GEI/phonefarm/pull/64) |
 | 已完成 | 农场只读快照 `fleet --json` | [#43](https://github.com/BH3GEI/phonefarm/pull/43) |
 | 已完成 | 系统参数自动调参在真原神上跑通（两组候选走完统计判定，均被淘汰且有道理） | [#52](https://github.com/BH3GEI/phonefarm/pull/52) |
 | 已完成 | 评测统一入口 `phonefarm eval --request`：v1 原样转交 gpu-op，v2 按 kind 路由 shader / sysparam / gray；离线 15 项单测 + 冒烟过，真机路径尚未验证 | [#61](https://github.com/BH3GEI/phonefarm/pull/61) |
 | 进行中 | loop_v1 往 Rust 内核收：判定口径（解析→归因→统计→判据收口→白名单→判定→画面判据→模型交互/本地变异器）、两通路对照、Vulkan-Samples 三道闸与两臂判读面、refbench/vks 报告已收完，剩 autoloop.py（编排/设备驱动）、载体构建/路线工具（make_route_a.py / shadercompiler_shim.py）、设备端 shell、knobs/ 那批 | [#39](https://github.com/BH3GEI/phonefarm/pull/39)、[#45](https://github.com/BH3GEI/phonefarm/pull/45)、[#48](https://github.com/BH3GEI/phonefarm/pull/48)、[#50](https://github.com/BH3GEI/phonefarm/pull/50)、[#54](https://github.com/BH3GEI/phonefarm/pull/54)、[#55](https://github.com/BH3GEI/phonefarm/pull/55)、[#57](https://github.com/BH3GEI/phonefarm/pull/57)、[#58](https://github.com/BH3GEI/phonefarm/pull/58)、[#59](https://github.com/BH3GEI/phonefarm/pull/59)、[#62](https://github.com/BH3GEI/phonefarm/pull/62) |
 | 计划 | ③ 系统参数白名单的接收端真机探测（`--sysparam-probe`） | — |
-| 计划 | 灰档真正投算子（copyprobe 已验反作弊放行与帧时无损，下一步改描述符/建 pipeline 投真超分） | — |
+| 计划 | 灰档超分算子迭代：2×2 bilinear 只是占位优胜者，换 game_opt_loop 后续赛道更强的算子（同 candidate.spv 契约换装） | — |
 
 ### refbench（白盒靶子）
 
@@ -104,6 +105,20 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 - 反作弊放行：5 臂全过，层自报 copies ≈ frames（4791–5392），从未停用。
 - 帧时无损：探针臂 `frame_p50` 16.636–16.674 ms，与无层臂（16.661 / 16.680 ms）差 < 0.05 ms，顶满 60 帧档；每帧一次 2140×968 拷贝 + 一次克隆替换的开销淹没在噪声里。
 
+### 灰档真超分算子 upop A/B（phonefarm knobs，原神大世界）
+
+条件：原神 7.1.0 大世界站定 36 s 转视角负载（`workload_spin_touch_v1`）；渲染精度档位「低」（渲染 1134×514、送显 2141×969）；A 臂 = 挂层只读 passdump + 游戏自带放大，B 臂 = 挂层 upop（我们的算子，2×2 bilinear，imageLoad 改写为数学逐位等价的 texelFetch）；5 对交替 A/B，loop_v1 冻结口径（5v5 精确置换 252 枚举，α_win=0.0167 Bonferroni/3，α_lose=0.05）；帧时 + 停充功耗（battery rail）+ 电池温度。
+
+| 指标 | A（游戏放大） | B（我们的算子） | Δ | p_lose |
+|---|---|---|---|---|
+| frame_p95 | 19.661 ms | 19.624 ms | −0.19% | 0.571 |
+| fps_mean | 59.178 | 59.269 | +0.15% | 0.881 |
+| power_watt | 2.789 W | 2.903 W | +4.07% | 0.278 |
+
+无指标显著变差（p_lose 全 ≥ 0.28）→ 零成本通过；补跑对电池温度 37→37 °C 平直。原 a5 臂误采加载画面作废，rerun 5 对补跑（表内已用补跑值）。
+
+画质（同位置 · 同传送视角 · 同时辰 ~11:57–11:59 正午，璃月港，UID/角色/传送水晶排除）：逐像素 MAD 我们的算子 8.3–18.7 vs 游戏自带放大 26.9–42.8，所有测区接近原生（极高）3–4 倍。
+
 ### 停充之后的功耗对照（phonefarm）
 
 条件：原神固定场景两通路并排采 30 秒、全窗口停充。
@@ -126,6 +141,7 @@ refbench 0.45%，Megacity 0.987%，原神 1.37%（跨黄昏那一批 5.35%）。
 
 ## 变更记录
 
+- **2026-09-24（第五次核对）**：核对到 phonefarm #63（docs 同步「等 eval --request」→已落地，无新状态）、#64（真超分算子投原神）。#64 把 game_opt_loop 真实帧优胜算子 gen1_loc3（2×2 bilinear）按 candidate.spv 契约装进灰档层，替换「渲染精度低」档下游戏自带放大，5 对 A/B 无指标显著变差（p95 −0.19%、fps +0.15%、功耗 +4.07% 但 p_lose=0.28 属噪声），零成本通过；画质 MAD 比游戏自带放大接近原生 3–4 倍（8.3–18.7 vs 26.9–42.8）。「灰档真正投算子」从计划划为已完成，后续计划改为算子迭代。同步 knobs/README「下一步」里的分辨率候选说法。
 - **2026-09-24（第四次核对）**：核对到 phonefarm #61、#62。新增「评测统一入口 `phonefarm eval --request`」这一项已完成能力（离线 15 项单测 + 冒烟过，真机路径尚未验证）——v1 原样转交 gpu-op，v2 按 kind 路由 shader / sysparam / gray，顺手把 brain.rs 密钥从 argv 撤到 `-K` 配置文件。#62 把 refbench 的 `RULES` 与 vks 的 `KNOBS`/`METRIC_MEANING` 抽成冻结的 `rules.json`，判读哈希随之切到这份文件的 sha256（切换点之前的归档哈希对应旧 .py，已记录在案，非回放损坏）。同步 STATUS 里的②③ 接收端说法、game_opt_loop README / DESIGN、phonefarm AGENTS、组织主页四处「等 eval --request」。
 - **2026-09-24（第三次核对）**：核对到 phonefarm #57、#58、#59。loop_v1 的 Vulkan-Samples 三道闸与两臂判读面、refbench/vks 报告也收进 Rust，「报告类」从「还没收」里划掉；剩 autoloop.py（编排/设备驱动）、载体构建/路线工具（make_route_a.py / shadercompiler_shim.py）、设备端 shell、knobs/ 那批。#58 顺带修好 #45 引入的回放哈希断裂（归档证据重新可重放）。同步 README / AGENTS / loop_v1 README / 组织主页四处「进行中」说法。
 - **2026-09-24（第二次核对）**：核对到 phonefarm #48、#50、#54、#51、#55。更新 loop_v1 收进 Rust 的进度（判定口径与两通路对照已收，剩 autoloop.py / 报告类 / 设备端 shell）；补上灰档 copyprobe 探针的已完成结论与帧时数字；同步五处其它文档里的「Rust 化」说法。
