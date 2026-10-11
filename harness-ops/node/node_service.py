@@ -112,6 +112,16 @@ class McpChild:
 
 # ═════════════ /jobs ═════════════
 
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except PermissionError:
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 class Jobs:
     def __init__(self, root, bins):
         self.root, self.bins = root, bins
@@ -170,6 +180,12 @@ class Jobs:
 
     def status(self, jid):
         meta = json.load(open(self.path(jid, "meta.json")))
+        if "exit" not in meta and jid not in self.procs and not _pid_alive(meta.get("pid")):
+            # 节点服务重启前起的任务：进程已经结束，但新进程不是它的父进程，拿不到真实退出码。
+            # 记 -1 并标注，免得客户端（pf-node wait/follow）永远等 "running"。
+            meta.update(exit=-1, ended=time.time(), lost=True,
+                        note="节点服务重启过，这个任务的真实退出码丢了；看日志和输出目录判断结果")
+            json.dump(meta, open(self.path(jid, "meta.json"), "w"), ensure_ascii=False)
         meta["state"] = "finished" if "exit" in meta else "running"
         return meta
 
