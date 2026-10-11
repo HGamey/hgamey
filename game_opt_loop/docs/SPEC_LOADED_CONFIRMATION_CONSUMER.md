@@ -94,3 +94,23 @@ separate acceptance. Independent source review found no new core blocker and
 confirmed the baseline exploration exclusion obligation above. Logs and raw
 source hashes remain local in `phonefarm/tasks/oneplus_live_20261012/
 loaded_consumer_offline/`; proof/promotion stay false.
+
+## Explicit first-case goal
+
+The single-case profile may explicitly select `goal=render_cadence` or
+`goal=render_efficiency`. Missing retains the historical receiver default
+RenderEfficiency; no data-dependent fallback changes a requested goal. Unknown
+goals refuse before execution. Cadence freezes exactly frame-p95 and fps rules;
+efficiency additionally requires power. The receiver conditions' goal and
+required_metrics must match any explicit request, and both routes retain the
+same fixed improvement/regression/alpha/baseline/pair policy. Current/charging/
+power may remain raw diagnostics in cadence mode; no energy benefit, displayed
+FPS, present quality or gameplay proof follows from that mode.
+
+Explicit-goal increment acceptance: 362 full tests passed, including eleven
+single-case CLI tests; strict all-targets/all-features Clippy passed. Positive
+cadence mechanism freezes two exact metrics and records a negative result with
+false proof/promotion. Unknown and mismatched receiver goals refuse without
+falling back to another goal. The earlier c7c90c6/360-test evidence and binary
+remain unchanged. This source acceptance does not claim new native/GPU/device
+validation or substitute for the separate integrated d4e5208/441-test gate.
