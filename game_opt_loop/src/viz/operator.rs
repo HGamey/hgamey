@@ -128,6 +128,7 @@ fn classify(
             Some(EvalStatus::Slow) => (RoundVerdict::Eliminated, "超出耗时预算".to_string()),
             Some(EvalStatus::Crash) => (RoundVerdict::Eliminated, "真机崩溃".to_string()),
             Some(EvalStatus::Reverted) => (RoundVerdict::Eliminated, "已回滚".to_string()),
+            Some(EvalStatus::Abort) => (RoundVerdict::Invalid, "评测资格未成立".to_string()),
             None => (RoundVerdict::Invalid, "标称已评测但没有报告".to_string()),
         },
     }

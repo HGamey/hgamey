@@ -1162,6 +1162,7 @@ mod tests {
 
     fn report_with(q: Option<crate::engine::QualityReference>) -> EvalReport {
         EvalReport {
+            extensions: Default::default(),
             candidate_id: "c".into(),
             status: crate::engine::EvalStatus::Pass,
             metrics: crate::engine::Metrics {

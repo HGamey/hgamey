@@ -18,6 +18,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 pub mod engine;
+pub mod evidence;
 pub mod harness;
 pub mod optimize;
 pub mod tracks;

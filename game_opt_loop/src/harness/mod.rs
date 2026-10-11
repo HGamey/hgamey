@@ -915,6 +915,7 @@ mod tests {
     #[test]
     fn report_round_trips_through_the_contract_shape() {
         let r = EvalReport {
+            extensions: Default::default(),
             candidate_id: "x".into(),
             status: EvalStatus::Slow,
             metrics: Metrics {

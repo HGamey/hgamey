@@ -62,6 +62,11 @@ pub struct Entry {
     pub status: String,
     pub metrics: MetricsV2,
     pub verdict: VerdictV2,
+    /// Original receiver evidence, separate from candidate metadata.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub measurement_evidence: crate::evidence::Extensions,
+    #[serde(default)]
+    pub qualification_state: crate::evidence::QualificationState,
     /// 这一轮**实际**在什么条件下量的。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conditions_observed: Option<super::eval::ConditionsObserved>,
@@ -96,6 +101,8 @@ impl Entry {
             status: r.status.clone(),
             metrics: r.metrics.clone(),
             verdict: r.verdict.clone(),
+            measurement_evidence: r.extensions.clone(),
+            qualification_state: crate::evidence::qualification_state(&r.extensions),
             conditions_observed: r.conditions_observed.clone(),
             power_source: r.power_source.clone(),
             quality_reference: r.quality_reference.clone(),
@@ -367,12 +374,12 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
         o.push_str("这一轮没有任何候选上机。\n\n");
     } else {
         o.push_str(
-            "| 候选 | 层 | 改了什么 | 判定 | 帧时p95 | 帧率 | 功耗 | 画质 | p | 留下 |\n\
-             |---|---|---|---|---|---|---|---|---|---|\n",
+            "| 候选 | 层 | 改了什么 | 判定 | 帧时p95 | 帧率 | 功耗 | 画质 | p | 留下 | 结论资格 |\n\
+             |---|---|---|---|---|---|---|---|---|---|---|\n",
         );
         for e in &r.archive {
             o.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.4} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.4} | {} | {} |\n",
                 e.id,
                 e.layer.id(),
                 e.change.summary(),
@@ -383,6 +390,11 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
                 num(e.metrics.psnr_db, "dB"),
                 e.verdict.p_value,
                 if e.kept { "是" } else { "否" },
+                match e.qualification_state {
+                    crate::evidence::QualificationState::LegacyUnqualified => "旧报告，未核资格",
+                    crate::evidence::QualificationState::Qualified => "证据资格成立",
+                    crate::evidence::QualificationState::Ineligible => "证据资格不成立",
+                },
             ));
         }
         o.push('\n');
@@ -491,6 +503,8 @@ pkg_path=package:/data/app/x/base.apk\n";
             evidence_dir: None,
             kept,
             measurement_valid: status != "ABORT",
+            measurement_evidence: Default::default(),
+            qualification_state: Default::default(),
         }
     }
 
