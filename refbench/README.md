@@ -80,6 +80,8 @@ adb shell am start -n io.github.hgamey.refbench/android.app.NativeActivity \
   --es capture.rules_path /data/local/tmp/postfx/frozen_rules.json \
   --es capture.rules_sha256 "$RULES_SHA256"
 # 进程结束后，pull 整个 files/capture_native_quality_001 目录；不要只拉 manifest。
+# 新完成合同必须含 completion.json + run-scoped refbench_out.json，并验证绑定；
+# 旧无 marker 捕获不能回填或当新版完整采集。参见 docs/SPEC_CAPTURE_COMPLETION.md。
 
 python3 tools/native_pairs.py validate --manifest capture/manifest.json \
   --rules frozen_rules.json --candidate-shader candidate.spv

@@ -46,3 +46,15 @@ Refs [数据合同 #15](https://github.com/HGamey/.github/issues/15)、[系统 e
 - Host test `synthetic_fixture` 内容另标 `scene_content=synthetic_fixture`；假候选不是有效 SPIR-V。原生输出内容固定 `procedural_alu`，桥映射 unknown。来源声明/哈希不自动证明 GPU 来源或真实配对。
 - 既有 `output.schema.json` 的 compute pass `load_op=NONE` 枚举不一致是原有 contract backlog，本次不顺带修复。新增捕获 flag 单独加入 output schema；完整原生捕获合同由严格 host validator 检验。
 - 待 Android 构建后运行 GPU validation layers、捕获真实 native raw、检查尺寸/相位/色彩/设备生命周期，并用预冻结规则经 phonefarm 评测。该阶段未交付，所以 issue #15 不关闭。
+
+## 新 completion 执行合同
+
+本分支增加 [SPEC_CAPTURE_COMPLETION](SPEC_CAPTURE_COMPLETION.md)。manifest@1
+保留字段，但 strict 新导入必须有 `refbench/native_capture_completion@1` 的
+`completion.json`，绑定本 run 的 manifest 与 run-scoped refbench_out。
+旧 capture 无 marker 仅可原样归档/UNKNOWN；不得回填升级旧记录。
+quality_only 不再覆盖 app-wide refbench_out；其输出在独占 capture_run_id
+目录。磁盘失败 sticky，最终 marker 出版前逐一重核 raw size/hash；actual
+fence wait→map/write 顺序保持。缺 marker 时即使 manifest complete=true
+也不能当完整 capture；存储失败可能连负面 checkpoint 都无法写，receiver
+仍须拒绝。BW 输出路径、性能语义和 UNKNOWN 来源映射不变。

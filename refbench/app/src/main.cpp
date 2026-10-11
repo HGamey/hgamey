@@ -227,14 +227,7 @@ static void mkdirs(const std::string& path) {
     mkdir(path.c_str(), 0771);
 }
 
-static void write_output_json() {
-    const char* base = g.app && g.app->activity && g.app->activity->externalDataPath
-                           ? g.app->activity->externalDataPath
-                           : (g.app && g.app->activity ? g.app->activity->internalDataPath : nullptr);
-    if (!base) { LOGE("no data path, json not written"); return; }
-    mkdirs(base);
-    std::string path = std::string(base) + "/refbench_out.json";
-
+static std::string output_json() {
     std::string j;
     j.reserve(4096);
     j += "{\n";
@@ -294,6 +287,17 @@ static void write_output_json() {
              g.debug_labels ? "true" : "false", g.frames_submitted, g.clean_exit ? "true" : "false");
     j += buf;
 
+    return j;
+}
+
+static void write_output_json() {
+    const char* base = g.app && g.app->activity && g.app->activity->externalDataPath
+                           ? g.app->activity->externalDataPath
+                           : (g.app && g.app->activity ? g.app->activity->internalDataPath : nullptr);
+    if (!base) { LOGE("no data path, json not written"); return; }
+    mkdirs(base);
+    std::string path = std::string(base) + "/refbench_out.json";
+    std::string j = output_json();
     FILE* f = fopen(path.c_str(), "w");
     if (!f) { LOGE("open %s failed: %s", path.c_str(), strerror(errno)); return; }
     fwrite(j.data(), 1, j.size(), f);
@@ -327,13 +331,26 @@ static void finish_and_exit(int code) {
         code = 2;
         g.capture_sink.fail("run_aborted_or_incomplete");
     }
-    if (g.dev) vkDeviceWaitIdle(g.dev);
-    if (g.capture_initialized && !g.capture_sink.manifest(g.clean_exit &&
-            g.capture_frames_written == g.cfg.capture_count)) {
-        g.clean_exit = false;
-        code = 2;
+    if (g.dev) {
+        VkResult idle = vkDeviceWaitIdle(g.dev);
+        if (g.capture_initialized && idle != VK_SUCCESS) {
+            g.clean_exit = false;
+            code = 2;
+            g.capture_sink.fail("device_idle_failed");
+        }
     }
-    write_output_json();
+    if (g.capture_initialized) {
+        if (!g.capture_sink.finish(output_json(), g.frames_submitted, g.clean_exit)) {
+            g.clean_exit = false;
+            code = 2;
+            // Best effort only: durable storage failure may also prevent this
+            // negative checkpoint. The completion contract still rejects it.
+            g.capture_sink.failure_output(output_json());
+        }
+    } else if (g.cfg.capture_native_pairs != "on") {
+        // Keep the historical performance output path and behavior unchanged.
+        write_output_json();
+    }
     LOGI("REFBENCH_DONE code=%d scene=%s run_id=%s frames=%d clean=%d",
          code, g.cfg.scene.c_str(), g.cfg.run_id.c_str(), g.frames_submitted, (int)g.clean_exit);
     // 礼貌收尾: 请求 finish, 短暂排空事件; 无论成败, 保证进程退出 (harness 靠 pidof 判结束)

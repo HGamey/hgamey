@@ -356,6 +356,39 @@ class Sink {
     std::string failure_reason;
     std::vector<std::string> rows;
     uint64_t start_ms = 0, end_ms = 0, last_timestamp = 0;
+    struct Artifact { std::string file, sha; size_t bytes; };
+    std::vector<Artifact> artifacts;
+    std::string last_manifest_bytes;
+    bool sticky(const char *reason) {
+        if (failure_reason.empty()) failure_reason = reason;
+        return false;
+    }
+    bool file_matches(const std::string &name, size_t size, const std::string &expected) {
+        int fd = open((dir + "/" + name).c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+        if (fd < 0) return false;
+        struct stat st{};
+        bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0 &&
+                  uint64_t(st.st_size) == size;
+        Sha256 sha; char bytes[65536]; size_t total = 0;
+        while (ok) {
+            ssize_t n = read(fd, bytes, sizeof bytes);
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0) { ok = false; break; }
+            if (!n) break;
+            if (size_t(n) > size - total) { ok = false; break; }
+            total += size_t(n); sha.update(bytes, size_t(n));
+        }
+        int closed = close(fd);
+        return ok && closed == 0 && total == size && sha.finish() == expected;
+    }
+    bool write_new(const std::string &name, const std::string &bytes) {
+        if (bytes.size() > 1024 * 1024) return false;
+        int fd = open((dir + "/" + name).c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+        if (fd < 0) return false;
+        bool ok = write_all(fd, bytes.data(), bytes.size()) && fsync(fd) == 0;
+        int closed = close(fd);
+        return ok && closed == 0;
+    }
     bool atomic(const std::string &path, const std::string &bytes) {
         struct stat st{};
         if (lstat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
@@ -376,7 +409,7 @@ class Sink {
         if (parent < 0)
             return false;
         ok = fsync(parent) == 0;
-        close(parent);
+        if (close(parent) != 0) ok = false;
         return ok;
     }
     static bool write_all(int fd, const void *data, size_t n) {
@@ -450,11 +483,12 @@ class Sink {
             std::string name = std::to_string(frame_index) + "_" + r.role + ".rgba";
             int fd = open((dir + "/" + name).c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
             if (fd < 0)
-                return false;
+                return sticky("raw_open_failed");
             bool ok = write_all(fd, r.bytes, n) && fsync(fd) == 0;
             int closed = close(fd);
             if (!ok || closed != 0)
-                return false;
+                return sticky("raw_write_or_sync_failed");
+            artifacts.push_back({name, digest(r.bytes, n), n});
             if (i)
                 row << ',';
             row << "{\"role\":" << quote(r.role) << ",\"file\":" << quote(name)
@@ -502,7 +536,57 @@ class Sink {
             j << rows[i];
         }
         j << "]}\n";
-        return atomic(dir + "/manifest.json", j.str());
+        last_manifest_bytes = j.str();
+        if (!atomic(dir + "/manifest.json", last_manifest_bytes))
+            return sticky("manifest_write_or_sync_failed");
+        return true;
+    }
+    bool finish(const std::string &run_output, int submitted, bool clean) {
+        if (!clean || submitted != cfg.total_frames || rows.size() != size_t(cfg.count) ||
+            !failure_reason.empty()) {
+            sticky("run_aborted_or_incomplete"); manifest(false); return false;
+        }
+        for (const auto &a : artifacts)
+            if (!file_matches(a.file, a.bytes, a.sha)) {
+                sticky("raw_final_verification_failed"); manifest(false); return false;
+            }
+        if (!write_new("refbench_out.json", run_output)) {
+            sticky("run_output_write_or_sync_failed"); manifest(false); return false;
+        }
+        if (!manifest(true)) return false;
+        const std::string mh = digest(last_manifest_bytes.data(), last_manifest_bytes.size());
+        if (last_manifest_bytes.size() > 1024 * 1024 || run_output.size() > 1024 * 1024 ||
+            !file_matches("manifest.json", last_manifest_bytes.size(), mh) ||
+            !file_matches("refbench_out.json", run_output.size(), digest(run_output.data(), run_output.size()))) {
+            sticky("completion_file_verification_failed"); manifest(false); return false;
+        }
+        std::ostringstream receipt;
+        receipt << "{\"schema\":\"refbench/native_capture_completion@1\",\"run_id\":" << quote(cfg.run_id)
+                << ",\"manifest_sha256\":" << quote(mh)
+                << ",\"run_output_sha256\":" << quote(digest(run_output.data(), run_output.size()))
+                << ",\"frame_count\":" << rows.size() << ",\"frames_submitted\":" << submitted
+                << ",\"total_frames\":" << cfg.total_frames
+                << ",\"complete\":true,\"capture_mode\":\"quality_only\",\"performance_eligible\":false}\n";
+        // Stage bytes privately, then link create-only: consumers never see a
+        // partially written marker. The directory belongs to this run only.
+        std::string tmp = "completion.json.tmp";
+        if (!write_new(tmp, receipt.str()) ||
+            link((dir + "/" + tmp).c_str(), (dir + "/completion.json").c_str()) != 0) {
+            sticky("completion_publication_failed"); manifest(false); return false;
+        }
+        unlink((dir + "/" + tmp).c_str());
+        int parent = open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        bool synced = parent >= 0 && fsync(parent) == 0;
+        if (parent >= 0 && close(parent) != 0) synced = false;
+        if (!synced) {
+            unlink((dir + "/completion.json").c_str());
+            sticky("completion_directory_sync_failed"); manifest(false); return false;
+        }
+        return true;
+    }
+    bool failure_output(const std::string &run_output) {
+        if (failure_reason.empty() || run_output.size() > 1024 * 1024) return false;
+        return atomic(dir + "/refbench_out.json", run_output);
     }
     bool fail(const std::string &reason) {
         if (failure_reason.empty())

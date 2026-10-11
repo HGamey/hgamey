@@ -188,6 +188,8 @@
     "source": "native_rendered_controlled_whitebox / procedural_alu, not real game",
     "performance_eligible": false,
     "host_bridge": "python3 tools/native_pairs.py import; preserves raw SHA and original capture clock/rules; consumer source unknown for controlled whitebox",
-    "verification_status": "host syntax and synthetic file/PNG/consumer tests only; APK build / native GPU output not verified"
+    "verification_status": "host syntax and synthetic file/PNG/consumer tests only; APK build / native GPU output not verified",
+    "completion": "completion.json: refbench/native_capture_completion@1, mandatory for new validation/import; last create-only marker binds exact manifest/run-scoped output hashes and count. Older captures without marker remain archival/UNKNOWN.",
+    "run_output": "refbench_out.json inside capture_{run_id}; quality mode no longer overwrites shared app-wide output"
   }
 }

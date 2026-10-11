@@ -11,6 +11,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+EVIDENCE = Path(os.environ.get("REFBENCH_EVIDENCE_DIR", str(ROOT / "tasks/native_capture_20261011")))
 SPEC = importlib.util.spec_from_file_location("native_pairs", ROOT / "tools/native_pairs.py")
 N = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(N)
@@ -51,6 +52,69 @@ class NativePairs(unittest.TestCase):
 
     def load(self):
         return N.load_capture(self.path, self.rule_path, self.candidate)
+
+    def rebind_completion(self, output_change=None):
+        output_path = self.case / "refbench_out.json"
+        output = json.loads(output_path.read_bytes())
+        if output_change:
+            output_change(output)
+        output_path.write_bytes(N.json_bytes(output))
+        receipt_path = self.case / "completion.json"
+        receipt = json.loads(receipt_path.read_bytes())
+        receipt["manifest_sha256"] = N.sha(self.path.read_bytes())
+        receipt["run_output_sha256"] = N.sha(output_path.read_bytes())
+        receipt_path.write_bytes(N.json_bytes(receipt))
+
+    def test_completion_marker_required_and_bound(self):
+        marker = self.case / "completion.json"
+        marker.unlink()
+        with self.assertRaisesRegex(ValueError, "completion.json"):
+            self.load()
+        marker.write_bytes((self.original / "completion.json").read_bytes())
+        receipt = json.loads(marker.read_bytes())
+        receipt["run_id"] = "old_run"
+        marker.write_bytes(N.json_bytes(receipt))
+        with self.assertRaisesRegex(ValueError, "run/schema"):
+            self.load()
+
+    def test_output_semantics_rejected_even_with_rehashed_marker(self):
+        for change, error in [
+            (lambda o: o.update(run_id="stale"), "identity"),
+            (lambda o: o.update(clean_exit=False), "incomplete"),
+            (lambda o: o.update(frames_submitted=59), "incomplete"),
+            (lambda o: o.update(frames_submitted=True), "incomplete"),
+            (lambda o: o.update(params={"frames":60,"intensity":64}), "configuration"),
+            (lambda o: o.update(postfx={"active":False}), "candidate"),
+        ]:
+            (self.case / "refbench_out.json").write_bytes((self.original / "refbench_out.json").read_bytes())
+            self.rebind_completion(change)
+            with self.assertRaisesRegex(ValueError, error):
+                self.load()
+
+    def test_disk_failures_remain_unpublished(self):
+        for name in ("out_collision", "manifest_collision", "raw_tamper", "disk_full", "symlink_guard"):
+            capture = self.base / ("capture_" + name)
+            self.assertFalse((capture / "completion.json").exists(), name)
+        for name in ("out_collision", "raw_tamper"):
+            output = json.loads((self.base / ("capture_" + name) / "refbench_out.json").read_bytes())
+            self.assertFalse(output["clean_exit"])
+        manifest = json.loads((self.base / "capture_out_collision/manifest.json").read_bytes())
+        self.assertFalse(manifest["complete"])
+        self.assertEqual(manifest["failure_reason"], "run_output_write_or_sync_failed")
+        self.assertEqual((self.base / "capture_marker_collision/completion.json").read_text(), "stale")
+        with self.assertRaises(ValueError):
+            N.load_capture(self.base / "capture_marker_collision/manifest.json", self.rule_path, self.candidate)
+
+    def test_completion_marker_symlink_and_fifo_rejected_without_block(self):
+        marker = self.case / "completion.json"
+        marker.unlink()
+        marker.symlink_to(self.original / "completion.json")
+        with self.assertRaisesRegex(ValueError, "non-symlink"):
+            self.load()
+        marker.unlink()
+        os.mkfifo(marker)
+        with self.assertRaisesRegex(ValueError, "non-symlink"):
+            self.load()
 
     def test_actual_cpp_sink_and_png_bridge(self):
         m, *_ = self.load()
@@ -166,6 +230,7 @@ class NativePairs(unittest.TestCase):
             for frame in m["frames"]:
                 frame["images"].pop()
         self.change(off)
+        self.rebind_completion(lambda o: o.update(effective_knobs={"postfx":"off"}, postfx={"active":False}))
         N.load_capture(self.path, self.rule_path)
         with self.assertRaisesRegex(ValueError, "requires an executed"):
             N.import_capture(self.path, self.rule_path, None, self.case / "out")
@@ -182,7 +247,8 @@ class NativePairs(unittest.TestCase):
         self.assertEqual(imported.returncode, 0, imported.stderr)
         self.assertEqual(json.loads(imported.stdout)["source"], "synthetic_fixture")
         self.assertFalse(json.loads(imported.stdout)["real_game_qualification"])
-        (ROOT / "tasks/native_capture_20261011/import-cli-stdout.json").write_text(imported.stdout)
+        EVIDENCE.mkdir(parents=True, exist_ok=True)
+        (EVIDENCE / "import-cli-stdout.json").write_text(imported.stdout)
         self.change(lambda m: m.update(complete=False))
         bad = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(bad.returncode, 2)
@@ -205,7 +271,7 @@ class NativePairs(unittest.TestCase):
         self.assertFalse(report["no_ghosting_proven"])
         self.assertEqual(len(report["frames"]), 4)
         # Preserve actual executable input/output as reviewable local evidence.
-        evidence = ROOT / "tasks/native_capture_20261011/consumer_fixture"
+        evidence = EVIDENCE / "consumer_fixture"
         evidence.parent.mkdir(parents=True, exist_ok=True)
         if evidence.exists(): shutil.rmtree(evidence)  # only this generated test fixture
         shutil.copytree(out, evidence)

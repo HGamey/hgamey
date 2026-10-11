@@ -9,6 +9,8 @@ import binascii
 import hashlib
 import json
 import math
+import os
+import stat
 from pathlib import Path
 import re
 import struct
@@ -40,9 +42,15 @@ def sha(data):
 
 def regular_bytes(path, limit):
     path = Path(path)
-    require(not path.is_symlink() and path.is_file(), f"not a regular non-symlink file: {path}")
-    require(path.stat().st_size <= limit, f"file exceeds bound: {path}")
-    with path.open("rb") as stream:
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        raise ValueError(f"not a regular non-symlink file: {path}: {error}") from error
+    with os.fdopen(fd, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        require(stat.S_ISREG(metadata.st_mode), f"not a regular non-symlink file: {path}")
+        require(metadata.st_size <= limit, f"file exceeds bound: {path}")
         result = stream.read(limit + 1)
     require(len(result) <= limit, f"file grew beyond bound: {path}")
     return result
@@ -173,7 +181,28 @@ def load_capture(manifest_path, rules_path, candidate_path=None):
         hr_size = sizes["native_hr"]
         if candidate_bytes is not None:
             require(sizes["postfx_candidate"] == hr_size, "candidate is not HR-sized")
-    return m, manifest_bytes, rules, rules_bytes, candidate_bytes, blobs
+    # A complete manifest alone is a checkpoint, not a published capture.
+    # Keep old captures unchanged: no marker means explicit rejection.
+    receipt_bytes = regular_bytes(manifest_path.parent / "completion.json", MAX_JSON)
+    receipt = parse(receipt_bytes)
+    keys(receipt, {"schema", "run_id", "manifest_sha256", "run_output_sha256", "frame_count", "frames_submitted", "total_frames", "complete", "capture_mode", "performance_eligible"}, "completion")
+    require(receipt["schema"] == "refbench/native_capture_completion@1" and receipt["run_id"] == m["run_id"], "completion run/schema mismatch")
+    require(receipt["complete"] is True and receipt["capture_mode"] == "quality_only" and receipt["performance_eligible"] is False, "completion claim scope")
+    for name, expected in (("frame_count", m["count"]), ("frames_submitted", m["total_frames"]), ("total_frames", m["total_frames"])):
+        require(type(receipt[name]) is int and receipt[name] == expected, "completion frame count mismatch")
+    hash_value(receipt["manifest_sha256"], "completion manifest")
+    hash_value(receipt["run_output_sha256"], "completion output")
+    require(receipt["manifest_sha256"] == sha(manifest_bytes), "completion manifest binding mismatch")
+    output_bytes = regular_bytes(manifest_path.parent / "refbench_out.json", MAX_JSON)
+    require(receipt["run_output_sha256"] == sha(output_bytes), "completion run output binding mismatch")
+    output = parse(output_bytes)
+    require(isinstance(output, dict) and output.get("run_id") == m["run_id"] and output.get("scene") == "sr_pipeline", "run output identity mismatch")
+    require(output.get("clean_exit") is True and type(output.get("frames_submitted")) is int and output["frames_submitted"] == m["total_frames"], "run output incomplete")
+    require(output.get("capture_mode") == "quality_only" and output.get("performance_eligible") is False, "run output claim scope")
+    params = output.get("params")
+    require(isinstance(params, dict) and type(params.get("frames")) is int and params["frames"] == m["total_frames"] and type(params.get("intensity")) is int and params["intensity"] == m["intensity"], "run output configuration mismatch")
+    require(output.get("effective_knobs") == {"postfx": "on" if candidate_bytes is not None else "off"} and isinstance(output.get("postfx"), dict) and output["postfx"].get("active") is (candidate_bytes is not None), "run output candidate configuration mismatch")
+    return m, manifest_bytes, rules, rules_bytes, candidate_bytes, blobs, receipt_bytes, output_bytes
 
 
 def chunk(kind, payload):
@@ -206,7 +235,7 @@ def write_new(path, data):
 
 
 def import_capture(manifest_path, rules_path, candidate_path, out):
-    m, manifest_bytes, rules, rules_bytes, candidate_bytes, blobs = load_capture(manifest_path, rules_path, candidate_path)
+    m, manifest_bytes, rules, rules_bytes, candidate_bytes, blobs, completion_bytes, output_bytes = load_capture(manifest_path, rules_path, candidate_path)
     require(candidate_bytes is not None, "PNG comparison requires an executed postfx_candidate; native pairs alone are valid capture assets")
     # Validate/convert all snapshots before output exists; never mutate source inputs.
     converted = {}
@@ -218,6 +247,9 @@ def import_capture(manifest_path, rules_path, candidate_path, out):
     out.mkdir(mode=0o700)  # exclusive, no overwrite/resume inferred from path
     (out / "raw").mkdir()
     write_new(out / "capture_manifest.json", manifest_bytes)
+    # Exact snapshots checked by load_capture; never reopen after validation.
+    write_new(out / "completion.json", completion_bytes)
+    write_new(out / "refbench_out.json", output_bytes)
     write_new(out / "frozen_rules.json", rules_bytes)
     write_new(out / "candidate.spv", candidate_bytes)
     sequence = m["run_id"]

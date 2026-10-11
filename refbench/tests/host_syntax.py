@@ -14,7 +14,8 @@ with tempfile.TemporaryDirectory(prefix="refbench-host-syntax-") as folder:
     tmp=Path(folder)
     (tmp/"vulkan").mkdir()
     for file in (headers/"vulkan").iterdir():
-        if file.is_file(): (tmp/"vulkan"/file.name).symlink_to(file)
+        if file.is_file() and file.name != "vulkan_android.h":
+            (tmp/"vulkan"/file.name).symlink_to(file)
     (tmp/"vulkan"/"vulkan_android.h").symlink_to(root/"tests/stubs/vulkan_android.h")
     if (headers/"vk_video").is_dir(): (tmp/"vk_video").symlink_to(headers/"vk_video")
     (tmp/"gen").mkdir()

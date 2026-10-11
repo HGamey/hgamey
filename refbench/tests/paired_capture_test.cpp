@@ -1,6 +1,9 @@
 #include "paired_capture.h"
 #include <cassert>
 #include <iostream>
+#include <csignal>
+#include <sys/resource.h>
+#include <sys/wait.h>
 using namespace paired_capture;
 int main(int argc, char **argv) {
   assert(digest("", 0) ==
@@ -77,7 +80,11 @@ int main(int argc, char **argv) {
     assert(sink.frame(frame, phase(frame, 60), now, raw));
     assert(!sink.frame(frame, phase(frame, 60), now, raw));
   }
-  assert(sink.manifest(true));
+  auto output = [](const Config &cfg, bool clean = true) {
+    return "{\"run_id\":" + quote(cfg.run_id) + ",\"scene\":\"sr_pipeline\",\"clean_exit\":" +
+       (clean ? "true" : "false") + ",\"frames_submitted\":60,\"capture_mode\":\"quality_only\",\"performance_eligible\":false,\"params\":{\"frames\":60,\"intensity\":1},\"effective_knobs\":{\"postfx\":\"on\"},\"postfx\":{\"active\":true}}\n";
+  };
+  assert(sink.finish(output(c), 60, true));
   Config inc = c;
   inc.run_id = "incomplete";
   Sink incomplete;
@@ -100,5 +107,36 @@ int main(int argc, char **argv) {
   assert(symlink(argv[3], link.c_str()) == 0);
   assert(!link_guard.frame(0, phase(0, 60), clock_ns(CLOCK_MONOTONIC), raw));
   assert(link_guard.fail("output_collision"));
+  // Real filesystem failures exercised through the same native Sink as callbacks.
+  for (const char *which : {"out_collision", "marker_collision", "manifest_collision", "raw_tamper"}) {
+    Config x = c; x.run_id = which; x.count = 1;
+    Sink negative; assert(negative.begin(argv[1], x));
+    assert(negative.frame(0, phase(0, 60), clock_ns(CLOCK_MONOTONIC), raw));
+    std::string collision = negative.directory() + "/" +
+       (std::string(which) == "out_collision" ? "refbench_out.json" :
+        std::string(which) == "marker_collision" ? "completion.json" :
+        std::string(which) == "manifest_collision" ? "manifest.json.tmp" : "0_native_lr.rgba");
+    FILE *bad = fopen(collision.c_str(), "w"); assert(bad); assert(fputs("stale", bad) >= 0); assert(fclose(bad) == 0);
+    assert(!negative.finish(output(x), 60, true));
+    assert(!negative.finish(output(x), 60, true)); // failure cannot be reset
+    negative.failure_output(output(x, false));
+    std::string marker_hash;
+    if (std::string(which) != "marker_collision")
+      assert(access((negative.directory()+"/completion.json").c_str(), F_OK) != 0);
+  }
+  // Kernel-enforced short/error write, not a synthetic return stub.
+  Config disk = c; disk.run_id = "disk_full"; disk.count = 1;
+  Sink disk_sink; assert(disk_sink.begin(argv[1], disk));
+  pid_t child = fork(); assert(child >= 0);
+  if (child == 0) {
+    signal(SIGXFSZ, SIG_IGN);
+    struct rlimit cap{1, 1}; assert(setrlimit(RLIMIT_FSIZE, &cap) == 0);
+    assert(!disk_sink.frame(0, phase(0, 60), clock_ns(CLOCK_MONOTONIC), raw));
+    assert(!disk_sink.finish(output(disk), 60, true));
+    assert(access((disk_sink.directory()+"/completion.json").c_str(), F_OK) != 0);
+    _exit(0);
+  }
+  int status = 0; assert(waitpid(child, &status, 0) == child);
+  assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
   std::cout << sink.directory() << "\n";
 }
