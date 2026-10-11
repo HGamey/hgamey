@@ -209,11 +209,28 @@ class Jobs:
         return buf.getvalue()
 
     def kill(self, jid):
+        """先 SIGINT（让 phonefarm 走还原流程）；15 秒后还活着升 SIGTERM，再 15 秒升 SIGKILL（整个进程组）。
+        排队等锁的进程有的不理 SIGINT，只发一次会出现「kill 回 true 但永远 running」。"""
         p = self.procs.get(jid)
-        if p and p.poll() is None:
-            os.killpg(p.pid, signal.SIGINT)  # 先 SIGINT，让 phonefarm 走还原流程
-            return True
-        return False
+        if not p or p.poll() is not None:
+            return False
+
+        def escalate():
+            for sig, wait in ((signal.SIGINT, 15), (signal.SIGTERM, 15), (signal.SIGKILL, 0)):
+                if p.poll() is not None:
+                    return
+                try:
+                    os.killpg(p.pid, sig)
+                except ProcessLookupError:
+                    return
+                log(f"job {jid} 发 {sig.name}")
+                try:
+                    p.wait(wait)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        threading.Thread(target=escalate, daemon=True).start()
+        return True
 
 
 # ═════════════ HTTP ═════════════
