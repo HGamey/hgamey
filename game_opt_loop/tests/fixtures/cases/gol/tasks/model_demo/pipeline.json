@@ -1,0 +1,893 @@
+{
+  "schema": "game_opt_loop/model_pipeline_journal@1",
+  "frozen": {
+    "plan": {
+      "schema": "game_opt_loop/model_pipeline_plan@1",
+      "pipeline_id": "synthetic_demo",
+      "mode": "autonomous",
+      "candidate_description": "Synthetic protocol demo, not a trained model or real game experiment.",
+      "model": {
+        "framework": "synthetic",
+        "runtime": "synthetic_no_device",
+        "abi": "synthetic/json",
+        "quantization": {
+          "method": "synthetic_no_conversion",
+          "precision": "synthetic",
+          "calibration_data_sha256": null
+        }
+      },
+      "data": [
+        {
+          "name": "data",
+          "role": "data",
+          "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs/synthetic_data.json",
+          "sha256": "882bc6ea1e21e2e4acff9935868bbac8a80038330431abefd9937a2a86cd2ac3",
+          "format": "synthetic/json",
+          "source": "synthetic"
+        }
+      ],
+      "stages": [
+        {
+          "stage": "design",
+          "argv": [
+            "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "ok"
+          ],
+          "cwd": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs",
+          "driver_artifacts": [
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py"
+          ],
+          "outputs": [
+            {
+              "name": "design.json",
+              "role": "architecture",
+              "format": "synthetic/json",
+              "source": "synthetic"
+            }
+          ],
+          "budget": {
+            "wall_ms": 10000,
+            "output_bytes": 1048576,
+            "steps": 1,
+            "tokens": 0,
+            "device_ms": 0
+          }
+        },
+        {
+          "stage": "train",
+          "argv": [
+            "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "ok"
+          ],
+          "cwd": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs",
+          "driver_artifacts": [
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py"
+          ],
+          "outputs": [
+            {
+              "name": "train.json",
+              "role": "weights",
+              "format": "synthetic/json",
+              "source": "synthetic"
+            }
+          ],
+          "budget": {
+            "wall_ms": 10000,
+            "output_bytes": 1048576,
+            "steps": 1,
+            "tokens": 0,
+            "device_ms": 0
+          }
+        },
+        {
+          "stage": "quantize",
+          "argv": [
+            "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "ok"
+          ],
+          "cwd": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs",
+          "driver_artifacts": [
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py"
+          ],
+          "outputs": [
+            {
+              "name": "quantize.json",
+              "role": "quantized_model",
+              "format": "synthetic/json",
+              "source": "synthetic"
+            }
+          ],
+          "budget": {
+            "wall_ms": 10000,
+            "output_bytes": 1048576,
+            "steps": 1,
+            "tokens": 0,
+            "device_ms": 0
+          }
+        },
+        {
+          "stage": "deploy",
+          "argv": [
+            "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "ok"
+          ],
+          "cwd": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs",
+          "driver_artifacts": [
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py"
+          ],
+          "outputs": [
+            {
+              "name": "deploy.json",
+              "role": "deployment_receipt",
+              "format": "synthetic/json",
+              "source": "synthetic"
+            }
+          ],
+          "budget": {
+            "wall_ms": 10000,
+            "output_bytes": 1048576,
+            "steps": 1,
+            "tokens": 0,
+            "device_ms": 0
+          }
+        },
+        {
+          "stage": "evaluate",
+          "argv": [
+            "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "ok"
+          ],
+          "cwd": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs",
+          "driver_artifacts": [
+            "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py"
+          ],
+          "outputs": [
+            {
+              "name": "evaluate.json",
+              "role": "evaluation_report",
+              "format": "synthetic/json",
+              "source": "synthetic"
+            }
+          ],
+          "budget": {
+            "wall_ms": 10000,
+            "output_bytes": 1048576,
+            "steps": 1,
+            "tokens": 0,
+            "device_ms": 0
+          }
+        }
+      ]
+    },
+    "drivers": [
+      [
+        {
+          "name": "driver_0",
+          "role": "driver",
+          "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+          "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        },
+        {
+          "name": "driver_1",
+          "role": "driver",
+          "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+          "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        }
+      ],
+      [
+        {
+          "name": "driver_0",
+          "role": "driver",
+          "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+          "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        },
+        {
+          "name": "driver_1",
+          "role": "driver",
+          "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+          "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        }
+      ],
+      [
+        {
+          "name": "driver_0",
+          "role": "driver",
+          "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+          "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        },
+        {
+          "name": "driver_1",
+          "role": "driver",
+          "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+          "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        }
+      ],
+      [
+        {
+          "name": "driver_0",
+          "role": "driver",
+          "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+          "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        },
+        {
+          "name": "driver_1",
+          "role": "driver",
+          "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+          "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        }
+      ],
+      [
+        {
+          "name": "driver_0",
+          "role": "driver",
+          "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+          "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        },
+        {
+          "name": "driver_1",
+          "role": "driver",
+          "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+          "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+          "format": "opaque_driver_file",
+          "source": "unknown"
+        }
+      ]
+    ]
+  },
+  "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+  "entries": [
+    {
+      "stage": "design",
+      "state": "completed",
+      "request": {
+        "schema": "game_opt_loop/model_stage_request@1",
+        "pipeline_id": "synthetic_demo",
+        "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+        "stage": "design",
+        "model": {
+          "framework": "synthetic",
+          "runtime": "synthetic_no_device",
+          "abi": "synthetic/json",
+          "quantization": {
+            "method": "synthetic_no_conversion",
+            "precision": "synthetic",
+            "calibration_data_sha256": null
+          }
+        },
+        "inputs": [
+          {
+            "name": "data",
+            "role": "data",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs/synthetic_data.json",
+            "sha256": "882bc6ea1e21e2e4acff9935868bbac8a80038330431abefd9937a2a86cd2ac3",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "drivers": [
+          {
+            "name": "driver_0",
+            "role": "driver",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          },
+          {
+            "name": "driver_1",
+            "role": "driver",
+            "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "design.json",
+            "role": "architecture",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/0_design/design.json",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "budget": {
+          "wall_ms": 10000,
+          "output_bytes": 1048576,
+          "steps": 1,
+          "tokens": 0,
+          "device_ms": 0
+        }
+      },
+      "request_sha256": "b377777df6197c5c3752fd247455544cb12823cfe9e0bce96f10a9e0fea3a6e9",
+      "decisions": [],
+      "started_at": "2026-10-11T11:28:56.654221+00:00",
+      "finished_at": "2026-10-11T11:28:56.707165+00:00",
+      "host_wall_ms": 40,
+      "exit_code": 0,
+      "driver_pid": 24181,
+      "stdout_sha256": "e36ac6809d896a200bf186ed91dd8576e6165d344ace209a7e39598955e101d6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence": {
+        "receipt": {
+          "schema": "game_opt_loop/model_stage_receipt@1",
+          "pipeline_id": "synthetic_demo",
+          "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+          "stage": "design",
+          "request_sha256": "b377777df6197c5c3752fd247455544cb12823cfe9e0bce96f10a9e0fea3a6e9",
+          "status": "succeeded",
+          "usage": {
+            "steps": 0,
+            "tokens": 0,
+            "device_ms": 0
+          },
+          "outputs": [
+            {
+              "name": "design.json",
+              "sha256": "50ce27896691ac71ff876d557934f45c26801d193bf9de7206abee22b77cdc79"
+            }
+          ],
+          "note": "Synthetic protocol exercise; no model training, API, deployment or game measurement."
+        },
+        "receipt_sha256": "29afafee6230d31ea57f29e7e5549652d44e21e357388b90a0fdd702809681ce",
+        "receipt_file": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/0_design/receipt.json",
+        "outputs": [
+          {
+            "name": "design.json",
+            "role": "architecture",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/0_design/design.json",
+            "sha256": "50ce27896691ac71ff876d557934f45c26801d193bf9de7206abee22b77cdc79",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "reconciliation": null
+      },
+      "error": null
+    },
+    {
+      "stage": "train",
+      "state": "completed",
+      "request": {
+        "schema": "game_opt_loop/model_stage_request@1",
+        "pipeline_id": "synthetic_demo",
+        "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+        "stage": "train",
+        "model": {
+          "framework": "synthetic",
+          "runtime": "synthetic_no_device",
+          "abi": "synthetic/json",
+          "quantization": {
+            "method": "synthetic_no_conversion",
+            "precision": "synthetic",
+            "calibration_data_sha256": null
+          }
+        },
+        "inputs": [
+          {
+            "name": "data",
+            "role": "data",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs/synthetic_data.json",
+            "sha256": "882bc6ea1e21e2e4acff9935868bbac8a80038330431abefd9937a2a86cd2ac3",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "design.json",
+            "role": "architecture",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/0_design/design.json",
+            "sha256": "50ce27896691ac71ff876d557934f45c26801d193bf9de7206abee22b77cdc79",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "drivers": [
+          {
+            "name": "driver_0",
+            "role": "driver",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          },
+          {
+            "name": "driver_1",
+            "role": "driver",
+            "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "train.json",
+            "role": "weights",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/1_train/train.json",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "budget": {
+          "wall_ms": 10000,
+          "output_bytes": 1048576,
+          "steps": 1,
+          "tokens": 0,
+          "device_ms": 0
+        }
+      },
+      "request_sha256": "32a469a5f13f958f92bfbff44433e17e3b5b203e365562304b6fb1bae9304dee",
+      "decisions": [],
+      "started_at": "2026-10-11T11:28:56.750623+00:00",
+      "finished_at": "2026-10-11T11:28:56.796996+00:00",
+      "host_wall_ms": 34,
+      "exit_code": 0,
+      "driver_pid": 24182,
+      "stdout_sha256": "fdc8d451d07a13407873d8764f941dfc92d7eb712a7438127945aacd92b09432",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence": {
+        "receipt": {
+          "schema": "game_opt_loop/model_stage_receipt@1",
+          "pipeline_id": "synthetic_demo",
+          "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+          "stage": "train",
+          "request_sha256": "32a469a5f13f958f92bfbff44433e17e3b5b203e365562304b6fb1bae9304dee",
+          "status": "succeeded",
+          "usage": {
+            "steps": 1,
+            "tokens": 0,
+            "device_ms": 0
+          },
+          "outputs": [
+            {
+              "name": "train.json",
+              "sha256": "97dde925a9fe2013099b98d4a34f18afa26f7a2f0240ee897ac5e980ed2938e0"
+            }
+          ],
+          "note": "Synthetic protocol exercise; no model training, API, deployment or game measurement."
+        },
+        "receipt_sha256": "7e376f1d53e13fec1eaad33ca64f3742c546b841c87253a3bee309bced1b839c",
+        "receipt_file": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/1_train/receipt.json",
+        "outputs": [
+          {
+            "name": "train.json",
+            "role": "weights",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/1_train/train.json",
+            "sha256": "97dde925a9fe2013099b98d4a34f18afa26f7a2f0240ee897ac5e980ed2938e0",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "reconciliation": null
+      },
+      "error": null
+    },
+    {
+      "stage": "quantize",
+      "state": "completed",
+      "request": {
+        "schema": "game_opt_loop/model_stage_request@1",
+        "pipeline_id": "synthetic_demo",
+        "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+        "stage": "quantize",
+        "model": {
+          "framework": "synthetic",
+          "runtime": "synthetic_no_device",
+          "abi": "synthetic/json",
+          "quantization": {
+            "method": "synthetic_no_conversion",
+            "precision": "synthetic",
+            "calibration_data_sha256": null
+          }
+        },
+        "inputs": [
+          {
+            "name": "data",
+            "role": "data",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs/synthetic_data.json",
+            "sha256": "882bc6ea1e21e2e4acff9935868bbac8a80038330431abefd9937a2a86cd2ac3",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "design.json",
+            "role": "architecture",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/0_design/design.json",
+            "sha256": "50ce27896691ac71ff876d557934f45c26801d193bf9de7206abee22b77cdc79",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "train.json",
+            "role": "weights",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/1_train/train.json",
+            "sha256": "97dde925a9fe2013099b98d4a34f18afa26f7a2f0240ee897ac5e980ed2938e0",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "drivers": [
+          {
+            "name": "driver_0",
+            "role": "driver",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          },
+          {
+            "name": "driver_1",
+            "role": "driver",
+            "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "quantize.json",
+            "role": "quantized_model",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/2_quantize/quantize.json",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "budget": {
+          "wall_ms": 10000,
+          "output_bytes": 1048576,
+          "steps": 1,
+          "tokens": 0,
+          "device_ms": 0
+        }
+      },
+      "request_sha256": "abb05e715a01d93e8237d5797d29bd1e9830c516e4b07d2703d58af86e563a14",
+      "decisions": [],
+      "started_at": "2026-10-11T11:28:56.839490+00:00",
+      "finished_at": "2026-10-11T11:28:56.886569+00:00",
+      "host_wall_ms": 34,
+      "exit_code": 0,
+      "driver_pid": 24183,
+      "stdout_sha256": "be125ef1ea78d15d6c7d78ceeeabb4e8feb410d6532a85b246f406cb8c60c769",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence": {
+        "receipt": {
+          "schema": "game_opt_loop/model_stage_receipt@1",
+          "pipeline_id": "synthetic_demo",
+          "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+          "stage": "quantize",
+          "request_sha256": "abb05e715a01d93e8237d5797d29bd1e9830c516e4b07d2703d58af86e563a14",
+          "status": "succeeded",
+          "usage": {
+            "steps": 0,
+            "tokens": 0,
+            "device_ms": 0
+          },
+          "outputs": [
+            {
+              "name": "quantize.json",
+              "sha256": "df0e66eb6e4d3a03879977f38bbc95edfc914035c8ba0bf215143d133b5b6a1b"
+            }
+          ],
+          "note": "Synthetic protocol exercise; no model training, API, deployment or game measurement."
+        },
+        "receipt_sha256": "c03b13e39718d893e8982fad58f42b1168c1f8a9f2248e7412a96653c4b6dc43",
+        "receipt_file": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/2_quantize/receipt.json",
+        "outputs": [
+          {
+            "name": "quantize.json",
+            "role": "quantized_model",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/2_quantize/quantize.json",
+            "sha256": "df0e66eb6e4d3a03879977f38bbc95edfc914035c8ba0bf215143d133b5b6a1b",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "reconciliation": null
+      },
+      "error": null
+    },
+    {
+      "stage": "deploy",
+      "state": "completed",
+      "request": {
+        "schema": "game_opt_loop/model_stage_request@1",
+        "pipeline_id": "synthetic_demo",
+        "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+        "stage": "deploy",
+        "model": {
+          "framework": "synthetic",
+          "runtime": "synthetic_no_device",
+          "abi": "synthetic/json",
+          "quantization": {
+            "method": "synthetic_no_conversion",
+            "precision": "synthetic",
+            "calibration_data_sha256": null
+          }
+        },
+        "inputs": [
+          {
+            "name": "data",
+            "role": "data",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs/synthetic_data.json",
+            "sha256": "882bc6ea1e21e2e4acff9935868bbac8a80038330431abefd9937a2a86cd2ac3",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "design.json",
+            "role": "architecture",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/0_design/design.json",
+            "sha256": "50ce27896691ac71ff876d557934f45c26801d193bf9de7206abee22b77cdc79",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "train.json",
+            "role": "weights",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/1_train/train.json",
+            "sha256": "97dde925a9fe2013099b98d4a34f18afa26f7a2f0240ee897ac5e980ed2938e0",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "quantize.json",
+            "role": "quantized_model",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/2_quantize/quantize.json",
+            "sha256": "df0e66eb6e4d3a03879977f38bbc95edfc914035c8ba0bf215143d133b5b6a1b",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "drivers": [
+          {
+            "name": "driver_0",
+            "role": "driver",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          },
+          {
+            "name": "driver_1",
+            "role": "driver",
+            "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "deploy.json",
+            "role": "deployment_receipt",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/3_deploy/deploy.json",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "budget": {
+          "wall_ms": 10000,
+          "output_bytes": 1048576,
+          "steps": 1,
+          "tokens": 0,
+          "device_ms": 0
+        }
+      },
+      "request_sha256": "79ddcefdd8b37df9e3b9d67168446da6bf0d95d32dd8d346939e8f9468befbc8",
+      "decisions": [],
+      "started_at": "2026-10-11T11:28:56.931610+00:00",
+      "finished_at": "2026-10-11T11:28:56.981902+00:00",
+      "host_wall_ms": 36,
+      "exit_code": 0,
+      "driver_pid": 24184,
+      "stdout_sha256": "4904fe52310f7eb25ce2724329fc05030a4f92f45b872afbd43c93a6919b928d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence": {
+        "receipt": {
+          "schema": "game_opt_loop/model_stage_receipt@1",
+          "pipeline_id": "synthetic_demo",
+          "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+          "stage": "deploy",
+          "request_sha256": "79ddcefdd8b37df9e3b9d67168446da6bf0d95d32dd8d346939e8f9468befbc8",
+          "status": "succeeded",
+          "usage": {
+            "steps": 0,
+            "tokens": 0,
+            "device_ms": 0
+          },
+          "outputs": [
+            {
+              "name": "deploy.json",
+              "sha256": "48b1fc2e921c81e5132020f23bdcd8eeeff8b30b7070d1fd0729fb88e58fe937"
+            }
+          ],
+          "note": "Synthetic protocol exercise; no model training, API, deployment or game measurement."
+        },
+        "receipt_sha256": "89a2e9af5d0a61500d988d56e853d52a46666b292baaf2677be906061ae9dced",
+        "receipt_file": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/3_deploy/receipt.json",
+        "outputs": [
+          {
+            "name": "deploy.json",
+            "role": "deployment_receipt",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/3_deploy/deploy.json",
+            "sha256": "48b1fc2e921c81e5132020f23bdcd8eeeff8b30b7070d1fd0729fb88e58fe937",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "reconciliation": null
+      },
+      "error": null
+    },
+    {
+      "stage": "evaluate",
+      "state": "completed",
+      "request": {
+        "schema": "game_opt_loop/model_stage_request@1",
+        "pipeline_id": "synthetic_demo",
+        "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+        "stage": "evaluate",
+        "model": {
+          "framework": "synthetic",
+          "runtime": "synthetic_no_device",
+          "abi": "synthetic/json",
+          "quantization": {
+            "method": "synthetic_no_conversion",
+            "precision": "synthetic",
+            "calibration_data_sha256": null
+          }
+        },
+        "inputs": [
+          {
+            "name": "data",
+            "role": "data",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_inputs/synthetic_data.json",
+            "sha256": "882bc6ea1e21e2e4acff9935868bbac8a80038330431abefd9937a2a86cd2ac3",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "design.json",
+            "role": "architecture",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/0_design/design.json",
+            "sha256": "50ce27896691ac71ff876d557934f45c26801d193bf9de7206abee22b77cdc79",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "train.json",
+            "role": "weights",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/1_train/train.json",
+            "sha256": "97dde925a9fe2013099b98d4a34f18afa26f7a2f0240ee897ac5e980ed2938e0",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "quantize.json",
+            "role": "quantized_model",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/2_quantize/quantize.json",
+            "sha256": "df0e66eb6e4d3a03879977f38bbc95edfc914035c8ba0bf215143d133b5b6a1b",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          },
+          {
+            "name": "deploy.json",
+            "role": "deployment_receipt",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/3_deploy/deploy.json",
+            "sha256": "48b1fc2e921c81e5132020f23bdcd8eeeff8b30b7070d1fd0729fb88e58fe937",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "drivers": [
+          {
+            "name": "driver_0",
+            "role": "driver",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/examples/model_pipeline/fake_driver.py",
+            "sha256": "bf736c7fa837c4b53d14a7caf3b0da7336581a276834e5de47890ac8875ce4b4",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          },
+          {
+            "name": "driver_1",
+            "role": "driver",
+            "path": "/opt/homebrew/Cellar/python@3.14/3.14.0_1/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+            "sha256": "b7e73dc9ef199f3046efd77d870fed331832ece0c3b33192595cdd4a81f8ef86",
+            "format": "opaque_driver_file",
+            "source": "unknown"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "evaluate.json",
+            "role": "evaluation_report",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/4_evaluate/evaluate.json",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "budget": {
+          "wall_ms": 10000,
+          "output_bytes": 1048576,
+          "steps": 1,
+          "tokens": 0,
+          "device_ms": 0
+        }
+      },
+      "request_sha256": "d2a2e944ecac1e2d9138e2c4e21fc103fb774f0bd25eaf3e164fe2517153a8df",
+      "decisions": [],
+      "started_at": "2026-10-11T11:28:57.025585+00:00",
+      "finished_at": "2026-10-11T11:28:57.080981+00:00",
+      "host_wall_ms": 41,
+      "exit_code": 0,
+      "driver_pid": 24185,
+      "stdout_sha256": "627ad59f33372c2324cdcc94bbafcb52e7f22bf8a99611cd35545f09c7d0476e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence": {
+        "receipt": {
+          "schema": "game_opt_loop/model_stage_receipt@1",
+          "pipeline_id": "synthetic_demo",
+          "plan_sha256": "e9ca81f5ccbc178fc3f6effd093558cd609e14c84aa14e1782b05be90cd29cc8",
+          "stage": "evaluate",
+          "request_sha256": "d2a2e944ecac1e2d9138e2c4e21fc103fb774f0bd25eaf3e164fe2517153a8df",
+          "status": "succeeded",
+          "usage": {
+            "steps": 0,
+            "tokens": 0,
+            "device_ms": 0
+          },
+          "outputs": [
+            {
+              "name": "evaluate.json",
+              "sha256": "460303d00a0eb97fab97b33167383e9c05061b7fe6efbe480ae3125031e47c30"
+            }
+          ],
+          "note": "Synthetic protocol exercise; no model training, API, deployment or game measurement."
+        },
+        "receipt_sha256": "1d847626ab6a4fa4e1badb3791e021b9206de637313641fcb7cc8cb73a4bd3d4",
+        "receipt_file": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/4_evaluate/receipt.json",
+        "outputs": [
+          {
+            "name": "evaluate.json",
+            "role": "evaluation_report",
+            "path": "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-model-artifact-pipeline/tasks/model_pipeline_20261011/demo_final/4_evaluate/evaluate.json",
+            "sha256": "460303d00a0eb97fab97b33167383e9c05061b7fe6efbe480ae3125031e47c30",
+            "format": "synthetic/json",
+            "source": "synthetic"
+          }
+        ],
+        "reconciliation": null
+      },
+      "error": null
+    }
+  ],
+  "usage_verification": "driver_declared_unverified",
+  "completion_scope": "driver_protocol_and_artifact_integrity_only",
+  "promotion_allowed": false,
+  "real_game_optimization_proven": false,
+  "model_semantics_verified": false
+}

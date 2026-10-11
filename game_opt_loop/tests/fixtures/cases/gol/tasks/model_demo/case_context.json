@@ -1,0 +1,5 @@
+{
+  "schema": "game_opt_loop/case_context@1",
+  "evidence_origin": "synthetic",
+  "scope": "Actual saved external fake-driver journal. No model training, real deployment or device measurement. Original absolute file declarations retained; unavailable associations remain unknown."
+}
