@@ -34,7 +34,8 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
             if args[0] == "gpu-op" {
-                println!("{{\"candidate_id\":\"{id}\",\"status\":\"PASS\",\"metrics\":{{\"operator_latency_ms\":0.5,\"fps_p95_ms\":16.0,\"power_watt\":null,\"psnr_db\":45.0}},\"verdict\":{{\"is_pareto_improvement\":true,\"p_value\":0.001}},\"source\":\"phonefarm\"}}");
+                let psnr = if id.starts_with("gen2_") { 47.0 } else if id.starts_with("gen1_") { 46.0 } else { 45.0 };
+                println!("{{\"candidate_id\":\"{id}\",\"status\":\"PASS\",\"metrics\":{{\"operator_latency_ms\":0.5,\"fps_p95_ms\":16.0,\"power_watt\":null,\"psnr_db\":{psnr}}},\"verdict\":{{\"is_pareto_improvement\":true,\"p_value\":0.001}},\"source\":\"phonefarm\"}}");
             } else {
                 println!("{{\"version\":2,\"kind\":\"{kind}\",\"candidate_id\":\"{id}\",\"status\":\"REJECT\",\"metrics\":{{\"fps_p95_ms\":16.0,\"fps_mean\":60.0,\"power_watt\":null}},\"verdict\":{{\"is_pareto_improvement\":false,\"p_value\":0.5,\"reason\":\"synthetic fixture: no improvement\"}},\"conditions_observed\":{{\"apply_ok\":true,\"restored\":true}},\"source\":\"phonefarm\"}}");
             }

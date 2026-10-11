@@ -228,6 +228,26 @@ fn shader_expert_reviews_each_generation_and_resume_never_repeats_measurement() 
     let done = f.calls();
     success(f.evolution(true));
     assert_eq!(f.calls(), done);
+    let first_generation: Value =
+        serde_json::from_slice(&std::fs::read(f.out.join("gen_1.json")).unwrap()).unwrap();
+    assert_eq!(
+        first_generation["best_psnr_so_far"], 46.0,
+        "resume must not leak generation 2 improvements into generation 1"
+    );
+    let journal = f.journal();
+    let measured_fingerprints: std::collections::HashSet<_> = done
+        .iter()
+        .map(|id| {
+            journal["entries"][id]["candidate"]["fingerprint"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        measured_fingerprints.len(),
+        done.len(),
+        "duplicate siblings must not consume device time"
+    );
     let archive: Value =
         serde_json::from_slice(&std::fs::read(f.out.join("archive.json")).unwrap()).unwrap();
     assert!(archive["entries"]
