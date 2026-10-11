@@ -354,7 +354,9 @@ def main():
             "game_opt_loop": (os.path.join(gol, "game_opt_loop"), gol),
             "adb": ("/opt/homebrew/bin/adb", root), "devlock": (os.path.join(root, "tools", "devlock"), root),
             # 更新节点上的 phonefarm / game_opt_loop：上传的 tar 覆盖到对应目录（保留 runs 等数据）
-            "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root))}
+            "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root)),
+            # 节点自己下载 APK 并装到手机（大安装包不经开发机）
+            "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
     jobs = Jobs(root, bins)
     board = None
     if dash:
