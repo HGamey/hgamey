@@ -2,6 +2,7 @@
   "baseline_artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "candidate_artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "conditions_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "baseline_admission_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "exploration_run_ids": [
     "exploration-1"
   ],

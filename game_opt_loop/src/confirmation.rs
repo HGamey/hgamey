@@ -35,6 +35,7 @@ pub struct Plan {
     pub baseline_artifact_sha256: String,
     pub candidate_artifact_sha256: String,
     pub conditions_sha256: String,
+    pub baseline_admission_sha256: String,
     pub exploration_run_ids: Vec<String>,
     pub exploration_artifact_sha256: Vec<String>,
     pub pairs: usize,
@@ -160,7 +161,8 @@ fn validate(plan: &Plan) -> Result<()> {
     ensure!(
         digest_ok(&plan.baseline_artifact_sha256)
             && digest_ok(&plan.candidate_artifact_sha256)
-            && digest_ok(&plan.conditions_sha256),
+            && digest_ok(&plan.conditions_sha256)
+            && digest_ok(&plan.baseline_admission_sha256),
         "artifact/conditions must be lowercase SHA-256 digests"
     );
     ensure!(
@@ -283,14 +285,28 @@ fn receiver_qualified(v: &Value) -> bool {
         .get("qualification_only")
         .is_some_and(|x| x.as_bool() != Some(false));
     !replay
-        && v["qualification"]["stage"] == "conclusion"
-        && v["qualification"]["eligible"] == true
-        && matches!(v["status"].as_str(), Some("PASS" | "REJECT"))
+        && v["schema"] == "phonefarm/confirmation_observation@1"
+        && v["qualification"]["stage"] == "experiment"
+        && v["qualification"]["eligible"] == false
+        && v["status"] == "VALID_OBSERVATION"
         && v["source"] == "phonefarm"
         && matches!(
             v["qualification"]["evidence_origin"].as_str(),
             Some("live_device" | "recorded_device")
         )
+        && v["sample_qualification"]["schema"] == "phonefarm/confirmation_sample_qualification@1"
+        && v["sample_qualification"]["valid_observation"] == true
+        && [
+            "root_verified",
+            "control_verified",
+            "cold_verified",
+            "trace_window_verified",
+            "workload_succeeded",
+            "restore_verified",
+            "baseline_admission_verified",
+        ]
+        .iter()
+        .all(|gate| v["sample_qualification"]["gates"][*gate] == true)
 }
 
 fn metric_provenance_valid(v: &Value, metric: &str) -> bool {
@@ -327,6 +343,8 @@ fn binding_valid(
         &frozen.plan.candidate_artifact_sha256
     };
     b["pair_id"] == pair_id
+        && v["sample_qualification"]["baseline_admission_sha256"]
+            == frozen.plan.baseline_admission_sha256
         && b["run_id"] == id
         && b["sample_role"] == role
         && b["aggregation_level"] == "single_run"
@@ -491,7 +509,7 @@ pub fn judge(
                 Ok(v) => {
                     if !receiver_qualified(&v) {
                         out.issues
-                            .push(format!("receiver not conclusion-qualified: {id}"));
+                            .push(format!("receiver not a valid single-run observation: {id}"));
                     }
                     if !binding_valid(&v, &pair.pair_id, id, role, frozen, registered) {
                         out.issues.push(format!(
@@ -686,12 +704,13 @@ mod tests {
     }
     #[test]
     fn offline_or_malformed_qualifications_do_not_confirm() {
-        let mut v = serde_json::json!({"source":"phonefarm","status":"REJECT","qualification":{"stage":"conclusion","eligible":true,"evidence_origin":"recorded_device"}});
+        let mut v = serde_json::json!({"schema":"phonefarm/confirmation_observation@1","source":"phonefarm","status":"VALID_OBSERVATION","qualification":{"stage":"experiment","eligible":false,"evidence_origin":"recorded_device"},
+            "sample_qualification":{"schema":"phonefarm/confirmation_sample_qualification@1","valid_observation":true,"gates":{"root_verified":true,"control_verified":true,"cold_verified":true,"trace_window_verified":true,"workload_succeeded":true,"restore_verified":true,"baseline_admission_verified":true}}});
         assert!(receiver_qualified(&v));
         v["qualification_only"] = Value::Bool(true);
         assert!(!receiver_qualified(&v));
         v["qualification_only"] = Value::Bool(false);
-        v["qualification"]["stage"] = Value::String("experiment".into());
+        v["qualification"]["stage"] = Value::String("conclusion".into());
         assert!(!receiver_qualified(&v));
     }
 }
@@ -721,6 +740,7 @@ mod contract_tests {
             baseline_artifact_sha256: "b".repeat(64),
             candidate_artifact_sha256: "c".repeat(64),
             conditions_sha256: "d".repeat(64),
+            baseline_admission_sha256: "e".repeat(64),
             exploration_run_ids: vec!["search1".into()],
             exploration_artifact_sha256: vec!["a".repeat(64)],
             pairs: 5,
@@ -748,7 +768,8 @@ mod contract_tests {
             for (id, role) in [(&p.a_run_id, "baseline"), (&p.b_run_id, "candidate")] {
                 let first = (role == "baseline") == p.baseline_first;
                 let second = i * 4 + 1 + usize::from(!first) * 2;
-                let report = json!({"source":"phonefarm","status":"REJECT","qualification":{"stage":"conclusion","eligible":true,"evidence_origin":"recorded_device"},
+                let report = json!({"schema":"phonefarm/confirmation_observation@1","source":"phonefarm","status":"VALID_OBSERVATION","qualification":{"stage":"experiment","eligible":false,"evidence_origin":"recorded_device"},
+                    "sample_qualification":{"schema":"phonefarm/confirmation_sample_qualification@1","valid_observation":true,"baseline_admission_sha256":frozen.plan.baseline_admission_sha256,"gates":{"root_verified":true,"control_verified":true,"cold_verified":true,"trace_window_verified":true,"workload_succeeded":true,"restore_verified":true,"baseline_admission_verified":true}},
                     "metrics":{"power_watt":if role=="baseline" {100.0} else {91.0+i as f64}},
                     "metric_provenance":{"power_watt":{"source":"battery_sysfs","rail":"battery","window_verified":true,"discharging":true}},
                     "confirmation_binding":{"raw_artifacts":{"trace_sha256":hash(format!("{id}:trace").as_bytes()),"env_sha256":hash(format!("{id}:env").as_bytes())},"pair_id":p.pair_id,"run_id":id,"sample_role":role,"aggregation_level":"single_run","artifact_sha256":if role=="baseline" {&frozen.plan.baseline_artifact_sha256} else {&frozen.plan.candidate_artifact_sha256},"conditions_sha256":frozen.plan.conditions_sha256,"frozen_plan_sha256":frozen.sha256,
@@ -884,6 +905,44 @@ mod contract_tests {
         });
         assert_eq!(check(&root, &f, &s).verdict, "BLOCKED");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn aggregated_conclusions_and_incomplete_single_run_gates_block() {
+        for gate in [
+            "root_verified",
+            "control_verified",
+            "cold_verified",
+            "trace_window_verified",
+            "workload_succeeded",
+            "restore_verified",
+            "baseline_admission_verified",
+        ] {
+            for invalid in [json!(false), Value::Null, json!("true")] {
+                let (root, f, mut s) = fixture();
+                modify_first(&root, &mut s, |v| {
+                    v["sample_qualification"]["gates"][gate] = invalid
+                });
+                assert_eq!(check(&root, &f, &s).verdict, "BLOCKED", "{gate}");
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+        for variant in 0..6 {
+            let (root, f, mut s) = fixture();
+            modify_first(&root, &mut s, |v| match variant {
+                0 => {
+                    v["qualification"]["stage"] = json!("conclusion");
+                    v["qualification"]["eligible"] = json!(true);
+                }
+                1 => v["schema"] = json!("phonefarm/eval_report@2"),
+                2 => v["status"] = json!("PASS"),
+                3 => v["sample_qualification"]["baseline_admission_sha256"] = json!("f".repeat(64)),
+                4 => v["sample_qualification"]["valid_observation"] = json!(false),
+                _ => v["qualification"]["evidence_origin"] = json!("synthetic_fixture"),
+            });
+            assert_eq!(check(&root, &f, &s).verdict, "BLOCKED", "variant {variant}");
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
