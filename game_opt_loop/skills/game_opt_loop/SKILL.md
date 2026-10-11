@@ -147,7 +147,16 @@ Read the output top down:
 ## Sharing one phone: the device lock
 
 Several agents work against one phone. Everything that touches the device —
-including `--plan` — goes through the lock at `/private/tmp/claude-501/devlock`.
+including `--plan` — goes through the lock at `/private/tmp/claude-501/devlock`
+(script: phonefarm repo `tools/devlock`).
+
+**`optimize` takes the lock itself** (acquire, 60 s heartbeat, release on exit):
+pass `--lock-label <label>` (default: `$DEVLOCK_LABEL`, else `game_opt_loop`)
+and optionally `--lock-wait 2h`. It queues and retries on its own; if the wait
+runs out it exits without touching the device. Do **not** wrap it in
+`devlock run <other-label>` — it would wait on itself. Wrapping with the *same*
+label is harmless. phonefarm's device subcommands do the same (`--lock-label`).
+The manual `devlock run` loop below is still how you guard ad-hoc `adb` commands.
 
 ```bash
 /private/tmp/claude-501/devlock status               # who holds it, who is queued
@@ -186,9 +195,11 @@ free.** So:
 # Take the label from `status`; retry until it is your turn.
 for i in $(seq 1 90); do
   /private/tmp/claude-501/devlock run gol-probe -- \
-    ./target/release/game_opt_loop optimize --game 原神 --plan && break
+    adb -s 91253241019A shell dumpsys battery && break
   sleep 40
 done
+# optimize queues by itself:
+./target/release/game_opt_loop optimize --game 原神 --plan --lock-label gol-probe
 ```
 
 ### Picking the device
