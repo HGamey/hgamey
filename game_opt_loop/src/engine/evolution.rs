@@ -35,7 +35,7 @@ use crate::TrackMode;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// 演化的运行参数。
@@ -350,12 +350,19 @@ impl Evolution {
         } else {
             None
         };
-        let archive = ParetoArchive::load_or_new(
-            &archive_path,
-            spec.id,
-            config.budget_ms,
-            spec.quality_baseline_db,
-        );
+        let archive = if campaign.is_some() {
+            // Replay immutable receipts in generation order. Starting with the
+            // final archive would leak later-generation wins into earlier
+            // convergence points and parent selection during resumed replay.
+            ParetoArchive::new(spec.id, config.budget_ms, spec.quality_baseline_db)
+        } else {
+            ParetoArchive::load_or_new(
+                &archive_path,
+                spec.id,
+                config.budget_ms,
+                spec.quality_baseline_db,
+            )
+        };
         check_archive_quality_reference(&archive, config.quality_reference.as_deref())
             .with_context(|| format!("档案 {}", archive_path.display()))?;
 
@@ -647,13 +654,18 @@ impl Evolution {
         let mut gate_rejections: BTreeMap<String, usize> = BTreeMap::new();
         let mut rejections = Vec::new();
         let mut gen_best_psnr: Option<f32> = None;
+        // Expert review stages the whole batch before measuring any child.
+        // Keep duplicate siblings out even while no new archive entry exists.
+        let mut batch_fingerprints = HashSet::new();
 
         for (candidate, genome) in batch.drain(..) {
             let already_staged = self
                 .campaign
                 .as_ref()
                 .is_some_and(|c| c.borrow().journal.entries.contains_key(&candidate.id));
-            if self.archive.contains_fingerprint(&candidate.fingerprint) && !already_staged {
+            if !batch_fingerprints.insert(candidate.fingerprint.clone())
+                || (self.archive.contains_fingerprint(&candidate.fingerprint) && !already_staged)
+            {
                 outcomes.push(CandidateOutcome {
                     id: candidate.id.clone(),
                     origin: candidate.origin,
