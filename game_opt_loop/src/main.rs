@@ -155,6 +155,22 @@ pub struct OptimizeArgs {
     /// 外部出方案进程单次超时 (秒)。
     #[arg(long, default_value_t = game_opt_loop::optimize::proposer::DEFAULT_TIMEOUT_S)]
     proposer_timeout_s: u64,
+
+    /// 设备锁 label。缺省取环境 `DEVLOCK_LABEL`, 再缺省 `game_opt_loop`。
+    /// lead 预排了队列时要用队列里那个名字。
+    ///
+    /// optimize (含 `--plan`) 自己拿锁、心跳、释放; 外面不要再用 `devlock run`
+    /// 包另一个 label —— 包同一个 label 没问题 (认得出是自己这一侧的, 原地执行)。
+    #[arg(long)]
+    lock_label: Option<String>,
+
+    /// 最多排多久队: `45m` / `2h` / `900s`。等满还没轮到就退出, 不碰设备。
+    #[arg(long, default_value = "2h")]
+    lock_wait: String,
+
+    /// 不拿设备锁 (只在确定没人共用这台手机时用)。
+    #[arg(long, default_value_t = false)]
+    no_devlock: bool,
 }
 
 #[derive(Args, Debug)]
@@ -602,6 +618,23 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
             specs: args.proposer,
             timeout_s: args.proposer_timeout_s,
         },
+    };
+
+    // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——
+    // 正常结束、`?` 提前返回、panic 展开都会释放。
+    let _lock = if args.no_devlock {
+        game_opt_loop::devlock::Guard::disabled()
+    } else {
+        let wait = game_opt_loop::devlock::parse_wait(&args.lock_wait)?;
+        let label = game_opt_loop::devlock::resolve_label(args.lock_label.as_deref());
+        let Some(script) = game_opt_loop::devlock::script_path(&cfg.phonefarm) else {
+            anyhow::bail!(
+                "找不到设备锁脚本 (DEVLOCK_BIN 未设, {} 旁边没有 tools/devlock, PATH 上也没有 devlock)。\
+                 没拿到锁不碰设备; 确实没人共用这台手机时可加 --no-devlock",
+                cfg.phonefarm.display()
+            );
+        };
+        game_opt_loop::devlock::Guard::acquire(script, label, wait)?
     };
 
     // 给了两个以上 --proposer 就是对比模式: 同一游戏 / 设备 / 预算依次跑, 出 compare.md。

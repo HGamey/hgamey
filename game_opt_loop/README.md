@@ -130,7 +130,6 @@ cargo run --release -- optimize --game 原神 --device 91253241019A --budget 1h 
 **还没接上的**
 
 - **停充**。phonefarm 已经能在测功耗期间停止充电（PR #27）。本仓库 v2 计划里已经把停充条件（`charging_suspend` + 放电态要求）填上了，真机那一端：②③ 两路的 eval 接收端已按契约接停充（#66 实际停充、节点记进 `power_source.charging_suspended_via`，停不掉功耗如实 null），① 画面算子现在还降级成 v1 `gpu-op`（不带停充）。所以 ① 那条路真机跑出来的功耗还是充电态下量的，按 §6.9 的规则一律排除在 Pareto 之外。
-- **设备锁**。phonefarm 那边有 `devlock` 做心跳与排队，本仓库代码还没自动接上——`--plan` 的摸底靠 skill 里手工 `devlock run` 包一层，真机评测目前靠人守着不要两条线同时上同一台机器。
 
 ---
 
@@ -156,7 +155,7 @@ cargo run -- serve --port 8765
 
 真机评测需要同级目录下有编译好的 `../phonefarm/phonefarm` 和至少一台在线设备。
 
-设备是共享的。phonefarm 那边约定用 `devlock` 抢锁排队，本仓库目前还没接上，跑真机之前请自己确认没有别的线在用同一台机器——A/B 两臂之间插进来一条别的负载，这一轮就白跑了。同一个候选的 A/B 两臂必须跑在同一台手机上，跨机比较拿不到可比的数字。
+设备是共享的，用 phonefarm 仓库里的设备锁 `tools/devlock`（安装见 phonefarm README）抢锁排队。`optimize`（含 `--plan`）自己拿锁、每 60 秒续心跳、跑完释放：`--lock-label`（缺省取环境 `DEVLOCK_LABEL`，再缺省 `game_opt_loop`；lead 预排了队列时用队列里那个名字）、`--lock-wait`（缺省 `2h`，等满没轮到就退出，不碰设备）、`--no-devlock`（显式不拿，打警告）。锁脚本按 `DEVLOCK_BIN` > `<--phonefarm 所在目录>/tools/devlock` > PATH 上的 `devlock` 找。持锁期间调起的 `phonefarm probe/eval` 认得是同一侧的锁，原地执行。外面不要再用 `devlock run` 包**另一个** label（会自己等自己）；包同一个 label 没问题。自主进化入口（不带子命令）的真机评测每一次都经 `phonefarm gpu-op`，由 phonefarm 那边逐次拿锁。A/B 两臂之间插进来一条别的负载，这一轮就白跑了。同一个候选的 A/B 两臂必须跑在同一台手机上，跨机比较拿不到可比的数字。
 
 ---
 
