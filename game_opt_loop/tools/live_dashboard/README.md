@@ -8,7 +8,7 @@ root; never point it at credentials, an alias, a private snapshot or a session.
 python3 tools/live_dashboard/export.py \
   --task-root /Users/kamico/work/GOSIM/HGamey/phonefarm/tasks/oneplus_live_20261012 \
   --eval-registry reporting/live-dashboard-publication/eval-input-registry.json \
-  --out /Users/kamico/work/GOSIM/HGamey/phonefarm/tasks/oneplus_live_20261012/reporting/live-dashboard-publication/release-002
+  --out /Users/kamico/work/GOSIM/HGamey/phonefarm/tasks/oneplus_live_20261012/reporting/live-dashboard-publication/release-004
 ```
 
 Use a fresh release name for each **completed** checkpoint. Registry schema
@@ -22,15 +22,20 @@ This local operator registry is integrity metadata, not trusted attestation.
 
 Inspect `release-manifest.json` and rehash its six files before deploying only
 that release. No original command, account screenshot or arbitrary file API is
-public. Root handles SSH/TLS. The finite deployment sequence is:
+public. Root handles SSH/TLS through its bounded, receipt-checked deployment
+script (replace the two final arguments with the exact release and independent
+review paths):
 
 ```sh
-rsync -a --chmod=D755,F644 RELEASE_DIRECTORY/ osakasb:/srv/phonefarm/releases/RELEASE_NAME/
-ssh osakasb 'ln -s /srv/phonefarm/releases/RELEASE_NAME /srv/phonefarm/current.next && mv -Tf /srv/phonefarm/current.next /srv/phonefarm/current'
+python3 /Users/kamico/work/GOSIM/HGamey/phonefarm/tasks/oneplus_live_20261012/deployment_phonefarm_20261012/deploy_release.py \
+  --release FINAL_RELEASE_DIRECTORY --review-receipt A_EXACT_REVIEW_RECEIPT
 ```
 
-The server runs `python3 -m http.server 8461 --bind 127.0.0.1 --directory
-/srv/phonefarm/current`; nginx forwards the public HTTPS host there. Its browser
+The script uploads only the release to the user's remote cache, then uses sudo
+install and an atomic current symlink. The actual remote directories are
+`/var/www/phonefarm/releases` and `/var/www/phonefarm/current`. Nginx's SNI443
+routing forwards to a local nginx TLS static server at `127.0.0.1:8461`; there
+is no Python HTTP server in the deployment. Its browser
 fetches `/api/live-experiments.json` with no-store every 30 seconds, preserving
 the prior data and a visible warning on failure. The export timestamp is not a
 new phone sample. Refresh creates no device work.
