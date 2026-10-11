@@ -4,11 +4,13 @@ Refs https://github.com/HGamey/.github/issues/18 。这是离线确认注册/裁
 
 ## 数据合同与冻结
 
-`confirm freeze --plan plan.json --out frozen.json` 以 create_new 注册：基线与候选工件 SHA-256、条件 SHA-256、探索 run IDs、预先分配的确认pair/run IDs与平衡AB/BA次序、完整确认 pair 数、指标方向/单位、最小收益、最大允许退化、家族 alpha 与统计假设。至少5对独立运行；至少1个指标必须有正的收益目标。sha绑定规则和注册时间。已有文件不得覆盖。
+`confirm freeze --plan plan.json --out frozen.json` 以 create_new 注册：基线与候选工件 SHA-256、条件 SHA-256、基线准入工件 `baseline_admission_sha256`、探索 run IDs、预先分配的确认pair/run IDs与平衡AB/BA次序、完整确认 pair 数、指标方向/单位、最小收益、最大允许退化、家族 alpha 与统计假设。至少5对独立运行；至少1个指标必须有正的收益目标。sha绑定规则和注册时间。已有文件不得覆盖。基线准入发生在注册前，其原始 trace/ENV 也列入 exploration_artifact_sha256，不能再作为确认臂。
 
 `confirm judge --frozen frozen.json --samples pairs.json --out report.json` 必须一次提供确切冻结轮数；未齐、超额、重复 run/pair/report 字节、与探索数据重叠、工件/条件/规则改变均 BLOCKED。每臂报告完整字节以sha绑定。confirmation_binding.raw_artifacts必须含trace_sha256及env_sha256，原始工件hash也须与其它确认臂及探索工件互斥；freeze必须列exploration_artifact_sha256。receiver必须提供单轮 `confirmation_binding`：run_id、sample_role baseline/candidate、artifact_sha256、conditions_sha256、frozen_plan_sha256、pair_id、started_at/finished_at、aggregation_level=single_run。运行时间必须在注册后，单轮不能重叠，必须符合冻结的AB/BA与pair顺序；报告不具备绑定则明确阻断。现有聚合 eval 报告没有此合同，不能直接当独立运行重复计数；后续执行driver需产出单轮绑定。
 
-接收端结论资格必须为true，stage为conclusion，source=phonefarm，status为PASS或REJECT。qualification_only或坏类型不可使用。统计REJECT仍可能是有效观测，ABORT不属于确认数据。必需指标数值/来源缺失不删除指标，不补零。当前仅支持power_watt、fps_p95_ms、frame_p95_ms、fps_mean及其正确方向，数值必须正且有限。功耗要求source=battery_sysfs、rail=battery、discharging=true、window_verified=true；帧代理要求source=raw_ftrace_kgsl、confidence=inferred、semantics=gpu_submit_proxy、display_verified=false。来源声明、sha及时间是完整性检查，不能证明采集真实性或外部注册 chronology。合成/未知来源不能确认手机指标。
+接收端必须是版本化单轮报告 `phonefarm/confirmation_observation@1`、source=phonefarm、status=VALID_OBSERVATION。单轮 `qualification.stage=experiment`、`eligible=false`，不作统计结论；来源明确 live_device/recorded_device。独立 `sample_qualification` 的 schema 为 `phonefarm/confirmation_sample_qualification@1`，valid_observation=true，baseline_admission_sha256 与计划相等，gates 中 root_verified、control_verified、cold_verified、trace_window_verified、workload_succeeded、restore_verified、baseline_admission_verified 必须全部为布尔 true。这些 gate 应由 receiver 从原始 bundle 重建，不能由候选自行填报。现有完整 A/B 的 conclusion/eligible 报告即使贴 single_run binding 仍拒绝；单轮有效性与完整确认集的统计裁决分开。
+
+qualification_only 或坏类型不可使用；BLOCKED/ABORT 不属于确认数据。必需指标数值/来源缺失不删除指标，不补零。当前仅支持power_watt、fps_p95_ms、frame_p95_ms、fps_mean及其正确方向，数值必须正且有限。功耗要求source=battery_sysfs、rail=battery、discharging=true、window_verified=true；帧代理要求source=raw_ftrace_kgsl、confidence=inferred、semantics=gpu_submit_proxy、display_verified=false。来源声明、sha及时间是完整性检查，不能证明采集真实性或外部注册 chronology。GOL 校验 receiver 报告与冻结绑定，不重新解析准入/采样原始 bundle；receiver 的门禁真实性仍待采集认证与真机验收。合成/未知来源不能确认手机指标。
 
 ## 统计与结论
 
