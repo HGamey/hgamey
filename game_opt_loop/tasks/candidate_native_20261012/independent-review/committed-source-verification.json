@@ -1,0 +1,20 @@
+{
+  "src/candidate_prepare.rs": {
+    "commit_sha256": "a47ede0a59472aced2776f8907449ea0c031c5e80d2aa5b3a93aa8884cb71374",
+    "matches_reviewed_bytes": true
+  },
+  "src/candidate_prepare_native.rs": {
+    "commit_sha256": "0ac1c3240a534ef0891bc80740444d8b83ad7b3bfe663fcac3d9dcdcd789e2e3",
+    "matches_reviewed_bytes": true
+  },
+  "docs/SPEC_CANDIDATE_NATIVE_PREPARE.md": {
+    "commit_sha256": "fa4da95f9e83a67bf74c086351458add54c7b3f780c80d652696d9fb6ad59260",
+    "matches_reviewed_bytes": true
+  },
+  "tests/candidate_native_cli.rs": {
+    "commit_sha256": "e6779675db54239b19e74f09a0bb797b99b899704ce2e156c44e8795040ffbe5",
+    "scope": "fixture timing-only follow-up, no repeated suite"
+  },
+  "commit": "70141d57dfe6238afa219d01604e191162353967",
+  "reviewed_binary_sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+}

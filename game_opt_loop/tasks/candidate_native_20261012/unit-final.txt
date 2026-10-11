@@ -1,0 +1,60 @@
+   Compiling game_opt_loop v0.2.0 (/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-native)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.41s
+     Running unittests src/lib.rs (target/debug/deps/game_opt_loop-d3adc83d8125cb56)
+
+running 4 tests
+test candidate_prepare::native::tests::known_native_policy_rejects_metadata_contradictions ... ok
+test candidate_prepare::native::tests::regular_sdk_snapshot_uses_private_bytes_and_rejects_mutation ... ok
+test candidate_prepare::native::tests::input_contract_presence_extras_and_post_execution_deadline_are_checked ... ok
+test candidate_prepare::native::tests::sdk_symlink_sparse_oversize_and_snapshot_budget_are_explicit_blocked ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 280 filtered out; finished in 0.14s
+
+     Running unittests src/main.rs (target/debug/deps/game_opt_loop-6cffe3d21da608b3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/candidate_artifact_cli.rs (target/debug/deps/candidate_artifact_cli-e98e88295fa45c4a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests/candidate_native_cli.rs (target/debug/deps/candidate_native_cli-b4d5aa0a06253b59)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+     Running tests/candidate_prepare_cli.rs (target/debug/deps/candidate_prepare_cli-693fb3ae239b2a5a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/contract_conformance.rs (target/debug/deps/contract_conformance-642fb67a8eeb550d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+     Running tests/evolution_loop.rs (target/debug/deps/evolution_loop-39edac1d7434ef9c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+     Running tests/optimize_flow.rs (target/debug/deps/optimize_flow-57bebe9b03494587)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/viz_dashboard.rs (target/debug/deps/viz_dashboard-09e648388d9f458e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
