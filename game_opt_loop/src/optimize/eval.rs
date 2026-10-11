@@ -501,6 +501,17 @@ pub struct EvalDriver {
     runner: Option<Box<dyn Fn(&str, &[String]) -> Result<(Option<i32>, String, String)> + Send + Sync>>,
 }
 
+/// 进门的结果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnterOutcome {
+    InGame,
+    /// 要人动手 (登录/实名/验证码/更新)。带接收端最后几行输出。
+    NeedsHuman(String),
+    Failed(String),
+    /// 接收端没有 `onboard` 子命令。
+    Unsupported,
+}
+
 impl EvalDriver {
     pub fn new(binary: impl Into<PathBuf>) -> Self {
         Self {
@@ -581,6 +592,42 @@ impl EvalDriver {
 
     /// 下发一次评测。请求先落盘再把路径传下去 —— 既避开 argv 长度限制,
     /// 也让每一次下发都留下可回溯的证据。
+    /// 把黑盒游戏带进游戏场景: `phonefarm onboard --package P --serial S --enter-only`。
+    ///
+    /// 系统参数那一层的评测不重启游戏, 量的是**屏幕上现在是什么**: 游戏被别人
+    /// force-stop 了、停在登录页, 量到的就是桌面/登录页。所以每个候选上机前先进门。
+    /// 接收端的退出码: 0 = 在游戏里, 3 = 需要人 (登录/实名/验证码), 其余 = 失败。
+    /// 接收端不认这个子命令 (旧版 phonefarm) 时回 `Unsupported`, 调用方照旧行为继续。
+    pub fn enter_scene(&self, package: &str, serial: &str, out: &Path) -> EnterOutcome {
+        let args = vec![
+            "--package".to_string(),
+            package.to_string(),
+            "--serial".to_string(),
+            serial.to_string(),
+            "--enter-only".to_string(),
+            "--out".to_string(),
+            out.display().to_string(),
+        ];
+        match self.call("onboard", &args) {
+            Err(e) => EnterOutcome::Failed(e.to_string()),
+            Ok((code, stdout, stderr)) => {
+                let tail = |s: &str| s.lines().rev().take(3).collect::<Vec<_>>().join(" | ");
+                if stderr.contains("未知子命令") || stderr.contains("unknown subcommand") {
+                    return EnterOutcome::Unsupported;
+                }
+                match code {
+                    Some(0) => EnterOutcome::InGame,
+                    Some(3) => EnterOutcome::NeedsHuman(tail(&stdout)),
+                    c => EnterOutcome::Failed(format!(
+                        "退出码 {c:?}: {} {}",
+                        tail(&stdout),
+                        tail(&stderr)
+                    )),
+                }
+            }
+        }
+    }
+
     pub fn evaluate(&self, request: &Request, request_path: &Path) -> Result<Report> {
         if let Some(dir) = request_path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -886,5 +933,25 @@ mod tests {
         assert!(d.probe().is_supported());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 进门的退出码契约: 0 在游戏里, 3 要人, 其余失败; 旧接收端不认子命令时照旧继续。
+    #[test]
+    fn enter_scene_maps_receiver_exit_codes() {
+        let p = std::path::Path::new("/tmp/x");
+        let run = |code: Option<i32>, err: &'static str| {
+            EvalDriver::new("/nonexistent/phonefarm").with_runner(move |sub, args| {
+                assert_eq!(sub, "onboard");
+                assert!(args.iter().any(|a| a == "--enter-only"));
+                Ok((code, "{\"status\":\"X\"}".into(), err.into()))
+            })
+        };
+        assert_eq!(run(Some(0), "").enter_scene("pkg", "S", p), EnterOutcome::InGame);
+        assert!(matches!(run(Some(3), "").enter_scene("pkg", "S", p), EnterOutcome::NeedsHuman(_)));
+        assert!(matches!(run(Some(1), "").enter_scene("pkg", "S", p), EnterOutcome::Failed(_)));
+        assert_eq!(
+            run(Some(2), "未知子命令 onboard").enter_scene("pkg", "S", p),
+            EnterOutcome::Unsupported
+        );
     }
 }

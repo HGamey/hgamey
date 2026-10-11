@@ -463,6 +463,22 @@ impl LayerCtx<'_> {
 
     /// 下发一个候选。失败只回 Err, 由调用方记进 `eval_errors` 并接着跑下一个。
     fn evaluate(&self, id: &str, req: &Request) -> Result<eval::Report> {
+        // 黑盒游戏: 上机前先进门。量到桌面或登录页的一轮不是数据。
+        if self.caps.carrier.box_kind == games::BoxKind::BlackBox && !req.package.is_empty() {
+            let dir = self.cfg.out_dir.join("enter").join(id);
+            match self.driver.enter_scene(&req.package, self.serial, &dir) {
+                eval::EnterOutcome::InGame => println!("        进门: 已在游戏场景"),
+                eval::EnterOutcome::Unsupported => {
+                    println!("        进门: 接收端没有 onboard --enter-only, 照旧直接上机 (开跑前要人确认在游戏里)")
+                }
+                eval::EnterOutcome::NeedsHuman(why) => {
+                    bail!("进不了游戏场景, 要人动手: {why} (证据 {})", dir.display())
+                }
+                eval::EnterOutcome::Failed(why) => {
+                    bail!("进不了游戏场景: {why} (证据 {})", dir.display())
+                }
+            }
+        }
         let path = self
             .cfg
             .out_dir
