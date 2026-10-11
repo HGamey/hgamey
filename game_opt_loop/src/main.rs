@@ -102,6 +102,12 @@ pub struct OptimizeArgs {
     #[arg(long)]
     device: Option<String>,
 
+    /// 同型号的其他设备, 可多次给。③ 系统参数层同一代的候选分给主设备与这些设备
+    /// 并行量, 每个候选只在自己那台上比对照臂, 不跨设备比。型号/root 与主设备不同就停。
+    /// 设备锁仍是一把: optimize 持锁期间这几台都归它用。
+    #[arg(long = "extra-device")]
+    extra_device: Vec<String>,
+
     /// 包名。名字认不出来时用它指定; 给了就压过内置表的推断。
     #[arg(long)]
     package: Option<String>,
@@ -669,6 +675,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         game: args.game,
         package: args.package,
         serial: args.device,
+        extra_devices: args.extra_device,
         budget,
         plan_only: args.plan,
         out_dir: args.out,

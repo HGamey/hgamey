@@ -102,6 +102,7 @@ cargo run --release -- optimize --game com.example.game --package com.example.ga
 | :--- | :--- |
 | `--game <name>` | `原神` / `genshin` / `refbench` / a carrier directory name / a package name |
 | `--device <serial>` | Target device. Omit **only** when exactly one is online — with several online it refuses rather than guesses |
+| `--extra-device <serial>` | Repeatable. Same-model devices that share layer ③ candidates of one generation with `--device`, in parallel. Each candidate is judged only against its own control arm on the device it ran on — never across devices. Refuses a different model/root state. One device lock covers all of them |
 | `--package <pkg>` | Package name, when the game name is not recognized. Overrides the built-in table |
 | `--budget <45m\|2h\|900s>` | Real-device time budget. Bare numbers are minutes. Default **30m**, deliberately small — enough for one candidate on the cheapest layer |
 | `--plan` | Survey + plan only. **Not a single byte is written to the device** |
