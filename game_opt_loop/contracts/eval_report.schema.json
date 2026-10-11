@@ -127,7 +127,11 @@
         "hits": { "type": ["integer", "null"], "description": "gray: 改写被绑定的次数。0 而 require_hit=true 时必须 ABORT。" },
         "snapshot_identical": { "type": ["boolean", "null"], "description": "轮末设备快照与轮前是否逐行相等。false = 留痕了, 本轮作废。" },
         "restored": { "type": ["boolean", "null"], "description": "所有写入 (sysfs / settings / 属性 / 停充) 是否已全部还原并回读一致。false 是需要人介入的状态, 上层不应继续下发下一个候选。" },
-        "snapshot_diff": { "type": ["array", "null"], "items": { "type": "string" }, "description": "snapshot_identical=false 时, 差在哪几行" }
+        "snapshot_diff": { "type": ["array", "null"], "items": { "type": "string" }, "description": "snapshot_identical=false 时, 差在哪几行" },
+        "contested_arms": { "type": ["integer", "null"], "description": "sysparam: 改写臂里有几臂被厂商性能服务抢回 (施加后约 12 秒或负载末尾回读对不上)。这几臂不进统计; 全部抢回则 ABORT。" },
+        "contested": { "type": ["array", "null"], "description": "sysparam: 每个被抢回的臂 {round, nodes: [\"路径: 写 X +12s回读 Y\"]}" },
+        "snapshot_vendor_drift": { "type": ["array", "null"], "items": { "type": "string" }, "description": "sysparam: 快照前后只在厂商服务会动的频率边界 (kgsl.*pwrlevel、cpu.*.scaling_max/min 等) 上不同, 不判留痕, 逐项记下" },
+        "image_check": { "type": ["object", "null"], "description": "gray: 画面比对 {min_psnr_db, psnr_knob_vs_ctrl_db: [...], psnr_ctrl_vs_ctrl_db: [...]}" }
       }
     },
     "evidence_dir": { "type": ["string", "null"], "description": "接收端把本轮原始证据 (trace / 快照 / 逐轮 metrics) 落在哪。上层把它记进总报告, 让每一个数字都能回溯到原始采集。" },
