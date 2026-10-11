@@ -530,7 +530,6 @@ fn main() -> Result<()> {
             )
         }
         None => {}
-        Some(Command::CandidateArtifact { .. }) => unreachable!("handled before banner"),
     }
     // 没给子命令 = 老的单赛道演化入口, 原样保留。
     let cli = cli.legacy;
