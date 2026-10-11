@@ -27,6 +27,28 @@ cargo run --release -- optimize --game 原神 --device 91253241019A --budget 2h
 
 ---
 
+## 模型工件阶段（协议层，尚未交付真实模型流程）
+
+`model-pipeline` 用明确配置的外部 argv 驱动 design/train/quantize/deploy/evaluate。
+它记录模型格式、framework/runtime/ABI/量化声明、数据来源与各阶段输入输出 SHA，
+提供逐阶段专家接受/拒绝/延期和不重复下发的恢复账本。中断状态必须人工核对，
+输出完成会重新验证当前字节；驱动协议完成不证明模型有效或真实游戏优化成立。
+训练/量化/部署适配器、模型格式解析、可信预算计量和 phonefarm 资格评测尚未接入。
+
+离线协议演示（全部合成产物，没有训练、API 或设备操作）：
+
+```bash
+python3 examples/model_pipeline/make_demo.py /tmp/gol-model-demo autonomous
+cargo run -- model-pipeline start --plan /tmp/gol-model-demo/plan.json --out /tmp/gol-model-demo/run
+cargo run -- model-pipeline resume --out /tmp/gol-model-demo/run
+```
+
+演示使用真实外部 fake driver；`promotion_allowed`、`real_game_optimization_proven`、
+`model_semantics_verified` 始终为 false。专家模式、驱动回执和恢复门禁详见
+[SPEC_MODEL_ARTIFACT_PIPELINE](docs/SPEC_MODEL_ARTIFACT_PIPELINE.md)。
+
+---
+
 ## 一次任务走完是什么样
 
 ```
