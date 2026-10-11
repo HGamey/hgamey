@@ -223,3 +223,10 @@ svg .grid { stroke: #20242d; }
 }
 #filedrawer-body img { max-width: 100%; border-radius: 8px; }
 .err { color: var(--bad); }
+.receiver-evidence { margin-top: 8px; }
+.receiver-evidence summary { cursor: pointer; color: var(--accent); }
+.receiver-evidence pre {
+  max-width: min(64vw, 760px); max-height: 480px; overflow: auto;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; color: #cfd6e2;
+}

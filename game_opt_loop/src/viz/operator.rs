@@ -5,9 +5,11 @@
 //! "面板还在按老格式读、显示出来的数早就不是档案里那份"这种事。
 
 use crate::engine::evolution::{GenerationRecord, OutcomeStage};
-use crate::engine::{EvalStatus, MetricSource, ParetoArchive};
+use crate::engine::{EvalReport, EvalStatus, MetricSource, ParetoArchive};
+use crate::evidence::{qualification_state, QualificationState};
 use crate::viz::model::{
-    evidence_file, CandidateRow, Condition, ParetoChart, ParetoPoint, Round, RoundVerdict, Stat,
+    evidence_file, CandidateEvidence, CandidateRow, Condition, ParetoChart, ParetoPoint, Round,
+    RoundVerdict, Stat,
 };
 use crate::viz::stats::round_to;
 use std::collections::HashSet;
@@ -66,9 +68,11 @@ fn load_run(dir: &Path) -> Option<EvolutionRun> {
 
     let mut generations = Vec::new();
     for p in &gen_paths {
-        match std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|raw| {
-            serde_json::from_str::<GenerationRecord>(&raw).map_err(|e| e.to_string())
-        }) {
+        match std::fs::read_to_string(p)
+            .map_err(|e| e.to_string())
+            .and_then(|raw| {
+                serde_json::from_str::<GenerationRecord>(&raw).map_err(|e| e.to_string())
+            }) {
             Ok(rec) => generations.push(rec),
             Err(e) => problems.push(format!("{} 读不出来: {e}", p.display())),
         }
@@ -98,10 +102,10 @@ fn generation_index(path: &Path) -> Option<u32> {
         .ok()
 }
 
-/// 单个候选的判定。
+/// 已通过资格检查后的机械判定；展示入口必须先调用 classify_report。
 ///
 /// - 没走完全程 (重复指纹 / 静态预检打回 / 评测出错) → **无效**: 没测过就没有结论。
-/// - 评了, 且进了支配前沿 → 合格。
+/// - 报告声明结论资格成立，评了且进了档案前沿 → 合格（不认证采集）。
 /// - 评了但没进前沿, 或画质/耗时被一票否决 → 淘汰。
 fn classify(
     stage: OutcomeStage,
@@ -109,12 +113,11 @@ fn classify(
     on_front: Option<bool>,
 ) -> (RoundVerdict, String) {
     match stage {
-        OutcomeStage::DuplicateSkipped => {
-            (RoundVerdict::Invalid, "指纹与既有算子重复, 未上机".to_string())
-        }
-        OutcomeStage::GateRejected => {
-            (RoundVerdict::Invalid, "静态预检打回, 未上机".to_string())
-        }
+        OutcomeStage::DuplicateSkipped => (
+            RoundVerdict::Invalid,
+            "指纹与既有算子重复, 未上机".to_string(),
+        ),
+        OutcomeStage::GateRejected => (RoundVerdict::Invalid, "静态预检打回, 未上机".to_string()),
         OutcomeStage::EvalError => (RoundVerdict::Invalid, "评测过程出错".to_string()),
         OutcomeStage::ReviewPending => (RoundVerdict::Evidence, "等待专家方向决定，未评测".into()),
         OutcomeStage::ReviewDeferred => (RoundVerdict::Evidence, "专家延期，未评测".into()),
@@ -123,11 +126,15 @@ fn classify(
             Some(EvalStatus::Pass) => match on_front {
                 Some(true) => (RoundVerdict::Qualified, "进入支配前沿".to_string()),
                 Some(false) => (RoundVerdict::Eliminated, "通过评测但被前沿支配".to_string()),
-                None => (RoundVerdict::Eliminated, "通过评测 (档案读不到, 无法判前沿)".to_string()),
+                None => (
+                    RoundVerdict::Eliminated,
+                    "通过评测 (档案读不到, 无法判前沿)".to_string(),
+                ),
             },
-            Some(EvalStatus::PoorQuality) => {
-                (RoundVerdict::Eliminated, "画质低于基线, 一票否决".to_string())
-            }
+            Some(EvalStatus::PoorQuality) => (
+                RoundVerdict::Eliminated,
+                "画质低于基线, 一票否决".to_string(),
+            ),
             Some(EvalStatus::Slow) => (RoundVerdict::Eliminated, "超出耗时预算".to_string()),
             Some(EvalStatus::Crash) => (RoundVerdict::Eliminated, "真机崩溃".to_string()),
             Some(EvalStatus::Reverted) => (RoundVerdict::Eliminated, "已回滚".to_string()),
@@ -139,9 +146,76 @@ fn classify(
 
 fn source_text(src: MetricSource) -> &'static str {
     match src {
-        MetricSource::Phonefarm => "真机实测",
+        MetricSource::Phonefarm => "phonefarm 报告（未认证采集）",
         // 这行字不能省: 成本模型的数是估计值, 不带 p 值, 不能当性能结论看。
         MetricSource::StaticCostModel => "静态估计 (非测量)",
+    }
+}
+
+fn candidate_evidence(report: &EvalReport) -> CandidateEvidence {
+    let state = qualification_state(&report.extensions);
+    CandidateEvidence {
+        qualification_state: state,
+        qualification_label: match state {
+            QualificationState::Qualified => "报告声明结论资格成立（未认证采集）",
+            QualificationState::LegacyUnqualified => "旧报告未资格化，仅证据",
+            QualificationState::Ineligible => "报告不具结论资格",
+        },
+        metric_source: source_text(report.source),
+        evidence_origin: report
+            .extensions
+            .get("qualification")
+            .and_then(|q| q.get("evidence_origin"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        reported_status: report.status,
+        receiver_report: serde_json::to_value(report).expect("finite deserialized report"),
+        view_grants_game_proof: false,
+        view_allows_promotion: false,
+    }
+}
+
+fn classify_report(
+    stage: OutcomeStage,
+    report: Option<&EvalReport>,
+    on_front: Option<bool>,
+) -> (RoundVerdict, String) {
+    let Some(report) = report.filter(|_| stage == OutcomeStage::Evaluated) else {
+        return classify(stage, report.map(|r| r.status), on_front);
+    };
+    match qualification_state(&report.extensions) {
+        QualificationState::Ineligible => (
+            RoundVerdict::Invalid,
+            format!("不具结论资格；原报告 {:?}", report.status),
+        ),
+        QualificationState::LegacyUnqualified => (
+            RoundVerdict::Evidence,
+            format!("旧报告未资格化；原报告 {:?}", report.status),
+        ),
+        QualificationState::Qualified if report.source == MetricSource::StaticCostModel => {
+            (RoundVerdict::Evidence, "静态估计；无测量结论".into())
+        }
+        QualificationState::Qualified
+            if !matches!(
+                report
+                    .extensions
+                    .get("qualification")
+                    .and_then(|q| q.get("evidence_origin"))
+                    .and_then(serde_json::Value::as_str),
+                Some("live_device" | "recorded_device")
+            ) =>
+        {
+            (
+                RoundVerdict::Evidence,
+                "资格声明缺有效设备来源；仅证据".into(),
+            )
+        }
+        QualificationState::Qualified
+            if report.status == EvalStatus::Pass && on_front.is_none() =>
+        {
+            (RoundVerdict::Invalid, "报告通过，档案前沿未知".into())
+        }
+        QualificationState::Qualified => classify(stage, Some(report.status), on_front),
     }
 }
 
@@ -166,9 +240,8 @@ fn round_for_generation(
 ) -> Round {
     let mut candidates = Vec::new();
     for o in &gen.outcomes {
-        let status = o.report.as_ref().map(|r| r.status);
         let on_front = front_ids.map(|f| f.contains(&o.id));
-        let (verdict, verdict_text) = classify(o.stage, status, on_front);
+        let (verdict, verdict_text) = classify_report(o.stage, o.report.as_ref(), on_front);
         let metrics = o.report.as_ref().map(|r| &r.metrics);
         candidates.push(CandidateRow {
             id: o.id.clone(),
@@ -190,6 +263,7 @@ fn round_for_generation(
             p_value: o.report.as_ref().map(|r| r.verdict.p_value),
             on_front,
             power_excluded_reason: power_excluded_reason(run, &o.id),
+            evidence: o.report.as_ref().map(candidate_evidence),
             violations: o
                 .gate
                 .as_ref()
@@ -210,6 +284,10 @@ fn round_for_generation(
         .iter()
         .filter(|c| c.verdict == RoundVerdict::Invalid)
         .count();
+    let evidence_only = candidates
+        .iter()
+        .filter(|c| c.verdict == RoundVerdict::Evidence)
+        .count();
 
     // 一代的判定: 只要有候选进了前沿就算这一代有收获。
     let (verdict, verdict_text) = if qualified > 0 {
@@ -221,6 +299,11 @@ fn round_for_generation(
         (
             RoundVerdict::Eliminated,
             format!("{eliminated} 个候选测完但都没进前沿"),
+        )
+    } else if evidence_only > 0 {
+        (
+            RoundVerdict::Evidence,
+            format!("{evidence_only} 个候选仅有证据，未获结论资格；{invalid} 个无效"),
         )
     } else {
         (
@@ -238,14 +321,14 @@ fn round_for_generation(
 
     let headline = vec![
         Stat::toned(
-            "本代最优画质",
+            "记录的本代最高画质",
             gen.gen_best_psnr.map(|v| format!("{v:.2}")),
             Some("dB"),
-            "good",
+            "plain",
         )
         .with_hint("绝对 dB 只在同一组参考图内可比"),
         Stat::plain(
-            "历史最低耗时",
+            "记录的历史最低耗时",
             gen.best_latency_so_far.map(|v| format!("{v:.3}")),
             Some("ms"),
         ),
@@ -253,17 +336,22 @@ fn round_for_generation(
         Stat::toned("合格", Some(qualified.to_string()), Some("个"), "good"),
         Stat::toned("淘汰", Some(eliminated.to_string()), Some("个"), "bad"),
         Stat::toned("无效", Some(invalid.to_string()), Some("个"), "warn"),
+        Stat::plain("仅证据", Some(evidence_only.to_string()), Some("个")),
     ];
 
     let mut conditions = vec![
-        Condition::new("指标来源", Some(source_text(gen.metric_source).to_string()), Some("gen_*.json")),
+        Condition::new(
+            "指标来源",
+            Some(source_text(gen.metric_source).to_string()),
+            Some("gen_*.json"),
+        ),
         Condition::new(
             "画质真值",
             quality_ref.map(|q| {
-                let kind = if q.kind == "real_frames" {
-                    "真机截帧"
-                } else {
-                    "程序化图案"
+                let kind = match q.kind.as_str() {
+                    "real_frames" => "真机截帧".to_string(),
+                    "procedural" => "程序化图案".to_string(),
+                    other => format!("未知来源 ({other})"),
                 };
                 format!("{kind} × {} 张", q.frames)
             }),
@@ -279,13 +367,20 @@ fn round_for_generation(
             power_source_text(run, gen),
             Some("report.power_source"),
         ),
-        Condition::new("变异来源", Some(origin_counts_text(gen)), Some("gen_*.json")),
+        Condition::new(
+            "变异来源",
+            Some(origin_counts_text(gen)),
+            Some("gen_*.json"),
+        ),
         Condition::new(
             "LLM",
             Some(if gen.llm.attempted {
                 format!(
                     "{} → 产出 {} 个",
-                    gen.llm.provider.clone().unwrap_or_else(|| "未记服务名".into()),
+                    gen.llm
+                        .provider
+                        .clone()
+                        .unwrap_or_else(|| "未记服务名".into()),
                     gen.llm.produced
                 )
             } else {
@@ -299,7 +394,11 @@ fn round_for_generation(
         Condition::new("游戏版本", None, None),
     ];
     if let Some(err) = &gen.llm.error {
-        conditions.push(Condition::new("LLM 报错", Some(err.clone()), Some("gen_*.json")));
+        conditions.push(Condition::new(
+            "LLM 报错",
+            Some(err.clone()),
+            Some("gen_*.json"),
+        ));
     }
 
     let mut evidence = vec![evidence_file(
@@ -337,6 +436,9 @@ fn round_for_generation(
         conditions,
         pareto: pareto_chart(run, gen.generation, quality_ref.map(|q| q.kind.clone())),
         evidence,
+        receiver_report: None,
+        view_grants_game_proof: false,
+        view_allows_promotion: false,
         notes,
     }
 }
@@ -527,7 +629,10 @@ mod tests {
     #[test]
     fn static_cost_model_source_is_labelled_as_not_measured() {
         assert!(source_text(MetricSource::StaticCostModel).contains("非测量"));
-        assert_eq!(source_text(MetricSource::Phonefarm), "真机实测");
+        assert_eq!(
+            source_text(MetricSource::Phonefarm),
+            "phonefarm 报告（未认证采集）"
+        );
     }
 
     #[test]
