@@ -89,9 +89,23 @@
             "required": ["id", "status", "what", "why"],
             "properties": {
               "id": { "type": "string" },
-              "status": { "type": "string", "enum": ["landed", "declared"], "description": "只有 landed 的能用; declared = 契约里声明了、层里还没实现" },
+              "status": { "type": "string", "enum": ["landed", "declared", "withdrawn"], "description": "只有 landed 的能用; declared = 契约里声明了、层里还没实现; withdrawn = 实现过但证据表明会画错画面, 已撤回 (why 里写原因)" },
               "what": { "type": "string" },
-              "why": { "type": "string" }
+              "why": { "type": "string" },
+              "scopes": {
+                "type": "array",
+                "description": "需要范围的开关 (storeop_dont_care) 准用的范围清单, 来自 phonefarm frame-audit analyze 判定「写回之后确定没人读」的附件。rewrite.scope 只能原样取其中一个的 scope。省略 = 这个开关不带范围。",
+                "items": {
+                  "type": "object",
+                  "required": ["scope", "pass", "bytes_per_frame", "why"],
+                  "properties": {
+                    "scope": { "type": "string", "pattern": "^[0-9a-f]{8,16}:[0-9]+$", "description": "<pass 特征码>:<附件下标>" },
+                    "pass": { "type": "string" },
+                    "bytes_per_frame": { "type": "number", "description": "每帧白写的字节数 (未压缩模型值)" },
+                    "why": { "type": "string" }
+                  }
+                }
+              }
             }
           }
         }

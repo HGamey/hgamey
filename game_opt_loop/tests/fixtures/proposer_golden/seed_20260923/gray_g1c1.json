@@ -14,14 +14,18 @@
   "kind": "gray",
   "package": "com.miHoYo.Yuanshen",
   "payload": {
+    "image_check": {
+      "min_psnr_db": 30.0
+    },
     "require_hit": true,
     "rewrites": [
       {
-        "knob": "loadop_dont_care"
+        "knob": "storeop_dont_care",
+        "scope": "15a51a879df99c32:2"
       }
     ],
     "side_effect_ack": "debug.vulkan.layers 是全局属性; 层加载成功后立刻清属性, 收尾还原",
-    "why": "本地降级产出: 单独验证 loadop_dont_care (省掉一次把上一帧内容从显存读回 tile 的带宽开销)"
+    "why": "本地降级产出: 单独去掉 15a51a879df99c32:2 的写回 (pass rp103 1070x484, 每帧约 2072 KB)"
   },
   "protocol": {
     "alternating": true,

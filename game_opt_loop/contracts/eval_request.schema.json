@@ -234,9 +234,16 @@
                       "enum": ["loadop_dont_care", "storeop_dont_care", "attachment_precision", "render_scale", "shader_replace"],
                       "description": "loadop_dont_care = 把 render pass 的 LoadOp LOAD 改写成 DONT_CARE (省一次 tile 回读); storeop_dont_care = StoreOp 同理; attachment_precision = 降 attachment 格式精度; render_scale = 改离屏 pass 的渲染分辨率; shader_replace = 用上层给的 SPIR-V 顶替某个 pass 的着色器 (与 kind=shader 的黑盒路径共用这条通道)"
                     },
-                    "scope": { "type": ["string", "null"], "description": "作用范围: pass 名/索引/格式匹配式。null = 全部命中的 pass" },
+                    "scope": { "type": ["string", "null"], "description": "作用范围。storeop_dont_care 必填: \"<pass 特征码前缀 ≥8 位十六进制>:<附件下标>\" (特征码取自 phonefarm frame-audit analyze), 只改那一个 pass 的那一个附件; 可以有多条, 接收端合成一个指定串一起施加。其余开关: null = 全部命中的 pass" },
                     "args": { "type": ["object", "null"], "description": "该开关的参数, 如 render_scale 的 {\"scale\": 0.75}" }
                   }
+                }
+              },
+              "image_check": {
+                "type": ["object", "null"],
+                "description": "画面比对。每轮两臂挂层、进场景后、负载开始前在同一位置各截一张, 改写臂对对照臂算 PSNR (RGB); 低于 min_psnr_db 整次 ABORT, 理由「画面出错」, 截图进 evidence_dir。接收端缺省就做 (门槛 30 dB), 上层显式写出来是为了把门槛冻结进请求。逐轮值与对照臂相邻两轮的参照值回在 conditions_observed.image_check。",
+                "properties": {
+                  "min_psnr_db": { "type": "number", "description": "门槛 (dB)。缺省 30" }
                 }
               },
               "require_hit": {

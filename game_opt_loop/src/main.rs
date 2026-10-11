@@ -190,6 +190,11 @@ pub struct OptimizeArgs {
     #[arg(long)]
     gate_key_file: Option<PathBuf>,
 
+    /// `phonefarm frame-audit analyze --json` 的输出 (analysis.json)。② 画面流程改写层的旋钮
+    /// = 里面判定「写回之后确定没人读」的附件; 不给就不跑 ② (一刀切的 LoadOp 改写已撤回)。
+    #[arg(long)]
+    frame_audit: Option<PathBuf>,
+
     /// 只跑哪几层: `sysparam,gray` (也认 `3,2`)。缺省按摸底能开的都排。
     /// 长实验拆段 (每段持锁 ≤45 分钟) 时一次跑一层。
     #[arg(long)]
@@ -700,6 +705,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         shape,
         profiles_dir: args.profiles,
         game_profile: args.game_profile,
+        frame_audit: args.frame_audit,
     };
 
     // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——

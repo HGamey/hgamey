@@ -148,6 +148,20 @@ pub struct KnobInfo {
     pub status: gray::KnobStatus,
     pub what: String,
     pub why: String,
+    /// 需要范围的开关准用的范围清单 (storeop_dont_care: frame-audit 判定确定没人读的附件)。
+    /// rewrite.scope 只能原样取其中一个的 `scope`。空 = 这个开关不带范围。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<gray::StoreTarget>,
+}
+
+/// 从约束里还原写回改写准用的范围清单。
+pub fn gray_targets(c: &Constraints) -> Vec<gray::StoreTarget> {
+    c.knobs
+        .iter()
+        .flatten()
+        .filter(|k| k.id == "storeop_dont_care")
+        .flat_map(|k| k.scopes.clone())
+        .collect()
 }
 
 /// 一条历史: 上过机的一个候选, 以及真机给的结论。
@@ -371,7 +385,7 @@ pub fn gray_history(items: &[HistoryItem]) -> Vec<sysparam::History> {
     items
         .iter()
         .filter_map(|h| {
-            let knobs: Vec<String> = h.candidate.rewrites()?.iter().map(|r| r.knob.clone()).collect();
+            let knobs: Vec<String> = h.candidate.rewrites()?.iter().map(gray::rewrite_label).collect();
             Some(sysparam::History {
                 params: knobs.iter().map(|k| (k.clone(), "on".to_string())).collect(),
                 verdict: h.status.clone(),
@@ -430,7 +444,8 @@ impl Proposer for Builtin {
                 }
             }
             Kind::Gray => {
-                let b = gray::Proposer { generator }.propose(
+                let targets = gray_targets(&input.constraints);
+                let b = gray::Proposer { generator, targets: &targets }.propose(
                     &input.device.note,
                     &input.target.workload,
                     &gray_history(&input.history),
@@ -639,10 +654,10 @@ pub fn screen(input: &Input, proposed: &Proposed) -> Screened {
                 sysparam::validate(params, &wl).map_err(|e| format!("{params:?}: {e}"))
             }
             (CandidatePayload::Gray { rewrites }, Kind::Gray) if c.kind == Kind::Gray => {
-                gray::validate(rewrites).map_err(|e| {
+                gray::validate(rewrites, &gray_targets(&input.constraints)).map_err(|e| {
                     format!(
                         "{}: {e}",
-                        rewrites.iter().map(|r| r.knob.clone()).collect::<Vec<_>>().join("+")
+                        rewrites.iter().map(gray::rewrite_label).collect::<Vec<_>>().join("+")
                     )
                 })
             }
@@ -676,7 +691,7 @@ impl Candidate {
                 .join(", "),
             CandidatePayload::Gray { rewrites } => rewrites
                 .iter()
-                .map(|r| r.knob.clone())
+                .map(gray::rewrite_label)
                 .collect::<Vec<_>>()
                 .join("+"),
         }
@@ -685,6 +700,15 @@ impl Candidate {
 
 /// 一层的出方案约束 (由 harness 从白名单 / 开关目录生成)。
 pub fn constraints_for(kind: Kind, wl: Option<&Whitelist>) -> Constraints {
+    constraints_with_targets(kind, wl, &[])
+}
+
+/// 同 [`constraints_for`], ② 层带上写回改写准用的范围清单。
+pub fn constraints_with_targets(
+    kind: Kind,
+    wl: Option<&Whitelist>,
+    targets: &[gray::StoreTarget],
+) -> Constraints {
     match kind {
         Kind::Sysparam => Constraints {
             whitelist: wl.cloned(),
@@ -702,6 +726,7 @@ pub fn constraints_for(kind: Kind, wl: Option<&Whitelist>) -> Constraints {
                         status: k.status,
                         what: k.what.into(),
                         why: k.why.into(),
+                        scopes: if k.needs_scope { targets.to_vec() } else { vec![] },
                     })
                     .collect(),
             ),
@@ -1164,7 +1189,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
 
     #[test]
     fn local_gray_through_the_interface_equals_the_old_entry_point() {
-        let old = gray::Proposer { generator: None }.propose("d", "w", &[], 2);
+        let old = gray::Proposer { generator: None, targets: &[] }.propose("d", "w", &[], 2);
         let new = Builtin::local().propose(&input(Kind::Gray, 2, 0, vec![]));
         let old_k: Vec<&Vec<Rewrite>> = old.accepted.iter().map(|p| &p.rewrites).collect();
         let new_k: Vec<&[Rewrite]> = new.candidates.iter().filter_map(|c| c.rewrites()).collect();

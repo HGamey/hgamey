@@ -122,6 +122,7 @@ fn config(root: &Path, extra: Vec<String>) -> optimize::Config {
         },
         profiles_dir: root.join("profiles"),
         game_profile: None,
+        frame_audit: None,
     }
 }
 
