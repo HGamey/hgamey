@@ -117,3 +117,54 @@ game_opt_loop optimize --game 原神 --device <serial> --budget 1h \
 内置的 `llm` / `local` 也走同一个接口：harness 组同一份输入，内置实现把它还原成改造前
 各层吃的历史格式，出完方案再过同一道校验。`tests/proposer_golden.rs` 用改造**之前**
 的代码录下整条链路下发给真机的请求，改造之后两个种子下逐字节一致。
+
+---
+
+## 2. 对比两个出方案的一方（最小版）
+
+给两个以上 `--proposer` 就是对比模式：同一游戏、同一设备、同样预算，依次各跑一遍完整的
+`optimize`，最后出一份对比报告。
+
+```bash
+game_opt_loop optimize --game 原神 --device <serial> --budget 1h --no-llm \
+    --proposer local --proposer cmd:examples/proposers/fixed_one.py
+```
+
+产物：
+
+```
+<out>/arm1_local/                   臂 1 的完整产物 (caps.json / report.json / report.md / requests/ / proposer/)
+<out>/arm2_cmd_fixed_one.py/        臂 2 的完整产物
+<out>/compare.json, compare.md      对比: 每臂问了几次、调了几次大模型、提了几个、本地打回几个、
+                                    上真机评测几次 (其中 ABORT / 下发失败几次)、留下了哪些改动与逐指标效果
+```
+
+各臂只换出方案的一方和输出目录，其余参数一字不差；第一臂挑到哪台设备，后面的臂就钉在那台。
+
+这一版**不判谁赢**，只把账摆在一起。原因：
+
+- 各臂是先后跑的，机器热态、电量、游戏版本可能在两臂之间漂（报告里写了各臂起始时间）；
+- 每个候选各自和基线做 A/B，两臂留下的改动之间没有直接上机比过。
+
+要回答「哪个 AI 更会优化游戏」，下一步需要：交替排臂（ABAB）抵消漂移、多次重复、
+以及把两臂各自的最好改动拿出来直接做一次 A/B。
+
+---
+
+## 3. 接一种新设备 / 新平台
+
+设备这一半在 phonefarm 里：实现 `platform::Backend`，在 `platform::open` 里登记一个 serial 前缀。
+完整说明（必须实现哪些、可选的有哪些、哪些地方还直接调 adb、各平台三层能不能开以及原因）见
+phonefarm 的 [`docs/DEVICES.md`](https://github.com/BH3GEI/phonefarm/blob/main/docs/DEVICES.md)。
+
+简要结论：
+
+| 层 | Android（adb） | OpenHarmony 商用机（hdc） |
+|---|---|---|
+| ③ 系统参数 | 能，要 root | 不能：没有 root |
+| ② 渲染流程改写 | 能，要 root 且目标应用已装 | 不知道：没有设备验证过；即便有注入点，放 `.so` 也要 root |
+| ① 画面算子 | 白盒载体，或经 ② 注入 | 不能：黑盒依赖 ②，refbench 没有鸿蒙版 |
+| 测量 | 能 | 能（HiSmartPerf） |
+
+game_opt_loop 这边按 caps 摸底的结果开层（`src/optimize/caps.rs`），新平台需要在 `caps::Platform`
+和摸底探针里加上对应分支。

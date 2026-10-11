@@ -830,7 +830,7 @@ impl Options {
             }
             [one] => Ok(one.trim().to_string()),
             many => bail!(
-                "一次只能指定一个出方案的一方, 收到 {} 个: {}",
+                "optimize::run 一次只用一个出方案的一方, 收到 {} 个 (多个请走对比模式 compare::run): {}",
                 many.len(),
                 many.join(", ")
             ),

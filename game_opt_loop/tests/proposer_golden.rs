@@ -217,3 +217,37 @@ fn the_example_external_proposer_runs_end_to_end() {
     assert!(root.join("out/proposer/sysparam_g1.input.json").is_file());
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// 对比模式: 两个出方案的一方 (本地变异器 vs 外部例子) 在同样的配置下各跑一遍,
+/// 各臂的请求与单独跑时一样, 对比报告里的账和各臂 report.json 对得上。
+#[test]
+fn compare_mode_runs_each_proposer_on_the_same_terms() {
+    let root = scaffold("cmp");
+    let mut cfg = config(&root, 20260923);
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/proposers/fixed_one.py");
+    cfg.proposer.specs = vec!["local".into(), format!("cmd:{}", example.display())];
+    let cmp = optimize::compare::run(&cfg).expect("对比模式应该跑得通");
+
+    assert_eq!(cmp.arms.len(), 2);
+    let (a, b) = (&cmp.arms[0], &cmp.arms[1]);
+    assert_eq!(a.label, "arm1_local");
+    assert_eq!(b.label, "arm2_cmd_fixed_one.py");
+    assert_eq!(a.serial, b.serial);
+
+    // 臂 1 就是 --no-llm 单独跑: 下发的请求与 golden 一致。
+    let got = requests(&root.join("out/arm1_local/requests"));
+    let want = requests(&golden_dir(20260923));
+    assert_eq!(got, want, "对比模式下的本地变异器臂与单独跑不一致");
+    assert_eq!(a.device_evals, want.len());
+    // 臂 2: 外部例子只给一个 ③ 候选。
+    assert_eq!(b.device_evals, 1);
+    assert_eq!(b.proposer_calls, 3);
+    assert_eq!(a.model_calls + b.model_calls, 0);
+    // 假 phonefarm 一律 REJECT: 两边都没留下东西。
+    assert!(a.kept.is_empty() && b.kept.is_empty());
+
+    let md = std::fs::read_to_string(root.join("out/compare.md")).unwrap();
+    assert!(md.contains("arm1_local") && md.contains("arm2_cmd_fixed_one.py"), "{md}");
+    assert!(root.join("out/compare.json").is_file());
+    std::fs::remove_dir_all(&root).ok();
+}
