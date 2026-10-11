@@ -89,7 +89,7 @@ impl Default for Budget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
     pub layer: Kind,
-    pub layer_display: &'static str,
+    pub layer_display: String,
     pub route: String,
     /// 为什么开这一层。
     pub why: String,
@@ -111,7 +111,7 @@ pub struct Step {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skipped {
     pub layer: Kind,
-    pub layer_display: &'static str,
+    pub layer_display: String,
     pub reason: String,
     pub blockers: Vec<String>,
 }
@@ -119,9 +119,9 @@ pub struct Skipped {
 /// 一份计划。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
-    pub schema: &'static str,
+    pub schema: String,
     pub generated_at: String,
-    pub tool_version: &'static str,
+    pub tool_version: String,
     pub game: String,
     pub package: Option<String>,
     pub serial: String,
@@ -243,7 +243,7 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
         if !verdict.open {
             skipped.push(Skipped {
                 layer: *kind,
-                layer_display: kind.display(),
+                layer_display: kind.display().into(),
                 reason: verdict.reason.clone(),
                 blockers: verdict.blockers.clone(),
             });
@@ -269,7 +269,7 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
             };
             skipped.push(Skipped {
                 layer: *kind,
-                layer_display: kind.display(),
+                layer_display: kind.display().into(),
                 reason: format!(
                     "{} —— 但画面算子的自主进化闭环在本仓库另有入口, optimize 只把它排进计划, 不代跑",
                     verdict.reason
@@ -291,7 +291,7 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
         if fits == 0 {
             skipped.push(Skipped {
                 layer: *kind,
-                layer_display: kind.display(),
+                layer_display: kind.display().into(),
                 reason: format!(
                     "预算不够: 轮到这一层时只剩 {}, 而一个候选要 {} (每臂 {} 轮不能再少, 否则判定够不着显著性)",
                     Budget { seconds: left }.human(),
@@ -319,7 +319,7 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
         left = left.saturating_sub(estimate_s);
         steps.push(Step {
             layer: *kind,
-            layer_display: kind.display(),
+            layer_display: kind.display().into(),
             route: verdict.route.clone().unwrap_or_default(),
             why: verdict.reason.clone(),
             generations,
@@ -338,9 +338,9 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
 
     let estimate_s = steps.iter().map(|s| s.estimate_s).sum();
     Plan {
-        schema: "game_opt_loop/plan@1",
+        schema: "game_opt_loop/plan@1".into(),
         generated_at: crate::engine::evolution::now(),
-        tool_version: crate::VERSION,
+        tool_version: crate::VERSION.into(),
         game: caps.target.display.clone(),
         package: caps.target.package.clone(),
         serial: caps.device.serial.clone(),

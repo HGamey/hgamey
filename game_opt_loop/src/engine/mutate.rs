@@ -11,12 +11,13 @@
 
 use crate::tracks::{TrackSpec, FRAME_GEN, SR};
 use crate::TrackMode;
+use serde::{Deserialize, Serialize};
 
 /// 一个可复现的小 PRNG (xorshift64*)。
 ///
 /// 不引入 `rand` 依赖: 演化的可复现性要求算法本身固定, 而不是依赖某个 crate
 /// 的版本间行为一致。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rng(u64);
 
 impl Rng {
@@ -58,7 +59,7 @@ impl Rng {
 }
 
 /// 重建核的形状。决定权重曲线, 直接影响锐度与振铃。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kernel {
     /// 双线性: 最省, 也最糊。
     Bilinear,
@@ -82,7 +83,7 @@ impl Kernel {
 }
 
 /// 超分算子基因组。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SrGenome {
     /// 邻域**边长** (每个轴上的 tap 数), 取值 2..=5 → tap 数 4 / 9 / 16 / 25。
     ///
@@ -327,7 +328,7 @@ void main() {{
 }
 
 /// 插帧算子基因组。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FgGenome {
     /// 运动搜索半径 (像素)。搜索代价与半径平方成正比。
     pub search_radius: i32,
@@ -464,7 +465,7 @@ void main() {{
 }
 
 /// 一个赛道无关的基因组句柄。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Genome {
     Sr(SrGenome),
     FrameGen(FgGenome),

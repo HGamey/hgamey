@@ -41,6 +41,9 @@ fn config(track: TrackMode, out: PathBuf, seed: u64, generations: u32) -> Evolut
         scene_intensity: 5,
         cool_c: 32.0,
         quality_reference: None,
+        campaign: None,
+        phonefarm: PathBuf::from("/nonexistent/phonefarm"),
+        serial: None,
     }
 }
 

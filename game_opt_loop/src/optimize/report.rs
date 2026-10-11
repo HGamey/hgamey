@@ -23,16 +23,9 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Change {
-    Sysparam {
-        params: BTreeMap<String, String>,
-    },
-    Gray {
-        rewrites: Vec<String>,
-    },
-    Shader {
-        track: String,
-        shader_path: String,
-    },
+    Sysparam { params: BTreeMap<String, String> },
+    Gray { rewrites: Vec<String> },
+    Shader { track: String, shader_path: String },
 }
 
 impl Change {
@@ -53,6 +46,10 @@ impl Change {
 /// 档案里的一条。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expert_decisions: Vec<crate::campaign::Decision>,
     pub id: String,
     pub layer: Kind,
     pub generation: u32,
@@ -93,6 +90,8 @@ impl Entry {
         r: &EvalReport,
     ) -> Self {
         Self {
+            campaign_binding_sha256: None,
+            expert_decisions: vec![],
             id: id.into(),
             layer,
             generation,
@@ -117,7 +116,7 @@ impl Entry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerOutcome {
     pub layer: Kind,
-    pub layer_display: &'static str,
+    pub layer_display: String,
     /// 用没用这一层。
     pub used: bool,
     /// 为什么用 / 为什么没用。
@@ -149,7 +148,7 @@ impl LayerOutcome {
     pub fn unused(layer: Kind, reason: impl Into<String>, blockers: Vec<String>) -> Self {
         Self {
             layer,
-            layer_display: layer.display(),
+            layer_display: layer.display().into(),
             used: false,
             reason: reason.into(),
             blockers,
@@ -169,6 +168,8 @@ impl LayerOutcome {
 /// 总报告。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<crate::campaign::Summary>,
     pub schema: &'static str,
     pub tool: &'static str,
     pub tool_version: &'static str,
@@ -241,6 +242,7 @@ pub fn build(
     };
 
     Report {
+        campaign: None,
         schema: "game_opt_loop/optimize_report@1",
         tool: "game_opt_loop",
         tool_version: crate::VERSION,
@@ -440,8 +442,11 @@ pub fn write(r: &Report, caps: &super::caps::Caps, dir: &Path) -> Result<(String
     let md = dir.join("report.md");
     std::fs::write(&json, serde_json::to_string_pretty(r)?)
         .with_context(|| format!("写入 {} 失败", json.display()))?;
-    std::fs::write(&md, markdown(r, caps))
-        .with_context(|| format!("写入 {} 失败", md.display()))?;
+    let mut rendered = markdown(r, caps);
+    if let Some(campaign) = &r.campaign {
+        rendered.push_str(&format!("\n## 实验方向决策\n\n模式：{:?}；专家决定数：{}；待决：{}。\n\n账本：{}（含每代风险、收益/成本估计、候选与冻结协议绑定、决定理由和评测回执）。\n", campaign.mode, campaign.expert_reviewed, campaign.waiting_for_review, campaign.journal));
+    }
+    std::fs::write(&md, rendered).with_context(|| format!("写入 {} 失败", md.display()))?;
     Ok((json.display().to_string(), md.display().to_string()))
 }
 
@@ -474,15 +479,14 @@ pkg_path=package:/data/app/x/base.apk\n";
 
     fn entry(id: &str, status: &str, kept: bool) -> Entry {
         Entry {
+            campaign_binding_sha256: None,
+            expert_decisions: vec![],
             id: id.into(),
             layer: Kind::Sysparam,
             generation: 1,
             why: "抬总线下限".into(),
             change: Change::Sysparam {
-                params: BTreeMap::from([(
-                    "bus.DDR.boost_freq".to_string(),
-                    "5333000".to_string(),
-                )]),
+                params: BTreeMap::from([("bus.DDR.boost_freq".to_string(), "5333000".to_string())]),
             },
             status: status.into(),
             metrics: MetricsV2 {
