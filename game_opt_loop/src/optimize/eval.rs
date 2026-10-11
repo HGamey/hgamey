@@ -427,6 +427,15 @@ pub struct ConditionsObserved {
     pub restored: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_diff: Option<Vec<String>>,
+    /// ③: 改写臂里有几臂被厂商性能服务抢回 (施加后回读对不上), 这几臂没进统计。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contested_arms: Option<u32>,
+    /// ③: 快照里只有厂商服务会动的频率边界变了 (不判留痕), 逐项 `键: 前 → 后`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_vendor_drift: Option<Vec<String>>,
+    /// ②: 画面比对的逐轮 PSNR 与门槛 (原样)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_check: Option<serde_json::Value>,
 }
 
 /// v2 评测报告。

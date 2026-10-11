@@ -357,6 +357,26 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
             if let Some(e) = &l.llm_error {
                 o.push_str(&format!("- 大模型这一层没用上: {e}\n"));
             }
+            // 被厂商性能服务抢回: 单列, 不混进「测量不算数」—— 它说的是这台机器上这类
+            // 旋钮守不守得住, 不是工装故障。
+            let contested: u32 = r
+                .archive
+                .iter()
+                .filter(|e| e.layer == l.layer)
+                .filter_map(|e| e.conditions_observed.as_ref()?.contested_arms)
+                .sum();
+            let drift: usize = r
+                .archive
+                .iter()
+                .filter(|e| e.layer == l.layer)
+                .filter_map(|e| e.conditions_observed.as_ref()?.snapshot_vendor_drift.as_ref())
+                .filter(|d| !d.is_empty())
+                .count();
+            if contested > 0 || drift > 0 {
+                o.push_str(&format!(
+                    "- 被厂商性能服务抢回: {contested} 臂 (施加后回读对不上, 没进统计); 轮末频率边界被它改动过的候选 {drift} 个\n"
+                ));
+            }
             for rej in &l.rejected_locally {
                 o.push_str(&format!("  - 本地打回: {rej}\n"));
             }
@@ -590,6 +610,29 @@ pkg_path=package:/data/app/x/base.apk\n";
         l.eval_errors = vec!["sys_g1c2: phonefarm eval 退出码 Some(2)".into()];
         let md = markdown(&build(&p, &c, vec![l], vec![], false), &c);
         assert!(md.contains("下发失败 (没跑成)"), "{md}");
+    }
+
+    /// 被厂商性能服务抢回的臂单列一行, 不混进「测量不算数」。
+    #[test]
+    fn contested_arms_are_counted_per_layer() {
+        let (c, p) = fixture();
+        let mut l = LayerOutcome::unused(Kind::Sysparam, "有 root", vec![]);
+        l.used = true;
+        l.evaluated = 2;
+        let mut a = entry("sys_g1c1", "REJECT", false);
+        a.conditions_observed = Some(crate::optimize::eval::ConditionsObserved {
+            contested_arms: Some(2),
+            snapshot_vendor_drift: Some(vec!["kgsl.max_pwrlevel: 0 → 17".into()]),
+            ..Default::default()
+        });
+        let mut b = entry("sys_g1c2", "ABORT", false);
+        b.conditions_observed = Some(crate::optimize::eval::ConditionsObserved {
+            contested_arms: Some(5),
+            ..Default::default()
+        });
+        let md = markdown(&build(&p, &c, vec![l], vec![a, b], false), &c);
+        assert!(md.contains("被厂商性能服务抢回: 7 臂"), "{md}");
+        assert!(md.contains("频率边界被它改动过的候选 1 个"), "{md}");
     }
 
     /// 三层的候选进同一份档案。
