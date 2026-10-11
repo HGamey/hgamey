@@ -354,6 +354,79 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
     }
 }
 
+/// 人工指定的计划形状: 只跑哪几层、每层几代几个。
+///
+/// 预算分配给出的是"缺省怎么排"; 真机验证要的往往是"这一层跑 2 代、每代 1 个",
+/// 而且长实验要拆成每段 ≤45 分钟持锁 —— 那就得能一次只跑一层。给了的字段压过
+/// 预算算出来的值, 没给的照旧。估计耗时按新形状重算, 超出预算时计划里写明。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Shape {
+    /// None = 按摸底能开的都排。
+    pub layers: Option<Vec<Kind>>,
+    pub generations: Option<u32>,
+    pub children: Option<u32>,
+}
+
+impl Shape {
+    /// 解析 `--layers sysparam,gray` (也认 `3`/`2`/`1` 与 `③②①`)。
+    pub fn parse_layers(s: &str) -> Result<Vec<Kind>> {
+        let mut out = Vec::new();
+        for raw in s.split([',', ' ']).map(str::trim).filter(|x| !x.is_empty()) {
+            let k = match raw {
+                "sysparam" | "3" | "③" => Kind::Sysparam,
+                "gray" | "2" | "②" => Kind::Gray,
+                "shader" | "1" | "①" => Kind::Shader,
+                _ => bail!("--layers 看不懂 {raw:?} (要 sysparam / gray / shader, 逗号分隔)"),
+            };
+            if !out.contains(&k) {
+                out.push(k);
+            }
+        }
+        if out.is_empty() {
+            bail!("--layers 是空的");
+        }
+        Ok(out)
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Shape::default()
+    }
+}
+
+/// 按 [`Shape`] 排计划: 没选的层当作"没开"(理由写明), 选了的层按预算排完后
+/// 再用人工给的代数/个数覆盖。纯函数。
+pub fn build_shaped(caps: &Caps, budget: Budget, use_llm: bool, shape: &Shape) -> Plan {
+    let mut c = caps.clone();
+    if let Some(want) = &shape.layers {
+        for (k, v) in [
+            (Kind::Sysparam, &mut c.layers.sysparam),
+            (Kind::Gray, &mut c.layers.gray),
+            (Kind::Shader, &mut c.layers.shader),
+        ] {
+            if v.open && !want.contains(&k) {
+                v.open = false;
+                v.reason = format!("这一层能开, 但这次按 --layers 没选 ({})", v.reason);
+                v.route = None;
+                v.blockers = vec![];
+            }
+        }
+    }
+    let mut plan = build(&c, budget, use_llm);
+    if shape.generations.is_some() || shape.children.is_some() {
+        for st in plan.steps.iter_mut() {
+            if let Some(g) = shape.generations {
+                st.generations = g.max(1);
+            }
+            if let Some(n) = shape.children {
+                st.children = n.max(1);
+            }
+            st.estimate_s = st.per_candidate_s * st.generations as u64 * st.children as u64;
+        }
+        plan.estimate_s = plan.steps.iter().map(|s| s.estimate_s).sum();
+    }
+    plan
+}
+
 /// optimize 这条命令**自己**驱动哪几层。
 ///
 /// ① 画面算子不在内: 它的自主进化闭环 (模板 → 变异 → 防爆门禁 → Pareto 归档)
@@ -444,6 +517,9 @@ pub fn render(plan: &Plan, caps: &Caps, receiver: Option<&str>) -> String {
         }
         .human()
     ));
+    if plan.estimate_s > plan.budget_s {
+        o.push_str("  (按 --generations/--children 指定的形状排, 估计耗时超出预算)\n");
+    }
 
     if plan.measure_only {
         o.push_str("\n三层全都开不了 —— 这一轮只测量, 不改动设备。原因见下。\n");
@@ -566,6 +642,44 @@ pkg_path=package:/data/app/x/base.apk\n";
         for bad in ["", "abc", "-5m", "0"] {
             assert!(Budget::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn layers_parse_names_and_numbers() {
+        assert_eq!(
+            Shape::parse_layers("sysparam,gray").unwrap(),
+            vec![Kind::Sysparam, Kind::Gray]
+        );
+        assert_eq!(Shape::parse_layers("2").unwrap(), vec![Kind::Gray]);
+        assert!(Shape::parse_layers("cpu").is_err());
+        assert!(Shape::parse_layers(",").is_err());
+    }
+
+    /// 只选一层时另一层出现在"不跑的层"里并写明是没选, 选中那层按人工代数/个数排,
+    /// 估计耗时随之重算。
+    #[test]
+    fn a_shape_selects_layers_and_overrides_generations() {
+        let c = caps_for(ROOTED);
+        let shape = Shape {
+            layers: Some(vec![Kind::Gray]),
+            generations: Some(2),
+            children: Some(1),
+        };
+        let p = build_shaped(&c, Budget::parse("30m").unwrap(), true, &shape);
+        assert_eq!(p.steps.len(), 1);
+        assert_eq!(p.steps[0].layer, Kind::Gray);
+        assert_eq!((p.steps[0].generations, p.steps[0].children), (2, 1));
+        assert_eq!(p.steps[0].estimate_s, 2 * p.steps[0].per_candidate_s);
+        assert_eq!(p.estimate_s, p.steps[0].estimate_s);
+        let sys = p.skipped.iter().find(|s| s.layer == Kind::Sysparam).unwrap();
+        assert!(sys.reason.contains("--layers"), "{}", sys.reason);
+        // 不给形状 = 原来的计划
+        let a = build_shaped(&c, Budget::parse("3h").unwrap(), true, &Shape::default());
+        let b = build(&c, Budget::parse("3h").unwrap(), true);
+        assert_eq!(
+            serde_json::to_value(&a.steps).unwrap(),
+            serde_json::to_value(&b.steps).unwrap()
+        );
     }
 
     #[test]

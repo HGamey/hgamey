@@ -21,6 +21,10 @@ cargo run --release -- optimize --game 原神 --device 91253241019A --budget 2h
 # 换一个出方案的一方：llm（缺省）/ local（本地确定性变异器）/ cmd:<可执行文件>（外部进程）
 cargo run --release -- optimize --game 原神 --device 91253241019A --budget 1h \
     --proposer cmd:examples/proposers/fixed_one.py
+
+# 指定形状：只跑 ③、2 代、每代 1 个（长实验拆段时一次跑一层，单段持锁不超过 45 分钟左右）
+cargo run --release -- optimize --game 原神 --device 91253241019A \
+    --layers sysparam --generations 2 --children 1 --lock-label <名字>
 ```
 
 出方案的一方是可插拔的（接口 `game_opt_loop/proposer@1`，stdin/stdout JSON），

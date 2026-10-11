@@ -123,6 +123,7 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         quality_reference: None,
         sysparam_probe: Some(root.join("probe.txt")),
         proposer: Default::default(),
+        shape: Default::default(),
     }
 }
 

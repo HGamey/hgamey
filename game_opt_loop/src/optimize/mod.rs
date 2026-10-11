@@ -60,6 +60,8 @@ pub struct Config {
     pub sysparam_probe: Option<PathBuf>,
     /// 出方案的一方 (`--proposer llm|local|cmd:<可执行文件>`), 见 [`proposer`]。
     pub proposer: proposer::Options,
+    /// 人工指定的计划形状 (`--layers` / `--generations` / `--children`)。
+    pub shape: plan::Shape,
 }
 
 /// 跑完之后的落点。
@@ -151,7 +153,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     println!("\n[2/3] 按能力开路 + 接收端探活...");
     let driver = eval::EvalDriver::new(&cfg.phonefarm);
     let support = driver.probe();
-    let mut plan = plan::build(&caps, cfg.budget, cfg.use_llm);
+    let mut plan = plan::build_shaped(&caps, cfg.budget, cfg.use_llm, &cfg.shape);
     // 画质真值跟着冻结条件走, 不是某一层的私有参数: 灰档的每一个改写都动画面,
     // 那一层的 psnr 约束没有真值就判不了。
     plan.conditions.quality_reference = cfg.quality_reference.clone();
