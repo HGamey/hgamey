@@ -25,3 +25,17 @@ context.DASH = { version: 'static-live-export' };
 context.PAGE = 'device'; context.render();
 assert.match(element('page-device').innerHTML, /手机页不连接设备/);
 console.log('frontend: render escaping, null, ABORT, stale snapshot, refresh and offline device guards PASS');
+async function legacyRouting() {
+  context.renderOverview = () => {};
+  for (const version of ['legacy-panel', 'static-live-export']) {
+    context.PAGE = 'today'; context.LIVE = null; context.LIVE_ERROR = null;
+    context.fetch = url => Promise.resolve(url === '/api/dashboard'
+      ? { ok: true, json: () => Promise.resolve({ version, paths: { game_opt_loop: '', phonefarm: '', lock_root: '' }, notices: [] }) }
+      : { ok: false, status: 404 });
+    context.load();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(context.PAGE, version === 'legacy-panel' ? 'overview' : 'today');
+  }
+  console.log('frontend: legacy Rust panel retains overview; static export retains Today PASS');
+}
+legacyRouting().catch(e => { console.error(e); process.exitCode = 1; });

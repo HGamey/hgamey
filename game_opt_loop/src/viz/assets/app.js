@@ -54,7 +54,11 @@ function load() {
         '层① ' + esc(d.paths.game_opt_loop) + ' · 层②③ ' + esc(d.paths.phonefarm) +
         (d.paths.phonefarm_present ? '' : ' (没找到)') +
         ' · 设备锁 ' + esc(d.paths.lock_root) + ' · v' + esc(d.version);
-      render();
+      if (d.version !== 'static-live-export' && !LIVE && PAGE === 'today') {
+        showPage('overview');
+      } else {
+        render();
+      }
     })
     .catch(function (e) {
       el('refresh-state').innerHTML = '<span class="err">读取失败: ' + esc(e.message) + '</span>';

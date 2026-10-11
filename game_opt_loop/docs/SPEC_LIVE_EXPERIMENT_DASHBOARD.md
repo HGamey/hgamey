@@ -55,6 +55,12 @@ data hash and export timestamp; that timestamp is not a new phone measurement.
 The old tabs retain the existing panel markup and helpers. A static release
 includes an explicitly empty historical dashboard rather than importing old
 redmagic results as today's OnePlus results.
+The additive PR is based on current origin/main (`85c3524`), with only Today
+styles/routes added. A normal Rust panel without the static live endpoint
+returns to its existing Overview page; it does not replace the old dashboard
+with a missing-live-data screen. The published release-005 is separately
+bound to its original integrated assets and source `124b078`; it is not
+silently regenerated from this adapted PR branch.
 
 Validation: Python bounded/terminal/hash input checks, Node syntax and DOM-stub
 render checks, local HTTP/browser QA. No Cargo whole gate is implied because
