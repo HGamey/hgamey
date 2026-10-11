@@ -1,0 +1,51 @@
+{
+  "cases": [
+    {
+      "case": "actual-offline",
+      "session": "/private/tmp/gol-prepare-actual-srmfrnd2/actual-offline",
+      "exit_code": 0,
+      "inspect_exit_code": 0,
+      "status": "PREPARED_OFFLINE",
+      "gol_sha256": "176e788e7f50e07a936f4b589d775642f0bcf44ae6e2c9bc5fcd1be553e18b34",
+      "phonefarm_sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d",
+      "candidate_frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+      "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+      "offline_compilation_adapter_complete": true,
+      "preparation_chain_complete": true,
+      "proof_flags": {
+        "deployable": false,
+        "gpu_validated": false,
+        "promotion_allowed": false,
+        "quality_verified": false,
+        "real_game_optimization_proven": false,
+        "semantic_equivalence_proven": false
+      }
+    },
+    {
+      "case": "actual-missing-sdk",
+      "session": "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk",
+      "exit_code": 1,
+      "inspect_exit_code": 1,
+      "status": "BLOCKED",
+      "gol_sha256": "176e788e7f50e07a936f4b589d775642f0bcf44ae6e2c9bc5fcd1be553e18b34",
+      "phonefarm_sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d",
+      "candidate_frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+      "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+      "offline_compilation_adapter_complete": true,
+      "preparation_chain_complete": false,
+      "proof_flags": {
+        "deployable": false,
+        "gpu_validated": false,
+        "promotion_allowed": false,
+        "quality_verified": false,
+        "real_game_optimization_proven": false,
+        "semantic_equivalence_proven": false
+      }
+    }
+  ],
+  "device_calls": 0,
+  "model_calls": 0,
+  "sdk_downloads": 0,
+  "controlled_fake_ndk_positive": false,
+  "real_ndk_execution": "NOT_RUN"
+}

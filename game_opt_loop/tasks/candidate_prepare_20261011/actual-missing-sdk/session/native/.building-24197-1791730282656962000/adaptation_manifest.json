@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+  "state": "adapted_offline",
+  "deployable": false,
+  "device_validation": "not_run",
+  "semantic_equivalence": "not_run",
+  "qualification": "not_run",
+  "source_spirv_association": "caller_supplied_unverified",
+  "files": {
+    "adapted.spv": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325",
+    "descriptor.json": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+    "original.comp": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+    "original.spv": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+  }
+}

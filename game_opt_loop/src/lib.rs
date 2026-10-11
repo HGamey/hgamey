@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod engine;
 pub mod candidate_artifact;
+pub mod candidate_prepare;
 pub mod harness;
 pub mod optimize;
 pub mod tracks;

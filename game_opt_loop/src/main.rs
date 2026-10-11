@@ -23,6 +23,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Prepare a local compiled candidate and finite PF adaptation; never deploy.
+    CandidatePrepare {
+        #[command(subcommand)]
+        action: game_opt_loop::candidate_prepare::Action,
+    },
     /// Freeze/replay the actual local candidate gate and compiler; no device calls.
     CandidateArtifact {
         #[command(subcommand)]
@@ -361,6 +366,9 @@ fn main() -> Result<()> {
     if let Some(Command::CandidateArtifact { action }) = cli.command {
         return game_opt_loop::candidate_artifact::run(action);
     }
+    if let Some(Command::CandidatePrepare { action }) = cli.command {
+        return game_opt_loop::candidate_prepare::run(action);
+    }
 
     println!("==================================================");
     println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
@@ -393,6 +401,7 @@ fn main() -> Result<()> {
         }
         None => {}
         Some(Command::CandidateArtifact { .. }) => unreachable!("handled before banner"),
+        Some(Command::CandidatePrepare { .. }) => unreachable!("handled before banner"),
     }
     // 没给子命令 = 老的单赛道演化入口, 原样保留。
     let cli = cli.legacy;
