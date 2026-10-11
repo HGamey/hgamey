@@ -1,0 +1,79 @@
+{
+  "schema": "game_opt_loop/cross_repository_compilation_interface@1",
+  "steps": [
+    {
+      "argv": [
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/target/debug/game_opt_loop",
+        "candidate-artifact",
+        "compile",
+        "--candidate",
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/tasks/candidate_compilation_20261011/sr-candidate.json",
+        "--out",
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/tasks/candidate_compilation_20261011/compile-artifact"
+      ],
+      "exit": 0,
+      "stdout": "compile.stdout.json",
+      "stderr": "compile.stderr.log"
+    },
+    {
+      "argv": [
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/target/debug/game_opt_loop",
+        "candidate-artifact",
+        "verify",
+        "--artifact",
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/tasks/candidate_compilation_20261011/compile-artifact",
+        "--expected-identity",
+        "6f34194322739f1cf2818fcb0b1cece006916e5e29ced0dc4c1cea6fe2767a00"
+      ],
+      "exit": 0,
+      "stdout": "verify.stdout.json",
+      "stderr": "verify.stderr.log"
+    },
+    {
+      "argv": [
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-storage-adapter/src/target/debug/phonefarm",
+        "gray-artifact",
+        "adapt-storage",
+        "--source",
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/tasks/candidate_compilation_20261011/compile-artifact/original.comp",
+        "--spirv",
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/tasks/candidate_compilation_20261011/compile-artifact/original.spv",
+        "--out",
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/tasks/candidate_compilation_20261011/adapted"
+      ],
+      "exit": 0,
+      "stdout": "adapt.stdout.json",
+      "stderr": "adapt.stderr.log"
+    },
+    {
+      "argv": [
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-storage-adapter/src/target/debug/phonefarm",
+        "gray-artifact",
+        "verify-adaptation",
+        "--artifact",
+        "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact/tasks/candidate_compilation_20261011/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+      ],
+      "exit": 0,
+      "stdout": "verify-adaptation.stdout.json",
+      "stderr": "verify-adaptation.stderr.log"
+    }
+  ],
+  "gol_binary_sha256": "bcd1dc1c7a2180324fcf4e1cdf5c7cf968d40f5d50dc5b897622d5c8df0de1d8",
+  "phonefarm_binary_sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d",
+  "phonefarm_source_head": "6cde2b1cd86835519a15a1d26d941081c8dcf4ca",
+  "source_spirv_hashes_match": true,
+  "actual_naga_and_adapter_used": true,
+  "ndk_or_gpu_used": false,
+  "compiled_frozen_identity": "6f34194322739f1cf2818fcb0b1cece006916e5e29ced0dc4c1cea6fe2767a00",
+  "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+  "adapter_association": "caller_supplied_unverified",
+  "proof_flags": {
+    "gpu_validated": false,
+    "semantic_equivalence_proven": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "deployable": false,
+    "promotion_allowed": false
+  },
+  "claim_scope": "actual_local_compile_to_actual_finite_adapter_interface_only"
+}

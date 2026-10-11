@@ -34,6 +34,12 @@ enum Command {
         #[command(subcommand)]
         action: game_opt_loop::model_pipeline::PipelineCommand,
     },
+    /// Freeze/replay the actual local candidate gate and compiler; no device calls.
+    CandidateArtifact {
+        #[command(subcommand)]
+        action: game_opt_loop::candidate_artifact::Action,
+
+    },
     /// 一条命令跑完整条优化链路: 摸底 → 三层自动开路 → 真机评测 → 统一档案 + 总报告。
     ///
     /// 三层是: ③ 系统参数 (要 root)、② 画面流程改写 (要能挂 Vulkan 层)、
@@ -486,14 +492,16 @@ fn main() -> Result<()> {
     // 确认与工件协议入口的 stdout 是可解析的 JSON。
     if !matches!(
         &cli.command,
-        Some(Command::Confirm { .. } | Command::ModelPipeline { .. })
+        Some(Command::Confirm { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. })
     ) {
         println!("==================================================");
         println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
         println!("==================================================");
     }
 
+
     match cli.command {
+        Some(Command::CandidateArtifact { action }) => return game_opt_loop::candidate_artifact::run(action),
         Some(Command::Confirm { action }) => return game_opt_loop::confirmation::run(action),
         Some(Command::ModelPipeline { action }) => return game_opt_loop::model_pipeline::run(action),
         Some(Command::Optimize(args)) => return run_optimize(args),
@@ -522,6 +530,7 @@ fn main() -> Result<()> {
             )
         }
         None => {}
+        Some(Command::CandidateArtifact { .. }) => unreachable!("handled before banner"),
     }
     // 没给子命令 = 老的单赛道演化入口, 原样保留。
     let cli = cli.legacy;
