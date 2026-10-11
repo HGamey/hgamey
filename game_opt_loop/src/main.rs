@@ -161,7 +161,8 @@ pub struct OptimizeArgs {
     #[arg(long)]
     layers: Option<String>,
 
-    /// 每层跑几代 (压过预算算出来的值; 估计耗时随之重算, 超预算时计划里写明)。
+    /// 每层跑几代。给了它或 --children, 选中的层都按这个形状排、预算不再砍层
+    /// (只给一个时另一个取 1); 估计耗时随之重算, 超预算时计划里写明。
     #[arg(long)]
     generations: Option<u32>,
 

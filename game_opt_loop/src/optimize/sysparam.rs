@@ -760,6 +760,14 @@ impl Proposer<'_> {
         }
 
         if batch.accepted.is_empty() {
+            // 大模型回了候选、但一个都没过白名单校验: 这一代退回本地变异器。
+            // 不记一句的话报告里只看到"本地变异器 1 代", 读不出大模型其实回了话。
+            if batch.llm_error.is_none() && !batch.rejected.is_empty() {
+                batch.llm_error = Some(format!(
+                    "大模型回了 {} 个候选, 全部没过白名单校验 (见 rejected_locally)",
+                    batch.rejected.len()
+                ));
+            }
             let need = n as usize;
             batch.accepted = local_mutate(wl, history, need, self.seed);
             batch.origin = Some(Origin::LocalMutation);

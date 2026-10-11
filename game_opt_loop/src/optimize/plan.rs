@@ -393,8 +393,8 @@ impl Shape {
     }
 }
 
-/// 按 [`Shape`] 排计划: 没选的层当作"没开"(理由写明), 选了的层按预算排完后
-/// 再用人工给的代数/个数覆盖。纯函数。
+/// 按 [`Shape`] 排计划: 没选的层当作"没开"(理由写明)。给了代数/个数时, 选中且能开的
+/// 层一律按这个形状排 (只给一个时另一个取 1), 预算不再砍层; 没给时照常按预算排。纯函数。
 pub fn build_shaped(caps: &Caps, budget: Budget, use_llm: bool, shape: &Shape) -> Plan {
     let mut c = caps.clone();
     if let Some(want) = &shape.layers {
@@ -411,15 +411,22 @@ pub fn build_shaped(caps: &Caps, budget: Budget, use_llm: bool, shape: &Shape) -
             }
         }
     }
-    let mut plan = build(&c, budget, use_llm);
-    if shape.generations.is_some() || shape.children.is_some() {
+    let overridden = shape.generations.is_some() || shape.children.is_some();
+    // 人工给了代数/个数: 选中的层都按这个形状排, 预算不再砍层 —— 否则排在
+    // 前面的层按新形状吃掉预算, 后面选中的层被当成"预算不够"砍掉, 跟人要的正相反。
+    // 计划里照旧写原预算, 估计超出时 render 会说明。
+    let mut plan = if overridden {
+        let mut p = build(&c, Budget { seconds: u64::MAX / 4 }, use_llm);
+        p.budget_s = budget.seconds;
+        p
+    } else {
+        build(&c, budget, use_llm)
+    };
+    if overridden {
+        // 只给了其中一个时, 另一个取 1 (排计划时用的是放开的预算, 那边算出来的值没有意义)。
         for st in plan.steps.iter_mut() {
-            if let Some(g) = shape.generations {
-                st.generations = g.max(1);
-            }
-            if let Some(n) = shape.children {
-                st.children = n.max(1);
-            }
+            st.generations = shape.generations.unwrap_or(1).max(1);
+            st.children = shape.children.unwrap_or(1).max(1);
             st.estimate_s = st.per_candidate_s * st.generations as u64 * st.children as u64;
         }
         plan.estimate_s = plan.steps.iter().map(|s| s.estimate_s).sum();
@@ -665,6 +672,25 @@ pkg_path=package:/data/app/x/base.apk\n";
             generations: Some(2),
             children: Some(1),
         };
+        // 两层都选、30m 预算: 形状是人定的, 两层都要排上, 不能被预算砍掉一层
+        let both = Shape {
+            layers: None,
+            generations: Some(2),
+            children: Some(1),
+        };
+        let p2 = build_shaped(&c, Budget::parse("30m").unwrap(), true, &both);
+        assert_eq!(p2.steps.len(), 2, "{:?}", p2.skipped);
+        assert!(p2.steps.iter().all(|s| (s.generations, s.children) == (2, 1)));
+        // 只给代数: 每代 1 个
+        let g3 = Shape {
+            generations: Some(3),
+            ..Default::default()
+        };
+        let p3 = build_shaped(&c, Budget::parse("30m").unwrap(), true, &g3);
+        assert!(p3.steps.iter().all(|s| (s.generations, s.children) == (3, 1)));
+        assert_eq!(p2.budget_s, 1800);
+        assert!(p2.estimate_s > p2.budget_s);
+
         let p = build_shaped(&c, Budget::parse("30m").unwrap(), true, &shape);
         assert_eq!(p.steps.len(), 1);
         assert_eq!(p.steps[0].layer, Kind::Gray);

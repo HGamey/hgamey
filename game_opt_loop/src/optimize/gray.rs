@@ -328,6 +328,12 @@ impl Proposer<'_> {
             }
         }
         if batch.accepted.is_empty() {
+            if batch.llm_error.is_none() && !batch.rejected.is_empty() {
+                batch.llm_error = Some(format!(
+                    "大模型回了 {} 个候选, 全部没过开关目录校验 (见 rejected_locally)",
+                    batch.rejected.len()
+                ));
+            }
             batch.accepted = local_proposals(n as usize, history);
             batch.origin = Some(super::sysparam::Origin::LocalMutation);
         }
