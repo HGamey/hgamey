@@ -1,0 +1,390 @@
+   Compiling game_opt_loop v0.2.0 (/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.19s
+     Running unittests src/lib.rs (target/debug/deps/game_opt_loop-d3adc83d8125cb56)
+
+running 278 tests
+test engine::analysis::tests::trip_count_handles_inequality_exits ... ok
+test engine::analysis::tests::trip_count_counts_descending_loops ... ok
+test engine::analysis::tests::trip_count_rejects_counters_moving_away_from_the_bound ... ok
+test engine::analysis::tests::trip_count_counts_ordinary_ascending_loops ... ok
+test engine::analysis::tests::trip_count_normalises_reversed_comparisons ... ok
+test engine::analysis::tests::trip_count_returns_zero_when_the_loop_never_runs ... ok
+test engine::archive::tests::empty_archive_yields_no_parents ... ok
+test engine::archive::tests::duplicate_fingerprints_are_rejected ... ok
+test engine::archive::tests::candidates_below_the_quality_floor_never_reach_the_front ... ok
+test engine::archive::tests::front_keeps_genuine_trade_offs ... ok
+test engine::archive::tests::candidates_over_budget_never_reach_the_front ... ok
+test engine::archive::tests::measured_front_excludes_simulated_entries ... ok
+test engine::archive::tests::best_metrics_track_the_admissible_set_only ... ok
+test engine::cost_model::tests::a_smoothing_kernel_is_penalised_not_rewarded ... ok
+test engine::archive::tests::parent_selection_is_deterministic_and_prefers_the_front ... ok
+test engine::cost_model::tests::frame_time_stays_pinned_by_the_frame_limiter ... ok
+test engine::cost_model::tests::over_sharpening_is_punished ... ok
+test engine::cost_model::tests::simulated_reports_are_labelled_and_carry_no_fake_p_value ... ok
+test engine::cost_model::tests::taps_beyond_the_kernel_support_earn_no_quality ... ok
+test engine::cost_model::tests::the_model_reproduces_real_hardware_measurements ... ok
+test engine::cost_model::tests::the_psnr_model_reproduces_real_hardware_measurements ... ok
+test engine::evolution::tests::an_unrecognised_reference_kind_is_counted_separately ... ok
+test engine::archive::tests::charging_state_keeps_power_out_of_the_sort_and_says_so ... ok
+test engine::archive::tests::round_trips_through_disk_atomically ... ok
+test engine::evolution::tests::a_changed_quality_reference_refuses_to_reuse_the_old_archive ... ok
+test engine::evolution::tests::quality_trait_inference_is_conservative ... ok
+test engine::evolution::tests::the_quality_reference_summary_counts_what_came_back_not_what_was_asked_for ... ok
+test engine::cost_model::tests::baseline_operator_fits_the_budget_with_room_to_spare ... ok
+test engine::cost_model::tests::power_drops_below_the_native_baseline ... ok
+test engine::generator::tests::extracts_multiple_fenced_shaders ... ok
+test engine::generator::tests::gate_feedback_compresses_to_one_line ... ok
+test engine::cost_model::tests::memory_path_dominates_for_a_typical_operator ... ok
+test engine::generator::tests::honours_an_explicit_provider_choice ... ok
+test engine::generator::tests::ignores_shell_noise_and_malformed_lines ... ok
+test engine::generator::tests::picks_the_first_provider_with_a_key ... ok
+test engine::generator::tests::parses_both_export_and_bare_assignments ... ok
+test engine::generator::tests::no_keys_means_no_provider ... ok
+test engine::generator::tests::recovers_a_truncated_final_block ... ok
+test engine::generator::tests::returns_nothing_for_prose ... ok
+test engine::generator::tests::skips_fences_that_are_not_shaders ... ok
+test engine::generator::tests::prompts_name_no_papers_or_algorithms ... ok
+test engine::generator::tests::system_prompt_states_every_hard_constraint ... ok
+test engine::mutate::tests::genome_to_glsl_is_deterministic ... ok
+test engine::generator::tests::tolerates_odd_fence_languages_and_bare_output ... ok
+test engine::generator::tests::user_prompt_feeds_back_last_generation_rejections ... ok
+test engine::mutate::tests::rng_is_stable_across_runs ... ok
+test engine::mutate::tests::mutation_is_reproducible_from_a_seed ... ok
+test engine::mutate::tests::tap_count_tracks_side_length ... ok
+test engine::mutate::tests::mutation_actually_explores ... ok
+test engine::pareto::tests::a_genuine_trade_off_is_mutually_non_dominated ... ok
+test engine::pareto::tests::an_incomparable_power_axis_does_not_poison_crowding_distance ... ok
+test engine::cost_model::tests::transcendental_weighting_costs_more_than_polynomial ... ok
+test engine::pareto::tests::a_single_improvement_with_no_regression_dominates ... ok
+test engine::pareto::tests::an_incomparable_power_axis_is_skipped_not_guessed ... ok
+test engine::cost_model::tests::an_oversized_neighbourhood_blows_the_budget ... ok
+test engine::pareto::tests::every_point_lands_in_exactly_one_layer ... ok
+test engine::pareto::tests::front_keeps_only_non_dominated_points ... ok
+test engine::pareto::tests::crowding_marks_the_extremes_as_maximally_sparse ... ok
+test engine::pareto::tests::differences_within_noise_do_not_count_as_domination ... ok
+test engine::pareto::tests::layers_are_ordered_and_partition_every_point ... ok
+test engine::pareto::tests::identical_points_do_not_dominate_each_other ... ok
+test engine::pareto::tests::strictly_better_on_every_axis_dominates ... ok
+test engine::tests::a_charging_report_with_null_power_still_parses ... ok
+test engine::tests::a_report_with_a_missing_per_frame_reading_still_parses ... ok
+test engine::tests::admissibility_enforces_the_latency_budget ... ok
+test engine::tests::admissibility_enforces_the_quality_floor ... ok
+test engine::tests::admissibility_requires_significance_for_measured_data ... ok
+test engine::tests::fingerprint_ignores_comments_and_whitespace ... ok
+test engine::tests::fingerprint_separates_real_changes ... ok
+test engine::tests::non_pass_status_is_never_admissible ... ok
+test engine::tests::power_only_counts_when_the_device_is_actually_on_battery ... ok
+test engine::tests::simulated_reports_are_not_judged_on_significance ... ok
+test engine::tests::the_quality_floor_comes_from_this_run_s_baseline_arm ... ok
+test engine::cost_model::tests::latency_grows_monotonically_with_tap_count ... ok
+test engine::validator::tests::accepts_a_frame_gen_operator_that_reads_both_history_frames ... ok
+test engine::validator::tests::an_unguarded_store_inside_a_helper_is_still_caught ... ok
+test engine::validator::tests::gate_is_fast_enough_to_be_a_local_tripwire ... ok
+test engine::validator::tests::guard_state_propagates_into_called_functions ... ok
+test engine::validator::tests::guard_written_as_a_positive_condition_is_accepted ... ok
+test engine::validator::tests::rejects_a_frame_gen_operator_that_ignores_one_history_frame ... ok
+test engine::validator::tests::rejects_binding_outside_the_contract ... ok
+test engine::validator::tests::rejects_counter_moving_away_from_bound ... ok
+test engine::validator::tests::baseline_templates_pass_the_gate ... ok
+test engine::validator::tests::rejects_do_while_true ... ok
+test engine::validator::tests::rejects_divergent_barrier ... ok
+test engine::validator::tests::rejects_for_ever ... ok
+test engine::validator::tests::realistic_multi_tap_operator_passes ... ok
+test engine::validator::tests::rejects_missing_version_directive ... ok
+test engine::validator::tests::rejects_missing_workgroup_declaration ... ok
+test engine::validator::tests::rejects_missing_required_binding ... ok
+test engine::validator::tests::rejects_oversized_workgroup ... ok
+test engine::validator::tests::rejects_obfuscated_infinite_loop ... ok
+test engine::validator::tests::rejects_operator_that_writes_nothing ... ok
+test engine::validator::tests::rejects_loop_trip_over_limit ... ok
+test engine::validator::tests::rejects_storage_buffer ... ok
+test engine::validator::tests::rejects_runtime_bounded_loop ... ok
+test engine::validator::tests::rejects_renamed_contract_slot ... ok
+test engine::validator::tests::rejects_syntax_error ... ok
+test engine::validator::tests::rejects_unguarded_store ... ok
+test engine::mutate::tests::static_analysis_agrees_with_the_declared_tap_count ... ok
+test engine::validator::tests::rejects_while_true ... ok
+test engine::validator::tests::shared_memory_and_uniform_barrier_are_allowed ... ok
+test engine::validator::tests::sr_operator_is_rejected_on_the_frame_gen_track ... ok
+test engine::validator::tests::unbounded_loop_in_an_uncalled_helper_is_still_rejected ... ok
+test harness::tests::an_unmeasured_psnr_comes_back_as_null_not_as_a_parse_error ... ok
+test harness::tests::a_non_zero_exit_surfaces_phonefarm_stderr ... ok
+test harness::tests::a_zero_exit_with_an_unparseable_body_is_still_an_error ... ok
+test harness::tests::build_request_carries_the_contract ... ok
+test engine::validator::tests::the_write_only_output_slot_is_not_required_to_be_read ... ok
+test harness::tests::empty_device_list_yields_nothing ... ok
+test harness::tests::eval_request_freezes_the_anti_noise_protocol ... ok
+test harness::tests::parses_a_well_formed_report ... ok
+test harness::tests::parses_device_serials_and_skips_headers ... ok
+test engine::validator::tests::tap_counting_follows_function_calls ... ok
+test harness::tests::picks_the_report_out_of_noisy_stdout ... ok
+test harness::tests::a_successful_round_trip_writes_the_request_and_parses_the_report ... ok
+test harness::tests::probe_reports_missing_binary_instead_of_pretending ... ok
+test harness::tests::rejects_empty_or_unparseable_output ... ok
+test harness::tests::probe_never_reports_ready_without_a_real_device ... ok
+test harness::tests::report_round_trips_through_the_contract_shape ... ok
+test harness::tests::report_source_is_decided_by_the_receiving_side ... ok
+test harness::tests::subcommand_probe_is_independent_of_device_probe ... ok
+test harness::tests::exit_code_one_is_a_measured_rejection_not_a_harness_failure ... ok
+test harness::tests::subcommand_status_round_trips_as_json ... ok
+test harness::tests::exit_code_one_with_an_unparseable_body_still_surfaces_stderr ... ok
+test optimize::caps::tests::charge_control_nodes_are_probed_as_root ... ok
+test optimize::caps::tests::an_already_mounted_layer_is_flagged ... ok
+test optimize::caps::tests::a_hot_non_soc_zone_is_not_mistaken_for_the_soc_temperature ... ok
+test optimize::caps::tests::kv_keeps_every_line_for_repeated_keys ... ok
+test optimize::caps::tests::probe_script_skips_the_package_query_when_we_do_not_know_the_package ... ok
+test optimize::caps::tests::probe_script_is_read_only ... ok
+test optimize::caps::tests::charging_state_is_detected_from_status_and_current ... ok
+test optimize::caps::tests::rooted_device_opens_all_three_layers_for_an_installed_blackbox_game ... ok
+test optimize::caps::tests::prober_uses_the_injected_shell ... ok
+test optimize::caps::tests::unknown_is_not_the_same_as_no ... ok
+test optimize::caps::tests::unrooted_device_shuts_everything_and_says_why ... ok
+test optimize::caps::tests::without_a_soc_zone_the_temperature_stays_unknown ... ok
+test optimize::caps::tests::zero_temperature_is_not_a_measurement ... ok
+test optimize::eval::tests::abort_is_not_a_negative_sample ... ok
+test optimize::eval::tests::a_v1_report_still_parses ... ok
+test optimize::eval::tests::report_parsing_takes_the_outer_object_not_a_nested_one ... ok
+test optimize::eval::tests::exit_code_one_is_a_verdict_not_a_failure ... ok
+test optimize::eval::tests::exit_code_two_is_a_failure ... ok
+test optimize::caps::tests::whitebox_opens_the_shader_layer_without_a_vulkan_layer ... ok
+test optimize::eval::tests::an_old_eval_that_only_takes_set_is_detected ... ok
+test optimize::eval::tests::sysparam_does_not_ask_for_image_quality ... ok
+test optimize::eval::tests::a_mismatched_kind_in_the_reply_is_refused ... ok
+test optimize::eval::tests::requests_round_trip_for_every_kind ... ok
+test optimize::games::tests::explicit_package_wins ... ok
+test optimize::games::tests::genshin_resolves_to_its_package_and_is_blackbox ... ok
+test optimize::games::tests::package_shaped_names_are_accepted_as_packages ... ok
+test optimize::games::tests::genshin_carries_the_gamepad_pitfall ... ok
+test optimize::games::tests::unknown_name_without_a_package_stays_unknown ... ok
+test optimize::gray::tests::declared_but_unimplemented_knobs_are_refused ... ok
+test optimize::gray::tests::every_rewrite_touches_the_image ... ok
+test optimize::gray::tests::duplicate_knobs_are_refused ... ok
+test optimize::gray::tests::a_landed_knob_passes ... ok
+test optimize::gray::tests::garbage_replies_yield_nothing ... ok
+test optimize::gray::tests::proposals_parse_from_a_reply ... ok
+test optimize::gray::tests::proposer_falls_back_without_an_llm ... ok
+test optimize::gray::tests::the_catalog_shown_to_the_model_only_lists_landed_knobs ... ok
+test optimize::gray::tests::the_local_fallback_only_proposes_landed_knobs ... ok
+test optimize::gray::tests::the_local_fallback_never_repeats_a_knob_it_already_tried ... ok
+test optimize::gray::tests::unknown_knobs_are_refused ... ok
+test optimize::plan::tests::a_tight_budget_drops_layers_instead_of_rounds ... ok
+test optimize::plan::tests::a_rooted_device_plans_the_layers_optimize_actually_drives ... ok
+test optimize::plan::tests::budget_is_small_by_default ... ok
+test optimize::plan::tests::budget_parsing ... ok
+test optimize::plan::tests::budget_is_handed_out_in_order_not_split_evenly ... ok
+test optimize::plan::tests::nothing_open_means_measure_only ... ok
+test optimize::games::tests::whitebox_comes_from_the_carrier_contract_on_disk ... ok
+test optimize::plan::tests::the_fan_state_is_never_guessed ... ok
+test optimize::plan::tests::the_handoff_for_the_image_operator_layer_tells_the_truth_about_its_target ... ok
+test optimize::plan::tests::the_layer_optimize_does_not_drive_takes_no_budget ... ok
+test optimize::plan::tests::power_is_always_required_to_be_measured_on_battery ... ok
+test optimize::plan::tests::the_plan_says_who_actually_proposes ... ok
+test optimize::plan::tests::the_plan_is_a_pure_function_of_caps ... ok
+test optimize::plan::tests::the_rendered_plan_explains_every_closed_layer ... ok
+test optimize::plan::tests::the_rendered_plan_states_the_receiver_status ... ok
+test optimize::report::tests::a_plan_only_report_says_so_loudly ... ok
+test optimize::plan::tests::thermal_targets_follow_the_measured_temperature ... ok
+test optimize::report::tests::abort_is_called_out_as_an_invalid_measurement ... ok
+test optimize::report::tests::every_layer_is_accounted_for ... ok
+test optimize::report::tests::failed_dispatches_are_listed_apart_from_aborted_measurements ... ok
+test optimize::report::tests::an_all_abort_run_does_not_claim_nothing_improved ... ok
+test optimize::report::tests::one_archive_holds_every_layer ... ok
+test optimize::report::tests::the_report_always_states_the_test_conditions ... ok
+test optimize::report::tests::unmeasured_numbers_are_never_printed_as_zero ... ok
+test optimize::sysparam::tests::garbage_replies_yield_nothing_rather_than_panicking ... ok
+test optimize::sysparam::tests::cross_parameter_constraints_hold ... ok
+test optimize::sysparam::tests::a_missing_sibling_does_not_cause_a_false_inversion ... ok
+test optimize::sysparam::tests::local_mutation_is_reproducible_and_always_legal ... ok
+test optimize::sysparam::tests::local_mutation_only_pushes_forward ... ok
+test optimize::sysparam::tests::local_mutation_avoids_what_has_been_tried ... ok
+test optimize::sysparam::tests::plan_is_deterministic_and_puts_ceilings_first ... ok
+test optimize::sysparam::tests::proposals_survive_markdown_fences_and_numeric_values ... ok
+test optimize::sysparam::tests::only_nodes_that_actually_take_a_write_get_in ... ok
+test optimize::sysparam::tests::the_proposer_falls_back_to_local_mutation ... ok
+test optimize::sysparam::tests::unknown_parameters_are_refused ... ok
+test optimize::sysparam::tests::values_outside_the_table_are_refused ... ok
+test optimize::sysparam::tests::the_prompt_shows_the_whitelist_and_the_history ... ok
+test optimize::tests::a_single_online_device_is_picked_automatically ... ok
+test optimize::report::tests::writing_produces_both_files ... ok
+test optimize::tests::unmeasured_metrics_are_not_reported_as_zero_to_the_proposer ... ok
+test optimize::sysparam::tests::thermal_protection_never_enters_the_whitelist ... ok
+test optimize::tests::per_metric_lines_survive_a_reply_without_details ... ok
+test tracks::tests::budgets_match_the_design_red_lines ... ok
+test tracks::tests::embedded_templates_carry_their_mutation_slot ... ok
+test tracks::tests::embedded_templates_declare_every_required_binding ... ok
+test tracks::tests::track_ids_round_trip ... ok
+test viz::abtest::tests::all_pass_with_unevaluated_criteria_is_invalid_not_qualified ... ok
+test viz::abtest::tests::criterion_names_and_order_are_stable ... ok
+test viz::abtest::tests::missing_summary_is_invalid_not_eliminated ... ok
+test viz::abtest::tests::only_time_like_metrics_are_smaller_is_better ... ok
+test viz::abtest::tests::primary_never_falls_back_to_a_bandwidth_metric ... ok
+test viz::abtest::tests::unit_for_known_metrics ... ok
+test viz::abtest::tests::probe_shape_finds_comparison_inside_criterion ... ok
+test viz::abtest::tests::unknown_criterion_key_keeps_its_own_name ... ok
+test viz::abtest::tests::two_arm_shape_is_parsed ... ok
+test viz::carrier::tests::base_prefix_does_not_swallow_mc_base ... ok
+test viz::carrier::tests::collect_skips_missing_root ... ok
+test viz::carrier::tests::every_gate_declares_which_metric_it_gates ... ok
+test viz::carrier::tests::prefix_match_requires_trailing_digits ... ok
+test viz::device::tests::empty_owner_means_nobody ... ok
+test viz::device::tests::goal_is_read_from_the_head_of_the_log ... ok
+test viz::device::tests::log_lines_are_parsed_and_junk_ignored ... ok
+test viz::device::tests::owner_line_is_parsed ... ok
+test viz::device::tests::missing_lock_root_is_reported_as_free_not_crashed ... ok
+test viz::device::tests::owner_without_since_still_yields_a_label ... ok
+test viz::device::tests::steal_line_takes_the_new_owner_as_label ... ok
+test viz::fleet::tests::an_empty_farm_is_valid_data_not_an_error ... ok
+test viz::fleet::tests::argv_carries_the_lock_dir ... ok
+test viz::device::tests::serial_is_read_from_the_start_line ... ok
+test viz::fleet::tests::disabled_means_no_view_at_all ... ok
+test viz::fleet::tests::junk_before_the_json_is_skipped ... ok
+test viz::fleet::tests::a_missing_binary_is_reported_not_panicked ... ok
+test viz::fleet::tests::pretty_printed_json_also_parses ... ok
+test viz::fleet::tests::parses_a_real_light_probe ... ok
+test viz::fleet::tests::screenshots_are_opt_in_and_carry_the_interval_and_label ... ok
+test viz::fleet::tests::unknown_fields_do_not_break_parsing ... ok
+test viz::operator::tests::discover_returns_nothing_for_missing_dir ... ok
+test viz::operator::tests::evaluated_without_report_is_invalid ... ok
+test viz::operator::tests::front_membership_decides_qualified ... ok
+test viz::operator::tests::generation_index_parses_and_sorts_numerically ... ok
+test viz::operator::tests::missing_archive_does_not_claim_a_front_verdict ... ok
+test viz::operator::tests::poor_quality_is_eliminated ... ok
+test viz::operator::tests::static_cost_model_source_is_labelled_as_not_measured ... ok
+test viz::operator::tests::unevaluated_candidates_are_invalid_not_eliminated ... ok
+test viz::runlog::tests::battery_temp_takes_the_last_reading ... ok
+test viz::runlog::tests::monitored_package_is_extracted ... ok
+test viz::runlog::tests::snapshot_skips_comments_and_keeps_values_with_equals ... ok
+test viz::runlog::tests::snapshot_diff_finds_the_changed_knob ... ok
+test viz::runlog::tests::snapshot_treats_unreadable_and_null_as_unknown ... ok
+test viz::runlog::tests::summary_metric_lookup_returns_none_for_unknown_name ... ok
+test viz::serve::tests::content_type_by_extension ... ok
+test viz::serve::tests::allows_an_evidence_file_inside_the_root ... ok
+test viz::serve::tests::directory_is_not_served ... ok
+test viz::serve::tests::missing_file_is_not_found ... ok
+test viz::serve::tests::refuses_anything_under_a_dot_directory ... ok
+test viz::serve::tests::embedded_assets_are_not_empty ... ok
+test viz::serve::tests::rejects_absolute_path_outside_the_root ... ok
+test viz::serve::tests::rejects_traversal_out_of_the_root ... ok
+test viz::stats::tests::dispersion_guards_zero_median ... ok
+test viz::serve::tests::refuses_files_outside_the_evidence_extensions ... ok
+test viz::stats::tests::dispersion_matches_genshin_report ... ok
+test viz::stats::tests::dispersion_needs_two_samples ... ok
+test viz::stats::tests::dispersion_matches_phonefarm_report ... ok
+test viz::stats::tests::median_odd_and_even ... ok
+test viz::stats::tests::round_to_trims_float_noise ... ok
+test viz::tests::allowed_roots_only_contain_existing_dirs ... ok
+test viz::tests::phonefarm_root_defaults_to_sibling ... ok
+test viz::tests::missing_phonefarm_yields_a_notice_not_a_panic ... ok
+test viz::tests::numbered_dirs_sorts_numerically_not_lexically ... ok
+test viz::serve::tests::the_server_answers_over_real_http ... ok
+test engine::evolution::tests::the_gate_stays_fast_across_the_whole_corpus ... ok
+test engine::evolution::tests::the_gate_does_not_over_kill_benign_operators ... ok
+test engine::evolution::tests::red_team_corpus_is_fully_intercepted_with_the_right_reason ... ok
+test engine::mutate::tests::every_locally_mutated_operator_survives_the_gate ... ok
+
+test result: ok. 278 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running unittests src/main.rs (target/debug/deps/game_opt_loop-6cffe3d21da608b3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/candidate_artifact_cli.rs (target/debug/deps/candidate_artifact_cli-e98e88295fa45c4a)
+
+running 10 tests
+test strict_candidate_rejects_missing_unknown_duplicate_and_wrong_fields ... ok
+test unsafe_candidate_is_persisted_but_cannot_export_or_verify_as_success ... ok
+test actual_sr_compiler_replays_and_exports_adapter_binding ... ok
+test actual_framegen_compiles_without_claiming_sr_adapter_or_gpu ... ok
+test rehashed_bytecode_cannot_bypass_actual_recompilation ... ok
+test overwrite_extra_files_unbounded_inputs_and_unknown_proofs_fail ... ok
+test replacing_all_frozen_candidate_identity_requires_new_external_approval ... ok
+test symlink_inputs_ancestors_outputs_and_artifacts_are_rejected ... ok
+test rehashed_rules_gate_and_binary_claims_are_not_accepted ... ok
+test missing_or_modified_artifacts_fail_closed ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.77s
+
+     Running tests/contract_conformance.rs (target/debug/deps/contract_conformance-642fb67a8eeb550d)
+
+running 19 tests
+test a_v2_report_matches_the_contract ... ok
+test eval_request_matches_its_contract ... ok
+test eval_request_carries_the_incumbent_when_there_is_one ... ok
+test an_abort_report_is_contract_valid ... ok
+test candidate_matches_its_contract ... ok
+test eval_report_matches_its_contract_for_both_sources ... ok
+test eval_report_carries_where_the_quality_truth_came_from ... ok
+test a_v2_request_without_conditions_is_refused ... ok
+test eval_report_carries_the_power_source ... ok
+test fingerprints_look_like_the_contract_says ... ok
+test every_status_the_upper_layer_understands_is_in_the_contract ... ok
+test every_candidate_origin_is_in_the_contract_enum ... ok
+test eval_request_carries_the_quality_reference ... ok
+test the_mini_validator_actually_catches_violations ... ok
+test the_contract_actually_pins_each_payload_to_its_kind ... ok
+test pareto_archive_matches_its_contract ... ok
+test the_v1_request_shape_is_still_accepted ... ok
+test every_eval_status_is_in_the_contract_enum ... ok
+test every_v2_request_kind_matches_the_contract ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/evolution_loop.rs (target/debug/deps/evolution_loop-39edac1d7434ef9c)
+
+running 11 tests
+test the_persisted_spirv_matches_what_the_gate_compiled ... ok
+test the_upstream_can_parse_a_real_device_report ... ok
+test dry_run_records_are_all_labelled_as_estimates ... ok
+test a_second_run_resumes_from_the_existing_archive ... ok
+test the_cumulative_best_quality_never_regresses ... ok
+test every_front_entry_satisfies_the_hard_constraints ... ok
+test the_archive_never_holds_duplicate_fingerprints ... ok
+test a_full_dry_run_produces_the_expected_artifacts ... ok
+test a_different_seed_explores_differently ... ok
+test the_same_seed_reproduces_the_same_archive ... ok
+test the_frame_gen_track_closes_the_loop_too ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/optimize_flow.rs (target/debug/deps/optimize_flow-57bebe9b03494587)
+
+running 5 tests
+test an_unrecognized_game_is_reported_as_unknown_rather_than_guessed ... ok
+test the_survey_only_ever_issues_one_read_only_command ... ok
+test when_nothing_can_be_opened_every_reason_reaches_the_report ... ok
+test the_whole_pipeline_is_reproducible_from_a_recorded_probe ... ok
+test a_plan_run_produces_caps_and_a_report_that_explain_themselves ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/viz_dashboard.rs (target/debug/deps/viz_dashboard-09e648388d9f458e)
+
+running 17 tests
+test evidence_only_dirs_are_listed_but_not_counted_in_the_three_way_tally ... ok
+test an_arm_without_a_report_is_invalid_not_a_negative_verdict ... ok
+test test_conditions_come_from_the_run_files_and_stay_unknown_when_absent ... ok
+test carrier_dispersion_matches_the_numbers_in_the_reports ... ok
+test a_significant_result_passes_all_criteria ... ok
+test a_directionally_good_but_insignificant_result_is_eliminated_not_qualified ... ok
+test operator_generations_are_read_from_the_real_archive ... ok
+test recent_device_tasks_carry_their_goal ... ok
+test quality_reference_is_carried_so_absolute_db_is_not_compared_across_references ... ok
+test last_touch_is_looked_up_by_serial_and_old_logs_stay_unknown ... ok
+test the_tracked_evidence_report_still_declares_its_retraction ... ok
+test the_device_lock_is_read_from_its_files_and_not_by_running_the_script ... ok
+test the_retracted_power_conclusion_is_surfaced_at_the_top ... ok
+test the_three_layers_are_always_present_and_counted ... ok
+test the_probe_shaped_report_is_parsed_too ... ok
+test the_changed_knob_is_discovered_by_diffing_the_two_arms_snapshots ... ok
+test unreported_power_source_shows_as_unknown_instead_of_a_made_up_value ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests game_opt_loop
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
