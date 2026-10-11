@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub mod campaign;
 pub mod engine;
 pub mod evidence;
+pub mod confirmation;
 pub mod harness;
 pub mod optimize;
 pub mod tracks;
