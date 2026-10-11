@@ -166,12 +166,12 @@ pub fn parse_answer(text: &str) -> Result<f64> {
 
 /// 给守门看的状态: 设备、层、判定口径、这个候选、最近的历史。只用出方案输入里已有的东西。
 pub fn state_for(input: &Input, c: &Candidate) -> Value {
-    let hist: Vec<Value> = input
-        .history
+    // ABORT (没量准) 既不是正样本也不是负样本, 不给守门看: 回放里发现它会把
+    // 「和一个 ABORT 候选参数相同」当成被否定过 (docs/DESIGN_CLOUD_PROPOSER.md)。
+    let valid: Vec<&HistoryItem> = input.history.iter().filter(|h| h.measurement_valid).collect();
+    let hist: Vec<Value> = valid[valid.len().saturating_sub(HISTORY_TAIL)..]
         .iter()
-        .rev()
-        .take(HISTORY_TAIL)
-        .rev()
+        .copied()
         .map(|h: &HistoryItem| {
             json!({
                 "change": h.candidate.summary(),
@@ -374,6 +374,14 @@ mod tests {
         assert_eq!(s["candidate"]["change"], c.summary());
         assert!(s["judging"]["metrics"].is_array());
         assert!(s["history"].as_array().unwrap().len() <= HISTORY_TAIL);
+        // ABORT 不进守门看的历史。
+        let mut inp2 = input();
+        let mut h = crate::optimize::proposer::tests_support::history_item(c.clone(), false);
+        inp2.history.push(h.clone());
+        assert_eq!(state_for(&inp2, &c)["history"].as_array().unwrap().len(), 0);
+        h.measurement_valid = true;
+        inp2.history.push(h);
+        assert_eq!(state_for(&inp2, &c)["history"].as_array().unwrap().len(), 1);
     }
 
     /// 真打一次 Jev (要 key 和网络; 缺省跳过)。`GOL_LIVE_JEV=1 cargo test live_jev`。

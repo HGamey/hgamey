@@ -1045,6 +1045,21 @@ pub(crate) mod tests_support {
     pub fn sysparam_input(n: u32) -> super::Input {
         super::tests::input(super::Kind::Sysparam, n, 20260923, vec![])
     }
+
+    pub fn history_item(candidate: super::Candidate, measurement_valid: bool) -> super::HistoryItem {
+        super::HistoryItem {
+            candidate_id: "h1".into(),
+            generation: 1,
+            candidate,
+            status: if measurement_valid { "REJECT" } else { "ABORT" }.into(),
+            measurement_valid,
+            kept: false,
+            reason: None,
+            p_value: 1.0,
+            per_metric: Default::default(),
+            summary: vec![],
+        }
+    }
 }
 
 #[cfg(test)]

@@ -89,7 +89,7 @@ def load(path):
 
 def state(c, history):
     hist = [{"change": h["change"], "status": h["status"], "measurement_valid": h["valid"], "kept": h["kept"],
-             "reason": h["reason"], "per_metric": []} for h in history[-HISTORY_TAIL:]]
+             "reason": h["reason"], "per_metric": []} for h in [x for x in history if x["valid"]][-HISTORY_TAIL:]]
     return {"task": "手机游戏性能优化: 判断候选值不值得上真机评测", "device": DEVICE, "target": TARGET,
             "layer": "③ 系统参数", "judging": JUDGING, "candidate": {"change": c["change"], "why": c["why"]},
             "history": hist}
