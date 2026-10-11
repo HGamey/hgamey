@@ -7,6 +7,7 @@ var PAGE = 'overview';
 var SELECTED_ROUND = null;
 var REFRESH_MS = 30000;
 var timer = null;
+var EVIDENCE_OPEN = Object.create(null);
 
 /* ── 小工具 ───────────────────────────────────────── */
 function esc(s) {
@@ -121,8 +122,8 @@ function renderOverview() {
     '<h2 class="section">三层级 · 每层多少轮, 结果怎么分</h2>' +
     '<div class="grid3">' + cards + '</div>' +
     '<div class="card" style="margin-top:16px"><div class="dim" style="font-size:13px">' +
-      '合格 = 判据齐全且全部通过 &nbsp;·&nbsp; 淘汰 = 判据齐全但有未通过 &nbsp;·&nbsp; ' +
-      '无效 = 判据不齐 / 没测上, <b>下不出结论</b> (不是判负)' +
+      '合格 / 淘汰只展示报告声明结论资格后的前沿或判据结果；无效表示资格或测试不完整。' +
+      '<br>仅证据包括旧报告、静态估计与来源未知的记录。面板不认证采集，也不授予真实游戏证明或晋级权限。' +
     '</div></div>' +
     '<h2 class="section">载体可复现性 · 同一载体连跑 N 轮, 帧时散得有多开</h2>' +
     carrierTable() +
@@ -157,7 +158,8 @@ function carrierTable() {
   return '<div class="card"><table><thead><tr>' +
     '<th>载体</th><th>窗口</th><th>轮数</th><th>p95 离散度</th><th>p50 离散度</th>' +
     '<th>p95 中位</th><th>帧率中位</th><th>阈值</th><th>判定</th><th></th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    '</tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<p class="dim">本表判定仅描述保存记录的离散度是否符合该表阈值，不授予优化结论资格。</p></div>';
 }
 
 /* ── 轮次 ─────────────────────────────────────────── */
@@ -176,6 +178,8 @@ function findRound(id) {
 }
 
 function renderRounds() {
+  var details = el('page-rounds').querySelectorAll('details.receiver-evidence[data-key]');
+  for (var i = 0; i < details.length; i++) EVIDENCE_OPEN[details[i].dataset.key] = details[i].open;
   var all = allRounds();
   if (!all.length) {
     el('page-rounds').innerHTML = '<div class="card"><span class="unknown">还没有任何一轮数据</span></div>';
@@ -214,6 +218,11 @@ function verdictLabel(v) {
   return { qualified: '合格', eliminated: '淘汰', invalid: '无效', evidence: '仅证据' }[v] || v;
 }
 
+function evidenceDetailAttrs(parts) {
+  var key = JSON.stringify(parts);
+  return ' data-key="' + esc(key) + '"' + (EVIDENCE_OPEN[key] ? ' open' : '');
+}
+
 function roundDetail(x) {
   if (!x) return '<span class="unknown">没有选中任何一轮</span>';
   var r = x.round;
@@ -243,7 +252,7 @@ function roundDetail(x) {
       '<th>功耗 W</th><th>画质 dB</th><th>p 值</th><th>说明</th></tr></thead><tbody>' +
       r.candidates.map(function (c) {
         return '<tr>' +
-          '<td><b>' + esc(c.id) + '</b>' + (c.on_front ? ' <span class="badge qualified">前沿</span>' : '') + '</td>' +
+          '<td><b>' + esc(c.id) + '</b>' + (c.on_front ? ' <span class="badge evidence">档案前沿</span>' : '') + '</td>' +
           '<td>' + esc(c.origin) + '</td>' +
           '<td><span class="badge ' + esc(c.verdict) + '">' + verdictLabel(c.verdict) + '</span></td>' +
           '<td class="num">' + num(c.latency_ms, 4) + '</td>' +
@@ -256,7 +265,15 @@ function roundDetail(x) {
             (c.violations && c.violations.length ? ' [' + esc(c.violations.join(',')) + ']' : '') +
             (c.notes ? '<br>' + esc(c.notes) : '') +
             (c.power_excluded_reason ? '<br>功耗未参与排序: ' + esc(c.power_excluded_reason) : '') +
-          '</td></tr>';
+          '</td></tr>' +
+            (c.evidence ? '<tr><td colspan="9"><details class="receiver-evidence"' +
+              evidenceDetailAttrs(['candidate', r.id, c.id]) +
+              '><summary>' + esc(c.id) + ' · 来源、资格与原始回包</summary>' +
+              '<p>' + esc(c.evidence.metric_source) + '<br>' + esc(c.evidence.qualification_label) +
+              '<br>声明来源: ' + val(c.evidence.evidence_origin) +
+              '<br>原报告状态: ' + val(c.evidence.reported_status) +
+              '<br>面板仅展示记录；真实游戏证明和晋级权限不由面板授予。</p>' +
+              '<pre>' + esc(JSON.stringify(c.evidence.receiver_report, null, 2)) + '</pre></details></td></tr>' : '');
       }).join('') + '</tbody></table>';
   }
 
@@ -266,6 +283,13 @@ function roundDetail(x) {
         '<span><i style="background:var(--dim)"></i>' + esc(r.arms.a_label) + '</span>' +
         '<span><i style="background:var(--accent)"></i>' + esc(r.arms.b_label) + '</span>' +
       '</div>';
+  }
+
+  if (r.receiver_report) {
+    html += '<details class="receiver-evidence"' + evidenceDetailAttrs(['ab', r.id]) +
+      '><summary>原始 A/B 回包与资格声明</summary>' +
+      '<p>保存的记录尚未认证采集；面板不授予真实游戏证明或晋级权限。</p>' +
+      '<pre>' + esc(JSON.stringify(r.receiver_report, null, 2)) + '</pre></details>';
   }
 
   html += '<h2 class="section">测试条件</h2><div class="kv">' +
@@ -321,9 +345,9 @@ function renderCharts() {
       ' — 绝对 dB 只在同一组参考图内可比</span></div>' +
       paretoSvg(pr.pareto, 980, 420) +
       '<div class="legend">' +
-        '<span><i style="background:var(--good)"></i>支配前沿</span>' +
+        '<span><i style="background:var(--good)"></i>档案前沿（历史成员关系）</span>' +
         '<span><i style="background:var(--dim)"></i>被支配</span>' +
-        '<span>点上的字是候选 id, 悬停看详情</span>' +
+        '<span>点上的字是候选 id；来源与结论资格见轮次详情</span>' +
       '</div></div>';
   }
 
@@ -414,7 +438,7 @@ function paretoSvg(p, w, h) {
     return '<g><circle cx="' + sx(d.x) + '" cy="' + sy(d.y) + '" r="' + rr + '" fill="' + c +
       '" fill-opacity="' + (d.on_front ? 1 : 0.55) + '"><title>' + esc(d.id) + ' · 第' + d.generation +
       '代 · ' + esc(d.origin) + '\n耗时 ' + d.x + ' ms · 画质 ' + d.y + ' dB' +
-      (d.on_front ? '\n在支配前沿上' : '') + '</title></circle>' +
+      (d.on_front ? '\n在档案前沿上（历史成员关系）' : '') + '</title></circle>' +
       '<text x="' + sx(d.x) + '" y="' + (sy(d.y) - rr - 5) + '" font-size="11" text-anchor="middle">' + esc(d.id) + '</text></g>';
   }).join('');
 

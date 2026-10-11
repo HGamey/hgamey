@@ -130,9 +130,23 @@ pub struct CandidateRow {
     /// 功耗为什么没参与支配排序; `None` = 参与了或档案没记。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_excluded_reason: Option<String>,
+    /// Full receiver report plus its declaration-level qualification. A view grants no proof.
+    pub evidence: Option<CandidateEvidence>,
     /// 静态预检未通过时的违规码。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub violations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CandidateEvidence {
+    pub qualification_state: crate::evidence::QualificationState,
+    pub qualification_label: &'static str,
+    pub metric_source: &'static str,
+    pub evidence_origin: Option<String>,
+    pub reported_status: crate::engine::EvalStatus,
+    pub receiver_report: serde_json::Value,
+    pub view_grants_game_proof: bool,
+    pub view_allows_promotion: bool,
 }
 
 /// 层②③ 的两臂逐轮数值 —— 前端的对比图直接吃这个。
@@ -217,6 +231,10 @@ pub struct Round {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pareto: Option<ParetoChart>,
     pub evidence: Vec<EvidenceFile>,
+    /// A/B receiver JSON is preserved for read-only inspection; declarations are not attestations.
+    pub receiver_report: Option<serde_json::Value>,
+    pub view_grants_game_proof: bool,
+    pub view_allows_promotion: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
 }

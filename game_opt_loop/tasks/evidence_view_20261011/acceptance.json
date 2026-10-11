@@ -1,0 +1,30 @@
+{
+  "schema": "game_opt_loop/evidence_view_acceptance@1",
+  "scope": "read_only_declaration_display",
+  "cargo_tests_passed": 339,
+  "strict_clippy_exit": 0,
+  "independent_review": "all_pass contradiction reproduced and fixed; all proof/promotion view flags remain false",
+  "manual_ui_checks": [
+    "historical PASS only evidence",
+    "archive-front badge does not imply qualification",
+    "missing origin remains unknown",
+    "full receiver JSON expanded",
+    "refresh preserves expanded state",
+    "legacy A/B 5/5 preserved without granting qualification",
+    "no browser console errors"
+  ],
+  "manual_ui_assets_sha256": "79ccee1682de6c92ed970f877840c4e04e0cf762d8420570d07c23108d1a2b90",
+  "manual_ui_local_screenshots": [
+    "evidence-view-candidate.jpg",
+    "evidence-view-ab.jpg"
+  ],
+  "fixture_data_only": true,
+  "device_calls": 0,
+  "model_api_calls": 0,
+  "game_optimization_proven": false,
+  "promotion_allowed": false,
+  "remaining": [
+    "unified confirmation report and model-stage case view",
+    "authenticated real-game evidence"
+  ]
+}
