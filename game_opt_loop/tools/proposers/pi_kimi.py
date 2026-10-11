@@ -72,6 +72,30 @@ def quota_or_rate_limited(text: str) -> bool:
             or ("403" in t and ("limit" in t or "permission_error" in t)))
 
 
+def parse_events(stdout: str):
+    """pi --mode json 的事件流 → (最后一条 assistant 文本, [(工具名, 成功否)])。"""
+    texts, calls, names = [], [], {}
+    for line in stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if ev.get("type") != "message_end":
+            continue
+        m = ev.get("message") or {}
+        content = m.get("content") if isinstance(m.get("content"), list) else []
+        if m.get("role") == "assistant":
+            t = "".join(c.get("text", "") for c in content if c.get("type") == "text")
+            if t.strip():
+                texts.append(t)
+            for c in content:
+                if c.get("type") == "toolCall":
+                    names[c.get("id")] = c.get("name")
+        elif m.get("role") == "toolResult":
+            calls.append((m.get("toolName") or names.get(m.get("toolCallId"), "?"), not m.get("isError")))
+    return (texts[-1] if texts else ""), calls
+
+
 def extract_json(text: str):
     """从模型回复里抠出最后一个能解析、带 candidates 的 JSON 对象。"""
     fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
@@ -99,7 +123,7 @@ def main() -> int:
     timeout = int(os.environ.get("PI_TIMEOUT_S", "420"))
 
     prompt = RULES + "\n\n输入:\n" + json.dumps(slim(inp), ensure_ascii=False)
-    cmd = [pi, "-p", "--no-session", "-nc", "-ns", "-np"]
+    cmd = [pi, "-p", "--mode", "json", "--no-session", "-nc", "-ns", "-np"]
     if tools:
         # MCP 由 pi 的内置扩展提供, 不能加 -ne; 服务器要在 mcp.json 里设 "exposure": "direct"。
         cmd += ["--tools", tools]
@@ -126,9 +150,14 @@ def main() -> int:
         return 3
     if model is None:
         return 3
-    out = extract_json(r.stdout)
+    text, calls = parse_events(r.stdout)
+    for name, ok in calls:
+        log(f"调用工具 {name}: {'成功' if ok else '出错'}")
+    if tools and not calls:
+        log("没有调用任何工具")
+    out = extract_json(text)
     if out is None:
-        log("回复里找不到合法 JSON:", r.stdout[-800:])
+        log("回复里找不到合法 JSON:", text[-800:])
         return 4
     out["protocol"], out["version"] = PROTOCOL, 1
     out.setdefault("proposer", f"pi_kimi ({model})")
