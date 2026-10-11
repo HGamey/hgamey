@@ -42,6 +42,8 @@ struct Fixture {
     out: PathBuf,
     log: PathBuf,
     phonefarm: PathBuf,
+    receiver_evidence: Option<&'static str>,
+    force_pass: bool,
 }
 impl Fixture {
     fn new() -> Self {
@@ -69,6 +71,8 @@ impl Fixture {
             cwd,
             out,
             phonefarm,
+            receiver_evidence: None,
+            force_pass: false,
         }
     }
     fn command(&self, args: &[&str]) -> Command {
@@ -76,6 +80,12 @@ impl Fixture {
         cmd.current_dir(&self.cwd)
             .env("FAKE_PHONEFARM_LOG", &self.log)
             .args(args);
+        if let Some(stage) = self.receiver_evidence {
+            cmd.env("FAKE_QUALIFICATION", stage);
+        }
+        if self.force_pass {
+            cmd.env("FAKE_PASS", "1");
+        }
         cmd
     }
     fn call(&self, args: &[&str]) -> Output {
@@ -373,6 +383,108 @@ fn changed_probe_or_mode_cannot_reuse_optimize_approvals() {
     std::fs::write(f.root.join("probe.txt"), "gpu.num_pwrlevels=999\n").unwrap();
     assert!(!f.optimize("expert", true).status.success());
     assert!(f.calls().is_empty());
+}
+
+fn assert_receiver_evidence(value: &Value, stage: &str) {
+    let expected_stage = if stage == "qualification_only" {
+        "conclusion"
+    } else {
+        stage
+    };
+    assert_eq!(value["qualification"]["stage"], expected_stage);
+    assert_eq!(value["qualification"]["eligible"], true);
+    assert_eq!(value["qualification_only"], stage == "qualification_only");
+    assert_eq!(value["artifacts"]["fixture"], "synthetic: no real frame");
+    assert_eq!(value["metric_provenance"]["power_watt"], "unavailable");
+    assert_eq!(
+        value["future_receiver_evidence"]["nested"],
+        json!([null, false, {"sha256":"synthetic"}])
+    );
+}
+
+#[test]
+fn shader_campaign_preserves_receiver_extensions_and_qualification_on_replay() {
+    for stage in ["conclusion", "experiment", "qualification_only"] {
+        let mut f = Fixture::new();
+        f.receiver_evidence = Some(stage);
+        success(f.evolution(false));
+        for _ in 0..3 {
+            f.decide_pending("accept");
+            success(f.evolution(true));
+        }
+        let calls = f.calls();
+        success(f.evolution(true));
+        assert_eq!(f.calls(), calls);
+        let journal = f.journal();
+        let archive: Value =
+            serde_json::from_slice(&std::fs::read(f.out.join("archive.json")).unwrap()).unwrap();
+        let qualified = stage == "conclusion";
+        for entry in archive["entries"].as_array().unwrap() {
+            let id = entry["id"].as_str().unwrap();
+            assert_receiver_evidence(&entry["report"], stage);
+            assert_eq!(entry["report"], journal["entries"][id]["result"]);
+            assert_eq!(
+                entry["qualification_state"],
+                if qualified { "qualified" } else { "ineligible" }
+            );
+            assert_eq!(
+                entry["campaign_binding_sha256"],
+                journal["entries"][id]["binding_sha256"]
+            );
+            assert!(entry["expert_decisions"][0]["expert"].as_bool().unwrap());
+        }
+        let rebuilt =
+            game_opt_loop::engine::ParetoArchive::load(&f.out.join("archive.json")).unwrap();
+        assert_eq!(!rebuilt.front().is_empty(), qualified);
+    }
+}
+
+#[test]
+fn optimize_campaign_preserves_measurement_evidence_and_qualification_on_replay() {
+    for stage in ["conclusion", "experiment", "qualification_only"] {
+        let mut f = Fixture::new();
+        f.receiver_evidence = Some(stage);
+        f.force_pass = true;
+        success(f.optimize("expert", false));
+        for _ in 0..10 {
+            let waiting = f.journal()["entries"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|e| e["state"] == "pending" || e["state"] == "deferred");
+            if !waiting {
+                break;
+            }
+            f.decide_pending("accept");
+            success(f.optimize("expert", true));
+        }
+        let calls = f.calls();
+        assert!(!calls.is_empty());
+        success(f.optimize("expert", true));
+        assert_eq!(f.calls(), calls);
+        let journal = f.journal();
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(f.out.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["campaign"]["waiting_for_review"], false);
+        let qualified = stage == "conclusion";
+        for entry in report["archive"].as_array().unwrap() {
+            let id = entry["id"].as_str().unwrap();
+            assert_receiver_evidence(&entry["measurement_evidence"], stage);
+            assert_receiver_evidence(&journal["entries"][id]["result"], stage);
+            assert_eq!(
+                entry["qualification_state"],
+                if qualified { "qualified" } else { "ineligible" }
+            );
+            assert_eq!(entry["kept"], qualified);
+            assert_eq!(entry["measurement_valid"], qualified);
+            assert_eq!(
+                entry["campaign_binding_sha256"],
+                journal["entries"][id]["binding_sha256"]
+            );
+            assert_eq!(entry["expert_decisions"][0]["expert"], true);
+        }
+        assert_eq!(!report["kept"].as_array().unwrap().is_empty(), qualified);
+    }
 }
 
 #[test]

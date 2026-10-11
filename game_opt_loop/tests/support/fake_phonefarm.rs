@@ -33,11 +33,19 @@ fn main() {
             if std::env::var_os("FAKE_PAUSE").is_some() {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
+            let evidence = std::env::var("FAKE_QUALIFICATION").map(|stage| {
+                let only = stage == "qualification_only";
+                let stage = if only { "conclusion" } else { &stage };
+                format!(",\"qualification\":{{\"stage\":\"{stage}\",\"eligible\":true}},\"qualification_only\":{only},\"artifacts\":{{\"fixture\":\"synthetic: no real frame\"}},\"metric_provenance\":{{\"power_watt\":\"unavailable\"}},\"future_receiver_evidence\":{{\"nested\":[null,false,{{\"sha256\":\"synthetic\"}}]}}")
+            }).unwrap_or_default();
             if args[0] == "gpu-op" {
                 let psnr = if id.starts_with("gen2_") { 47.0 } else if id.starts_with("gen1_") { 46.0 } else { 45.0 };
-                println!("{{\"candidate_id\":\"{id}\",\"status\":\"PASS\",\"metrics\":{{\"operator_latency_ms\":0.5,\"fps_p95_ms\":16.0,\"power_watt\":null,\"psnr_db\":{psnr}}},\"verdict\":{{\"is_pareto_improvement\":true,\"p_value\":0.001}},\"source\":\"phonefarm\"}}");
+                println!("{{\"candidate_id\":\"{id}\",\"status\":\"PASS\",\"metrics\":{{\"operator_latency_ms\":0.5,\"fps_p95_ms\":16.0,\"power_watt\":null,\"psnr_db\":{psnr}}},\"verdict\":{{\"is_pareto_improvement\":true,\"p_value\":0.001}},\"source\":\"phonefarm\"{evidence}}}");
             } else {
-                println!("{{\"version\":2,\"kind\":\"{kind}\",\"candidate_id\":\"{id}\",\"status\":\"REJECT\",\"metrics\":{{\"fps_p95_ms\":16.0,\"fps_mean\":60.0,\"power_watt\":null}},\"verdict\":{{\"is_pareto_improvement\":false,\"p_value\":0.5,\"reason\":\"synthetic fixture: no improvement\"}},\"conditions_observed\":{{\"apply_ok\":true,\"restored\":true}},\"source\":\"phonefarm\"}}");
+                let passed = std::env::var_os("FAKE_PASS").is_some();
+                let status = if passed { "KEEP" } else { "REJECT" };
+                let p = if passed { 0.001 } else { 0.5 };
+                println!("{{\"version\":2,\"kind\":\"{kind}\",\"candidate_id\":\"{id}\",\"status\":\"{status}\",\"metrics\":{{\"fps_p95_ms\":16.0,\"fps_mean\":60.0,\"power_watt\":null}},\"verdict\":{{\"is_pareto_improvement\":{passed},\"p_value\":{p},\"reason\":\"synthetic fixture\"}},\"conditions_observed\":{{\"apply_ok\":true,\"restored\":true}},\"source\":\"phonefarm\"{evidence}}}");
             }
         },
         _ => std::process::exit(2),
