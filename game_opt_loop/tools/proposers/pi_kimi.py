@@ -7,6 +7,9 @@
 
 环境变量:
     PI_MODEL      pi 的模型 (缺省 kimi-1/kimi-for-coding)
+    PI_MODELS     逗号分隔的多个模型 (通常是同一模型挂在不同账号的 provider 下), 按顺序轮换:
+                  某个账号回 403 额度用完 / 429 限流就换下一个, 全部失败才报错。给了它就不看 PI_MODEL。
+                  日志里只记用的是第几个, 不打印 key。
     PI_BIN        pi 可执行 (缺省 pi)
     PI_MCP_TOOLS  逗号分隔的 MCP 工具白名单 (例如 mcp__pfnode__phonefarm_fleet)。
                   不给 = 不开任何工具, 只凭输入出方案。只应放只读工具。
@@ -62,6 +65,13 @@ def slim(inp: dict) -> dict:
     return keep
 
 
+def quota_or_rate_limited(text: str) -> bool:
+    """pi 的报错里看得出是 403 额度用完或 429 限流 (换账号能解决的那一类)。"""
+    t = text.lower()
+    return ("429" in t or "rate limit" in t or "usage limit" in t or "quota" in t
+            or ("403" in t and ("limit" in t or "permission_error" in t)))
+
+
 def extract_json(text: str):
     """从模型回复里抠出最后一个能解析、带 candidates 的 JSON 对象。"""
     fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
@@ -81,13 +91,15 @@ def main() -> int:
     if inp.get("protocol") != PROTOCOL:
         log("不认识的协议", inp.get("protocol"))
         return 2
-    model = os.environ.get("PI_MODEL", "kimi-1/kimi-for-coding")
+    models = [m.strip() for m in os.environ.get("PI_MODELS", "").split(",") if m.strip()]
+    if not models:
+        models = [os.environ.get("PI_MODEL", "kimi-1/kimi-for-coding")]
     pi = os.environ.get("PI_BIN", "pi")
     tools = os.environ.get("PI_MCP_TOOLS", "").strip()
     timeout = int(os.environ.get("PI_TIMEOUT_S", "420"))
 
     prompt = RULES + "\n\n输入:\n" + json.dumps(slim(inp), ensure_ascii=False)
-    cmd = [pi, "-p", "--no-session", "-nc", "-ns", "-np", "--model", model]
+    cmd = [pi, "-p", "--no-session", "-nc", "-ns", "-np"]
     if tools:
         # MCP 由 pi 的内置扩展提供, 不能加 -ne; 服务器要在 mcp.json 里设 "exposure": "direct"。
         cmd += ["--tools", tools]
@@ -95,14 +107,24 @@ def main() -> int:
     else:
         cmd += ["-ne", "-nt", "--no-mcp"]
     cmd += os.environ.get("PI_EXTRA_ARGS", "").split()
-    log(f"model={model} kind={inp['kind']} gen={inp['generation']} n={inp['n']} tools={tools or '无'}")
-    try:
-        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        log(f"pi 超过 {timeout} 秒")
+    log(f"kind={inp['kind']} gen={inp['generation']} n={inp['n']} tools={tools or '无'} 账号 {len(models)} 个")
+    r, model = None, None
+    for i, m in enumerate(models, 1):
+        try:
+            r = subprocess.run(cmd + ["--model", m], input=prompt, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log(f"第 {i} 个账号: pi 超过 {timeout} 秒")
+            return 3
+        if r.returncode == 0:
+            model = m
+            log(f"用的是第 {i} 个账号")
+            break
+        if quota_or_rate_limited(r.stdout + r.stderr) and i < len(models):
+            log(f"第 {i} 个账号额度用完或被限流, 换下一个")
+            continue
+        log(f"第 {i} 个账号失败, pi 退出码 {r.returncode}:", (r.stderr or r.stdout)[-800:])
         return 3
-    if r.returncode != 0:
-        log("pi 退出码", r.returncode, r.stderr[-800:])
+    if model is None:
         return 3
     out = extract_json(r.stdout)
     if out is None:

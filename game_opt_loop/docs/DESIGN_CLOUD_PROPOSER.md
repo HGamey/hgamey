@@ -112,6 +112,9 @@ cloud_proposer ◄── gh run download ──────────┘ ─�
 - `tools/proposers/cloud_actions.py` + `.github/workflows/proposer.yml`：Actions 那一跳。
   **仓库还没有 secrets，云端整条链路没跑通过**，只能验证到「触发 → 找到 run → 在缺 key 那一步失败 →
   取回结果」。
+- 多账号轮换：Actions secrets 里配了 `KIMI_API_KEY`、`KIMI_API_KEY_2`、`KIMI_API_KEY_3`，workflow 给每个账号建一个 provider，
+  `pi_kimi.py` 通过 `PI_MODELS` 按顺序用。某个账号回 403 额度用完或 429 限流时换下一个，全部失败才报错；
+  日志里只记用了第几个账号。本机用 kimi-3 → kimi-2 → kimi-1 验证过：前两个额度用完，换到第 3 个出了候选。
 - 跑 `cloud_actions.py` 的机器（通常是节点）上要有登录了的 `gh`。
 
 ### 离线评测（2026-10-11，`tools/proposer_eval.py`，明细 `docs/evidence/proposer_eval_pi_kimi_20261011.json`）

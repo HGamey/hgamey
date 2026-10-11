@@ -3,6 +3,7 @@
 #
 # 需要的 secrets (owner 配):
 #   KIMI_API_KEY   Kimi For Coding 的 key (必需)
+#   KIMI_API_KEY_2, KIMI_API_KEY_3  备用账号 (可选)。按顺序用, 遇到 403 额度用完 / 429 限流换下一个。
 #   PF_NODE_TOKEN  手机节点 /mcp 的 token (可选; 不配就不查设备现状, 只凭输入出方案)
 name: proposer
 run-name: proposer ${{ inputs.nonce }}
@@ -28,21 +29,31 @@ jobs:
           node-version: "22"
       - name: 装 pi
         run: npm install -g @earendil-works/pi-coding-agent
-      - name: 配 Kimi
+      - name: 配 Kimi (多账号, 按顺序轮换)
         env:
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          K1: ${{ secrets.KIMI_API_KEY }}
+          K2: ${{ secrets.KIMI_API_KEY_2 }}
+          K3: ${{ secrets.KIMI_API_KEY_3 }}
         run: |
-          test -n "$KIMI_API_KEY" || { echo "缺 secrets.KIMI_API_KEY"; exit 1; }
+          test -n "$K1" || { echo "缺 secrets.KIMI_API_KEY"; exit 1; }
           mkdir -p ~/.pi/agent
           python3 - <<'PY'
           import json, os
           m = {"id": "kimi-for-coding", "reasoning": True, "contextWindow": 262144,
                "maxTokens": 32768, "input": ["text"]}
-          cfg = {"providers": {"kimi": {"baseUrl": "https://api.kimi.com/coding",
-                 "api": "anthropic-messages", "apiKey": os.environ["KIMI_API_KEY"], "models": [m]}}}
+          providers, models = {}, []
+          for i, name in enumerate(["K1", "K2", "K3"], 1):
+              k = os.environ.get(name, "").strip()
+              if not k:
+                  continue
+              providers[f"kimi{i}"] = {"baseUrl": "https://api.kimi.com/coding",
+                                       "api": "anthropic-messages", "apiKey": k, "models": [m]}
+              models.append(f"kimi{i}/kimi-for-coding")
           p = os.path.expanduser("~/.pi/agent/models.json")
-          open(p, "w").write(json.dumps(cfg))
+          open(p, "w").write(json.dumps({"providers": providers}))
           os.chmod(p, 0o600)
+          open(os.environ["GITHUB_ENV"], "a").write("PI_MODELS=" + ",".join(models) + "\n")
+          print(f"配了 {len(models)} 个 Kimi 账号")
           PY
       - name: 接节点 /mcp (只读工具)
         env:
@@ -57,7 +68,6 @@ jobs:
         env:
           INPUT_B64: ${{ inputs.input_b64 }}
           PF_NODE_TOKEN: ${{ secrets.PF_NODE_TOKEN }}
-          PI_MODEL: kimi/kimi-for-coding
         run: |
           mkdir -p out
           echo "$INPUT_B64" | base64 -d | gunzip > out/input.json
