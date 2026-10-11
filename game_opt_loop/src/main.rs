@@ -24,6 +24,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// One deterministic system case through the receiver confirmation driver.
+    Case {
+        #[command(subcommand)]
+        action: game_opt_loop::system_case::Action,
+    },
     /// 离线注册独立确认规则或核对 heldout 配对报告；不调用设备或模型。
     Confirm {
         #[command(subcommand)]
@@ -497,7 +502,7 @@ fn main() -> Result<()> {
     // 确认与工件协议入口的 stdout 是可解析的 JSON。
     if !matches!(
         &cli.command,
-        Some(Command::Confirm { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. } | Command::CandidatePrepare { .. })
+        Some(Command::Confirm { .. } | Command::Case { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. } | Command::CandidatePrepare { .. })
     ) {
         println!("==================================================");
         println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
@@ -508,6 +513,7 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Command::CandidatePrepare { action }) => return game_opt_loop::candidate_prepare::run(action),
         Some(Command::CandidateArtifact { action }) => return game_opt_loop::candidate_artifact::run(action),
+        Some(Command::Case { action }) => return game_opt_loop::system_case::run(action),
         Some(Command::Confirm { action }) => return game_opt_loop::confirmation::run(action),
         Some(Command::ModelPipeline { action }) => return game_opt_loop::model_pipeline::run(action),
         Some(Command::Optimize(args)) => return run_optimize(args),
