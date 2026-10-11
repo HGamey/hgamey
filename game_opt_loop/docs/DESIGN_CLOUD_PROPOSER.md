@@ -114,6 +114,20 @@ cloud_proposer ◄── gh run download ──────────┘ ─�
   取回结果」。
 - 跑 `cloud_actions.py` 的机器（通常是节点）上要有登录了的 `gh`。
 
+### 离线评测（2026-10-11，`tools/proposer_eval.py`，明细 `docs/evidence/proposer_eval_pi_kimi_20261011.json`）
+
+输入是两份：一份是 10/11 真机那一轮的 ③ 第 1 代真实输入（节点上探出的 8 项白名单，n 改成 3）；
+另一份是在它上面补了 4 条历史上真机量准判 REJECT 的候选，作为第 2 代。本机用 pi + Kimi
+（kimi-for-coding）每份各跑 3 次：
+
+- 6 次调用全部成功，用时中位数 27 秒（10–43 秒）。
+- 18 个候选全部过白名单近似校验，没有超出 n 的；10 个互不相同。
+- 带历史的那份没有原样重复任何一个已 REJECT 的候选，方向转向了 CPU 调度和频率上限。
+  不带历史的那份有一次出了 DDR=3187000，正是 10/11 真机 REJECT 的那个；它当时看不到历史，所以不算错。
+- 守门对这 18 个候选给 p=0.47–0.68，没有一个低于 0.3。
+- 这些候选上真机效果如何**没有测**。
+- 白名单校验是 Python 版的近似，真正的校验在 `sysparam.rs::validate`。
+
 ### 需要 owner 决定 / 动手的
 
 1. 在 HGamey/game_opt_loop 配 Actions secrets：`KIMI_API_KEY`（或 pi 认的 Kimi 凭据）、

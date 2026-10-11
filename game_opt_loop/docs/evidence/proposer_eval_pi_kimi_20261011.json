@@ -1,0 +1,200 @@
+{
+ "summary": {
+  "proposer": "tools/proposers/pi_kimi.py",
+  "calls": 6,
+  "failed_calls": 0,
+  "median_seconds": 27.2,
+  "candidates": 18,
+  "invalid": 0,
+  "over_n": 0,
+  "dup_of_rejected": 0,
+  "distinct": 10,
+  "jev_p_min_median_max": [
+   0.47,
+   0.58,
+   0.68
+  ]
+ },
+ "rows": [
+  {
+   "input": "g1_n3.input.json",
+   "run": 1,
+   "rc": 0,
+   "seconds": 43.3,
+   "n": 3,
+   "candidates": [
+    {
+     "change": "bus.DDR.boost_freq=2092000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.54
+    },
+    {
+     "change": "bus.LLCC.boost_freq=806000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.62
+    },
+    {
+     "change": "cpu.policy6.scaling_max_freq=2438400",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.57
+    }
+   ]
+  },
+  {
+   "input": "g1_n3.input.json",
+   "run": 2,
+   "rc": 0,
+   "seconds": 18.9,
+   "n": 3,
+   "candidates": [
+    {
+     "change": "bus.DDR.boost_freq=2092000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.62
+    },
+    {
+     "change": "bus.LLCC.boost_freq=806000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.68
+    },
+    {
+     "change": "cpu.policy6.scaling_max_freq=2112000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.68
+    }
+   ]
+  },
+  {
+   "input": "g1_n3.input.json",
+   "run": 3,
+   "rc": 0,
+   "seconds": 10.1,
+   "n": 3,
+   "candidates": [
+    {
+     "change": "cpu.policy6.scaling_max_freq=2438400",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.56
+    },
+    {
+     "change": "bus.LLCC.boost_freq=1211000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.59
+    },
+    {
+     "change": "bus.DDR.boost_freq=3187000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.58
+    }
+   ]
+  },
+  {
+   "input": "g2_hist.input.json",
+   "run": 1,
+   "rc": 0,
+   "seconds": 27.2,
+   "n": 3,
+   "candidates": [
+    {
+     "change": "cpu.policy6.scaling_governor=performance",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.58
+    },
+    {
+     "change": "cpu.policy6.scaling_min_freq=1267200",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.67
+    },
+    {
+     "change": "bus.LLCC.boost_freq=806000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.5
+    }
+   ]
+  },
+  {
+   "input": "g2_hist.input.json",
+   "run": 2,
+   "rc": 0,
+   "seconds": 28.4,
+   "n": 3,
+   "candidates": [
+    {
+     "change": "cpu.policy6.scaling_max_freq=2112000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.49
+    },
+    {
+     "change": "bus.LLCC.boost_freq=806000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.5
+    },
+    {
+     "change": "cpu.policy0.scaling_max_freq=1324800",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.64
+    }
+   ]
+  },
+  {
+   "input": "g2_hist.input.json",
+   "run": 3,
+   "rc": 0,
+   "seconds": 17.9,
+   "n": 3,
+   "candidates": [
+    {
+     "change": "cpu.policy6.scaling_max_freq=2112000",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.53
+    },
+    {
+     "change": "cpu.policy6.scaling_governor=performance",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.47
+    },
+    {
+     "change": "cpu.policy0.scaling_max_freq=2361600",
+     "over_n": false,
+     "invalid": null,
+     "dup_of_rejected": false,
+     "jev_p": 0.52
+    }
+   ]
+  }
+ ]
+}
