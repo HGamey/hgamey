@@ -23,6 +23,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// 离线注册独立确认规则或核对 heldout 配对报告；不调用设备或模型。
+    Confirm {
+        #[command(subcommand)]
+        action: game_opt_loop::confirmation::Action,
+    },
     /// 一条命令跑完整条优化链路: 摸底 → 三层自动开路 → 真机评测 → 统一档案 + 总报告。
     ///
     /// 三层是: ③ 系统参数 (要 root)、② 画面流程改写 (要能挂 Vulkan 层)、
@@ -358,6 +363,7 @@ fn main() -> Result<()> {
     println!("==================================================");
 
     match cli.command {
+        Some(Command::Confirm { action }) => return game_opt_loop::confirmation::run(action),
         Some(Command::Optimize(args)) => return run_optimize(args),
         Some(Command::Serve {
             port,
