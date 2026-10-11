@@ -98,6 +98,26 @@ fn malformed_or_preflight_qualification_cannot_promote_in_either_entry() {
 }
 
 #[test]
+fn offline_qualification_replays_cannot_promote_even_with_a_fake_pass() {
+    for marker in [json!(true), Value::Null, json!("true"), json!({})] {
+        let mut raw = reply();
+        raw["qualification_only"] = marker;
+        let operator: EvalReport = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(
+            qualification_state(&operator.extensions),
+            QualificationState::Ineligible
+        );
+        assert!(!operator.is_admissible(1.5, 38.0));
+        let optimize: eval::Report = serde_json::from_value(raw).unwrap();
+        assert!(!optimize.kept());
+    }
+    let mut measured = reply();
+    measured["qualification_only"] = json!(false);
+    let operator: EvalReport = serde_json::from_value(measured).unwrap();
+    assert!(operator.is_admissible(1.5, 38.0));
+}
+
+#[test]
 fn qualification_does_not_bypass_original_budget_quality_or_statistics() {
     let mut raw = reply();
     raw["metrics"]["operator_latency_ms"] = json!(5.0);
