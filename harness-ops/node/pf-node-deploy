@@ -1,0 +1,29 @@
+#!/bin/zsh
+# 把本机 ~/projects 下 phonefarm / game_opt_loop 的 main（已提交的文件 + 编译好的可执行）推到手机节点。
+# 只传 git 跟踪的文件和可执行，不传运行数据。用法: pf-node-deploy [phonefarm] [game_opt_loop] [harness-ops]（缺省前两个）
+set -eu
+P=~/projects
+stage=$(mktemp -d)
+trap 'rm -rf $stage' EXIT
+targets=(${@:-phonefarm game_opt_loop})
+for t in $targets; do
+  case $t in
+    phonefarm)
+      (cd $P/phonefarm/src && cargo build --release -q && cp target/release/phonefarm ..)
+      mkdir -p $stage/phonefarm
+      (cd $P/phonefarm && git ls-files -z | rsync -a --from0 --files-from=- ./ $stage/phonefarm/ && cp phonefarm $stage/phonefarm/ && [ -f secrets.env ] && cp secrets.env $stage/phonefarm/ || true)
+      echo "phonefarm @ $(git -C $P/phonefarm log --oneline -1)";;
+    game_opt_loop)
+      (cd $P/game_opt_loop && cargo build --release -q)
+      mkdir -p $stage/game_opt_loop
+      (cd $P/game_opt_loop && git ls-files -z | rsync -a --from0 --files-from=- ./ $stage/game_opt_loop/ && cp target/release/game_opt_loop $stage/game_opt_loop/)
+      echo "game_opt_loop @ $(git -C $P/game_opt_loop log --oneline -1)";;
+    harness-ops)
+      mkdir -p $stage/harness-ops && cp $P/harness-ops/node/{node_service.py,update_node.sh,run_node.sh} $stage/harness-ops/;;
+  esac
+done
+du -sh $stage
+pf-node --label deploy update_node $stage
+if (( ${targets[(Ie)harness-ops]} )); then
+  curl -sS -m 30 -X POST -A pf-node/1 -H "Authorization: Bearer $(cat ~/.config/hgamey/node.token)" ${PF_NODE_URL:-https://phone.liyao.space}/admin/restart; echo
+fi

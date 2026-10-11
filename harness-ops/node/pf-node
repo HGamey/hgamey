@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""pf-node：在手机节点上跑 phonefarm / game_opt_loop / adb / devlock，用法和本地几乎一样。
+
+  pf-node phonefarm eval --request r.json --json --lock-label judge
+  pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
+  pf-node adb -s 91253241019A shell 'su -c "cat /sys/class/kgsl/kgsl-3d0/max_pwrlevel"'
+  pf-node devlock status
+  pf-node --detach phonefarm autoloop ...      # 只回任务 id
+  pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
+  pf-node status|log|wait|kill|out <id>
+
+- 参数里凡是本机存在的文件/目录（含 --flag=路径 的写法）自动打包上传，在节点上替换成对应路径。
+- @out 是本次任务在节点上的输出目录；任务结束后它的内容下载到 -o 指定的目录（缺省 ./pf-node-out/<id>）。
+- 日志实时回显；退出码等于节点上命令的退出码。Ctrl-C 会让节点向任务发 SIGINT（phonefarm 会走还原流程）。
+- 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 在 ~/.config/hgamey/node.token 或 PF_NODE_TOKEN。
+"""
+import io, json, os, sys, tarfile, time, urllib.error, urllib.request
+
+URL = os.environ.get("PF_NODE_URL", "https://phone.liyao.space").rstrip("/")
+TOKEN = os.environ.get("PF_NODE_TOKEN") or open(os.path.expanduser("~/.config/hgamey/node.token")).read().strip()
+
+
+def call(method, path, data=None, headers=None, timeout=60):
+    h = {"Authorization": f"Bearer {TOKEN}", "User-Agent": "pf-node/1", **(headers or {})}
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(URL + path, data=data, method=method, headers=h), timeout=timeout) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                sys.exit(f"pf-node: {e.code} {e.read().decode(errors='replace')}")
+            err = e
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            err = e
+        time.sleep(2 ** attempt)
+    sys.exit(f"pf-node: 连不上节点 {URL}: {err}")
+
+
+def pack(argv):
+    """把参数里的本地路径打进 tar，参数改写成 @in/<序号>/<basename>。"""
+    buf, n, out = io.BytesIO(), 0, []
+    with tarfile.open(fileobj=buf, mode="w:gz") as t:
+        for a in argv:
+            flag, sep, val = a.partition("=") if a.startswith("--") and "=" in a else ("", "", a)
+            if val and not val.startswith("@") and os.path.exists(val):
+                arc = f"{n}/{os.path.basename(os.path.normpath(val))}"
+                t.add(val, arcname=arc)
+                n += 1
+                val = f"@in/{arc}"
+            out.append(f"{flag}{sep}{val}" if sep else val)
+    return out, (buf.getvalue() if n else b"")
+
+
+def follow(jid):
+    off = 0
+    try:
+        while True:
+            chunk = call("GET", f"/jobs/{jid}/log?offset={off}")
+            if chunk:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.flush()
+                off += len(chunk)
+            st = json.loads(call("GET", f"/jobs/{jid}"))
+            if st["state"] == "finished":
+                chunk = call("GET", f"/jobs/{jid}/log?offset={off}")
+                sys.stdout.buffer.write(chunk)
+                return st["exit"]
+            time.sleep(1 if chunk else 2)
+    except KeyboardInterrupt:
+        call("POST", f"/jobs/{jid}/kill", b"")
+        print(f"\npf-node: 已让节点中断任务 {jid}（SIGINT）", file=sys.stderr)
+        return 130
+
+
+def fetch_out(jid, dest):
+    data = call("GET", f"/jobs/{jid}/out", timeout=600)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+        members = [m for m in t.getmembers() if m.name not in (".", "./")]
+        if not members:
+            return
+        os.makedirs(dest, exist_ok=True)
+        t.extractall(dest, members=members, filter="data")
+    print(f"pf-node: 输出已下载到 {dest}", file=sys.stderr)
+
+
+def main():
+    args, outdir, detach, label, exe = sys.argv[1:], None, False, os.environ.get("DEVLOCK_LABEL"), None
+    while args and args[0].startswith("-"):
+        a = args.pop(0)
+        if a in ("-o", "--out-dir"):
+            outdir = args.pop(0)
+        elif a == "--detach":
+            detach = True
+        elif a == "--exe":
+            exe = args.pop(0)
+        elif a == "--label":
+            label = args.pop(0)
+        elif a in ("-h", "--help"):
+            sys.exit(__doc__)
+        else:
+            sys.exit(f"pf-node: 未知选项 {a}")
+    if not args:
+        sys.exit(__doc__)
+    if args[0] in ("status", "log", "wait", "kill", "out") and len(args) == 2:
+        cmd, jid = args
+        if cmd == "status":
+            print(call("GET", f"/jobs/{jid}").decode())
+        elif cmd == "log":
+            sys.stdout.buffer.write(call("GET", f"/jobs/{jid}/log"))
+        elif cmd == "kill":
+            print(call("POST", f"/jobs/{jid}/kill", b"").decode())
+        elif cmd == "out":
+            fetch_out(jid, outdir or os.path.join("pf-node-out", jid))
+        else:
+            rc = follow(jid)
+            fetch_out(jid, outdir or os.path.join("pf-node-out", jid))
+            sys.exit(rc)
+        return
+    binname, argv = args[0], args[1:]
+    argv, body = pack(([exe] if exe else []) + argv)
+    spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
+    if exe:
+        spec["exe"] = argv[0]
+    meta = json.loads(call("POST", "/jobs", body, {"X-Job": json.dumps(spec, ensure_ascii=True),
+                                                   "Content-Type": "application/gzip"}, timeout=600))
+    jid = meta["id"]
+    print(f"pf-node: 任务 {jid} 已在节点启动", file=sys.stderr)
+    if detach:
+        print(jid)
+        return
+    rc = follow(jid)
+    fetch_out(jid, outdir or os.path.join("pf-node-out", jid))
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()
