@@ -223,3 +223,32 @@ svg .grid { stroke: #20242d; }
 }
 #filedrawer-body img { max-width: 100%; border-radius: 8px; }
 .err { color: var(--bad); }
+
+/* 今日实测沿用既有主题；窄屏可以横向浏览原导航。 */
+.live-heading, .live-record-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.live-heading h1 { margin: 8px 0 20px; font-size: 28px; }
+.live-record h2 { margin: 0; font-size: 21px; }
+.live-summary { margin: 18px 0; }
+.live-summary strong { display: block; font-size: 32px; margin-top: 6px; }
+.live-summary p { color: var(--dim); margin-bottom: 0; }
+.live-record { margin: 18px 0; }
+.live-status { color: var(--warn); font: 13px ui-monospace, monospace; margin: 12px 0; overflow-wrap: anywhere; }
+.live-record .stats .stat { flex: 1; min-width: 170px; }
+.live-record .stat .v { font-size: 26px; }
+.live-record details summary { cursor: pointer; color: var(--accent); }
+.live-record pre { overflow: auto; max-height: 340px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, monospace; }
+.live-restore { margin-top: 15px; font-size: 14px; }
+.live-bars { max-width: 680px; }
+.live-bar-row { display: grid; grid-template-columns: 92px 1fr 60px; gap: 12px; align-items: center; margin: 8px 0; font-size: 13px; }
+.live-bar-row > div { height: 12px; border-radius: 5px; background: var(--card-2); overflow: hidden; }
+.live-bar-row i { display: block; height: 100%; background: var(--accent); }
+.live-bar-row b { text-align: right; }
+@media (max-width: 800px) {
+  .topbar { flex-wrap: wrap; gap: 10px; padding: 12px; }
+  #nav { overflow-x: auto; width: 100%; order: 3; }
+  #nav button { font-size: 14px; padding: 8px 10px; flex-shrink: 0; }
+  main { padding: 14px; }
+  .live-heading, .live-record-title { display: block; }
+  .live-heading h1 { font-size: 24px; }
+  .live-heading .badge { margin-bottom: 16px; }
+}

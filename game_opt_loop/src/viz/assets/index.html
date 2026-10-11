@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>优化闭环 · 本地面板</title>
+<title>Phonefarm · 实验面板</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">优化闭环 <span class="dim">本地只读面板</span></div>
+  <div class="brand">Phonefarm <span class="dim">实验只读面板</span></div>
   <nav id="nav">
-    <button data-page="overview" class="on">总览</button>
+    <button data-page="today" class="on">今日实验</button>
+    <button data-page="overview">总览</button>
     <button data-page="rounds">轮次</button>
     <button data-page="charts">图</button>
     <button data-page="device">手机</button>
@@ -24,7 +25,8 @@
 <div id="notices"></div>
 
 <main>
-  <section id="page-overview" class="page"></section>
+  <section id="page-today" class="page"></section>
+  <section id="page-overview" class="page hidden"></section>
   <section id="page-rounds" class="page hidden"></section>
   <section id="page-charts" class="page hidden"></section>
   <section id="page-device" class="page hidden"></section>

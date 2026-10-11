@@ -3,10 +3,13 @@
    一条原则: 后端给 null 就显示「未知/未测」, 前端绝不替数据编一个值。 */
 
 var DASH = null;
-var PAGE = 'overview';
+var LIVE = null;
+var LIVE_ERROR = null;
+var PAGE = 'today';
 var SELECTED_ROUND = null;
 var REFRESH_MS = 30000;
 var timer = null;
+var EVIDENCE_OPEN = Object.create(null);
 
 /* ── 小工具 ───────────────────────────────────────── */
 function esc(s) {
@@ -37,6 +40,7 @@ function shortTime(s) {
 
 /* ── 取数 ─────────────────────────────────────────── */
 function load() {
+  loadLive();
   el('refresh-state').textContent = '读取中…';
   fetch('/api/dashboard', { cache: 'no-store' })
     .then(function (r) {
@@ -57,6 +61,23 @@ function load() {
     });
 }
 
+function loadLive() {
+  fetch('/api/live-experiments.json', { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (d) {
+    if (d.schema !== 'hgamey/live_experiments_public@1' || !Array.isArray(d.records)) {
+      throw new Error('不支持的终态数据格式');
+    }
+    LIVE = d;
+    LIVE_ERROR = null;
+    if (PAGE === 'today') renderToday();
+  }).catch(function (e) {
+    LIVE_ERROR = e.message;
+    if (PAGE === 'today') renderToday();
+  });
+}
+
 /* ── 路由 ─────────────────────────────────────────── */
 function showPage(p) {
   PAGE = p;
@@ -64,19 +85,74 @@ function showPage(p) {
   for (var i = 0; i < buttons.length; i++) {
     buttons[i].className = buttons[i].dataset.page === p ? 'on' : '';
   }
-  ['overview', 'rounds', 'charts', 'device'].forEach(function (name) {
+  ['today', 'overview', 'rounds', 'charts', 'device'].forEach(function (name) {
     el('page-' + name).classList.toggle('hidden', name !== p);
   });
   render();
 }
 
 function render() {
+  if (PAGE === 'today') { renderToday(); return; }
   if (!DASH) return;
+  if (DASH.version === 'static-live-export') {
+    el('page-' + PAGE).innerHTML = '<div class="card"><h2>历史面板</h2><p class="dim">本发布仅导出今日一加实测。原红魔/原神历史没有混入今日数据；手机页不连接设备。请查看「今日实验」。</p></div>';
+    return;
+  }
   renderNotices();
   if (PAGE === 'overview') renderOverview();
   if (PAGE === 'rounds') renderRounds();
   if (PAGE === 'charts') renderCharts();
   if (PAGE === 'device') renderDevice();
+}
+
+/* ── 今日终态实验：沿用面板布局，独立于旧载体/设备历史 ── */
+function renderToday() {
+  var page = el('page-today');
+  var open = page.querySelectorAll('details[data-live-key]');
+  for (var i = 0; i < open.length; i++) EVIDENCE_OPEN['live:' + open[i].dataset.liveKey] = open[i].open;
+  if (!LIVE) {
+    page.innerHTML = '<div class="card"><h2>今日实验数据</h2><p class="unknown">' +
+      esc(LIVE_ERROR ? '读取失败：' + LIVE_ERROR : '等待有限终态数据…') + '</p></div>';
+    return;
+  }
+  var html = '<div class="live-heading"><div><div class="dim">' + esc(LIVE.measurement_date) +
+    ' · ' + esc(LIVE.device) + '</div><h1>' + esc(LIVE.game) + ' · 效果、代价与边界</h1></div>' +
+    '<span class="badge evidence big">尚无验证优化收益</span></div>';
+  if (LIVE_ERROR) html += '<div class="notice retracted"><h4>刷新失败，正在显示旧快照</h4><p>' + esc(LIVE_ERROR) + '</p></div>';
+  html += '<div class="card live-scope"><b>' + esc(LIVE.main_workflow) + '</b><p>' + esc(LIVE.baseline_status) +
+    '</p><p class="dim">导出时间 ' + esc(shortTime(LIVE.generated_at)) + ' UTC · 每30秒重新读取发布快照，非每30秒测手机。' +
+    '<br>提交代理FPS ≠ 显示FPS；未知功耗显示未测；控制能力读回 ≠ 优化效果；页面不授予质量或晋级。</p></div>';
+  html += '<div class="grid3 live-summary"><div class="card"><div class="dim">收益</div><strong>未取得</strong><p>尚无合格候选A/B对照</p></div>' +
+    '<div class="card"><div class="dim">功耗</div><strong>未测</strong><p>未验证整窗放电与单位</p></div>' +
+    '<div class="card"><div class="dim">本次展示</div><strong>' + LIVE.records.length + ' 项</strong><p>诊断 / 被拒绝 / 现有eval终态</p></div></div>';
+  LIVE.records.forEach(function (r) {
+    var badge = r.kind === 'existing_prepare' ? '现有流程准备 / 尚未采样' : r.kind === 'existing_eval' ? '现有eval' : r.kind === 'control_capability' ? '控制能力 / 不计收益' : '辅助诊断';
+    html += '<article class="card live-record"><div class="live-record-title"><h2>' + esc(r.title) +
+      '</h2><span class="badge evidence">' + esc(badge) + '</span></div><div class="live-status">' + esc(r.status) +
+      '</div><p class="dim">' + esc(r.settings) + '</p><div class="stats">';
+    (r.metrics || []).forEach(function (m) {
+      html += '<div class="stat"><div class="l">' + esc(m.label) + '</div><div class="v">' + val(m.value, m.unit) +
+        '</div><div class="h">' + esc(m.note) + '</div></div>';
+    });
+    html += '</div>';
+    if (r.histogram) {
+      var bins = Object.keys(r.histogram).sort(function (a, b) { return Number(a) - Number(b); });
+      var max = Math.max.apply(null, bins.map(function (k) { return r.histogram[k]; }));
+      html += '<h3>目标层被保留间隔的桶计数</h3><div class="live-bars">';
+      bins.forEach(function (k) {
+        var pct = max > 0 ? Math.max(1, r.histogram[k] / max * 100) : 0;
+        html += '<div class="live-bar-row"><span>' + esc(k) + ' ms桶</span><div><i style="width:' + pct +
+          '%"></i></div><b>' + esc(r.histogram[k]) + '</b></div>';
+      });
+      html += '</div><p class="dim">桶标签有量化误差，完整墙窗覆盖未知；不能据此计算正式游戏改善百分比。</p>';
+    }
+    html += '<div class="live-restore"><b>退出 / 恢复：</b>' + esc(typeof r.restoration === 'string' ? r.restoration : JSON.stringify(r.restoration)) +
+      '</div><ul class="notes">' + (r.limitations || []).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+    html += '<details data-live-key="' + esc(r.id) + '"' + (EVIDENCE_OPEN['live:' + r.id] ? ' open' : '') +
+      '><summary>来源哈希与接收端摘要</summary><pre>' + esc(JSON.stringify({ sources: r.sources, receiver: r.receiver_summary || null,
+        optimized_effect_proven: r.optimized_effect_proven, promotion_allowed: r.promotion_allowed }, null, 2)) + '</pre></details></article>';
+  });
+  page.innerHTML = html;
 }
 
 /* ── 提示条 ───────────────────────────────────────── */
