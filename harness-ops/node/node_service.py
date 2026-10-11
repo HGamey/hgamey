@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """HGamey 手机节点服务：跑在插着手机的那台机器上，只监听 127.0.0.1，由 cloudflared 隧道出网。
 
-两张脸，同一个 token（Authorization: Bearer <PHONEFARM_NODE_TOKEN>）：
+两张脸，管理 token（Authorization: Bearer <PHONEFARM_NODE_TOKEN>）全部可用；
+另有**只读 token** = HMAC-SHA256(管理 token, "hgamey-node-readonly-v1") 的十六进制，只能 POST /mcp、只能调只读工具
+（给云端 Actions 用：泄露了也碰不了手机）。两边各自从管理 token 推导，不用传文件。
 
   /mcp    MCP streamable HTTP（JSON 响应形态）⇄ stdio `phonefarm serve`，工具白名单。给云端 pi 用。
   /jobs   真机任务。给开发机上的 agent 用（客户端 pf-node）：
@@ -42,6 +44,14 @@ MAX_UPLOAD = 512 << 20
 
 def log(s):
     print(time.strftime("%F %T"), s, file=sys.stderr, flush=True)
+
+
+# 只读 token 能调的 MCP 工具：白名单去掉会起任务、碰手机的三个
+MCP_RO = MCP_ALLOW - {"phonefarm_run", "phonefarm_benchmark", "phonefarm_script"}
+
+
+def readonly_token(admin_token):
+    return hmac.new(admin_token.encode(), b"hgamey-node-readonly-v1", "sha256").hexdigest()
 
 
 def rpc_error(id_, code, message):
@@ -101,20 +111,20 @@ class McpChild:
     def notify(self, msg):
         self._write(msg)
 
-    def handle(self, msg):
+    def handle(self, msg, allow=MCP_ALLOW):
         method = msg.get("method")
         if "id" not in msg:
             self.notify(msg)
             return None
         if method == "tools/call":
             name = (msg.get("params") or {}).get("name")
-            if name not in MCP_ALLOW:
+            if name not in allow:
                 log(f"mcp 拒绝 {name}")
                 return rpc_error(msg["id"], -32601, f"工具 {name} 不在白名单里")
             log(f"mcp tools/call {name}")
         resp = self.request(msg)
         if method == "tools/list" and "result" in resp:
-            resp["result"]["tools"] = [t for t in resp["result"].get("tools", []) if t.get("name") in MCP_ALLOW]
+            resp["result"]["tools"] = [t for t in resp["result"].get("tools", []) if t.get("name") in allow]
         return resp
 
 
@@ -236,6 +246,7 @@ class Jobs:
 # ═════════════ HTTP ═════════════
 
 def make_handler(mcp, jobs, token, board=None):
+    ro_token = readonly_token(token)
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -253,8 +264,13 @@ def make_handler(mcp, jobs, token, board=None):
             self.end_headers()
             self.wfile.write(data)
 
-        def _authed(self):
-            if hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {token}"):
+        def _authed(self, allow_ro=False):
+            got = self.headers.get("Authorization", "")
+            self.ro = False
+            if hmac.compare_digest(got, f"Bearer {token}"):
+                return True
+            if allow_ro and hmac.compare_digest(got, f"Bearer {ro_token}"):
+                self.ro = True
                 return True
             log(f"401 {self.command} {self.path} 来自 {self.headers.get('CF-Connecting-IP', self.client_address[0])}")
             self._send(401, {"error": "unauthorized"})
@@ -302,7 +318,7 @@ def make_handler(mcp, jobs, token, board=None):
             if board and parts[:1] == ["dash"]:
                 n = int(self.headers.get("Content-Length", 0))
                 return board.handle_post(self, parts, self.rfile.read(min(n, 4096)) if n else b"")
-            if not self._authed():
+            if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
                 body = self._body()
@@ -328,7 +344,9 @@ def make_handler(mcp, jobs, token, board=None):
                 msg = json.loads(body)
             except ValueError:
                 return self._send(400, rpc_error(None, -32700, "parse error"))
-            out = [r for r in map(mcp.handle, msg) if r] if isinstance(msg, list) else mcp.handle(msg)
+            allow = MCP_RO if self.ro else MCP_ALLOW
+            out = ([r for r in (mcp.handle(m, allow) for m in msg) if r] if isinstance(msg, list)
+                   else mcp.handle(msg, allow))
             if not out:
                 return self._send(202, b"")
             extra = {}
