@@ -111,7 +111,8 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         game: "原神".into(),
         package: None,
         serial: Some("91253241019A".into()),
-        // 6h: ③ 排 2 代 × 3 个, ② 排 3 代 × 3 个 (已实现的开关只有一个, 第二代就停)。
+        // 形状写死成 2 代 × 3 个 (② 已实现的开关只有一个, 第二代就停), 不靠预算推:
+        // 金样钉的是「同一种子下发同样的请求」, 不该随每候选估时的口径一起漂。
         budget: Budget::parse("6h").unwrap(),
         plan_only: false,
         out_dir: root.join("out"),
@@ -124,7 +125,11 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         quality_reference: None,
         sysparam_probe: Some(root.join("probe.txt")),
         proposer: Default::default(),
-        shape: Default::default(),
+        shape: optimize::plan::Shape {
+            layers: None,
+            generations: Some(2),
+            children: Some(3),
+        },
         // 空档案库: 原神走内置条目, 请求与金样一致
         profiles_dir: root.join("profiles"),
         game_profile: None,
