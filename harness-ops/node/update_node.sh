@@ -42,7 +42,12 @@ if [[ ${1:-} == --git ]]; then
       phonefarm)
         (cd $src/src && cargo build --release -q)
         sync_tracked $src ~/node/phonefarm
-        install_bin $CARGO_TARGET_DIR/release/phonefarm ~/node/phonefarm/phonefarm;;
+        install_bin $CARGO_TARGET_DIR/release/phonefarm ~/node/phonefarm/phonefarm
+        # 灰档层 .so 不入库，phonefarm 挂层时找 knobs/gray/build/out/；NDK 只装在节点上，所以在这里编
+        if [[ -x ~/node/phonefarm/knobs/gray/build/build_layer.sh ]]; then
+          (cd ~/node/phonefarm && knobs/gray/build/build_layer.sh 2>&1 | tail -3) || { echo "灰档层编译失败"; exit 1; }
+          ls -la ~/node/phonefarm/knobs/gray/build/out/libVkLayer_refknobs.so
+        fi;;
       game_opt_loop)
         (cd $src && cargo build --release -q)
         sync_tracked $src ~/node/game_opt_loop
