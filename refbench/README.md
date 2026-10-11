@@ -49,6 +49,23 @@ adb shell am start -n io.github.hgamey.refbench/android.app.NativeActivity \
 两臂唯一的差别就是那个算子。算子装不上时**退出码 2 且 clean_exit=false**，
 绝不静默退回 off —— 否则 A/B 会悄悄变成 A 和 A。
 
+## selftest：给判定链出「答案已知」的考题
+
+[`selftest/load.comp`](selftest/load.comp) 是装进 `sr_pipeline` postfx 插槽的负载算子，
+供 phonefarm 的 `phonefarm selftest` 检验真机判定准不准（A/A 误判率、已知变好的检出率与
+最小可检测效应、已知变差必须 REJECT、画质作弊必须被画面判据拦下）。不改 apk。
+
+- 三个特化常量：`HEAVY_WG`（前多少个工作组跑重循环）、`ITERS`（每像素迭代数）、
+  `DOWNS`（采样降分辨率倍数，作弊考题用）。refbench 不传 `VkSpecializationInfo`，
+  所以宿主侧按 SpecId 改写 `OpSpecConstant` 的缺省值即可。两臂是同一份字节码，
+  只差一个整数——负载差的幅度由构造给定。
+- 重循环结果只在数学上不可能成立的分支里写回，输出与 `HEAVY_WG` / `ITERS` 无关：
+  同一 `DOWNS` 下两臂画面逐位相同。
+- 缺省值是安全值（不跑重循环、不降采样），未改写直接装上就是一个最近邻放大。
+- `load.spv` 入库（约 3 KB），改了 `.comp` 才需要 `bash selftest/build.sh` 重编。
+
+本仓库仍然只提供负载；测量与判定全在 phonefarm 侧。
+
 ## 快速验证（手动冒烟，正式流程走 loop_v1）
 
 ```bash
