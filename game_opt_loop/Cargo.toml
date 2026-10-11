@@ -16,6 +16,8 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 log = "0.4"
 env_logger = "0.11"
+fs2 = "0.4"
+libc = "0.2"
 # 纯 Rust GLSL 前端 + SPIR-V 后端: 防爆编译门禁不依赖任何 C++ 工具链 (glslang/shaderc)。
 # 注: naga 30.0.1 的 `glsl-in` 漏了 `front::interpolator` 的 feature gate
 # (它被 gate 在 spv-in/wgsl-in 上), 故必须连带开启 `wgsl-in` 才能编译。

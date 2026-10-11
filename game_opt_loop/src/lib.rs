@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod engine;
 pub mod harness;
+pub mod model_pipeline;
 pub mod optimize;
 pub mod tracks;
 pub mod viz;

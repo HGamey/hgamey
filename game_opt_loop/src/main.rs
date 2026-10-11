@@ -23,6 +23,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// 用明确配置的外部驱动执行模型工件五阶段，记录证据与断点；不自动推广。
+    ModelPipeline {
+        #[command(subcommand)]
+        action: game_opt_loop::model_pipeline::PipelineCommand,
+    },
     /// 一条命令跑完整条优化链路: 摸底 → 三层自动开路 → 真机评测 → 统一档案 + 总报告。
     ///
     /// 三层是: ③ 系统参数 (要 root)、② 画面流程改写 (要能挂 Vulkan 层)、
@@ -353,11 +358,15 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    println!("==================================================");
-    println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
-    println!("==================================================");
+    // 工件协议入口的 stdout 是可解析的 JSON；其余入口保留既有展示。
+    if !matches!(&cli.command, Some(Command::ModelPipeline { .. })) {
+        println!("==================================================");
+        println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
+        println!("==================================================");
+    }
 
     match cli.command {
+        Some(Command::ModelPipeline { action }) => return game_opt_loop::model_pipeline::run(action),
         Some(Command::Optimize(args)) => return run_optimize(args),
         Some(Command::Serve {
             port,
