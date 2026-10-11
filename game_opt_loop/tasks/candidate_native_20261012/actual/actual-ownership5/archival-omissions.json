@@ -1,0 +1,38 @@
+[
+  {
+    "archival_path": "session/native-layer-inputs/vk_layer_refknobs.cpp",
+    "sha256": "ba97bc7b9bfca3d81993b87fa7b3d363c2dc10fc46792cbf59037d9dd2061956",
+    "bytes": 100464,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native-layer-inputs/dispatch_ownership.h",
+    "sha256": "41b5169f27f3ff5216c3293afad40ccc16457e29bb2d79033e1c6e78a6e09823",
+    "bytes": 36371,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native-layer-inputs/artifact_stats.h",
+    "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648",
+    "bytes": 2367,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc/vk_layer_refknobs.cpp",
+    "sha256": "ba97bc7b9bfca3d81993b87fa7b3d363c2dc10fc46792cbf59037d9dd2061956",
+    "bytes": 100464,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc/dispatch_ownership.h",
+    "sha256": "41b5169f27f3ff5216c3293afad40ccc16457e29bb2d79033e1c6e78a6e09823",
+    "bytes": 36371,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc/artifact_stats.h",
+    "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648",
+    "bytes": 2367,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "archival_path": "session/native-layer-inputs/vk_layer_refknobs.cpp",
+    "sha256": "cf9dcc89983f401434c4113d28ed95a6249ebdd8899eadb19453aea2590396bc",
+    "bytes": 97158,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native-layer-inputs/artifact_stats.h",
+    "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648",
+    "bytes": 2367,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native/upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6/vk_layer_refknobs.cpp",
+    "sha256": "cf9dcc89983f401434c4113d28ed95a6249ebdd8899eadb19453aea2590396bc",
+    "bytes": 97158,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  },
+  {
+    "archival_path": "session/native/upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6/artifact_stats.h",
+    "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648",
+    "bytes": 2367,
+    "reason": "duplicate known PF repository source; byte identity retained in actual journal/descriptor; live session remains available"
+  }
+]

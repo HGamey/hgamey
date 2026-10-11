@@ -1,0 +1,354 @@
+{
+  "frozen_inputs_sha256": "edb562688bc279a5df08f480810381164678654525fb25d5e2a77e8eb94ceb29",
+  "inputs": {
+    "build": true,
+    "candidate": {
+      "bytes": 1014,
+      "sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f"
+    },
+    "execution_scope": "trusted_local_binaries_and_OS_shell_process_groups_not_sandbox_or_remote_attestation",
+    "gate_sha256": "10212fe5f2c297f934da6bb810645f5bff9bc378c1dfcf5851b4220fd06e2ff1",
+    "gol": {
+      "bytes": 46920192,
+      "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+    },
+    "implementation_sha256": "a47ede0a59472aced2776f8907449ea0c031c5e80d2aa5b3a93aa8884cb71374",
+    "native_implementation_sha256": "0ac1c3240a534ef0891bc80740444d8b83ad7b3bfe663fcac3d9dcdcd789e2e3",
+    "native_layer_input_root": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/knobs/gray/layer",
+    "native_plan": {
+      "inventory": [],
+      "inventory_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "layer_contract": "not_selected",
+      "layer_inputs": {},
+      "layer_root": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/knobs/gray/layer",
+      "reason": "MISSING_ANDROID_NDK",
+      "sdk_path": null,
+      "state": "MISSING"
+    },
+    "native_tool_timeout_seconds": 30,
+    "ndk": "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/sdk",
+    "phonefarm": {
+      "bytes": 36280200,
+      "sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+    },
+    "provenance": "synthetic_mechanism_fixture",
+    "stage_wall_ms": 30000,
+    "stream_bytes": 1048576,
+    "whole_wall_ms": 180000
+  },
+  "prepared_receipt": {
+    "bytes": 4586,
+    "sha256": "644d9125175c7865136d2a97e834ed2b4ec4ad56df3a56b16d9036da2a586a37"
+  },
+  "proof_flags": {
+    "deployable": false,
+    "gpu_validated": false,
+    "promotion_allowed": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "semantic_equivalence_proven": false
+  },
+  "schema": "game_opt_loop/candidate_prepare@2",
+  "stages": [
+    {
+      "argv": [
+        "candidate-artifact",
+        "compile",
+        "--candidate",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/candidate.json",
+        "--out",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/compiled"
+      ],
+      "elapsed_ms": 2312,
+      "error": null,
+      "exit_code": 0,
+      "group_absent": true,
+      "name": "compile",
+      "pid": 96026,
+      "result": {
+        "adapter_input": {
+          "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+          "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+          "original_spirv_path": "original.spv",
+          "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+          "source_path": "original.comp",
+          "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+          "source_spirv_association": "repository_gate_compiler_replayable",
+          "trust_scope": "local_integrity_not_authenticated_attestation"
+        },
+        "candidate_id": "actual-naga-sr-interface",
+        "claim_scope": "static_gate_and_local_compilation_only",
+        "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+        "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+        "gate_passed": true,
+        "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+        "proof_flags": {
+          "deployable": false,
+          "gpu_validated": false,
+          "promotion_allowed": false,
+          "quality_verified": false,
+          "real_game_optimization_proven": false,
+          "semantic_equivalence_proven": false
+        },
+        "schema": "game_opt_loop/candidate_compilation@1",
+        "state": "host_compiled",
+        "track": "sr"
+      },
+      "signal": null,
+      "state": "COMPLETED",
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 1524,
+        "sha256": "a6a5dc32f18e69e25933c9cbd317a9845536209fd3283dd4968ea63d398a4090"
+      },
+      "tool_sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+    },
+    {
+      "argv": [
+        "candidate-artifact",
+        "verify",
+        "--artifact",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/compiled",
+        "--expected-identity",
+        "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de"
+      ],
+      "elapsed_ms": 2754,
+      "error": null,
+      "exit_code": 0,
+      "group_absent": true,
+      "name": "verify_compile",
+      "pid": 96067,
+      "result": {
+        "adapter_input": {
+          "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+          "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+          "original_spirv_path": "original.spv",
+          "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+          "source_path": "original.comp",
+          "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+          "source_spirv_association": "repository_gate_compiler_replayable",
+          "trust_scope": "local_integrity_not_authenticated_attestation"
+        },
+        "candidate_id": "actual-naga-sr-interface",
+        "claim_scope": "static_gate_and_local_compilation_only",
+        "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+        "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+        "gate_passed": true,
+        "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+        "proof_flags": {
+          "deployable": false,
+          "gpu_validated": false,
+          "promotion_allowed": false,
+          "quality_verified": false,
+          "real_game_optimization_proven": false,
+          "semantic_equivalence_proven": false
+        },
+        "schema": "game_opt_loop/candidate_compilation@1",
+        "state": "host_compiled_replay_match",
+        "track": "sr"
+      },
+      "signal": null,
+      "state": "COMPLETED",
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 1537,
+        "sha256": "97e84be1921f972fecd8b4a06ce5b364b80a546fa1174f2891b035278a990e89"
+      },
+      "tool_sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+    },
+    {
+      "argv": [
+        "gray-artifact",
+        "adapt-storage",
+        "--source",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/compiled/original.comp",
+        "--spirv",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/compiled/original.spv",
+        "--out",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/adapted"
+      ],
+      "elapsed_ms": 511,
+      "error": null,
+      "exit_code": 0,
+      "group_absent": true,
+      "name": "adapt",
+      "pid": 96129,
+      "result": {
+        "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+        "deployable": false,
+        "descriptor": {
+          "adapted_abi": {
+            "entry_point": "main",
+            "input": "set0/binding0:combined_sampler_2d_float32",
+            "local_size": [
+              16,
+              16,
+              1
+            ],
+            "output": "set0/binding1:writeonly_rgba8_2d",
+            "version": 1
+          },
+          "adapted_spirv_sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325",
+          "changes": {
+            "direct_loads": 2,
+            "image_reads_to_fetch": 1,
+            "image_sizes_to_lod": 1,
+            "input_variable": 33,
+            "original_image_type": 5,
+            "original_pointer_type": 34,
+            "output_shared_original_type": true,
+            "output_variable": 35,
+            "unused_loads": 1
+          },
+          "original_source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+          "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+          "protocol_version": 1,
+          "source_spirv_association": "caller_supplied_unverified",
+          "transform": "direct_rgba8_storage_to_combined_fetch_lod0"
+        },
+        "device_validation": "not_run",
+        "path": "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+        "qualification": "not_run",
+        "semantic_equivalence": "not_run",
+        "source_spirv_association": "caller_supplied_unverified",
+        "state": "verified_offline"
+      },
+      "signal": null,
+      "state": "COMPLETED",
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 1489,
+        "sha256": "c472ab2beb16c46d739f018cf71ff4c924285f9f3ef2840cbff3e7e5608d82f0"
+      },
+      "tool_sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+    },
+    {
+      "argv": [
+        "gray-artifact",
+        "verify-adaptation",
+        "--artifact",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+      ],
+      "elapsed_ms": 50,
+      "error": null,
+      "exit_code": 0,
+      "group_absent": true,
+      "name": "verify_adaptation",
+      "pid": 96141,
+      "result": {
+        "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+        "compiler_binding_scope": "local_replayed_compilation_not_authenticated_attestation",
+        "descriptor_sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+        "files": {
+          "adapted.spv": {
+            "bytes": 2800,
+            "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+          },
+          "descriptor.json": {
+            "bytes": 947,
+            "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+          },
+          "manifest.json": {
+            "bytes": 698,
+            "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+          },
+          "original.comp": {
+            "bytes": 673,
+            "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+          },
+          "original.spv": {
+            "bytes": 2688,
+            "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+          }
+        },
+        "local_compiler_export_bytes_equal": true,
+        "manifest_sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f",
+        "source_spirv_association": "caller_supplied_unverified"
+      },
+      "signal": null,
+      "state": "COMPLETED",
+      "stderr": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stdout": {
+        "bytes": 1489,
+        "sha256": "c472ab2beb16c46d739f018cf71ff4c924285f9f3ef2840cbff3e7e5608d82f0"
+      },
+      "tool_sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+    },
+    {
+      "argv": [
+        "gray-artifact",
+        "build",
+        "--adapted-artifact",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+        "--out",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/native",
+        "--ndk",
+        "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/controlled-empty-sdk",
+        "--timeout-seconds",
+        "1",
+        "--process-supervision",
+        "inherited-group"
+      ],
+      "elapsed_ms": 45,
+      "error": "MISSING_ANDROID_NDK",
+      "exit_code": 2,
+      "group_absent": true,
+      "name": "native_build",
+      "pid": 96147,
+      "result": {
+        "actual_ndk": "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/controlled-empty-sdk",
+        "device_validation": "not_run",
+        "empty_sdk_inventory_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "native_build_accepted": false,
+        "probe_scope": "controlled_empty_sdk_not_caller_installation_or_native_build",
+        "reason": "MISSING_ANDROID_NDK",
+        "requested_ndk": "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/sdk",
+        "requested_ndk_observation": "not_found_at_probe_time",
+        "tool_execution": "missing_tool_refusal"
+      },
+      "signal": null,
+      "state": "BLOCKED",
+      "stderr": {
+        "bytes": 389,
+        "sha256": "4ba8d957dd277d929fd21163cee896b621b946845a3f3b9a4a2e8c787cb0e213"
+      },
+      "stdout": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "tool_sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+    },
+    {
+      "argv": [],
+      "elapsed_ms": null,
+      "error": "native build unavailable",
+      "exit_code": null,
+      "group_absent": null,
+      "name": "verify_native",
+      "pid": null,
+      "result": null,
+      "signal": null,
+      "state": "NOT_RUN",
+      "stderr": null,
+      "stdout": null,
+      "tool_sha256": null
+    }
+  ],
+  "status": "BLOCKED"
+}

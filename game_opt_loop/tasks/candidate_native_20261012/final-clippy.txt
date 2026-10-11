@@ -1,0 +1,2 @@
+    Checking game_opt_loop v0.2.0 (/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-native)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.85s
