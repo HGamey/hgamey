@@ -108,6 +108,9 @@ cargo run --release -- optimize --game com.example.game --package com.example.ga
 | `--out <dir>` | Artifacts: `caps.json`, `report.json`, `report.md`, `requests/`. Default `runs/optimize` |
 | `--no-llm` | Skip the model, use only the local deterministic mutator |
 | `--sysparam-probe <probe.txt>` | Feed an already-collected system-parameter probe (see "Current limits") |
+| `--layers <sysparam,gray>` | Only these layers (also `3,2`). The others are listed as "not selected". Use it to split a long run into ≤45-minute lock holds |
+| `--generations N` / `--children N` | Override what the budget would give each selected layer. The estimate is recomputed; the plan says so when it exceeds the budget |
+| `--lock-label <label>` / `--lock-wait 2h` / `--no-devlock` | Device lock (see below). `optimize` queues and releases by itself |
 
 Artifacts:
 

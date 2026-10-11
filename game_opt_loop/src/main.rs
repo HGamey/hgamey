@@ -156,6 +156,19 @@ pub struct OptimizeArgs {
     #[arg(long, default_value_t = game_opt_loop::optimize::proposer::DEFAULT_TIMEOUT_S)]
     proposer_timeout_s: u64,
 
+    /// 只跑哪几层: `sysparam,gray` (也认 `3,2`)。缺省按摸底能开的都排。
+    /// 长实验拆段 (每段持锁 ≤45 分钟) 时一次跑一层。
+    #[arg(long)]
+    layers: Option<String>,
+
+    /// 每层跑几代 (压过预算算出来的值; 估计耗时随之重算, 超预算时计划里写明)。
+    #[arg(long)]
+    generations: Option<u32>,
+
+    /// 每代几个候选 (同上)。
+    #[arg(long)]
+    children: Option<u32>,
+
     /// 设备锁 label。缺省取环境 `DEVLOCK_LABEL`, 再缺省 `game_opt_loop`。
     /// lead 预排了队列时要用队列里那个名字。
     ///
@@ -599,6 +612,15 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         None => optimize::plan::Budget::default(),
     };
 
+    let shape = optimize::plan::Shape {
+        layers: args
+            .layers
+            .as_deref()
+            .map(optimize::plan::Shape::parse_layers)
+            .transpose()?,
+        generations: args.generations,
+        children: args.children,
+    };
     let cfg = optimize::Config {
         game: args.game,
         package: args.package,
@@ -618,6 +640,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
             specs: args.proposer,
             timeout_s: args.proposer_timeout_s,
         },
+        shape,
     };
 
     // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——
