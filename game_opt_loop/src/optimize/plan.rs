@@ -138,6 +138,9 @@ pub struct Plan {
     pub pitfalls: Vec<super::games::Pitfall>,
 }
 
+/// 温度安全线 (农场规矩: SoC 不超过 70C)。
+pub const TEMP_CAP_C: f32 = 70.0;
+
 /// 从 caps 推冻结的测试条件。
 ///
 /// 等冷目标与温度上限都从**这次摸到的实际温度**推, 不用绝对常数:
@@ -145,8 +148,11 @@ pub struct Plan {
 /// 都卡死在等冷超时上。
 pub fn conditions_from(caps: &Caps) -> Conditions {
     let base = caps.device.soc_temp_c.unwrap_or(40.0);
-    // 温度上限: 安全线。超了这一组作废。
-    let temp_cap = (base + 3.0).max(45.0);
+    // 温度上限: 安全线, 超了这一组作废。用农场的固定安全线, 不从摸底温度推:
+    // 摸底时游戏多半没在跑, 待机温度 +3C 在真机上一跑原神就超 (10-11 真机两组
+    // 候选都在第 1 轮报 52.3C / 60.5C 超过 51.8C 作废, 一个数都没量到)。
+    // 它是安全线, 不是可比性条件 —— 可比性由等冷目标和交替 ABBA 管。
+    let temp_cap = TEMP_CAP_C;
     // 等冷目标: "回到基线是在什么热态下量的"。超时不作废, 安全由上限单独把关。
     let cool = (base + 1.0).max(40.0).min(temp_cap - 2.0);
 
@@ -822,18 +828,18 @@ pkg_path=package:/data/app/x/base.apk\n";
         assert_eq!(plan.skipped.len(), 3);
     }
 
-    /// 等冷目标与温度上限从实测温度推, 不是常数。
+    /// 等冷目标从实测温度推, 不是常数; 温度上限是固定安全线。
     #[test]
     fn thermal_targets_follow_the_measured_temperature() {
         let hot = caps_for(&ROOTED.replace("zone=cpu-0-0 41300", "zone=cpu-0-0 52000"));
         let c = conditions_from(&hot);
-        assert_eq!(c.temp_cap_c, Some(55.0));
+        assert_eq!(c.temp_cap_c, Some(TEMP_CAP_C));
         assert_eq!(c.cool_c, Some(53.0));
 
         // 凉机上有下限兜底, 不会把目标定到一个永远等不到的低温。
         let cool = caps_for(&ROOTED.replace("zone=cpu-0-0 41300", "zone=cpu-0-0 25000"));
         let c = conditions_from(&cool);
-        assert_eq!(c.temp_cap_c, Some(45.0));
+        assert_eq!(c.temp_cap_c, Some(TEMP_CAP_C));
         assert_eq!(c.cool_c, Some(40.0));
         assert!(c.cool_c.unwrap() < c.temp_cap_c.unwrap());
     }

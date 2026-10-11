@@ -272,8 +272,10 @@ but read them before you start.
   settles ten-plus degrees apart, so frame times and watts are not comparable
   across fan states. When unknown the report says `unknown` — it never guesses.
 - **Survey a rested phone, and sanity-check the temperature it reports.** The
-  frozen cool-down target and temperature cap are derived from whatever the
-  survey measured. Survey a phone that has just spent 45 minutes under another
+  frozen cool-down target is derived from whatever the survey measured (the
+  temperature cap is a fixed 70 °C safety line; it used to be survey + 3 °C,
+  which Genshin under load exceeds in the first round, so every candidate
+  ABORTed). Survey a phone that has just spent 45 minutes under another
   agent's load and you freeze a cool-down target above any temperature it will
   ever reach — no gate at all, printed as a perfectly normal line. On this
   hardware an idle-ish reading is 40–55 °C; anything near or above 100 °C means

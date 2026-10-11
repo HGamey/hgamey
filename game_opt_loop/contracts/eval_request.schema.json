@@ -39,7 +39,7 @@
       "description": "测试条件。**在看到候选数据之前冻结**, 并且原样回到报告里 —— 一份不写清测试条件的数字没法跨轮比较。",
       "properties": {
         "cool_c": { "type": ["number", "null"], "description": "等冷目标 (摄氏度): SoC 结温降到此值以下才开跑。null = 不等冷。\n\n这个数不是越低越好: 连跑几十轮之后设备根本降不到一个固定低温, 拿绝对值当门槛会把每组候选卡死在等冷超时上。参考 loop_v1/auto 的取法: min(max(40, 基线起跑温度+1), temp_cap_c - 2)。DESIGN 里写的 32C 假定挂了外置风扇强吹。" },
-        "temp_cap_c": { "type": ["number", "null"], "description": "温度上限。超了这一组直接作废并还原, 不参与比较。参考取法: max(45, 基线实测最高温 + 3)。与 cool_c 是两件事: cool_c 是起跑门槛 (超时不作废), temp_cap_c 是安全上限 (超了作废)。" },
+        "temp_cap_c": { "type": ["number", "null"], "description": "温度上限。超了这一组直接作废并还原, 不参与比较。optimize 的取法: 农场安全线 70C (常数)。以前取「摸底温度 + 3」, 摸底时游戏多半没在跑, 一跑原神第 1 轮就超, 整组作废。与 cool_c 是两件事: cool_c 是起跑门槛 (超时不作废), temp_cap_c 是安全上限 (超了作废)。" },
         "require_root": { "type": "boolean", "description": "这一轮是否必须有 root。sysparam 恒为 true; shader 在 refbench/headless 载体上也要 (锁频与 ftrace 都要 root)" },
         "require_discharging": { "type": "boolean", "description": "是否必须处于放电态才算数。充电时电池轨读到的是流入功率, USB 轨含着灌进电池的那一份, 两者都不是整机功耗。true 时接收端应先尝试停充 (charging_suspend), 停不掉就把 power_watt 如实报 null 而不是报一个假数字。" },
         "charging_suspend": {
