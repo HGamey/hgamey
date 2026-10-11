@@ -10,6 +10,16 @@ Refs https://github.com/HGamey/.github/issues/18 。这是离线确认注册/裁
 
 接收端必须是版本化单轮报告 `phonefarm/confirmation_observation@1`、source=phonefarm、status=VALID_OBSERVATION。单轮 `qualification.stage=experiment`、`eligible=false`，不作统计结论；来源明确 live_device/recorded_device。独立 `sample_qualification` 的 schema 为 `phonefarm/confirmation_sample_qualification@1`，valid_observation=true，baseline_admission_sha256 与计划相等，gates 中 root_verified、control_verified、cold_verified、trace_window_verified、workload_succeeded、restore_verified、baseline_admission_verified 必须全部为布尔 true。这些 gate 应由 receiver 从原始 bundle 重建，不能由候选自行填报。现有完整 A/B 的 conclusion/eligible 报告即使贴 single_run binding 仍拒绝；单轮有效性与完整确认集的统计裁决分开。
 
+每臂还必须包含 `measurement_window`：schema=`phonefarm/measurement_window@1`，
+clock_scope=`capture_metadata_and_env_proc_uptime`，device_serial/boot_id，
+capture_start_uptime_s/capture_end_uptime_s、env_start_uptime_s/env_end_uptime_s、
+env_duration_s/env_interval_s。这些设备时间均来自 `/proc/uptime` 记录声明：有限、
+非负、start<end，ENV 覆盖 capture，采样 duration 及实际 ENV 跨度不得大于 host
+单轮时长；不能把 ftrace event clock 当成 uptime。按冻结顺序检查所有臂：serial/boot
+不变，整 ENV 窗及 capture 窗分别严格不重叠、不可倒退。raw hash 不同不足以证明
+遥测窗独立。phonefarm 另外检查原始基线准入窗互斥、确认窗晚于准入窗。上述校验
+不认证设备时钟或采集身份，统计独立性仍是预注册实验假设。
+
 qualification_only 或坏类型不可使用；BLOCKED/ABORT 不属于确认数据。必需指标数值/来源缺失不删除指标，不补零。当前仅支持power_watt、fps_p95_ms、frame_p95_ms、fps_mean及其正确方向，数值必须正且有限。功耗要求source=battery_sysfs、rail=battery、discharging=true、window_verified=true；帧代理要求source=raw_ftrace_kgsl、confidence=inferred、semantics=gpu_submit_proxy、display_verified=false。来源声明、sha及时间是完整性检查，不能证明采集真实性或外部注册 chronology。GOL 校验 receiver 报告与冻结绑定，不重新解析准入/采样原始 bundle；receiver 的门禁真实性仍待采集认证与真机验收。合成/未知来源不能确认手机指标。
 
 ## 统计与结论
