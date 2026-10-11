@@ -17,6 +17,10 @@ typeset -A REPO=(
   harness-ops   git@github.com:HGamey/harness-ops.git
 )
 
+install_bin() {  # $1 新程序 $2 目标：先写临时文件再 mv 整体替换，正在跑的旧进程不受影响
+  cp $1 $2.new && { codesign --force --sign - $2.new 2>/dev/null || true; } && mv -f $2.new $2
+}
+
 sync_tracked() {  # $1 源码目录 $2 目标目录
   git -C $1 ls-files -z | rsync -a --from0 --files-from=- $1/ $2/
 }
@@ -38,13 +42,11 @@ if [[ ${1:-} == --git ]]; then
       phonefarm)
         (cd $src/src && cargo build --release -q)
         sync_tracked $src ~/node/phonefarm
-        cp $CARGO_TARGET_DIR/release/phonefarm ~/node/phonefarm/phonefarm
-        codesign --force --sign - ~/node/phonefarm/phonefarm 2>/dev/null || true;;
+        install_bin $CARGO_TARGET_DIR/release/phonefarm ~/node/phonefarm/phonefarm;;
       game_opt_loop)
         (cd $src && cargo build --release -q)
         sync_tracked $src ~/node/game_opt_loop
-        cp $CARGO_TARGET_DIR/release/game_opt_loop ~/node/game_opt_loop/game_opt_loop
-        codesign --force --sign - ~/node/game_opt_loop/game_opt_loop 2>/dev/null || true;;
+        install_bin $CARGO_TARGET_DIR/release/game_opt_loop ~/node/game_opt_loop/game_opt_loop;;
       harness-ops)
         rsync -a $src/node/ ~/node/harness-ops/ --exclude __pycache__
         echo "节点服务本身的改动要 /admin/restart 才生效";;
