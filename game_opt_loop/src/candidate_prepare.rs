@@ -15,17 +15,21 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const SCHEMA: &str = "game_opt_loop/candidate_prepare@1";
+#[path = "candidate_prepare_native.rs"]
+mod native;
+
+const SCHEMA: &str = "game_opt_loop/candidate_prepare@2";
 const META_CAP: usize = 2 * 1024 * 1024;
 const RECEIPT_CAP: usize = 64 * 1024;
 const SPV_CAP: usize = 16 * 1024 * 1024;
 const TOOL_CAP: u64 = 512 * 1024 * 1024;
-const NAMES: [&str; 5] = [
+const NAMES: [&str; 6] = [
     "compile",
     "verify_compile",
     "adapt",
     "verify_adaptation",
     "native_build",
+    "verify_native",
 ];
 // Fixed receiver code, never caller-provided shell. The actual argv stays separate.
 const GATE: &str = r#"program=$1; permit=$2; token=$3; shift 3; n=0; while [ ! -f "$permit" ]; do [ "$n" -lt 500 ] || exit 91; n=$((n+1)); sleep .02; done; [ "$(cat "$permit")" = "$token" ] || exit 92; exec "$program" "$@""#;
@@ -44,6 +48,11 @@ pub enum Action {
         build: bool,
         #[arg(long, requires = "build")]
         ndk: Option<PathBuf>,
+        /// Expected external PF layer source root; does not redirect the builder.
+        #[arg(long, requires = "build")]
+        native_layer_input_root: Option<PathBuf>,
+        #[arg(long, requires = "build", default_value_t = 30)]
+        native_tool_timeout_seconds: u64,
         #[arg(long, default_value_t = 30_000)]
         stage_wall_ms: u64,
         #[arg(long, default_value_t = 180_000)]
@@ -78,8 +87,12 @@ struct Inputs {
     stream_bytes: usize,
     build: bool,
     ndk: Option<PathBuf>,
+    native_layer_input_root: Option<PathBuf>,
+    native_tool_timeout_seconds: u64,
+    native_plan: Option<native::Plan>,
     provenance: String,
     implementation_sha256: String,
+    native_implementation_sha256: String,
     gate_sha256: String,
     execution_scope: String,
 }
@@ -276,6 +289,12 @@ fn publish_permit(dir: &Directory, name: &str, bytes: &[u8]) -> Result<()> {
 }
 
 impl Driver {
+    fn timer(&self) -> Option<(Instant, u64)> {
+        Some((self.start, self.journal.inputs.whole_wall_ms))
+    }
+    fn check_budget(&self) -> Result<()> {
+        native::budget(self.start, self.journal.inputs.whole_wall_ms)
+    }
     fn checkpoint(&mut self) -> Result<()> {
         self.checkpoint += 1;
         let tmp = format!(".checkpoint-{}", self.checkpoint);
@@ -322,6 +341,7 @@ impl Driver {
         stage.argv = args.clone();
         stage.tool_sha256 = Some(expected.sha256.clone());
         self.checkpoint()?;
+        self.check_budget()?;
         let permit_name = format!("{}.permit", NAMES[index]);
         let token = self.journal.frozen_inputs_sha256.clone();
         let mut command = Command::new("/bin/sh");
@@ -346,8 +366,11 @@ impl Driver {
         self.journal.stages[index].pid = Some(owned.child.id());
         self.checkpoint()?;
         // Permission to execute follows the durable owned PID/group record.
+        self.check_budget()?;
         publish_permit(&self.dir, &permit_name, format!("{token}\n").as_bytes())?;
-        let wall = wall.saturating_sub(begin.elapsed());
+        let whole_remaining = Duration::from_millis(self.journal.inputs.whole_wall_ms)
+            .saturating_sub(self.start.elapsed());
+        let wall = wall.saturating_sub(begin.elapsed()).min(whole_remaining);
         let out = bounded_child(&mut owned.child, wall, self.journal.inputs.stream_bytes);
         owned.armed = !out.group_absent;
         let elapsed = begin.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -469,6 +492,10 @@ fn bounded_child(child: &mut std::process::Child, wall: Duration, cap: usize) ->
                     ensure!(
                         group_absent(pid),
                         "launcher exited but controlled group remains live/unknown"
+                    );
+                    ensure!(
+                        status.signal().is_none(),
+                        "controlled launcher terminated by signal"
                     );
                     return Ok(());
                 }
@@ -821,8 +848,14 @@ fn chain(driver: &mut Driver) -> Result<Value> {
             .ndk
             .clone()
             .context("build missing explicit SDK path")?;
-        match std::fs::symlink_metadata(&ndk) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let plan = driver
+            .journal
+            .inputs
+            .native_plan
+            .clone()
+            .context("missing frozen native plan")?;
+        match plan.state.as_str() {
+            "MISSING" => {
                 // Freeze the caller observation, then probe controlled absence. Reusing
                 // the mutable caller path could race a newly installed helper into a new group.
                 let controlled_ndk = driver.path.join("controlled-empty-sdk");
@@ -850,6 +883,8 @@ fn chain(driver: &mut Driver) -> Result<Value> {
                         path_string(&controlled_ndk)?,
                         "--timeout-seconds".into(),
                         "1".into(),
+                        "--process-supervision".into(),
+                        "inherited-group".into(),
                     ],
                 )?;
                 let result = (|| {
@@ -883,17 +918,29 @@ fn chain(driver: &mut Driver) -> Result<Value> {
                     }
                 }
             }
-            _ => {
-                driver.journal.stages[4].state = State::NotRun;
-                driver.journal.stages[4].error = Some("BLOCKED_PROCESS_GROUP_CONTRACT: SDK path present/unknown; PF helper groups are not supervised by this wrapper".into());
+            "READY" => {
+                native_chain(driver, &plan, &path)?;
+                status = "PREPARED_OFFLINE_NATIVE";
             }
+            "BLOCKED" => {
+                driver.journal.stages[4].state = State::NotRun;
+                driver.journal.stages[4].error = plan.reason.clone();
+            }
+            _ => anyhow::bail!("unknown frozen native plan"),
         }
-        status = "BLOCKED";
+        if status != "PREPARED_OFFLINE_NATIVE" {
+            status = "BLOCKED";
+            driver.journal.stages[5].state = State::NotRun;
+            driver.journal.stages[5].error = Some("native build unavailable".into());
+        }
     } else {
         driver.journal.stages[4].state = State::NotRun;
         driver.journal.stages[4].error = Some("native build not requested".into());
+        driver.journal.stages[5].state = State::NotRun;
+        driver.journal.stages[5].error = Some("native build not requested".into());
     }
     let rules = identity(&Directory::open(&compile_path)?.read("rules.json", META_CAP)?);
+    driver.check_budget()?;
     Ok(prepared(
         &driver.journal,
         status,
@@ -904,6 +951,182 @@ fn chain(driver: &mut Driver) -> Result<Value> {
     ))
 }
 
+fn native_args(
+    path: &Path,
+    inputs: &Inputs,
+    adapted: &Path,
+    plan: &native::Plan,
+) -> Result<Vec<String>> {
+    Ok(vec![
+        "gray-artifact".into(),
+        "build".into(),
+        "--adapted-artifact".into(),
+        path_string(adapted)?,
+        "--out".into(),
+        path_string(&path.join("native"))?,
+        "--ndk".into(),
+        path_string(plan.sdk_path.as_deref().context("SDK path missing")?)?,
+        "--timeout-seconds".into(),
+        inputs.native_tool_timeout_seconds.to_string(),
+        "--process-supervision".into(),
+        "inherited-group".into(),
+    ])
+}
+fn native_chain(driver: &mut Driver, plan: &native::Plan, adapted: &Path) -> Result<()> {
+    native::check(plan, &driver.path, true, driver.timer())?;
+    let args = native_args(&driver.path, &driver.journal.inputs, adapted, plan)?;
+    let out = driver.command(4, false, args)?;
+    let result = (|| {
+        let build = receipt(&out)?;
+        native::artifact(
+            &driver.path,
+            plan,
+            adapted,
+            &build,
+            None,
+            true,
+            driver.timer(),
+        )
+    })();
+    let binding = driver.finish(4, result)?;
+    let build = binding["build_receipt"].clone();
+    let artifact = PathBuf::from(build["artifact"].as_str().context("native artifact path")?);
+    let out = driver.command(
+        5,
+        false,
+        vec![
+            "gray-artifact".into(),
+            "verify".into(),
+            "--artifact".into(),
+            path_string(&artifact)?,
+        ],
+    )?;
+    let result = (|| {
+        let verify = receipt(&out)?;
+        native::artifact(
+            &driver.path,
+            plan,
+            adapted,
+            &build,
+            Some(&verify),
+            true,
+            driver.timer(),
+        )
+    })();
+    driver.finish(5, result)?;
+    Ok(())
+}
+fn inspect_native(path: &Path, journal: &Journal, adapted: &Path) -> Result<()> {
+    let build = &journal.stages[4];
+    let verify = &journal.stages[5];
+    if !journal.inputs.build {
+        ensure!(
+            journal.inputs.native_plan.is_none()
+                && journal.inputs.native_layer_input_root.is_none()
+                && journal.status == "PREPARED_OFFLINE"
+                && [build, verify].iter().all(|s| s.state == State::NotRun
+                    && s.error.as_deref() == Some("native build not requested")),
+            "unrequested native state invalid"
+        );
+        return Ok(());
+    }
+    let plan = journal
+        .inputs
+        .native_plan
+        .as_ref()
+        .context("missing frozen native plan")?;
+    match plan.state.as_str() {
+        "READY" => {
+            ensure!(
+                journal.status == "PREPARED_OFFLINE_NATIVE"
+                    && build.state == State::Completed
+                    && verify.state == State::Completed,
+                "native preparation lacks completed required stages"
+            );
+            let expected_build = build
+                .result
+                .as_ref()
+                .context("native build binding missing")?;
+            let build_receipt = &expected_build["build_receipt"];
+            let dir = Directory::open(path)?;
+            let actual_build: Value = serde_json::from_slice(
+                &dir.read("native_build.stdout.log", journal.inputs.stream_bytes)?,
+            )?;
+            let actual_verify: Value = serde_json::from_slice(
+                &dir.read("verify_native.stdout.log", journal.inputs.stream_bytes)?,
+            )?;
+            ensure!(
+                build_receipt == &actual_build,
+                "native build nested receipt contradicts actual stdout"
+            );
+            ensure!(
+                native::artifact(path, plan, adapted, build_receipt, None, false, None)?
+                    == *expected_build,
+                "native build binding changed"
+            );
+            let expected_verify = verify
+                .result
+                .as_ref()
+                .context("native verification binding missing")?;
+            ensure!(
+                expected_verify["build_receipt"] == actual_build
+                    && expected_verify["pf_receipt"] == actual_verify,
+                "native verification nested receipts contradict actual stdout"
+            );
+            ensure!(
+                native::artifact(
+                    path,
+                    plan,
+                    adapted,
+                    build_receipt,
+                    Some(&expected_verify["pf_receipt"]),
+                    false,
+                    None
+                )? == *expected_verify,
+                "native verification binding changed"
+            );
+            ensure!(
+                build.tool_sha256.as_ref() == Some(&journal.inputs.phonefarm.sha256)
+                    && verify.tool_sha256.as_ref() == Some(&journal.inputs.phonefarm.sha256)
+                    && build.argv == native_args(path, &journal.inputs, adapted, plan)?
+                    && verify.argv
+                        == vec![
+                            "gray-artifact".to_string(),
+                            "verify".into(),
+                            "--artifact".into(),
+                            build_receipt["artifact"]
+                                .as_str()
+                                .context("native artifact path")?
+                                .into()
+                        ],
+                "native argv/tool policy changed"
+            );
+        }
+        "MISSING" => ensure!(
+            journal.status == "BLOCKED"
+                && build.state == State::Blocked
+                && build.error.as_deref() == Some("MISSING_ANDROID_NDK")
+                && verify.state == State::NotRun
+                && verify.error.as_deref() == Some("native build unavailable"),
+            "missing SDK state invalid"
+        ),
+        "BLOCKED" => ensure!(
+            journal.status == "BLOCKED"
+                && build.state == State::NotRun
+                && build.error == plan.reason
+                && plan
+                    .reason
+                    .as_ref()
+                    .is_some_and(|r| r.starts_with("BLOCKED_NATIVE_INPUTS:"))
+                && verify.state == State::NotRun
+                && verify.error.as_deref() == Some("native build unavailable"),
+            "unsupported SDK state invalid"
+        ),
+        _ => anyhow::bail!("unknown native snapshot plan"),
+    }
+    Ok(())
+}
+
 fn prepared(
     journal: &Journal,
     status: &str,
@@ -912,7 +1135,7 @@ fn prepared(
     replay: Value,
     binding: Value,
 ) -> Value {
-    json!({"schema":SCHEMA,"status":status,"offline_compilation_adapter_complete":true,"preparation_chain_complete":status=="PREPARED_OFFLINE","frozen_inputs_sha256":journal.frozen_inputs_sha256,"candidate_frozen_identity":frozen,"candidate_json":journal.inputs.candidate,"rules":rules,"gol_executable":journal.inputs.gol,"phonefarm_executable":journal.inputs.phonefarm,"compiler_receipt":replay,"adapter_binding":binding,"provenance":journal.inputs.provenance,"native_build_state":journal.stages[4].state,"native_build_reason":journal.stages[4].error,"proof_flags":ProofFlags::default(),"claim_scope":"offline_static_compilation_and_adapter_integrity_only_not_full_candidate_driver"})
+    json!({"schema":SCHEMA,"status":status,"offline_compilation_adapter_complete":true,"preparation_chain_complete":matches!(status,"PREPARED_OFFLINE"|"PREPARED_OFFLINE_NATIVE"),"frozen_inputs_sha256":journal.frozen_inputs_sha256,"candidate_frozen_identity":frozen,"candidate_json":journal.inputs.candidate,"rules":rules,"gol_executable":journal.inputs.gol,"phonefarm_executable":journal.inputs.phonefarm,"compiler_receipt":replay,"adapter_binding":binding,"provenance":journal.inputs.provenance,"native_binding":journal.stages[5].result,"native_plan":journal.inputs.native_plan,"native_build_state":journal.stages[4].state,"native_build_reason":journal.stages[4].error,"proof_flags":ProofFlags::default(),"claim_scope":"offline_compilation_adapter_and_optional_native_host_integrity_not_full_candidate_driver"})
 }
 
 fn execute(candidate: &Path, pf: &Path, out: &Path, mut inputs: Inputs) -> Result<Value> {
@@ -924,6 +1147,15 @@ fn execute(candidate: &Path, pf: &Path, out: &Path, mut inputs: Inputs) -> Resul
     dir.write_new("candidate.json", &candidate)?;
     inputs.gol = copy_tool(&std::env::current_exe()?, &dir, "gol.bin")?;
     inputs.phonefarm = copy_tool(&absolute(pf)?, &dir, "phonefarm.bin")?;
+    if inputs.build {
+        inputs.native_plan = Some(native::snapshot(
+            inputs.ndk.as_deref().context("missing SDK request")?,
+            inputs.native_layer_input_root.as_deref(),
+            &path,
+            start,
+            inputs.whole_wall_ms,
+        ));
+    }
     let stages = NAMES
         .into_iter()
         .map(|name| Stage {
@@ -958,19 +1190,25 @@ fn execute(candidate: &Path, pf: &Path, out: &Path, mut inputs: Inputs) -> Resul
         },
     };
     driver.checkpoint()?;
-    match chain(&mut driver) {
-        Ok(v) => {
-            let bytes = encode(&v)?;
-            driver.dir.write_new("prepared.json", &bytes)?;
-            driver.journal.prepared_receipt = Some(identity(&bytes));
-            driver.journal.status = v["status"].as_str().context("prepared status")?.into();
-            driver.checkpoint()?;
-            Ok(v)
-        }
+    let result: Result<Value> = (|| {
+        let v = chain(&mut driver)?;
+        driver.check_budget()?;
+        let bytes = encode(&v)?;
+        driver.dir.write_new("prepared.json", &bytes)?;
+        driver.check_budget()?;
+        driver.journal.prepared_receipt = Some(identity(&bytes));
+        driver.journal.status = v["status"].as_str().context("prepared status")?.into();
+        driver.checkpoint()?;
+        driver.check_budget()?;
+        Ok(v)
+    })();
+    match result {
+        Ok(v) => Ok(v),
         Err(e) => {
-            if driver.journal.status == "RUNNING" {
+            if driver.journal.status != "UNKNOWN" {
                 driver.journal.status = "FAILED".into();
             }
+            driver.journal.prepared_receipt = None;
             for stage in &mut driver.journal.stages {
                 if stage.state == State::InFlight {
                     stage.state = State::Unknown;
@@ -1018,7 +1256,12 @@ fn inspect(path: &Path) -> Result<Value> {
     ensure!(
         matches!(
             journal.status.as_str(),
-            "RUNNING" | "FAILED" | "UNKNOWN" | "BLOCKED" | "PREPARED_OFFLINE"
+            "RUNNING"
+                | "FAILED"
+                | "UNKNOWN"
+                | "BLOCKED"
+                | "PREPARED_OFFLINE"
+                | "PREPARED_OFFLINE_NATIVE"
         ),
         "unknown journal status"
     );
@@ -1026,7 +1269,9 @@ fn inspect(path: &Path) -> Result<Value> {
         (50..=120_000).contains(&journal.inputs.stage_wall_ms)
             && (50..=600_000).contains(&journal.inputs.whole_wall_ms)
             && (1024..=1_048_576).contains(&journal.inputs.stream_bytes)
+            && (1..=120).contains(&journal.inputs.native_tool_timeout_seconds)
             && journal.inputs.build == journal.inputs.ndk.is_some()
+            && journal.inputs.build == journal.inputs.native_plan.is_some()
             && matches!(
                 journal.inputs.provenance.as_str(),
                 "synthetic_mechanism_fixture"
@@ -1034,7 +1279,10 @@ fn inspect(path: &Path) -> Result<Value> {
             ),
         "invalid frozen policy/provenance"
     );
-    if matches!(journal.status.as_str(), "PREPARED_OFFLINE" | "BLOCKED") {
+    if matches!(
+        journal.status.as_str(),
+        "PREPARED_OFFLINE" | "PREPARED_OFFLINE_NATIVE" | "BLOCKED"
+    ) {
         ensure!(
             journal.prepared_receipt.is_some(),
             "final state lacks prepared receipt"
@@ -1046,6 +1294,15 @@ fn inspect(path: &Path) -> Result<Value> {
             && file_hash(&path.join("phonefarm.bin"), TOOL_CAP)? == journal.inputs.phonefarm,
         "frozen inputs changed"
     );
+    if let Some(plan) = &journal.inputs.native_plan {
+        ensure!(
+            plan.layer_root == journal.inputs.native_layer_input_root,
+            "native layer expectation root differs from frozen request"
+        );
+        if plan.state == "READY" {
+            native::check(plan, &path, false, None)?;
+        }
+    }
     let mut unknown = false;
     for (i, stage) in journal.stages.iter_mut().enumerate() {
         ensure!(stage.name == NAMES[i], "stage order/name altered");
@@ -1098,8 +1355,8 @@ fn inspect(path: &Path) -> Result<Value> {
         ensure!(
             v["status"] == journal.status
                 && v["offline_compilation_adapter_complete"] == true
-                && v["preparation_chain_complete"] == !journal.inputs.build
-                && (journal.status == "BLOCKED") == journal.inputs.build,
+                && v["preparation_chain_complete"] == (journal.status != "BLOCKED")
+                && (journal.status != "PREPARED_OFFLINE") == journal.inputs.build,
             "prepared outcome contradicts required stage policy"
         );
         ensure!(
@@ -1131,17 +1388,7 @@ fn inspect(path: &Path) -> Result<Value> {
             v["adapter_binding"] == current && journal.stages[3].result == Some(current),
             "adapter binding changed"
         );
-        let native = &journal.stages[4];
-        ensure!(
-            if journal.inputs.build {
-                (native.state == State::Blocked && native.error.as_deref() == Some("MISSING_ANDROID_NDK"))
-                    || (native.state == State::NotRun && native.error.as_deref() == Some("BLOCKED_PROCESS_GROUP_CONTRACT: SDK path present/unknown; PF helper groups are not supervised by this wrapper"))
-            } else {
-                native.state == State::NotRun
-                    && native.error.as_deref() == Some("native build not requested")
-            },
-            "native outcome contradicts frozen build policy"
-        );
+        inspect_native(&path, &journal, &adapted_path)?;
         let replay = journal.stages[1]
             .result
             .clone()
@@ -1183,6 +1430,8 @@ pub fn run(action: Action) -> Result<()> {
             out,
             build,
             ndk,
+            native_layer_input_root,
+            native_tool_timeout_seconds,
             stage_wall_ms,
             whole_wall_ms,
             stream_bytes,
@@ -1191,7 +1440,8 @@ pub fn run(action: Action) -> Result<()> {
             ensure!(
                 (50..=120_000).contains(&stage_wall_ms)
                     && (50..=600_000).contains(&whole_wall_ms)
-                    && (1024..=1_048_576).contains(&stream_bytes),
+                    && (1024..=1_048_576).contains(&stream_bytes)
+                    && (1..=120).contains(&native_tool_timeout_seconds),
                 "budgets outside receiver limits"
             );
             ensure!(
@@ -1202,12 +1452,15 @@ pub fn run(action: Action) -> Result<()> {
                 sha256: String::new(),
                 bytes: 0,
             };
-            execute(&candidate, &phonefarm_bin, &out, Inputs { candidate: blank.clone(), gol: blank.clone(), phonefarm: blank, stage_wall_ms, whole_wall_ms, stream_bytes, build, ndk: ndk.map(|p| absolute(&p)).transpose()?, provenance: if synthetic { "synthetic_mechanism_fixture" } else { "caller_supplied_local_candidate_not_real_game_attestation" }.into(), implementation_sha256: sha(include_bytes!("candidate_prepare.rs")), gate_sha256: sha(GATE.as_bytes()), execution_scope: "trusted_local_binaries_and_OS_shell_process_groups_not_sandbox_or_remote_attestation".into() })?
+            execute(&candidate, &phonefarm_bin, &out, Inputs { candidate: blank.clone(), gol: blank.clone(), phonefarm: blank, stage_wall_ms, whole_wall_ms, stream_bytes, build, ndk: ndk.map(|p| absolute(&p)).transpose()?, native_layer_input_root: native_layer_input_root.map(|p| absolute(&p)).transpose()?, native_tool_timeout_seconds, native_plan: None, provenance: if synthetic { "synthetic_mechanism_fixture" } else { "caller_supplied_local_candidate_not_real_game_attestation" }.into(), implementation_sha256: sha(include_bytes!("candidate_prepare.rs")), native_implementation_sha256: sha(include_bytes!("candidate_prepare_native.rs")), gate_sha256: sha(GATE.as_bytes()), execution_scope: "trusted_local_binaries_and_OS_shell_process_groups_not_sandbox_or_remote_attestation".into() })?
         }
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
     ensure!(
-        value["status"] == "PREPARED_OFFLINE",
+        matches!(
+            value["status"].as_str(),
+            Some("PREPARED_OFFLINE" | "PREPARED_OFFLINE_NATIVE")
+        ),
         "preparation is {}; see retained session",
         value["status"]
     );

@@ -314,7 +314,7 @@ fn sdk_requests_are_explicit_blocked_negative_or_not_run() {
     assert!(v["native_build_reason"]
         .as_str()
         .unwrap()
-        .starts_with("BLOCKED_PROCESS_GROUP_CONTRACT"));
+        .starts_with("BLOCKED_NATIVE_INPUTS"));
     assert_eq!(present.calls(), 2);
     no_proof(&v);
 }

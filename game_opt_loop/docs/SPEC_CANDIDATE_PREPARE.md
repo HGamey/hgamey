@@ -116,25 +116,14 @@ caller SDK. It retains the real missing-tool refusal, and
 records BLOCKED with build/device execution not accepted. It never installs an
 SDK, substitutes OpenHarmony tools or uses a fake compiler as a native success.
 
-The currently consumed ordinary PF native build starts each NDK helper in its own process group, outside
-the outer PF group. Until the builder supplies a supervised group/descendant
-contract, a present SDK is NOT_RUN/BLOCKED for this wrapper. Killing only the PF
-launcher cannot honestly guarantee that those helper groups have stopped. This
-is an explicit integration gap, not a successful native build. The missing-SDK
-case runs no NDK helper and is bounded by the outer process contract. Enabling
-actual native construction requires a subsequent compatible PF supervision
-interface and real NDK acceptance; no deployability gate will be relaxed. The
-next supervision unit must give PF an explicit supervised mode which keeps NDK
-helpers in the controlled group, or supplies durable child-group receipts to the
-parent before side effects and proves every recorded group absent. The wrapper
-must reject unknown/unacknowledged groups on cancellation and host interruption.
+The follow-up [native preparation contract](SPEC_CANDIDATE_NATIVE_PREPARE.md) consumes PF24's explicit inherited-group interface. Present SDK execution requires a bounded whole regular-file SDK snapshot and explicit four-layer-input expectation root, then outer group retirement and a second native verification stage. Unsupported SDK layouts remain BLOCKED. A successful controlled fake SDK is synthetic host-mechanism evidence; real NDK/Android/GPU validation remains not_run and every deploy/proof/promotion flag remains false.
 
 ## Acceptance and remaining work
 
 `offline_compilation_adapter_complete` records completion of the four validated
 compiler/adapter stages. `preparation_chain_complete` is true only when no
 requested stage is blocked or not run: without a build request the result is
-`PREPARED_OFFLINE`; a requested missing or present SDK yields `BLOCKED` and false
+`PREPARED_OFFLINE`; a requested missing or unsupported SDK yields `BLOCKED` and false
 for the complete preparation chain. These fields do not grant any proof flag.
 
 Run actual local GOL compilation and replay against the actual PF adapter and
@@ -144,7 +133,6 @@ Fake programs test timeout, output cap, lingering descendants, invalid receipts,
 identity mismatches, gate failure ordering and interrupted journals. Those
 mechanism tests are synthetic and never award real-source or candidate gates.
 
-Run full Rust tests and strict clippy. The complete driver still needs native
-supervision/build, approved layer identity, GPU capabilities and ownership,
+Run full Rust tests and strict clippy. A compatible bounded native preparation can produce `PREPARED_OFFLINE_NATIVE`; the complete driver still needs real NDK acceptance, approved layer identity, GPU capabilities and ownership,
 device lease/recovery, controlled real measurements, independent paired quality,
 qualification and heldout confirmation. Offline PREPARED does not satisfy them.
