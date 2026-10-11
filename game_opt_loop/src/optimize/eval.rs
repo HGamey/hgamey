@@ -302,6 +302,14 @@ pub struct GrayPayload {
     pub require_hit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub side_effect_ack: Option<String>,
+    /// 画面比对: 每轮改写臂与对照臂同位置截图的 PSNR 低于门槛 → ABORT「画面出错」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_check: Option<ImageCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageCheck {
+    pub min_psnr_db: f64,
 }
 
 /// v2 评测请求。
@@ -748,12 +756,13 @@ mod tests {
                     why: None,
                     layer: None,
                     rewrites: vec![Rewrite {
-                        knob: "loadop_dont_care".into(),
-                        scope: None,
+                        knob: "storeop_dont_care".into(),
+                        scope: Some("15a51a879df99c32:2".into()),
                         args: None,
                     }],
                     require_hit: true,
                     side_effect_ack: None,
+                    image_check: Some(ImageCheck { min_psnr_db: 30.0 }),
                 }),
                 Kind::Shader => Payload::Shader(ShaderPayload {
                     track: "sr".into(),

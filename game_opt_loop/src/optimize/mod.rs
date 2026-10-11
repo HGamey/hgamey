@@ -66,6 +66,8 @@ pub struct Config {
     pub sysparam_probe: Option<PathBuf>,
     /// 出方案的一方 (`--proposer llm|local|cmd:<可执行文件>`), 见 [`proposer`]。
     pub proposer: proposer::Options,
+    /// `phonefarm frame-audit analyze --json` 的输出: ② 层的旋钮从这里来。
+    pub frame_audit: Option<PathBuf>,
     /// 人工指定的计划形状 (`--layers` / `--generations` / `--children`)。
     pub shape: plan::Shape,
     /// 游戏档案库 (`<目录>/<包名>/profile.json`)。目标包名在库里有 PASS 的档案就用它的
@@ -808,7 +810,33 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
         return Ok(o);
     }
 
-    let constraints = proposer::constraints_for(Kind::Gray, None);
+    // 候选空间 = frame-audit 判定「写回之后确定没人读」的附件, 每一个是一个旋钮。
+    // 没有这份结果就一个都不提: 一刀切的 LoadOp 改写已撤回 (会画错), 不拿它凑数。
+    let targets = match ctx.cfg.frame_audit.as_ref() {
+        Some(p) => gray::load_targets(p)?,
+        None => Vec::new(),
+    };
+    if targets.is_empty() {
+        out.used = false;
+        out.reason = match ctx.cfg.frame_audit.as_ref() {
+            Some(p) => format!(
+                "frame-audit 结果 {} 里没有「确定没人读」的写回, 这一层没有可开的旋钮",
+                p.display()
+            ),
+            None => "没有 frame-audit 结果, 不知道哪些写回确定没人读; 一刀切的 LoadOp 改写已撤回 (会画错画面)".into(),
+        };
+        out.blockers = vec![
+            "先跑 `phonefarm frame-audit capture` + `analyze --json`, 再用 --frame-audit <analysis.json> 喂进来".into(),
+        ];
+        println!("      {}", out.reason);
+        return Ok(out);
+    }
+    println!(
+        "      旋钮 {} 个 (来自 frame-audit): {}",
+        targets.len(),
+        targets.iter().map(|t| t.scope.as_str()).collect::<Vec<_>>().join(", ")
+    );
+    let constraints = proposer::constraints_with_targets(Kind::Gray, None, &targets);
     let mut history: Vec<proposer::HistoryItem> = Vec::new();
     let mut origins: Vec<sysparam::Origin> = Vec::new();
 
@@ -830,7 +858,7 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
 
         for (i, prop) in batch.accepted.iter().enumerate() {
             let id = format!("gray_g{gen}c{}", i + 1);
-            let knobs: Vec<String> = prop.rewrites.iter().map(|r| r.knob.clone()).collect();
+            let knobs: Vec<String> = prop.rewrites.iter().map(gray::rewrite_label).collect();
             println!("      {id}: {} — {}", knobs.join("+"), prop.why);
 
             let req = Request {
@@ -851,6 +879,10 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                     side_effect_ack: Some(
                         "debug.vulkan.layers 是全局属性; 层加载成功后立刻清属性, 收尾还原".into(),
                     ),
+                    // 每轮两臂同位置截图比对: 画面变了直接 ABORT, 不让「统计不显著」掩盖画错。
+                    image_check: Some(eval::ImageCheck {
+                        min_psnr_db: gray::MIN_PSNR_DB,
+                    }),
                 }),
             };
 

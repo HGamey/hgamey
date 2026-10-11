@@ -109,6 +109,7 @@ cargo run --release -- optimize --game com.example.game --package com.example.ga
 | `--out <dir>` | Artifacts: `caps.json`, `report.json`, `report.md`, `requests/`. Default `runs/optimize` |
 | `--no-llm` | Skip the model, use only the local deterministic mutator |
 | `--sysparam-probe <probe.txt>` | Feed an already-collected system-parameter probe (see "Current limits") |
+| `--frame-audit <analysis.json>` | Frame-audit result; layer ② knobs are its certain dead stores. Without it ② does not run |
 | `--layers <sysparam,gray>` | Only these layers (also `3,2`). The others are listed as "not selected". Use it to split a long run into ≤45-minute lock holds |
 | `--generations N` / `--children N` | Fix the shape of every selected open layer (the other one defaults to 1); the budget no longer cuts layers. The estimate is recomputed; the plan says so when it exceeds the budget |
 | `--lock-label <label>` / `--lock-wait 2h` / `--no-devlock` | Device lock (see below). `optimize` queues and releases by itself |
@@ -368,11 +369,26 @@ Stated plainly so you do not mistake a gap for a bug:
   `game_opt_loop --track sr --carrier refbench --generations 3 --children 4`.
   It appears in the plan under "layers not to run", with that command spelled
   out, and it consumes no budget.
-- **The render-flow knob catalog lags the layer on purpose.** Only
-  `loadop_dont_care` has landed and been verified to bind on real hardware; the
-  rest are declared in the contract and refused locally. Proposing a knob the
-  layer does not implement buys a wasted run whose "no significant difference"
-  is indistinguishable from "this rewrite does not help."
+- **Layer ② knobs come from a frame audit.** Pass `--frame-audit <analysis.json>`
+  (output of `phonefarm frame-audit analyze --json`). Every attachment the audit
+  marks as a *certain* dead store — in every judged frame of every capture, for
+  every instance of that pass signature — becomes one knob
+  `storeop_dont_care` with `scope = "<sig>:<attachment>"`. The model and the local
+  mutator combine them (≤4 per candidate; the layer property has a length cap).
+  For Genshin 7.1.0 that is three: `15a51a879df99c32:2`, `9d0b4db80bf552b8:0/1`
+  (`tests/fixtures/frame_audit/`). Without the file, layer ② does not run.
+- **`loadop_dont_care` is withdrawn.** phonefarm `docs/GENSHIN_FRAME_AUDIT.md` §4:
+  every LOAD in a Genshin frame reads freshly written content, so the blanket
+  rewrite corrupts the image; it was never caught because nobody compared images.
+- **Every ② candidate carries an image check.** Before the workload in each
+  round, both arms take a screenshot at the same spot; knob-vs-control PSNR below
+  30 dB → ABORT "画面出错". The threshold is a prior; check
+  `conditions_observed.image_check.psnr_ctrl_vs_ctrl_db` (natural variation
+  between control restarts) on real runs before trusting it.
+- **The rest of the knob catalog lags the layer on purpose.** Declared knobs are
+  refused locally. Proposing a knob the layer does not implement buys a wasted
+  run whose "no significant difference" is indistinguishable from "this rewrite
+  does not help."
 
 ## The contract between the two repos
 

@@ -41,7 +41,7 @@
             "properties": {
               "rewrites": {
                 "type": "array",
-                "description": "改写开关。knob 必须是输入 constraints.knobs 里 status=landed 的 id, 不许重复。",
+                "description": "改写开关。knob 必须是输入 constraints.knobs 里 status=landed 的 id; 带 scopes 的开关必须给 scope, 且只能原样取 scopes 里的某一个。同一 knob+scope 不许重复, 一组最多 4 条写回改写。",
                 "items": {
                   "type": "object",
                   "required": ["knob"],

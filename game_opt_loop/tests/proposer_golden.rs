@@ -134,6 +134,10 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         // 空档案库: 原神走内置条目, 请求与金样一致
         profiles_dir: root.join("profiles"),
         game_profile: None,
+        // ② 的旋钮来自真机抓的原神 frame-audit 结果 (rp103 C2、rp71 C0/C1 三处确定白存)
+        frame_audit: Some(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frame_audit/genshin_7.1_analysis.json"),
+        ),
     }
 }
 
