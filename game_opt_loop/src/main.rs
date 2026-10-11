@@ -483,8 +483,11 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // 工件协议入口的 stdout 是可解析的 JSON；其余入口保留既有展示。
-    if !matches!(&cli.command, Some(Command::ModelPipeline { .. })) {
+    // 确认与工件协议入口的 stdout 是可解析的 JSON。
+    if !matches!(
+        &cli.command,
+        Some(Command::Confirm { .. } | Command::ModelPipeline { .. })
+    ) {
         println!("==================================================");
         println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
         println!("==================================================");
