@@ -29,8 +29,11 @@ if a[1]=='prepare':
  r=read(val('--request'));d=pathlib.Path(val('--out'));d.mkdir()
  (d/'candidate.json').write_bytes(pathlib.Path(r['candidate']).read_bytes())
  write(d/'baseline.json',{'kind':'sysparam','payload':{'params':{},'plan':[],'deny_keywords':[]}})
- write(d/'conditions.json',{'synthetic_fixture':True});write(d/'admission.json',{'synthetic_fixture':True})
+ goal=r.get('goal','render_efficiency')
+ if mode=='goal_policy':goal='render_efficiency' if goal=='render_cadence' else 'render_cadence'
+ write(d/'conditions.json',{'synthetic_fixture':True,'policy':{'goal':goal,'required_metrics':['frame_p95','fps_mean']+(['power_w_mean'] if goal=='render_efficiency' else [])}});write(d/'admission.json',{'synthetic_fixture':True})
  rules=[{'name':'frame_p95_ms','direction':'lower','scale':'percent','minimum_improvement':1.,'maximum_regression':1.},{'name':'fps_mean','direction':'higher','scale':'percent','minimum_improvement':None,'maximum_regression':1.},{'name':'power_watt','direction':'lower','scale':'percent','minimum_improvement':None,'maximum_regression':1.}]
+ if r.get('goal')=='render_cadence':rules=rules[:2]
  p={k:sha(d/n) for k,n in [('candidate_artifact_sha256','candidate.json'),('baseline_artifact_sha256','baseline.json'),('conditions_sha256','conditions.json'),('baseline_admission_sha256','admission.json')]}
  p.update(exploration_run_ids=['admission_0','admission_1','admission_2'],exploration_artifact_sha256=['1'*64],pairs=len(r['schedule']),schedule=r['schedule'],family_alpha=.05,paired_t_assumptions_acknowledged=True,metrics=rules)
  if mode=='policy':p['metrics'][0]['minimum_improvement']=0.
@@ -310,4 +313,53 @@ fn snapshot_uses_copied_workload_and_candidate_not_mutable_caller() {
         f.read("case/00-prepare.result.json")["stdout_sha256"],
         format!("{:x}", Sha256::digest(b))
     );
+}
+
+#[test]
+fn explicit_cadence_goal_freezes_two_metrics_without_energy_claims() {
+    let f = F::new();
+    let mut profile = f.read("profile.json");
+    profile["goal"] = json!("render_cadence");
+    f.json("profile.json", &profile);
+    f.plan();
+    assert_eq!(f.read("case/request.json")["goal"], "render_cadence");
+    let r = f.run("normal");
+    assert_eq!(r.status.code(), Some(0)); // Recorded negative is a completed case, not statistical PASS.
+    let v: Value = serde_json::from_slice(&r.stdout).unwrap();
+    assert_eq!(v["status"], "CASE_RECORDED");
+    assert_eq!(v["verdict"], "BLOCKED");
+    assert_eq!(v["promotion_allowed"], false);
+    assert_eq!(v["real_game_optimization_proven"], false);
+    assert_eq!(
+        f.read("case/frozen.json")["plan"]["metrics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(f.count(), 2);
+}
+#[test]
+fn unknown_goal_and_receiver_goal_mismatch_never_downgrade() {
+    let f = F::new();
+    let mut p = f.read("profile.json");
+    p["goal"] = json!("display_smoothness");
+    f.json("profile.json", &p);
+    let r = f.cmd(
+        &["case", "plan", "--profile", "profile.json", "--out", "case"],
+        "normal",
+    );
+    assert!(!r.status.success());
+    assert!(!f.root.join("case").exists());
+    assert_eq!(f.count(), 0);
+    let f = F::new();
+    let mut p = f.read("profile.json");
+    p["goal"] = json!("render_cadence");
+    f.json("profile.json", &p);
+    f.plan();
+    let r = f.run("goal_policy");
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stdout).contains("receiver goal/required metrics"));
+    assert_eq!(f.count(), 1);
+    assert!(!f.root.join("case/01-freeze.intent.json").exists());
 }

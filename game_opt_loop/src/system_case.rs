@@ -88,6 +88,7 @@ struct Profile {
     pairs: usize,
     paired_t_assumptions_acknowledged: bool,
     temperature_profile_id: Option<String>,
+    goal: Option<String>,
     budgets: Budgets,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -329,6 +330,12 @@ fn validate(p: &Profile, workload: &[u8]) -> Result<()> {
         p.temperature_profile_id.as_ref().is_none_or(|s| safe(s)),
         "unsafe receiver preset ID"
     );
+    ensure!(
+        p.goal
+            .as_deref()
+            .is_none_or(|s| matches!(s, "render_cadence" | "render_efficiency")),
+        "unknown explicit receiver goal"
+    );
     let b = &p.budgets;
     ensure!(
         (1..=7200).contains(&b.prepare_seconds)
@@ -394,6 +401,9 @@ fn request(p: &Profile, root: &Path) -> Value {
     let mut v = json!({"schema":"phonefarm/confirmation_driver_request@1","transport":{"kind":p.transport.kind,"program":root.join("transport-tool"),"target":p.transport.target},"package":p.package,"render_comm":p.render_comm,"capture_seconds":p.capture_seconds,"lead_seconds":p.lead_seconds,"workload":root.join("workload.json"),"candidate":root.join("candidate.json"),"schedule":(0..p.pairs).map(|i|json!({"pair_id":format!("{}_p{i:02}",p.case_id),"a_run_id":format!("{}_a{i:02}",p.case_id),"b_run_id":format!("{}_b{i:02}",p.case_id),"baseline_first":i%2==0})).collect::<Vec<_>>(),"paired_t_assumptions_acknowledged":p.paired_t_assumptions_acknowledged});
     if let Some(s) = &p.temperature_profile_id {
         v["temperature_profile_id"] = json!(s);
+    }
+    if let Some(s) = &p.goal {
+        v["goal"] = json!(s);
     }
     v
 }
@@ -690,7 +700,27 @@ fn validate_receiver_plan(root: &Path, p: &Profile) -> Result<()> {
     let receiver = root.join("receiver");
     let v: Value = serde_json::from_slice(&read_path(&receiver.join("plan.json"), JSON_CAP)?)?;
     let requested = request(p, root);
-    let metrics = json!([{"name":"frame_p95_ms","direction":"lower","scale":"percent","minimum_improvement":1.0,"maximum_regression":1.0},{"name":"fps_mean","direction":"higher","scale":"percent","minimum_improvement":null,"maximum_regression":1.0},{"name":"power_watt","direction":"lower","scale":"percent","minimum_improvement":null,"maximum_regression":1.0}]);
+    let mut metrics = json!([{"name":"frame_p95_ms","direction":"lower","scale":"percent","minimum_improvement":1.0,"maximum_regression":1.0},{"name":"fps_mean","direction":"higher","scale":"percent","minimum_improvement":null,"maximum_regression":1.0},{"name":"power_watt","direction":"lower","scale":"percent","minimum_improvement":null,"maximum_regression":1.0}]);
+    if p.goal.as_deref() == Some("render_cadence") {
+        metrics.as_array_mut().expect("fixed metric array").pop();
+    }
+    if let Some(goal) = &p.goal {
+        let raw = read_path(&receiver.join("conditions.json"), JSON_CAP)?;
+        ensure!(
+            v["conditions_sha256"] == sha(&raw),
+            "explicit goal conditions bytes differ from receiver plan"
+        );
+        let c: Value = serde_json::from_slice(&raw)?;
+        let required = if goal == "render_cadence" {
+            json!(["frame_p95", "fps_mean"])
+        } else {
+            json!(["frame_p95", "fps_mean", "power_w_mean"])
+        };
+        ensure!(
+            c["policy"]["goal"] == *goal && c["policy"]["required_metrics"] == required,
+            "receiver goal/required metrics differ from explicit case request"
+        );
+    }
     ensure!(
         v["schedule"] == requested["schedule"]
             && v["pairs"] == p.pairs
