@@ -417,6 +417,8 @@ pub struct ConditionsObserved {
 /// v2 评测报告。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
+    #[serde(default, flatten)]
+    pub extensions: crate::evidence::Extensions,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -450,7 +452,7 @@ impl Report {
     /// ABORT 是"这次没量准", 不是"量到了, 不好"。把两者混为一谈, 演化就会把
     /// 工装故障学成算法结论。
     pub fn is_measurement_valid(&self) -> bool {
-        self.status != "ABORT"
+        self.status != "ABORT" && crate::evidence::permits_promotion(&self.extensions)
     }
 
     /// 值不值得保留。
@@ -783,6 +785,7 @@ mod tests {
     #[test]
     fn abort_is_not_a_negative_sample() {
         let mk = |status: &str| Report {
+            extensions: Default::default(),
             version: Some(2),
             kind: Some(Kind::Sysparam),
             candidate_id: "c".into(),

@@ -754,6 +754,7 @@ mod tests {
     #[test]
     fn per_metric_lines_survive_a_reply_without_details() {
         let r = eval::Report {
+            extensions: Default::default(),
             version: Some(2),
             kind: Some(Kind::Sysparam),
             candidate_id: "c".into(),
@@ -776,6 +777,7 @@ mod tests {
     #[test]
     fn unmeasured_metrics_are_not_reported_as_zero_to_the_proposer() {
         let mut r = eval::Report {
+            extensions: Default::default(),
             version: Some(2),
             kind: Some(Kind::Sysparam),
             candidate_id: "c".into(),

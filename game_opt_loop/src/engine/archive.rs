@@ -27,6 +27,8 @@ pub struct ArchiveEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub report: EvalReport,
+    #[serde(default)]
+    pub qualification_state: crate::evidence::QualificationState,
     /// 功耗为什么没参与这条记录的支配排序; None = 参与了。
     ///
     /// 落盘而不是每次现算: 档案是**跨轮追加**的历史。事后翻档案时,
@@ -120,6 +122,7 @@ impl ParetoArchive {
             origin: candidate.origin,
             notes: candidate.notes.clone(),
             power_excluded_reason: report.power_exclusion_reason().map(str::to_string),
+            qualification_state: crate::evidence::qualification_state(&report.extensions),
             report,
             recorded_at: now,
             shader_source: candidate.shader_source.clone(),
@@ -242,6 +245,7 @@ mod tests {
             None,
         );
         let report = EvalReport {
+            extensions: Default::default(),
             candidate_id: id.to_string(),
             status: EvalStatus::Pass,
             metrics: Metrics {
