@@ -25,7 +25,16 @@ cargo run --release -- optimize --game 原神 --device 91253241019A --budget 1h 
 # 指定形状：只跑 ③、2 代、每代 1 个（长实验拆段时一次跑一层，单段持锁不超过 45 分钟左右）
 cargo run --release -- optimize --game 原神 --device 91253241019A \
     --layers sysparam --generations 2 --children 1 --lock-label <名字>
+
+# 内置表里没有的游戏：先用 phonefarm onboard 实测出一份游戏档案，再直接按包名跑
+../phonefarm/phonefarm onboard --package com.example.game --out runs/onboard/example
+cargo run --release -- optimize --game com.example.game --game-profile runs/onboard/example/profile.json --plan
 ```
+
+游戏档案（契约 [`contracts/game_profile.schema.json`](contracts/game_profile.schema.json)）只收 `PASS` 的，
+收进 `--profiles` 目录（缺省 `profiles/<包名>/profile.json`，连同负载脚本一起拷）；之后
+`optimize --game <包名>` 自动读它：负载、每轮秒数、渲染线程（`render_comm`，非 Unity 游戏必需）、
+已知的坑，并在评测请求里带 `workload.enter = "onboard"`，让接收端每次重启游戏后自己走回游戏场景。
 
 出方案的一方是可插拔的（接口 `game_opt_loop/proposer@1`，stdin/stdout JSON），
 怎么写一个见 [`docs/INTEGRATION.md`](docs/INTEGRATION.md)。

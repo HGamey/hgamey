@@ -28,7 +28,7 @@ enum Command {
     /// 三层是: ③ 系统参数 (要 root)、② 画面流程改写 (要能挂 Vulkan 层)、
     /// ① 画面算子 (要白盒载体, 或能挂层的黑盒)。能开哪层由摸底结果决定,
     /// 一层都开不了就只测量并写清原因。
-    Optimize(OptimizeArgs),
+    Optimize(Box<OptimizeArgs>),
 
     /// 把分几段 (各自持锁) 跑出来的单臂 optimize 输出拼成一份对比报告。离线, 不碰设备。
     ///
@@ -197,6 +197,16 @@ pub struct OptimizeArgs {
     /// 不拿设备锁 (只在确定没人共用这台手机时用)。
     #[arg(long, default_value_t = false)]
     no_devlock: bool,
+
+    /// 游戏档案库目录 (`<目录>/<包名>/profile.json`, 由 `phonefarm onboard` 实测产出)。
+    /// 目标包名有 PASS 的档案就用它的负载、渲染线程和坑。
+    #[arg(long, default_value = "profiles")]
+    profiles: PathBuf,
+
+    /// 刚由 `phonefarm onboard` 产出的 profile.json: 先收进档案库 (只收 PASS), 再用。
+    /// 包名没给时取档案里的包名。
+    #[arg(long)]
+    game_profile: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -411,7 +421,7 @@ fn main() -> Result<()> {
     println!("==================================================");
 
     match cli.command {
-        Some(Command::Optimize(args)) => return run_optimize(args),
+        Some(Command::Optimize(args)) => return run_optimize(*args),
         Some(Command::Compare { arms, out }) => {
             let c = optimize::compare::from_arm_dirs(&arms, &out)?;
             println!("对比报告 ({} 臂): {}/compare.md", c.arms.len(), out.display());
@@ -659,6 +669,8 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
             timeout_s: args.proposer_timeout_s,
         },
         shape,
+        profiles_dir: args.profiles,
+        game_profile: args.game_profile,
     };
 
     // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——

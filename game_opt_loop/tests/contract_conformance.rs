@@ -806,3 +806,26 @@ mod proposer_contract {
         }
     }
 }
+
+/// 游戏档案: game_opt_loop 自己的读取结构 (GameProfile) 序列化回去, 必须仍是一份合法档案;
+/// 一份 phonefarm onboard 形状的完整档案也必须过 (多出来的证据字段不影响)。
+#[test]
+fn game_profile_matches_its_contract() {
+    let full = serde_json::json!({
+        "profile_version": 1, "status": "PASS", "package": "com.example.game",
+        "version_name": "1.0", "created_at": "2026-10-11T13:00:00-07:00",
+        "device": {"serial": "S", "screen": [2688, 1216]},
+        "entry": {"status": "INGAME", "taps": 2, "seconds": 41.5, "vlm_calls": 0, "steps": []},
+        "workload": {"script": "workload.json", "seconds": 30, "input": "touch",
+                     "render_comm": "RHIThread", "graphics_api": "vulkan"},
+        "criteria": {"frame_p95_cv_max": 0.03},
+        "repeatability": {"rounds": 5, "judge": {"verdict": "PASS", "frame_p95_cv": 0.012}},
+        "baseline": {"fps_mean": 59.8}, "conditions": {},
+        "pitfalls": [{"id": "x", "symptom": "s", "workaround": "w"}],
+        "needs_human": []
+    });
+    assert_conforms(&full, "game_profile.schema.json");
+    let parsed: game_opt_loop::optimize::profile::GameProfile =
+        serde_json::from_value(full).unwrap();
+    assert_conforms(&serde_json::to_value(&parsed).unwrap(), "game_profile.schema.json");
+}

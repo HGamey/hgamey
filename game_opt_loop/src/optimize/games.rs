@@ -147,6 +147,10 @@ pub struct Workload {
     pub input: InputMethod,
     /// 脚本文件在不在。不在就不能声称"负载已就绪"。
     pub script_present: bool,
+    /// 渲染线程名 (ftrace comm)。None = 按 Unity 缺省 (UnityGfxDeviceW) 解析;
+    /// 非 Unity 游戏由游戏档案给出, 否则解析出零帧。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_comm: Option<String>,
 }
 
 /// 解析出来的被测目标。
@@ -162,6 +166,9 @@ pub struct Target {
     pub pitfalls: Vec<Pitfall>,
     /// 名字是怎么认出来的 —— 内置表命中, 还是当成包名/载体名直接用。
     pub resolved_via: String,
+    /// 用上的游戏档案 (`phonefarm onboard` 实测出来的, 见 `profile.rs`)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<super::profile::ProfileRef>,
 }
 
 /// 载体的搜索根。默认 `../phonefarm/loop_v1/carriers` 与 `..`(找同级 refbench)。
@@ -280,9 +287,11 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
                 seconds: k.seconds,
                 input: k.input,
                 script_present,
+                render_comm: None,
             },
             pitfalls: k.pitfalls.to_vec(),
             resolved_via: format!("内置条目 `{}`", k.aliases[0]),
+            profile: None,
         };
     }
 
@@ -302,9 +311,11 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
                 seconds: 0,
                 input: InputMethod::SelfDriven,
                 script_present: true,
+                render_comm: None,
             },
             pitfalls: vec![CHARGING_POWER_INVALID, FAN_STATE_UNRECORDED],
             resolved_via: "载体目录里有 contract/launch.json".to_string(),
+            profile: None,
         };
     }
 
@@ -328,9 +339,11 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
             seconds: 36,
             input: InputMethod::Touch,
             script_present: false,
+            render_comm: None,
         },
         pitfalls: vec![CHARGING_POWER_INVALID, FAN_STATE_UNRECORDED],
         resolved_via,
+        profile: None,
     }
 }
 

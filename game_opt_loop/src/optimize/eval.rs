@@ -74,6 +74,13 @@ pub struct WorkloadSpec {
     pub frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intensity: Option<u32>,
+    /// 渲染线程名 (ftrace comm), 来自游戏档案。缺省时接收端按 Unity 的 UnityGfxDeviceW 解析。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_comm: Option<String>,
+    /// 每臂重启游戏之后怎么回到游戏场景。`onboard` = 接收端跑 `phonefarm onboard
+    /// --enter-only` 的白名单状态机 (有游戏档案的目标才这么填); 缺省 = 不管 (旧行为)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<String>,
 }
 
 /// 停充意图。
@@ -656,6 +663,8 @@ mod tests {
                 seconds: Some(36),
                 frames: None,
                 intensity: None,
+                render_comm: None,
+                enter: None,
             },
             conditions: Conditions {
                 cool_c: Some(40.0),

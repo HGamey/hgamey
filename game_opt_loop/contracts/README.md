@@ -9,6 +9,7 @@ phonefarm 按它们回报告；两边各自的单测对着同一份文件钉死�
 | `eval_report.schema.json` | phonefarm | game_opt_loop |
 | `candidate.schema.json` | game_opt_loop | 本仓库归档 |
 | `pareto_archive.schema.json` | game_opt_loop | 本仓库归档 |
+| `game_profile.schema.json` | phonefarm (`onboard`) | game_opt_loop (`optimize` 的档案库 `profiles/`) |
 | `proposer_input.schema.json` | game_opt_loop | 出方案的一方（内置或外部进程） |
 | `proposer_output.schema.json` / `proposer_candidate.schema.json` | 出方案的一方 | game_opt_loop |
 

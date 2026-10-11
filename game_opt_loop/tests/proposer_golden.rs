@@ -124,6 +124,9 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         sysparam_probe: Some(root.join("probe.txt")),
         proposer: Default::default(),
         shape: Default::default(),
+        // 空档案库: 原神走内置条目, 请求与金样一致
+        profiles_dir: root.join("profiles"),
+        game_profile: None,
     }
 }
 
