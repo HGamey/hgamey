@@ -64,6 +64,7 @@ fn fake_phonefarm(probe_out: &Path) -> String {
 case "$1" in
   devices) echo "91253241019A  NX809J  adb"; exit 0 ;;
   probe) cat '{probe}'; exit 0 ;;
+  onboard) echo '{{"status":"INGAME"}}'; exit 0 ;;
   eval)
     req="$3"
     if [ ! -f "$req" ]; then echo "读取请求失败: $req" >&2; exit 2; fi
