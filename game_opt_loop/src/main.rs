@@ -34,6 +34,11 @@ enum Command {
         #[command(subcommand)]
         action: game_opt_loop::model_pipeline::PipelineCommand,
     },
+    /// Prepare a local compiled candidate and finite PF adaptation; never deploy.
+    CandidatePrepare {
+        #[command(subcommand)]
+        action: game_opt_loop::candidate_prepare::Action,
+    },
     /// Freeze/replay the actual local candidate gate and compiler; no device calls.
     CandidateArtifact {
         #[command(subcommand)]
@@ -492,7 +497,7 @@ fn main() -> Result<()> {
     // 确认与工件协议入口的 stdout 是可解析的 JSON。
     if !matches!(
         &cli.command,
-        Some(Command::Confirm { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. })
+        Some(Command::Confirm { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. } | Command::CandidatePrepare { .. })
     ) {
         println!("==================================================");
         println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
@@ -501,6 +506,7 @@ fn main() -> Result<()> {
 
 
     match cli.command {
+        Some(Command::CandidatePrepare { action }) => return game_opt_loop::candidate_prepare::run(action),
         Some(Command::CandidateArtifact { action }) => return game_opt_loop::candidate_artifact::run(action),
         Some(Command::Confirm { action }) => return game_opt_loop::confirmation::run(action),
         Some(Command::ModelPipeline { action }) => return game_opt_loop::model_pipeline::run(action),

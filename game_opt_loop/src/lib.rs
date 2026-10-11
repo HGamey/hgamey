@@ -22,6 +22,7 @@ pub mod engine;
 pub mod evidence;
 pub mod confirmation;
 pub mod candidate_artifact;
+pub mod candidate_prepare;
 pub mod harness;
 pub mod model_pipeline;
 pub mod optimize;

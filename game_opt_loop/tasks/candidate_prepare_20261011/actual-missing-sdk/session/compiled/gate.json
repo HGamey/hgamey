@@ -1,0 +1,26 @@
+{
+  "features": {
+    "alu_ops": 13,
+    "branches": 1,
+    "image_loads": 1,
+    "image_queries": 2,
+    "image_stores": 1,
+    "images_read": [
+      0
+    ],
+    "loops": 0,
+    "max_loop_trip": 0,
+    "spirv_words": 672,
+    "transcendental_ops": 0,
+    "workgroup_bytes": 0,
+    "workgroup_size": [
+      16,
+      16,
+      1
+    ]
+  },
+  "passed": true,
+  "schema": "game_opt_loop/static_gate@1",
+  "spirv_bytes": 2688,
+  "violations": []
+}

@@ -498,9 +498,9 @@ fn allowed_file(name: &str) -> bool {
 
 // Directory-descriptor traversal also rejects symlink ancestors. File contents are
 // bounded snapshots; verification never reopens a source for gate execution.
-struct Directory(File);
+pub(crate) struct Directory(pub(crate) File);
 impl Directory {
-    fn open(path: &Path) -> Result<Self> {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         let absolute = if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -530,7 +530,7 @@ impl Directory {
         }
         Ok(dir)
     }
-    fn create(path: &Path) -> Result<Self> {
+    pub(crate) fn create(path: &Path) -> Result<Self> {
         let parent = Self::open(
             path.parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -553,13 +553,13 @@ impl Directory {
         parent.0.sync_all()?;
         Ok(dir)
     }
-    fn file(&self, name: &str, flags: i32) -> Result<File> {
+    pub(crate) fn file(&self, name: &str, flags: i32) -> Result<File> {
         let name = c_name(name.as_bytes())?;
         let file = open_at(self.0.as_raw_fd(), &name, flags | libc::O_NONBLOCK, 0o600)?;
         ensure!(file.metadata()?.is_file(), "only regular files allowed");
         Ok(file)
     }
-    fn read(&self, name: &str, cap: usize) -> Result<Vec<u8>> {
+    pub(crate) fn read(&self, name: &str, cap: usize) -> Result<Vec<u8>> {
         let file = self.file(name, libc::O_RDONLY)?;
         ensure!(
             file.metadata()?.len() <= cap as u64,
@@ -570,13 +570,13 @@ impl Directory {
         ensure!(bytes.len() <= cap, "file exceeds size cap: {name}");
         Ok(bytes)
     }
-    fn write_new(&self, name: &str, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn write_new(&self, name: &str, bytes: &[u8]) -> Result<()> {
         let mut file = self.file(name, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         Ok(())
     }
-    fn names(&self) -> Result<BTreeSet<String>> {
+    pub(crate) fn names(&self) -> Result<BTreeSet<String>> {
         // SAFETY: dup creates an owned fd for fdopendir; closedir releases it.
         let fd = unsafe { libc::dup(self.0.as_raw_fd()) };
         ensure!(fd >= 0, "cannot duplicate directory fd");
@@ -589,9 +589,17 @@ impl Directory {
         }
         let mut names = BTreeSet::new();
         let result = (|| {
+            // dup shares the directory offset: every inventory must restart.
+            unsafe { libc::rewinddir(stream) };
             loop {
+                #[cfg(target_os = "macos")]
+                let errno = unsafe { libc::__error() };
+                #[cfg(not(target_os = "macos"))]
+                let errno = unsafe { libc::__errno_location() };
+                unsafe { *errno = 0 };
                 let entry = unsafe { libc::readdir(stream) };
                 if entry.is_null() {
+                    ensure!(unsafe { *errno } == 0, "directory inventory failed: {}", std::io::Error::last_os_error());
                     break;
                 }
                 let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_str()?;
@@ -644,7 +652,7 @@ fn parent_and_name(path: &Path) -> Result<(Directory, String)> {
         .to_owned();
     Ok((dir, name))
 }
-fn read_path(path: &Path, cap: usize) -> Result<Vec<u8>> {
+pub(crate) fn read_path(path: &Path, cap: usize) -> Result<Vec<u8>> {
     let (dir, name) = parent_and_name(path)?;
     dir.read(&name, cap)
 }

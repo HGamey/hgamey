@@ -1,0 +1,49 @@
+{
+  "compiler_policy": {
+    "capabilities": "all_static_not_device_caps",
+    "frontend": "naga_glsl",
+    "spv_options": "naga_default",
+    "validation_flags": "all",
+    "word_encoding": "little_endian_u32"
+  },
+  "limits": {
+    "max_loop_trip": 256,
+    "max_source_bytes": 65536,
+    "max_workgroup_bytes": 32768,
+    "max_workgroup_invocations": 1024
+  },
+  "schema": "game_opt_loop/compilation_rules@1",
+  "track": {
+    "bindings": [
+      {
+        "access": "ReadOnly",
+        "binding": 0,
+        "must_read": true,
+        "name": "u_InputTexture",
+        "required": true,
+        "role": "游戏低分辨率颜色缓冲 (常驻显存)"
+      },
+      {
+        "access": "WriteOnly",
+        "binding": 1,
+        "must_read": false,
+        "name": "u_OutputTexture",
+        "required": true,
+        "role": "送显高分辨率目标 (常驻显存)"
+      }
+    ],
+    "budget_ms": 1.5,
+    "display": "超分辨率 (Super Resolution)",
+    "hints": [
+      "输出像素中心与输入像素中心的映射必须半像素对齐 ((p + 0.5) / outSize * inSize - 0.5), 错半像素会系统性掉 PSNR。",
+      "邻域采样半径直接决定 imageLoad 次数; 移动端瓶颈通常是访存而不是 ALU, 优先用更少的 tap 配更好的权重。",
+      "锐化项应受局部对比度/梯度调制, 平坦区不要加锐化, 否则噪点被一起放大。",
+      "所有写回值必须 clamp 到 [0,1], 越界会在 rgba8 上环绕成色斑。"
+    ],
+    "id": "sr",
+    "mutation_slot": "// [LLM 变异插槽: 高频重构与边缘自适应锐化]",
+    "objective": "从低分辨率颜色缓冲重建锐利、干净的高分辨率画面; 禁止产生摩尔纹、振铃或边缘破碎。",
+    "power_baseline_watt": 5.599999904632568,
+    "quality_baseline_db": 38.66600036621094
+  }
+}

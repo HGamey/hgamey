@@ -1,0 +1,31 @@
+{
+  "schema": "game_opt_loop/candidate_compilation@1",
+  "state": "host_compiled_replay_match",
+  "gate_passed": true,
+  "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+  "candidate_id": "actual-naga-sr-interface",
+  "track": "sr",
+  "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+  "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+  "adapter_input": {
+    "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+    "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+    "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+    "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+    "original_spirv_path": "original.spv",
+    "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+    "source_path": "original.comp",
+    "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+    "source_spirv_association": "repository_gate_compiler_replayable",
+    "trust_scope": "local_integrity_not_authenticated_attestation"
+  },
+  "proof_flags": {
+    "gpu_validated": false,
+    "semantic_equivalence_proven": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "deployable": false,
+    "promotion_allowed": false
+  },
+  "claim_scope": "static_gate_and_local_compilation_only"
+}

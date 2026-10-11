@@ -1,0 +1,37 @@
+{
+  "base": "b431f72a7d889e3bc525ab8e52673a4b24100df4",
+  "files": {
+    "src/candidate_prepare.rs": {
+      "sha256": "3a765c1bed0fffdc354c9908aee4827944cacb8f2a7f478474bf0384f759bb2d",
+      "bytes": 46468
+    },
+    "src/candidate_artifact.rs": {
+      "sha256": "9e1ddb01830607d3e80b174da69d018b8ee086c2303f418e3de07174cf5959a2",
+      "bytes": 23919
+    },
+    "src/lib.rs": {
+      "sha256": "6201c10ea5a8c0d39889b66e47929c381c70e182b0a0521d25072adf0e866b39",
+      "bytes": 2000
+    },
+    "src/main.rs": {
+      "sha256": "ee7f3afb18e5c988df5fefd4234ca5186d04bb39f89323206dec1f9701ecd0d4",
+      "bytes": 30801
+    },
+    "tests/candidate_prepare_cli.rs": {
+      "sha256": "4d18e01b15268b74d4121a7a7af89e6d43c2e167493ced8da8e2666afa41a250",
+      "bytes": 19686
+    },
+    "docs/SPEC_CANDIDATE_PREPARE.md": {
+      "sha256": "8dc3c9dd4b4092dc54698bad18ca91124e82c5d7fa6dceca80556a18cfe337e2",
+      "bytes": 9031
+    },
+    "Cargo.toml": {
+      "sha256": "8e4ddea557203d717e5acf9e8eb0fe723d9f2930d88ceb45876589f471fa9972",
+      "bytes": 1338
+    },
+    "Cargo.lock": {
+      "sha256": "c234e794ba3d53793e96d0655f335a284efad33084bfd98178614628f74be5a8",
+      "bytes": 52121
+    }
+  }
+}
