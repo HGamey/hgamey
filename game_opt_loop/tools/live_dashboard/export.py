@@ -323,11 +323,21 @@ def export(task_root, out, registry=None):
     existing = eval_records(source, registry)
     records = list(reversed(existing)) + initial_records(source)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
+    if existing and existing[-1]["kind"] == "existing_prepare":
+        latest = existing[-1]
+        count = next((m["value"] for m in latest["metrics"] if m["label"] == "基线采样"), "未知")
+        workflow = "phonefarm confirmation-driver prepare：基线准备；辅助SF/FT不替换主指标"
+        baseline_status = "最新prepare终态：" + latest["status"] + "；基线 " + str(count) + "；没有候选收益数据"
+    elif existing:
+        workflow = "phonefarm既有eval基线验证；辅助SF/FT不替换主指标"
+        baseline_status = "最新现有eval终态：" + existing[-1]["status"] + "；按下方接收端资格与缺失指标核对"
+    else:
+        workflow = "phonefarm既有测量流程；辅助SF/FT不替换主指标"
+        baseline_status = "等待现有测量流程终态回执；诊断记录不算正式基线PASS"
     data = {"schema": "hgamey/live_experiments_public@1", "generated_at": now,
             "measurement_date": "2026-10-12 JST", "device": "一加 Ace 5 · Android16 · root",
             "game": "明日方舟：终末地", "records": records,
-            "main_workflow": "phonefarm既有eval基线验证；辅助SF/FT不替换主指标",
-            "baseline_status": ("最新现有eval终态：" + existing[-1]["status"] + "；按下方接收端资格与缺失指标核对") if existing else "等待现有eval终态回执；诊断记录不算正式基线PASS",
+            "main_workflow": workflow, "baseline_status": baseline_status,
             "optimized_effect_proven": False, "promotion_allowed": False,
             "power_watt": None, "refresh_seconds": 30,
             "cost": {"export_model_api_calls": 0, "export_device_calls": 0},
