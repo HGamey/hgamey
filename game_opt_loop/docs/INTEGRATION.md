@@ -141,6 +141,15 @@ game_opt_loop optimize --game 原神 --device <serial> --budget 1h --no-llm \
 
 各臂只换出方案的一方和输出目录，其余参数一字不差；第一臂挑到哪台设备，后面的臂就钉在那台。
 
+单次持锁不宜太长时，可以把各臂拆成几段各自持锁跑（每段一次 `optimize --proposer <一个>`，
+形状用 `--layers/--generations/--children` 钉成一样），最后离线拼对比：
+
+```bash
+game_opt_loop compare --arm runs/seg1_local --arm runs/seg2_fixed_one --out runs/compare
+```
+
+离线拼的对比里各臂用时与种子报告没记，写「未记录」；臂名取目录名。
+
 这一版**不判谁赢**，只把账摆在一起。原因：
 
 - 各臂是先后跑的，机器热态、电量、游戏版本可能在两臂之间漂（报告里写了各臂起始时间）；

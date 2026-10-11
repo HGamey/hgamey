@@ -252,3 +252,33 @@ fn compare_mode_runs_each_proposer_on_the_same_terms() {
     assert!(root.join("out/compare.json").is_file());
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// 分段跑 (每段各自持锁) 的单臂输出, 离线拼成的对比与一次跑完的对比账目一致。
+#[test]
+fn arms_run_in_separate_sessions_can_be_compared_offline() {
+    let root = scaffold("cmp_off");
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/proposers/fixed_one.py");
+    let mut dirs = Vec::new();
+    for (name, spec) in [("seg1_local", "local".to_string()), ("seg2_ext", format!("cmd:{}", example.display()))] {
+        let mut cfg = config(&root, 20260923);
+        cfg.proposer.specs = vec![spec];
+        cfg.out_dir = root.join(name);
+        optimize::run(&cfg).unwrap();
+        dirs.push(cfg.out_dir);
+    }
+    let c = optimize::compare::from_arm_dirs(&dirs, &root.join("cmp")).unwrap();
+    assert_eq!(c.arms.len(), 2);
+    assert_eq!(c.arms[0].label, "seg1_local");
+    assert_eq!(c.arms[0].spec, "local");
+    assert!(c.arms[1].spec.starts_with("cmd:"));
+    assert_eq!(c.arms[0].device_evals, requests(&golden_dir(20260923)).len());
+    assert_eq!(c.arms[1].device_evals, 1);
+    assert!(c.arms.iter().all(|a| a.wall_s.is_none()));
+    assert_eq!(c.seed, None);
+    assert_eq!(c.game, "原神");
+    let md = std::fs::read_to_string(root.join("cmp/compare.md")).unwrap();
+    assert!(md.contains("未记录") && md.contains("离线拼成"), "{md}");
+    // 只给一个臂、或者给了 --plan 的输出, 拒绝。
+    assert!(optimize::compare::from_arm_dirs(&dirs[..1], &root.join("x")).is_err());
+    std::fs::remove_dir_all(&root).ok();
+}

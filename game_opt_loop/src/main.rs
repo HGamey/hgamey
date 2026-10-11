@@ -30,6 +30,18 @@ enum Command {
     /// 一层都开不了就只测量并写清原因。
     Optimize(OptimizeArgs),
 
+    /// 把分几段 (各自持锁) 跑出来的单臂 optimize 输出拼成一份对比报告。离线, 不碰设备。
+    ///
+    /// 每个 `--arm` 是一次 `optimize --proposer <一个>` 的 `--out` 目录。
+    Compare {
+        /// 单臂输出目录 (至少两个)。
+        #[arg(long = "arm", required = true)]
+        arms: Vec<PathBuf>,
+        /// compare.json / compare.md 写到哪。
+        #[arg(long, default_value = "runs/compare")]
+        out: PathBuf,
+    },
+
     /// 起一个本机只读可视化面板, 把三层闭环的产物摊在浏览器里。
     ///
     /// 只读: 不碰设备, 不碰设备锁, 没有任何写接口。
@@ -400,6 +412,11 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Optimize(args)) => return run_optimize(args),
+        Some(Command::Compare { arms, out }) => {
+            let c = optimize::compare::from_arm_dirs(&arms, &out)?;
+            println!("对比报告 ({} 臂): {}/compare.md", c.arms.len(), out.display());
+            return Ok(());
+        }
         Some(Command::Serve {
             port,
             root,

@@ -31,8 +31,10 @@ pub struct Arm {
     pub out_dir: String,
     pub report_json: String,
     pub serial: String,
+    /// 起始时间 (离线拼的对比里是这一臂报告的生成时间)。
     pub started_at: String,
-    pub wall_s: u64,
+    /// 用时 (秒)。离线拼的对比里不知道, 为 None。
+    pub wall_s: Option<u64>,
     /// 问了出方案的一方几次 / 其中调了几次大模型。
     pub proposer_calls: u32,
     pub model_calls: u32,
@@ -73,7 +75,8 @@ pub struct Comparison {
     pub game: String,
     pub serial: String,
     pub budget_s: u64,
-    pub seed: u64,
+    /// 离线拼的对比里报告不记种子, 为 None。
+    pub seed: Option<u64>,
     pub arms: Vec<Arm>,
     pub notes: Vec<String>,
 }
@@ -81,6 +84,12 @@ pub struct Comparison {
 /// 只读 report.json 里对比要用的那几样 (Report 本身带 `&'static str`, 读不回来)。
 #[derive(Deserialize)]
 struct ReportView {
+    #[serde(default)]
+    game: String,
+    #[serde(default)]
+    generated_at: String,
+    #[serde(default)]
+    plan: Option<PlanView>,
     serial: String,
     headline: String,
     #[serde(default)]
@@ -89,6 +98,12 @@ struct ReportView {
     archive: Vec<Entry>,
     #[serde(default)]
     proposer: Option<super::proposer::Summary>,
+}
+
+#[derive(Deserialize)]
+struct PlanView {
+    #[serde(default)]
+    budget_s: u64,
 }
 
 #[derive(Deserialize)]
@@ -133,8 +148,8 @@ pub fn arm_from_report(
     label: &str,
     spec: &str,
     out_dir: &Path,
-    started_at: String,
-    wall_s: u64,
+    started_at: Option<String>,
+    wall_s: Option<u64>,
 ) -> Result<Arm> {
     let path = out_dir.join("report.json");
     let text = std::fs::read_to_string(&path)
@@ -180,7 +195,7 @@ pub fn arm_from_report(
         out_dir: out_dir.display().to_string(),
         report_json: path.display().to_string(),
         serial: r.serial,
-        started_at,
+        started_at: started_at.unwrap_or(r.generated_at),
         wall_s,
         proposer_calls: summary.calls,
         model_calls: summary.model_calls,
@@ -229,10 +244,10 @@ pub fn run(cfg: &Config) -> Result<Comparison> {
             label,
             super::proposer::describe_spec(spec)
         );
-        let started_at = crate::engine::evolution::now();
+        let started_at = Some(crate::engine::evolution::now());
         let t0 = Instant::now();
         super::run(&c).with_context(|| format!("对比臂 {label} 没跑完"))?;
-        let arm = arm_from_report(&label, spec, &c.out_dir, started_at, t0.elapsed().as_secs())?;
+        let arm = arm_from_report(&label, spec, &c.out_dir, started_at, Some(t0.elapsed().as_secs()))?;
         serial.get_or_insert_with(|| arm.serial.clone());
         arms.push(arm);
     }
@@ -243,9 +258,53 @@ pub fn run(cfg: &Config) -> Result<Comparison> {
     Ok(cmp)
 }
 
-/// 拼对比报告。
-pub fn build(cfg: &Config, arms: Vec<Arm>) -> Comparison {
-    let mut notes = vec![
+/// 离线拼对比: 把分几段 (各自持锁) 跑出来的单臂输出目录拼成一份对比报告。
+/// 每个目录是一次 `optimize --proposer <一个>` 的 `--out`; 臂名取目录名,
+/// 出方案的一方取各自 report.json 里记的那个。用时与种子报告里没记, 如实写「未记录」。
+pub fn from_arm_dirs(dirs: &[PathBuf], out: &Path) -> Result<Comparison> {
+    if dirs.len() < 2 {
+        bail!("拼对比要至少两个臂的输出目录");
+    }
+    let mut arms = Vec::new();
+    let (mut game, mut budget_s) = (String::new(), 0u64);
+    for d in dirs {
+        let text = std::fs::read_to_string(d.join("report.json"))
+            .with_context(|| format!("{} 下没有 report.json", d.display()))?;
+        let r: ReportView = serde_json::from_str(&text)
+            .with_context(|| format!("{}/report.json 解析失败", d.display()))?;
+        let spec = r
+            .proposer
+            .as_ref()
+            .map(|p| p.spec.clone())
+            .with_context(|| format!("{}/report.json 没记出方案的一方 (是 --plan 的输出?)", d.display()))?;
+        if game.is_empty() {
+            game = r.game.clone();
+            budget_s = r.plan.as_ref().map(|p| p.budget_s).unwrap_or(0);
+        }
+        let label = d
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("arm{}", arms.len() + 1));
+        arms.push(arm_from_report(&label, &spec, d, None, None)?);
+    }
+    let mut c = Comparison {
+        schema: "game_opt_loop/compare@1".into(),
+        generated_at: crate::engine::evolution::now(),
+        game,
+        serial: arms[0].serial.clone(),
+        budget_s,
+        seed: None,
+        arms,
+        notes: Vec::new(),
+    };
+    c.notes = notes_for(&c.arms);
+    c.notes.push("这份对比由分段跑出的单臂输出离线拼成: 各臂预算/形状是否一致要看各自 report.json 的计划。".into());
+    write(&c, out)?;
+    Ok(c)
+}
+
+fn notes_for(arms: &[Arm]) -> Vec<String> {
+    let mut notes: Vec<String> = vec![
         "各臂只换了出方案的一方, 游戏 / 设备 / 预算 / 种子 / 冻结的测试条件与判定口径一样。".into(),
         "各臂是先后跑的: 机器热态、电量、游戏版本可能在两臂之间漂, 先后顺序见各臂起始时间。".into(),
         "这里不判谁赢: 每个候选各自和基线 A/B, 两臂留下的改动之间没有直接对比过。".into(),
@@ -254,13 +313,19 @@ pub fn build(cfg: &Config, arms: Vec<Arm>) -> Comparison {
     if serials.len() > 1 {
         notes.push(format!("注意: 各臂跑在不同设备上 ({serials:?}), 不可比。"));
     }
+    notes
+}
+
+/// 拼对比报告。
+pub fn build(cfg: &Config, arms: Vec<Arm>) -> Comparison {
+    let notes = notes_for(&arms);
     Comparison {
         schema: "game_opt_loop/compare@1".into(),
         generated_at: crate::engine::evolution::now(),
         game: cfg.game.clone(),
         serial: arms.first().map(|a| a.serial.clone()).unwrap_or_default(),
         budget_s: cfg.budget.seconds,
-        seed: cfg.seed,
+        seed: Some(cfg.seed),
         arms,
         notes,
     }
@@ -272,18 +337,21 @@ pub fn markdown(c: &Comparison) -> String {
     o.push_str(&format!("# {} 出方案对比\n\n", c.game));
     o.push_str(&format!(
         "- 生成时间: {}\n- 设备: {}\n- 每臂预算: {} 秒, 种子 {}\n\n",
-        c.generated_at, c.serial, c.budget_s, c.seed
+        c.generated_at,
+        c.serial,
+        c.budget_s,
+        c.seed.map(|x| x.to_string()).unwrap_or_else(|| "未记录".into())
     ));
     o.push_str("## 账\n\n");
     o.push_str("| 臂 | 出方案的一方 | 起始 | 用时 | 问了几次 | 大模型调用 | 提出 | 本地打回 | 真机评测 | 其中 ABORT | 下发失败 | 留下 |\n");
     o.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for a in &c.arms {
         o.push_str(&format!(
-            "| {} | {} | {} | {}s | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             a.label,
             a.describe,
             a.started_at,
-            a.wall_s,
+            a.wall_s.map(|x| format!("{x}s")).unwrap_or_else(|| "未记录".into()),
             a.proposer_calls,
             a.model_calls,
             a.proposed,
