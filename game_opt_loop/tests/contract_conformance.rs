@@ -829,3 +829,41 @@ fn game_profile_matches_its_contract() {
         serde_json::from_value(full).unwrap();
     assert_conforms(&serde_json::to_value(&parsed).unwrap(), "game_profile.schema.json");
 }
+
+/// 一份真机产出的档案 (10-11 原神冷启动, 手机节点上 `phonefarm onboard` 跑出, 原样拷来):
+/// 合契约, 能收进档案库, 用到黑盒目标上之后负载 / 渲染线程 / 坑都来自它。
+#[test]
+fn a_real_onboard_profile_conforms_and_applies() {
+    use game_opt_loop::optimize::{games, profile};
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/onboard_genshin_20261011");
+    let raw: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("profile.json")).unwrap()).unwrap();
+    assert_conforms(&raw, "game_profile.schema.json");
+    assert_eq!(raw["status"], "PASS");
+    assert_eq!(raw["human_interventions"], 0);
+
+    let store = profile::Store {
+        root: std::env::temp_dir().join(format!("gol_real_profile_{}", std::process::id())),
+    };
+    let _ = std::fs::remove_dir_all(&store.root);
+    store.install(&dir.join("profile.json")).unwrap();
+    let loaded = store.find("com.miHoYo.Yuanshen").unwrap().unwrap();
+    // 当成没见过的包名: 不走内置的「原神」条目
+    let mut t = games::resolve(
+        "com.miHoYo.Yuanshen.unseen",
+        Some("com.miHoYo.Yuanshen"),
+        &games::CarrierRoots {
+            carriers_dir: "/nonexistent".into(),
+            siblings_dir: "/nonexistent".into(),
+        },
+    );
+    assert!(profile::apply(&mut t, &loaded));
+    assert!(t.workload.script_present);
+    assert_eq!(t.workload.seconds, 30);
+    assert_eq!(t.workload.render_comm.as_deref(), Some("UnityGfxDeviceW"));
+    let r = t.profile.as_ref().unwrap();
+    assert!(r.frame_p95_cv.unwrap() < 0.03);
+    assert_eq!(r.entry_taps, Some(1));
+    assert!(t.pitfalls.iter().any(|p| p.id == "dynamic_idle_scene"));
+    let _ = std::fs::remove_dir_all(&store.root);
+}

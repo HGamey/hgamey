@@ -1,0 +1,584 @@
+{
+  "baseline": {
+    "fps_cap": 60,
+    "fps_mean": 59.6196,
+    "frame_p50_ms": 16.624,
+    "frame_p95_ms": 19.67098,
+    "power_w": null
+  },
+  "conditions": {
+    "battery_capacity_pct": "99",
+    "charging": {
+      "charging_enabled_after": "1",
+      "log": [
+        "CHARGE_STATE status=Charging current_now=-632000 capacity=100 on_battery=no",
+        "CHARGE_STATE status=Charging current_now=-1005000 capacity=98 on_battery=no"
+      ],
+      "suspended": true
+    },
+    "fan_state": "fan_enable=0,fan_speed_level=5,fan_speed_pwm=",
+    "ingame_fps_setting": null,
+    "ingame_fps_setting_note": "工具读不到, 由人填; 改了它这份基线作废",
+    "local_time": "15:43",
+    "mute": {
+      "stream3_after": 0,
+      "stream3_before": 0
+    },
+    "power_source": "usb"
+  },
+  "created_at": "2026-10-11T15:43:42.005172-07:00",
+  "criteria": {
+    "frame_p95_cv_max": 0.03,
+    "ingame_return_ratio_max": 0.75,
+    "min_frames_per_round": 300,
+    "min_valid_rounds": 3,
+    "spin_moved_min": 0.2,
+    "temp_cap_c": 70.0
+  },
+  "device": {
+    "screen": [
+      2688,
+      1216
+    ],
+    "serial": "91253241019A"
+  },
+  "entry": {
+    "ingame_probe": {
+      "confirm": {
+        "idle": 0.091,
+        "ingame": true,
+        "ret": 0.3516,
+        "swing": 0.8212,
+        "swipe": [
+          1075,
+          486,
+          1882,
+          486,
+          1000
+        ]
+      },
+      "first": {
+        "idle": 0.2392,
+        "ingame": true,
+        "ret": 0.3154,
+        "swing": 0.8165,
+        "swipe": [
+          1075,
+          486,
+          1882,
+          486,
+          1000
+        ]
+      }
+    },
+    "policy": {
+      "allow_consent": true,
+      "allow_guest": true
+    },
+    "replay": "policy",
+    "replay_note": "复现时重跑同一套白名单状态机 (phonefarm onboard --enter-only), 不盲放点击坐标: 公告每天不一样",
+    "seconds": 74.5,
+    "status": "INGAME",
+    "steps": [
+      {
+        "at": [
+          0.499256,
+          0.930921
+        ],
+        "label": "点击进入",
+        "rule": "start:点击进入",
+        "screen": "start",
+        "via": "ocr_rule"
+      }
+    ],
+    "taps": 1,
+    "vlm_calls": 0
+  },
+  "evidence": {
+    "dir": "/Users/mac/node/phonefarm/_jobs/83662e84b677/out/ob",
+    "rounds": [
+      {
+        "env": {
+          "battery_capacity_pct": "100",
+          "battery_charging": true,
+          "battery_status": "Charging",
+          "charge_suspended": false,
+          "current_now_ua_mean": -851500.0,
+          "fan_state": "fan_enable=0,fan_speed_level=5,fan_speed_pwm=",
+          "n_samples": 20,
+          "on_battery": false,
+          "power_now_plausible": false,
+          "power_now_w_mean": 833.9684,
+          "power_rail": "battery",
+          "power_source": "usb",
+          "power_usable_reason": "非放电态 (status=Charging, current_now 均值=-851500.0): USB 输入功率里含给电池充电的部分, 且充电电流随电量单调衰减, 量不到整机功耗。跑之前用 charge_suspend.sh 停充即可",
+          "power_vi_w_mean": 3.7042,
+          "power_w_mean": null,
+          "power_w_median": null,
+          "soc_temp_max_c": 60.1,
+          "soc_temp_mean_c": 57.27,
+          "usb_input_w_mean": null,
+          "voltage_now_uv_mean": 4350800.0
+        },
+        "return_fraction": 0.8931,
+        "round": 0,
+        "summary": {
+          "bw_max": 8600,
+          "bw_median": 7000.0,
+          "ddr_boost_khz": "547000",
+          "ddr_cur_khz": "3187000",
+          "fps_mean": 59.528,
+          "frame_mean": 16.7989,
+          "frame_p50": 16.636,
+          "frame_p95": 19.6417,
+          "frame_p99": 24.8757,
+          "gpu_active_mean": 13.2381,
+          "gpu_active_p50": 13.2436,
+          "gpu_active_p95": 14.1769,
+          "llcc_boost_khz": "282000",
+          "n_buslevel_events": 578,
+          "n_frames": 1786,
+          "n_submits": 3573,
+          "n_thermal_events": 0,
+          "queue_p50": 2.0905,
+          "queue_p95": 5.6321,
+          "span_s": 30.0028,
+          "spf_scores": {
+            "acf": {
+              "1": -0.77566,
+              "2": 0.67502,
+              "3": -0.70444,
+              "4": 0.70264,
+              "5": -0.6844,
+              "6": 0.66197
+            },
+            "cv_norm": {
+              "1": 0.43681,
+              "2": 0.20025,
+              "3": 0.27559,
+              "4": 0.17438,
+              "5": 0.23503,
+              "6": 0.1542
+            }
+          },
+          "submits_per_frame": 2,
+          "thermal_pwrlevel": "0"
+        }
+      },
+      {
+        "env": {
+          "battery_capacity_pct": "100",
+          "battery_charging": true,
+          "battery_status": "Charging",
+          "charge_suspended": false,
+          "current_now_ua_mean": -962000.0,
+          "fan_state": "fan_enable=0,fan_speed_level=5,fan_speed_pwm=",
+          "n_samples": 20,
+          "on_battery": false,
+          "power_now_plausible": false,
+          "power_now_w_mean": 174.9189,
+          "power_rail": "battery",
+          "power_source": "usb",
+          "power_usable_reason": "非放电态 (status=Charging, current_now 均值=-962000.0): USB 输入功率里含给电池充电的部分, 且充电电流随电量单调衰减, 量不到整机功耗。跑之前用 charge_suspend.sh 停充即可",
+          "power_vi_w_mean": 4.1789,
+          "power_w_mean": null,
+          "power_w_median": null,
+          "soc_temp_max_c": 61.6,
+          "soc_temp_mean_c": 58.775,
+          "usb_input_w_mean": null,
+          "voltage_now_uv_mean": 4344050.0
+        },
+        "return_fraction": 0.591,
+        "round": 1,
+        "summary": {
+          "bw_max": 9950,
+          "bw_median": 7800.0,
+          "ddr_boost_khz": "547000",
+          "ddr_cur_khz": "3187000",
+          "fps_mean": 59.499,
+          "frame_mean": 16.807,
+          "frame_p50": 16.604,
+          "frame_p95": 19.5462,
+          "frame_p99": 26.0386,
+          "gpu_active_mean": 13.4175,
+          "gpu_active_p50": 13.2581,
+          "gpu_active_p95": 14.3912,
+          "llcc_boost_khz": "282000",
+          "n_buslevel_events": 846,
+          "n_frames": 1786,
+          "n_submits": 3573,
+          "n_thermal_events": 0,
+          "queue_p50": 2.7483,
+          "queue_p95": 6.2455,
+          "span_s": 30.0173,
+          "spf_scores": {
+            "acf": {
+              "1": -0.76389,
+              "2": 0.66844,
+              "3": -0.68941,
+              "4": 0.67228,
+              "5": -0.63697,
+              "6": 0.61117
+            },
+            "cv_norm": {
+              "1": 0.37111,
+              "2": 0.17746,
+              "3": 0.24356,
+              "4": 0.15461,
+              "5": 0.19979,
+              "6": 0.14678
+            }
+          },
+          "submits_per_frame": 2,
+          "thermal_pwrlevel": "0"
+        }
+      },
+      {
+        "env": {
+          "battery_capacity_pct": "99",
+          "battery_charging": true,
+          "battery_status": "Charging",
+          "charge_suspended": false,
+          "current_now_ua_mean": -989300.0,
+          "fan_state": "fan_enable=0,fan_speed_level=5,fan_speed_pwm=",
+          "n_samples": 20,
+          "on_battery": false,
+          "power_now_plausible": false,
+          "power_now_w_mean": 91.0418,
+          "power_rail": "battery",
+          "power_source": "usb",
+          "power_usable_reason": "非放电态 (status=Charging, current_now 均值=-989300.0): USB 输入功率里含给电池充电的部分, 且充电电流随电量单调衰减, 量不到整机功耗。跑之前用 charge_suspend.sh 停充即可",
+          "power_vi_w_mean": 4.2936,
+          "power_w_mean": null,
+          "power_w_median": null,
+          "soc_temp_max_c": 61.2,
+          "soc_temp_mean_c": 59.395,
+          "usb_input_w_mean": null,
+          "voltage_now_uv_mean": 4340100.0
+        },
+        "return_fraction": 0.2468,
+        "round": 2,
+        "summary": {
+          "bw_max": 11300,
+          "bw_median": 7800,
+          "ddr_boost_khz": "547000",
+          "ddr_cur_khz": "3187000",
+          "fps_mean": 59.758,
+          "frame_mean": 16.7342,
+          "frame_p50": 16.646,
+          "frame_p95": 19.189,
+          "frame_p99": 24.4469,
+          "gpu_active_mean": 13.3756,
+          "gpu_active_p50": 13.2306,
+          "gpu_active_p95": 14.3419,
+          "llcc_boost_khz": "282000",
+          "n_buslevel_events": 871,
+          "n_frames": 1793,
+          "n_submits": 3587,
+          "n_thermal_events": 0,
+          "queue_p50": 2.7822,
+          "queue_p95": 6.0352,
+          "span_s": 30.0044,
+          "spf_scores": {
+            "acf": {
+              "1": -0.79857,
+              "2": 0.70731,
+              "3": -0.7551,
+              "4": 0.74265,
+              "5": -0.71483,
+              "6": 0.69163
+            },
+            "cv_norm": {
+              "1": 0.36146,
+              "2": 0.1623,
+              "3": 0.22457,
+              "4": 0.1284,
+              "5": 0.18593,
+              "6": 0.11717
+            }
+          },
+          "submits_per_frame": 2,
+          "thermal_pwrlevel": "0"
+        }
+      },
+      {
+        "env": {
+          "battery_capacity_pct": "99",
+          "battery_charging": true,
+          "battery_status": "Charging",
+          "charge_suspended": false,
+          "current_now_ua_mean": -988100.0,
+          "fan_state": "fan_enable=0,fan_speed_level=5,fan_speed_pwm=",
+          "n_samples": 20,
+          "on_battery": false,
+          "power_now_plausible": false,
+          "power_now_w_mean": 33.4235,
+          "power_rail": "battery",
+          "power_source": "usb",
+          "power_usable_reason": "非放电态 (status=Charging, current_now 均值=-988100.0): USB 输入功率里含给电池充电的部分, 且充电电流随电量单调衰减, 量不到整机功耗。跑之前用 charge_suspend.sh 停充即可",
+          "power_vi_w_mean": 4.2848,
+          "power_w_mean": null,
+          "power_w_median": null,
+          "soc_temp_max_c": 62.4,
+          "soc_temp_mean_c": 60.115,
+          "usb_input_w_mean": null,
+          "voltage_now_uv_mean": 4336500.0
+        },
+        "return_fraction": 0.3748,
+        "round": 3,
+        "summary": {
+          "bw_max": 11150,
+          "bw_median": 7750,
+          "ddr_boost_khz": "547000",
+          "ddr_cur_khz": "3187000",
+          "fps_mean": 59.53,
+          "frame_mean": 16.7948,
+          "frame_p50": 16.6275,
+          "frame_p95": 19.964,
+          "frame_p99": 24.7886,
+          "gpu_active_mean": 13.3442,
+          "gpu_active_p50": 13.2175,
+          "gpu_active_p95": 14.3534,
+          "llcc_boost_khz": "282000",
+          "n_buslevel_events": 865,
+          "n_frames": 1786,
+          "n_submits": 3574,
+          "n_thermal_events": 0,
+          "queue_p50": 2.5526,
+          "queue_p95": 6.8202,
+          "span_s": 30.0016,
+          "spf_scores": {
+            "acf": {
+              "1": -0.73177,
+              "2": 0.61145,
+              "3": -0.66543,
+              "4": 0.65494,
+              "5": -0.63776,
+              "6": 0.61828
+            },
+            "cv_norm": {
+              "1": 0.41301,
+              "2": 0.205,
+              "3": 0.27829,
+              "4": 0.16972,
+              "5": 0.21291,
+              "6": 0.14984
+            }
+          },
+          "submits_per_frame": 2,
+          "thermal_pwrlevel": "0"
+        }
+      },
+      {
+        "env": {
+          "battery_capacity_pct": "99",
+          "battery_charging": true,
+          "battery_status": "Charging",
+          "charge_suspended": false,
+          "current_now_ua_mean": -1002350.0,
+          "fan_state": "fan_enable=0,fan_speed_level=5,fan_speed_pwm=",
+          "n_samples": 20,
+          "on_battery": false,
+          "power_now_plausible": false,
+          "power_now_w_mean": 96.2372,
+          "power_rail": "battery",
+          "power_source": "usb",
+          "power_usable_reason": "非放电态 (status=Charging, current_now 均值=-1002350.0): USB 输入功率里含给电池充电的部分, 且充电电流随电量单调衰减, 量不到整机功耗。跑之前用 charge_suspend.sh 停充即可",
+          "power_vi_w_mean": 4.3442,
+          "power_w_mean": null,
+          "power_w_median": null,
+          "soc_temp_max_c": 62.0,
+          "soc_temp_mean_c": 60.165,
+          "usb_input_w_mean": null,
+          "voltage_now_uv_mean": 4334050.0
+        },
+        "return_fraction": 0.3236,
+        "round": 4,
+        "summary": {
+          "bw_max": 9750,
+          "bw_median": 7750,
+          "ddr_boost_khz": "547000",
+          "ddr_cur_khz": "3187000",
+          "fps_mean": 59.783,
+          "frame_mean": 16.7271,
+          "frame_p50": 16.6065,
+          "frame_p95": 20.014,
+          "frame_p99": 22.8792,
+          "gpu_active_mean": 13.3566,
+          "gpu_active_p50": 13.2327,
+          "gpu_active_p95": 14.3574,
+          "llcc_boost_khz": "282000",
+          "n_buslevel_events": 909,
+          "n_frames": 1794,
+          "n_submits": 3589,
+          "n_thermal_events": 0,
+          "queue_p50": 2.8646,
+          "queue_p95": 6.2462,
+          "span_s": 30.0083,
+          "spf_scores": {
+            "acf": {
+              "1": -0.79808,
+              "2": 0.70063,
+              "3": -0.72882,
+              "4": 0.7011,
+              "5": -0.70314,
+              "6": 0.7001
+            },
+            "cv_norm": {
+              "1": 0.35818,
+              "2": 0.16312,
+              "3": 0.22886,
+              "4": 0.13491,
+              "5": 0.18417,
+              "6": 0.12242
+            }
+          },
+          "submits_per_frame": 2,
+          "thermal_pwrlevel": "0"
+        }
+      }
+    ]
+  },
+  "human_interventions": 0,
+  "launch": {
+    "cold_start": true,
+    "component": "com.miHoYo.Yuanshen/com.miHoYo.GetMobileInfo.MainActivity"
+  },
+  "needs_human": [],
+  "package": "com.miHoYo.Yuanshen",
+  "pitfalls": [
+    {
+      "id": "dynamic_idle_scene",
+      "symptom": "无输入时画面也在变 (9% 像素): NPC / 天气 / 粒子",
+      "workaround": "离散度会偏大; A/B 必须交替, 判定靠置换检验而不是单轮对比"
+    },
+    {
+      "id": "ingame_settings_unread",
+      "symptom": "游戏内帧率 / 画质设置工具读不到, 改了它基线就作废",
+      "workaround": "conditions.ingame_fps_setting 由人填; 换设置后重跑 onboard"
+    }
+  ],
+  "profile_version": 1,
+  "repeatability": {
+    "judge": {
+      "fps_mean_cv": 0.002324,
+      "frame_p50_cv": 0.001104,
+      "frame_p95_cv": 0.017094,
+      "monotone_p95": false,
+      "power_w_cv": null,
+      "reasons": [],
+      "valid_rounds": 5,
+      "verdict": "PASS",
+      "warnings": []
+    },
+    "per_round": [
+      {
+        "fps_mean": 59.528,
+        "frame_p50": 16.636,
+        "frame_p95": 19.6417,
+        "n_frames": 1786,
+        "power_w": null,
+        "return_fraction": 0.8931,
+        "soc_temp_max_c": 60.1
+      },
+      {
+        "fps_mean": 59.499,
+        "frame_p50": 16.604,
+        "frame_p95": 19.5462,
+        "n_frames": 1786,
+        "power_w": null,
+        "return_fraction": 0.591,
+        "soc_temp_max_c": 61.6
+      },
+      {
+        "fps_mean": 59.758,
+        "frame_p50": 16.646,
+        "frame_p95": 19.189,
+        "n_frames": 1793,
+        "power_w": null,
+        "return_fraction": 0.2468,
+        "soc_temp_max_c": 61.2
+      },
+      {
+        "fps_mean": 59.53,
+        "frame_p50": 16.6275,
+        "frame_p95": 19.964,
+        "n_frames": 1786,
+        "power_w": null,
+        "return_fraction": 0.3748,
+        "soc_temp_max_c": 62.4
+      },
+      {
+        "fps_mean": 59.783,
+        "frame_p50": 16.6065,
+        "frame_p95": 20.014,
+        "n_frames": 1794,
+        "power_w": null,
+        "return_fraction": 0.3236,
+        "soc_temp_max_c": 62.0
+      }
+    ],
+    "rounds": 5
+  },
+  "status": "PASS",
+  "version_name": "7.1.0_48052158_48145775",
+  "workload": {
+    "geom": {
+      "ms": 10000,
+      "x0": 0.4,
+      "x1": 0.7,
+      "y": 0.4
+    },
+    "graphics_api": "both_loaded",
+    "input": "touch",
+    "kind": "camera_swipe_pairs",
+    "render_comm": "UnityGfxDeviceW",
+    "render_discovery": {
+      "all_submits": 487,
+      "graphics_api": "both_loaded",
+      "maps_gles_driver": 4,
+      "maps_vulkan_icd": 4,
+      "n_threads": 185,
+      "pid": 4495,
+      "pkg_submits": 481,
+      "render_comm": "UnityGfxDeviceW",
+      "share": 1.0
+    },
+    "script": "workload.json",
+    "seconds": 30,
+    "spin_check": {
+      "geom": {
+        "ms": 10000,
+        "x0": 0.4,
+        "x1": 0.7,
+        "y": 0.4
+      },
+      "moved_fraction": 0.742,
+      "px": [
+        1075,
+        1882,
+        486
+      ],
+      "return_fraction": 0.4305,
+      "spinning": true,
+      "tries": [
+        {
+          "geom": {
+            "ms": 10000,
+            "x0": 0.4,
+            "x1": 0.7,
+            "y": 0.4
+          },
+          "moved_fraction": 0.742,
+          "px": [
+            1075,
+            1882,
+            486
+          ],
+          "return_fraction": 0.4305,
+          "spinning": true
+        }
+      ]
+    }
+  }
+}
