@@ -60,8 +60,16 @@ loaded policy/thermal contract and package/comm registration; actual candidate,
 baseline, conditions and admission byte hashes must equal the receiver plan.
 Require `confirmation_baseline_admission@2`, its exact render-contract reference,
 the `frozen_render_attribution@1` contract, exactly three independently hashed
-baseline records, complete initial witness and matching pinned reader source/
-ELF/build copies. The existing Plan fields bind complete conditions/admission
+baseline records and their exact fixed admission_N-run.json references. Read
+the current trace/ENV/thermal/render and other fixed raw receipts, bind
+phase/role/pair/serial/conditions/artifact/source to that run, and compare all12
+baseline trace/render hashes with the frozen records. Require the actual
+heldout bundle/run/registration FileRefs, with the same fixed raw inventory and
+report bindings. Archive these current raw bytes as hashes, not just declared
+references. Large trace/ENV/thermal files are <=128MiB; other evidence <=2MiB;
+the combined baseline/heldout unique raw-byte inventory has a512MiB limit
+(not an RSS claim). Require the complete initial witness and matching pinned
+reader source/ELF/build copies. The existing Plan fields bind complete conditions/admission
 bytes before heldout; no new PF Plan field or old confirmation fingerprint is
 introduced. SPF/caller/context/epoch selection is receiver frozen before arms.
 

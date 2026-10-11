@@ -782,7 +782,7 @@ fn validate_receiver_plan(root: &Path, p: &Profile) -> Result<()> {
         v["exploration_run_ids"] == json!(["admission_0", "admission_1", "admission_2"]),
         "receiver admission IDs unknown"
     );
-    contract::receiver_plan(root, &p)?;
+    contract::receiver_plan(root, p)?;
     Ok(())
 }
 fn recorded_artifacts(root: &Path) -> Result<BTreeMap<String, Identity>> {
@@ -795,10 +795,16 @@ fn recorded_artifacts(root: &Path) -> Result<BTreeMap<String, Identity>> {
         "receiver/plan.json",
         "receiver/samples.json",
     ] {
-        files.insert(n.to_owned(), id(&read_path(&root.join(n), JSON_CAP)?));
+        files.insert(
+            n.to_owned(),
+            id(&read_path(&root.join(n), contract::artifact_cap(n))?),
+        );
     }
     for n in contract::receiver_artifacts(root)? {
-        files.insert(n.clone(), id(&read_path(&root.join(n), JSON_CAP)?));
+        files.insert(
+            n.clone(),
+            id(&read_path(&root.join(&n), contract::artifact_cap(&n))?),
+        );
     }
     for (i, phase) in PHASES.iter().enumerate() {
         for suffix in ["stdout", "stderr", "result.json"] {

@@ -9,7 +9,7 @@ use std::{
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const RECEIVER: &str = r##"#!/usr/bin/env python3
-import sys,json,pathlib,hashlib,os,shutil,time
+import sys,json,pathlib,hashlib,os,shutil,time,datetime
 args=sys.argv[1:]
 def val(k):return args[args.index(k)+1]
 def read(p):return json.loads(pathlib.Path(p).read_bytes())
@@ -18,6 +18,15 @@ def sha(p):return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 def raw(d,n):
  b=('#phonefarm_render_witness v2\nsynthetic_host_only '+n+'\n#end\n').encode();(d/n).write_bytes(b);return sha(d/n)
 def ref(d,n):return {'path':n,'sha256':sha(d/n)}
+RAW=[('trace','trace.txt'),('env','sampler.log'),('workload_exit','workload_exit.txt'),('sampler_exit','sampler_exit.txt'),('capture_exit','capture_exit.txt'),('restore_exit','restore_exit.txt'),('root_id','root_id.txt'),('boot_id','boot_id.txt'),('probe','probe.txt'),('snapshot_before','snapshot_before.txt'),('snapshot_at_run','snapshot_at_run.txt'),('snapshot_after_run','snapshot_after_run.txt'),('snapshot_restored','snapshot_restored.txt'),('thermal_admission','pre-thermal.raw.tsv'),('thermal_window','thermal_sampler.log'),('thermal_sampler_exit','thermal_sampler_exit.txt'),('render_before','render-before.raw.tsv'),('render_after','render-after.raw.tsv'),('render_final','render-final.raw.tsv')]
+def raw_run(d,run,phase,role,pair):
+ refs={}
+ for key,suffix in RAW:
+  n='probe.txt' if key=='probe' else run+'-'+suffix
+  raw(d,n);refs[key]=ref(d,n)
+ start=datetime.datetime.now(datetime.timezone.utc);finish=start+datetime.timedelta(seconds=6)
+ write(d/(run+'-run.json'),{'schema':'phonefarm/run_one_bundle@3','evidence_origin':'recorded_device','phase':phase,'run_id':run,'pair_id':pair,'sample_role':role,'device_serial':'synthetic-device','started_at':start.isoformat(),'finished_at':finish.isoformat(),'conditions':ref(d,'conditions.json'),'artifact':ref(d,'baseline.json' if role=='baseline' else 'candidate.json'),'raw':refs})
+ return read(d/(run+'-run.json'))
 root=pathlib.Path(os.environ['SYSTEM_CASE_FIXTURE_ROOT']);mode=os.environ.get('SYSTEM_CASE_FIXTURE_MODE','normal')
 with (root/'invocations').open('a') as f:f.write(json.dumps(args)+'\n')
 if mode=='hang':time.sleep(60)
@@ -37,33 +46,40 @@ if args[1]=='prepare':
  policy={'version':2,'goal':'render_cadence','required_metrics':['frame_p95','fps_mean'],'temperature_profile_id':'loaded_steady_v1','temperature_profile_sha256':tc['profile_sha256'],'thermal_reference_sha256':tc['reference_sha256'],'temp_cap_c':None,'cool_c':None}
  sampling={'render_attribution_profile_id':PROFILE,'render_reader_build_sha256':sha(d/'render_reader.build.json'),'render_reader_elf_sha256':sha(d/'render_reader.elf')}
  write(d/'sampling-contract.json',sampling)
- cond={'schema':'phonefarm/confirmation_conditions@3','device_boot_id':'host-only-boot','render_comm':r['render_comm'],'policy':policy,'thermal_contract':ref(d,'thermal-evidence.json'),'sampling_contract_sha256':sha(d/'sampling-contract.json'),'render_attribution':{'profile_id':PROFILE,'package':r['package'],'initial_witness':ref(d,'render-initial.raw.tsv')}}
+ cond={'schema':'phonefarm/confirmation_conditions@3','device_serial':'synthetic-device','device_boot_id':'host-only-boot','render_comm':r['render_comm'],'policy':policy,'thermal_contract':ref(d,'thermal-evidence.json'),'sampling_contract_sha256':sha(d/'sampling-contract.json'),'render_attribution':{'profile_id':PROFILE,'package':r['package'],'initial_witness':ref(d,'render-initial.raw.tsv')}}
  if mode=='legacy_receiver':cond['schema']='phonefarm/confirmation_conditions@2';cond.pop('render_attribution')
  write(d/'conditions.json',cond)
  th={'tid':42,'start_ticks':100,'comm':r['render_comm']}
  scope={'profile_id':PROFILE,'package':r['package'],'boot_id':cond['device_boot_id'],'pid':40,'process_start_ticks':90,'uid':10001,'package_metadata_sha256':'a'*64,'kernel_version_sha256':'b'*64,'render_thread':th,'threads':{'42':th},'device':'kgsl-3d0','event_formats_sha256':{k:format(i+1,'x')*64 for i,k in enumerate(['adreno_cmdbatch_queued','adreno_cmdbatch_submitted','kgsl_context_create','kgsl_context_detach','kgsl_context_destroy','sched_process_fork','sched_process_exit'])},'fork_parent_key':'pid','clock_capabilities_sha256':'c'*64,'cpus':[0,1]}
  rows=[];expl=[]
  for i in range(3):
-  hs=[raw(d,'admission_'+str(i)+'-'+n) for n in ['trace.txt','render-before.raw.tsv','render-after.raw.tsv','render-final.raw.tsv']];expl+=hs
+  run=raw_run(d,'admission_'+str(i),'admission','baseline',None);hs=[run['raw'][k]['sha256'] for k in ['trace','render_before','render_after','render_final']];expl+=hs
   rows.append(dict(zip(['trace_sha256','before_sha256','after_sha256','final_sha256'],hs),submits_per_group=2,active_contexts=[11,12],caller_tids=[42],executor_counts={'100':150},selected_packets=150,boundary_submits=0,excluded_queued_classes=0))
  render={'schema':'phonefarm/frozen_render_attribution@1','scope':scope,'submits_per_group':2,'active_contexts':[11,12],'caller_tids':[42],'baselines':rows}
  write(d/'render-contract.json',render)
- write(d/'admission.json',{'schema':'phonefarm/confirmation_baseline_admission@2','conditions':ref(d,'conditions.json'),'baseline_artifact':ref(d,'baseline.json'),'runs':[{'synthetic_host_only':i} for i in range(3)],'render_contract':ref(d,'render-contract.json')})
+ write(d/'admission.json',{'schema':'phonefarm/confirmation_baseline_admission@2','conditions':ref(d,'conditions.json'),'baseline_artifact':ref(d,'baseline.json'),'runs':[ref(d,'admission_'+str(i)+'-run.json') for i in range(3)],'render_contract':ref(d,'render-contract.json')})
+ if mode=='baseline_raw_changed':(d/'admission_2-render-final.raw.tsv').write_bytes(b'changed')
+ if mode=='baseline_raw_missing':(d/'admission_2-render-final.raw.tsv').unlink()
+ if mode=='baseline_wrong_role':
+  n='admission_2-run.json';v=read(d/n);v['sample_role']='candidate';write(d/n,v);a=read(d/'admission.json');a['runs'][2]=ref(d,n);write(d/'admission.json',a)
+ if mode=='baseline_ref_escape':
+  a=read(d/'admission.json');a['runs'][2]['path']='../admission_2-run.json';write(d/'admission.json',a)
  rules=[{'name':'frame_p95_ms','direction':'lower','scale':'percent','minimum_improvement':1.,'maximum_regression':1.},{'name':'fps_mean','direction':'higher','scale':'percent','minimum_improvement':None,'maximum_regression':1.}]
  p={k:sha(d/n) for k,n in [('candidate_artifact_sha256','candidate.json'),('baseline_artifact_sha256','baseline.json'),('conditions_sha256','conditions.json'),('baseline_admission_sha256','admission.json')]}
  p.update(exploration_run_ids=['admission_0','admission_1','admission_2'],exploration_artifact_sha256=expl,pairs=len(r['schedule']),schedule=r['schedule'],family_alpha=.05,paired_t_assumptions_acknowledged=True,metrics=rules,temperature_contract=tc)
  write(d/'plan.json',p)
  print(json.dumps({'status':'PREPARED','plan':str(d/'plan.json'),'eligible':False,'evidence_origin':'synthetic' if mode=='synthetic' else 'live_device','real_game_optimization_proven':False,'promotion_allowed':False}))
 else:
- d=pathlib.Path(val('--session'));f=read(val('--frozen'));p=f['plan'];render=read(d/'render-contract.json');pairs=[]
+ d=pathlib.Path(val('--session'));f=read(val('--frozen'));p=f['plan'];render=read(d/'render-contract.json');pairs=[];write(d/'registered.json',f)
  for pair in p['schedule']:
   entry=dict(pair);entry.pop('baseline_first')
   for role in ['a','b']:
    run=entry[role+'_run_id'];record=dict(render['baselines'][0])
-   record.update({k:raw(d,run+'-'+n) for k,n in [('trace_sha256','trace.txt'),('before_sha256','render-before.raw.tsv'),('after_sha256','render-after.raw.tsv'),('final_sha256','render-final.raw.tsv')]})
+   run_manifest=raw_run(d,run,'confirmation','baseline' if role=='a' else 'candidate',pair['pair_id']);record.update({k:run_manifest['raw'][key]['sha256'] for k,key in [('trace_sha256','trace'),('before_sha256','render_before'),('after_sha256','render_after'),('final_sha256','render_final')]})
    diag={'profile_id':PROFILE,'origin_scope':'original target-TGID queued commands uniquely joined to measurement submitted packets; all executors; per-capture opaque context generation','scope':render['scope'],'record':record,'display_verified':False,'context_process_ownership_verified':False,'installed_kernel_source_verified':False,'continuous_foreground_verified':False,'quality_verified':False}
    gates={'target_command_origin_verified':True,'frozen_grouping_verified':True}
-   binding={'run_id':run,'conditions_sha256':p['conditions_sha256'],'frozen_plan_sha256':f['sha256'],'render_contract_sha256':sha(d/'render-contract.json'),'raw_artifacts':dict(trace_sha256=record['trace_sha256'],render_before_sha256=record['before_sha256'],render_after_sha256=record['after_sha256'],render_final_sha256=record['final_sha256'],**{k:hashlib.sha256((run+k).encode()).hexdigest() for k in ['env_sha256','thermal_admission_sha256','thermal_window_sha256','thermal_sampler_exit_sha256']})}
+   binding={'run_id':run,'started_at':run_manifest['started_at'],'finished_at':run_manifest['finished_at'],'artifact_sha256':run_manifest['artifact']['sha256'],'conditions_sha256':p['conditions_sha256'],'frozen_plan_sha256':f['sha256'],'render_contract_sha256':sha(d/'render-contract.json'),'raw_artifacts':{binding_key:run_manifest['raw'][key]['sha256'] for key,binding_key in [('trace','trace_sha256'),('env','env_sha256'),('thermal_admission','thermal_admission_sha256'),('thermal_window','thermal_window_sha256'),('thermal_sampler_exit','thermal_sampler_exit_sha256'),('render_before','render_before_sha256'),('render_after','render_after_sha256'),('render_final','render_final_sha256')]}}
+
    if role=='a' and run==p['schedule'][0]['a_run_id']:
     if mode=='missing_origin':gates.pop('target_command_origin_verified')
     if mode=='spf_changed':record['submits_per_group']=1
@@ -73,9 +89,11 @@ else:
     if mode=='claim_display':diag['display_verified']=True
     if mode=='binding_changed':binding['render_contract_sha256']='0'*64
     if mode=='witness_changed':(d/(run+'-render-before.raw.tsv')).write_bytes(b'changed')
+    if mode=='env_changed':(d/(run+'-sampler.log')).write_bytes(b'changed')
+    if mode=='thermal_changed':(d/(run+'-thermal_sampler.log')).unlink()
     if mode=='exploration_reused':record['before_sha256']=render['baselines'][0]['before_sha256'];binding['raw_artifacts']['render_before_sha256']=record['before_sha256'];shutil.copyfile(d/'admission_0-render-before.raw.tsv',d/(run+'-render-before.raw.tsv'))
    v={'schema':'phonefarm/confirmation_observation@2','source':'phonefarm','status':'VALID_OBSERVATION','qualification':{'stage':'experiment','eligible':False,'evidence_origin':'recorded_device'},'sample_qualification':{'gates':gates},'target_game_attribution':diag,'confirmation_binding':binding,'real_game_optimization_proven':False,'promotion_allowed':False,'host_fixture_only':True}
-   name=run+'-report.json';write(d/name,v);entry[role+'_report']=name;entry[role+'_report_sha256']=sha(d/name)
+   write(d/(run+'-bundle.json'),{'schema':'phonefarm/confirmation_bundle@1','run':ref(d,run+'-run.json'),'baseline_admission':ref(d,'admission.json'),'frozen_plan':ref(d,'registered.json')});name=run+'-report.json';write(d/name,v);entry[role+'_report']=name;entry[role+'_report_sha256']=sha(d/name)
   pairs.append(entry)
  write(d/'samples.json',{'frozen_plan_sha256':f['sha256'],'candidate_artifact_sha256':p['candidate_artifact_sha256'],'conditions_sha256':p['conditions_sha256'],'source_kind':'synthetic_fixture','pairs':pairs})
  print(json.dumps({'status':'COLLECTED_OBSERVATIONS','samples':str(d/'samples.json'),'eligible':False,'evidence_origin':'live_device','real_game_optimization_proven':False,'promotion_allowed':False}))
@@ -309,6 +327,8 @@ fn v2_origin_grouping_epoch_witness_and_unsupported_claims_stop_before_judge() {
         "binding_changed",
         "witness_changed",
         "exploration_reused",
+        "env_changed",
+        "thermal_changed",
     ] {
         let f = F::blackbox();
         f.plan();
@@ -363,7 +383,7 @@ fn v2_host_timeout_or_closed_pipe_descendant_retains_unknown_without_retry() {
     for mode in ["hang", "closed_child"] {
         let f = F::blackbox();
         let mut p = f.read("profile.json");
-        p["budgets"]["prepare_seconds"] = json!(1);
+        p["budgets"]["prepare_seconds"] = json!(5);
         f.json("profile.json", &p);
         f.plan();
         let out = f.run(mode);
@@ -379,4 +399,45 @@ fn v2_host_timeout_or_closed_pipe_descendant_retains_unknown_without_retry() {
         assert_eq!(f.count(), 1);
         assert!(!f.root.join("late").exists());
     }
+}
+
+#[test]
+fn v2_baseline_run_refs_and_current_twelve_raw_files_are_mandatory() {
+    for mode in [
+        "baseline_raw_changed",
+        "baseline_raw_missing",
+        "baseline_wrong_role",
+        "baseline_ref_escape",
+    ] {
+        let f = F::blackbox();
+        f.plan();
+        let out = f.run(mode);
+        assert!(!out.status.success());
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["status"], "STOPPED", "{mode}: {v}");
+        assert!(!f.root.join("case/01-freeze.intent.json").exists());
+        assert_eq!(f.count(), 1);
+    }
+}
+#[test]
+fn v2_archive_and_inspect_include_the_third_baseline_final_witness() {
+    let f = F::blackbox();
+    f.plan();
+    assert!(f.run("normal").status.success());
+    let v = f.read("case/case-result.json");
+    assert!(v["artifacts"]
+        .get("receiver/admission_2-run.json")
+        .is_some());
+    assert!(v["artifacts"]
+        .get("receiver/admission_2-trace.txt")
+        .is_some());
+    assert!(v["artifacts"]
+        .get("receiver/admission_2-render-final.raw.tsv")
+        .is_some());
+    std::fs::remove_file(
+        f.root
+            .join("case/receiver/admission_2-render-final.raw.tsv"),
+    )
+    .unwrap();
+    assert!(!f.inspect().status.success());
 }

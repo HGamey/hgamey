@@ -241,6 +241,160 @@ struct Render {
     caller_tids: BTreeSet<u32>,
     baselines: Vec<Record>,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileRef {
+    path: String,
+    sha256: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Run {
+    schema: String,
+    evidence_origin: String,
+    phase: String,
+    run_id: String,
+    pair_id: Option<String>,
+    sample_role: String,
+    device_serial: String,
+    started_at: String,
+    finished_at: String,
+    conditions: FileRef,
+    artifact: FileRef,
+    raw: BTreeMap<String, FileRef>,
+}
+const RAW: [(&str, &str); 19] = [
+    ("trace", "trace.txt"),
+    ("env", "sampler.log"),
+    ("workload_exit", "workload_exit.txt"),
+    ("sampler_exit", "sampler_exit.txt"),
+    ("capture_exit", "capture_exit.txt"),
+    ("restore_exit", "restore_exit.txt"),
+    ("root_id", "root_id.txt"),
+    ("boot_id", "boot_id.txt"),
+    ("probe", "probe.txt"),
+    ("snapshot_before", "snapshot_before.txt"),
+    ("snapshot_at_run", "snapshot_at_run.txt"),
+    ("snapshot_after_run", "snapshot_after_run.txt"),
+    ("snapshot_restored", "snapshot_restored.txt"),
+    ("thermal_admission", "pre-thermal.raw.tsv"),
+    ("thermal_window", "thermal_sampler.log"),
+    ("thermal_sampler_exit", "thermal_sampler_exit.txt"),
+    ("render_before", "render-before.raw.tsv"),
+    ("render_after", "render-after.raw.tsv"),
+    ("render_final", "render-final.raw.tsv"),
+];
+pub(super) fn artifact_cap(n: &str) -> usize {
+    if n.ends_with("-trace.txt")
+        || n.ends_with("-sampler.log")
+        || n.ends_with("-thermal_sampler.log")
+    {
+        128 * 1024 * 1024
+    } else {
+        JSON_CAP
+    }
+}
+#[derive(Default)]
+struct Evidence {
+    identities: BTreeMap<String, Identity>,
+    bytes: usize,
+}
+impl Evidence {
+    fn read(&mut self, dir: &Path, file: &str, reference: &FileRef) -> Result<Vec<u8>> {
+        ensure!(
+            reference.path == file && digest(&reference.sha256, 64),
+            "raw reference not fixed: {file}"
+        );
+        let bytes = read_path(&dir.join(file), artifact_cap(file))?;
+        ensure!(
+            sha(&bytes) == reference.sha256,
+            "current raw/run bytes changed: {file}"
+        );
+        let identity = id(&bytes);
+        if let Some(prior) = self.identities.get(file) {
+            ensure!(
+                *prior == identity,
+                "shared raw file changed during snapshot"
+            );
+        } else {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len())
+                .context("raw evidence size overflow")?;
+            ensure!(
+                self.bytes <= 512 * 1024 * 1024,
+                "case raw evidence exceeds512MiB finite read budget"
+            );
+            self.identities.insert(file.into(), identity);
+        }
+        Ok(bytes)
+    }
+}
+fn raw_file(run: &str, key: &str, suffix: &str) -> String {
+    if key == "probe" {
+        suffix.into()
+    } else {
+        format!("{run}-{suffix}")
+    }
+}
+fn run_receipts(
+    dir: &Path,
+    reference: &FileRef,
+    expected: &str,
+    expected_role: (&str, &str, Option<&str>),
+    conditions: &Value,
+    evidence: &mut Evidence,
+) -> Result<Run> {
+    let (phase, role, pair) = expected_role;
+    let run: Run =
+        serde_json::from_slice(&evidence.read(dir, &format!("{expected}-run.json"), reference)?)?;
+    ensure!(
+        run.schema == "phonefarm/run_one_bundle@3"
+            && matches!(
+                run.evidence_origin.as_str(),
+                "live_device" | "recorded_device"
+            )
+            && run.run_id == expected
+            && run.phase == phase
+            && run.sample_role == role
+            && run.pair_id.as_deref() == pair
+            && conditions["device_serial"] == run.device_serial,
+        "raw run identity/role/source mismatch"
+    );
+    let start = chrono::DateTime::parse_from_rfc3339(&run.started_at)?;
+    let end = chrono::DateTime::parse_from_rfc3339(&run.finished_at)?;
+    ensure!(end > start, "raw run chronology malformed");
+    evidence.read(dir, "conditions.json", &run.conditions)?;
+    let artifact = if role == "baseline" {
+        "baseline.json"
+    } else {
+        "candidate.json"
+    };
+    evidence.read(dir, artifact, &run.artifact)?;
+    ensure!(
+        run.raw.keys().map(String::as_str).collect::<BTreeSet<_>>()
+            == RAW.into_iter().map(|(k, _)| k).collect(),
+        "raw run fixed inventory incomplete/extra"
+    );
+    for (key, suffix) in RAW {
+        evidence.read(dir, &raw_file(expected, key, suffix), &run.raw[key])?;
+    }
+    Ok(run)
+}
+fn record_receipts(record: &Record, run: &Run) -> Result<()> {
+    for (hash, key) in [
+        (&record.trace_sha256, "trace"),
+        (&record.before_sha256, "render_before"),
+        (&record.after_sha256, "render_after"),
+        (&record.final_sha256, "render_final"),
+    ] {
+        ensure!(
+            run.raw[key].sha256 == *hash,
+            "frozen render record differs from actual run raw reference"
+        );
+    }
+    Ok(())
+}
 fn fixed_ref(dir: &Path, value: &Value, file: &str, cap: usize) -> Result<Vec<u8>> {
     ensure!(
         value.as_object().is_some_and(|o| o.len() == 2) && value["path"] == file,
@@ -281,7 +435,7 @@ fn record_valid(r: &Record, f: &Render) -> bool {
         .iter()
         .all(|s| digest(s, 64))
 }
-fn receiver_render(root: &Path, p: &Profile) -> Result<Render> {
+fn receiver_render(root: &Path, p: &Profile, evidence: &mut Evidence) -> Result<Render> {
     let dir = root.join("receiver");
     let conditions = json_file(&dir, "conditions.json")?;
     ensure!(
@@ -384,7 +538,17 @@ fn receiver_render(root: &Path, p: &Profile) -> Result<Render> {
     );
     let plan = json_file(&dir, "plan.json")?;
     let mut seen = BTreeSet::new();
-    for r in &f.baselines {
+    for (i, r) in f.baselines.iter().enumerate() {
+        let reference: FileRef = serde_json::from_value(admission["runs"][i].clone())?;
+        let run = run_receipts(
+            &dir,
+            &reference,
+            &format!("admission_{i}"),
+            ("admission", "baseline", None),
+            &conditions,
+            evidence,
+        )?;
+        record_receipts(r, &run)?;
         for hash in [
             &r.trace_sha256,
             &r.before_sha256,
@@ -454,11 +618,12 @@ fn receiver_render(root: &Path, p: &Profile) -> Result<Render> {
     Ok(f)
 }
 pub(super) fn receiver_plan(root: &Path, p: &Profile) -> Result<()> {
-    receiver_render(root, p)?;
+    receiver_render(root, p, &mut Evidence::default())?;
     Ok(())
 }
 pub(super) fn receiver_samples(root: &Path, p: &Profile) -> Result<()> {
-    let f = receiver_render(root, p)?;
+    let mut evidence = Evidence::default();
+    let f = receiver_render(root, p, &mut evidence)?;
     let dir = root.join("receiver");
     let samples = json_file(&dir, "samples.json")?;
     let frozen = json_file(root, "frozen.json")?;
@@ -483,6 +648,7 @@ pub(super) fn receiver_samples(root: &Path, p: &Profile) -> Result<()> {
         .map(String::from)
         .collect::<BTreeSet<_>>();
     let render_hash = sha(&read_path(&dir.join("render-contract.json"), JSON_CAP)?);
+    let conditions = json_file(&dir, "conditions.json")?;
     for (i, pair) in pairs.iter().enumerate() {
         ensure!(
             pair["pair_id"] == format!("{}_p{i:02}", p.case_id),
@@ -505,6 +671,41 @@ pub(super) fn receiver_samples(root: &Path, p: &Profile) -> Result<()> {
             );
             let v: Value = serde_json::from_slice(&bytes)?;
             let binding = &v["confirmation_binding"];
+            let bundle = json_file(&dir, &format!("{run}-bundle.json"))?;
+            ensure!(
+                bundle.as_object().is_some_and(|o| o.len() == 4)
+                    && bundle["schema"] == "phonefarm/confirmation_bundle@1",
+                "missing actual observation bundle"
+            );
+            fixed_ref(
+                &dir,
+                &bundle["baseline_admission"],
+                "admission.json",
+                JSON_CAP,
+            )?;
+            let registered: Value = serde_json::from_slice(&fixed_ref(
+                &dir,
+                &bundle["frozen_plan"],
+                "registered.json",
+                JSON_CAP,
+            )?)?;
+            ensure!(
+                registered == frozen,
+                "receiver registration differs from GOL freeze"
+            );
+            let reference: FileRef = serde_json::from_value(bundle["run"].clone())?;
+            let parsed = run_receipts(
+                &dir,
+                &reference,
+                &run,
+                (
+                    "confirmation",
+                    if role == "a" { "baseline" } else { "candidate" },
+                    pair["pair_id"].as_str(),
+                ),
+                &conditions,
+                &mut evidence,
+            )?;
             ensure!(
                 v["schema"] == "phonefarm/confirmation_observation@2"
                     && v["status"] == "VALID_OBSERVATION"
@@ -528,6 +729,28 @@ pub(super) fn receiver_samples(root: &Path, p: &Profile) -> Result<()> {
             let d = &v["target_game_attribution"];
             let scope: Scope = serde_json::from_value(d["scope"].clone())?;
             let r: Record = serde_json::from_value(d["record"].clone())?;
+            record_receipts(&r, &parsed)?;
+            ensure!(
+                binding["started_at"] == parsed.started_at
+                    && binding["finished_at"] == parsed.finished_at
+                    && binding["artifact_sha256"] == parsed.artifact.sha256,
+                "report/run chronology/artifact mismatch"
+            );
+            for (key, binding_key) in [
+                ("trace", "trace_sha256"),
+                ("env", "env_sha256"),
+                ("thermal_admission", "thermal_admission_sha256"),
+                ("thermal_window", "thermal_window_sha256"),
+                ("thermal_sampler_exit", "thermal_sampler_exit_sha256"),
+                ("render_before", "render_before_sha256"),
+                ("render_after", "render_after_sha256"),
+                ("render_final", "render_final_sha256"),
+            ] {
+                ensure!(
+                    binding["raw_artifacts"][binding_key] == parsed.raw[key].sha256,
+                    "report differs from current actual raw run binding"
+                );
+            }
             ensure!(
                 d["profile_id"] == PROFILE
                     && scope == f.scope
@@ -612,6 +835,17 @@ pub(super) fn receiver_artifacts(root: &Path) -> Result<Vec<String>> {
     .map(|n| format!("receiver/{n}"))
     .collect::<Vec<_>>();
     n.extend(RECEIVER_NATIVE.into_iter().map(|n| format!("receiver/{n}")));
+    n.push("receiver/probe.txt".into());
+    n.push("receiver/registered.json".into());
+    for i in 0..3 {
+        let run = format!("admission_{i}");
+        n.push(format!("receiver/{run}-run.json"));
+        n.extend(
+            RAW.into_iter()
+                .filter(|(k, _)| *k != "probe")
+                .map(|(k, s)| format!("receiver/{}", raw_file(&run, k, s))),
+        );
+    }
     let samples = json_file(&root.join("receiver"), "samples.json")?;
     let pairs = samples["pairs"].as_array().context("missing v2 pairs")?;
     ensure!(pairs.len() <= 32, "too many v2 pairs");
@@ -622,13 +856,13 @@ pub(super) fn receiver_artifacts(root: &Path) -> Result<Vec<String>> {
                 .context("missing run")?;
             ensure!(safe(run), "unsafe run");
             n.push(format!("receiver/{run}-report.json"));
-            for suffix in [
-                "render-before.raw.tsv",
-                "render-after.raw.tsv",
-                "render-final.raw.tsv",
-            ] {
-                n.push(format!("receiver/{run}-{suffix}"));
-            }
+            n.push(format!("receiver/{run}-bundle.json"));
+            n.push(format!("receiver/{run}-run.json"));
+            n.extend(
+                RAW.into_iter()
+                    .filter(|(k, _)| *k != "probe")
+                    .map(|(k, s)| format!("receiver/{}", raw_file(run, k, s))),
+            );
         }
     }
     Ok(n)
