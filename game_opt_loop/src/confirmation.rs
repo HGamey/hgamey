@@ -309,6 +309,62 @@ fn load_report(path: &Path, expected: &str) -> Result<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
+// Historical PF single-observation envelopes omitted version/policy. Explicit
+// declarations must still agree with the cold contract; absence is not v2.
+fn legacy_policy(v: &Value) -> bool {
+    v.as_object().is_some() && v.get("version").and_then(Value::as_u64) == Some(1)
+}
+
+fn legacy_wire_fields(v: &Value) -> bool {
+    v.as_object().is_some_and(|fields| {
+        fields.keys().all(|name| {
+            !name.starts_with("thermal_")
+                && !name.starts_with("temperature_")
+                && !matches!(
+                    name.as_str(),
+                    "thermal"
+                        | "temperature"
+                        | "purpose"
+                        | "measurement_purpose"
+                        | "control_purpose"
+                        | "sampling_purpose"
+                        | "profile"
+                        | "profile_id"
+                        | "profile_sha256"
+                        | "reference_sha256"
+                        | "receiver_policy_version"
+                )
+        })
+    })
+}
+
+fn legacy_receiver_contract(v: &Value) -> bool {
+    let qualification = &v["qualification"];
+    let policy = qualification.get("policy");
+    let admission = v.get("baseline_admission_qualification");
+    [
+        v,
+        qualification,
+        &v["sample_qualification"],
+        &v["sample_qualification"]["gates"],
+        &v["confirmation_binding"],
+        &v["confirmation_binding"]["raw_artifacts"],
+    ]
+    .into_iter()
+    .all(legacy_wire_fields)
+        && qualification
+            .get("version")
+            .is_none_or(|version| version.as_u64() == Some(1))
+        && policy.is_none_or(|policy| legacy_policy(policy) && legacy_wire_fields(policy))
+        && admission.is_none_or(|admission| {
+            admission.get("version").and_then(Value::as_u64) == Some(1)
+                && legacy_wire_fields(admission)
+                && admission
+                    .get("policy")
+                    .is_some_and(|policy| legacy_policy(policy) && legacy_wire_fields(policy))
+        })
+}
+
 fn receiver_qualified(v: &Value, thermal: Option<&TemperatureContract>) -> bool {
     let replay = v
         .get("qualification_only")
@@ -342,7 +398,7 @@ fn receiver_qualified(v: &Value, thermal: Option<&TemperatureContract>) -> bool 
                 && v["sample_qualification"]["schema"]
                     == "phonefarm/confirmation_sample_qualification@1"
                 && v["sample_qualification"]["gates"]["cold_verified"] == true
-                && v["confirmation_binding"].get("thermal_contract").is_none()
+                && legacy_receiver_contract(v)
         }
         Some(expected) => {
             v["schema"] == "phonefarm/confirmation_observation@2"
@@ -872,7 +928,7 @@ mod tests {
     #[test]
     fn offline_or_malformed_qualifications_do_not_confirm() {
         let mut v = serde_json::json!({"schema":"phonefarm/confirmation_observation@1","source":"phonefarm","status":"VALID_OBSERVATION","qualification":{"stage":"experiment","eligible":false,"evidence_origin":"recorded_device"},
-            "sample_qualification":{"schema":"phonefarm/confirmation_sample_qualification@1","valid_observation":true,"gates":{"root_verified":true,"control_verified":true,"cold_verified":true,"trace_window_verified":true,"workload_succeeded":true,"restore_verified":true,"baseline_admission_verified":true}}});
+            "sample_qualification":{"schema":"phonefarm/confirmation_sample_qualification@1","valid_observation":true,"gates":{"root_verified":true,"control_verified":true,"cold_verified":true,"trace_window_verified":true,"workload_succeeded":true,"restore_verified":true,"baseline_admission_verified":true}},"confirmation_binding":{"raw_artifacts":{}}});
         assert!(receiver_qualified(&v, None));
         v["qualification_only"] = Value::Bool(true);
         assert!(!receiver_qualified(&v, None));

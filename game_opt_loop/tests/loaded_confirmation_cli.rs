@@ -23,17 +23,36 @@ struct F {
 }
 impl F {
     fn command(root: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
+        let output = Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
             .current_dir(root)
             .args(args)
             .output()
-            .unwrap()
+            .unwrap();
+        if std::env::var_os("LOADED_CONFIRMATION_TEST_ARTIFACT_DIR").is_some() {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            std::fs::write(root.join(format!("cli-{id}.stdout")), &output.stdout).unwrap();
+            std::fs::write(root.join(format!("cli-{id}.stderr")), &output.stderr).unwrap();
+            Self::json(
+                root,
+                &format!("cli-{id}.receipt.json"),
+                &json!({
+                    "argv":args,"exit":output.status.code(),
+                    "stdout_sha256":sha(&output.stdout),"stderr_sha256":sha(&output.stderr),
+                    "scope":"synthetic_declared_receiver_mechanism_only","device_calls":0,"model_api_calls":0
+                }),
+            );
+        }
+        output
     }
     fn json(root: &Path, name: &str, value: &Value) {
         std::fs::write(root.join(name), serde_json::to_vec(value).unwrap()).unwrap();
     }
     fn new(loaded: bool) -> Self {
-        let root = std::env::temp_dir().join(format!(
+        let base = std::env::var_os("LOADED_CONFIRMATION_TEST_ARTIFACT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        std::fs::create_dir_all(&base).unwrap();
+        let root = base.join(format!(
             "gol-loaded-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
@@ -164,7 +183,9 @@ impl F {
 }
 impl Drop for F {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        if std::env::var_os("LOADED_CONFIRMATION_TEST_ARTIFACT_DIR").is_none() {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
 }
 
@@ -294,5 +315,128 @@ fn bad_plan_versions_unknown_fields_and_caller_caps_refuse_before_freeze() {
         );
         assert!(!r.status.success(), "case {i}");
         assert!(!f.root.join("bad-frozen.json").exists());
+    }
+}
+
+fn legacy_policy() -> Value {
+    json!({"version":1,"goal":"render_efficiency","required_metrics":["frame_p95","fps_mean","power_w_mean"],
+        "required_pairs":5,"require_quality":false,"temp_cap_c":70.0,"cool_c":40.0,
+        "baseline_min_runs":3,"dispersion_max_pct":5.0,"monotonic_max_ratio":0.9,
+        "minimum_pairs_for_conclusion":5,"alpha":0.05})
+}
+
+#[test]
+fn legacy_omitted_and_explicit_v1_contracts_remain_compatible() {
+    let f = F::new(false);
+    assert_eq!(f.judge()["verdict"], "PASS");
+    let mut f = F::new(false);
+    f.edit(|v| {
+        v["qualification"]["version"] = json!(1);
+        v["qualification"]["policy"] = legacy_policy();
+        // Original admission reports have their own v1 policy; free-text/check
+        // diagnostics must not be interpreted as a thermal contract field.
+        v["baseline_admission_qualification"] = json!({"version":1,"policy":legacy_policy(),
+            "checks":[{"id":"thermal_caps","state":"pass"}],
+            "claim_scope":"historical cold policy thermal diagnostics only"});
+    });
+    assert_eq!(f.judge()["verdict"], "PASS");
+}
+
+#[test]
+fn legacy_mixed_purpose_versions_and_thermal_fields_block_after_rehash() {
+    let mutations = [
+        ("/qualification/version", json!(2)),
+        ("/qualification/version", json!("1")),
+        ("/qualification/version", json!(null)),
+        ("/qualification/version", json!(1.0)),
+        ("/qualification/policy", json!(null)),
+        ("/qualification/policy/version", json!(2)),
+        ("/qualification/policy/version", json!("1")),
+        ("/qualification/policy/version", json!(null)),
+        (
+            "/qualification/policy/temperature_profile_id",
+            json!("capability_absolute_v1"),
+        ),
+        (
+            "/qualification/policy/temperature_profile_id",
+            json!("loaded_steady_v1"),
+        ),
+        ("/qualification/policy/temperature_profile_id", json!(null)),
+        (
+            "/qualification/policy/temperature_profile_sha256",
+            json!("1".repeat(64)),
+        ),
+        (
+            "/qualification/policy/thermal_reference_sha256",
+            json!("2".repeat(64)),
+        ),
+        ("/qualification/purpose", json!("capability_absolute_v1")),
+        ("/purpose", json!("configuration_readback_only")),
+        (
+            "/temperature_reference_purpose",
+            json!("diagnostic_only_no_comparison"),
+        ),
+        ("/temperature_profile_id", json!("capability_absolute_v1")),
+        ("/temperature", json!({"stable_reference_required":false})),
+        ("/sample_qualification/purpose", json!("control_only")),
+        (
+            "/sample_qualification/gates/thermal_profile_verified",
+            json!(true),
+        ),
+        (
+            "/sample_qualification/gates/thermal_window_verified",
+            json!(false),
+        ),
+        ("/confirmation_binding/thermal_contract", json!(null)),
+        ("/confirmation_binding/temperature_contract", contract()),
+        (
+            "/confirmation_binding/profile_id",
+            json!("capability_absolute_v1"),
+        ),
+        (
+            "/confirmation_binding/raw_artifacts/thermal_admission_sha256",
+            json!("1".repeat(64)),
+        ),
+        (
+            "/confirmation_binding/raw_artifacts/thermal_window_sha256",
+            json!("2".repeat(64)),
+        ),
+        (
+            "/confirmation_binding/raw_artifacts/thermal_sampler_exit_sha256",
+            json!(null),
+        ),
+        ("/baseline_admission_qualification/version", json!(2)),
+        ("/baseline_admission_qualification/policy/version", json!(2)),
+        (
+            "/baseline_admission_qualification/policy/temperature_profile_id",
+            json!("capability_absolute_v1"),
+        ),
+        (
+            "/baseline_admission_qualification/policy/thermal_reference_sha256",
+            json!(null),
+        ),
+    ];
+    for (path, replacement) in mutations {
+        let mut f = F::new(false);
+        F::json(
+            &f.root,
+            "countercase.json",
+            &json!({"path":path,"value":replacement,"outer_report_rehashed":true}),
+        );
+        f.edit(|v| {
+            v["qualification"]["version"] = json!(1);
+            v["qualification"]["policy"] = legacy_policy();
+            v["baseline_admission_qualification"] = json!({"version":1,"policy":legacy_policy()});
+            let mut keys = path.trim_start_matches('/').split('/').peekable();
+            let mut cursor = v;
+            while let Some(key) = keys.next() {
+                if keys.peek().is_none() {
+                    cursor[key] = replacement;
+                    break;
+                }
+                cursor = &mut cursor[key];
+            }
+        });
+        assert_eq!(f.judge()["verdict"], "BLOCKED", "mixed legacy field {path}");
     }
 }
