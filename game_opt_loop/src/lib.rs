@@ -17,6 +17,7 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+pub mod campaign;
 pub mod engine;
 pub mod harness;
 pub mod optimize;

@@ -18,6 +18,10 @@ use std::path::Path;
 /// 档案里的一条记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expert_decisions: Vec<crate::campaign::Decision>,
     pub id: String,
     pub generation: u32,
     pub track: String,
@@ -112,6 +116,8 @@ impl ParetoArchive {
             return false;
         }
         self.entries.push(ArchiveEntry {
+            campaign_binding_sha256: None,
+            expert_decisions: vec![],
             id: candidate.id.clone(),
             generation: candidate.generation,
             track: candidate.track.clone(),

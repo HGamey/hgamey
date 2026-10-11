@@ -24,9 +24,11 @@ pub mod plan;
 pub mod report;
 pub mod sysparam;
 
+use crate::campaign::{self, Campaign, Disposition};
 use anyhow::{bail, Context, Result};
 use eval::{CarrierKind, Kind, Payload, Request, WorkloadSpec};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 /// `optimize` 的配置。
@@ -56,6 +58,7 @@ pub struct Config {
     /// 那是 phonefarm 的活。接收端的探测通路接上之前, 这个参数让人可以
     /// 把已有的 probe.txt 喂进来, 把出主意那一半先跑通。
     pub sysparam_probe: Option<PathBuf>,
+    pub campaign: Option<campaign::Options>,
 }
 
 /// 跑完之后的落点。
@@ -123,14 +126,47 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         );
     }
 
+    let campaign = if let Some(options) = &cfg.campaign {
+        if cfg.plan_only {
+            bail!("--plan 不创建实验 campaign；去掉 --campaign-mode 或 --plan");
+        }
+        let mut input_paths: Vec<PathBuf> =
+            cfg.quality_reference.iter().map(PathBuf::from).collect();
+        input_paths.extend(cfg.sysparam_probe.iter().cloned());
+        if cfg.phonefarm.is_file() {
+            input_paths.push(cfg.phonefarm.clone());
+        }
+        let frozen = serde_json::json!({"entrypoint": "optimize", "game": cfg.game,
+            "package": cfg.package, "serial": cfg.serial, "budget": cfg.budget,
+            "seed": cfg.seed, "use_llm": cfg.use_llm, "llm_provider": cfg.llm_provider,
+            "llm_timeout_s": cfg.llm_timeout_s, "phonefarm": cfg.phonefarm,
+            "quality_reference": cfg.quality_reference, "sysparam_probe": cfg.sysparam_probe,
+            "input_artifacts": campaign::artifacts(&input_paths)?, "tool_version": crate::VERSION});
+        Some(RefCell::new(Campaign::open(&cfg.out_dir, options, frozen)?))
+    } else {
+        None
+    };
+    let saved: Option<(caps::Caps, plan::Plan)> = campaign
+        .as_ref()
+        .map(|c| c.borrow().snapshot("optimize_baseline"))
+        .transpose()?
+        .flatten();
+
     // ---- 1. 摸底 (只读) ----
     println!("\n[1/3] 摸底 (只读, 不动设备)...");
-    let prober = caps::Prober::new(&cfg.phonefarm);
-    let serial = pick_serial(&prober, cfg.serial.as_deref())?;
+    let (caps, restored_plan) = if let Some((caps, plan)) = saved {
+        println!("      恢复冻结摸底与计划，未重新测温改协议");
+        (caps, Some(plan))
+    } else {
+        let prober = caps::Prober::new(&cfg.phonefarm);
+        let serial = pick_serial(&prober, cfg.serial.as_deref())?;
+        let caps = prober
+            .run(&target, &serial)
+            .with_context(|| format!("摸底失败 (设备 {serial})"))?;
+        (caps, None)
+    };
+    let serial = caps.device.serial.clone();
     println!("      设备 {serial}");
-    let caps = prober
-        .run(&target, &serial)
-        .with_context(|| format!("摸底失败 (设备 {serial})"))?;
 
     let caps_path = cfg.out_dir.join("caps.json");
     caps::write(&caps, &caps_path)?;
@@ -145,11 +181,18 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     println!("\n[2/3] 按能力开路 + 接收端探活...");
     let driver = eval::EvalDriver::new(&cfg.phonefarm);
     let support = driver.probe();
-    let mut plan = plan::build(&caps, cfg.budget, cfg.use_llm);
+    let mut plan = restored_plan.unwrap_or_else(|| plan::build(&caps, cfg.budget, cfg.use_llm));
     // 画质真值跟着冻结条件走, 不是某一层的私有参数: 灰档的每一个改写都动画面,
     // 那一层的 psnr 约束没有真值就判不了。
     plan.conditions.quality_reference = cfg.quality_reference.clone();
-    println!("\n{}", plan::render(&plan, &caps, Some(&support.describe())));
+    if let Some(c) = &campaign {
+        c.borrow_mut()
+            .store_snapshot("optimize_baseline", &(caps.clone(), plan.clone()))?;
+    }
+    println!(
+        "\n{}",
+        plan::render(&plan, &caps, Some(&support.describe()))
+    );
 
     if cfg.plan_only {
         let layers = plan
@@ -157,7 +200,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             .iter()
             .map(|s| report::LayerOutcome {
                 layer: s.layer,
-                layer_display: s.layer_display,
+                layer_display: s.layer_display.clone(),
                 used: false,
                 reason: format!("{} (--plan: 只排计划, 没跑)", s.why),
                 blockers: if support.is_supported() {
@@ -232,6 +275,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             serial: &serial,
             driver: &driver,
             support: &support,
+            campaign: campaign.as_ref(),
         };
         // 一层出错不该把已经落袋的测量一起带走。跑到这里的每一份报告都
         // 代表几十分钟真机时间, 为了一个起不来的子进程把它们全丢掉,
@@ -268,7 +312,23 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         ));
     }
 
-    let r = report::build(&plan, &caps, layers, archive, false);
+    if let Some(c) = &campaign {
+        let c = c.borrow();
+        for entry in &mut archive {
+            if let Some(review) = c.journal.entries.get(&entry.id) {
+                entry.campaign_binding_sha256 = Some(review.binding_sha256.clone());
+                entry.expert_decisions = review.decisions.clone();
+            }
+        }
+    }
+    let mut r = report::build(&plan, &caps, layers, archive, false);
+    r.campaign = campaign.as_ref().map(|c| c.borrow().summary());
+    if r.campaign.as_ref().is_some_and(|c| c.waiting_for_review) {
+        r.headline = format!(
+            "等待专家方向决定；已有 {} 份评测回执。未决候选未下发设备",
+            r.archive.len()
+        );
+    }
     let (json, md) = report::write(&r, &caps, &cfg.out_dir)?;
     println!("\n{}", r.headline);
     println!("报告: {json}\n      {md}");
@@ -371,13 +431,14 @@ struct LayerCtx<'a> {
     serial: &'a str,
     driver: &'a eval::EvalDriver,
     support: &'a eval::EvalSupport,
+    campaign: Option<&'a RefCell<Campaign>>,
 }
 
 impl LayerCtx<'_> {
     fn new_outcome(&self) -> report::LayerOutcome {
         report::LayerOutcome {
             layer: self.step.layer,
-            layer_display: self.step.layer_display,
+            layer_display: self.step.layer_display.clone(),
             used: true,
             reason: self.step.why.clone(),
             blockers: vec![],
@@ -411,6 +472,78 @@ impl LayerCtx<'_> {
         out.blockers = vec!["phonefarm 补上 `eval --request <json> --json`".into()];
         println!("      {}", out.reason);
         Some(out)
+    }
+
+    fn reviewed_evaluate(
+        &self,
+        id: &str,
+        generation: u32,
+        candidate: serde_json::Value,
+        req: &Request,
+        history: &[sysparam::History],
+    ) -> Result<Disposition<eval::Report>> {
+        let Some(campaign) = self.campaign else {
+            return Ok(match self.evaluate(id, req) {
+                Ok(r) => Disposition::Completed(r),
+                Err(e) => Disposition::Failed(e.to_string()),
+            });
+        };
+        let request = campaign
+            .borrow()
+            .journal
+            .entries
+            .get(id)
+            .map(|e| e.request.clone())
+            .unwrap_or(serde_json::to_value(req)?);
+        let mut paths: Vec<PathBuf> = self
+            .cfg
+            .quality_reference
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        paths.extend(self.cfg.sysparam_probe.iter().cloned());
+        if let Some(path) = &req.workload.script {
+            paths.push(PathBuf::from(path));
+        }
+        campaign.borrow_mut().stage(
+            id,
+            generation,
+            self.step.layer.id(),
+            candidate,
+            request.clone(),
+            &paths,
+            campaign::Assessment {
+                hypothesis: match &req.payload {
+                    Payload::Sysparam(p) => p.why.clone(),
+                    Payload::Gray(p) => p.why.clone(),
+                    _ => None,
+                }
+                .unwrap_or_else(|| self.step.why.clone()),
+                expected_benefit: "降低帧时/功耗或提高帧率；幅度未知，须由冻结A/B统计裁决".into(),
+                risks: if self.step.layer == Kind::Gray {
+                    vec![
+                        "改写可能破坏画面，必须核对命中和质量证据".into(),
+                        "当前接收端灰档缺少质量裁决，不可据机械链路宣称优化收益".into(),
+                    ]
+                } else {
+                    vec![
+                        "驱动可能覆盖频率写入，需确认apply_ok与现场还原".into(),
+                        "降低帧时可能增加功耗".into(),
+                    ]
+                },
+                estimated_device_seconds: Some(self.step.per_candidate_s),
+                cost_basis: "计划模型估计；保持每臂轮数，不因预算紧张降低统计分辨率".into(),
+                previous_evidence: serde_json::to_value(history)?,
+            },
+        )?;
+        campaign.borrow_mut().execute(id, || {
+            let request: Request = serde_json::from_value(request)?;
+            let report = self.evaluate(id, &request)?;
+            if report.candidate_id != id || report.source != "phonefarm" {
+                bail!("回包candidate_id/source与已审批真机请求不一致");
+            }
+            Ok(report)
+        })
     }
 
     /// 下发一个候选。失败只回 Err, 由调用方记进 `eval_errors` 并接着跑下一个。
@@ -520,14 +653,31 @@ fn run_sysparam(
     let mut origins: Vec<sysparam::Origin> = Vec::new();
 
     for gen in 1..=ctx.step.generations {
-        let batch = proposer.propose(
-            &device_note(ctx.caps),
-            &workload_note(ctx.caps),
-            &wl,
-            &history,
-            ctx.step.children,
+        let key = format!("sysparam_generation_{gen}");
+        let stored = ctx
+            .campaign
+            .map(|c| c.borrow().snapshot::<sysparam::ProposalBatch>(&key))
+            .transpose()?
+            .flatten();
+        let batch = stored.unwrap_or_else(|| {
+            proposer.propose(
+                &device_note(ctx.caps),
+                &workload_note(ctx.caps),
+                &wl,
+                &history,
+                ctx.step.children,
+            )
+        });
+        if let Some(c) = ctx.campaign {
+            c.borrow_mut().store_snapshot(&key, &batch)?;
+        }
+        let mut waiting = false;
+        record_proposer(
+            &mut out,
+            &mut origins,
+            batch.origin,
+            batch.llm_error.as_ref(),
         );
-        record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         for (p, why) in &batch.rejected {
             out.rejected_locally.push(format!("{p:?}: {why}"));
@@ -565,9 +715,52 @@ fn run_sysparam(
                 }),
             };
 
-            let rep = match ctx.evaluate(&id, &req) {
-                Ok(r) => r,
-                Err(e) => {
+            let rep = match ctx.reviewed_evaluate(
+                &id,
+                gen,
+                serde_json::to_value(prop)?,
+                &req,
+                &history,
+            )? {
+                Disposition::Completed(r) => r,
+                Disposition::Pending | Disposition::Deferred => {
+                    waiting = true;
+                    out.blockers
+                        .push(format!("{id}: 等待专家方向决定，未下发设备"));
+                    continue;
+                }
+                Disposition::Rejected => {
+                    let reason = ctx
+                        .campaign
+                        .and_then(|c| {
+                            c.borrow()
+                                .journal
+                                .entries
+                                .get(&id)
+                                .and_then(|e| e.decisions.last())
+                                .map(|d| d.reason.clone())
+                        })
+                        .unwrap_or_default();
+                    let params = match &req.payload {
+                        Payload::Sysparam(p) => p.params.clone(),
+                        Payload::Gray(p) => p
+                            .rewrites
+                            .iter()
+                            .map(|r| (r.knob.clone(), "on".into()))
+                            .collect(),
+                        _ => Default::default(),
+                    };
+                    history.push(sysparam::History {
+                        params,
+                        verdict: "EXPERT_REJECT".into(),
+                        reason,
+                        per_metric: vec!["方向判断，未经测量，不能当作性能负样本".into()],
+                    });
+                    out.rejected_locally
+                        .push(format!("{id}: 专家拒绝方向（见campaign理由）"));
+                    continue;
+                }
+                Disposition::Failed(e) => {
                     println!("        → 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
                     continue;
@@ -608,6 +801,9 @@ fn run_sysparam(
                 &rep,
             ));
         }
+        if waiting {
+            break;
+        }
     }
     Ok(out)
 }
@@ -644,13 +840,30 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
     let mut origins: Vec<sysparam::Origin> = Vec::new();
 
     for gen in 1..=ctx.step.generations {
-        let batch = proposer.propose(
-            &device_note(ctx.caps),
-            &workload_note(ctx.caps),
-            &history,
-            ctx.step.children,
+        let key = format!("gray_generation_{gen}");
+        let stored = ctx
+            .campaign
+            .map(|c| c.borrow().snapshot::<gray::ProposalBatch>(&key))
+            .transpose()?
+            .flatten();
+        let batch = stored.unwrap_or_else(|| {
+            proposer.propose(
+                &device_note(ctx.caps),
+                &workload_note(ctx.caps),
+                &history,
+                ctx.step.children,
+            )
+        });
+        if let Some(c) = ctx.campaign {
+            c.borrow_mut().store_snapshot(&key, &batch)?;
+        }
+        let mut waiting = false;
+        record_proposer(
+            &mut out,
+            &mut origins,
+            batch.origin,
+            batch.llm_error.as_ref(),
         );
-        record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         for (k, why) in &batch.rejected {
             out.rejected_locally.push(format!("{k}: {why}"));
@@ -692,9 +905,52 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                 }),
             };
 
-            let rep = match ctx.evaluate(&id, &req) {
-                Ok(r) => r,
-                Err(e) => {
+            let rep = match ctx.reviewed_evaluate(
+                &id,
+                gen,
+                serde_json::to_value(prop)?,
+                &req,
+                &history,
+            )? {
+                Disposition::Completed(r) => r,
+                Disposition::Pending | Disposition::Deferred => {
+                    waiting = true;
+                    out.blockers
+                        .push(format!("{id}: 等待专家方向决定，未下发设备"));
+                    continue;
+                }
+                Disposition::Rejected => {
+                    let reason = ctx
+                        .campaign
+                        .and_then(|c| {
+                            c.borrow()
+                                .journal
+                                .entries
+                                .get(&id)
+                                .and_then(|e| e.decisions.last())
+                                .map(|d| d.reason.clone())
+                        })
+                        .unwrap_or_default();
+                    let params = match &req.payload {
+                        Payload::Sysparam(p) => p.params.clone(),
+                        Payload::Gray(p) => p
+                            .rewrites
+                            .iter()
+                            .map(|r| (r.knob.clone(), "on".into()))
+                            .collect(),
+                        _ => Default::default(),
+                    };
+                    history.push(sysparam::History {
+                        params,
+                        verdict: "EXPERT_REJECT".into(),
+                        reason,
+                        per_metric: vec!["方向判断，未经测量，不能当作性能负样本".into()],
+                    });
+                    out.rejected_locally
+                        .push(format!("{id}: 专家拒绝方向（见campaign理由）"));
+                    continue;
+                }
+                Disposition::Failed(e) => {
                     println!("        → 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
                     continue;
@@ -734,6 +990,9 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                 report::Change::Gray { rewrites: knobs },
                 &rep,
             ));
+        }
+        if waiting {
+            break;
         }
     }
     Ok(out)

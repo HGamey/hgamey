@@ -18,14 +18,14 @@
 //!
 //! 两条贯穿始终的规矩:
 //! - **单个候选出错不中断整代**。LLM 空回包、某个算子编不过、某次真机崩了,
-//!   都只让那一个候选作废。整代靠本地变异器兜底推进 —— 零人工介入的底线。
+//!   都只让那一个候选作废。自主模式靠本地变异器推进；expert campaign
+//!   需先持久化方向决定，未决候选不占设备。
 //! - **估计值与实测值永不混淆**。每条记录都带 `MetricSource`, 汇总先按来源分组。
 
+use crate::campaign::{self, Campaign, Disposition};
 use crate::engine::archive::ParetoArchive;
 use crate::engine::cost_model::{self, DeviceModel, NX809J_1080P};
-use crate::engine::generator::{
-    EliteSummary, Generator, MutationContext, RejectionSummary,
-};
+use crate::engine::generator::{EliteSummary, Generator, MutationContext, RejectionSummary};
 use crate::engine::mutate::{Genome, Rng};
 use crate::engine::validator::{GateReport, Validator, ViolationCode};
 use crate::engine::{Candidate, CandidateOrigin, EvalReport, MetricSource};
@@ -34,6 +34,7 @@ use crate::tracks::{self, TrackSpec};
 use crate::TrackMode;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -69,6 +70,9 @@ pub struct EvolutionConfig {
     /// 画质真值: 真机截帧目录 (或单张 PNG)。None = 接收端用程序化图案。
     /// 见 `harness::EvalRequest::quality_reference`。
     pub quality_reference: Option<String>,
+    pub campaign: Option<campaign::Options>,
+    pub phonefarm: PathBuf,
+    pub serial: Option<String>,
 }
 
 impl EvolutionConfig {
@@ -109,6 +113,9 @@ pub enum OutcomeStage {
     EvalError,
     /// 走完全程。
     Evaluated,
+    ReviewPending,
+    ReviewDeferred,
+    ReviewRejected,
 }
 
 /// 一代的完整记录, 落盘为 `gen_N.json`。
@@ -151,6 +158,9 @@ pub struct LlmStatus {
 /// 整轮演化的汇总。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvolutionSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<campaign::Summary>,
+    pub completed_generations: usize,
     pub track: String,
     pub generations: u32,
     pub children_per_generation: u32,
@@ -280,6 +290,14 @@ pub fn check_archive_quality_reference(
     );
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SavedBatch {
+    batch: Vec<(Candidate, Genome)>,
+    llm: LlmStatus,
+    rng: Rng,
+    incumbent: Option<f32>,
+}
+
 /// 演化引擎。
 pub struct Evolution {
     config: EvolutionConfig,
@@ -293,6 +311,7 @@ pub struct Evolution {
     driver: Option<PhonefarmDriver>,
     generator: Option<Generator>,
     llm_error: Option<String>,
+    campaign: Option<RefCell<Campaign>>,
 }
 
 impl Evolution {
@@ -302,6 +321,35 @@ impl Evolution {
         std::fs::create_dir_all(&config.out_dir)
             .with_context(|| format!("创建输出目录失败: {}", config.out_dir.display()))?;
 
+        let campaign = if let Some(options) = &config.campaign {
+            if !config.dry_run && config.serial.is_none() {
+                anyhow::bail!("真机 campaign 必须用 --device 固定设备；不能将审批带到下一台唯一在线设备");
+            }
+            if !options.resume && archive_path.exists() {
+                anyhow::bail!("新 campaign 需要新 --out，不能将来源未冻结的既有档案混入实验");
+            }
+            let frozen = serde_json::json!({
+                "entrypoint": "evolution", "track": config.track, "generations": config.generations,
+                "children": config.children, "seed": config.seed, "budget_ms": config.budget_ms,
+                "dry_run": config.dry_run, "carrier": config.carrier, "scene_frames": config.scene_frames,
+                "scene_intensity": config.scene_intensity, "cool_c": config.cool_c,
+                "quality_reference": config.quality_reference, "use_llm": config.use_llm,
+                "prefer_provider": config.prefer_provider, "llm_timeout_s": config.llm_timeout_s,
+                "phonefarm": config.phonefarm, "serial": config.serial,
+                "evaluator_artifacts": campaign::artifacts(&config.phonefarm.is_file().then(|| config.phonefarm.clone()).into_iter().collect::<Vec<_>>())?,
+                "device_cost_model": format!("{:?}", config.device),
+                "protocol": crate::harness::EvalProtocol::default(), "tool_version": crate::VERSION,
+                "templates": campaign::digest(&tracks::load_template(config.track)?)?,
+                "quality_inputs": campaign::artifacts(&config.quality_reference.iter().map(PathBuf::from).collect::<Vec<_>>())?,
+            });
+            Some(RefCell::new(Campaign::open(
+                &config.out_dir,
+                options,
+                frozen,
+            )?))
+        } else {
+            None
+        };
         let archive = ParetoArchive::load_or_new(
             &archive_path,
             spec.id,
@@ -331,6 +379,8 @@ impl Evolution {
         } else {
             Some(
                 PhonefarmDriver::new()
+                    .with_binary(config.phonefarm.clone())
+                    .with_serial(config.serial.clone())
                     .with_carrier(config.carrier.clone())
                     .with_scene(config.scene_frames, config.scene_intensity)
                     .with_cool_c(config.cool_c)
@@ -347,6 +397,7 @@ impl Evolution {
             driver,
             generator,
             llm_error,
+            campaign,
             config,
         })
     }
@@ -377,9 +428,13 @@ impl Evolution {
         let mut last_rejections: Vec<RejectionSummary> = Vec::new();
 
         // Gen 0 是基线: 先把模板本身评一次, 后面的代才有参照。
-        self.seed_baseline()?;
+        let baseline_ready = self.seed_baseline()?;
 
-        for gen in 1..=self.config.generations {
+        for gen in 1..=if baseline_ready {
+            self.config.generations
+        } else {
+            0
+        } {
             let (record, rejections) = self.run_generation(gen, &last_rejections)?;
             last_rejections = rejections;
 
@@ -392,7 +447,26 @@ impl Evolution {
             gen_best_series.push(record.gen_best_psnr);
             records.push(record);
 
+            if let Some(c) = &self.campaign {
+                let c = c.borrow();
+                for entry in &mut self.archive.entries {
+                    if let Some(review) = c.journal.entries.get(&entry.id) {
+                        entry.campaign_binding_sha256 = Some(review.binding_sha256.clone());
+                        entry.expert_decisions = review.decisions.clone();
+                    }
+                }
+            }
             self.archive.save(&self.archive_path)?;
+            if records.last().is_some_and(|r| {
+                r.outcomes.iter().any(|o| {
+                    matches!(
+                        o.stage,
+                        OutcomeStage::ReviewPending | OutcomeStage::ReviewDeferred
+                    )
+                })
+            }) {
+                break;
+            }
         }
 
         let metric_source = if self.config.dry_run {
@@ -413,6 +487,9 @@ impl Evolution {
                     OutcomeStage::DuplicateSkipped => duplicates += 1,
                     OutcomeStage::EvalError => errors += 1,
                     OutcomeStage::Evaluated => evaluated += 1,
+                    OutcomeStage::ReviewPending
+                    | OutcomeStage::ReviewDeferred
+                    | OutcomeStage::ReviewRejected => {}
                 }
             }
         }
@@ -421,6 +498,18 @@ impl Evolution {
         let screened = total - duplicates;
 
         Ok(EvolutionSummary {
+            campaign: self.campaign.as_ref().map(|c| c.borrow().summary()),
+            completed_generations: records
+                .iter()
+                .filter(|r| {
+                    !r.outcomes.iter().any(|o| {
+                        matches!(
+                            o.stage,
+                            OutcomeStage::ReviewPending | OutcomeStage::ReviewDeferred
+                        )
+                    })
+                })
+                .count(),
             track: spec.id.to_string(),
             generations: self.config.generations,
             children_per_generation: self.config.children,
@@ -459,9 +548,9 @@ impl Evolution {
     }
 
     /// 把赛道基线模板作为 Gen 0 收进档案。
-    fn seed_baseline(&mut self) -> Result<()> {
+    fn seed_baseline(&mut self) -> Result<bool> {
         if !self.archive.entries.is_empty() {
-            return Ok(());
+            return Ok(true);
         }
         let spec = self.config.spec();
         let source = tracks::load_template(self.config.track)?;
@@ -483,11 +572,36 @@ impl Evolution {
         self.persist_candidate(&candidate, &gate)?;
         self.persist_baseline_spirv(&gate)?;
 
-        if let Ok(report) = self.evaluate(&candidate, &gate, &Genome::baseline(self.config.track)) {
-            self.archive.insert(&candidate, report, now());
+        let disposition = self.reviewed_evaluate(
+            &candidate,
+            &gate,
+            &Genome::baseline(self.config.track),
+            None,
+        )?;
+        let ready = match disposition {
+            Disposition::Completed(report) => {
+                self.archive.insert(&candidate, report, now());
+                true
+            }
+            Disposition::Failed(e) => {
+                if self.campaign.is_some() {
+                    anyhow::bail!("基线评测失败，不能继续 campaign: {e}");
+                }
+                true
+            }
+            _ => false,
+        };
+        if let Some(c) = &self.campaign {
+            let c = c.borrow();
+            for entry in &mut self.archive.entries {
+                if let Some(review) = c.journal.entries.get(&entry.id) {
+                    entry.campaign_binding_sha256 = Some(review.binding_sha256.clone());
+                    entry.expert_decisions = review.decisions.clone();
+                }
+            }
         }
         self.archive.save(&self.archive_path)?;
-        Ok(())
+        Ok(ready)
     }
 
     /// 跑一代。
@@ -500,7 +614,33 @@ impl Evolution {
         let started_at = now();
 
         // ---- 变异 ----
-        let (mut batch, llm) = self.breed(generation, prev_rejections);
+        let key = format!("shader_generation_{generation}");
+        let stored: Option<SavedBatch> = self
+            .campaign
+            .as_ref()
+            .map(|c| c.borrow().snapshot(&key))
+            .transpose()?
+            .flatten();
+        let saved = match stored {
+            Some(saved) => {
+                self.rng = saved.rng.clone();
+                saved
+            }
+            None => {
+                let (batch, llm) = self.breed(generation, prev_rejections);
+                let saved = SavedBatch {
+                    batch,
+                    llm,
+                    rng: self.rng.clone(),
+                    incumbent: self.archive.best_latency(),
+                };
+                if let Some(c) = &self.campaign {
+                    c.borrow_mut().store_snapshot(&key, &saved)?;
+                }
+                saved
+            }
+        };
+        let (mut batch, llm) = (saved.batch, saved.llm);
 
         // ---- 逐个过流水线 ----
         let mut outcomes = Vec::new();
@@ -509,7 +649,11 @@ impl Evolution {
         let mut gen_best_psnr: Option<f32> = None;
 
         for (candidate, genome) in batch.drain(..) {
-            if self.archive.contains_fingerprint(&candidate.fingerprint) {
+            let already_staged = self
+                .campaign
+                .as_ref()
+                .is_some_and(|c| c.borrow().journal.entries.contains_key(&candidate.id));
+            if self.archive.contains_fingerprint(&candidate.fingerprint) && !already_staged {
                 outcomes.push(CandidateOutcome {
                     id: candidate.id.clone(),
                     origin: candidate.origin,
@@ -550,8 +694,8 @@ impl Evolution {
             // 门禁过了才写盘 —— 非法算子连落盘的资格都没有。
             self.persist_candidate(&candidate, &gate)?;
 
-            match self.evaluate(&candidate, &gate, &genome) {
-                Ok(report) => {
+            match self.reviewed_evaluate(&candidate, &gate, &genome, saved.incumbent)? {
+                Disposition::Completed(report) => {
                     if report.is_admissible(spec.budget_ms, spec.quality_baseline_db) {
                         if let Some(psnr) = report.metrics.psnr_db {
                             gen_best_psnr =
@@ -592,7 +736,7 @@ impl Evolution {
                         error: None,
                     });
                 }
-                Err(e) => {
+                Disposition::Failed(e) => {
                     // 单个候选评测失败不中断整代。
                     outcomes.push(CandidateOutcome {
                         id: candidate.id.clone(),
@@ -604,6 +748,43 @@ impl Evolution {
                         gate: Some(gate),
                         report: None,
                         error: Some(e.to_string()),
+                    });
+                }
+                state => {
+                    let stage = match state {
+                        Disposition::Pending => OutcomeStage::ReviewPending,
+                        Disposition::Deferred => OutcomeStage::ReviewDeferred,
+                        Disposition::Rejected => {
+                            let reason = self
+                                .campaign
+                                .as_ref()
+                                .and_then(|c| {
+                                    c.borrow()
+                                        .journal
+                                        .entries
+                                        .get(&candidate.id)
+                                        .and_then(|e| e.decisions.last())
+                                        .map(|d| d.reason.clone())
+                                })
+                                .unwrap_or_default();
+                            rejections.push(RejectionSummary {
+                                id: candidate.id.clone(),
+                                reason: format!("专家拒绝方向: {reason}"),
+                            });
+                            OutcomeStage::ReviewRejected
+                        }
+                        _ => unreachable!(),
+                    };
+                    outcomes.push(CandidateOutcome {
+                        id: candidate.id.clone(),
+                        origin: candidate.origin,
+                        fingerprint: candidate.fingerprint.clone(),
+                        parent_id: candidate.parent_id.clone(),
+                        notes: candidate.notes.clone(),
+                        stage,
+                        gate: Some(gate),
+                        report: None,
+                        error: None,
                     });
                 }
             }
@@ -807,6 +988,72 @@ impl Evolution {
     ///
     /// dry-run 走静态成本模型 (估计值), 否则下发 phonefarm (实测值)。
     /// 两条路径产出的报告都带明确的 `MetricSource`。
+    fn reviewed_evaluate(
+        &self,
+        candidate: &Candidate,
+        gate: &GateReport,
+        genome: &Genome,
+        incumbent: Option<f32>,
+    ) -> Result<Disposition<EvalReport>> {
+        let Some(campaign) = &self.campaign else {
+            return Ok(match self.evaluate(candidate, gate, genome) {
+                Ok(report) => Disposition::Completed(report),
+                Err(e) => Disposition::Failed(e.to_string()),
+            });
+        };
+        let shader = self.shader_path(candidate);
+        let request = if let Some(entry) = campaign.borrow().journal.entries.get(&candidate.id) {
+            entry.request.clone()
+        } else if let Some(driver) = &self.driver {
+            serde_json::to_value(driver.build_request_against(
+                candidate,
+                self.config.spec(),
+                &shader,
+                &shader.with_extension("spv"),
+                incumbent,
+            ))?
+        } else {
+            serde_json::json!({"candidate_id": candidate.id, "track": candidate.track,
+            "source": "static_cost_model", "budget_ms": self.config.budget_ms, "incumbent": incumbent})
+        };
+        let mut paths = vec![
+            shader.clone(),
+            shader.with_extension("spv"),
+            self.config.out_dir.join("candidates/baseline.spv"),
+        ];
+        paths.extend(self.config.quality_reference.iter().map(PathBuf::from));
+        let assessment = campaign::Assessment {
+            hypothesis: candidate.notes.clone().unwrap_or_else(|| format!("{} 算子方向", candidate.track)),
+            expected_benefit: "在冻结预算下改善重构画质或GPU代价；幅度未知，须由测量裁决".into(),
+            risks: vec!["全图PSNR不能证明连续帧无色偏/鬼影".into(), "工装表现不能直接证明黑盒游戏收益".into(),
+                format!("静态访存/ALU估计：{:?}", gate.features)],
+            estimated_device_seconds: if self.config.dry_run { Some(0) } else { Some(1260) },
+            cost_basis: "设备时间为90秒等冷+60秒负载、每臂4轮及60秒固定开销的估计；实际以接收端为准；生成来源见candidate.origin".into(),
+            previous_evidence: serde_json::to_value(self.archive.entries.iter().map(|e| (&e.id, &e.report)).collect::<Vec<_>>())?,
+        };
+        campaign.borrow_mut().stage(
+            &candidate.id,
+            candidate.generation,
+            "shader",
+            serde_json::to_value(candidate)?,
+            request.clone(),
+            &paths,
+            assessment,
+        )?;
+        campaign.borrow_mut().execute(&candidate.id, || {
+            if let Some(driver) = &self.driver {
+                let req: crate::harness::EvalRequest = serde_json::from_value(request)?;
+                let report = driver.evaluate(&req, &shader.with_extension("request.json"))?;
+                if report.candidate_id != candidate.id {
+                    anyhow::bail!("回包candidate_id与审批候选不一致");
+                }
+                Ok(report)
+            } else {
+                self.evaluate(candidate, gate, genome)
+            }
+        })
+    }
+
     fn evaluate(
         &self,
         candidate: &Candidate,

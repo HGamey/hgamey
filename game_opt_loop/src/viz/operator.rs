@@ -116,6 +116,9 @@ fn classify(
             (RoundVerdict::Invalid, "静态预检打回, 未上机".to_string())
         }
         OutcomeStage::EvalError => (RoundVerdict::Invalid, "评测过程出错".to_string()),
+        OutcomeStage::ReviewPending => (RoundVerdict::Evidence, "等待专家方向决定，未评测".into()),
+        OutcomeStage::ReviewDeferred => (RoundVerdict::Evidence, "专家延期，未评测".into()),
+        OutcomeStage::ReviewRejected => (RoundVerdict::Evidence, "专家拒绝方向，未经性能测量".into()),
         OutcomeStage::Evaluated => match status {
             Some(EvalStatus::Pass) => match on_front {
                 Some(true) => (RoundVerdict::Qualified, "进入支配前沿".to_string()),
@@ -418,6 +421,9 @@ fn stage_text(stage: OutcomeStage) -> &'static str {
         OutcomeStage::GateRejected => "预检打回",
         OutcomeStage::EvalError => "评测出错",
         OutcomeStage::Evaluated => "已评测",
+        OutcomeStage::ReviewPending => "等待专家决定",
+        OutcomeStage::ReviewDeferred => "专家延期",
+        OutcomeStage::ReviewRejected => "专家拒绝方向",
     }
 }
 
