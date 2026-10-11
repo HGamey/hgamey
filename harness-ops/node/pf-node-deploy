@@ -1,29 +1,46 @@
 #!/bin/zsh
 # 把本机 ~/projects 下 phonefarm / game_opt_loop 的 main（已提交的文件 + 编译好的可执行）推到手机节点。
-# 只传 git 跟踪的文件和可执行，不传运行数据。用法: pf-node-deploy [phonefarm] [game_opt_loop] [harness-ops]（缺省前两个）
+# 增量：只传上次部署（~/.config/hgamey/node-deployed 记的提交）以来改过的 git 跟踪文件 + 可执行，
+# 一次上传控制在几 MB，避免经 Cloudflare 的大包被断开。--full 传全部跟踪文件（大，慎用）。
+# 用法: pf-node-deploy [--full] [phonefarm] [game_opt_loop] [harness-ops]（缺省前两个）
 set -eu
 P=~/projects
 stage=$(mktemp -d)
 trap 'rm -rf $stage' EXIT
-targets=(${@:-phonefarm game_opt_loop})
+full=0; [[ ${1:-} == --full ]] && { full=1; shift; }
+targets=($@); (( $#targets )) || targets=(phonefarm game_opt_loop)
+REC=~/.config/hgamey/node-deployed; touch $REC
+last() { grep "^$1=" $REC | cut -d= -f2; }
+files() {  # $1 仓库目录 $2 名字 → 要传的跟踪文件列表（NUL 分隔）
+  local base=$(last $2)
+  if (( full )) || [[ -z $base ]]; then git -C $1 ls-files -z
+  else git -C $1 diff -z --name-only --diff-filter=ACMRT $base HEAD; fi
+}
+deployed=()
 for t in $targets; do
   case $t in
     phonefarm)
       (cd $P/phonefarm/src && cargo build --release -q && cp target/release/phonefarm ..)
       mkdir -p $stage/phonefarm
-      (cd $P/phonefarm && git ls-files -z | rsync -a --from0 --files-from=- ./ $stage/phonefarm/ && cp phonefarm $stage/phonefarm/ && [ -f secrets.env ] && cp secrets.env $stage/phonefarm/ || true)
-      echo "phonefarm @ $(git -C $P/phonefarm log --oneline -1)";;
+      (cd $P/phonefarm && files . phonefarm | rsync -a --from0 --files-from=- ./ $stage/phonefarm/ && cp phonefarm $stage/phonefarm/ && [ -f secrets.env ] && cp secrets.env $stage/phonefarm/ || true)
+      deployed+=(phonefarm=$(git -C $P/phonefarm rev-parse --short HEAD))
+      echo "phonefarm $(last phonefarm) → $(git -C $P/phonefarm log --oneline -1)";;
     game_opt_loop)
       (cd $P/game_opt_loop && cargo build --release -q)
       mkdir -p $stage/game_opt_loop
-      (cd $P/game_opt_loop && git ls-files -z | rsync -a --from0 --files-from=- ./ $stage/game_opt_loop/ && cp target/release/game_opt_loop $stage/game_opt_loop/)
-      echo "game_opt_loop @ $(git -C $P/game_opt_loop log --oneline -1)";;
+      (cd $P/game_opt_loop && files . game_opt_loop | rsync -a --from0 --files-from=- ./ $stage/game_opt_loop/ && cp target/release/game_opt_loop $stage/game_opt_loop/)
+      deployed+=(game_opt_loop=$(git -C $P/game_opt_loop rev-parse --short HEAD))
+      echo "game_opt_loop $(last game_opt_loop) → $(git -C $P/game_opt_loop log --oneline -1)";;
     harness-ops)
-      mkdir -p $stage/harness-ops && cp $P/harness-ops/node/{node_service.py,update_node.sh,run_node.sh} $stage/harness-ops/;;
+      mkdir -p $stage/harness-ops && cp $P/harness-ops/node/{node_service.py,dash.py,update_node.sh,run_node.sh} $stage/harness-ops/
+      cp -R $P/harness-ops/node/dash_static $stage/harness-ops/
+      # 作战室查看密码（与管理 token 分开）：本机有就一起带上，节点上装到 ~/.config/hgamey/dash.pass
+      [ -f ~/.config/hgamey/dash.pass ] && mkdir -p $stage/secrets && cp ~/.config/hgamey/dash.pass $stage/secrets/ || true;;
   esac
 done
 du -sh $stage
 pf-node --label deploy update_node $stage
+for kv in $deployed; do k=${kv%%=*}; grep -v "^$k=" $REC > $REC.tmp; echo $kv >> $REC.tmp; mv $REC.tmp $REC; done
 if (( ${targets[(Ie)harness-ops]} )); then
   curl -sS -m 30 -X POST -A pf-node/1 -H "Authorization: Bearer $(cat ~/.config/hgamey/node.token)" ${PF_NODE_URL:-https://phone.liyao.space}/admin/restart; echo
 fi

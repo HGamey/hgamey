@@ -14,12 +14,20 @@
           X-Job 可带 "exe": "@in/<路径>"，用上传的可执行代替缺省的（测未合并分支）。
   /admin/restart  退出进程，由 run_node.sh 的循环用新代码重新拉起。
   /health 无需 token，只回 ok（给隧道探活）。
+  /dash   作战室只读看板，用独立查看密码（~/.config/hgamey/dash.pass），逻辑在 dash.py。
 
 phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自己的仓库目录下执行（相对路径的 knobs/、loop_v1/ 照常可用）；碰设备的子命令自己拿设备锁、排队。
 """
 import argparse, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import dash  # 作战室 /dash（只读看板，独立查看密码）；它坏了不能拖垮 /jobs 和 /mcp
+except Exception as e:  # noqa: BLE001
+    dash = None
+    print(f"dash 模块加载失败，/dash 不可用: {e!r}", file=sys.stderr)
 
 MCP_ALLOW = {
     "phonefarm_devices", "phonefarm_fleet", "phonefarm_tasks", "phonefarm_runs", "phonefarm_last",
@@ -210,7 +218,7 @@ class Jobs:
 
 # ═════════════ HTTP ═════════════
 
-def make_handler(mcp, jobs, token):
+def make_handler(mcp, jobs, token, board=None):
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -246,6 +254,12 @@ def make_handler(mcp, jobs, token):
             parts = [p for p in u.path.split("/") if p]
             if parts == ["health"]:
                 return self._send(200, b"ok", "text/plain")
+            if board and parts[:1] == ["dash"]:  # 作战室自己管认证（查看密码，不是管理 token）
+                try:
+                    return board.handle_get(self, parts, u.query)
+                except Exception as e:  # noqa: BLE001
+                    log(f"dash GET {u.path} 出错: {e!r}")
+                    return self._send(500, {"error": "dash 内部错误"})
             if not self._authed():
                 return
             try:
@@ -268,6 +282,9 @@ def make_handler(mcp, jobs, token):
 
         def do_POST(self):
             parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if board and parts[:1] == ["dash"]:
+                n = int(self.headers.get("Content-Length", 0))
+                return board.handle_post(self, parts, self.rfile.read(min(n, 4096)) if n else b"")
             if not self._authed():
                 return
             try:
@@ -321,7 +338,14 @@ def main():
             "adb": ("/opt/homebrew/bin/adb", root), "devlock": (os.path.join(root, "tools", "devlock"), root),
             # 更新节点上的 phonefarm / game_opt_loop：上传的 tar 覆盖到对应目录（保留 runs 等数据）
             "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root))}
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), Jobs(root, bins), token))
+    jobs = Jobs(root, bins)
+    board = None
+    if dash:
+        try:
+            board = dash.Dash(root, gol, jobs.dir)
+        except Exception as e:  # noqa: BLE001
+            log(f"dash 起不来，/dash 不可用: {e!r}")
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board))
     log(f"节点服务 127.0.0.1:{a.port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})  根目录 {root}")
     srv.serve_forever()
 

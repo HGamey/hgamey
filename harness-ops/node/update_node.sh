@@ -9,6 +9,10 @@ for d in phonefarm game_opt_loop harness-ops; do
   rsync -a "$src/$d/" "$HOME/node/$d/"
   echo "updated ~/node/$d"
 done
+if [ -f "$src/secrets/dash.pass" ]; then
+  mkdir -p "$HOME/.config/hgamey" && install -m 600 "$src/secrets/dash.pass" "$HOME/.config/hgamey/dash.pass"
+  echo "updated ~/.config/hgamey/dash.pass"
+fi
 [ -f "$HOME/node/phonefarm/phonefarm" ] && codesign --force --sign - "$HOME/node/phonefarm/phonefarm" 2>/dev/null || true
 [ -f "$HOME/node/game_opt_loop/game_opt_loop" ] && codesign --force --sign - "$HOME/node/game_opt_loop/game_opt_loop" 2>/dev/null || true
 echo "节点服务本身的改动要重启服务才生效（harness-ops/node_service.py）"

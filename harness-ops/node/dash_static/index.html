@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>HGamey 作战室</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>HGamey 作战室</h1>
+    <span class="sub">真机实况 · 只读 · <span id="dev-name">—</span></span>
+  </div>
+  <div class="top-right">
+    <span id="lock-pill" class="pill">—</span>
+    <span id="live" class="live"><i></i><span id="live-text">连接中</span></span>
+    <form method="post" action="/dash/logout"><button class="ghost" title="退出">退出</button></form>
+  </div>
+</header>
+
+<main class="grid">
+  <section class="card phone" aria-labelledby="h-phone">
+    <div class="card-h"><h2 id="h-phone">手机</h2><span id="probe" class="chip">—</span></div>
+    <div class="tiles">
+      <div class="tile"><div class="k">在线</div><div class="v" id="t-online">—</div><div class="s" id="t-os"></div></div>
+      <div class="tile"><div class="k">电量</div><div class="v" id="t-bat">—</div><div class="s" id="t-batst"></div></div>
+      <div class="tile"><div class="k">SoC 最高温</div><div class="v" id="t-soc">—</div><div class="s" id="t-socz"></div></div>
+      <div class="tile"><div class="k">GPU / 电池温度</div><div class="v sm" id="t-gpu">—</div><div class="s" id="t-fan"></div></div>
+    </div>
+    <div class="fg"><span class="k">前台应用</span> <b id="t-fg">—</b></div>
+    <div class="spark-wrap">
+      <div class="spark-h"><span>SoC 温度 · 最近 30 分钟</span><span class="legend"><i class="sw held"></i>有人持锁（测量中）</span></div>
+      <svg id="spark" class="spark" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="SoC 温度走势"></svg>
+      <div id="spark-tip" class="tip" hidden></div>
+    </div>
+    <p id="phone-note" class="note"></p>
+  </section>
+
+  <section class="card lock" aria-labelledby="h-lock">
+    <div class="card-h"><h2 id="h-lock">设备锁</h2><span id="lock-age" class="muted"></span></div>
+    <div id="lock-holder" class="holder">—</div>
+    <div class="k">排队</div>
+    <ol id="queue" class="queue"></ol>
+    <div class="k">最近</div>
+    <ul id="lock-events" class="events"></ul>
+  </section>
+
+  <section class="card screen" aria-labelledby="h-screen">
+    <div class="card-h"><h2 id="h-screen">画面</h2><span id="shot-age" class="muted"></span></div>
+    <div class="shot-box">
+      <img id="shot" alt="手机截图" hidden>
+      <div id="shot-empty" class="shot-empty">还没有截图</div>
+      <div id="shot-veil" class="veil" hidden><b>测量进行中</b><span>暂停截图，避免给测量加噪声</span></div>
+    </div>
+    <p class="note" id="shot-rule"></p>
+  </section>
+
+  <section class="card jobs" aria-labelledby="h-jobs">
+    <div class="card-h"><h2 id="h-jobs">任务</h2><span id="jobs-count" class="muted"></span></div>
+    <ul id="jobs" class="job-list"></ul>
+  </section>
+
+  <section class="card log" aria-labelledby="h-log">
+    <div class="card-h"><h2 id="h-log">实时日志</h2><span id="log-title" class="muted"></span>
+      <label class="follow"><input type="checkbox" id="follow" checked> 跟随</label></div>
+    <pre id="log" class="logbox">选一个任务看日志</pre>
+  </section>
+
+  <section class="card exps" aria-labelledby="h-exps">
+    <div class="card-h"><h2 id="h-exps">实验</h2>
+      <select id="exp-sel" aria-label="选择实验"></select></div>
+    <div id="exp-head" class="exp-head"></div>
+    <div id="exp-chart" class="exp-chart"></div>
+    <div id="exp-gens" class="gens"></div>
+  </section>
+</main>
+<footer class="foot">只读看板：不会触发任何真机操作。别人持锁时只读 sysfs，不跑 dumpsys、不截图。</footer>
+<div id="tip" class="tip" hidden></div>
+<script src="/dash/static/app.js"></script>
+</body>
+</html>
