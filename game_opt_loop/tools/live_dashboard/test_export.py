@@ -112,9 +112,12 @@ class InputBoundary(unittest.TestCase):
                 "status": "BLOCKED_BEFORE_SELECTED_CONTROL_AND_BASELINES", "completed_at_unix_s": 30,
                 "prepare": {"status": "BLOCKED", "exit_code": 1, "performance_baselines_collected": 0,
                     "performance_baselines_requested": 3, "selected_control_write": "NOT_RUN",
+                    "elapsed_wall_s": 172.474,
                     "main_remote_tools_installed": True, "initial_snapshot_restore_graph_and_state_created": True},
                 "warmup": {"sample_count": 7, "span_s": 31.71, "max_single_sensor_range_c": 2.0, "hal_statuses": [0]*7},
+                "blocked_snapshot": {"gap_after_warmup_s": 110.2},
                 "recovery": {"exit_code": 0, "status": "RESTORED_REQUIRES_NEW_SESSION", "full_initial_snapshot_equal": True,
+                    "elapsed_wall_s": 84.819,
                     "owned_groups_absent_verified_by_existing_receiver": True, "remote_session_permanently_revoked": True,
                     "normal_lease_after_recovery_exit_code": 0},
                 "artifact_sha256": {str(p/name): h for name, h in hashes.items()}}
@@ -130,6 +133,9 @@ class InputBoundary(unittest.TestCase):
             record = m.eval_records(m.Source(p), "registry.json")[0]
             self.assertEqual(record["status"], "BLOCKED")
             self.assertEqual(record["metrics"][0]["value"], "0 / 3")
+            self.assertEqual(record["metrics"][-3]["value"], 172.47)
+            self.assertEqual(record["metrics"][-2]["value"], 84.82)
+            self.assertEqual(record["metrics"][-1]["value"], 110.2)
             self.assertIn("RESTORED_REQUIRES_NEW_SESSION", record["restoration"])
             self.assertFalse(record["promotion_allowed"])
             review["recovery"]["exit_code"] = 1

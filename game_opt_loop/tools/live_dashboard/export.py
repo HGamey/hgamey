@@ -311,6 +311,12 @@ def eval_records(s, registry):
             recovery = review.get("recovery", {})
             if recovery.get("exit_code") != rc["exit_code"] or recovery.get("status") != rr.get("status"):
                 raise ValueError("checkpoint recovery contradicts consumed restoration")
+            costs = [("准备流程耗时", prepared.get("elapsed_wall_s")),
+                ("还原流程耗时", recovery.get("elapsed_wall_s")),
+                ("暖机末点至写前检查", review.get("blocked_snapshot", {}).get("gap_after_warmup_s"))]
+            if any(type(v) not in {int, float} or not math.isfinite(v) or v < 0 for _, v in costs):
+                raise ValueError("missing/nonfinite phase cost")
+            x["metrics"] += [metric(k, round(v, 2), "s", "流程耗时诊断；不能证明阻断原因或游戏收益") for k, v in costs]
             if recovery.get("exit_code") == 0 and recovery.get("full_initial_snapshot_equal") is True and recovery.get("owned_groups_absent_verified_by_existing_receiver") is True and recovery.get("remote_session_permanently_revoked") is True and recovery.get("normal_lease_after_recovery_exit_code") == 0:
                 x["restoration"] += "；接收端核还原快照等于initial、远端会话撤销、归属组消失；独立普通租约exit0"
             x["sources"] = s.inputs[start:]
