@@ -5,10 +5,11 @@ scan a directory. Keep registry and output beneath the explicit canonical task
 root; never point it at credentials, an alias, a private snapshot or a session.
 
 ```sh
+task_release_name="release-$(date -u +%Y%m%dT%H%M%SZ)"
 python3 tools/live_dashboard/export.py \
   --task-root /Users/kamico/work/GOSIM/HGamey/phonefarm/tasks/oneplus_live_20261012 \
   --eval-registry reporting/live-dashboard-publication/eval-input-registry.json \
-  --out /Users/kamico/work/GOSIM/HGamey/phonefarm/tasks/oneplus_live_20261012/reporting/live-dashboard-publication/release-004
+  --out "/Users/kamico/work/GOSIM/HGamey/phonefarm/tasks/oneplus_live_20261012/reporting/live-dashboard-publication/$task_release_name"
 ```
 
 Use a fresh release name for each **completed** checkpoint. Registry schema
