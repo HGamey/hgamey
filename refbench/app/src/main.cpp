@@ -1,7 +1,8 @@
 // refbench — 白盒基准靶场, 单文件 Vulkan NativeActivity (hasCode=false, 零 Java)
 //
 // 纪律 (DESIGN.md §1): 本文件不含任何测量或判定逻辑。不读时钟决定内容、无随机数。
-// 内容只是 frame_index 的函数。输出 JSON 只有配置事实与提交计数, 没有时间量。
+// 内容只是 frame_index 的函数。refbench_out JSON 只有配置事实与提交计数。
+// 可选质量捕获的独立清单记录采集身份时钟，不作性能测量。
 //
 // 生命周期: 解析 intent extras → 起 Vulkan → 渲染固定帧数 (每帧恰好一次
 // vkQueueSubmit, 提交线程名 RefbenchRender) → 写 JSON + fsync → 进程自退。
@@ -34,6 +35,7 @@
 #include "gen/blit_frag.h"
 #include "gen/tri_vert.h"
 #include "gen/tri_frag.h"
+#include "paired_capture.h"
 
 #define TAG "refbench"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -44,6 +46,9 @@ static const char* RENDER_THREAD_NAME = "RefbenchRender";
 // Adreno Vulkan 驱动在自己进程内的内部线程 ("Thread-N") 上发 kgsl 提交, 不在调用线程。
 // 同线程组可写 /proc/self/task/<tid>/comm, 把它们统一改名 → ftrace 过滤有了稳定契约。
 static const char* DRIVER_THREAD_NAME = "RefbenchDrv";
+// Capture readback has a finite wait; the existing general shutdown path still
+// has vkDeviceWaitIdle and is not a bounded process-lifetime guarantee.
+static constexpr uint64_t CAPTURE_SUBMISSION_WAIT_NS = 10000000000ull;
 
 // ── 配置 (来自 intent extras, 全部字符串) ──────────────────────────────
 
@@ -58,6 +63,17 @@ struct Cfg {
     //   on  = 挂 postfx_shader 指定的 SPIR-V, 低分辨率 RT -> 高分辨率 RT       —— B 臂
     std::string knob_postfx = "off";
     std::string postfx_shader;  // 外部 candidate.spv 的设备侧绝对路径
+    std::string capture_native_pairs = "off";
+    int capture_start = 0, capture_count = 4, capture_stride = 1;
+    std::string capture_rules_path, capture_rules_sha256;
+};
+
+struct CaptureBuffer {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize bytes = 0;
+    uint32_t width = 0, height = 0;
+    std::string role;
 };
 
 struct PassInfo {
@@ -98,6 +114,18 @@ struct State {
     VkFramebuffer fbLo = VK_NULL_HANDLE;
     VkDescriptorSet setLo = VK_NULL_HANDLE, setHi = VK_NULL_HANDLE;
     bool hi_initialised = false;  // imgHi 首次使用前需要一次 layout 过渡
+    // Independent native HR is never imgHi (which is candidate compute output).
+    VkImage imgNativeHR = VK_NULL_HANDLE;
+    VkDeviceMemory memNativeHR = VK_NULL_HANDLE;
+    VkImageView viewNativeHR = VK_NULL_HANDLE;
+    VkFramebuffer fbNativeHR = VK_NULL_HANDLE;
+    VkPipeline pipeNativeHR = VK_NULL_HANDLE;
+    std::vector<CaptureBuffer> capture_buffers;
+    paired_capture::Sink capture_sink;
+    bool capture_initialized = false;
+    int capture_frames_written = 0;
+    uint64_t capture_recording_timestamp_ns = 0;
+    std::string candidate_sha256;
 
     // 外部装入的 compute 后处理算子
     VkShaderModule postfx_module = VK_NULL_HANDLE;
@@ -219,6 +247,9 @@ static void write_output_json() {
     if (g.cfg.scene == "bw_pingpong") { j += "\"loadop\": \""; j += g.cfg.knob_loadop; j += "\""; }
     if (g.cfg.scene == "sr_pipeline") { j += "\"postfx\": \""; j += g.cfg.knob_postfx; j += "\""; }
     j += "},\n";
+    if (g.cfg.capture_native_pairs == "on") {
+        j += " \"capture_mode\": \"quality_only\",\n \"performance_eligible\": false,\n";
+    }
     // postfx 的配置事实。只记"装了什么、几字节、进出多大", 不含任何时间量 ——
     // 测量与判定是 phonefarm 侧的事 (DESIGN.md §1 跑测分离)。
     if (g.cfg.scene == "sr_pipeline") {
@@ -290,7 +321,18 @@ static void write_started_marker() {
 }
 
 static void finish_and_exit(int code) {
+    if (g.capture_initialized && (!g.clean_exit ||
+            g.capture_frames_written != g.cfg.capture_count)) {
+        g.clean_exit = false;
+        code = 2;
+        g.capture_sink.fail("run_aborted_or_incomplete");
+    }
     if (g.dev) vkDeviceWaitIdle(g.dev);
+    if (g.capture_initialized && !g.capture_sink.manifest(g.clean_exit &&
+            g.capture_frames_written == g.cfg.capture_count)) {
+        g.clean_exit = false;
+        code = 2;
+    }
     write_output_json();
     LOGI("REFBENCH_DONE code=%d scene=%s run_id=%s frames=%d clean=%d",
          code, g.cfg.scene.c_str(), g.cfg.run_id.c_str(), g.frames_submitted, (int)g.clean_exit);
@@ -349,6 +391,17 @@ static void read_cfg_from_intent(android_app* app) {
         g.cfg.knob_loadop = getS("knob.loadop", g.cfg.knob_loadop);
         g.cfg.knob_postfx = getS("knob.postfx", g.cfg.knob_postfx);
         g.cfg.postfx_shader = getS("postfx.shader", g.cfg.postfx_shader);
+        g.cfg.capture_native_pairs = getS("capture.native_pairs", "off");
+        auto captureInt = [&](const char* key, int fallback) {
+            std::string value = getS(key, std::to_string(fallback));
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos || value.size() > 6) return -1;
+            return atoi(value.c_str());
+        };
+        g.cfg.capture_start = captureInt("capture.start", 0);
+        g.cfg.capture_count = captureInt("capture.count", 4);
+        g.cfg.capture_stride = captureInt("capture.stride", 1);
+        g.cfg.capture_rules_path = getS("capture.rules_path", "");
+        g.cfg.capture_rules_sha256 = getS("capture.rules_sha256", "");
     }
     vm->DetachCurrentThread();
     if (g.cfg.frames < 60) g.cfg.frames = 60;
@@ -362,6 +415,17 @@ static void read_cfg_from_intent(android_app* app) {
     }
     if (g.cfg.knob_loadop != "on" && g.cfg.knob_loadop != "off") g.cfg.knob_loadop = "off";
     if (g.cfg.knob_postfx != "on" && g.cfg.knob_postfx != "off") g.cfg.knob_postfx = "off";
+    if (g.cfg.capture_native_pairs != "off" && g.cfg.capture_native_pairs != "on") {
+        LOGE("invalid capture.native_pairs"); finish_and_exit(2);
+    }
+    if (g.cfg.capture_native_pairs == "on" &&
+        (g.cfg.scene != "sr_pipeline" || !paired_capture::name_ok(g.cfg.run_id) ||
+         !paired_capture::hash_ok(g.cfg.capture_rules_sha256) || g.cfg.capture_rules_path.empty() ||
+         g.cfg.capture_start < 0 || g.cfg.capture_count < 1 || g.cfg.capture_count > 16 ||
+         g.cfg.capture_stride < 1 || g.cfg.capture_stride > 16 ||
+         int64_t(g.cfg.capture_start) + int64_t(g.cfg.capture_count - 1) * g.cfg.capture_stride >= g.cfg.frames)) {
+        LOGE("invalid native paired capture configuration; refusing silent fallback"); finish_and_exit(2);
+    }
     LOGI("REFBENCH_CFG scene=%s run_id=%s frames=%d intensity=%d loadop=%s postfx=%s shader=%s",
          g.cfg.scene.c_str(), g.cfg.run_id.c_str(), g.cfg.frames, g.cfg.intensity,
          g.cfg.knob_loadop.c_str(), g.cfg.knob_postfx.c_str(),
@@ -434,6 +498,7 @@ static void make_storage_rt(uint32_t w, uint32_t h, VkFormat fmt, bool color_att
     ic.tiling = VK_IMAGE_TILING_OPTIMAL;
     ic.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
                VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (g.cfg.capture_native_pairs == "on") ic.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (color_attachment) ic.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     ic.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -483,6 +548,7 @@ static bool load_external_spirv(const std::string& path, VkShaderModule* out, lo
         return false;
     }
     *bytes = sz;
+    g.candidate_sha256 = paired_capture::digest(words.data(), size_t(sz));
     return true;
 }
 
@@ -966,6 +1032,12 @@ static void init_vulkan() {
 
         VkShaderModule fs_alu = make_shader(g_alu_frag, g_alu_frag_len);
         g.pipe_alu = make_pipeline(vs_full, fs_alu, g.rp_alu, State::SR_LO_W, State::SR_LO_H);
+        if (g.cfg.capture_native_pairs == "on") {
+            make_storage_rt(State::SR_HI_W, State::SR_HI_H, F, true,
+                            &g.imgNativeHR, &g.memNativeHR, &g.viewNativeHR);
+            g.fbNativeHR = make_fb(g.rp_alu, g.viewNativeHR, State::SR_HI_W, State::SR_HI_H);
+            g.pipeNativeHR = make_pipeline(vs_full, fs_alu, g.rp_alu, State::SR_HI_W, State::SR_HI_H);
+        }
         g.pipe_blit = make_pipeline(vs_full, fs_blit, g.rp_swap_dont,
                                     g.swap_extent.width, g.swap_extent.height);
         vkDestroyShaderModule(g.dev, fs_alu, nullptr);
@@ -973,6 +1045,10 @@ static void init_vulkan() {
 
         g.passes.push_back({"scene_lowres", "rtLo", "DONT_CARE", "STORE",
                             "R8G8B8A8_UNORM", State::SR_LO_W, State::SR_LO_H});
+        if (g.cfg.capture_native_pairs == "on") {
+            g.passes.push_back({"scene_native_hr_capture_only", "nativeHR", "DONT_CARE", "STORE",
+                               "R8G8B8A8_UNORM", State::SR_HI_W, State::SR_HI_H});
+        }
 
         if (g.cfg.knob_postfx == "on") {
             if (g.cfg.postfx_shader.empty()) {
@@ -1095,6 +1171,132 @@ static int rename_driver_threads() {
 
 struct PushC { float phase; int32_t iters; };
 
+static void init_capture() {
+    if (g.cfg.capture_native_pairs != "on")
+        return;
+    std::string rules_bytes, rules_hash;
+    uint64_t frozen_at = 0;
+    if (!paired_capture::file_hash(g.cfg.capture_rules_path, &rules_hash, &rules_bytes) ||
+        rules_hash != g.cfg.capture_rules_sha256 ||
+        !paired_capture::FrozenTimeParser(rules_bytes).parse(&frozen_at)) {
+        LOGE("capture rules file/hash/freeze invalid");
+        finish_and_exit(2);
+    }
+    const char *base = g.app->activity->externalDataPath ? g.app->activity->externalDataPath
+                                                         : g.app->activity->internalDataPath;
+    if (!base) {
+        LOGE("capture data path missing");
+        finish_and_exit(2);
+    }
+    mkdirs(base);
+    paired_capture::Config cfg;
+    cfg.run_id = g.cfg.run_id;
+    cfg.total_frames = g.cfg.frames;
+    cfg.intensity = g.cfg.intensity;
+    cfg.start = g.cfg.capture_start;
+    cfg.count = g.cfg.capture_count;
+    cfg.stride = g.cfg.capture_stride;
+    cfg.rules_sha256 = rules_hash;
+    cfg.frozen_at_ms = frozen_at;
+    cfg.scene_shader_sha256 = paired_capture::digest(g_alu_frag, g_alu_frag_len);
+    cfg.vertex_shader_sha256 = paired_capture::digest(g_fullscreen_vert, g_fullscreen_vert_len);
+    cfg.candidate_sha256 = g.postfx_active ? g.candidate_sha256 : "";
+    if (!g.capture_sink.begin(base, cfg)) {
+        LOGE("capture begin failed (rules not frozen or output already exists)");
+        finish_and_exit(2);
+    }
+    g.capture_initialized = true;
+    for (const auto &role :
+         std::vector<std::string>{"native_lr", "native_hr", "postfx_candidate"}) {
+        if (role == "postfx_candidate" && !g.postfx_active)
+            continue;
+        CaptureBuffer b;
+        b.role = role;
+        b.width = role == "native_lr" ? State::SR_LO_W : State::SR_HI_W;
+        b.height = role == "native_lr" ? State::SR_LO_H : State::SR_HI_H;
+        b.bytes = VkDeviceSize(b.width) * b.height * 4;
+        VkBufferCreateInfo bc{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bc.size = b.bytes;
+        bc.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VKC(vkCreateBuffer(g.dev, &bc, nullptr, &b.buffer));
+        VkMemoryRequirements requirements;
+        vkGetBufferMemoryRequirements(g.dev, b.buffer, &requirements);
+        VkMemoryAllocateInfo ma{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ma.allocationSize = requirements.size;
+        ma.memoryTypeIndex =
+            find_mem_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VKC(vkAllocateMemory(g.dev, &ma, nullptr, &b.memory));
+        VKC(vkBindBufferMemory(g.dev, b.buffer, b.memory, 0));
+        g.capture_buffers.push_back(b);
+    }
+}
+
+static void record_capture_copies(VkCommandBuffer cb, int frame_idx) {
+    if (!g.capture_initialized || !g.capture_sink.selected(frame_idx))
+        return;
+    for (const auto &b : g.capture_buffers) {
+        VkImage image =
+            b.role == "native_lr" ? g.imgLo : (b.role == "native_hr" ? g.imgNativeHR : g.imgHi);
+        VkImageMemoryBarrier to{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        to.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                           VK_ACCESS_SHADER_READ_BIT;
+        to.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        to.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        to.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        to.srcQueueFamilyIndex = to.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to.image = image;
+        to.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cb,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {b.width, b.height, 1};
+        vkCmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, b.buffer, 1, &copy);
+        VkImageMemoryBarrier back = to;
+        back.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        back.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        back.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        back.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &back);
+        VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host.buffer = b.buffer;
+        host.size = b.bytes;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
+                             nullptr, 1, &host, 0, nullptr);
+    }
+}
+
+static void write_capture_frame(int frame_idx) {
+    std::vector<paired_capture::Raw> raw;
+    for (const auto &b : g.capture_buffers) {
+        void *ptr = nullptr;
+        VKC(vkMapMemory(g.dev, b.memory, 0, b.bytes, 0, &ptr));
+        raw.push_back({b.role, b.width, b.height, ptr});
+    }
+    bool ok = g.capture_sink.frame(frame_idx, paired_capture::phase(frame_idx, g.cfg.frames),
+                                   g.capture_recording_timestamp_ns, raw);
+    for (const auto &b : g.capture_buffers)
+        vkUnmapMemory(g.dev, b.memory);
+    if (!ok) {
+        LOGE("capture readback write failed");
+        g.clean_exit = false;
+        g.capture_sink.fail("readback_write_failed");
+        finish_and_exit(2);
+    }
+    g.capture_frames_written++;
+}
 static void label_begin(VkCommandBuffer cb, const char* name) {
     if (!g.debug_labels) return;
     VkDebugUtilsLabelEXT l{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
@@ -1111,7 +1313,7 @@ static void record_frame(VkCommandBuffer cb, uint32_t image_idx, int frame_idx) 
     VKC(vkBeginCommandBuffer(cb, &bi));
 
     PushC pc;
-    pc.phase = (float)(2.0 * M_PI * (double)frame_idx / (double)g.cfg.frames);
+    pc.phase = paired_capture::phase(frame_idx,g.cfg.frames);
     pc.iters = 0;
 
     if (g.cfg.scene == "bw_pingpong") {
@@ -1190,6 +1392,14 @@ static void record_frame(VkCommandBuffer cb, uint32_t image_idx, int frame_idx) 
         label_end(cb);
 
         VkDescriptorSet present_src = g.setLo;  // postfx=off 时直接放大低分辨率图
+        if (g.capture_initialized && g.capture_sink.selected(frame_idx)) {
+            label_begin(cb,"scene_native_hr_capture_only");
+            VkRenderPassBeginInfo hr{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};hr.renderPass=g.rp_alu;hr.framebuffer=g.fbNativeHR;
+            hr.renderArea={{0,0},{State::SR_HI_W,State::SR_HI_H}};
+            vkCmdBeginRenderPass(cb,&hr,VK_SUBPASS_CONTENTS_INLINE);vkCmdBindPipeline(cb,VK_PIPELINE_BIND_POINT_GRAPHICS,g.pipeNativeHR);
+            vkCmdPushConstants(cb,g.playout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,8,&pc);
+            vkCmdDraw(cb,3,1,0,0);vkCmdEndRenderPass(cb);label_end(cb);
+        }
 
         if (g.postfx_active) {
             // 2) 管线尾部的 compute 算子: rtLo -> rtHi, 全程在显存里
@@ -1275,6 +1485,7 @@ static void record_frame(VkCommandBuffer cb, uint32_t image_idx, int frame_idx) 
         vkCmdEndRenderPass(cb);
         label_end(cb);
     }
+    record_capture_copies(cb,frame_idx);
     VKC(vkEndCommandBuffer(cb));
 }
 
@@ -1308,6 +1519,7 @@ static void render_all_frames() {
             finish_and_exit(2);
         }
 
+        if(g.capture_initialized)g.capture_recording_timestamp_ns=paired_capture::clock_ns(CLOCK_MONOTONIC);
         record_frame(g.cmd[f], idx, frame);
 
         VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -1334,6 +1546,16 @@ static void render_all_frames() {
             finish_and_exit(2);
         }
         g.frames_submitted++;
+        if(g.capture_initialized && g.capture_sink.selected(frame)){
+            VkResult capture_wait=vkWaitForFences(g.dev,1,&g.fence[f],VK_TRUE,CAPTURE_SUBMISSION_WAIT_NS);
+            if(capture_wait!=VK_SUCCESS){
+                g.clean_exit=false;
+                g.capture_sink.fail(capture_wait==VK_TIMEOUT?"submission_fence_timeout":"submission_fence_error");
+                LOGE("capture submission wait failed %d",int(capture_wait));
+                finish_and_exit(2);
+            }
+            write_capture_frame(frame);
+        }
         f = (f + 1) % State::FLIGHTS;
     }
     g.clean_exit = true;
@@ -1377,6 +1599,7 @@ void android_main(android_app* app) {
     }
 
     init_vulkan();
+    init_capture();
     write_started_marker();
     LOGI("REFBENCH_START scene=%s frames=%d", g.cfg.scene.c_str(), g.cfg.frames);
     render_all_frames();

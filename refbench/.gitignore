@@ -2,3 +2,5 @@ build/out/
 *.spv
 *.o
 .DS_Store
+__pycache__/
+*.pyc
