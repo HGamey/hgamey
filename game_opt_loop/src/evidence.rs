@@ -16,6 +16,14 @@ pub enum QualificationState {
 }
 
 pub fn qualification_state(evidence: &Extensions) -> QualificationState {
+    // Offline qualification replays do not contain a new optimization measurement.
+    // A malformed replay marker must not silently become permission to promote.
+    if evidence
+        .get("qualification_only")
+        .is_some_and(|value| value.as_bool() != Some(false))
+    {
+        return QualificationState::Ineligible;
+    }
     match evidence.get("qualification") {
         None => QualificationState::LegacyUnqualified,
         Some(q)
