@@ -367,6 +367,50 @@ fn run_window(
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MeasurementWindow {
+    schema: String,
+    device_serial: String,
+    boot_id: String,
+    capture_start_uptime_s: f64,
+    capture_end_uptime_s: f64,
+    env_start_uptime_s: f64,
+    env_end_uptime_s: f64,
+    env_duration_s: f64,
+    env_interval_s: f64,
+    clock_scope: String,
+}
+
+fn measurement_window(v: &Value) -> Option<MeasurementWindow> {
+    let w: MeasurementWindow = serde_json::from_value(v["measurement_window"].clone()).ok()?;
+    let (start, end) = run_window(v)?;
+    let host_seconds = (end - start).num_milliseconds() as f64 / 1000.0;
+    let valid = w.schema == "phonefarm/measurement_window@1"
+        && w.clock_scope == "capture_metadata_and_env_proc_uptime"
+        && !w.device_serial.trim().is_empty()
+        && !w.boot_id.trim().is_empty()
+        && [
+            w.capture_start_uptime_s,
+            w.capture_end_uptime_s,
+            w.env_start_uptime_s,
+            w.env_end_uptime_s,
+            w.env_duration_s,
+            w.env_interval_s,
+        ]
+        .iter()
+        .all(|n| n.is_finite() && *n >= 0.0)
+        && w.capture_start_uptime_s < w.capture_end_uptime_s
+        && w.env_start_uptime_s < w.env_end_uptime_s
+        && w.env_start_uptime_s <= w.capture_start_uptime_s
+        && w.env_end_uptime_s >= w.capture_end_uptime_s
+        && w.env_interval_s > 0.0
+        && w.env_interval_s <= w.env_duration_s
+        && w.env_duration_s <= host_seconds
+        && w.env_end_uptime_s - w.env_start_uptime_s <= host_seconds;
+    valid.then_some(w)
+}
+
 /// Positive differences always mean worse. One-sided simultaneous upper bounds use
 /// Bonferroni alpha/m, so a nonsignificant difference cannot establish noninferiority.
 fn summarize(rule: &MetricRule, a: &[f64], b: &[f64], alpha: f64) -> Result<MetricResult> {
@@ -466,6 +510,7 @@ pub fn judge(
     let mut raw_seen: BTreeSet<String> = p.exploration_artifact_sha256.iter().cloned().collect();
     let mut arms = vec![];
     let mut previous_end = registered;
+    let mut previous_measurement: Option<MeasurementWindow> = None;
     for (index, pair) in samples.pairs.iter().enumerate() {
         if p.schedule.get(index).is_none_or(|planned| {
             planned.pair_id != pair.pair_id
@@ -533,6 +578,29 @@ pub fn judge(
             }
         }
         if values.len() == 2 {
+            if let Some(planned) = p.schedule.get(index) {
+                let ordered = if planned.baseline_first {
+                    [&values[0], &values[1]]
+                } else {
+                    [&values[1], &values[0]]
+                };
+                for v in ordered {
+                    if let Some(w) = measurement_window(v) {
+                        if previous_measurement.as_ref().is_some_and(|prior| {
+                            prior.device_serial != w.device_serial
+                                || prior.boot_id != w.boot_id
+                                || w.env_start_uptime_s <= prior.env_end_uptime_s
+                                || w.capture_start_uptime_s <= prior.capture_end_uptime_s
+                        }) {
+                            out.issues.push("overlapping/reversed device measurement windows or changed device/boot identity".into());
+                        }
+                        previous_measurement = Some(w);
+                    } else {
+                        out.issues
+                            .push("missing/invalid whole measurement window declaration".into());
+                    }
+                }
+            }
             if let (Some((a_start, a_end)), Some((b_start, b_end)), Some(planned)) = (
                 run_window(&values[0]),
                 run_window(&values[1]),
@@ -769,6 +837,10 @@ mod contract_tests {
                 let first = (role == "baseline") == p.baseline_first;
                 let second = i * 4 + 1 + usize::from(!first) * 2;
                 let report = json!({"schema":"phonefarm/confirmation_observation@1","source":"phonefarm","status":"VALID_OBSERVATION","qualification":{"stage":"experiment","eligible":false,"evidence_origin":"recorded_device"},
+                    "measurement_window":{"schema":"phonefarm/measurement_window@1","device_serial":"fixture-device","boot_id":"fixture-boot",
+                        "capture_start_uptime_s":1000.0+second as f64+0.1,"capture_end_uptime_s":1000.0+second as f64+0.8,
+                        "env_start_uptime_s":1000.0+second as f64,"env_end_uptime_s":1000.0+second as f64+0.9,
+                        "env_duration_s":1.0,"env_interval_s":0.25,"clock_scope":"capture_metadata_and_env_proc_uptime"},
                     "sample_qualification":{"schema":"phonefarm/confirmation_sample_qualification@1","valid_observation":true,"baseline_admission_sha256":frozen.plan.baseline_admission_sha256,"gates":{"root_verified":true,"control_verified":true,"cold_verified":true,"trace_window_verified":true,"workload_succeeded":true,"restore_verified":true,"baseline_admission_verified":true}},
                     "metrics":{"power_watt":if role=="baseline" {100.0} else {91.0+i as f64}},
                     "metric_provenance":{"power_watt":{"source":"battery_sysfs","rail":"battery","window_verified":true,"discharging":true}},
@@ -902,6 +974,53 @@ mod contract_tests {
         let reused = hash(format!("{}:env", s.pairs[1].a_run_id).as_bytes());
         modify_first(&root, &mut s, |v| {
             v["confirmation_binding"]["raw_artifacts"]["env_sha256"] = serde_json::json!(reused)
+        });
+        assert_eq!(check(&root, &f, &s).verdict, "BLOCKED");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn distinct_report_hashes_do_not_make_shared_or_unknown_device_windows_independent() {
+        for (field, invalid) in [
+            ("schema", json!("unknown")),
+            ("clock_scope", json!("ftrace_event_clock")),
+            ("device_serial", json!("other-device")),
+            ("boot_id", json!("other-boot")),
+            ("capture_end_uptime_s", Value::Null),
+            ("env_start_uptime_s", json!(-1.0)),
+            ("env_end_uptime_s", json!(1001.5)),
+            ("env_duration_s", json!(220.0)),
+            ("env_interval_s", json!(0.0)),
+        ] {
+            let (root, f, mut s) = fixture();
+            modify_first(&root, &mut s, |v| v["measurement_window"][field] = invalid);
+            let r = check(&root, &f, &s);
+            assert_eq!(r.verdict, "BLOCKED", "{field}");
+            assert!(
+                r.issues.iter().any(|i| i.contains("measurement")),
+                "{field}: {:?}",
+                r.issues
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        let (root, f, mut s) = fixture();
+        let second: Value =
+            serde_json::from_slice(&std::fs::read(root.join(&s.pairs[0].b_report)).unwrap())
+                .unwrap();
+        modify_first(&root, &mut s, |v| {
+            v["measurement_window"] = second["measurement_window"].clone()
+        });
+        assert_ne!(s.pairs[0].a_report_sha256, s.pairs[0].b_report_sha256);
+        let r = check(&root, &f, &s);
+        assert_eq!(r.verdict, "BLOCKED");
+        assert!(r
+            .issues
+            .iter()
+            .any(|i| i.contains("overlapping/reversed device measurement")));
+        std::fs::remove_dir_all(root).unwrap();
+        let (root, f, mut s) = fixture();
+        modify_first(&root, &mut s, |v| {
+            v.as_object_mut().unwrap().remove("measurement_window");
         });
         assert_eq!(check(&root, &f, &s).verdict, "BLOCKED");
         std::fs::remove_dir_all(root).unwrap();
