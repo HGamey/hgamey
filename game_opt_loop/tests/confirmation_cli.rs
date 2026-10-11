@@ -55,13 +55,14 @@ fn real_cli_freezes_then_refuses_overwrite_and_records_blocked_synthetic_replay(
     .success());
     assert_eq!(std::fs::read(root.join("frozen.json")).unwrap(), original);
     let frozen: Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&r.stdout).unwrap(), frozen);
     let samples = json!({"frozen_plan_sha256":frozen["sha256"],"candidate_artifact_sha256":frozen["plan"]["candidate_artifact_sha256"],"conditions_sha256":frozen["plan"]["conditions_sha256"],"source_kind":"synthetic_fixture","pairs":[]});
     std::fs::write(
         root.join("samples.json"),
         serde_json::to_vec(&samples).unwrap(),
     )
     .unwrap();
-    assert!(!run(
+    let judged = run(
         &[
             "confirm",
             "judge",
@@ -70,18 +71,21 @@ fn real_cli_freezes_then_refuses_overwrite_and_records_blocked_synthetic_replay(
             "--samples",
             "samples.json",
             "--out",
-            "report.json"
+            "report.json",
         ],
-        &root
-    )
-    .status
-    .success());
+        &root,
+    );
+    assert!(!judged.status.success());
     let report: Value =
         serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
     assert_eq!(report["verdict"], "BLOCKED");
     assert_eq!(report["promotion_allowed"], false);
     assert_eq!(report["real_game_optimization_proven"], false);
     assert!(report["issues"].as_array().unwrap().len() >= 2);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&judged.stdout).unwrap(),
+        report
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 #[test]

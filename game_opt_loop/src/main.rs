@@ -358,9 +358,12 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    println!("==================================================");
-    println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
-    println!("==================================================");
+    // 确认入口的 stdout 是协议 JSON，便于外层 harness 直接消费。
+    if !matches!(&cli.command, Some(Command::Confirm { .. })) {
+        println!("==================================================");
+        println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
+        println!("==================================================");
+    }
 
     match cli.command {
         Some(Command::Confirm { action }) => return game_opt_loop::confirmation::run(action),
