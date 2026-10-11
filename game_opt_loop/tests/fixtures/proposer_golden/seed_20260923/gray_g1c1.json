@@ -9,7 +9,7 @@
     "fan": "unknown",
     "require_discharging": true,
     "require_root": true,
-    "temp_cap_c": 45.0
+    "temp_cap_c": 70.0
   },
   "kind": "gray",
   "package": "com.miHoYo.Yuanshen",
