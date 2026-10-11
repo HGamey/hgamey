@@ -1,0 +1,40 @@
+{
+  "complete": true,
+  "files": {
+    "candidate.json": {
+      "bytes": 1014,
+      "sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f"
+    },
+    "descriptor.json": {
+      "bytes": 2490,
+      "sha256": "6f34194322739f1cf2818fcb0b1cece006916e5e29ced0dc4c1cea6fe2767a00"
+    },
+    "gate.json": {
+      "bytes": 447,
+      "sha256": "07e3377ee5c6c0b04cf2178ab8b31c69b20c51d48cac48696f62451602b9b7eb"
+    },
+    "original.comp": {
+      "bytes": 673,
+      "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+    },
+    "original.spv": {
+      "bytes": 2688,
+      "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+    },
+    "rules.json": {
+      "bytes": 1817,
+      "sha256": "64bdee660bc9432bfa1cb9a6f1d890d4b9043d2e0548faf065d384980e737b6e"
+    }
+  },
+  "frozen_identity": "6f34194322739f1cf2818fcb0b1cece006916e5e29ced0dc4c1cea6fe2767a00",
+  "proof_flags": {
+    "deployable": false,
+    "gpu_validated": false,
+    "promotion_allowed": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "semantic_equivalence_proven": false
+  },
+  "schema": "game_opt_loop/candidate_compilation@1",
+  "state": "host_compiled"
+}

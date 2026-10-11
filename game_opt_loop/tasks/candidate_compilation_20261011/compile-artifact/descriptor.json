@@ -1,0 +1,73 @@
+{
+  "candidate_generation": 0,
+  "candidate_id": "actual-naga-sr-interface",
+  "claim_scope": "local_compiler_integrity_not_authenticated_attestation",
+  "compiler_identity": {
+    "claim_scope": "on_disk_running_executable_and_embedded_sources_not_toolchain_authentication",
+    "compiler": "repository_validator_naga_glsl_to_spirv",
+    "configured_naga_features": [
+      "glsl-in",
+      "wgsl-in",
+      "spv-out"
+    ],
+    "crate_version": "0.2.0",
+    "embedded_files": {
+      "Cargo.lock": {
+        "bytes": 52121,
+        "sha256": "c234e794ba3d53793e96d0655f335a284efad33084bfd98178614628f74be5a8"
+      },
+      "Cargo.toml": {
+        "bytes": 1338,
+        "sha256": "8e4ddea557203d717e5acf9e8eb0fe723d9f2930d88ceb45876589f471fa9972"
+      },
+      "src/candidate_artifact.rs": {
+        "bytes": 23321,
+        "sha256": "d38b5dcd38ec426f3bb2011420b8ca1d53f5d5e348325eae43550b8a887119fd"
+      },
+      "src/engine/analysis.rs": {
+        "bytes": 40256,
+        "sha256": "8058597ceb43b3f13fe00d067c995f16c90d8fe6b4107771ac6a473f7b4bab94"
+      },
+      "src/engine/mod.rs": {
+        "bytes": 23535,
+        "sha256": "a1be1ea2451113ae6ade055331cb8bc31a4ca9f3f8b90eaca18a1b27ccb50358"
+      },
+      "src/engine/validator.rs": {
+        "bytes": 39669,
+        "sha256": "42be6440666931e6d6752b64ab10a611dfe3df0c40628b5f0ba377293351f9e7"
+      },
+      "src/tracks/mod.rs": {
+        "bytes": 10018,
+        "sha256": "76e326ba2b46f3949d396550db5f676d8df2299bc6ef9db8221bd2b898f66a2d"
+      }
+    },
+    "executable_bytes": 45408320,
+    "executable_sha256": "bcd1dc1c7a2180324fcf4e1cdf5c7cf968d40f5d50dc5b897622d5c8df0de1d8"
+  },
+  "files": {
+    "candidate.json": {
+      "bytes": 1014,
+      "sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f"
+    },
+    "gate.json": {
+      "bytes": 447,
+      "sha256": "07e3377ee5c6c0b04cf2178ab8b31c69b20c51d48cac48696f62451602b9b7eb"
+    },
+    "original.comp": {
+      "bytes": 673,
+      "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+    },
+    "original.spv": {
+      "bytes": 2688,
+      "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+    },
+    "rules.json": {
+      "bytes": 1817,
+      "sha256": "64bdee660bc9432bfa1cb9a6f1d890d4b9043d2e0548faf065d384980e737b6e"
+    }
+  },
+  "gate_passed": true,
+  "schema": "game_opt_loop/candidate_compilation@1",
+  "source_spirv_association": "repository_gate_compiler_replayable",
+  "track": "sr"
+}
