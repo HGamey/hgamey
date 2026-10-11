@@ -2,16 +2,16 @@
 
 这份文件是唯一的现状总页。其它文档里出现「现状 / 进行中 / 下一步」的段落，一律以这里为准；同事照这份更新 PPT，这里过时了他就没法跟进。
 
-最后核对：2026-09-24（北京时间）
+最后核对：2026-10-11（系统交接审计；新增功能仍以实际合入与对应验收为准）
 
 各仓最后核对到的 PR：
 
 | 仓库 | 最后核对的 PR |
 |---|---|
-| game_opt_loop | [#14](https://github.com/HGamey/game_opt_loop/pull/14) |
-| phonefarm（对外 BH3GEI/phonefarm） | [#73](https://github.com/BH3GEI/phonefarm/pull/73) |
+| game_opt_loop | [#24](https://github.com/HGamey/game_opt_loop/pull/24)，审计基线 `d0807b1` |
+| phonefarm | HGamey/main `e3b7c35`（[#6](https://github.com/HGamey/phonefarm/pull/6)）；上游核心状态核对到 [#73](https://github.com/BH3GEI/phonefarm/pull/73) |
 | refbench | [#1](https://github.com/HGamey/refbench/pull/1) |
-| .github（组织主页） | [#3](https://github.com/HGamey/.github/pull/3) |
+| .github（组织主页） | `4ad34ae`；会议 [0917](https://github.com/orgs/HGamey/discussions/1) / [0924](https://github.com/orgs/HGamey/discussions/10) |
 
 ---
 
@@ -25,6 +25,23 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 - **sr_loop**：已结项的前序实验，不在当前主线。
 
 ---
+
+## 系统交付差距（2026-10-11核对）
+
+会议要求的目标是媒体算法寻优全流程，当前已经有可运行组件和实际案例，仍有以下结构断点。以下按 `d0807b1` / `e3b7c35` 源码核对；开放 issue 或 draft PR 不算主线完成。
+
+| 目标 | 当前实际边界 | 追踪 |
+|---|---|---|
+| 自主 SR 进入黑盒游戏 | 独立 Shader 入口在工装演化；optimize 只驱动系统参数和有限 LoadOp；原神固定 upop 是另一路人工实验，动态候选未统一 | [系统 #14](https://github.com/HGamey/.github/issues/14) |
+| 专家每代方向筛选与恢复 | 没有两入口共用的风险/收益/成本决定与 campaign checkpoint | [本仓 #25](https://github.com/HGamey/game_opt_loop/issues/25) |
+| 完整实验/结论资格 | KGSL 提交间隔分组是代理节奏，不是 present/display 测量；缺必需指标、冷热/恢复失败需统一阻断 | [系统 #12](https://github.com/HGamey/.github/issues/12) |
+| 连续帧质量 | 静态 PSNR/MAD 与单图平移+合成 HUD 机制已有；真实连续色调/鬼影门禁未完成 | [系统 #13](https://github.com/HGamey/.github/issues/13) |
+| 真正 LR/HR/插帧配对 | SR 的 LR 仍由 HR 降采样；插帧输入仍为单图平移；不能作为原生渲染/运动配对证明 | [系统 #15](https://github.com/HGamey/.github/issues/15) |
+| 设计/训练/量化/部署/调优 | 主线候选是 GLSL；sr_loop 历史 checkout 没有可直接部署的权重/TFLite/配对数组 | [系统 #16](https://github.com/HGamey/.github/issues/16) |
+| 实际条件与自动租约 | Shader 发送/接收降级会丢失部分 v2 条件；requested 不能充当 observed；锁仍依赖手工 | [系统 #17](https://github.com/HGamey/.github/issues/17) |
+| 独立确认与零成本声明 | 已有探索案例；不显著不能证明非劣效，最终案例还需与探索分开的确认数据 | [系统 #18](https://github.com/HGamey/.github/issues/18) |
+
+原神灰层能力仅在已有设备/客户端/管线条件下有证据；一加 Ace 5 接回后需要重新验证资格、挂点、命中、持续控制、供电和恢复。国内模型通道已实现，但跨模型同预算效果/成本尚未验证。完整交接与迭代顺序见 [docs 交接计划 PR](https://github.com/HGamey/docs/pull/5)，总追踪 [系统 #11](https://github.com/HGamey/.github/issues/11)。
 
 ## 能力清单
 
@@ -53,8 +70,8 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 | 已完成 | loop_v1 最小可信闭环（五条判据实测通过） | [#24](https://github.com/BH3GEI/phonefarm/pull/24) |
 | 已完成 | 灰档只读层 + LoadOp 改写 + passdump 描述符溯源（原 HGamey/knobs 并入） | [#31](https://github.com/BH3GEI/phonefarm/pull/31)、[#42](https://github.com/BH3GEI/phonefarm/pull/42)、[#47](https://github.com/BH3GEI/phonefarm/pull/47)、[#49](https://github.com/BH3GEI/phonefarm/pull/49) |
 | 已完成 | 灰档超分算子可行性（只读观测确认可行：放大 = 帧内最后一个 pass 的第一笔 draw，采样图可读） | [#47](https://github.com/BH3GEI/phonefarm/pull/47) |
-| 已完成 | 灰档超分机制全链路预演（copyprobe 1:1 拷贝探针）：反作弊放行、帧时无损、画面构造性逐位不变 | [#51](https://github.com/BH3GEI/phonefarm/pull/51) |
-| 已完成 | 灰档真超分算子投原神大世界（gen1_loc3，2×2 bilinear）：替换「渲染精度低」档下游戏自带放大，5 对 A/B 无指标显著变差（零成本通过），画质比游戏自带放大接近原生 3–4 倍 | [#64](https://github.com/BH3GEI/phonefarm/pull/64) |
+| 已完成 | 灰档超分机制全链路预演（copyprobe 1:1 拷贝探针）：已测客户端下运行未被阻断；采样未检出帧时差异；copy 算法构造上逐纹素等价（非通用反作弊或零成本保证） | [#51](https://github.com/BH3GEI/phonefarm/pull/51) |
+| 已完成 | 灰档真超分算子投原神大世界（gen1_loc3，2×2 bilinear）：替换「渲染精度低」档下游戏自带放大，5 对 A/B 无指标显著变差；裁决 INCONCLUSIVE，未证明零成本/非劣效；静态局部截图 MAD 比游戏自带放大更接近极高参考约 3–4 倍 | [#64](https://github.com/BH3GEI/phonefarm/pull/64) |
 | 已完成 | 农场只读快照 `fleet --json` | [#43](https://github.com/BH3GEI/phonefarm/pull/43) |
 | 已完成 | 系统参数自动调参在真原神上跑通（两组候选走完统计判定，均被淘汰且有道理） | [#52](https://github.com/BH3GEI/phonefarm/pull/52) |
 | 已完成 | 评测统一入口 `phonefarm eval --request`：v1 原样转交 gpu-op，v2 按 kind 路由 shader / sysparam / gray；离线 15 项单测 + 冒烟过，#66 对齐 optimize 驱动三处（serial 进请求体、workload 相对路径、停充按契约执行）并在原神真机验证通过 | [#61](https://github.com/BH3GEI/phonefarm/pull/61)、[#66](https://github.com/BH3GEI/phonefarm/pull/66) |
@@ -77,7 +94,7 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 
 ### 画面算子画质闭环（game_opt_loop M2）
 
-条件：NX809J，原神，19 张实拍帧当画质真值；`--no-llm` 本地确定性变异器（固定种子可复现）；冷机门槛放宽到 42 °C；设备插 USB 充电，功耗不作判据。
+条件：NX809J；性能载体是 refbench，画质在 headless runner 用 19 张原神静态截帧另测；`--no-llm` 本地确定性变异器（固定种子可复现）；冷机门槛放宽到 42 °C；设备插 USB 充电，功耗不作判据。
 
 - 赛道基线模板逐帧 29.67–35.68 dB，均值 34.521 dB。
 - 前沿留下 `gen0_baseline 0.264 ms / 34.521 dB` 与 `gen1_loc3 0.479 ms / 37.796 dB`——多花 0.22 ms 换 +3.3 dB。
@@ -104,7 +121,7 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 条件：原神 7.1.0，5 个探针臂（两批）跑满 36 s 转视角负载，`debug.knobs.copyprobe=1`；算子是 texelFetch 逐纹素 1:1 拷贝（无过滤无舍入），画面应逐像素不变。
 
 - 反作弊放行：5 臂全过，层自报 copies ≈ frames（4791–5392），从未停用。
-- 帧时无损：探针臂 `frame_p50` 16.636–16.674 ms，与无层臂（16.661 / 16.680 ms）差 < 0.05 ms，顶满 60 帧档；每帧一次 2140×968 拷贝 + 一次克隆替换的开销淹没在噪声里。
+- 已观测帧时差异很小（不等于证明非劣效）：探针臂 `frame_p50` 16.636–16.674 ms，与无层臂（16.661 / 16.680 ms）差 < 0.05 ms，顶满 60 帧档；每帧一次 2140×968 拷贝 + 一次克隆替换的开销淹没在噪声里。
 
 ### 灰档真超分算子 upop A/B（phonefarm knobs，原神大世界）
 
@@ -116,9 +133,9 @@ harness 本身就是产品——交付的不是某一个优化算子，而是从
 | fps_mean | 59.178 | 59.269 | +0.15% | 0.881 |
 | power_watt | 2.789 W | 2.903 W | +4.07% | 0.278 |
 
-无指标显著变差（p_lose 全 ≥ 0.28）→ 零成本通过；补跑对电池温度 37→37 °C 平直。原 a5 臂误采加载画面作废，rerun 5 对补跑（表内已用补跑值）。
+无指标显著变差（p_lose 全 ≥ 0.28）→ `INCONCLUSIVE(无显著变差)`；没有预冻结非劣效界及相应区间判据，不能据此证明零成本。前四对温度缺测，补跑对电池温度 37→37 °C 平直。原 a5 臂误采加载画面作废，rerun 5 对补跑（表内已用补跑值）。
 
-画质（同位置 · 同传送视角 · 同时辰 ~11:57–11:59 正午，璃月港，UID/角色/传送水晶排除）：逐像素 MAD 我们的算子 8.3–18.7 vs 游戏自带放大 26.9–42.8，所有测区接近原生（极高）3–4 倍。
+画质（同位置 · 同传送视角 · 同时辰 ~11:57–11:59 正午，璃月港，UID/角色/传送水晶排除）：逐像素 MAD 我们的算子 8.3–18.7 vs 游戏自带放大 26.9–42.8，这些静态局部测区的 MAD 更接近极高参考约 3–4 倍；跨 run 截图不是连续色调/鬼影或同帧 LR/HR 配对证据。
 
 ### 停充之后的功耗对照（phonefarm）
 
@@ -148,6 +165,8 @@ refbench 0.45%，Megacity 0.987%，原神 1.37%（跨黄昏那一批 5.35%）。
 ---
 
 ## 变更记录
+
+- **2026-10-11（系统交接审计）**：按远端源码和两次会议核对业务交付，补结构断点与验收追踪。限定 M2 为 refbench 性能+静态原神帧画质；原神 upop 保留原数和 INCONCLUSIVE，撤回“零成本通过/功耗差属于噪声”的推论；copyprobe 未检出差异不能证明非劣效。下方历史记录保留为当时表述，旧零成本口径由本条及当前正文取代。未进行本轮真机或付费 API 测试。
 
 - **2026-09-24（第八次核对）**：核对到 phonefarm #73（灰档主机侧编排搬进 Rust）。#73 把 `knobs/gray/` 的主机侧编排收成三个子命令：`phonefarm gray-layer`（← enable_layer.sh，probe / loadop / passdump / copyprobe / upop / target / status / off 全模式，挂层每步回读核验、off 兜底清扫）、`phonefarm gray-ab`（← genshin_loadop_ab.sh + genshin_copyprobe_ab.sh，loadop / copyprobe 两模式）、`phonefarm shot-diff`（← compare_shots.py，probe 与无层差异对照控制对基线而非字面 0）；删掉 compare_shots.py、genshin_loadop_ab.sh、genshin_copyprobe_ab.sh。顺手修 A/B 方法论：eval gray 的对照臂从「摘层」改成「两臂都挂层只切改写属性」，层本身的开销消掉后差值才干净对应改写这一个改动；eval gray 同步切到 GrayLayer（Rust）。真机（devlock/rust-port）gray-layer status / off / probe 走通，`cargo test` 504 项全过、clippy 零警告。留守 test_loadop.sh（refbench 三臂对照配方，依赖白盒靶子 knob.loadop，与 gray-ab 黑盒路线不同）、genshin_quality.sh / genshin_upop_ab.sh（超分那批）、载体构建/路线工具。把「loop_v1 往 Rust 内核收」里的灰档主机侧编排从剩余项划掉；同步 STATUS、game_opt_loop README、phonefarm AGENTS、loop_v1 README、knobs README 五处「剩 knobs/ 那批」说法（phonefarm 总 README 已在 #74 内同步、组织主页已由 lead 直接提交同步，无需再改）。
 - **2026-09-24（第七次核对）**：核对到 phonefarm #71（autoloop 编排搬进 Rust）。#71 把 `loop_v1/auto/autoloop.py`（829 行）迁成 `src/autoloop.rs`，对外 `phonefarm autoloop`，`loop_v1/auto/` 只剩设备端 shell 与一份薄测试；判定口径零复制，复用 `src/sysparam.rs` / `src/llm.rs`，`cargo test` 500 项全过、clippy 零警告，autoloop.py 删除。至此 loop_v1 判定链（parse-trace / attribute / analyze / report / frames-moving / crosscheck-report / vks-* / eval / autoloop）全部在 Rust 内核。把「loop_v1 往 Rust 内核收」里的 autoloop 编排从剩余项划掉，剩载体构建/路线工具、设备端 shell、knobs/ 那批。真机 `--probe-only` + 一代闭环按 devlock 排队补跑（lead 指示后执行）。同步 STATUS、game_opt_loop README、phonefarm AGENTS 三处「剩 autoloop.py」说法（phonefarm README / loop_v1 README 已在 #71 内同步、组织主页已由 lead 直接提交同步，无需再改）。
