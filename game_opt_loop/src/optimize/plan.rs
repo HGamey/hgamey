@@ -21,8 +21,30 @@ use serde::{Deserialize, Serialize};
 /// n=4 时是 0.0286, 够不着。所以 5 是"判定还能有结论"的下限。
 pub const MIN_ROUNDS: u32 = 5;
 
-/// 等冷一次大概要多久 (秒)。用来估时间, 不是门槛。
-const COOLDOWN_ESTIMATE_S: u64 = 90;
+/// 每臂除负载本身之外的开销 (秒), 用来估时间, 不是门槛。按归档实测定:
+///
+/// - ③ 系统参数: 旋钮实时写入, 不重启游戏。2026-09-23 原神 sys_g1c1 一个候选
+///   5 对 10 臂 13 分 06 秒, 每臂约 78 秒, 负载 36 秒 → 开销约 42 秒 (快照、拉 trace、
+///   解析、施加/还原)。phonefarm eval 两臂之间不等冷。
+/// - ② 画面流程改写: 每臂要重启游戏、过登录页、等进大世界 (层在建实例时读开关)。
+///   runs_graylayer/ab 与 upop_141624 每臂间隔 105–140 秒, 负载约 40 秒 → 开销约 75 秒。
+///
+/// 旧值是「每臂等冷 90 秒」, 而 eval 并不逐臂等冷, 一个 sysparam 候选估成 22 分钟,
+/// 实测 13 分钟, 同样预算下少排了将近一半候选。
+fn arm_overhead_s(kind: Kind) -> u64 {
+    match kind {
+        Kind::Sysparam => 45,
+        Kind::Gray => 75,
+        // ① 不在 optimize 的步骤里 (见 drives), 给个与 ② 相同的保守值
+        Kind::Shader => 75,
+    }
+}
+
+/// 一个候选估计耗时 (秒): 每臂 MIN_ROUNDS 轮, 两臂交替, 加固定开销。
+/// 不扣确定性截断可能省下的臂 —— 截不截取决于数据, 估时按跑满算。
+pub fn per_candidate_estimate_s(kind: Kind, workload_s: u64) -> u64 {
+    2 * (arm_overhead_s(kind) + workload_s) * MIN_ROUNDS as u64 + PER_CANDIDATE_OVERHEAD_S
+}
 /// 每个候选的固定开销 (应用参数 / 还原 / 快照比对)。
 const PER_CANDIDATE_OVERHEAD_S: u64 = 60;
 
@@ -210,9 +232,6 @@ fn workload_seconds(caps: &Caps) -> u64 {
 /// `--plan --no-llm` 会打印并落盘一句不成立的话。
 pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
     let seconds = workload_seconds(caps);
-    // 一对 A/B = 两次「等冷 + 跑负载」。
-    let per_pair_s = 2 * (COOLDOWN_ESTIMATE_S + seconds);
-    let per_candidate_s = per_pair_s * MIN_ROUNDS as u64 + PER_CANDIDATE_OVERHEAD_S;
 
     // 开路顺序: ③ → ② → ①。不是随便排的 ——
     // 系统参数不动画面 (不必量画质, 最便宜也最安全), 画面流程改写次之,
@@ -229,7 +248,7 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
     // 预算怎么发: **按还剩几层均分, 但至少给得起一个候选**。
     //
     // 一开始就三层平分是错的: 三层平分缺省的 30m 是每层 10m, 而一个候选要
-    // 22m —— 于是三层一起被砍, 跟"砍掉最贵的那一层"正好相反, 而且这条命令的
+    // 十几分钟 (③ 约 14.5m, ② 约 19.5m) —— 于是三层一起被砍, 跟"砍掉最贵的那一层"正好相反, 而且这条命令的
     // 缺省行为变成了"什么都不做"。
     //
     // 纯贪心 (排在前面的层先吃饱) 也是错的: 第一层会把预算吃光, 后面的层
@@ -286,6 +305,7 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
         }
 
         // 这一层塞得下几个候选。轮数不降 —— 降了判定就出不了结论。
+        let per_candidate_s = per_candidate_estimate_s(*kind, seconds);
         let share = left / remaining.max(1) as u64;
         let mut fits = share / per_candidate_s.max(1);
         if fits == 0 && left >= per_candidate_s {
@@ -621,6 +641,15 @@ fn yn(p: &super::caps::Probe<bool>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 估时口径钉在归档实测上: ③ 36 秒负载一个候选约 14.5 分钟 (实测 13 分 06 秒),
+    /// ② 每臂多一次重启进门, 约 19.5 分钟。
+    #[test]
+    fn per_candidate_estimate_tracks_measured_wall_time() {
+        assert_eq!(per_candidate_estimate_s(Kind::Sysparam, 36), 870);
+        assert_eq!(per_candidate_estimate_s(Kind::Gray, 36), 1170);
+        assert!(per_candidate_estimate_s(Kind::Sysparam, 36) >= 786, "不能比实测 13m06s 还乐观");
+    }
     use crate::optimize::caps;
     use crate::optimize::games::{self, CarrierRoots};
     use std::path::PathBuf;
