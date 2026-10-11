@@ -40,7 +40,7 @@
 `GOL_LIVE_JEV=1 cargo test live_jev` 返回 p=0.36。另外手工问过一个「和已被拒候选几乎一样」的候选，
 p=0.39。**守门准不准还没有数据**，要靠影子模式攒。
 
-## 2. 云端出方案（设计；最小实现见下一个 PR）
+## 2. 云端出方案（最小实现：`tools/proposers/`、`.github/workflows/proposer.yml`）
 
 ```
 节点上的 optimize ──proposer@1 Input──► cloud_proposer (cmd: 适配器)
@@ -64,6 +64,18 @@ cloud_proposer ◄── gh run download ──────────┘ ─�
   `phonefarm_script` 这几个会碰设备的工具，云端出方案**不应该**用）。pi 用 `--tools` 白名单把
   这几个排除掉。
 - 失败语义与外部进程一致：出错时这一代不上机，不换成别的出方案方式补位。
+
+### 现状
+
+- `tools/proposers/pi_kimi.py`：出方案本体，本机可直接用 `--proposer cmd:tools/proposers/pi_kimi.py`。
+  在本机用 Kimi（kimi-for-coding）对一份手写输入跑过：约 13 秒出 2 个候选，都在白名单内，
+  避开了历史上已 REJECT 的方向。开了 `PI_MCP_TOOLS` 时可经节点 `/mcp` 查设备
+  （本机验证过 pi 能调到 `phonefarm_devices` 并返回 91253241019A；MCP 服务器在 pi 的 mcp.json 里要设
+  `"exposure": "direct"`，不能带 `-ne`）。
+- `tools/proposers/cloud_actions.py` + `.github/workflows/proposer.yml`：Actions 那一跳。
+  **仓库还没有 secrets，云端整条链路没跑通过**，只能验证到「触发 → 找到 run → 在缺 key 那一步失败 →
+  取回结果」。
+- 跑 `cloud_actions.py` 的机器（通常是节点）上要有登录了的 `gh`。
 
 ### 需要 owner 决定 / 动手的
 
