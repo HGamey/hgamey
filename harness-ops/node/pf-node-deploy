@@ -1,10 +1,13 @@
 #!/bin/zsh
 # 让手机节点自己从 GitHub 拉代码、编译、更新（节点上的 update_node.sh --git）。开发机只发一条小指令，不传文件。
-# 用法: pf-node-deploy [phonefarm[@ref]] [game_opt_loop[@ref]] [harness-ops[@ref]]   缺省 phonefarm game_opt_loop @ origin/main
-#   含 harness-ops 时，更新后自动 /admin/restart 节点服务。
+# 用法: pf-node-deploy [--restart] [phonefarm[@ref]] [game_opt_loop[@ref]] [harness-ops[@ref]]
+#   缺省 phonefarm game_opt_loop @ origin/main。
+#   --restart：更新后 /admin/restart 节点服务（只在 node_service.py / dash 有改动时才需要；
+#   重启会让正在跑的任务丢失状态追踪，先看 `pf-node devlock status` 和作战室，避开有人在跑的时候）。
 set -eu
+restart=0; [[ ${1:-} == --restart ]] && { restart=1; shift; }
 pf-node --label deploy update_node --git "$@"
-if (( ${@[(I)harness-ops*]} )); then
+if (( restart )); then
   curl -sS -m 30 -X POST -A pf-node/1 -H "Authorization: Bearer $(cat ~/.config/hgamey/node.token)" \
     ${PF_NODE_URL:-https://phone.liyao.space}/admin/restart; echo
 fi
