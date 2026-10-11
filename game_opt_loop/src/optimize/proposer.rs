@@ -809,6 +809,8 @@ pub struct Options {
     pub specs: Vec<String>,
     /// 外部出方案进程单次超时 (秒)。
     pub timeout_s: u64,
+    /// 上机前守门 (`--gate jev`), 缺省不开。见 [`super::gate`]。
+    pub gate: Option<super::gate::Options>,
 }
 
 impl Default for Options {
@@ -816,6 +818,7 @@ impl Default for Options {
         Self {
             specs: Vec::new(),
             timeout_s: DEFAULT_TIMEOUT_S,
+            gate: None,
         }
     }
 }
@@ -853,6 +856,9 @@ pub struct Summary {
     pub describe: String,
     pub calls: u32,
     pub model_calls: u32,
+    /// 上机前守门的每一次判断 (开了 `--gate` 才有)。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate: Vec<super::gate::Decision>,
 }
 
 /// 记账用的包装: 对内原样转交, 对外多数几个数。
@@ -877,6 +883,7 @@ impl<'a> Counting<'a> {
             describe: self.inner.describe(),
             calls: self.calls.get(),
             model_calls: self.model_calls.get(),
+            gate: Vec::new(),
         }
     }
 }
@@ -1032,8 +1039,16 @@ pub fn input_for(
     }
 }
 
+/// 给本 crate 其它模块的单测用的输入 (与本模块单测同一份)。
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
+    pub fn sysparam_input(n: u32) -> super::Input {
+        super::tests::input(super::Kind::Sysparam, n, 20260923, vec![])
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
@@ -1057,7 +1072,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         sysparam::build_whitelist(&sysparam::parse_probe(PROBE))
     }
 
-    fn input(kind: Kind, n: u32, seed: u64, history: Vec<HistoryItem>) -> Input {
+    pub(crate) fn input(kind: Kind, n: u32, seed: u64, history: Vec<HistoryItem>) -> Input {
         Input {
             protocol: PROTOCOL.into(),
             version: VERSION,

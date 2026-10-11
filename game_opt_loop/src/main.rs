@@ -168,6 +168,22 @@ pub struct OptimizeArgs {
     #[arg(long, default_value_t = game_opt_loop::optimize::proposer::DEFAULT_TIMEOUT_S)]
     proposer_timeout_s: u64,
 
+    /// 上机前守门: 候选过了校验、上真机之前先问一个便宜的判断值不值得 (`jev`)。缺省不开。
+    #[arg(long, value_name = "jev")]
+    gate: Option<String>,
+
+    /// 守门阈值: p(值得上机) 低于它就不上机。
+    #[arg(long, default_value_t = game_opt_loop::optimize::gate::DEFAULT_THRESHOLD)]
+    gate_threshold: f64,
+
+    /// 守门只问只记, 不挡 (先攒数据看它准不准)。
+    #[arg(long)]
+    gate_shadow: bool,
+
+    /// 守门 key 文件。缺省: 环境 TYPESAFE_API_KEY, 再缺省 ~/.config/hgamey/typesafe.key。
+    #[arg(long)]
+    gate_key_file: Option<PathBuf>,
+
     /// 只跑哪几层: `sysparam,gray` (也认 `3,2`)。缺省按摸底能开的都排。
     /// 长实验拆段 (每段持锁 ≤45 分钟) 时一次跑一层。
     #[arg(long)]
@@ -667,6 +683,12 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         proposer: optimize::proposer::Options {
             specs: args.proposer,
             timeout_s: args.proposer_timeout_s,
+            gate: args.gate.map(|spec| optimize::gate::Options {
+                spec,
+                threshold: args.gate_threshold,
+                shadow: args.gate_shadow,
+                key_file: args.gate_key_file,
+            }),
         },
         shape,
         profiles_dir: args.profiles,

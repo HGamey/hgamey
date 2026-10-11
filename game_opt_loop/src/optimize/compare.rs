@@ -223,7 +223,7 @@ pub fn run(cfg: &Config) -> Result<Comparison> {
     for s in &specs {
         let one = super::proposer::Options {
             specs: vec![s.clone()],
-            timeout_s: cfg.proposer.timeout_s,
+            ..cfg.proposer.clone()
         };
         one.spec(cfg.use_llm)?;
     }

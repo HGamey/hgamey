@@ -20,6 +20,7 @@ pub mod caps;
 pub mod compare;
 pub mod eval;
 pub mod games;
+pub mod gate;
 pub mod gray;
 pub mod plan;
 pub mod profile;
@@ -243,7 +244,15 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         cfg.llm_timeout_s,
         std::time::Duration::from_secs(cfg.proposer.timeout_s.max(1)),
     )?;
-    let counted = proposer::Counting::new(built.as_ref());
+    let gated = match &cfg.proposer.gate {
+        Some(o) => Some(gate::build(built.as_ref(), o)?),
+        None => None,
+    };
+    let inner: &dyn proposer::Proposer = match &gated {
+        Some(g) => g,
+        None => built.as_ref(),
+    };
+    let counted = proposer::Counting::new(inner);
     println!("      出主意: {}", counted.summary().describe);
 
     let mut layers: Vec<report::LayerOutcome> = Vec::new();
@@ -297,7 +306,10 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     }
 
     let mut r = report::build(&plan, &caps, layers, archive, false);
-    r.proposer = Some(counted.summary());
+    r.proposer = Some(proposer::Summary {
+        gate: gated.as_ref().map(|g| g.decisions()).unwrap_or_default(),
+        ..counted.summary()
+    });
     let (json, md) = report::write(&r, &caps, &cfg.out_dir)?;
     println!("\n{}", r.headline);
     println!("报告: {json}\n      {md}");
