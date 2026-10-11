@@ -1,0 +1,473 @@
+{
+  "artifact_hashes": {
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-boot_id.txt": "d8bb5ae7578ea78dc3626b811e8bd6bb779356e38b9df141c9473b4854d4f598",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-capture_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-cold.json": "fd81f8888c60fc94d05ae3eb19d4fbdae85b4cea04710e7a9adcdc2b1acdc54c",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-env.txt": "eecc6affc587d19ab9ea596e326b2d506e3394218be1a2b6a8cd41ba1cee4849",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-probe.txt": "92b17004719f61dfa1c0d838544ce09a59f7990f4dce5998ac4193133eb91c80",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-restore_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-root_id.txt": "ac352e0f45e72935209b81b53b1e797423e552dee8f5c11cbd9a633500a3ccea",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-sampler_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-snapshot_after_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-snapshot_at_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-snapshot_before.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-snapshot_restored.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-trace.txt": "31ce37c9529778d9f882c30db3c1e99cf8f425f6fc8b400cc929b51452497781",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3-workload_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/a3.run.json": "6f13ee1aa29a1dd7bf01987746d9a63a3c49d3e4866297d49b3142be254e4d84",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/admission.json": "e8e648c0371b6064d39b3b909f481f19bb3e06fa7edb0c57be233c72c19d5262",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/baseline.json": "aeb3594316d6e7cc7ccc2e7b1607bbb4aa635078a85d7b5f1ea666c50121ee29",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/conditions.json": "295a1bb10b0ab20b3aa0f81c8635aadbd2b1a458060470ffcea4eb7c8ea1b223",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-boot_id.txt": "d8bb5ae7578ea78dc3626b811e8bd6bb779356e38b9df141c9473b4854d4f598",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-capture_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-cold.json": "612baab487cfd478627a09ef1207c5169f2ecd83d75b4c473151f49edaa8d2db",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-env.txt": "3395e62b7eeae2eb1f9e18efa1aaa41a52c6d6ea9d5d0a0ff562946f224a2bb8",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-probe.txt": "92b17004719f61dfa1c0d838544ce09a59f7990f4dce5998ac4193133eb91c80",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-restore_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-root_id.txt": "ac352e0f45e72935209b81b53b1e797423e552dee8f5c11cbd9a633500a3ccea",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-sampler_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-snapshot_after_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-snapshot_at_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-snapshot_before.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-snapshot_restored.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-trace.txt": "c5a7336c1e23599201f896e47f51b9a7c758a93993ca8388e69ea053f80c3ef9",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1-workload_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore1.run.json": "7a460dded789b07f06770dd00ee72d3e1285b6395b326563e450a3d6f88af3f9",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-boot_id.txt": "d8bb5ae7578ea78dc3626b811e8bd6bb779356e38b9df141c9473b4854d4f598",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-capture_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-cold.json": "078f93d1fc0ed1847a52f1b5f5acd6058f36995f70c44aaebe2238397859c1d9",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-env.txt": "8e83cdf74833a547278c961241f3958f1d5f562edf75229d9d1b8e2b19ed3466",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-probe.txt": "92b17004719f61dfa1c0d838544ce09a59f7990f4dce5998ac4193133eb91c80",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-restore_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-root_id.txt": "ac352e0f45e72935209b81b53b1e797423e552dee8f5c11cbd9a633500a3ccea",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-sampler_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-snapshot_after_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-snapshot_at_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-snapshot_before.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-snapshot_restored.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-trace.txt": "796c1dff3ffebe146bb58fe7c954ae24943327c94f0a0f6ccda8f0ea18d22a67",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2-workload_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore2.run.json": "4ca462f3413b2e845a6d4a4db7eab5516500ce83e5019f0eadda2603f18601f5",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-boot_id.txt": "d8bb5ae7578ea78dc3626b811e8bd6bb779356e38b9df141c9473b4854d4f598",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-capture_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-cold.json": "e56912819171761412beaeb1665b9969fe9a6bca260865d6424ca3d03d8c6300",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-env.txt": "da1c93dd0c54527dc7cf0ab4bd8896b91e98189662b2cb6007bfbc45e2f264a8",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-probe.txt": "92b17004719f61dfa1c0d838544ce09a59f7990f4dce5998ac4193133eb91c80",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-restore_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-root_id.txt": "ac352e0f45e72935209b81b53b1e797423e552dee8f5c11cbd9a633500a3ccea",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-sampler_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-snapshot_after_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-snapshot_at_run.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-snapshot_before.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-snapshot_restored.txt": "2c49b4ee6f13a4b60d1d830b7960c1d784cda8311c15541c464a049d19769e4d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-trace.txt": "559b59f01d904b931b098e0fb88d6e21c158722e56595e0c7fff9ae2b0b497d4",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3-workload_exit.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/explore3.run.json": "fe791351b81c9a013ca2d6936b28c3c5fa736389e54b3ffc1f267d09154b524d",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-confirmation-observation/tasks/confirmation_observation_20261011/cross_cli/frozen.json": "b2d0641dc97946683e637bc2ec70a5176c7ef16ab3382f830e5ac6fa89c79221"
+  },
+  "baseline_admission_qualification": {
+    "checks": [
+      {
+        "id": "root",
+        "reason": "优化控制/差异写探测要求已验证 root",
+        "state": "pass"
+      },
+      {
+        "id": "trace",
+        "reason": "需要可读的目标 trace 事件；root 不代表该厂商驱动支持",
+        "state": "pass"
+      },
+      {
+        "id": "evidence_origin",
+        "reason": "合成/估计/未知来源不能取得真实实验结论资格",
+        "state": "pass"
+      },
+      {
+        "id": "statistical_reachability",
+        "reason": "至少五对且精确置换最小p必须小于冻结alpha/K",
+        "state": "pass"
+      },
+      {
+        "id": "control",
+        "reason": "存在/可写不等于实际生效",
+        "state": "pass"
+      },
+      {
+        "id": "workload",
+        "reason": "不能只凭脚本退出成功认定负载执行",
+        "state": "pass"
+      },
+      {
+        "id": "cold",
+        "reason": "冷机未知或超时不能宣称条件相同",
+        "state": "pass"
+      },
+      {
+        "id": "restored",
+        "reason": "恢复失败/未知阻断结论并保留回滚依据",
+        "state": "pass"
+      },
+      {
+        "id": "baseline_count",
+        "reason": "至少三轮完整基线才能检查重复性与漂移",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.frame_p95",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.fps_mean",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.power_w_mean",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.thermal",
+        "reason": "每轮热区必须有效且 <= 冻结 temp_cap_c=Some(70.0)",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.thermal_window",
+        "reason": "不能用部分有效热区样本声称整窗未越过温度上限",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.trace_window",
+        "reason": "采样完成/覆盖必须绑定实际trace采集窗",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.workload_exit",
+        "reason": "每臂负载退出码必须记录为0，初始自检不能代替逐轮成功",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.frame_source",
+        "reason": "submit proxy 只支持渲染目标；未知分组不支持裁决，display 需直接验证",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.1.power_source",
+        "reason": "功耗需要整窗电池放电证据，均值本身不是供电证明",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.frame_p95",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.fps_mean",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.power_w_mean",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.thermal",
+        "reason": "每轮热区必须有效且 <= 冻结 temp_cap_c=Some(70.0)",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.thermal_window",
+        "reason": "不能用部分有效热区样本声称整窗未越过温度上限",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.trace_window",
+        "reason": "采样完成/覆盖必须绑定实际trace采集窗",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.workload_exit",
+        "reason": "每臂负载退出码必须记录为0，初始自检不能代替逐轮成功",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.frame_source",
+        "reason": "submit proxy 只支持渲染目标；未知分组不支持裁决，display 需直接验证",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.2.power_source",
+        "reason": "功耗需要整窗电池放电证据，均值本身不是供电证明",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.frame_p95",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.fps_mean",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.power_w_mean",
+        "reason": "必需指标必须每轮完整且有限正数",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.thermal",
+        "reason": "每轮热区必须有效且 <= 冻结 temp_cap_c=Some(70.0)",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.thermal_window",
+        "reason": "不能用部分有效热区样本声称整窗未越过温度上限",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.trace_window",
+        "reason": "采样完成/覆盖必须绑定实际trace采集窗",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.workload_exit",
+        "reason": "每臂负载退出码必须记录为0，初始自检不能代替逐轮成功",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.frame_source",
+        "reason": "submit proxy 只支持渲染目标；未知分组不支持裁决，display 需直接验证",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.3.power_source",
+        "reason": "功耗需要整窗电池放电证据，均值本身不是供电证明",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.frame_p95.repeatability",
+        "reason": "dispersion=0.000%, increasing=0.000, decreasing=0.000; frozen gates <5%, <0.9",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.fps_mean.repeatability",
+        "reason": "dispersion=0.000%, increasing=0.000, decreasing=0.000; frozen gates <5%, <0.9",
+        "state": "pass"
+      },
+      {
+        "id": "baseline.power_w_mean.repeatability",
+        "reason": "dispersion=0.000%, increasing=0.000, decreasing=0.000; frozen gates <5%, <0.9",
+        "state": "pass"
+      }
+    ],
+    "claim_scope": "none; evidence does not qualify a conclusion",
+    "conclusion_allowed": false,
+    "control_validation_scope": "probe/apply readback only; continuous control effectiveness not measured",
+    "eligible": false,
+    "evidence_origin": "recorded_device",
+    "experiment_allowed": true,
+    "frame_evidence": [
+      {
+        "acf_at_selected_period": 0.9829,
+        "confidence": "inferred",
+        "display_verified": false,
+        "semantics": "gpu_submit_proxy",
+        "source": "raw_ftrace_kgsl",
+        "submits_per_frame": 2
+      },
+      {
+        "acf_at_selected_period": 0.9829,
+        "confidence": "inferred",
+        "display_verified": false,
+        "semantics": "gpu_submit_proxy",
+        "source": "raw_ftrace_kgsl",
+        "submits_per_frame": 2
+      },
+      {
+        "acf_at_selected_period": 0.9829,
+        "confidence": "inferred",
+        "display_verified": false,
+        "semantics": "gpu_submit_proxy",
+        "source": "raw_ftrace_kgsl",
+        "submits_per_frame": 2
+      }
+    ],
+    "policy": {
+      "alpha": 0.05,
+      "baseline_min_runs": 3,
+      "cool_c": 40.0,
+      "dispersion_max_pct": 5.0,
+      "goal": "render_efficiency",
+      "minimum_pairs_for_conclusion": 5,
+      "monotonic_max_ratio": 0.9,
+      "require_quality": false,
+      "required_metrics": [
+        "frame_p95",
+        "fps_mean",
+        "power_w_mean"
+      ],
+      "required_pairs": 5,
+      "temp_cap_c": 70.0,
+      "version": 1
+    },
+    "probe_allowed": true,
+    "stage": "experiment",
+    "status": "ready",
+    "version": 1
+  },
+  "checks": [
+    {
+      "id": "sample.1.frame_p95",
+      "reason": "必需指标必须每轮完整且有限正数",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.fps_mean",
+      "reason": "必需指标必须每轮完整且有限正数",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.power_w_mean",
+      "reason": "必需指标必须每轮完整且有限正数",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.thermal",
+      "reason": "每轮热区必须有效且 <= 冻结 temp_cap_c=Some(70.0)",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.thermal_window",
+      "reason": "不能用部分有效热区样本声称整窗未越过温度上限",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.trace_window",
+      "reason": "采样完成/覆盖必须绑定实际trace采集窗",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.workload_exit",
+      "reason": "每臂负载退出码必须记录为0，初始自检不能代替逐轮成功",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.frame_source",
+      "reason": "submit proxy 只支持渲染目标；未知分组不支持裁决，display 需直接验证",
+      "state": "pass"
+    },
+    {
+      "id": "sample.1.power_source",
+      "reason": "功耗需要整窗电池放电证据，均值本身不是供电证明",
+      "state": "pass"
+    }
+  ],
+  "confirmation_binding": {
+    "aggregation_level": "single_run",
+    "artifact_sha256": "aeb3594316d6e7cc7ccc2e7b1607bbb4aa635078a85d7b5f1ea666c50121ee29",
+    "conditions_sha256": "295a1bb10b0ab20b3aa0f81c8635aadbd2b1a458060470ffcea4eb7c8ea1b223",
+    "finished_at": "2026-10-11T12:36:58.732689Z",
+    "frozen_plan_sha256": "2c5c8054589f3e594fc3a6c1b06927b469a19278d4aa5f33494f846a0ceb22fd",
+    "pair_id": "p3",
+    "raw_artifacts": {
+      "env_sha256": "eecc6affc587d19ab9ea596e326b2d506e3394218be1a2b6a8cd41ba1cee4849",
+      "trace_sha256": "31ce37c9529778d9f882c30db3c1e99cf8f425f6fc8b400cc929b51452497781"
+    },
+    "run_id": "a3",
+    "sample_role": "baseline",
+    "started_at": "2026-10-11T12:36:48.732689Z"
+  },
+  "control_validation_scope": "snapshot readback at both sampling boundaries only; sustained control not verified",
+  "issues": [],
+  "limitations": [
+    "GPU submit cadence proxy is not present/display FPS",
+    "no quality, deployment or real-game optimization proof",
+    "trace_window_verified checks capture uptime metadata and ENV coverage; ftrace event clock/location not verified; submit span is duration only",
+    "battery mean is over the complete sampler window covering the trace, not cropped to event timestamps",
+    "existing run_once directories need heldout-driver receipts; missing context is BLOCKED"
+  ],
+  "measurement_window": {
+    "boot_id": "hypothetical-boot",
+    "capture_end_uptime_s": 1046521.5599999999,
+    "capture_start_uptime_s": 1046519.1,
+    "clock_scope": "capture_metadata_and_env_proc_uptime",
+    "device_serial": "hypothetical-contract-device",
+    "env_duration_s": 5.0,
+    "env_end_uptime_s": 1046522.1,
+    "env_interval_s": 1.0,
+    "env_start_uptime_s": 1046518.1,
+    "schema": "phonefarm/measurement_window@1"
+  },
+  "metric_provenance": {
+    "fps_mean": {
+      "acf_at_selected_period": 0.9829,
+      "confidence": "inferred",
+      "display_verified": false,
+      "raw_sha256": "31ce37c9529778d9f882c30db3c1e99cf8f425f6fc8b400cc929b51452497781",
+      "semantics": "gpu_submit_proxy",
+      "source": "raw_ftrace_kgsl",
+      "submits_per_frame": 2
+    },
+    "fps_p95_ms": {
+      "acf_at_selected_period": 0.9829,
+      "confidence": "inferred",
+      "display_verified": false,
+      "raw_sha256": "31ce37c9529778d9f882c30db3c1e99cf8f425f6fc8b400cc929b51452497781",
+      "semantics": "gpu_submit_proxy",
+      "source": "raw_ftrace_kgsl",
+      "submits_per_frame": 2
+    },
+    "frame_p95_ms": {
+      "acf_at_selected_period": 0.9829,
+      "confidence": "inferred",
+      "display_verified": false,
+      "raw_sha256": "31ce37c9529778d9f882c30db3c1e99cf8f425f6fc8b400cc929b51452497781",
+      "semantics": "gpu_submit_proxy",
+      "source": "raw_ftrace_kgsl",
+      "submits_per_frame": 2
+    },
+    "power_watt": {
+      "discharging": true,
+      "rail": "battery",
+      "raw_sha256": "eecc6affc587d19ab9ea596e326b2d506e3394218be1a2b6a8cd41ba1cee4849",
+      "source": "battery_sysfs",
+      "window_verified": true
+    }
+  },
+  "metrics": {
+    "fps_mean": 29.879,
+    "fps_p95_ms": 35.0254,
+    "frame_p95_ms": 35.0254,
+    "power_watt": 3.85
+  },
+  "promotion_allowed": false,
+  "qualification": {
+    "claim_scope": "one recorded sysparam experiment observation; submit-proxy render metrics and verified battery window, no improvement verdict",
+    "eligible": false,
+    "evidence_origin": "recorded_device",
+    "stage": "experiment"
+  },
+  "real_game_optimization_proven": false,
+  "restore_validation_scope": "byte equality of all device_snapshot v1 fixed domains plus frozen declared CPU policy domains; unreadable untouched fields and unlisted device nodes are not observed",
+  "sample_qualification": {
+    "baseline_admission_sha256": "e8e648c0371b6064d39b3b909f481f19bb3e06fa7edb0c57be233c72c19d5262",
+    "gates": {
+      "baseline_admission_verified": true,
+      "cold_verified": true,
+      "control_verified": true,
+      "restore_verified": true,
+      "root_verified": true,
+      "trace_window_verified": true,
+      "workload_succeeded": true
+    },
+    "schema": "phonefarm/confirmation_sample_qualification@1",
+    "valid_observation": true
+  },
+  "schema": "phonefarm/confirmation_observation@1",
+  "source": "phonefarm",
+  "source_attestation": "driver declarations and exact raw bytes checked; device identity, acquisition and chronology not attested",
+  "status": "VALID_OBSERVATION"
+}

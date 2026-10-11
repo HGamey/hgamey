@@ -19,6 +19,7 @@
 
 pub mod abtest;
 pub mod carrier;
+pub mod cases;
 pub mod device;
 pub mod fleet;
 pub mod model;
@@ -92,6 +93,7 @@ pub struct Dashboard {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fleet: Option<fleet::FleetView>,
     pub notices: Vec<Notice>,
+    pub cases: cases::Collection,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +126,7 @@ pub fn build(paths: &VizPaths) -> Dashboard {
         device: device::load(&paths.lock_root, &paths.phonefarm_root, 8),
         fleet: paths.fleet.as_ref().and_then(fleet::get),
         notices: notices(paths),
+        cases: cases::collect(&paths.gol_root, &paths.phonefarm_root),
     }
 }
 
