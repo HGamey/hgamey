@@ -1,0 +1,18 @@
+   Compiling game_opt_loop v0.2.0 (/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-artifact)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.62s
+     Running tests/candidate_artifact_cli.rs (target/debug/deps/candidate_artifact_cli-e98e88295fa45c4a)
+
+running 10 tests
+test strict_candidate_rejects_missing_unknown_duplicate_and_wrong_fields ... ok
+test rehashed_bytecode_cannot_bypass_actual_recompilation ... ok
+test unsafe_candidate_is_persisted_but_cannot_export_or_verify_as_success ... ok
+test overwrite_extra_files_unbounded_inputs_and_unknown_proofs_fail ... ok
+test actual_sr_compiler_replays_and_exports_adapter_binding ... ok
+test actual_framegen_compiles_without_claiming_sr_adapter_or_gpu ... ok
+test replacing_all_frozen_candidate_identity_requires_new_external_approval ... ok
+test symlink_inputs_ancestors_outputs_and_artifacts_are_rejected ... ok
+test rehashed_rules_gate_and_binary_claims_are_not_accepted ... ok
+test missing_or_modified_artifacts_fail_closed ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.14s
+
