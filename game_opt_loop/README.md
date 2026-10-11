@@ -17,7 +17,14 @@ cargo run --release -- optimize --game 原神 --plan
 
 # 真跑：指定设备与真机时长预算（预算不够时砍整层，不降轮数）
 cargo run --release -- optimize --game 原神 --device 91253241019A --budget 2h
+
+# 换一个出方案的一方：llm（缺省）/ local（本地确定性变异器）/ cmd:<可执行文件>（外部进程）
+cargo run --release -- optimize --game 原神 --device 91253241019A --budget 1h \
+    --proposer cmd:examples/proposers/fixed_one.py
 ```
+
+出方案的一方是可插拔的（接口 `game_opt_loop/proposer@1`，stdin/stdout JSON），
+怎么写一个见 [`docs/INTEGRATION.md`](docs/INTEGRATION.md)。
 
 产物落在 `--out`（缺省 `runs/optimize`）：`caps.json`（摸到了什么，每条结论带出处）、
 `report.json` / `report.md`（每层用没用与为什么、哪些留下哪些淘汰、数字，以及测试条件）。

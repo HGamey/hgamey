@@ -103,6 +103,20 @@ fn validate(instance: &Value, schema: &Value, path: &str, out: &mut Vec<String>)
                 }
             }
         }
+        // additionalProperties: proposer 契约靠它把 harness 的字段挡在候选外面。
+        if let Some(extra) = schema.get("additionalProperties") {
+            let declared = schema.get("properties").and_then(Value::as_object);
+            for (key, v) in obj {
+                if declared.is_some_and(|p| p.contains_key(key)) {
+                    continue;
+                }
+                match extra {
+                    Value::Bool(false) => out.push(format!("{path}: 多了契约之外的字段 `{key}`")),
+                    Value::Object(_) => validate(v, extra, &format!("{path}.{key}"), out),
+                    _ => {}
+                }
+            }
+        }
     }
 
     if let (Some(arr), Some(items)) = (instance.as_array(), schema.get("items")) {
@@ -661,5 +675,134 @@ fn every_status_the_upper_layer_understands_is_in_the_contract() {
             allowed.contains(&Value::String(s.into())),
             "契约的 status 枚举里少了 {s}"
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 出方案接口 (proposer@1): 输入由本仓库产出、外部进程消费; 输出反过来。
+// 两个方向都钉: Rust 序列化出来的输入合契约; 一份手写的、第三方会真发过来的
+// 输出合契约且 Rust 认得; 契约说要拒的, Rust 也拒。
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod proposer_contract {
+    use super::*;
+    use game_opt_loop::optimize::eval::Kind;
+    use game_opt_loop::optimize::proposer::{self, Candidate};
+    use game_opt_loop::optimize::{caps, games, plan, sysparam};
+
+    fn sample_input() -> proposer::Input {
+        let target = games::resolve(
+            "原神",
+            None,
+            &games::CarrierRoots {
+                carriers_dir: "/nonexistent".into(),
+                siblings_dir: "/nonexistent".into(),
+            },
+        );
+        let caps = caps::assemble(
+            &target,
+            "91253241019A",
+            "model=NX809J\nroot_uid=0\nzone=cpu-0-0 41300\n\
+             charge_node=/sys/class/qcom-battery/charging_enabled\n\
+             pkg_path=package:/data/app/x/base.apk\n",
+        );
+        let plan = plan::build(&caps, plan::Budget::parse("2h").unwrap(), false);
+        let step = plan.steps.iter().find(|s| s.layer == Kind::Sysparam).unwrap();
+        let wl = sysparam::build_whitelist(&sysparam::parse_probe(
+            "bus.DDR.boost_freq.writable=yes\nbus.DDR.boost_freq.effect=live\n\
+             bus.DDR.boost_freq.cur=547000\nbus.DDR.avail_freqs=547000 1555000 5333000\n",
+        ));
+        let rep: game_opt_loop::optimize::eval::Report = serde_json::from_value(serde_json::json!({
+            "candidate_id": "sys_g1c1", "status": "REJECT", "kind": "sysparam", "source": "phonefarm",
+            "verdict": {"is_pareto_improvement": false, "p_value": 0.3143, "reason": "没有任何指标显著改善",
+                        "per_metric": {"frame_p95": {"status": "无显著变化", "diff_pct": -0.91, "p": 0.3143}}}
+        }))
+        .unwrap();
+        let hist = proposer::history_item(
+            "sys_g1c1",
+            1,
+            Candidate::sysparam(
+                "抬总线下限",
+                [("bus.DDR.boost_freq".to_string(), "1555000".to_string())].into(),
+            ),
+            &rep,
+            vec!["frame_p95: -0.91% (p=0.3143) 无显著变化".into()],
+        );
+        proposer::input_for(
+            step,
+            &caps,
+            &plan,
+            2,
+            20260923,
+            "NX809J".into(),
+            "转视角 36 秒".into(),
+            proposer::constraints_for(Kind::Sysparam, Some(&wl)),
+            vec![hist],
+        )
+    }
+
+    #[test]
+    fn the_input_we_send_matches_its_contract() {
+        let v = serde_json::to_value(sample_input()).unwrap();
+        assert_conforms(&v, "proposer_input.schema.json");
+        assert_eq!(v["protocol"], proposer::PROTOCOL);
+        assert_eq!(v["version"], proposer::VERSION);
+
+        let mut gray = sample_input();
+        gray.kind = Kind::Gray;
+        gray.constraints = proposer::constraints_for(Kind::Gray, None);
+        assert_conforms(&serde_json::to_value(gray).unwrap(), "proposer_input.schema.json");
+    }
+
+    #[test]
+    fn candidates_we_produce_match_the_candidate_contract() {
+        for c in [
+            Candidate::sysparam("x", [("a".to_string(), "1".to_string())].into()),
+            Candidate::gray(
+                "y",
+                vec![game_opt_loop::optimize::eval::Rewrite {
+                    knob: "loadop_dont_care".into(),
+                    scope: None,
+                    args: None,
+                }],
+            ),
+        ] {
+            assert_conforms(&serde_json::to_value(c).unwrap(), "proposer_candidate.schema.json");
+        }
+    }
+
+    /// 第三方会真的写出来的那种回包: 合契约, 而且 Rust 认得。
+    #[test]
+    fn a_hand_written_third_party_output_is_accepted_by_both_sides() {
+        let out = serde_json::json!({
+            "protocol": "game_opt_loop/proposer@1",
+            "version": 1,
+            "proposer": "fixed-ddr@0.1",
+            "candidates": [
+                {"kind": "sysparam", "why": "抬 DDR 下限", "payload": {"params": {"bus.DDR.boost_freq": "1555000"}}}
+            ]
+        });
+        assert_conforms(&out, "proposer_output.schema.json");
+        let (ok, bad) = proposer::parse_output(&out.to_string(), Kind::Sysparam).unwrap();
+        assert_eq!(ok.len(), 1);
+        assert!(bad.is_empty());
+    }
+
+    /// 契约说要拒的 (带 harness 字段 / 取值不是字符串 / payload 多字段), Rust 也拒。
+    #[test]
+    fn what_the_contract_refuses_rust_refuses_too() {
+        let schema = load_schema("proposer_candidate.schema.json");
+        for bad in [
+            serde_json::json!({"kind": "sysparam", "payload": {"params": {"a": "1"}}, "protocol": {"p_threshold": 1.0}}),
+            serde_json::json!({"kind": "sysparam", "payload": {"params": {"a": 1}}}),
+            serde_json::json!({"kind": "sysparam", "payload": {"params": {"a": "1"}, "plan": []}}),
+            serde_json::json!({"kind": "gray", "payload": {"rewrites": [{"knob": "loadop_dont_care"}], "require_hit": false}}),
+        ] {
+            let mut problems = Vec::new();
+            validate(&bad, &schema, "cand", &mut problems);
+            assert!(!problems.is_empty(), "契约没拦住 {bad}");
+            let kind = if bad["kind"] == "gray" { Kind::Gray } else { Kind::Sysparam };
+            assert!(Candidate::from_value(&bad, kind).is_err(), "Rust 没拦住 {bad}");
+        }
     }
 }

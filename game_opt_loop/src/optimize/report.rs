@@ -182,6 +182,9 @@ pub struct Report {
     pub headline: String,
     /// 这份报告里的数字来自哪里。
     pub disclaimer: &'static str,
+    /// 出方案的一方与它的账 (问了几次、调了几次大模型)。`--plan` 时为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposer: Option<super::proposer::Summary>,
 }
 
 pub const DISCLAIMER: &str = "档案里的每个数字都来自 phonefarm 的真机采样与冻结规则判定。\
@@ -249,6 +252,7 @@ pub fn build(
         kept,
         headline,
         disclaimer: DISCLAIMER,
+        proposer: None,
     }
 }
 

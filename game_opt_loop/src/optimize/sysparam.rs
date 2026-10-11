@@ -471,6 +471,8 @@ pub struct Proposal {
 pub enum Origin {
     Llm,
     LocalMutation,
+    /// 外部进程 (`--proposer cmd:...`) 出的。
+    External,
 }
 
 /// 系统提示词。与 Python 版同一套硬规矩。
@@ -705,7 +707,7 @@ impl Lcg {
 ///
 /// 无论谁出的, 产出都要**过一遍白名单校验**才算数 —— 模型说某个值合法不作数。
 pub struct Proposer<'a> {
-    pub generator: Option<&'a crate::engine::generator::Generator>,
+    pub generator: Option<&'a dyn super::proposer::Complete>,
     pub seed: u64,
 }
 

@@ -287,7 +287,7 @@ pub fn local_proposals(n: usize, history: &[super::sysparam::History]) -> Vec<Pr
 
 /// 出主意的一方。
 pub struct Proposer<'a> {
-    pub generator: Option<&'a crate::engine::generator::Generator>,
+    pub generator: Option<&'a dyn super::proposer::Complete>,
 }
 
 impl Proposer<'_> {

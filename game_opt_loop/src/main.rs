@@ -144,6 +144,16 @@ pub struct OptimizeArgs {
     /// 接收端补上之前, 用这个参数喂一份已有的探测结果, 先把出主意那一半跑通。
     #[arg(long)]
     sysparam_probe: Option<PathBuf>,
+
+    /// 出方案的一方: `llm` (缺省: 大模型, 挂了退回本地变异器) / `local` (本地确定性
+    /// 变异器, 同 --no-llm) / `cmd:<可执行文件>` (外部进程: stdin 收一份 proposer@1 输入,
+    /// stdout 回一份候选; 契约见 contracts/proposer_*.schema.json, 接入说明见 docs/INTEGRATION.md)。
+    #[arg(long = "proposer", value_name = "SPEC")]
+    proposer: Vec<String>,
+
+    /// 外部出方案进程单次超时 (秒)。
+    #[arg(long, default_value_t = game_opt_loop::optimize::proposer::DEFAULT_TIMEOUT_S)]
+    proposer_timeout_s: u64,
 }
 
 #[derive(Args, Debug)]
@@ -587,6 +597,10 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         seed: args.seed,
         quality_reference: args.quality_reference,
         sysparam_probe: args.sysparam_probe,
+        proposer: optimize::proposer::Options {
+            specs: args.proposer,
+            timeout_s: args.proposer_timeout_s,
+        },
     };
 
     let outcome = optimize::run(&cfg)?;

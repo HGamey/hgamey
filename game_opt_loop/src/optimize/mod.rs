@@ -21,6 +21,7 @@ pub mod eval;
 pub mod games;
 pub mod gray;
 pub mod plan;
+pub mod proposer;
 pub mod report;
 pub mod sysparam;
 
@@ -56,6 +57,8 @@ pub struct Config {
     /// 那是 phonefarm 的活。接收端的探测通路接上之前, 这个参数让人可以
     /// 把已有的 probe.txt 喂进来, 把出主意那一半先跑通。
     pub sysparam_probe: Option<PathBuf>,
+    /// 出方案的一方 (`--proposer llm|local|cmd:<可执行文件>`), 见 [`proposer`]。
+    pub proposer: proposer::Options,
 }
 
 /// 跑完之后的落点。
@@ -102,6 +105,8 @@ fn pick_serial(prober: &caps::Prober, want: Option<&str>) -> Result<String> {
 
 /// 跑一次 optimize。
 pub fn run(cfg: &Config) -> Result<Outcome> {
+    // 出方案的 spec 写错了 (或与 --no-llm 矛盾) 应该在碰设备之前就停。
+    let proposer_spec = cfg.proposer.spec(cfg.use_llm)?;
     let roots = games::CarrierRoots::default();
     let target = games::resolve(&cfg.game, cfg.package.as_deref(), &roots);
 
@@ -149,6 +154,9 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     // 画质真值跟着冻结条件走, 不是某一层的私有参数: 灰档的每一个改写都动画面,
     // 那一层的 psnr 约束没有真值就判不了。
     plan.conditions.quality_reference = cfg.quality_reference.clone();
+    if let Some(line) = cfg.proposer.plan_line() {
+        plan.steps.iter_mut().for_each(|s| s.proposer = line.clone());
+    }
     println!("\n{}", plan::render(&plan, &caps, Some(&support.describe())));
 
     if cfg.plan_only {
@@ -197,26 +205,15 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
 
     // ---- 3. 逐层跑 ----
     println!("\n[3/3] 逐层出主意 + 真机评测...");
-    let generator = if cfg.use_llm {
-        let secrets = crate::engine::generator::load_secrets(&cfg.secrets);
-        match crate::engine::generator::Generator::from_secrets_with_timeout(
-            &secrets,
-            cfg.llm_provider.as_deref(),
-            cfg.llm_timeout_s,
-        ) {
-            Ok(g) => {
-                println!("      出主意: {} (挂了退回本地变异器)", g.provider_name());
-                Some(g)
-            }
-            Err(e) => {
-                println!("      出主意: 大模型不可用 ({e}) → 全程走本地变异器");
-                None
-            }
-        }
-    } else {
-        println!("      出主意: 已按 --no-llm 关闭 → 全程走本地变异器");
-        None
-    };
+    let built = proposer::from_spec(
+        &proposer_spec,
+        &cfg.secrets,
+        cfg.llm_provider.as_deref(),
+        cfg.llm_timeout_s,
+        std::time::Duration::from_secs(cfg.proposer.timeout_s.max(1)),
+    )?;
+    let counted = proposer::Counting::new(built.as_ref());
+    println!("      出主意: {}", counted.summary().describe);
 
     let mut layers: Vec<report::LayerOutcome> = Vec::new();
     let mut archive: Vec<report::Entry> = Vec::new();
@@ -228,7 +225,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             caps: &caps,
             plan: &plan,
             step,
-            generator: generator.as_ref(),
+            proposer: &counted,
             serial: &serial,
             driver: &driver,
             support: &support,
@@ -268,7 +265,8 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         ));
     }
 
-    let r = report::build(&plan, &caps, layers, archive, false);
+    let mut r = report::build(&plan, &caps, layers, archive, false);
+    r.proposer = Some(counted.summary());
     let (json, md) = report::write(&r, &caps, &cfg.out_dir)?;
     println!("\n{}", r.headline);
     println!("报告: {json}\n      {md}");
@@ -367,7 +365,7 @@ struct LayerCtx<'a> {
     caps: &'a caps::Caps,
     plan: &'a plan::Plan,
     step: &'a plan::Step,
-    generator: Option<&'a crate::engine::generator::Generator>,
+    proposer: &'a dyn proposer::Proposer,
     serial: &'a str,
     driver: &'a eval::EvalDriver,
     support: &'a eval::EvalSupport,
@@ -422,6 +420,28 @@ impl LayerCtx<'_> {
             .join(format!("{id}.json"));
         self.driver.evaluate(req, &path)
     }
+
+    /// 出一代方案: 组 proposer@1 输入 → 出方案的一方 → harness 校验 → 落证据
+    /// (`<out>/proposer/`)。谁来出方案只在这一处可换, 校验对谁都一样。
+    fn propose(
+        &self,
+        generation: u32,
+        constraints: &proposer::Constraints,
+        history: &[proposer::HistoryItem],
+    ) -> proposer::Batch<proposer::Candidate> {
+        let input = proposer::input_for(
+            self.step,
+            self.caps,
+            self.plan,
+            generation,
+            self.cfg.seed,
+            device_note(self.caps),
+            workload_note(self.caps),
+            constraints.clone(),
+            history.to_vec(),
+        );
+        proposer::generation(self.proposer, &input, &self.cfg.out_dir.join("proposer"))
+    }
 }
 
 /// 把这一代的出主意来路并进层结果。
@@ -437,15 +457,15 @@ fn record_proposer(
     if let Some(o) = origin {
         origins.push(o);
     }
-    let llm = origins
-        .iter()
-        .filter(|o| **o == sysparam::Origin::Llm)
-        .count();
-    let local = origins.len() - llm;
-    out.proposer = Some(match (llm, local) {
-        (0, _) => "本地确定性变异器".to_string(),
-        (_, 0) => "大模型".to_string(),
-        (l, n) => format!("大模型 {l} 代 / 本地变异器 {n} 代"),
+    let count = |o: sysparam::Origin| origins.iter().filter(|x| **x == o).count();
+    let (llm, ext) = (count(sysparam::Origin::Llm), count(sysparam::Origin::External));
+    let local = origins.len() - llm - ext;
+    out.proposer = Some(match (llm, local, ext) {
+        (0, 0, e) if e > 0 => "外部进程".to_string(),
+        (0, _, 0) => "本地确定性变异器".to_string(),
+        (_, 0, 0) => "大模型".to_string(),
+        (l, n, 0) => format!("大模型 {l} 代 / 本地变异器 {n} 代"),
+        (l, n, e) => format!("大模型 {l} 代 / 本地变异器 {n} 代 / 外部进程 {e} 代"),
     });
     // LLM 的岔子留第一条: 后面几代多半是同一个原因, 覆盖成最后一条会让
     // "第一次为什么降级"这个真正有用的信息丢掉。
@@ -512,26 +532,15 @@ fn run_sysparam(
         return Ok(o);
     }
 
-    let proposer = sysparam::Proposer {
-        generator: ctx.generator,
-        seed: ctx.cfg.seed,
-    };
-    let mut history: Vec<sysparam::History> = Vec::new();
+    let constraints = proposer::constraints_for(Kind::Sysparam, Some(&wl));
+    let mut history: Vec<proposer::HistoryItem> = Vec::new();
     let mut origins: Vec<sysparam::Origin> = Vec::new();
 
     for gen in 1..=ctx.step.generations {
-        let batch = proposer.propose(
-            &device_note(ctx.caps),
-            &workload_note(ctx.caps),
-            &wl,
-            &history,
-            ctx.step.children,
-        );
+        let batch = ctx.propose(gen, &constraints, &history).sysparam();
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
-        for (p, why) in &batch.rejected {
-            out.rejected_locally.push(format!("{p:?}: {why}"));
-        }
+        out.rejected_locally.extend(batch.rejected.iter().cloned());
         if batch.accepted.is_empty() {
             // 提不出新东西就停, 不空转剩下的代数。
             let note = format!("第 {gen} 代一个可用候选都没提出来, 这一层到此为止");
@@ -587,16 +596,11 @@ fn run_sysparam(
                 if rep.kept() { " 留下" } else { "" }
             );
 
-            // 只有量准了的才喂回给出主意的一方。ABORT 什么都没测到,
-            // 把它当成"这组不行"会让模型学到一条不存在的规律。
-            if rep.is_measurement_valid() {
-                history.push(sysparam::History {
-                    params: prop.params.clone(),
-                    verdict: rep.status.clone(),
-                    reason: rep.verdict.reason.clone().unwrap_or_default(),
-                    per_metric: per_metric_lines(&rep),
-                });
-            }
+            // 上过机的都进历史 (带 measurement_valid)。内置出方案还原历史时只取量准了的
+            // (proposer::sysparam_history): ABORT 什么都没测到, 当成"这组不行"会让模型
+            // 学到一条不存在的规律。
+            let cand = proposer::Candidate::sysparam(prop.why.clone(), prop.params.clone());
+            history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             archive.push(report::Entry::from_report(
                 id,
                 Kind::Sysparam,
@@ -637,24 +641,15 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
         return Ok(o);
     }
 
-    let proposer = gray::Proposer {
-        generator: ctx.generator,
-    };
-    let mut history: Vec<sysparam::History> = Vec::new();
+    let constraints = proposer::constraints_for(Kind::Gray, None);
+    let mut history: Vec<proposer::HistoryItem> = Vec::new();
     let mut origins: Vec<sysparam::Origin> = Vec::new();
 
     for gen in 1..=ctx.step.generations {
-        let batch = proposer.propose(
-            &device_note(ctx.caps),
-            &workload_note(ctx.caps),
-            &history,
-            ctx.step.children,
-        );
+        let batch = ctx.propose(gen, &constraints, &history).gray();
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
-        for (k, why) in &batch.rejected {
-            out.rejected_locally.push(format!("{k}: {why}"));
-        }
+        out.rejected_locally.extend(batch.rejected.iter().cloned());
         if batch.accepted.is_empty() {
             // 层里已实现的开关是有限的, 试完就没了。这时候停下来说清楚,
             // 比把同一个候选再上机一遍诚实。
@@ -715,17 +710,9 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             );
 
             // 不管量没量准, 这些开关都算"提过了" —— 否则下一代会原样再提一遍,
-            // 换回来的是同一个候选在真机上再跑一轮。
-            history.push(sysparam::History {
-                params: knobs.iter().map(|k| (k.clone(), "on".to_string())).collect(),
-                verdict: rep.status.clone(),
-                reason: format!("{} — {}", knobs.join("+"), prop.why),
-                per_metric: if rep.is_measurement_valid() {
-                    per_metric_lines(&rep)
-                } else {
-                    vec!["这一轮没量准 (ABORT), 数字不算数".into()]
-                },
-            });
+            // 换回来的是同一个候选在真机上再跑一轮 (见 proposer::gray_history)。
+            let cand = proposer::Candidate::gray(prop.why.clone(), prop.rewrites.clone());
+            history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             archive.push(report::Entry::from_report(
                 id,
                 Kind::Gray,
