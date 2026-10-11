@@ -71,6 +71,9 @@ pub struct Entry {
     pub quality_reference: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_dir: Option<String>,
+    /// 多机并行时在哪台设备上量的 (判定只在这台内部比对照臂)。单机不写。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
     /// 留下了没有。
     pub kept: bool,
     /// 这条记录的测量本身算不算数。ABORT 的记录 `false` ——
@@ -100,6 +103,7 @@ impl Entry {
             power_source: r.power_source.clone(),
             quality_reference: r.quality_reference.clone(),
             evidence_dir: r.evidence_dir.clone(),
+            device: None,
             kept: r.kept(),
             measurement_valid: r.is_measurement_valid(),
         }
@@ -493,6 +497,7 @@ pkg_path=package:/data/app/x/base.apk\n";
             power_source: None,
             quality_reference: None,
             evidence_dir: None,
+            device: None,
             kept,
             measurement_valid: status != "ABORT",
         }

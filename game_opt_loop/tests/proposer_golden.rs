@@ -111,6 +111,7 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         game: "原神".into(),
         package: None,
         serial: Some("91253241019A".into()),
+        extra_devices: vec![],
         // 形状写死成 2 代 × 3 个 (② 已实现的开关只有一个, 第二代就停), 不靠预算推:
         // 金样钉的是「同一种子下发同样的请求」, 不该随每候选估时的口径一起漂。
         budget: Budget::parse("6h").unwrap(),

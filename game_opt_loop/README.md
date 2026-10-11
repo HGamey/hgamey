@@ -26,6 +26,10 @@ cargo run --release -- optimize --game 原神 --device 91253241019A --budget 1h 
 cargo run --release -- optimize --game 原神 --device 91253241019A \
     --layers sysparam --generations 2 --children 1 --lock-label <名字>
 
+# 多台同型号手机并行：③ 同一代的候选分给几台同时量（每个候选只在自己那台上比对照臂，不跨设备比；
+# 型号或 root 与主设备不同就停；设备锁仍是一把，optimize 持锁期间这几台都归它）
+cargo run --release -- optimize --game 原神 --device 91253241019A --extra-device <同型号第二台> --layers sysparam
+
 # 内置表里没有的游戏：先用 phonefarm onboard 实测出一份游戏档案，再直接按包名跑
 ../phonefarm/phonefarm onboard --package com.example.game --out runs/onboard/example
 cargo run --release -- optimize --game com.example.game --game-profile runs/onboard/example/profile.json --plan

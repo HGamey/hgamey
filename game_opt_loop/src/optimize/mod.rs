@@ -18,6 +18,7 @@
 
 pub mod caps;
 pub mod compare;
+pub mod dispatch;
 pub mod eval;
 pub mod games;
 pub mod gate;
@@ -42,6 +43,9 @@ pub struct Config {
     pub package: Option<String>,
     /// 目标设备; None = 自己挑唯一在线的那台。
     pub serial: Option<String>,
+    /// 同型号的其他设备 (`--extra-device`, 可多次)。③ 系统参数层同一代的候选分给
+    /// 这些设备与主设备并行量; 每个候选只在自己那台上比对照臂, 不跨设备比。空 = 单机。
+    pub extra_devices: Vec<String>,
     pub budget: plan::Budget,
     /// 只摸底 + 打印计划, 不改设备。
     pub plan_only: bool,
@@ -113,6 +117,53 @@ fn pick_serial(prober: &caps::Prober, want: Option<&str>) -> Result<String> {
     }
 }
 
+/// 主设备之外的同型号设备 (`--extra-device`)。返回本次可用设备表, 主设备在前。
+///
+/// 每台都单独摸底并落 `caps_<serial>.json`。型号或 root 与主设备不一致就整次停下:
+/// 不同型号的手机对同一组系统参数的反应本来就不同, 混着量会把机型差异算进候选。
+/// 白名单沿用主设备那一份 (同型号同系统版本), 每台的实际生效情况以各自回包的
+/// `conditions_observed.apply_ok` 为准。
+fn extra_devices(
+    prober: &caps::Prober,
+    target: &games::Target,
+    primary: &caps::Caps,
+    serial: &str,
+    extras: &[String],
+    out_dir: &std::path::Path,
+) -> Result<Vec<String>> {
+    let mut devices = vec![serial.to_string()];
+    if extras.is_empty() {
+        return Ok(devices);
+    }
+    let online = prober.devices()?;
+    for s in extras {
+        if devices.contains(s) {
+            continue;
+        }
+        if !online.contains(s) {
+            bail!("--extra-device {s} 不在线。在线的是: {}", online.join(", "));
+        }
+        let c = prober
+            .run(target, s)
+            .with_context(|| format!("摸底失败 (设备 {s})"))?;
+        caps::write(&c, &out_dir.join(format!("caps_{s}.json")))?;
+        let same_model = c.device.model.is_some() && c.device.model == primary.device.model;
+        if !same_model || c.device.root.is_true() != primary.device.root.is_true() {
+            bail!(
+                "--extra-device {s} 与主设备不同型号或 root 状态不同 ({:?} root={} vs {:?} root={}), \
+                 多机只并行同型号设备, 不跨机型比较",
+                c.device.model,
+                c.device.root.is_true(),
+                primary.device.model,
+                primary.device.root.is_true()
+            );
+        }
+        println!("      并行设备 {s} ({})", c.device.model.as_deref().unwrap_or("?"));
+        devices.push(s.clone());
+    }
+    Ok(devices)
+}
+
 /// 跑一次 optimize。
 pub fn run(cfg: &Config) -> Result<Outcome> {
     // 出方案的 spec 写错了 (或与 --no-llm 矛盾) 应该在碰设备之前就停。
@@ -172,6 +223,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     let caps_path = cfg.out_dir.join("caps.json");
     caps::write(&caps, &caps_path)?;
     println!("      caps: {}", caps_path.display());
+    let devices = extra_devices(&prober, &target, &caps, &serial, &cfg.extra_devices, &cfg.out_dir)?;
 
     // ---- 2. 开路 + 排计划 ----
     //
@@ -267,6 +319,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             step,
             proposer: &counted,
             serial: &serial,
+            devices: &devices,
             driver: &driver,
             support: &support,
         };
@@ -415,6 +468,36 @@ fn per_metric_lines(r: &eval::Report) -> Vec<String> {
         .unwrap_or_default()
 }
 
+
+/// 在指定设备上下发一个候选 (多机调度从各自的线程里调它, 所以不借 [`LayerCtx`])。
+fn evaluate_on(
+    cfg: &Config,
+    caps: &caps::Caps,
+    driver: &eval::EvalDriver,
+    serial: &str,
+    id: &str,
+    req: &Request,
+) -> Result<eval::Report> {
+    // 黑盒游戏: 上机前先进门。量到桌面或登录页的一轮不是数据。
+    if caps.carrier.box_kind == games::BoxKind::BlackBox && !req.package.is_empty() {
+        let dir = cfg.out_dir.join("enter").join(id);
+        match driver.enter_scene(&req.package, serial, &dir) {
+            eval::EnterOutcome::InGame => println!("        进门: 已在游戏场景"),
+            eval::EnterOutcome::Unsupported => {
+                println!("        进门: 接收端没有 onboard --enter-only, 照旧直接上机 (开跑前要人确认在游戏里)")
+            }
+            eval::EnterOutcome::NeedsHuman(why) => {
+                bail!("进不了游戏场景, 要人动手: {why} (证据 {})", dir.display())
+            }
+            eval::EnterOutcome::Failed(why) => {
+                bail!("进不了游戏场景: {why} (证据 {})", dir.display())
+            }
+        }
+    }
+    let path = cfg.out_dir.join("requests").join(format!("{id}.json"));
+    driver.evaluate(req, &path)
+}
+
 /// 跑一层要用到的全部东西。
 ///
 /// 收成一个结构体不是为了少敲字, 是为了让两个层跑器的签名一眼看得出
@@ -427,6 +510,8 @@ struct LayerCtx<'a> {
     step: &'a plan::Step,
     proposer: &'a dyn proposer::Proposer,
     serial: &'a str,
+    /// 本次可用的设备, 主设备在前 (`--extra-device` 追加的在后)。
+    devices: &'a [String],
     driver: &'a eval::EvalDriver,
     support: &'a eval::EvalSupport,
 }
@@ -473,28 +558,7 @@ impl LayerCtx<'_> {
 
     /// 下发一个候选。失败只回 Err, 由调用方记进 `eval_errors` 并接着跑下一个。
     fn evaluate(&self, id: &str, req: &Request) -> Result<eval::Report> {
-        // 黑盒游戏: 上机前先进门。量到桌面或登录页的一轮不是数据。
-        if self.caps.carrier.box_kind == games::BoxKind::BlackBox && !req.package.is_empty() {
-            let dir = self.cfg.out_dir.join("enter").join(id);
-            match self.driver.enter_scene(&req.package, self.serial, &dir) {
-                eval::EnterOutcome::InGame => println!("        进门: 已在游戏场景"),
-                eval::EnterOutcome::Unsupported => {
-                    println!("        进门: 接收端没有 onboard --enter-only, 照旧直接上机 (开跑前要人确认在游戏里)")
-                }
-                eval::EnterOutcome::NeedsHuman(why) => {
-                    bail!("进不了游戏场景, 要人动手: {why} (证据 {})", dir.display())
-                }
-                eval::EnterOutcome::Failed(why) => {
-                    bail!("进不了游戏场景: {why} (证据 {})", dir.display())
-                }
-            }
-        }
-        let path = self
-            .cfg
-            .out_dir
-            .join("requests")
-            .join(format!("{id}.json"));
-        self.driver.evaluate(req, &path)
+        evaluate_on(self.cfg, self.caps, self.driver, self.serial, id, req)
     }
 
     /// 出一代方案: 组 proposer@1 输入 → 出方案的一方 → harness 校验 → 落证据
@@ -625,35 +689,55 @@ fn run_sysparam(
             break;
         }
 
-        for (i, prop) in batch.accepted.iter().enumerate() {
-            let id = format!("sys_g{gen}c{}", i + 1);
-            println!("      {id}: {} 项 — {}", prop.params.len(), prop.why);
+        // 先把这一代的请求全部排好 (打印顺序与单机时相同), 再分给设备并行量。
+        let reqs: Vec<(String, Request)> = batch
+            .accepted
+            .iter()
+            .enumerate()
+            .map(|(i, prop)| {
+                let id = format!("sys_g{gen}c{}", i + 1);
+                println!("      {id}: {} 项 — {}", prop.params.len(), prop.why);
+                let req = Request {
+                    version: eval::REQUEST_VERSION,
+                    kind: Kind::Sysparam,
+                    candidate_id: id.clone(),
+                    serial: Some(ctx.serial.to_string()),
+                    package: ctx.caps.target.package.clone().unwrap_or_default(),
+                    workload: workload_of(ctx.step, ctx.caps),
+                    conditions: ctx.plan.conditions.clone(),
+                    protocol: plan::protocol_for(ctx.step, ctx.caps),
+                    payload: Payload::Sysparam(eval::SysparamPayload {
+                        why: Some(prop.why.clone()),
+                        params: prop.params.clone(),
+                        plan: sysparam::plan(&prop.params, &wl),
+                        whitelist: Some(wl.clone()),
+                        deny_keywords: sysparam::DENY_KEYWORDS
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                    }),
+                };
+                (id, req)
+            })
+            .collect();
+        let multi = ctx.devices.len() > 1;
+        let (cfg, caps, driver) = (ctx.cfg, ctx.caps, ctx.driver);
+        let results = dispatch::run_on_devices(&reqs, ctx.devices, |dev, _, (id, req)| {
+            let mut req = req.clone();
+            req.serial = Some(dev.to_string());
+            if multi {
+                println!("        {id} → 设备 {dev}");
+            }
+            evaluate_on(cfg, caps, driver, dev, id, &req)
+        });
 
-            let req = Request {
-                version: eval::REQUEST_VERSION,
-                kind: Kind::Sysparam,
-                candidate_id: id.clone(),
-                serial: Some(ctx.serial.to_string()),
-                package: ctx.caps.target.package.clone().unwrap_or_default(),
-                workload: workload_of(ctx.step, ctx.caps),
-                conditions: ctx.plan.conditions.clone(),
-                protocol: plan::protocol_for(ctx.step, ctx.caps),
-                payload: Payload::Sysparam(eval::SysparamPayload {
-                    why: Some(prop.why.clone()),
-                    params: prop.params.clone(),
-                    plan: sysparam::plan(&prop.params, &wl),
-                    whitelist: Some(wl.clone()),
-                    deny_keywords: sysparam::DENY_KEYWORDS
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
-                }),
-            };
-
-            let rep = match ctx.evaluate(&id, &req) {
+        for ((prop, (id, _)), (dev, res)) in batch.accepted.iter().zip(&reqs).zip(results) {
+            let id = id.clone();
+            let rep = match res {
                 Ok(r) => r,
                 Err(e) => {
-                    println!("        → 下发失败, 跳过这个候选: {e}");
+                    let who = if multi { format!("{id} [{dev}] ") } else { String::new() };
+                    println!("        {who}→ 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
                     continue;
                 }
@@ -666,7 +750,8 @@ fn run_sysparam(
                 out.kept += 1;
             }
             println!(
-                "        → {} (p={:.4}){}{}",
+                "        {}{} (p={:.4}){}{}",
+                if multi { format!("{id} [{dev}] → ") } else { "→ ".into() },
                 rep.status,
                 rep.verdict.p_value,
                 if rep.kept() { " 留下" } else { "" },
@@ -678,7 +763,7 @@ fn run_sysparam(
             // 学到一条不存在的规律。
             let cand = proposer::Candidate::sysparam(prop.why.clone(), prop.params.clone());
             history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
-            archive.push(report::Entry::from_report(
+            let mut entry = report::Entry::from_report(
                 id,
                 Kind::Sysparam,
                 gen,
@@ -687,7 +772,12 @@ fn run_sysparam(
                     params: prop.params.clone(),
                 },
                 &rep,
-            ));
+            );
+            // 多机时记下在哪台上量的 (判定只在这台内部比对照臂); 单机不写, 档案与以前一致
+            if multi {
+                entry.device = Some(dev);
+            }
+            archive.push(entry);
         }
     }
     Ok(out)
