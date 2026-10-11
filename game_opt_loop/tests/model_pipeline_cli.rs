@@ -299,15 +299,44 @@ fn timeout_and_byte_caps_preserve_uncertainty_and_no_retry() {
     for behavior in ["sleep", "oversize"] {
         let f = Fixture::new("autonomous", behavior);
         f.modify_plan(|p| {
-            p["stages"][0]["budget"]["wall_ms"] = json!(150);
-            if behavior == "oversize" {
+            if behavior == "sleep" {
+                p["stages"][0]["budget"]["wall_ms"] = json!(150);
+            } else {
+                // Exercise the byte cap after Python starts, rather than racing
+                // interpreter startup against the short wall-time test.
                 p["stages"][0]["budget"]["output_bytes"] = json!(10000);
             }
         });
         assert!(!f.cli("start", &[]).status.success());
-        assert_eq!(f.journal()["entries"][0]["state"], "unknown");
+        let j = f.journal();
+        let entry = &j["entries"][0];
+        assert_eq!(entry["state"], "unknown");
+        let calls = f.calls();
+        if behavior == "sleep" {
+            // The host can exhaust 150ms before Python reaches its call ledger.
+            // Either case has uncertain effects and must never auto-retry.
+            assert!(calls <= 1);
+            assert!(entry["error"]
+                .as_str()
+                .unwrap()
+                .contains("host wall budget exceeded"));
+            assert!(entry["host_wall_ms"].as_u64().unwrap() >= 150);
+        } else {
+            assert_eq!(calls, 1);
+            assert!(entry["error"]
+                .as_str()
+                .unwrap()
+                .contains("host output/log bytes budget exceeded"));
+            assert!(
+                std::fs::metadata(f.out.join("0_design/design.json"))
+                    .unwrap()
+                    .len()
+                    > 10000
+            );
+            assert!(entry["host_wall_ms"].as_u64().unwrap() < 5000);
+        }
         assert!(!f.cli("resume", &[]).status.success());
-        assert_eq!(f.calls(), 1);
+        assert_eq!(f.calls(), calls, "resume must not start another driver");
     }
 }
 
@@ -428,14 +457,35 @@ fn launcher_leaving_live_workers_is_unknown_and_does_not_advance() {
 
 #[test]
 fn valid_receipt_does_not_override_observed_timeout() {
-    let f = Fixture::new("autonomous", "receipt_then_wait");
-    f.modify_plan(|p| {
-        p["stages"][0]["budget"]["wall_ms"] = json!(150);
-    });
-    assert!(!f.cli("start", &[]).status.success());
-    assert_eq!(f.journal()["entries"][0]["state"], "unknown");
+    let f = Fixture::new("autonomous", "receipt_then_wait_for_timeout");
+    // Keep the normal 5s wall budget: Python has time to publish its receipt,
+    // then deliberately remains alive for 30s to cross the host deadline.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
+        .args(["model-pipeline", "start", "--plan"])
+        .arg(&f.plan)
+        .arg("--out")
+        .arg(&f.out)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_file(&f.out.join("0_design/ready.flag"));
     let receipt = f.out.join("0_design/receipt.json");
     assert!(receipt.exists());
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "observe receipt before timeout"
+    );
+    assert_eq!(f.calls(), 1);
+    assert!(!child.wait().unwrap().success());
+    let j = f.journal();
+    assert_eq!(j["entries"][0]["state"], "unknown");
+    assert!(j["entries"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("host wall budget exceeded"));
+    assert!(j["entries"][0]["host_wall_ms"].as_u64().unwrap() >= 5000);
+    assert!(!f.out.join("0_design/driver_finished.flag").exists());
     assert!(!f
         .cli(
             "reconcile",
@@ -454,6 +504,8 @@ fn valid_receipt_does_not_override_observed_timeout() {
         .status
         .success());
     assert_eq!(f.journal()["entries"][0]["state"], "unknown");
+    assert_eq!(f.calls(), 1);
+    assert!(!f.cli("resume", &[]).status.success());
     assert_eq!(f.calls(), 1);
 }
 
