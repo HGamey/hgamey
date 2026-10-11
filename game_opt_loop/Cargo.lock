@@ -535,6 +535,7 @@ dependencies = [
  "chrono",
  "clap",
  "env_logger",
+ "errno",
  "fs2",
  "libc",
  "log",
