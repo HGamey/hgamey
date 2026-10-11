@@ -382,6 +382,16 @@ fn workload_note(caps: &caps::Caps) -> String {
     }
 }
 
+/// 日志里跟在判定后面的那句理由。ABORT 的原因 (超温 / 快照不一致 / 没量到帧)
+/// 只写在 report.json 里的话, 真机跑在远端节点上时要等整段跑完、把输出拉回来才看得到;
+/// 打在日志里, 第一个候选作废时就能决定要不要停下来修。
+fn verdict_note(rep: &eval::Report) -> String {
+    match rep.verdict.reason.as_deref().map(str::trim) {
+        Some(r) if !r.is_empty() => format!(" — {r}"),
+        _ => String::new(),
+    }
+}
+
 /// 把逐指标明细压成给出主意的一方看的几行。
 fn per_metric_lines(r: &eval::Report) -> Vec<String> {
     r.verdict
@@ -656,10 +666,11 @@ fn run_sysparam(
                 out.kept += 1;
             }
             println!(
-                "        → {} (p={:.4}){}",
+                "        → {} (p={:.4}){}{}",
                 rep.status,
                 rep.verdict.p_value,
-                if rep.kept() { " 留下" } else { "" }
+                if rep.kept() { " 留下" } else { "" },
+                verdict_note(&rep)
             );
 
             // 上过机的都进历史 (带 measurement_valid)。内置出方案还原历史时只取量准了的
@@ -769,10 +780,11 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                 out.kept += 1;
             }
             println!(
-                "        → {} (p={:.4}){}",
+                "        → {} (p={:.4}){}{}",
                 rep.status,
                 rep.verdict.p_value,
-                if rep.kept() { " 留下" } else { "" }
+                if rep.kept() { " 留下" } else { "" },
+                verdict_note(&rep)
             );
 
             // 不管量没量准, 这些开关都算"提过了" —— 否则下一代会原样再提一遍,
@@ -802,6 +814,28 @@ mod tests {
         // 需要的错误措辞 —— 挑错设备的代价是在别人的机器上写 sysfs。
         let cfg_msg = "不在线";
         assert!(cfg_msg.contains("不在线"));
+    }
+
+    #[test]
+    fn the_verdict_reason_follows_the_status_in_the_log() {
+        let mut r = eval::Report {
+            version: Some(2),
+            kind: Some(Kind::Sysparam),
+            candidate_id: "c".into(),
+            status: "ABORT".into(),
+            metrics: Default::default(),
+            verdict: Default::default(),
+            source: "phonefarm".into(),
+            power_source: None,
+            quality_reference: None,
+            conditions_observed: None,
+            evidence_dir: None,
+            phonefarm_version: None,
+            obtained_via: None,
+        };
+        assert_eq!(verdict_note(&r), "");
+        r.verdict.reason = Some("knob 臂第 1 轮 SoC 结温 52.3C 超过上限 51.8C".into());
+        assert!(verdict_note(&r).contains("52.3C"));
     }
 
     #[test]
