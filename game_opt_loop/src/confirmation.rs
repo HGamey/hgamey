@@ -45,6 +45,29 @@ pub struct Plan {
     /// normal paired differences. Frame samples within one run cannot be used as pairs.
     pub paired_t_assumptions_acknowledged: bool,
     pub metrics: Vec<MetricRule>,
+    /// Receiver-frozen loaded thermal identities, never caller temperature limits.
+    /// Omit None to preserve historical v1 plan fingerprints byte for byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_contract: Option<TemperatureContract>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TemperatureContract {
+    pub profile_id: String,
+    pub receiver_policy_version: u32,
+    pub profile_sha256: String,
+    pub reference_sha256: String,
+    pub thermal_contract_sha256: String,
+}
+impl TemperatureContract {
+    fn valid(&self) -> bool {
+        self.profile_id == "loaded_steady_v1"
+            && self.receiver_policy_version == 2
+            && digest_ok(&self.profile_sha256)
+            && digest_ok(&self.reference_sha256)
+            && digest_ok(&self.thermal_contract_sha256)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +181,12 @@ fn fingerprint(f: &Frozen) -> Result<String> {
     ))?))
 }
 fn validate(plan: &Plan) -> Result<()> {
+    ensure!(
+        plan.temperature_contract
+            .as_ref()
+            .is_none_or(TemperatureContract::valid),
+        "unsupported loaded temperature contract/version/hash"
+    );
     ensure!(
         digest_ok(&plan.baseline_artifact_sha256)
             && digest_ok(&plan.candidate_artifact_sha256)
@@ -280,12 +309,11 @@ fn load_report(path: &Path, expected: &str) -> Result<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn receiver_qualified(v: &Value) -> bool {
+fn receiver_qualified(v: &Value, thermal: Option<&TemperatureContract>) -> bool {
     let replay = v
         .get("qualification_only")
         .is_some_and(|x| x.as_bool() != Some(false));
-    !replay
-        && v["schema"] == "phonefarm/confirmation_observation@1"
+    let common = !replay
         && v["qualification"]["stage"] == "experiment"
         && v["qualification"]["eligible"] == false
         && v["status"] == "VALID_OBSERVATION"
@@ -294,19 +322,50 @@ fn receiver_qualified(v: &Value) -> bool {
             v["qualification"]["evidence_origin"].as_str(),
             Some("live_device" | "recorded_device")
         )
-        && v["sample_qualification"]["schema"] == "phonefarm/confirmation_sample_qualification@1"
         && v["sample_qualification"]["valid_observation"] == true
         && [
             "root_verified",
             "control_verified",
-            "cold_verified",
             "trace_window_verified",
             "workload_succeeded",
             "restore_verified",
             "baseline_admission_verified",
         ]
         .iter()
-        .all(|gate| v["sample_qualification"]["gates"][*gate] == true)
+        .all(|gate| v["sample_qualification"]["gates"][*gate] == true);
+    if !common {
+        return false;
+    }
+    match thermal {
+        None => {
+            v["schema"] == "phonefarm/confirmation_observation@1"
+                && v["sample_qualification"]["schema"]
+                    == "phonefarm/confirmation_sample_qualification@1"
+                && v["sample_qualification"]["gates"]["cold_verified"] == true
+                && v["confirmation_binding"].get("thermal_contract").is_none()
+        }
+        Some(expected) => {
+            v["schema"] == "phonefarm/confirmation_observation@2"
+                && v["sample_qualification"]["schema"]
+                    == "phonefarm/confirmation_sample_qualification@2"
+                && v["sample_qualification"]["gates"]["thermal_profile_verified"] == true
+                && v["sample_qualification"]["gates"]["thermal_window_verified"] == true
+                && v["qualification"]["version"] == 2
+                && v["qualification"]["policy"]["version"] == 2
+                && v["qualification"]["policy"]["temperature_profile_id"] == expected.profile_id
+                && v["qualification"]["policy"]["temperature_profile_sha256"]
+                    == expected.profile_sha256
+                && v["qualification"]["policy"]["thermal_reference_sha256"]
+                    == expected.reference_sha256
+                && v["qualification"]["policy"].get("temp_cap_c") == Some(&Value::Null)
+                && v["qualification"]["policy"].get("cool_c") == Some(&Value::Null)
+                && expected.valid()
+                && serde_json::from_value::<TemperatureContract>(
+                    v["confirmation_binding"]["thermal_contract"].clone(),
+                )
+                .is_ok_and(|actual| actual == *expected)
+        }
+    }
 }
 
 fn metric_provenance_valid(v: &Value, metric: &str) -> bool {
@@ -552,7 +611,7 @@ pub fn judge(
             };
             match load_report(&path, expected) {
                 Ok(v) => {
-                    if !receiver_qualified(&v) {
+                    if !receiver_qualified(&v, p.temperature_contract.as_ref()) {
                         out.issues
                             .push(format!("receiver not a valid single-run observation: {id}"));
                     }
@@ -569,6 +628,28 @@ pub fn judge(
                             out.issues.push(format!(
                                 "missing/reused/exploration raw artifact {kind}: {id}"
                             ));
+                        }
+                    }
+                    if p.temperature_contract.is_some() {
+                        for kind in ["thermal_admission_sha256", "thermal_window_sha256"] {
+                            let digest = v["confirmation_binding"]["raw_artifacts"][kind]
+                                .as_str()
+                                .unwrap_or("");
+                            if !digest_ok(digest) || !raw_seen.insert(digest.to_string()) {
+                                out.issues.push(format!(
+                                    "missing/reused/exploration raw thermal artifact {kind}: {id}"
+                                ));
+                            }
+                        }
+                        // A bare exit status is normally byte-identical across successful arms.
+                        // Its hash is required; uniqueness is not observation independence.
+                        if !v["confirmation_binding"]["raw_artifacts"]
+                            ["thermal_sampler_exit_sha256"]
+                            .as_str()
+                            .is_some_and(digest_ok)
+                        {
+                            out.issues
+                                .push(format!("missing/invalid thermal sampler exit hash: {id}"));
                         }
                     }
                     values.push(v);
@@ -771,15 +852,33 @@ mod tests {
         assert!(summarize(&rule(), &[1.0; 5], &[1.0, 2.0, f64::NAN, 4.0, 5.0], 0.05).is_err());
     }
     #[test]
+    fn pre_extension_frozen_plan_keeps_exact_historical_fingerprint() {
+        // Frozen by the actual pre-extension CLI from the synthetic example plan.
+        let legacy: Frozen = serde_json::from_str(include_str!(
+            "../tests/fixtures/legacy_confirmation_frozen.json"
+        ))
+        .unwrap();
+        assert!(legacy.plan.temperature_contract.is_none());
+        assert_eq!(fingerprint(&legacy).unwrap(), legacy.sha256);
+        assert_eq!(
+            legacy.sha256,
+            "5c7b606a4804b7a4dff1ec2135af32a63e15b6963e313b9dd7dc197238b700b0"
+        );
+        assert!(serde_json::to_value(&legacy.plan)
+            .unwrap()
+            .get("temperature_contract")
+            .is_none());
+    }
+    #[test]
     fn offline_or_malformed_qualifications_do_not_confirm() {
         let mut v = serde_json::json!({"schema":"phonefarm/confirmation_observation@1","source":"phonefarm","status":"VALID_OBSERVATION","qualification":{"stage":"experiment","eligible":false,"evidence_origin":"recorded_device"},
             "sample_qualification":{"schema":"phonefarm/confirmation_sample_qualification@1","valid_observation":true,"gates":{"root_verified":true,"control_verified":true,"cold_verified":true,"trace_window_verified":true,"workload_succeeded":true,"restore_verified":true,"baseline_admission_verified":true}}});
-        assert!(receiver_qualified(&v));
+        assert!(receiver_qualified(&v, None));
         v["qualification_only"] = Value::Bool(true);
-        assert!(!receiver_qualified(&v));
+        assert!(!receiver_qualified(&v, None));
         v["qualification_only"] = Value::Bool(false);
         v["qualification"]["stage"] = Value::String("conclusion".into());
-        assert!(!receiver_qualified(&v));
+        assert!(!receiver_qualified(&v, None));
     }
 }
 
@@ -822,6 +921,7 @@ mod contract_tests {
                 minimum_improvement: Some(1.0),
                 maximum_regression: 3.0,
             }],
+            temperature_contract: None,
         };
         let mut frozen = Frozen {
             schema: "game_opt_loop/confirmation_plan@1".into(),
