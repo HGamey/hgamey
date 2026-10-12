@@ -102,7 +102,7 @@ impl Steer {
             parts.push("停止: 这一代结束后停".to_string());
         }
         if self.pause {
-            parts.push("暂停: 等 human.md 再改才继续".to_string());
+            parts.push("暂停: 等掌舵指令再改才继续".to_string());
         }
         if self.budget_add_min != 0 {
             parts.push(format!("预算 {:+} 分钟", self.budget_add_min));
@@ -114,7 +114,7 @@ impl Steer {
             parts.push(format!("只跑 {}", l.join("+")));
         }
         if !self.free_text.is_empty() {
-            parts.push("其余原文交给出方案的一方作为最高优先级偏好".to_string());
+            parts.push("其余的话原样转给出主意的一方, 优先照办".to_string());
         }
         if parts.is_empty() {
             "没有指令".into()

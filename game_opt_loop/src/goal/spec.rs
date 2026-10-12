@@ -168,23 +168,41 @@ impl GoalSpec {
         })
     }
 
-    /// 一句话的目标摘要。
+    /// 一句话的目标摘要 (给人看的大白话, 实时看板的标题): 游戏用中文名, 层名不用代号。
     pub fn summary(&self) -> String {
+        let game = crate::optimize::games::resolve(
+            &self.game,
+            Some(&self.game),
+            &crate::optimize::games::CarrierRoots::default(),
+        )
+        .display;
+        let game = if game.is_empty() { self.game.clone() } else { game };
         let what = match self.objective.metric.as_str() {
-            "power_watt" => "整机功耗",
-            "frame_p95" => "帧时 p95",
+            "power_watt" => "整机耗电",
+            "frame_p95" => "卡顿 (帧时 p95)",
             "fps_mean" => "平均帧率",
             "gpu_busy_ms" => "GPU 忙碌时间",
             m => m,
         };
-        let dir = if self.objective.direction == "lower" { "降低" } else { "提高" };
+        let dir = if self.objective.direction == "lower" { "降" } else { "提高" };
+        let layers: Vec<&str> = self
+            .layers
+            .iter()
+            .map(|l| match l.as_str() {
+                "sysparam" => "改系统设置",
+                "gray" => "精简画面步骤",
+                "whitebox" => "改游戏渲染设置",
+                "upop" => "加画面算子",
+                x => x,
+            })
+            .collect();
+        let m = self.budget.wall_minutes;
+        let time = if m % 60 == 0 { format!("{} 小时", m / 60) } else { format!("{m} 分钟") };
         format!(
-            "{} 上把{what}{dir} {}% (层: {}; 最多 {} 代 / {} 分钟)",
-            self.game,
-            self.objective.target_pct,
-            self.layers.join("+"),
-            self.budget.max_generations,
-            self.budget.wall_minutes
+            "{game}：{what}{dir} {}%（{}；最多 {} 代、{time}）",
+            fmt_pct(self.objective.target_pct),
+            layers.join("、"),
+            self.budget.max_generations
         )
     }
 
@@ -197,6 +215,10 @@ impl GoalSpec {
             _ => "gpu_busy_ms",
         }
     }
+}
+
+fn fmt_pct(x: f64) -> String {
+    if x.fract() == 0.0 { format!("{}", x as i64) } else { format!("{x}") }
 }
 
 /// 写回 goal.md (front-matter + 正文)。
@@ -279,6 +301,25 @@ mod tests {
         assert_eq!(d.spec.per_generation, 2);
         assert_eq!(d.body, "省电, 但别卡。");
         assert_eq!(d.spec.metric_key(), "power_w_mean");
+    }
+
+    #[test]
+    fn the_summary_is_plain_language() {
+        let mut d = parse(SAMPLE).unwrap().spec;
+        assert_eq!(d.summary(), "原神：整机耗电降 5%（改系统设置、精简画面步骤；最多 6 代、3 小时）");
+        d.game = "com.unity.megacity.metro".into();
+        d.objective.target_pct = 10.0;
+        d.layers = vec!["sysparam".into(), "gray".into(), "whitebox".into()];
+        d.budget.max_generations = 4;
+        d.budget.wall_minutes = 240;
+        assert_eq!(
+            d.summary(),
+            "Megacity：整机耗电降 10%（改系统设置、精简画面步骤、改游戏渲染设置；最多 4 代、4 小时）"
+        );
+        d.objective.metric = "fps_mean".into();
+        d.objective.direction = "higher".into();
+        d.budget.wall_minutes = 90;
+        assert!(d.summary().contains("平均帧率提高 10%") && d.summary().contains("90 分钟"), "{}", d.summary());
     }
 
     #[test]

@@ -493,7 +493,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         "awaiting_confirm" | "drafting" => {}
         // 冻结了、但一代都还没开始 (例如排队等锁时被杀掉): 可以接着跑, 前提是 goal.md 没被改过
         "running" | "paused" if st.generation == 0 && st.goal_sha256.as_deref() == Some(sha.as_str()) => {
-            rd.event(0, "note", json!({"message": "接着跑: 上一次冻结后一代都没开始就停了 (排队时被杀或节点重启)"}));
+            rd.event(0, "note", json!({"message": "接着跑: 上次确认目标后还没开始第一代就停了"}));
         }
         s => bail!(
             "这次目标运行的状态是 {s} (已跑到第 {} 代), 不能再启动; 要重跑请新建一个 run 目录, \
@@ -518,7 +518,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     rd.event(0, "start", json!({"goal_summary": st.goal_summary, "goal_sha256": sha,
         "layers": spec.layers, "objective": spec.objective, "budget": spec.budget}));
     if spec.layers.iter().any(|l| l == "upop") {
-        rd.event(0, "note", json!({"message": "layers 里的 upop (画面算子) optimize 还不驱动, 这次不跑"}));
+        rd.event(0, "note", json!({"message": "「加画面算子」这一层还不能自动跑, 这次跳过"}));
     }
 
     let label = format!("goal-{}", rd.run_id());
@@ -527,16 +527,16 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             Ok(g) => Some(g),
             Err(e) if optimize::interrupted() => {
                 // 排队时被叫停: 没碰设备, 按人叫停收尾
-                rd.event(0, "note", json!({"message": format!("排队等锁时被叫停, 没碰设备: {e:#}")}));
+                rd.event(0, "note", json!({"message": format!("排队等手机时被叫停, 没动手机: {e:#}")}));
                 st.status = "done".into();
                 st.stop_reason = Some("human_stop".into());
                 rd.write_state(&mut st)?;
-                rd.event(0, "stop", json!({"reason": "human_stop", "summary": "排队等锁时被叫停, 一代都没跑"}));
+                rd.event(0, "stop", json!({"reason": "human_stop", "summary": "排队等手机时被叫停, 一代都没跑"}));
                 return Ok(st);
             }
             Err(e) => {
                 // 等锁超时: 没碰设备。状态保持「已冻结、一代没开始」, 同一个目录可以再 goal run 接着排。
-                rd.event(0, "note", json!({"message": format!("没拿到设备锁, 没碰设备: {e:#}")}));
+                rd.event(0, "note", json!({"message": format!("没排到手机, 没动手机: {e:#}")}));
                 return Err(e);
             }
         },
@@ -584,17 +584,17 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         st.budget_min = (spec.budget.wall_minutes as i64 + steer.budget_add_min).max(0) as f64;
 
         if optimize::interrupted() {
-            stop(&mut st, "human_stop", "人按了停止 (SIGINT)".into())?;
+            stop(&mut st, "human_stop", "人按了停止".into())?;
             break;
         }
         if steer.stop {
-            stop(&mut st, "human_stop", "人在 human.md 里写了停止".into())?;
+            stop(&mut st, "human_stop", "人在掌舵指令里写了停止".into())?;
             break;
         }
         if steer.pause {
             st.status = "paused".into();
             rd.write_state(&mut st)?;
-            rd.event(gen, "note", json!({"message": "人要求暂停; 等 human.md 再改才继续, 期间放掉设备锁"}));
+            rd.event(gen, "note", json!({"message": "人要求暂停: 等掌舵指令再改才继续, 这期间把手机让给别人"}));
             drop(guard.take());
             let seen = last_human.clone().unwrap_or_default();
             loop {
@@ -706,8 +706,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                     per_gen.push((gen, g));
                 }
             }
-            rd.event(gen, "note", json!({"message": format!("第 {gen} 代被人叫停打断, 正在上机的候选由 phonefarm 走还原")}));
-            stop(&mut st, "human_stop", format!("人按了停止 (SIGINT), 第 {gen} 代中断"))?;
+            rd.event(gen, "note", json!({"message": format!("第 {gen} 代被人叫停, 正在测的那组改动已经撤回")}));
+            stop(&mut st, "human_stop", format!("人按了停止, 第 {gen} 代中途停下"))?;
             break;
         }
         let outcome = match result {
