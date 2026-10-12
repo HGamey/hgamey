@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>HGamey 作战室</title>
+<title>HGamey 实时看板</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/dash/static/app.css">
 </head>
@@ -13,8 +13,8 @@
   <div class="brand-row">
     <a class="logo" href="/dash" aria-label="首页">HG</a>
     <div class="brand">
-      <h1>HGamey 作战室</h1>
-      <span class="sub">人定目标，harness 在真手机上自己调、自己判、自己停</span>
+      <h1>HGamey 实时看板</h1>
+      <span class="sub">你定目标，harness 在真手机上自己试、自己判断、自己停</span>
     </div>
     <nav class="nav"><a href="/dash" aria-current="page">首页</a><a href="/dash/maint">维护</a></nav>
   </div>
@@ -55,7 +55,7 @@
       <section class="card steer o-steer" aria-labelledby="h-steer">
         <div class="card-h"><h2 id="h-steer">掌舵</h2><span class="muted">human.md</span></div>
         <div id="steer-lock" class="lockline" hidden><span>改指令、停止、起新目标要先输入掌舵密码</span><button class="btn sm" type="button" data-act="unlock">解锁</button></div>
-        <p class="hint">harness 每一代开始前读一次这里。可以写 <b>停止</b>、<b>暂停</b>、<b>预算 +30 分钟</b>、<b>不要动 某个旋钮</b>、<b>只试 某一层</b>，也可以写任何大白话偏好。</p>
+        <p class="hint">harness 每一代开始前读一次这里。可以写 <b>停止</b>、<b>暂停</b>、<b>预算 +30 分钟</b>、<b>不要动 某个设置</b>、<b>只试 系统参数</b>（或 <b>只试 画面流程</b>），也可以写任何大白话的要求。</p>
         <textarea id="human" spellcheck="false" placeholder="（还没有指令）" aria-label="human.md"></textarea>
         <div class="row-btns">
           <button id="save-human" class="btn primary" type="button">保存指令</button>
@@ -75,7 +75,7 @@
     </div>
   </div>
 </main>
-<footer class="foot">首页只放 harness 自己的运行。开发用的任务、设备锁、日志在「维护」页。测量进行中不截图、不跑 dumpsys。</footer>
+<footer class="foot">首页只放 harness 自己的运行。开发用的任务、谁在用手机、日志在「维护」页。手机正在测量时不截图、不做额外读取，免得干扰结果。</footer>
 
 <dialog id="dlg-unlock" class="dlg">
   <form id="f-unlock">

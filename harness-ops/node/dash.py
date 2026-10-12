@@ -1,4 +1,4 @@
-"""作战室 /dash：节点自带的只读看板（node_service 只负责挂载，逻辑都在这里）。
+"""实时看板 /dash：节点自带的只读看板（node_service 只负责挂载，逻辑都在这里）。
 
 只读纪律：
   - 本模块不起任何任务、不碰设备锁、不往手机写东西。唯一碰手机的是 `phonefarm fleet`（只读快照），
@@ -552,7 +552,7 @@ class Dash:
             held = bool(lock["held_by"]) and not lock["stale"]
             fresh_free = not lock["held_by"] and lock["free_for_s"] is not None and lock["free_for_s"] < FREE_GRACE_S
             if fresh_free:
-                self.fleet_skip = f"设备锁刚释放 {lock['free_for_s']}s，等 {FREE_GRACE_S}s 再采，免得撞上别人开测"
+                self.fleet_skip = f"手机刚空出来 {lock['free_for_s']} 秒，等满 {FREE_GRACE_S} 秒再读，免得撞上别人开测"
                 time.sleep(5)
                 continue
             self.fleet_skip = None
@@ -816,7 +816,7 @@ def detect_markers(root, dirs, files):
 
 
 LOGIN_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>HGamey 作战室</title><link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>HGamey 实时看板</title><link rel="icon" href="data:,">
 <style>
 :root{--bg:#f4f3ef;--card:#fcfcfb;--ink:#0b0b0b;--sub:#52514e;--line:rgba(11,11,11,.12);--acc:#2a78d6;--bad:#d03b3b}
 @media (prefers-color-scheme:dark){:root{--bg:#0d0d0d;--card:#1a1a19;--ink:#f0efec;--sub:#c3c2b7;--line:rgba(255,255,255,.12);--acc:#3987e5}}
@@ -827,6 +827,6 @@ input,button{width:100%;box-sizing:border-box;font:inherit;padding:11px 12px;bor
 button{margin-top:10px;background:var(--acc);border:0;color:#fff;font-weight:600;cursor:pointer}
 </style></head><body>
 <form method="post" action="/dash/login" class="card">
-<h1>HGamey 作战室</h1><p class="sub">真机实况 · 只读</p>{{msg}}
+<h1>HGamey 实时看板</h1><p class="sub">真手机实时状态 · 用查看密码只能看</p>{{msg}}
 <input type="password" name="pw" placeholder="查看密码" autofocus autocomplete="current-password" required>
 <button type="submit">进入</button><p class="hint">{{hint}}</p></form></body></html>"""

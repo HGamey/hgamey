@@ -1,4 +1,4 @@
-// HGamey 作战室：纯静态页面，轮询节点上的只读 JSON 接口。
+// HGamey 实时看板：纯静态页面，轮询节点上的只读 JSON 接口。
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
@@ -41,7 +41,7 @@
     // 顶栏锁状态
     const pill = $("lock-pill");
     pill.className = "pill " + (held ? "held" : "free");
-    pill.textContent = held ? `● ${L.held_by} 正在用手机` : L.held_by ? `锁超期：${L.held_by}` : "手机空闲";
+    pill.textContent = held ? `● ${L.held_by} 正在用手机` : L.held_by ? `${L.held_by} 好久没动静了` : "手机空闲";
     $("dev-name").textContent = d ? `${d.brand || ""} ${d.model || d.serial}`.trim() : "没有设备";
 
     // 手机
@@ -59,8 +59,8 @@
       $("t-fan").textContent = f.supported ? `风扇 ${f.enabled ? "开" : "关"}${f.speed_level != null ? " · 档 " + f.speed_level : ""}` : "";
       $("t-fg").textContent = d.foreground || (d.probe_depth === "light" ? "（测量中不读，免得打扰）" : "桌面 / 未知");
       const pc = $("probe");
-      pc.textContent = d.probe_depth === "light" ? "只读 sysfs" : d.probe_depth === "full" ? "完整采样" : "离线";
-      pc.title = d.probe_depth === "light" ? "别人持锁时只 cat sysfs，不跑 dumpsys" : "";
+      pc.textContent = d.probe_depth === "light" ? "轻量读取" : d.probe_depth === "full" ? "完整读取" : "离线";
+      pc.title = d.probe_depth === "light" ? "有人在用手机：只读 sysfs 文件，不跑 dumpsys" : "手机空闲：getprop + dumpsys 完整读取";
     } else {
       $("t-online").innerHTML = `<span class="dot off"></span>没看到手机`;
     }
@@ -68,21 +68,21 @@
     if (st.fleet_age_s != null) notes.push(`手机数据采于 ${ago(st.fleet_age_s)}`);
     if (st.fleet_skip) notes.push(st.fleet_skip);
     if (st.fleet_err) notes.push(st.fleet_err);
-    if (st.fleet_age_s == null && !st.fleet_err) notes.push("首次采样中…");
+    if (st.fleet_age_s == null && !st.fleet_err) notes.push("第一次读取中…");
     $("phone-note").textContent = notes.join(" · ");
     renderSpark(st.hist || []);
 
     // 设备锁
     if (L.held_by) {
       const since = L.since ? `从 ${L.since.slice(11) || L.since} 起` : "";
-      $("lock-holder").innerHTML = `${esc(L.held_by)}<span class="s">${esc(since)} · 心跳 ${L.heartbeat_age_s ?? "?"}s 前${L.stale ? " · 已超期可接管" : ""}</span>`;
+      $("lock-holder").innerHTML = `${esc(L.held_by)}<span class="s" title="设备锁心跳 ${L.heartbeat_age_s ?? "?"}s 前">${esc(since)} · ${L.heartbeat_age_s ?? "?"} 秒前还在用${L.stale ? " · 好久没动静，别人可以接手" : ""}</span>`;
     } else {
       $("lock-holder").innerHTML = `空闲<span class="s">${L.free_for_s != null ? "已空闲 " + dur(L.free_for_s) : ""}</span>`;
     }
     $("lock-age").textContent = "";
     $("queue").innerHTML = (L.queue || []).length ? L.queue.map((q) => `<li>${esc(q)}</li>`).join("") : `<li class="empty">没人排队</li>`;
     $("lock-events").innerHTML = (L.recent || []).map((e) =>
-      `<li><span class="t">${esc(e.at.slice(11))}</span><span class="a-${esc(e.action)}">${{ acquire: "拿锁", release: "释放", steal: "接管" }[e.action] || esc(e.action)}</span><b>${esc(e.label)}</b></li>`).join("");
+      `<li><span class="t">${esc(e.at.slice(11))}</span><span class="a-${esc(e.action)}">${{ acquire: "开始用", release: "用完", steal: "接手" }[e.action] || esc(e.action)}</span><b>${esc(e.label)}</b></li>`).join("");
 
     // 画面
     const box = document.querySelector(".shot-box");
@@ -94,7 +94,7 @@
     $("shot-veil").hidden = !held;
     box.classList.toggle("stale", held);
     const P = st.policy || {};
-    $("shot-rule").textContent = `只在设备锁空闲 ≥${P.free_grace_s}s 时截，最多每 ${P.shot_every_s}s 一张；有人持锁时一张不截。`;
+    $("shot-rule").textContent = `手机空闲满 ${P.free_grace_s} 秒才截，最多每 ${P.shot_every_s} 秒一张；有人在用手机时一张不截。`;
 
     renderJobs(st);
   }
@@ -104,7 +104,7 @@
     const svg = $("spark");
     const now = Date.now() / 1000, t0 = now - 1800;
     const pts = hist.filter((h) => h.t >= t0 && h.soc != null);
-    if (pts.length < 2) { svg.innerHTML = `<text x="150" y="38" text-anchor="middle" font-size="11" fill="var(--muted)">采样积累中（页面打开时才采）</text>`; return; }
+    if (pts.length < 2) { svg.innerHTML = `<text x="150" y="38" text-anchor="middle" font-size="11" fill="var(--muted)">数据积累中（页面开着时才读）</text>`; return; }
     const W = 300, H = 70, pad = 4;
     let lo = Math.min(...pts.map((p) => p.soc)), hi = Math.max(...pts.map((p) => p.soc));
     if (hi - lo < 4) { const m = (hi + lo) / 2; lo = m - 2; hi = m + 2; }
@@ -123,7 +123,7 @@
     svg.onmousemove = (ev) => {
       const r = svg.getBoundingClientRect(), t = t0 + ((ev.clientX - r.left) / r.width) * 1800;
       let best = pts[0]; for (const p of pts) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
-      showTip(ev, `${hm(best.t)}<br>SoC ${num(best.soc)}°C · GPU ${num(best.gpu)}°C<br>电量 ${best.bat ?? "—"}% · 电池 ${num(best.bat_c)}°C${best.held ? "<br>有人持锁" : ""}`);
+      showTip(ev, `${hm(best.t)}<br>芯片 ${num(best.soc)}°C · 显卡 ${num(best.gpu)}°C<br>电量 ${best.bat ?? "—"}% · 电池 ${num(best.bat_c)}°C${best.held ? "<br>有人在用手机" : ""}`);
     };
     svg.onmouseleave = hideTip;
   }
@@ -141,7 +141,7 @@
       const now = st.now, el = j.state === "running" ? now - j.started : (j.ended || now) - j.started;
       const stc = j.state === "running" ? "running" : j.state === "lost" ? "lost" : j.exit === 0 ? "ok" : "fail";
       const stt = j.state === "running" ? "在跑" : j.state === "lost" ? "失联" : j.exit === 0 ? "完成" : `退出 ${j.exit}`;
-      const lockTag = j.state === "running" && L.held_by && j.label === L.held_by ? `<span class="st lockholder">持锁</span>` : "";
+      const lockTag = j.state === "running" && L.held_by && j.label === L.held_by ? `<span class="st lockholder" title="持有设备锁">正在用手机</span>` : "";
       return `<li class="job ${j.id === S.selJob ? "sel" : ""}" data-id="${esc(j.id)}" tabindex="0">
         <div class="row1"><span class="lbl">${esc(j.label || "—")}</span><span class="st ${stc}">${stt}</span>${lockTag}
         <span class="when">${j.state === "running" ? "已跑 " + dur(el) : hm(j.ended || j.started) + " · " + dur(el)}</span></div>
@@ -177,10 +177,10 @@
   }
 
   // ───────── 实验（10 秒） ─────────
-  const OUT = { win: ["判赢", "✓"], lose: ["判输", "✗"], void: ["作废", "∅"], measuring: ["测量中", "◐"], pending: ["待测", "…"], other: ["其他", "?"] };
+  const OUT = { win: ["有效", "✓"], lose: ["淘汰", "✗"], void: ["没测准", "∅"], measuring: ["正在测", "◐"], pending: ["待测", "…"], other: ["其他", "?"] };
   const MET = [
     { k: "fps", name: "平均帧率", unit: "fps", better: 1 },
-    { k: "frame_p95", name: "帧时 p95", unit: "ms", better: -1 },
+    { k: "frame_p95", name: "卡顿程度", unit: "ms", better: -1 },
     { k: "power", name: "整机功耗", unit: "W", better: -1 },
   ];
 
@@ -197,7 +197,7 @@
     const sel = $("exp-sel"), exps = S.exps;
     if (!exps.length) {
       sel.innerHTML = ""; sel.hidden = true;
-      $("exp-head").innerHTML = `<div class="empty">节点上还没有 optimize / autoloop / eval 的证据（只看最近 3 天和最近的任务）。</div>`;
+      $("exp-head").innerHTML = `<div class="empty">手机节点上还没有实验记录（只看最近 3 天和最近的任务）。</div>`;
       $("exp-chart").innerHTML = ""; $("exp-gens").innerHTML = ""; return;
     }
     sel.hidden = false;
@@ -217,9 +217,9 @@
       `<span title="${esc(e.path)}">${esc(e.path.split("/").slice(-2).join("/"))}</span>`,
     ].filter(Boolean).map((b) => `<span class="meta">${b}</span>`).join("");
     const layers = (m.layers || []).map((l) => `<span class="chip" title="${esc(l.reason || "")}">${esc(l.name)}${l.used ? "" : "（未用）"}</span>`).join(" ");
-    $("exp-head").innerHTML = `<div class="headline">${esc(m.headline || (e.running ? "实验进行中，每一代的方案和判定会陆续出现" : e.title))}</div>
+    $("exp-head").innerHTML = `<div class="headline">${esc(m.headline || (e.running ? "实验进行中，每一代的方案和结论会陆续出现" : e.title))}</div>
       <div class="counts">${counts}</div>${bits}${layers ? `<span class="meta">${layers}</span>` : ""}
-      ${m.rule ? `<span class="meta">判赢条件：${esc(m.rule)}</span>` : ""}${m.error ? `<span class="meta">解析出错：${esc(m.error)}</span>` : ""}`;
+      ${m.rule ? `<span class="meta">怎样算有效：${esc(m.rule)}</span>` : ""}${m.error ? `<span class="meta">解析出错：${esc(m.error)}</span>` : ""}`;
     renderChart(e.cands || []);
     renderGens(e);
   }
@@ -257,7 +257,7 @@
         const i = Math.floor(((ev.clientX - svg.getBoundingClientRect().left) / svg.getBoundingClientRect().width) * n);
         const c = cands[i]; if (!c) return hideTip();
         const v = c.metrics?.[mt.k] || {};
-        showTip(ev, `<b>${esc(c.id)}</b> · ${OUT[c.outcome]?.[0] || ""}<br>${esc(c.change).slice(0, 120)}<br>${mt.name}：${num(v.a, 2)} → ${num(v.b, 2)} ${mt.unit}（${v.pct == null ? "—" : (v.pct > 0 ? "+" : "") + num(v.pct, 2) + "%"}${v.p != null ? "，p=" + num(v.p, 3) : ""}）`);
+        showTip(ev, `<b>${esc(c.id)}</b> · ${OUT[c.outcome]?.[0] || ""}<br>${esc(c.change).slice(0, 120)}<br>${mt.name}：${num(v.a, 2)} → ${num(v.b, 2)} ${mt.unit}（${v.pct == null ? "—" : (v.pct > 0 ? "+" : "") + num(v.pct, 2) + "%"}${v.p != null ? "，" + (v.p < 0.05 ? "差别可靠" : "可能只是波动") + "（p=" + num(v.p, 3) + "）" : ""}）`);
       };
       svg.onmouseleave = hideTip;
     }
@@ -272,30 +272,30 @@
       }
       const good = v.pct != null && v.pct * mt.better > 0, sig = v.sig === true || (v.p != null && v.p < 0.05);
       const cls = v.pct == null ? "" : (sig ? (good ? "better" : "worse") : "") + (sig ? " sig" : "");
-      return `<tr title="${esc(v.status || "")}"><td>${mt.name}</td><td>${num(v.a, 2)}</td><td>${num(v.b, 2)}</td><td class="${cls}">${v.pct == null ? "—" : (v.pct > 0 ? "+" : "") + num(v.pct, 1) + "%"}</td><td>${v.p == null ? "—" : num(v.p, 3)}</td></tr>`;
+      return `<tr title="${esc(v.status || "")}"><td>${mt.name}</td><td>${num(v.a, 2)}</td><td>${num(v.b, 2)}</td><td class="${cls}">${v.pct == null ? "—" : (v.pct > 0 ? "+" : "") + num(v.pct, 1) + "%"}</td><td title="${v.p == null ? "" : "p=" + num(v.p, 3)}">${v.p == null ? "—" : v.p < 0.05 ? "可靠" : "像是波动"}</td></tr>`;
     }).join("");
     const temp = c.temp_max_c != null ? `<tr><td>最高温度</td><td></td><td>${num(c.temp_max_c)}°C</td><td></td><td></td></tr>` : "";
     if (!rows && !temp) return "";
-    return `<table class="mt"><thead><tr><th>指标</th><th>对照</th><th>方案</th><th>变化</th><th>p</th></tr></thead><tbody>${rows}${temp}</tbody></table>`;
+    return `<table class="mt"><thead><tr><th>指标</th><th title="对照臂">改前</th><th title="方案臂">改后</th><th>变化</th><th title="统计检验 p 值：小于 0.05 算可靠">可靠吗</th></tr></thead><tbody>${rows}${temp}</tbody></table>`;
   }
 
   function renderGens(e) {
     const groups = new Map();
     for (const c of e.cands || []) { const k = c.gen ?? "?"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(c); }
     for (const k of Object.keys(e.gens || {})) if (!groups.has(+k) && !groups.has(k)) groups.set(+k || k, []);
-    if (!groups.size) { $("exp-gens").innerHTML = `<div class="empty">${e.running ? "第一代方案还在出…" : "这个实验没有候选记录"}</div>`; return; }
+    if (!groups.size) { $("exp-gens").innerHTML = `<div class="empty">${e.running ? "第一代方案还在出…" : "这个实验没有方案记录"}</div>`; return; }
     const keys = [...groups.keys()].sort((a, b) => (+b || 0) - (+a || 0)); // 最新一代在上
     $("exp-gens").innerHTML = keys.map((k) => {
       const gm = (e.gens || {})[String(k)] || {}, cs = groups.get(k);
-      const rej = (gm.rejected || []).length ? `<details class="rejected"><summary>本地校验打回 ${gm.rejected.length} 个</summary>${gm.rejected.map((r) => `<div>${esc(r)}</div>`).join("")}</details>` : "";
-      return `<div class="gen"><h3>第 ${esc(k)} 代 <span class="muted">${gm.origin ? "出方案：" + esc(gm.origin) : ""}${gm.proposed != null ? ` · 提了 ${gm.proposed} 个` : ""}${gm.error ? " · 出岔子：" + esc(gm.error) : ""}</span></h3>
+      const rej = (gm.rejected || []).length ? `<details class="rejected"><summary>没通过检查、没上手机的 ${gm.rejected.length} 个</summary>${gm.rejected.map((r) => `<div>${esc(r)}</div>`).join("")}</details>` : "";
+      return `<div class="gen"><h3>第 ${esc(k)} 代 <span class="muted">${gm.origin ? "出方案的是：" + esc(gm.origin) : ""}${gm.proposed != null ? ` · 提了 ${gm.proposed} 个` : ""}${gm.error ? " · 出岔子：" + esc(gm.error) : ""}</span></h3>
         <div class="cands">${cs.map((c) => `<div class="cand ${c.outcome}">
           <div class="row1"><span class="cid">${esc(c.id)}</span>${c.layer ? `<span class="chip">${esc(c.layer)}</span>` : ""}<span class="badge ${c.outcome}">${OUT[c.outcome]?.[1] || ""} ${OUT[c.outcome]?.[0] || esc(c.status)}${c.status && !["PASS", "KEEP", "REJECT", "ABORT"].includes(c.status) ? " · " + esc(c.status) : ""}</span></div>
           ${c.why ? `<div class="why">${esc(c.why)}</div>` : ""}
           ${c.change ? `<div class="chg">${esc(c.change)}</div>` : ""}
           ${metricTable(c)}
-          ${c.reason ? `<div class="reason">判官：${esc(c.reason)}${c.p != null ? `（p=${num(c.p, 3)}）` : ""}</div>` : ""}
-        </div>`).join("") || `<div class="empty">这一代没有通过校验的方案</div>`}</div>${rej}</div>`;
+          ${c.reason ? `<div class="reason">结论：${esc(c.reason)}${c.p != null ? `（<span class="rel" title="p=${num(c.p, 3)}">${c.p < 0.05 ? "差别可靠" : "可能只是波动"}</span>）` : ""}</div>` : ""}
+        </div>`).join("") || `<div class="empty">这一代没有通过检查的方案</div>`}</div>${rej}</div>`;
     }).join("");
   }
 

@@ -344,3 +344,5 @@ details.gm pre { margin: 8px 0 0; background: var(--panel); border-radius: 10px;
   .goal-title { font-size: 19px; }
   .top-right { width: 100%; }
 }
+.rel { border-bottom: 1px dotted currentColor; cursor: help; }
+[title] .rel, span[title] { text-decoration-skip-ink: auto; }

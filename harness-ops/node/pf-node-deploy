@@ -3,7 +3,7 @@
 # 用法: pf-node-deploy [--restart] [phonefarm[@ref]] [game_opt_loop[@ref]] [harness-ops[@ref]]
 #   缺省 phonefarm game_opt_loop @ origin/main。
 #   --restart：更新后 /admin/restart 节点服务（只在 node_service.py / dash 有改动时才需要；
-#   重启会让正在跑的任务丢失状态追踪，先看 `pf-node devlock status` 和作战室，避开有人在跑的时候）。
+#   任务退出码已落盘，重启不再丢任务状态；仍建议先看 `pf-node devlock status` 和实时看板）。
 set -eu
 restart=0; [[ ${1:-} == --restart ]] && { restart=1; shift; }
 pf-node --label deploy update_node --git "$@"

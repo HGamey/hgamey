@@ -1,4 +1,4 @@
-"""作战室的「目标模式」一侧：读目标运行目录、掌舵（改 human.md / 停止）、新目标（起草 → 确认 → 开跑）。
+"""实时看板的「目标模式」一侧：读目标运行目录、掌舵（改 human.md / 停止）、新目标（起草 → 确认 → 开跑）。
 
 目录与文件格式见 lead 的 GOAL_SPEC（~/node/goals/<run_id>/ 下 intent.txt、goal.md、human.md、
 human.history/、state.json、events.jsonl、report.md、optimize/）。

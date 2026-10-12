@@ -20,7 +20,7 @@
           X-Job 可带 "exe": "@in/<路径>"，用上传的可执行代替缺省的（测未合并分支）。
   /admin/restart  退出进程，由 run_node.sh 的循环用新代码重新拉起。
   /health 无需 token，只回 ok（给隧道探活）。
-  /dash   作战室只读看板，用独立查看密码（~/.config/hgamey/dash.pass），逻辑在 dash.py。
+  /dash   实时看板只读看板，用独立查看密码（~/.config/hgamey/dash.pass），逻辑在 dash.py。
 
 phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自己的仓库目录下执行（相对路径的 knobs/、loop_v1/ 照常可用）；碰设备的子命令自己拿设备锁、排队。
 """
@@ -30,7 +30,7 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    import dash  # 作战室 /dash（只读看板，独立查看密码）；它坏了不能拖垮 /jobs 和 /mcp
+    import dash  # 实时看板 /dash（只读看板，独立查看密码）；它坏了不能拖垮 /jobs 和 /mcp
 except Exception as e:  # noqa: BLE001
     dash = None
     print(f"dash 模块加载失败，/dash 不可用: {e!r}", file=sys.stderr)
@@ -361,7 +361,7 @@ def make_handler(mcp, jobs, token, board=None):
             parts = [p for p in u.path.split("/") if p]
             if parts == ["health"]:
                 return self._send(200, b"ok", "text/plain")
-            if board and parts[:1] == ["dash"]:  # 作战室自己管认证（查看密码，不是管理 token）
+            if board and parts[:1] == ["dash"]:  # 实时看板自己管认证（查看密码，不是管理 token）
                 try:
                     return board.handle_get(self, parts, u.query)
                 except Exception as e:  # noqa: BLE001
