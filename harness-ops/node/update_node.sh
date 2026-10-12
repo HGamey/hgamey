@@ -15,7 +15,7 @@
 #       旧方式：上传目录里的 phonefarm/、game_opt_loop/、harness-ops/ 逐个 rsync 到 ~/node/ 下同名目录。
 set -eu
 # 同一时间只允许一个部署（两个 agent 同时部署会互相覆盖 .new 文件）
-LOCKD=$HOME/node/.deploy.lock
+LOCKD=$HOME/node/.deploy.lock; mkdir -p $HOME/node
 for i in {1..60}; do mkdir $LOCKD 2>/dev/null && break; [[ $i == 60 ]] && { echo "另一个部署 10 分钟没结束，放弃"; exit 4; }; echo "等另一个部署结束…"; sleep 10; done
 trap 'rmdir $LOCKD 2>/dev/null' EXIT
 export PATH=/opt/homebrew/bin:$HOME/.cargo/bin:$PATH
@@ -36,30 +36,48 @@ json_get() {  # $1 build.json $2 python 表达式（j 是解析后的 dict）
   python3 -c 'import json,sys; j=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' $1 $2
 }
 
-fetch_prebuilt() {  # $1 提交 sha $2 下载目录。0=下好且校验过 1=release 上不是这个 sha 2=下载/校验失败
-  local sha=$1 d=$2 f want
-  rm -rf $d && mkdir -p $d
-  curl -fsSL --retry 3 --max-time 60 -o $d/build.json "$PF_REL/build.json?t=$(date +%s)" || return 2
+# 节点到 GitHub 的网络会断：失败自动重试、断点续传（-C -），30 秒低于 10KB/s 算卡住重来
+CURL=(curl -fsSL --connect-timeout 20 --retry 5 --retry-all-errors --retry-delay 3 --speed-limit 10240 --speed-time 30)
+
+fetch_prebuilt() {  # $1 提交 sha $2 下载目录。0=下好且校验过 1=release 上不是这个 sha 2=下载/校验失败（可重试）
+  local sha=$1 d=$2 f asset want got
+  mkdir -p $d && rm -f $d/build.json
+  $CURL --max-time 60 -o $d/build.json "$PF_REL/build.json?t=$(date +%s)" || { echo "  取 build.json 失败"; return 2; }
   [[ $(json_get $d/build.json 'j["sha"]') == $sha ]] || return 1
   for f in $(json_get $d/build.json '" ".join(j["files"])'); do
-    curl -fsSL --retry 3 --max-time 300 -o $d/$f "$PF_REL/$f" || return 2
+    # 新版 CI 给每个文件一个带提交号的资产名（永不覆盖，不会撞上 CI 覆盖时的 404）；老 build.json 没有就用原名
+    asset=$(json_get $d/build.json "j['files']['$f'].get('asset', '$f')")
     want=$(json_get $d/build.json "j['files']['$f']['sha256']")
-    # CI 连着两次 push 时文件可能已被下一次覆盖而 build.json 还没换：按 1 处理，过会儿再看
-    [[ $(shasum -a 256 $d/$f | cut -d' ' -f1) == $want ]] || { echo "  $f sha256 对不上（CI 正在覆盖？）"; return 1; }
+    [[ -f $d/$f && $(shasum -a 256 $d/$f | cut -d' ' -f1) == $want ]] && continue   # 上一轮已下好
+    # 下到 .part.<资产名>，断了下一轮接着续；资产名带提交号，不会把两个版本续到一起
+    $CURL -C - --max-time 600 -o $d/.part.$asset "$PF_REL/$asset" || { echo "  下载 $asset 失败（已下 $(stat -f %z $d/.part.$asset 2>/dev/null || echo 0) 字节，下一轮续传）"; return 2; }
+    got=$(shasum -a 256 $d/.part.$asset | cut -d' ' -f1)
+    if [[ $got != $want ]]; then
+      rm -f $d/.part.$asset
+      # 老 build.json（无 asset 字段）时同名文件可能正被 CI 覆盖：等新 build.json
+      [[ $asset == $f ]] && { echo "  $f sha256 对不上（CI 正在覆盖？）"; return 1; }
+      echo "  $asset sha256 对不上，删掉重下"; return 2
+    fi
+    mv -f $d/.part.$asset $d/$f
   done
   return 0
 }
 
 prebuilt_phonefarm() {  # $1 源码目录 $2 下载目录。成功返回 0，需退回本地编译返回 1
-  local src=$1 d=$2 sha main rc waited=0
+  local src=$1 d=$2 sha main rc waited=0 fails=0
   sha=$(git -C $src rev-parse HEAD); main=$(git -C $src rev-parse origin/main)
+  rm -rf $d
   while :; do
     fetch_prebuilt $sha $d && rc=0 || rc=$?
     (( rc == 0 )) && { echo "  用 CI 产物 $(json_get $d/build.json 'j["built_at"]+"  "+j["run_url"]')"; return 0; }
-    (( rc == 2 )) && { echo "  下载 CI 产物失败"; return 1; }
+    if (( rc == 2 )); then  # 网络问题：连续失败 5 轮才放弃（每轮 curl 自己还会重试 5 次）
+      (( ++fails >= 5 )) && { echo "  下载 CI 产物连续失败 $fails 轮，放弃"; return 1; }
+      sleep 15; (( waited += 15 )); continue
+    fi
+    fails=0
     [[ $sha == $main ]] || { echo "  $sha 不是 origin/main 最新，CI 不会单独编它"; return 1; }
     (( waited >= PF_WAIT )) && { echo "  等了 ${waited}s，node-build 仍是 $(json_get $d/build.json 'j["sha"]')"; return 1; }
-    (( waited == 0 )) && echo "  CI 还没出 ${sha:0:7} 的产物，最多等 $((PF_WAIT/60)) 分钟…"
+    echo "  CI 还没出 ${sha:0:7} 的产物（node-build 现在是 $(json_get $d/build.json 'j["sha"][:7]')），30 秒后再看（最多等 $((PF_WAIT/60)) 分钟）"
     sleep 30; (( waited += 30 ))
   done
 }
