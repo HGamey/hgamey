@@ -774,6 +774,10 @@ class Dash:
             serial = d.get("serial")
             goal = next((r for r in running if (r["state"].get("device") in (serial,)) or
                          (lock.get("held_by") == f"goal-{r['run_id']}" and r["state"].get("device") in (None, "any"))), None)
+            # 目标在跑但手机此刻被别人占着（目标在排队）：也标出来，免得看着像「没有目标」
+            waiting = None
+            if not goal:
+                waiting = next((r for r in running if r["state"].get("device") in (serial, None, "any")), None)
             shot = os.path.join(self.shot_dir, re.sub(r"[^0-9A-Za-z_-]", "_", serial or "") + ".jpg")
             b, t = d.get("battery") or {}, d.get("thermal") or {}
             slots.append({"serial": serial, "online": d.get("online"), "state": d.get("state"),
@@ -783,7 +787,10 @@ class Dash:
                           "busy": bool(lock.get("held_by")) and not lock.get("stale"), "light": d.get("probe_depth") == "light",
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
-                                            "demo": goal["demo"]}})
+                                            "demo": goal["demo"]},
+                          "waiting_goal": waiting and {"run_id": waiting["run_id"],
+                                                       "summary": waiting["state"].get("goal_summary") or waiting["intent"],
+                                                       "holder": lock.get("held_by")}})
         while len(slots) < SLOTS_MIN:
             slots.append(None)
         return {"now": _now(), "slots": slots, "fleet_age_s": int(_now() - self.fleet_at) if self.fleet_at else None,

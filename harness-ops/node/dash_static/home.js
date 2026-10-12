@@ -70,6 +70,7 @@
       const thumb = s.shot_at ? `<img alt="${esc(s.model || s.serial)} 画面" src="/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}">`
         : `<div class="ph">${s.busy ? "测量中<br>不截图" : "暂无画面"}</div>`;
       const doing = s.goal ? `<div class="doing on" title="${esc(s.goal.summary)}">▶ ${esc(s.goal.summary)}</div>`
+        : s.waiting_goal ? `<div class="doing" title="${esc(s.waiting_goal.summary)}">⏳ 目标在排队（${esc(s.waiting_goal.holder || "别人")} 正在用手机）</div>`
         : `<div class="doing">${s.busy ? "开发调试占用中" : "没有在跑目标"}</div>`;
       return `<div class="slot"><div class="thumb">${thumb}</div><div class="meta">
         <div class="name" title="${esc(s.model || "")}">${esc(s.model || "未知型号")}</div>
@@ -253,7 +254,7 @@
       case "keep": return ["★", "blue", `${cid} 进入保留名单${e.delta_pct != null ? `（${esc(mname(e.metric || ""))} ${pct(e.delta_pct)}）` : ""}，后面的方案在它基础上继续`];
       case "stop": return ["■", e.reason === "error" ? "red" : "brown", `停下了：${esc(STOP[e.reason] || e.reason || "")}${e.summary ? `<span class="sub2">${esc(e.summary)}</span>` : ""}`];
       case "error": return ["!", "red", `出错：${esc(e.message || e.text || e.error || "")}`];
-      case "note": return ["·", e.stage === "draft" ? "brown" : "", (e.stage === "draft" ? `起草：${e.by === "llm" ? "大模型" : e.by === "template" ? "模板" : esc(e.by || "")} · ` : "") + esc(e.text || e.message || "")];
+      case "note": return ["·", e.stage === "draft" ? "brown" : "", (e.stage === "draft" ? `起草${e.by === "llm" ? "（大模型）" : e.by === "template" ? "（模板）" : e.by ? "（" + esc(e.by) + "）" : ""}：` : "") + esc(e.text || e.message || "")];
       default: return ["·", "", `${esc(e.type)} ${esc(JSON.stringify(e).slice(0, 160))}`];
     }
   }
