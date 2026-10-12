@@ -151,7 +151,13 @@ impl Guard {
                 POLL.as_secs(),
                 t0.elapsed().as_secs()
             );
-            std::thread::sleep(POLL);
+            // 排队时被叫停 (SIGINT): 一秒一秒地睡, 好及时退出 —— 还没碰设备, 直接走
+            for _ in 0..POLL.as_secs() {
+                if crate::optimize::interrupted() {
+                    bail!("设备锁: 排队时被叫停, 没碰设备就退出");
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
         }
         std::env::set_var("DEVLOCK_LABEL", &label);
         // 3. 心跳
