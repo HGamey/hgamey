@@ -7,6 +7,14 @@ RAW_LIMIT=384*1024*1024
 STAGES={'design','train','quantize','deploy','evaluate'}
 ROLES={'design':'architecture','train':'weights','quantize':'quantized_model','deploy':'deployment_receipt','evaluate':'evaluation_report'}
 WALL={'design':30000,'train':180000,'quantize':120000,'deploy':30000,'evaluate':30000}
+OUTPUT_CONTRACT={
+ 'design':{'architecture.json':('architecture','game_opt_loop/local_sr_architecture@1'),'design-evidence.json':('metadata','game_opt_loop/local_design_evidence@1')},
+ 'train':{'trained.weights.h5':('weights','keras_weights_hdf5'),'train-evidence.json':('metadata','game_opt_loop/local_training_evidence@1')},
+ 'quantize':{'model-fp32.tflite':('quantized_model','tflite_flatbuffer_fp32'),'model-fp16.tflite':('quantized_model','tflite_flatbuffer_float16_weights'),'quantize-evidence.json':('metadata','game_opt_loop/local_quantization_evidence@1')},
+ 'deploy':{'deployment.json':('deployment_receipt','explicit_unimplemented_android_receipt')},
+ 'evaluate':{'evaluation.json':('evaluation_report','explicit_unimplemented_android_receipt')}
+}
+INPUT_CONTRACT={'dataset':('data','game_opt_loop/paired_training_dataset@1'),**{name:value for stage in OUTPUT_CONTRACT.values() for name,value in stage.items()}}
 class Rejected(ValueError):pass
 def require(c,m):
  if not c:raise Rejected(m)
@@ -74,6 +82,7 @@ class Session:
   self.inputs={};names=set()
   for a in r['inputs']:
    keys(a,['name','role','path','sha256','format','source'],'input');require(a['name'] not in names,'duplicate input name');names.add(a['name']);require(a['source'] in ('unknown','synthetic'),'driver does not authenticate real-game source')
+   require(a['name'] in INPUT_CONTRACT and (a['role'],a['format'])==INPUT_CONTRACT[a['name']],'input role/format differs from fixed local stage contract')
    # Capture blobs are data-contract references, read by the bounded data adapter.
    self.inputs[a['name']]=(a,snapshot(a,OUTPUT_LIMIT if a['role']=='weights' else JSON_LIMIT))
   for a in r['drivers']:snapshot(a,512*1024*1024)
@@ -83,7 +92,7 @@ class Session:
    keys(a,['name','role','path','format','source'],'output');require(re.fullmatch('[a-zA-Z0-9_.-]{1,128}',a['name']) and a['name'] not in ('.','..','request.json','receipt.json','stdout.log','stderr.log') and a['name'] not in self.outputs,'output name')
    require(absolute(a['path'])==self.dir/a['name'] and a['role'] in (ROLES[self.stage],'metadata') and a['source']==source,'output role/path/source differs')
    self.outputs[a['name']]=a
-  require(any(a['role']==ROLES[self.stage] for a in r['outputs']),'stage main output absent');self.source=source;self.total=0
+  require(set(self.outputs)==set(OUTPUT_CONTRACT[self.stage]) and all((a['role'],a['format'])==OUTPUT_CONTRACT[self.stage][name] for name,a in self.outputs.items()),'output role/format/set differs from fixed local stage contract');self.source=source;self.total=0
  def create_runtime_cache(self):
   require(self.cache is None,'runtime cache already registered')
   path=self.dir.parent/('runtime-cache-'+self.stage);d=directory(self.dir.parent)

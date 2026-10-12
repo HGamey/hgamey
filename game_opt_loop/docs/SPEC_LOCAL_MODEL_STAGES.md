@@ -21,13 +21,14 @@ Native pixel colors are linear shader UNORM8; training consumes RGB float32/255 
 
 ## Model and budget contract
 
-Proposed initial mechanism model: bilinear resize to exact 3/2 output plus a tiny bounded residual Conv2D network. No arbitrary Python architecture/code execution from a JSON genome, no external downloads/weights. Fixed CPU-only seed, single-thread execution and bounded patch input/output sizes are recorded; CPU numerical reproducibility is scoped to the pinned runtime, not universal bit equality.
+Proposed initial mechanism model: bilinear resize to exact 3/2 output plus a tiny bounded residual Conv2D network. No arbitrary Python architecture/code execution from a JSON genome, no external downloads/weights. Fixed CPU-only seed, one interop/two intraop threads and bounded patch input/output sizes are recorded; CPU numerical reproducibility is scoped to the pinned runtime, not universal bit equality.
 
 Initial tests use a small static LR patch (even dimensions) and matched HR patch, fixed≤8 training steps/batch1, positive bounded LR,≤8 channels/two Conv2D layers and≤10000 parameters. Each stage uses the existing host wall/output process-group limits and the registered #16 budget below. The driver enforces its actual loop count and reports steps/tokens0/device_ms0; generic pipeline still labels usage driver-declared rather than a trusted device/API meter. Actual initial/final weight SHA and nonzero weight-delta prove a local update occurred, not useful training or lower loss/real-game quality.
 
 ## Wire / lifecycle
 
 - Read `GOL_PIPELINE_REQUEST`, `GOL_PIPELINE_RECEIPT`, `GOL_PIPELINE_STAGE_DIR` only. Request schema/stage/model/budgets, exact input snapshot bytes/hashes, output names/roles/formats/source and request digest match existing Rust canonical sorted-JSON semantics.
+- Local stage input names/roles/formats and each stage's exact output set/roles/formats are finite registered contracts; a rehashed user declaration cannot relabel generated H5/TFLite or architecture as a different format or Android artifact.
 - Register Python executable and every script/config as driver artifacts. Runtime package/dependency versions/import identity are recorded, but this is trusted local execution, not a network sandbox or authenticated build closure.
 - No shell concatenation, network/device command or package installer in drivers. Successful outputs are create-only in the current stage, synced, parsed/rehashed, then receipt atomically published last. Missing/invalid upstream weights or data never silently initialize a new training run.
 - Failed receipt has an explicit error code and no valid model outputs; partial files remain negative evidence. No automatic resume of in-flight side effects; only generic explicit reconcile can handle unknown execution.

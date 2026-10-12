@@ -63,4 +63,7 @@ class Runtime(unittest.TestCase):
   def change(r,d):
    r['outputs']=[{'name':'evaluation.json','role':'evaluation_report','path':str(d/'evaluation.json'),'format':'explicit_unimplemented_android_receipt','source':'synthetic'}]
   result=self.direct('evaluate-blocked',change,'evaluate');self.assertIn('BLOCKED_PENDING_ACTUAL_DEVICE_RUNTIME',result['note'])
+ def test_rehashed_output_format_is_rejected_by_actual_gol_cli(self):
+  d=self.base/'wrong-format';d.mkdir();plan=P.parse(P.read(self.good/'plan.json'));plan['pipeline_id']='wrong-format';plan['stages'][0]['outputs'][0]['format']='pretend_android_gpu_model';path=d/'plan.json';P.write_new(path,P.encode(plan))
+  value=P.parse(self.command('wrong-format-actual-gol',[GOL,'model-pipeline','start','--plan',str(path),'--out',str(d/'pipeline')],1,10));self.assertEqual(value['entries'][0]['state'],'failed');self.assertFalse(value['promotion_allowed']);self.assertFalse(value['model_semantics_verified']);self.assertIn(b'output role/format/set differs',P.read(d/'pipeline/0_design/stderr.log'));self.assertFalse((d/'pipeline/0_design/architecture.json').exists());self.assertTrue(all(x['state']=='pending' for x in value['entries'][1:]))
 if __name__=='__main__':unittest.main(verbosity=2)
