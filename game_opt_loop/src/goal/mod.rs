@@ -279,6 +279,50 @@ pub struct RunOpts<'a> {
     pub before_generation: Option<&'a dyn Fn(u32)>,
 }
 
+/// 云端出方案单代超时: Actions 排队 + 装 pi + Kimi, 实测一次约 1.5 分钟, 留足余量。
+pub const CLOUD_TIMEOUT_S: u64 = 1200;
+/// 云端出方案适配器的缺省位置 (相对 game_opt_loop 仓库根, 也就是 goal run 的工作目录)。
+/// 环境变量 `GOL_CLOUD_PROPOSER` 可换成别的可执行 (例如本机直接跑 tools/proposers/pi_kimi.py)。
+pub const CLOUD_ADAPTER: &str = "tools/proposers/cloud_actions.py";
+
+/// goal.md 里的 `proposer` → optimize 认的出方案 spec。
+///
+/// - `llm` / `local`: 原样。
+/// - `cloud`: `cmd:<GOL_CLOUD_PROPOSER 或 tools/proposers/cloud_actions.py>`。用缺省适配器时
+///   先确认 `gh` 已登录 (它靠 gh 触发 GitHub Actions、取回结果), 不然第一代必然出不了方案。
+pub fn proposer_spec_for(p: &str) -> Result<String> {
+    match p {
+        "llm" | "local" => Ok(p.to_string()),
+        "cloud" => {
+            let custom = std::env::var("GOL_CLOUD_PROPOSER").ok().filter(|s| !s.trim().is_empty());
+            let exe = custom.clone().unwrap_or_else(|| CLOUD_ADAPTER.to_string());
+            if !std::path::Path::new(&exe).is_file() {
+                bail!(
+                    "proposer: cloud 要的适配器 {exe} 不存在 (goal run 要在 game_opt_loop 仓库根下跑, \
+                     或用 GOL_CLOUD_PROPOSER 指定)"
+                );
+            }
+            if custom.is_none() {
+                let ok = std::process::Command::new("gh")
+                    .args(["auth", "status"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !ok {
+                    bail!(
+                        "proposer: cloud 靠 gh 触发 GitHub Actions, 但这台机器上 gh 没登录 (gh auth status 失败)。\
+                         登录后再跑, 或用 GOL_CLOUD_PROPOSER 换成本机的 tools/proposers/pi_kimi.py"
+                    );
+                }
+            }
+            Ok(format!("cmd:{exe}"))
+        }
+        other => bail!("proposer 只认 llm / local / cloud, 收到 {other}"),
+    }
+}
+
 pub struct LockOpts {
     pub script: PathBuf,
     pub wait: Duration,
@@ -379,9 +423,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         "awaiting_confirm" | "drafting" => {}
         s => bail!("这次目标运行的状态是 {s}, 不能再启动 (要重跑请新建一个 run 目录)"),
     }
-    if spec.proposer == "cloud" {
-        bail!("proposer: cloud 还没接 (目前只有 llm / local)");
-    }
+    // 云端出方案: 先确认这台机器上起得来, 别冻结了目标才发现第一代就出不了方案。
+    let proposer_spec = proposer_spec_for(&spec.proposer)?;
 
     // ── 冻结 ──
     std::fs::write(rd.path("goal.frozen.md"), &goal_text)?;
@@ -533,8 +576,12 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             quality_reference: None,
             sysparam_probe: opts.sysparam_probe.clone(),
             proposer: optimize::proposer::Options {
-                specs: vec![spec.proposer.clone()],
-                timeout_s: optimize::proposer::DEFAULT_TIMEOUT_S,
+                specs: vec![proposer_spec.clone()],
+                timeout_s: if spec.proposer == "cloud" {
+                    CLOUD_TIMEOUT_S
+                } else {
+                    optimize::proposer::DEFAULT_TIMEOUT_S
+                },
                 gate,
             },
             frame_audit: opts.frame_audit.clone(),

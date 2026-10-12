@@ -38,6 +38,8 @@ RULES = """你在为一个手机游戏性能优化流水线出候选改动。你
 4. 不要重复 history 里已经上过机且被判 REJECT 的候选或其近似; ABORT (measurement_valid=false) 不代表方向不行。
 5. 每个候选只放 kind / why / payload 三个字段。why 用一句中文说清想验证什么。
 6. 每次真机评测约 20 分钟, 宁缺毋滥: 没有把握就少出。
+7. 输入里如果有 steer (人刚给的指令 + 这次目标的说明), 它是最高优先级的偏好: 方向按它来;
+   但白名单 / 开关目录仍是硬约束, steer 和它们冲突时以白名单为准。
 
 只输出一个 JSON 对象, 不要任何别的文字:
 {"protocol": "game_opt_loop/proposer@1", "version": 1, "proposer": "pi_kimi", "candidates": [ ... ]}
@@ -51,6 +53,8 @@ def log(*a):
 def slim(inp: dict) -> dict:
     """给模型看的输入: 去掉对出方案没用、又很占篇幅的部分。"""
     keep = {k: inp.get(k) for k in ("kind", "generation", "n", "device", "target", "plan", "judging", "constraints")}
+    if (inp.get("steer") or "").strip():
+        keep["steer"] = inp["steer"]
     hist = []
     for h in inp.get("history") or []:
         hist.append({

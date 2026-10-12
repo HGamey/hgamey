@@ -34,7 +34,7 @@
       }
     },
     "stop_when": { "type": "array", "description": "任一满足就停: \"target_reached\" / \"budget_exhausted\" / {no_gain: N}。budget_exhausted 永远生效" },
-    "proposer": { "type": "string", "enum": ["llm", "local", "cloud"], "description": "cloud 还没接" },
+    "proposer": { "type": "string", "enum": ["llm", "local", "cloud"], "description": "cloud = GitHub Actions 里的 pi + Kimi (tools/proposers/cloud_actions.py), 要 gh 已登录; 环境变量 GOL_CLOUD_PROPOSER 可换适配器" },
     "gate": { "type": "string", "enum": ["off", "shadow", "jev"] },
     "per_generation": { "type": "integer", "description": "每一代每层上机几个候选, 1..=6, 缺省 2 (规格 v1 没写, 实现补上的)" }
   }

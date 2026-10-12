@@ -308,3 +308,39 @@ fn sigint_stops_the_current_generation_and_reaches_the_child() {
     check_contracts(&dir);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// `proposer: cloud` 走外部进程那条路 (proposer@1)。测试里用 GOL_CLOUD_PROPOSER 把云端适配器换成
+/// 仓库里给第三方的例子, 不真的去触发 GitHub Actions; 适配器不存在时 goal run 在冻结之前就拒绝。
+#[test]
+fn proposer_cloud_runs_through_the_external_adapter() {
+    let root = scaffold("cloud", false);
+    let dir = root.join("goals/run_cloud");
+    goal::draft("原神太费电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| {
+        s.proposer = "cloud".into();
+        s.layers = vec!["sysparam".into()];
+        s.per_generation = 1;
+        s.budget.max_generations = 1;
+        s.budget.min_generations = 1;
+    });
+
+    // 适配器不存在: 冻结之前就拒, 目录还能重新确认。
+    std::env::set_var("GOL_CLOUD_PROPOSER", root.join("nope.py"));
+    let err = goal::run(&dir, &opts(&root, None)).unwrap_err().to_string();
+    assert!(err.contains("不存在"), "{err}");
+    assert!(!dir.join("goal.frozen.md").exists());
+
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/proposers/fixed_one.py");
+    std::env::set_var("GOL_CLOUD_PROPOSER", &example);
+    let st = goal::run(&dir, &opts(&root, None)).unwrap();
+    std::env::remove_var("GOL_CLOUD_PROPOSER");
+    assert_eq!(st.generation, 1);
+    let rep: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("optimize/gen1/report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(rep["proposer"]["spec"], format!("cmd:{}", example.display()));
+    assert!(events(&dir).iter().any(|e| e["type"] == "propose" && e["gen"] == 1));
+    check_contracts(&dir);
+    std::fs::remove_dir_all(&root).ok();
+}

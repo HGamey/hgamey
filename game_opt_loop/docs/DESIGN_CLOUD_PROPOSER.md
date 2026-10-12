@@ -131,6 +131,14 @@ cloud_proposer ◄── gh run download ──────────┘ ─�
 - 这些候选上真机效果如何**没有测**。
 - 白名单校验是 Python 版的近似，真正的校验在 `sysparam.rs::validate`。
 
+### 接进目标模式
+
+goal.md 里写 `proposer: cloud`，`goal run` 每一代就用 `cmd:tools/proposers/cloud_actions.py` 出方案，单代超时 1200 秒。
+`goal run` 在冻结目标之前会先检查两件事：适配器文件存在、`gh` 已登录；有一样不满足就直接拒绝，不会等到第一代才失败。
+环境变量 `GOL_CLOUD_PROPOSER` 可以把适配器换掉，例如在有 pi 和 Kimi 的机器上直接用 `tools/proposers/pi_kimi.py`。
+目标模式里人的指令和目标说明（proposer@1 的 `steer` 字段）会原样交给 Kimi，并标为最高优先级，但白名单仍是硬约束。
+本机验证过：给它「只试总线频率，别动 CPU」，3 个候选全是 DDR/LLCC。
+
 ### 需要 owner 决定 / 动手的
 
 1. 在 HGamey/game_opt_loop 配 Actions secrets：`KIMI_API_KEY`（或 pi 认的 Kimi 凭据）、
