@@ -85,7 +85,7 @@ pub struct GoalDoc {
 }
 
 pub const METRICS: [&str; 4] = ["power_watt", "frame_p95", "fps_mean", "gpu_busy_ms"];
-pub const LAYERS: [&str; 3] = ["sysparam", "gray", "upop"];
+pub const LAYERS: [&str; 4] = ["sysparam", "gray", "whitebox", "upop"];
 
 /// 拆 front-matter。
 pub fn parse(text: &str) -> Result<GoalDoc> {

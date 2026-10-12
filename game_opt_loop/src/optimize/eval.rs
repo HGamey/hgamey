@@ -30,6 +30,8 @@ pub enum Kind {
     Gray,
     /// ③ 系统参数 (黑档)。
     Sysparam,
+    /// ④ 引擎设置 (白盒: 有源码的游戏把渲染设置做成启动参数)。
+    Whitebox,
 }
 
 impl Kind {
@@ -38,6 +40,7 @@ impl Kind {
             Kind::Shader => "shader",
             Kind::Gray => "gray",
             Kind::Sysparam => "sysparam",
+            Kind::Whitebox => "whitebox",
         }
     }
 
@@ -47,6 +50,7 @@ impl Kind {
             Kind::Shader => "① 画面算子",
             Kind::Gray => "② 画面流程改写",
             Kind::Sysparam => "③ 系统参数",
+            Kind::Whitebox => "④ 引擎设置 (白盒)",
         }
     }
 }
@@ -200,7 +204,7 @@ impl Protocol {
                 MetricSpec::lower("power_watt"),
                 MetricSpec::constraint_higher("psnr_db"),
             ],
-            Kind::Gray => vec![
+            Kind::Gray | Kind::Whitebox => vec![
                 MetricSpec::lower("fps_p95_ms"),
                 MetricSpec::higher("fps_mean"),
                 MetricSpec::lower("power_watt"),
@@ -236,6 +240,19 @@ pub enum Payload {
     Shader(ShaderPayload),
     Sysparam(SysparamPayload),
     Gray(GrayPayload),
+    Whitebox(WhiteboxPayload),
+}
+
+/// ④ 白盒引擎设置。对照臂 = workload.launch.extras; 改写臂 = 后面追加 `--es <旋钮> <值>`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhiteboxPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    pub knobs: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measure_only: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_check: Option<ImageCheck>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -789,6 +806,12 @@ mod tests {
             },
             protocol: Protocol::for_kind(kind, 5, 36, 40.0),
             payload: match kind {
+                Kind::Whitebox => Payload::Whitebox(WhiteboxPayload {
+                    why: Some("雾挪到透明物之后".into()),
+                    knobs: BTreeMap::from([("fog_event".to_string(), "AfterRenderingTransparents".to_string())]),
+                    measure_only: None,
+                    image_check: Some(ImageCheck { min_psnr_db: 30.0 }),
+                }),
                 Kind::Sysparam => Payload::Sysparam(SysparamPayload {
                     why: Some("试试总线下限".into()),
                     params: BTreeMap::from([("bus.DDR.boost_freq".to_string(), "5333000".to_string())]),
@@ -831,7 +854,7 @@ mod tests {
 
     #[test]
     fn requests_round_trip_for_every_kind() {
-        for kind in [Kind::Shader, Kind::Gray, Kind::Sysparam] {
+        for kind in [Kind::Shader, Kind::Gray, Kind::Sysparam, Kind::Whitebox] {
             let r = sample_request(kind);
             let v = serde_json::to_value(&r).unwrap();
             assert_eq!(v["version"], 2);
@@ -857,7 +880,7 @@ mod tests {
         assert!(!ids.contains(&"psnr_db"), "{ids:?}");
 
         // 改画面的两层必须量画质, 而且是当约束量。
-        for kind in [Kind::Shader, Kind::Gray] {
+        for kind in [Kind::Shader, Kind::Gray, Kind::Whitebox] {
             let p = Protocol::for_kind(kind, 5, 36, 40.0);
             let psnr = p
                 .metrics

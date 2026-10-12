@@ -7,7 +7,7 @@
   "properties": {
     "protocol": { "const": "game_opt_loop/proposer@1" },
     "version": { "const": 1, "description": "加字段不升版本 (读的一方必须容忍不认识的字段); 改已有字段的语义才升。" },
-    "kind": { "type": "string", "enum": ["sysparam", "gray"], "description": "这一代要哪一层的候选。sysparam = ③ 系统参数; gray = ② 画面流程改写 (Vulkan layer)。① 画面算子不经 optimize, 不会出现。" },
+    "kind": { "type": "string", "enum": ["sysparam", "gray", "whitebox"], "description": "这一代要哪一层的候选。sysparam = ③ 系统参数; gray = ② 画面流程改写 (Vulkan layer); whitebox = ④ 白盒引擎设置 (启动参数)。① 画面算子不经 optimize, 不会出现。" },
     "generation": { "type": "integer", "minimum": 1 },
     "n": { "type": "integer", "minimum": 1, "description": "这一代最多要几个候选。多回的只取前 n 个过了校验的, 其余记为打回、不上机。" },
     "seed": { "type": "integer", "minimum": 0, "description": "随机种子。确定性的出方案一方应当只依赖 (这份输入, seed), 这样同一份输入能复现同一批候选。" },
@@ -82,6 +82,22 @@
           "description": "参数 id → { kind: sysfs|setting, path, values: [准写的取值, 原样文本], current, group, effect }。只能从 values 里挑。"
         },
         "deny_keywords": { "type": "array", "items": { "type": "string" }, "description": "温控保护关键词。参数 id 或路径命中即拒。" },
+        "whitebox": {
+          "type": ["array", "null"],
+          "description": "④ 白盒引擎设置旋钮目录。候选 payload.knobs 的键只能是这里的 id, 值只能取 values 里的 (values 为空时按 free 的说明写自由文本, 只许字母数字和 _,.-)。measure_only=true 的旋钮改了画面必然变, 接收端只量上限, 永远不会被保留。",
+          "items": {
+            "type": "object",
+            "required": ["id", "values", "measure_only", "what", "why"],
+            "properties": {
+              "id": { "type": "string" },
+              "values": { "type": "array", "items": { "type": "string" } },
+              "free": { "type": ["string", "null"] },
+              "measure_only": { "type": "boolean" },
+              "what": { "type": "string" },
+              "why": { "type": "string" }
+            }
+          }
+        },
         "knobs": {
           "type": ["array", "null"],
           "items": {

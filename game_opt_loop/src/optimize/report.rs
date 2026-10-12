@@ -29,6 +29,9 @@ pub enum Change {
     Gray {
         rewrites: Vec<String>,
     },
+    Whitebox {
+        knobs: BTreeMap<String, String>,
+    },
     Shader {
         track: String,
         shader_path: String,
@@ -45,6 +48,7 @@ impl Change {
                 .collect::<Vec<_>>()
                 .join(", "),
             Change::Gray { rewrites } => rewrites.join("+"),
+            Change::Whitebox { knobs } => super::whitebox::label(knobs),
             Change::Shader { track, shader_path } => format!("{track}: {shader_path}"),
         }
     }

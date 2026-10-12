@@ -29,6 +29,7 @@ pub mod profile;
 pub mod proposer;
 pub mod report;
 pub mod sysparam;
+pub mod whitebox;
 
 use anyhow::{bail, Context, Result};
 use eval::{CarrierKind, Kind, Payload, Request, WorkloadSpec};
@@ -394,6 +395,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         let outcome = match step.layer {
             Kind::Sysparam => run_sysparam(&ctx, &mut archive),
             Kind::Gray => run_gray(&ctx, &mut archive),
+            Kind::Whitebox => run_whitebox(&ctx, &mut archive),
             // ① 不在 plan.steps 里 (见 plan::drives), 真进来了说明计划排错了。
             Kind::Shader => Ok(report::LayerOutcome::unused(
                 Kind::Shader,
@@ -1086,6 +1088,131 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                 gen,
                 prop.why.clone(),
                 report::Change::Gray { rewrites: knobs },
+                &rep,
+            ));
+        }
+    }
+    ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
+    Ok(out)
+}
+
+/// ④ 引擎设置层 (白盒启动参数)。
+fn run_whitebox(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<report::LayerOutcome> {
+    let mut out = ctx.new_outcome();
+    if ctx.caps.target.workload.launch.is_none() {
+        out.used = false;
+        out.reason = "目标不是自驱动负载 (没有 workload.launch), 白盒旋钮拼不进启动参数".into();
+        return Ok(out);
+    }
+    if let Some(o) = ctx.receiver_missing() {
+        return Ok(o);
+    }
+    let constraints = proposer::constraints_with_targets(Kind::Whitebox, None, &[]);
+    let mut history: Vec<proposer::HistoryItem> = ctx
+        .cfg
+        .goal
+        .prior_history
+        .iter()
+        .filter(|h| h.candidate.kind == Kind::Whitebox)
+        .cloned()
+        .collect();
+    let prior = history.len();
+    let mut origins: Vec<sysparam::Origin> = Vec::new();
+
+    for g in 1..=ctx.step.generations {
+        let gen = ctx.cfg.goal.gen_offset + g;
+        if interrupted() {
+            bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
+        }
+        let batch = ctx.propose(gen, &constraints, &history).whitebox();
+        record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
+        out.proposed += batch.accepted.len() + batch.rejected.len();
+        out.rejected_locally.extend(batch.rejected.iter().cloned());
+        // 禁止项: 旋钮名或 `旋钮=值`
+        let accepted: Vec<&whitebox::Proposal> = batch
+            .accepted
+            .iter()
+            .filter(|p| {
+                let bad = p.knobs.iter().any(|(k, v)| ctx.cfg.goal.forbids(k) || ctx.cfg.goal.forbids(&format!("{k}={v}")));
+                if bad {
+                    out.rejected_locally.push(format!("{}: 碰了禁止项", whitebox::label(&p.knobs)));
+                }
+                !bad
+            })
+            .collect();
+        if accepted.is_empty() {
+            let note = format!("第 {gen} 代没有新的白盒设置组可提, 这一层到此为止");
+            println!("      {note}");
+            out.blockers.push(note);
+            break;
+        }
+        for (i, prop) in accepted.iter().enumerate() {
+            let id = format!("wb_g{gen}c{}", i + 1);
+            let lbl = whitebox::label(&prop.knobs);
+            let measure_only = whitebox::is_measure_only(&prop.knobs);
+            println!(
+                "      {id}: {lbl}{} — {}",
+                if measure_only { " (只量上限)" } else { "" },
+                prop.why
+            );
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "propose", "candidate_id": id, "layer": "whitebox",
+                "changes": prop.knobs, "why": prop.why,
+            }));
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "measure", "candidate_id": id, "arms_done": 0,
+                "arms_planned": 2 * ctx.step.rounds,
+            }));
+            let req = Request {
+                version: eval::REQUEST_VERSION,
+                kind: Kind::Whitebox,
+                candidate_id: id.clone(),
+                serial: Some(ctx.serial.to_string()),
+                package: ctx.caps.target.package.clone().unwrap_or_default(),
+                workload: workload_of(ctx.step, ctx.caps),
+                conditions: ctx.plan.conditions.clone(),
+                protocol: plan::protocol_for(ctx.step, ctx.caps),
+                payload: Payload::Whitebox(eval::WhiteboxPayload {
+                    why: Some(prop.why.clone()),
+                    knobs: prop.knobs.clone(),
+                    measure_only: measure_only.then_some(true),
+                    image_check: Some(eval::ImageCheck {
+                        min_psnr_db: ctx.cfg.goal.psnr_min_db.unwrap_or(gray::MIN_PSNR_DB),
+                    }),
+                }),
+            };
+            let rep = match ctx.evaluate(&id, &req) {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("        → 下发失败, 跳过这个候选: {e}");
+                    out.eval_errors.push(format!("{id}: {e}"));
+                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e.to_string()}));
+                    continue;
+                }
+            };
+            out.evaluated += 1;
+            if !rep.is_measurement_valid() {
+                out.aborted += 1;
+            }
+            if rep.kept() {
+                out.kept += 1;
+            }
+            println!(
+                "        → {} (p={:.4}){}{}",
+                rep.status,
+                rep.verdict.p_value,
+                if rep.kept() { " 留下" } else { "" },
+                verdict_note(&rep)
+            );
+            ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
+            let cand = proposer::Candidate::whitebox(prop.why.clone(), prop.knobs.clone());
+            history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
+            archive.push(report::Entry::from_report(
+                id,
+                Kind::Whitebox,
+                gen,
+                prop.why.clone(),
+                report::Change::Whitebox { knobs: prop.knobs.clone() },
                 &rep,
             ));
         }
