@@ -84,7 +84,7 @@ p=0.39。**守门准不准还没有数据**，要靠影子模式攒。
                                              │ gh workflow run proposer.yml (输入: gzip+base64 的 Input, nonce)
                                              ▼
                                    GitHub Actions runner
-                                     pi -p (Kimi)  ──只读──► 节点 /mcp (phonefarm_fleet / phonefarm_caps ...)
+                                     pi -p (Kimi)  ──只读──► 节点 /mcp (只读 token, phonefarm_devices ...)
                                      产出 proposer@1 Output，本地按契约先校验一遍
                                      上传为 artifact proposer-<nonce>
                                              │

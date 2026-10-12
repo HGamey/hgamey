@@ -62,7 +62,7 @@ jobs:
           if [ -n "$PF_NODE_TOKEN" ]; then
             pi mcp add pfnode --url https://phone.liyao.space/mcp --header User-Agent=pf-node/1 --bearer-token-env-var PF_NODE_TOKEN
             python3 -c "import json,os;p=os.path.expanduser('~/.pi/agent/mcp.json');d=json.load(open(p));s=d.get('mcpServers',d)['pfnode'];s['exposure']='direct';json.dump(d,open(p,'w'))"
-            echo "PI_MCP_TOOLS=mcp__pfnode__phonefarm_fleet,mcp__pfnode__phonefarm_devices,mcp__pfnode__phonefarm_caps" >> "$GITHUB_ENV"
+            echo "PI_MCP_TOOLS=mcp__pfnode__phonefarm_devices" >> "$GITHUB_ENV"
           fi
       - name: 出方案
         env:

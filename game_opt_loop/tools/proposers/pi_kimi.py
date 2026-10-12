@@ -11,7 +11,7 @@
                   某个账号回 403 额度用完 / 429 限流就换下一个, 全部失败才报错。给了它就不看 PI_MODEL。
                   日志里只记用的是第几个, 不打印 key。
     PI_BIN        pi 可执行 (缺省 pi)
-    PI_MCP_TOOLS  逗号分隔的 MCP 工具白名单 (例如 mcp__pfnode__phonefarm_fleet)。
+    PI_MCP_TOOLS  逗号分隔的 MCP 工具白名单 (例如 mcp__pfnode__phonefarm_devices)。
                   不给 = 不开任何工具, 只凭输入出方案。只应放只读工具。
                   对应的 MCP 服务器要在 pi 的 mcp.json 里设 "exposure": "direct", 否则模型看不到工具。
     PI_TIMEOUT_S  pi 单次超时 (缺省 420 秒)
@@ -127,7 +127,9 @@ def main() -> int:
     if tools:
         # MCP 由 pi 的内置扩展提供, 不能加 -ne; 服务器要在 mcp.json 里设 "exposure": "direct"。
         cmd += ["--tools", tools]
-        prompt += "\n\n你可以用这些只读工具查手机现状: " + tools + "。不要尝试任何会改动设备的操作。"
+        prompt += ("\n\n你可以用这些只读工具查手机现状: " + tools + "。不要尝试任何会改动设备的操作。"
+                   "\n出方案之前先调用一次 mcp__pfnode__phonefarm_devices (如果可用), 确认输入里 device.serial "
+                   "那台设备在线; 不在线就在输出的 notes 里写明, 方案照常出。")
     else:
         cmd += ["-ne", "-nt", "--no-mcp"]
     cmd += os.environ.get("PI_EXTRA_ARGS", "").split()
