@@ -228,6 +228,58 @@ fn strip_fence(raw: &str) -> String {
     t.to_string()
 }
 
+/// `goal show`: 一次目标运行的现状 (纯文本)。
+pub fn show(dir: &Path, last_events: usize) -> Result<String> {
+    let rd = RunDir::new(dir);
+    let read = |n: &str| std::fs::read_to_string(rd.path(n)).unwrap_or_else(|_| format!("<没有 {n}>\n"));
+    let mut o = String::new();
+    o.push_str(&format!("== {} ==\n\n-- state.json --\n{}\n", dir.display(), read("state.json")));
+    o.push_str(&format!("\n-- goal.md --\n{}\n", read("goal.md")));
+    o.push_str(&format!("-- human.md --\n{}\n", read("human.md")));
+    let ev = read("events.jsonl");
+    let lines: Vec<&str> = ev.lines().collect();
+    o.push_str(&format!("-- events.jsonl (最后 {} 条 / 共 {}) --\n", last_events.min(lines.len()), lines.len()));
+    for l in lines.iter().skip(lines.len().saturating_sub(last_events)) {
+        o.push_str(l);
+        o.push('\n');
+    }
+    if rd.path("report.md").exists() {
+        o.push_str(&format!("\n-- report.md --\n{}", read("report.md")));
+    }
+    Ok(o)
+}
+
+/// `goal edit`: 确认前整份替换 goal.md。先校验; 已经开跑的不许改 (冻结的就是冻结的)。
+pub fn edit(dir: &Path, new_goal: &Path) -> Result<()> {
+    let rd = RunDir::new(dir);
+    let mut st = rd.read_state()?;
+    if !matches!(st.status.as_str(), "drafting" | "awaiting_confirm") {
+        bail!("状态是 {}, goal.md 已冻结, 不能再改", st.status);
+    }
+    let text = std::fs::read_to_string(new_goal).with_context(|| format!("读不了 {}", new_goal.display()))?;
+    let doc = spec::parse(&text)?;
+    std::fs::write(rd.path("goal.md"), &text)?;
+    rd.event(0, "note", json!({"stage": "draft", "message": "人改了 goal.md (整份替换)"}));
+    st.goal_summary = doc.spec.summary();
+    st.max_generations = doc.spec.budget.max_generations;
+    st.budget_min = doc.spec.budget.wall_minutes as f64;
+    rd.write_state(&mut st)?;
+    Ok(())
+}
+
+/// 把这次用的输入文件留一份在 run 目录的 inputs/ 下 (证据: 这次的白名单与旋钮从哪来)。
+fn keep_input(rd: &RunDir, src: Option<&PathBuf>, name: &str) -> Option<PathBuf> {
+    let src = src?;
+    let dst = rd.path("inputs").join(name);
+    if src != &dst {
+        let _ = std::fs::create_dir_all(rd.path("inputs"));
+        if std::fs::copy(src, &dst).is_err() {
+            return Some(src.clone());
+        }
+    }
+    Some(dst)
+}
+
 // ───────────────────────────── 运行 ─────────────────────────────
 
 /// SIGINT / SIGTERM: 置叫停标志, 并把 SIGINT 转给登记着的 phonefarm 子进程 (它们收到后
@@ -412,6 +464,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
 
     // ── 冻结 ──
     std::fs::write(rd.path("goal.frozen.md"), &goal_text)?;
+    let sysparam_probe = keep_input(&rd, opts.sysparam_probe.as_ref(), "probe.txt");
+    let frame_audit = keep_input(&rd, opts.frame_audit.as_ref(), "frame_audit.json");
     st.goal_sha256 = Some(sha.clone());
     st.status = "running".into();
     st.goal_summary = spec.summary();
@@ -558,7 +612,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             llm_timeout_s: None,
             seed: 20261011 + gen as u64,
             quality_reference: None,
-            sysparam_probe: opts.sysparam_probe.clone(),
+            sysparam_probe: sysparam_probe.clone(),
             proposer: optimize::proposer::Options {
                 specs: vec![proposer_spec.clone()],
                 timeout_s: if spec.proposer == "cloud" {
@@ -568,7 +622,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 },
                 gate,
             },
-            frame_audit: opts.frame_audit.clone(),
+            frame_audit: frame_audit.clone(),
             shape: optimize::plan::Shape {
                 layers: Some(kinds_of(&layers)),
                 generations: Some(1),
