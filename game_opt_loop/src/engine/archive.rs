@@ -97,8 +97,7 @@ impl ParetoArchive {
         let tmp = path.with_extension("json.tmp");
         let body = serde_json::to_string_pretty(self)?;
         std::fs::write(&tmp, body).with_context(|| format!("写入 {} 失败", tmp.display()))?;
-        std::fs::rename(&tmp, path)
-            .with_context(|| format!("原子替换 {} 失败", path.display()))?;
+        std::fs::rename(&tmp, path).with_context(|| format!("原子替换 {} 失败", path.display()))?;
         Ok(())
     }
 
@@ -131,7 +130,10 @@ impl ParetoArchive {
     pub fn admissible(&self) -> Vec<&ArchiveEntry> {
         self.entries
             .iter()
-            .filter(|e| e.report.is_admissible(self.budget_ms, self.quality_baseline_db))
+            .filter(|e| {
+                e.report
+                    .is_admissible(self.budget_ms, self.quality_baseline_db)
+            })
             .collect()
     }
 
@@ -200,7 +202,9 @@ impl ParetoArchive {
         self.admissible()
             .iter()
             .filter_map(|e| e.report.metrics.psnr_db)
-            .fold(None, |acc: Option<f32>, v| Some(acc.map_or(v, |a| a.max(v))))
+            .fold(None, |acc: Option<f32>, v| {
+                Some(acc.map_or(v, |a| a.max(v)))
+            })
     }
 
     /// 可行域内历史最低延迟。
@@ -208,7 +212,9 @@ impl ParetoArchive {
         self.admissible()
             .iter()
             .map(|e| e.report.metrics.operator_latency_ms)
-            .fold(None, |acc: Option<f32>, v| Some(acc.map_or(v, |a| a.min(v))))
+            .fold(None, |acc: Option<f32>, v| {
+                Some(acc.map_or(v, |a| a.min(v)))
+            })
     }
 
     pub fn fingerprints(&self) -> HashSet<String> {
@@ -300,7 +306,11 @@ mod tests {
         }
 
         // 放电态: 省电的那个凭功耗支配另一个, 前沿只剩它。
-        let front: Vec<&str> = discharging_archive.front().iter().map(|e| e.id.as_str()).collect();
+        let front: Vec<&str> = discharging_archive
+            .front()
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
         assert_eq!(front, vec!["frugal"], "放电态下功耗应当分得出胜负");
         assert!(discharging_archive
             .entries
@@ -308,13 +318,20 @@ mod tests {
             .all(|e| e.power_excluded_reason.is_none()));
 
         // 充电态: 功耗不参与, 两个候选在剩下两维上打平 -> 都留在前沿。
-        let mut front: Vec<&str> = charging_archive.front().iter().map(|e| e.id.as_str()).collect();
+        let mut front: Vec<&str> = charging_archive
+            .front()
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
         front.sort_unstable();
         assert_eq!(front, vec!["frugal", "thirsty"], "充电态下功耗不该分出胜负");
 
         // 原因落盘, 且数字本身照样留着 (排除的是比较资格, 不是读数)。
         for e in &charging_archive.entries {
-            let why = e.power_excluded_reason.as_deref().expect("应当记下排除原因");
+            let why = e
+                .power_excluded_reason
+                .as_deref()
+                .expect("应当记下排除原因");
             assert!(why.contains("非放电态"), "{why}");
             assert!(e.report.metrics.power_watt.is_some());
         }
@@ -325,16 +342,14 @@ mod tests {
         let path = dir.join("archive.json");
         charging_archive.save(&path).unwrap();
         let back = ParetoArchive::load(&path).unwrap();
-        assert!(back
-            .entries
-            .iter()
-            .all(|e| e.power_excluded_reason.as_deref().is_some_and(|w| w.contains("非放电态"))));
+        assert!(back.entries.iter().all(|e| e
+            .power_excluded_reason
+            .as_deref()
+            .is_some_and(|w| w.contains("非放电态"))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn archive_with(
-        rows: &[(&str, f32, f32, f32, MetricSource)],
-    ) -> ParetoArchive {
+    fn archive_with(rows: &[(&str, f32, f32, f32, MetricSource)]) -> ParetoArchive {
         let mut a = ParetoArchive::new("sr", 1.5, 37.286);
         for (i, (id, lat, pow, psnr, src)) in rows.iter().enumerate() {
             let (c, r) = entry(id, i as u32, *lat, *pow, *psnr, *src);
@@ -368,7 +383,13 @@ mod tests {
     fn candidates_below_the_quality_floor_never_reach_the_front() {
         let a = archive_with(&[
             ("sharp", 1.2, 4.8, 38.4, MetricSource::StaticCostModel),
-            ("blurry_but_instant", 0.1, 4.3, 35.0, MetricSource::StaticCostModel),
+            (
+                "blurry_but_instant",
+                0.1,
+                4.3,
+                35.0,
+                MetricSource::StaticCostModel,
+            ),
         ]);
         let front: Vec<&str> = a.front().iter().map(|e| e.id.as_str()).collect();
         assert_eq!(front, vec!["sharp"]);
@@ -377,10 +398,28 @@ mod tests {
     #[test]
     fn front_keeps_genuine_trade_offs() {
         let a = archive_with(&[
-            ("fast_soft", 0.40, 4.40, 37.60, MetricSource::StaticCostModel),
+            (
+                "fast_soft",
+                0.40,
+                4.40,
+                37.60,
+                MetricSource::StaticCostModel,
+            ),
             ("balanced", 0.90, 4.60, 38.60, MetricSource::StaticCostModel),
-            ("sharp_slow", 1.40, 4.90, 39.50, MetricSource::StaticCostModel),
-            ("dominated", 1.45, 5.00, 38.00, MetricSource::StaticCostModel),
+            (
+                "sharp_slow",
+                1.40,
+                4.90,
+                39.50,
+                MetricSource::StaticCostModel,
+            ),
+            (
+                "dominated",
+                1.45,
+                5.00,
+                38.00,
+                MetricSource::StaticCostModel,
+            ),
         ]);
         let mut front: Vec<&str> = a.front().iter().map(|e| e.id.as_str()).collect();
         front.sort_unstable();
@@ -403,14 +442,31 @@ mod tests {
     #[test]
     fn parent_selection_is_deterministic_and_prefers_the_front() {
         let a = archive_with(&[
-            ("fast_soft", 0.40, 4.40, 37.60, MetricSource::StaticCostModel),
+            (
+                "fast_soft",
+                0.40,
+                4.40,
+                37.60,
+                MetricSource::StaticCostModel,
+            ),
             ("balanced", 0.90, 4.60, 38.60, MetricSource::StaticCostModel),
-            ("sharp_slow", 1.40, 4.90, 39.50, MetricSource::StaticCostModel),
-            ("dominated", 1.45, 5.00, 38.00, MetricSource::StaticCostModel),
+            (
+                "sharp_slow",
+                1.40,
+                4.90,
+                39.50,
+                MetricSource::StaticCostModel,
+            ),
+            (
+                "dominated",
+                1.45,
+                5.00,
+                38.00,
+                MetricSource::StaticCostModel,
+            ),
         ]);
-        let pick = |n| -> Vec<String> {
-            a.select_parents(n).iter().map(|e| e.id.clone()).collect()
-        };
+        let pick =
+            |n| -> Vec<String> { a.select_parents(n).iter().map(|e| e.id.clone()).collect() };
         assert_eq!(pick(3), pick(3), "亲本选择必须可复现");
         let three = pick(3);
         assert!(!three.contains(&"dominated".to_string()));
@@ -454,7 +510,13 @@ mod tests {
     fn best_metrics_track_the_admissible_set_only() {
         let a = archive_with(&[
             ("ok", 0.90, 4.60, 38.60, MetricSource::StaticCostModel),
-            ("over_budget", 0.10, 4.20, 41.00, MetricSource::StaticCostModel),
+            (
+                "over_budget",
+                0.10,
+                4.20,
+                41.00,
+                MetricSource::StaticCostModel,
+            ),
         ]);
         let mut a = a;
         a.entries[1].report.metrics.operator_latency_ms = 9.0;

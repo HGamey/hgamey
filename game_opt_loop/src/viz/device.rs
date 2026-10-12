@@ -113,7 +113,10 @@ pub fn parse_log_line(line: &str) -> Option<LockEvent> {
 
 fn age_secs(path: &Path) -> Option<u64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    SystemTime::now().duration_since(modified).ok().map(|d| d.as_secs())
+    SystemTime::now()
+        .duration_since(modified)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 fn mtime_rfc3339(path: &Path) -> Option<String> {
@@ -240,12 +243,14 @@ fn scan_runs(phonefarm_root: &Path, max_recent: usize, max_scan: usize) -> RunSc
         t.serial = head.as_deref().and_then(serial_from_log);
         if let Some(serial) = &t.serial {
             // 倒序扫, 所以第一次见到这台机器就是它最近那一次 —— 不覆盖。
-            last_touch.entry(serial.clone()).or_insert_with(|| LastTouch {
-                task: t.task.clone(),
-                run: t.run.clone(),
-                at: t.modified.clone(),
-                goal: t.goal.clone(),
-            });
+            last_touch
+                .entry(serial.clone())
+                .or_insert_with(|| LastTouch {
+                    task: t.task.clone(),
+                    run: t.run.clone(),
+                    at: t.modified.clone(),
+                    goal: t.goal.clone(),
+                });
         }
         if i < max_recent {
             recent.push(t);
@@ -344,8 +349,8 @@ mod tests {
 
     #[test]
     fn steal_line_takes_the_new_owner_as_label() {
-        let ev =
-            parse_log_line("2026-09-23 09:16:41 steal by wb-megacity from [old] idle 900s").unwrap();
+        let ev = parse_log_line("2026-09-23 09:16:41 steal by wb-megacity from [old] idle 900s")
+            .unwrap();
         assert_eq!(ev.action, "steal");
         assert_eq!(ev.label, "wb-megacity", "steal 行要跳过 'by' 取到新主人");
         assert!(ev.raw.contains("idle 900s"));
@@ -367,10 +372,16 @@ mod tests {
         assert_eq!(serial_from_log(log).as_deref(), Some("91253241019A"));
 
         // 旧日志压根没这个字段
-        assert_eq!(serial_from_log("{\"v\":1}\n{\"r\":\"start\",\"pid\":1}\n"), None);
+        assert_eq!(
+            serial_from_log("{\"v\":1}\n{\"r\":\"start\",\"pid\":1}\n"),
+            None
+        );
         // phonefarm 判不出是哪台时会记 null —— 同样当未知
         assert_eq!(serial_from_log("{\"r\":\"start\",\"serial\":null}\n"), None);
-        assert_eq!(serial_from_log("{\"r\":\"start\",\"serial\":\"  \"}\n"), None);
+        assert_eq!(
+            serial_from_log("{\"r\":\"start\",\"serial\":\"  \"}\n"),
+            None
+        );
         // 开头有非 JSON 行也要能继续往下找
         assert_eq!(
             serial_from_log("不是 JSON\n{\"r\":\"start\",\"serial\":\"hdc:abc\"}\n").as_deref(),

@@ -109,7 +109,11 @@ impl ProbeStatus {
     pub fn describe(&self) -> String {
         match self {
             ProbeStatus::Ready { devices } => {
-                format!("就绪 — {} 台在线设备: {}", devices.len(), devices.join(", "))
+                format!(
+                    "就绪 — {} 台在线设备: {}",
+                    devices.len(),
+                    devices.join(", ")
+                )
             }
             ProbeStatus::NoDevice => "phonefarm 可用, 但没有在线设备".to_string(),
             ProbeStatus::BinaryUnusable { detail } => format!("phonefarm 无法执行: {detail}"),
@@ -138,9 +142,9 @@ impl SubcommandStatus {
     pub fn describe(&self) -> String {
         match self {
             SubcommandStatus::Supported => "算子评测子命令可用".to_string(),
-            SubcommandStatus::Unsupported { subcommand } => format!(
-                "phonefarm 不认 `{subcommand}` 子命令 —— 真机算子评测的接收端尚未实现"
-            ),
+            SubcommandStatus::Unsupported { subcommand } => {
+                format!("phonefarm 不认 `{subcommand}` 子命令 —— 真机算子评测的接收端尚未实现")
+            }
             SubcommandStatus::Unknown { detail } => format!("无法探测算子评测子命令: {detail}"),
         }
     }
@@ -445,7 +449,12 @@ impl PhonefarmDriver {
                 "phonefarm {} 退出码 {:?}\nstderr: {}",
                 self.subcommand,
                 outcome.exit_code,
-                outcome.stderr.lines().take(10).collect::<Vec<_>>().join("\n")
+                outcome
+                    .stderr
+                    .lines()
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n")
             );
         }
 
@@ -454,7 +463,12 @@ impl PhonefarmDriver {
                 "phonefarm {} 退出码 {:?}, 回包无法解析\nstderr: {}",
                 self.subcommand,
                 outcome.exit_code,
-                outcome.stderr.lines().take(10).collect::<Vec<_>>().join("\n")
+                outcome
+                    .stderr
+                    .lines()
+                    .take(10)
+                    .collect::<Vec<_>>()
+                    .join("\n")
             )
         })
     }
@@ -659,7 +673,10 @@ mod tests {
 
     #[test]
     fn picks_the_report_out_of_noisy_stdout() {
-        let noisy = format!("等冷中 33.4C\n准备回放\n{}\n", sample_report_json("phonefarm"));
+        let noisy = format!(
+            "等冷中 33.4C\n准备回放\n{}\n",
+            sample_report_json("phonefarm")
+        );
         let r = parse_eval_report(&noisy).unwrap();
         assert_eq!(r.candidate_id, "gen1_c1");
     }
@@ -763,12 +780,8 @@ mod tests {
                 stderr: "ERROR: 设备无心跳\n等冷超时".into(),
             })
         });
-        let request = driver.build_request(
-            &a_candidate(),
-            &SR,
-            Path::new("x.comp"),
-            Path::new("x.spv"),
-        );
+        let request =
+            driver.build_request(&a_candidate(), &SR, Path::new("x.comp"), Path::new("x.spv"));
         let err = driver
             .evaluate(&request, &dir.join("r.json"))
             .unwrap_err()
@@ -845,12 +858,8 @@ mod tests {
                 stderr: String::new(),
             })
         });
-        let request = driver.build_request(
-            &a_candidate(),
-            &SR,
-            Path::new("x.comp"),
-            Path::new("x.spv"),
-        );
+        let request =
+            driver.build_request(&a_candidate(), &SR, Path::new("x.comp"), Path::new("x.spv"));
         assert!(driver.evaluate(&request, &dir.join("r.json")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

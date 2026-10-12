@@ -138,7 +138,13 @@ pub fn arm_label(i: usize, spec: &str) -> String {
         .unwrap_or_else(|| spec.trim().to_string());
     let safe: String = base
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("arm{}_{}", i + 1, safe)
 }
@@ -152,10 +158,10 @@ pub fn arm_from_report(
     wall_s: Option<u64>,
 ) -> Result<Arm> {
     let path = out_dir.join("report.json");
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("读不到 {}", path.display()))?;
-    let r: ReportView = serde_json::from_str(&text)
-        .with_context(|| format!("{} 解析失败", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("读不到 {}", path.display()))?;
+    let r: ReportView =
+        serde_json::from_str(&text).with_context(|| format!("{} 解析失败", path.display()))?;
     let summary = r.proposer.clone().unwrap_or_default();
     let kept = r
         .archive
@@ -204,7 +210,11 @@ pub fn arm_from_report(
         device_evals: r.layers.iter().map(|l| l.evaluated).sum(),
         aborted: r.layers.iter().map(|l| l.aborted).sum(),
         eval_errors: r.layers.iter().map(|l| l.eval_errors.len()).sum(),
-        proposer_errors: r.layers.iter().filter_map(|l| l.llm_error.clone()).collect(),
+        proposer_errors: r
+            .layers
+            .iter()
+            .filter_map(|l| l.llm_error.clone())
+            .collect(),
         kept,
         headline: r.headline,
     })
@@ -247,7 +257,13 @@ pub fn run(cfg: &Config) -> Result<Comparison> {
         let started_at = Some(crate::engine::evolution::now());
         let t0 = Instant::now();
         super::run(&c).with_context(|| format!("对比臂 {label} 没跑完"))?;
-        let arm = arm_from_report(&label, spec, &c.out_dir, started_at, Some(t0.elapsed().as_secs()))?;
+        let arm = arm_from_report(
+            &label,
+            spec,
+            &c.out_dir,
+            started_at,
+            Some(t0.elapsed().as_secs()),
+        )?;
         serial.get_or_insert_with(|| arm.serial.clone());
         arms.push(arm);
     }
@@ -276,7 +292,12 @@ pub fn from_arm_dirs(dirs: &[PathBuf], out: &Path) -> Result<Comparison> {
             .proposer
             .as_ref()
             .map(|p| p.spec.clone())
-            .with_context(|| format!("{}/report.json 没记出方案的一方 (是 --plan 的输出?)", d.display()))?;
+            .with_context(|| {
+                format!(
+                    "{}/report.json 没记出方案的一方 (是 --plan 的输出?)",
+                    d.display()
+                )
+            })?;
         if game.is_empty() {
             game = r.game.clone();
             budget_s = r.plan.as_ref().map(|p| p.budget_s).unwrap_or(0);
@@ -298,7 +319,10 @@ pub fn from_arm_dirs(dirs: &[PathBuf], out: &Path) -> Result<Comparison> {
         notes: Vec::new(),
     };
     c.notes = notes_for(&c.arms);
-    c.notes.push("这份对比由分段跑出的单臂输出离线拼成: 各臂预算/形状是否一致要看各自 report.json 的计划。".into());
+    c.notes.push(
+        "这份对比由分段跑出的单臂输出离线拼成: 各臂预算/形状是否一致要看各自 report.json 的计划。"
+            .into(),
+    );
     write(&c, out)?;
     Ok(c)
 }
@@ -340,7 +364,9 @@ pub fn markdown(c: &Comparison) -> String {
         c.generated_at,
         c.serial,
         c.budget_s,
-        c.seed.map(|x| x.to_string()).unwrap_or_else(|| "未记录".into())
+        c.seed
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| "未记录".into())
     ));
     o.push_str("## 账\n\n");
     o.push_str("| 臂 | 出方案的一方 | 起始 | 用时 | 问了几次 | 大模型调用 | 提出 | 本地打回 | 真机评测 | 其中 ABORT | 下发失败 | 留下 |\n");
@@ -351,7 +377,9 @@ pub fn markdown(c: &Comparison) -> String {
             a.label,
             a.describe,
             a.started_at,
-            a.wall_s.map(|x| format!("{x}s")).unwrap_or_else(|| "未记录".into()),
+            a.wall_s
+                .map(|x| format!("{x}s"))
+                .unwrap_or_else(|| "未记录".into()),
             a.proposer_calls,
             a.model_calls,
             a.proposed,
@@ -415,6 +443,9 @@ mod tests {
             arm_label(1, "cmd:/x/y/my proposer.py --flag"),
             "arm2_cmd_my"
         );
-        assert_eq!(arm_label(2, "cmd:examples/proposers/fixed_one.py"), "arm3_cmd_fixed_one.py");
+        assert_eq!(
+            arm_label(2, "cmd:examples/proposers/fixed_one.py"),
+            "arm3_cmd_fixed_one.py"
+        );
     }
 }

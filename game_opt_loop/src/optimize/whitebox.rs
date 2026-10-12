@@ -96,7 +96,10 @@ pub fn knob(id: &str) -> Option<&'static Knob> {
 
 /// 接收端只许 `[A-Za-z0-9_,.-]`, 长度 ≤ 64 (要拼进 am start)。
 fn safe_value(v: &str) -> bool {
-    !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || "_,.-".contains(c))
+    !v.is_empty()
+        && v.len() <= 64
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_,.-".contains(c))
 }
 
 /// 校验一组旋钮。
@@ -105,7 +108,10 @@ pub fn validate(knobs: &BTreeMap<String, String>) -> Result<(), String> {
         return Err("空旋钮组".into());
     }
     if knobs.len() > 3 {
-        return Err(format!("一组最多 3 个旋钮 (好归因), 这组 {} 个", knobs.len()));
+        return Err(format!(
+            "一组最多 3 个旋钮 (好归因), 这组 {} 个",
+            knobs.len()
+        ));
     }
     for (k, v) in knobs {
         let Some(spec) = knob(k) else {
@@ -126,12 +132,18 @@ pub fn validate(knobs: &BTreeMap<String, String>) -> Result<(), String> {
 
 /// 这组里有没有「改了画面必然变」的旋钮 (接收端只量上限, 不可能被保留)。
 pub fn is_measure_only(knobs: &BTreeMap<String, String>) -> bool {
-    knobs.keys().any(|k| knob(k).is_some_and(|s| s.measure_only))
+    knobs
+        .keys()
+        .any(|k| knob(k).is_some_and(|s| s.measure_only))
 }
 
 /// 一组旋钮的标签 (历史、档案、去重)。
 pub fn label(knobs: &BTreeMap<String, String>) -> String {
-    knobs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",")
+    knobs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// 给出主意的一方看的目录。
@@ -142,7 +154,11 @@ pub fn describe() -> String {
             format!(
                 "- {} ∈ {}{} — {}。{}{}",
                 k.id,
-                if k.values.is_empty() { "(自由)".to_string() } else { format!("{:?}", k.values) },
+                if k.values.is_empty() {
+                    "(自由)".to_string()
+                } else {
+                    format!("{:?}", k.values)
+                },
                 k.free.map(|f| format!(" ({f})")).unwrap_or_default(),
                 k.what,
                 k.why,
@@ -167,7 +183,12 @@ pub const SYSTEM_PROMPT: &str = "你是 Unity URP 移动端渲染优化专家。
 4. 只输出 JSON 数组, 不要解释。\n\
 输出格式: [{\"why\":\"一句话\",\"knobs\":{\"旋钮\":\"值\"}}, ...]";
 
-pub fn user_prompt(device_note: &str, workload_note: &str, history: &[super::sysparam::History], n: u32) -> String {
+pub fn user_prompt(
+    device_note: &str,
+    workload_note: &str,
+    history: &[super::sysparam::History],
+    n: u32,
+) -> String {
     let mut lines = vec![
         "# 设备与负载".to_string(),
         device_note.to_string(),
@@ -214,21 +235,33 @@ pub struct ProposalBatch {
 
 pub fn parse_proposals(text: &str, n: usize) -> Vec<Proposal> {
     let s = text.trim();
-    let (Some(a), Some(b)) = (s.find('['), s.rfind(']')) else { return vec![] };
+    let (Some(a), Some(b)) = (s.find('['), s.rfind(']')) else {
+        return vec![];
+    };
     if b <= a {
         return vec![];
     }
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s[a..=b]) else { return vec![] };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s[a..=b]) else {
+        return vec![];
+    };
     let mut out = Vec::new();
     for item in v.as_array().into_iter().flatten() {
-        let Some(obj) = item["knobs"].as_object() else { continue };
+        let Some(obj) = item["knobs"].as_object() else {
+            continue;
+        };
         let knobs: BTreeMap<String, String> = obj
             .iter()
             .filter_map(|(k, v)| {
                 let v = match v {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => if *b { "1".into() } else { "0".into() },
+                    serde_json::Value::Bool(b) => {
+                        if *b {
+                            "1".into()
+                        } else {
+                            "0".into()
+                        }
+                    }
                     _ => return None,
                 };
                 Some((k.clone(), v))
@@ -238,7 +271,12 @@ pub fn parse_proposals(text: &str, n: usize) -> Vec<Proposal> {
             continue;
         }
         out.push(Proposal {
-            why: item["why"].as_str().unwrap_or("").chars().take(300).collect(),
+            why: item["why"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(300)
+                .collect(),
             knobs,
             origin: super::sysparam::Origin::Llm,
         });
@@ -251,9 +289,13 @@ pub fn parse_proposals(text: &str, n: usize) -> Vec<Proposal> {
 
 /// 本地降级: 只提画面不该变的旋钮, 每个非缺省取值单独试一次, 试过的组合不再提。
 pub fn local_proposals(n: usize, history: &[super::sysparam::History]) -> Vec<Proposal> {
-    let tried: Vec<BTreeSet<String>> = history.iter().map(|h| h.params.keys().cloned().collect()).collect();
+    let tried: Vec<BTreeSet<String>> = history
+        .iter()
+        .map(|h| h.params.keys().cloned().collect())
+        .collect();
     // 当前出包的缺省值 (docs/MEGACITY_WHITEBOX_KNOBS.md §1): 试它等于拿 A 和 A 比
-    let default = |k: &str, v: &str| matches!((k, v), ("store_opt", "auto") | ("depth_priming", "forced"));
+    let default =
+        |k: &str, v: &str| matches!((k, v), ("store_opt", "auto") | ("depth_priming", "forced"));
     let mut out = Vec::new();
     for k in CATALOG.iter().filter(|k| !k.measure_only) {
         for v in k.values {
@@ -292,7 +334,10 @@ impl Proposer<'_> {
     ) -> ProposalBatch {
         let mut batch = ProposalBatch::default();
         if let Some(g) = self.generator {
-            match g.complete(SYSTEM_PROMPT, &user_prompt(device_note, workload_note, history, n)) {
+            match g.complete(
+                SYSTEM_PROMPT,
+                &user_prompt(device_note, workload_note, history, n),
+            ) {
                 Ok(raw) => {
                     batch.llm_raw = Some(raw.clone());
                     let props = parse_proposals(&raw, n as usize);
@@ -330,13 +375,20 @@ mod tests {
     use super::*;
 
     fn m(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn values_are_checked_per_knob() {
         assert!(validate(&m(&[("store_opt", "discard")])).is_ok());
-        assert!(validate(&m(&[("fog_event", "AfterRenderingTransparents"), ("ssao_src", "depth")])).is_ok());
+        assert!(validate(&m(&[
+            ("fog_event", "AfterRenderingTransparents"),
+            ("ssao_src", "depth")
+        ]))
+        .is_ok());
         assert!(validate(&m(&[("fog_event", "550")])).is_ok());
         assert!(validate(&m(&[("feat_off", "fog,ambientocclusion")])).is_ok());
         for bad in [
@@ -345,7 +397,12 @@ mod tests {
             m(&[("msaa", "8")]),
             m(&[("store_opt", "maybe")]),
             m(&[("feat_off", "fog; rm -rf /")]),
-            m(&[("store_opt", "discard"), ("msaa", "1"), ("shadowres", "1024"), ("ssao_src", "depth")]),
+            m(&[
+                ("store_opt", "discard"),
+                ("msaa", "1"),
+                ("shadowres", "1024"),
+                ("ssao_src", "depth"),
+            ]),
         ] {
             assert!(validate(&bad).is_err(), "{bad:?}");
         }
@@ -369,7 +426,9 @@ mod tests {
             assert_ne!(label(&p.knobs), "depth_priming=forced");
         }
         let h = vec![super::super::sysparam::History {
-            params: [(label(&first[0].knobs), "on".to_string())].into_iter().collect(),
+            params: [(label(&first[0].knobs), "on".to_string())]
+                .into_iter()
+                .collect(),
             verdict: "REJECT".into(),
             reason: String::new(),
             per_metric: vec![],
@@ -381,7 +440,10 @@ mod tests {
 
     #[test]
     fn replies_parse_with_numbers_and_strings() {
-        let p = parse_proposals(r#"[{"why":"挪雾","knobs":{"fog_event":"AfterRenderingTransparents","ssao_after_opaque":1}}]"#, 3);
+        let p = parse_proposals(
+            r#"[{"why":"挪雾","knobs":{"fog_event":"AfterRenderingTransparents","ssao_after_opaque":1}}]"#,
+            3,
+        );
         assert_eq!(p[0].knobs["ssao_after_opaque"], "1");
         assert!(validate(&p[0].knobs).is_ok());
         assert!(parse_proposals("不行", 3).is_empty());

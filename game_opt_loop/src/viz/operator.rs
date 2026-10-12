@@ -66,9 +66,11 @@ fn load_run(dir: &Path) -> Option<EvolutionRun> {
 
     let mut generations = Vec::new();
     for p in &gen_paths {
-        match std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|raw| {
-            serde_json::from_str::<GenerationRecord>(&raw).map_err(|e| e.to_string())
-        }) {
+        match std::fs::read_to_string(p)
+            .map_err(|e| e.to_string())
+            .and_then(|raw| {
+                serde_json::from_str::<GenerationRecord>(&raw).map_err(|e| e.to_string())
+            }) {
             Ok(rec) => generations.push(rec),
             Err(e) => problems.push(format!("{} 读不出来: {e}", p.display())),
         }
@@ -109,22 +111,25 @@ fn classify(
     on_front: Option<bool>,
 ) -> (RoundVerdict, String) {
     match stage {
-        OutcomeStage::DuplicateSkipped => {
-            (RoundVerdict::Invalid, "指纹与既有算子重复, 未上机".to_string())
-        }
-        OutcomeStage::GateRejected => {
-            (RoundVerdict::Invalid, "静态预检打回, 未上机".to_string())
-        }
+        OutcomeStage::DuplicateSkipped => (
+            RoundVerdict::Invalid,
+            "指纹与既有算子重复, 未上机".to_string(),
+        ),
+        OutcomeStage::GateRejected => (RoundVerdict::Invalid, "静态预检打回, 未上机".to_string()),
         OutcomeStage::EvalError => (RoundVerdict::Invalid, "评测过程出错".to_string()),
         OutcomeStage::Evaluated => match status {
             Some(EvalStatus::Pass) => match on_front {
                 Some(true) => (RoundVerdict::Qualified, "进入支配前沿".to_string()),
                 Some(false) => (RoundVerdict::Eliminated, "通过评测但被前沿支配".to_string()),
-                None => (RoundVerdict::Eliminated, "通过评测 (档案读不到, 无法判前沿)".to_string()),
+                None => (
+                    RoundVerdict::Eliminated,
+                    "通过评测 (档案读不到, 无法判前沿)".to_string(),
+                ),
             },
-            Some(EvalStatus::PoorQuality) => {
-                (RoundVerdict::Eliminated, "画质低于基线, 一票否决".to_string())
-            }
+            Some(EvalStatus::PoorQuality) => (
+                RoundVerdict::Eliminated,
+                "画质低于基线, 一票否决".to_string(),
+            ),
             Some(EvalStatus::Slow) => (RoundVerdict::Eliminated, "超出耗时预算".to_string()),
             Some(EvalStatus::Crash) => (RoundVerdict::Eliminated, "真机崩溃".to_string()),
             Some(EvalStatus::Reverted) => (RoundVerdict::Eliminated, "已回滚".to_string()),
@@ -252,7 +257,11 @@ fn round_for_generation(
     ];
 
     let mut conditions = vec![
-        Condition::new("指标来源", Some(source_text(gen.metric_source).to_string()), Some("gen_*.json")),
+        Condition::new(
+            "指标来源",
+            Some(source_text(gen.metric_source).to_string()),
+            Some("gen_*.json"),
+        ),
         Condition::new(
             "画质真值",
             quality_ref.map(|q| {
@@ -275,13 +284,20 @@ fn round_for_generation(
             power_source_text(run, gen),
             Some("report.power_source"),
         ),
-        Condition::new("变异来源", Some(origin_counts_text(gen)), Some("gen_*.json")),
+        Condition::new(
+            "变异来源",
+            Some(origin_counts_text(gen)),
+            Some("gen_*.json"),
+        ),
         Condition::new(
             "LLM",
             Some(if gen.llm.attempted {
                 format!(
                     "{} → 产出 {} 个",
-                    gen.llm.provider.clone().unwrap_or_else(|| "未记服务名".into()),
+                    gen.llm
+                        .provider
+                        .clone()
+                        .unwrap_or_else(|| "未记服务名".into()),
                     gen.llm.produced
                 )
             } else {
@@ -295,7 +311,11 @@ fn round_for_generation(
         Condition::new("游戏版本", None, None),
     ];
     if let Some(err) = &gen.llm.error {
-        conditions.push(Condition::new("LLM 报错", Some(err.clone()), Some("gen_*.json")));
+        conditions.push(Condition::new(
+            "LLM 报错",
+            Some(err.clone()),
+            Some("gen_*.json"),
+        ));
     }
 
     let mut evidence = vec![evidence_file(
