@@ -1,0 +1,19 @@
+# 实时看板离线兜底页。只覆盖 phone.liyao.space/dash*，不碰 /jobs /mcp /health，也不碰 DNS、隧道等其他设置。
+#
+# 还没部署 —— 要往 owner 的 Cloudflare 账号加一个 Worker 和一条路由，等 owner 决定：
+#   做法一（受限 token）：owner 建一个 API token，权限只要
+#       Account › Workers Scripts › Edit   （本账号）
+#       Zone › Workers Routes › Edit       （只选 liyao.space 这个 zone）
+#     放进 /Users/yao/Desktop/code/agent/.hgamey/cloudflare.token，然后：
+#       cd cloudflare/offline && CLOUDFLARE_API_TOKEN=$(cat …/cloudflare.token) npx wrangler@3 deploy
+#   做法二（手动贴）：Cloudflare 后台 › Workers & Pages › 新建 Worker「hgamey-dash-offline」，把 worker.js 整个贴进去保存；
+#     再到 liyao.space › Workers Routes 加一条：phone.liyao.space/dash*  →  hgamey-dash-offline。
+# 撤掉：删掉那条路由即可（Worker 本身不在路由上就不生效）。
+name = "hgamey-dash-offline"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+workers_dev = false
+
+routes = [
+  { pattern = "phone.liyao.space/dash*", zone_name = "liyao.space" },
+]
