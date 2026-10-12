@@ -8,32 +8,47 @@
   pf-node --detach phonefarm autoloop ...      # 只回任务 id
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
+  pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 
 - 参数里凡是本机存在的文件/目录（含 --flag=路径 的写法）自动打包上传，在节点上替换成对应路径。
 - @out 是本次任务在节点上的输出目录；任务结束后它的内容下载到 -o 指定的目录（缺省 ./pf-node-out/<id>）。
+  下载分块进行（PF_NODE_CHUNK 字节一块，缺省 2MB），断了自动续，最后校验 sha256；中途中断的进度存在
+  <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
 - 日志实时回显；退出码等于节点上命令的退出码。Ctrl-C 会让节点向任务发 SIGINT（phonefarm 会走还原流程）。
 - 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 在 ~/.config/hgamey/node.token 或 PF_NODE_TOKEN。
 """
-import io, json, os, sys, tarfile, time, urllib.error, urllib.request
+import hashlib, http.client, io, json, os, sys, tarfile, time, urllib.error, urllib.parse, urllib.request
 
 URL = os.environ.get("PF_NODE_URL", "https://phone.liyao.space").rstrip("/")
 TOKEN = os.environ.get("PF_NODE_TOKEN") or open(os.path.expanduser("~/.config/hgamey/node.token")).read().strip()
+CHUNK = int(os.environ.get("PF_NODE_CHUNK", 2 << 20))
 
 
-def call(method, path, data=None, headers=None, timeout=60):
+class ClientError(Exception):
+    def __init__(self, code, body):
+        super().__init__(f"{code} {body.decode(errors='replace')}")
+        self.code, self.body = code, body
+
+
+def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False):
     h = {"Authorization": f"Bearer {TOKEN}", "User-Agent": "pf-node/1", **(headers or {})}
-    for attempt in range(5):
+    for attempt in range(attempts):
         try:
             with urllib.request.urlopen(urllib.request.Request(URL + path, data=data, method=method, headers=h), timeout=timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code < 500:
+                if raise_4xx:
+                    raise ClientError(e.code, e.read())
                 sys.exit(f"pf-node: {e.code} {e.read().decode(errors='replace')}")
             err = e
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        # http.client.IncompleteRead 等（经 Cloudflare 读到一半断流）也重试
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
             err = e
-        time.sleep(2 ** attempt)
-    sys.exit(f"pf-node: 连不上节点 {URL}: {err}")
+        if attempt + 1 < attempts:
+            print(f"pf-node: {method} {path.split('?')[0]} 出错 {err!r}，{min(2 ** attempt, 30)}s 后重试", file=sys.stderr)
+            time.sleep(min(2 ** attempt, 30))
+    sys.exit(f"pf-node: 连不上节点 {URL}: {err!r}")
 
 
 def pack(argv):
@@ -72,15 +87,98 @@ def follow(jid):
         return 130
 
 
-def fetch_out(jid, dest):
-    data = call("GET", f"/jobs/{jid}/out", timeout=600)
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+def _extract(data_or_path, dest):
+    kw = {"fileobj": io.BytesIO(data_or_path)} if isinstance(data_or_path, bytes) else {"name": data_or_path}
+    with tarfile.open(mode="r:gz", **kw) as t:
         members = [m for m in t.getmembers() if m.name not in (".", "./")]
         if not members:
-            return
+            return False
         os.makedirs(dest, exist_ok=True)
         t.extractall(dest, members=members, filter="data")
-    print(f"pf-node: 输出已下载到 {dest}", file=sys.stderr)
+    return True
+
+
+def _sha256(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def download_out(jid, rel, part_dir):
+    """分块把 /jobs/<id>/out（或 ?path=rel）下到本地文件，断了从断点续，最后核 sha256。
+    返回 (本地文件, 元信息)；节点服务是旧版（不认 meta）时返回 (bytes, None)。"""
+    base = f"/jobs/{jid}/out?" + (urllib.parse.urlencode({"path": rel}) + "&" if rel else "")
+    for restart in range(5):
+        raw = call("GET", base + "meta=1", timeout=600)  # 节点要先打 tar.gz，大目录会久一点
+        try:
+            meta = json.loads(raw)
+        except ValueError:
+            if rel:
+                print("pf-node: 节点服务是旧版，不支持只下单个文件，下了整个输出目录", file=sys.stderr)
+            return raw, None
+        size, etag = meta["size"], meta["etag"]
+        part = os.path.join(part_dir, f".pf-node-{jid}-{etag}.part")
+        os.makedirs(part_dir, exist_ok=True)
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        if have > size:
+            os.remove(part)
+            have = 0
+        if have and have < size:
+            print(f"pf-node: 从 {have}/{size} 字节处接着下", file=sys.stderr)
+        t0, changed = time.time(), False
+        with open(part, "ab") as f:
+            while have < size:
+                n = min(CHUNK, size - have)
+                try:
+                    chunk = call("GET", base + urllib.parse.urlencode({"offset": have, "length": n, "etag": etag}),
+                                 timeout=120, attempts=8, raise_4xx=True)
+                except ClientError as e:
+                    if e.code == 409:  # 节点上输出变了（任务还在写）：从头来
+                        changed = True
+                        break
+                    sys.exit(f"pf-node: {e}")
+                if len(chunk) != n:  # 短读：不写，重拿这一块
+                    print(f"pf-node: 块 {have} 只收到 {len(chunk)}/{n} 字节，重拿", file=sys.stderr)
+                    continue
+                f.write(chunk)
+                f.flush()
+                have += n
+                if size > 4 * CHUNK:
+                    print(f"\rpf-node: 下载 {have * 100 // size}% ({have >> 20}/{size >> 20} MB)", end="", file=sys.stderr)
+        if size > 4 * CHUNK:
+            print(f"  {time.time() - t0:.0f}s", file=sys.stderr)
+        if changed:
+            os.remove(part)
+            print("pf-node: 节点上的输出在变（任务还在写？），重新下载", file=sys.stderr)
+            continue
+        if _sha256(part) == meta["sha256"]:
+            return part, meta
+        os.remove(part)
+        print("pf-node: sha256 对不上，重新下载", file=sys.stderr)
+    sys.exit("pf-node: 下载输出反复失败")
+
+
+def fetch_out(jid, dest, rel=None):
+    part_dir = os.path.dirname(os.path.abspath(dest))
+    got, meta = download_out(jid, rel, part_dir)
+    if meta is None:  # 旧版节点服务：整份 tar.gz
+        if _extract(got, dest):
+            print(f"pf-node: 输出已下载到 {dest}", file=sys.stderr)
+        return
+    if meta["kind"] == "file":
+        out = os.path.join(dest, meta["path"])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        os.replace(got, out)
+        print(f"pf-node: 已下载 {out}（{meta['size']} 字节，sha256 已校验）", file=sys.stderr)
+        return
+    try:
+        sub = os.path.join(dest, meta["path"]) if meta["path"] != "." else dest
+        if _extract(got, sub):
+            print(f"pf-node: 输出已下载到 {sub}（sha256 已校验）", file=sys.stderr)
+    finally:
+        os.remove(got)
 
 
 def main():
@@ -101,6 +199,9 @@ def main():
             sys.exit(f"pf-node: 未知选项 {a}")
     if not args:
         sys.exit(__doc__)
+    if args[0] == "out" and len(args) == 3:
+        fetch_out(args[1], outdir or os.path.join("pf-node-out", args[1]), args[2])
+        return
     if args[0] in ("status", "log", "wait", "kill", "out") and len(args) == 2:
         cmd, jid = args
         if cmd == "status":
