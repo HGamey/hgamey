@@ -8,7 +8,7 @@
     "version": { "type": ["integer", "null"], "enum": [2, null], "description": "省略 = v1 (gpu-op 的扁平报告)" },
     "kind": {
       "type": ["string", "null"],
-      "enum": ["shader", "sysparam", "gray", null],
+      "enum": ["shader", "sysparam", "gray", "whitebox", null],
       "description": "这份报告评的是哪一层。省略 = shader。必须与请求里的 kind 相同 —— 对不上说明上层发错了或接收端认错了, 上层应当整份作废而不是照收。"
     },
     "candidate_id": { "type": "string" },
@@ -49,6 +49,8 @@
       "type": "object",
       "required": ["is_pareto_improvement", "p_value"],
       "properties": {
+        "measure_only": { "type": ["boolean", "null"], "description": "whitebox: 本组旋钮改了画面必然变化 (或请求要求只量上限), 结果只回答「这块浪费值多少」, 不是可采纳优化; 此时 status 恒 REJECT。" },
+        "would_keep": { "type": ["boolean", "null"], "description": "measure_only 时记统计上本来会不会判保留 (不影响 status)。" },
         "is_pareto_improvement": { "type": "boolean", "description": "值不值得保留。仅在**统计显著且方向确实对**时为真: 快了 0.3% 但 p=0.4 是噪声不是改进; 显著但更慢也不是改进 —— 显著性只说明差异真实, 不说明方向对。" },
         "p_value": { "type": "number", "description": "主指标的检验 p 值。成本模型不做检验, 固定记 1.0 作为「未检验」哨兵, 不伪造小 p 值。每臂样本不足以出 p 值时同样记 1.0。" },
         "stat": { "type": ["string", "null"], "enum": ["welch_t", "exact_permutation", null], "description": "实际用的是哪种检验" },
@@ -132,6 +134,17 @@
         "contested": { "type": ["array", "null"], "description": "sysparam: 每个被抢回的臂 {round, nodes: [\"路径: 写 X +12s回读 Y\"]}" },
         "snapshot_vendor_drift": { "type": ["array", "null"], "items": { "type": "string" }, "description": "sysparam: 快照前后只在厂商服务会动的频率边界 (kgsl.*pwrlevel、cpu.*.scaling_max/min 等) 上不同, 不判留痕, 逐项记下" },
         "image_check": { "type": ["object", "null"], "description": "gray: 画面比对 {min_psnr_db, psnr_knob_vs_ctrl_db: [...], psnr_ctrl_vs_ctrl_db: [...]}" }
+      }
+    },
+    "image_check": {
+      "type": ["object", "null"],
+      "description": "whitebox: 静态场景 (workload.launch.static_extras) 按 对照/改写/对照 各截两张的画面比对。PSNR 99 = 逐像素相同。",
+      "properties": {
+        "min_psnr_db": { "type": ["number", "null"] },
+        "static_extras": { "type": ["string", "null"] },
+        "psnr_knob_vs_ctrl": { "type": ["array", "null"], "items": { "type": ["number", "null"] }, "description": "改写臂对两次对照臂的 PSNR" },
+        "psnr_ctrl_vs_ctrl": { "type": ["number", "null"], "description": "两次对照之间的 PSNR: 噪声底" },
+        "psnr_within_1s": { "type": ["array", "null"], "items": { "type": ["number", "null"] }, "description": "同一次启动内相隔 1 秒两张的 PSNR: 动画噪声" }
       }
     },
     "evidence_dir": { "type": ["string", "null"], "description": "接收端把本轮原始证据 (trace / 快照 / 逐轮 metrics) 落在哪。上层把它记进总报告, 让每一个数字都能回溯到原始采集。" },

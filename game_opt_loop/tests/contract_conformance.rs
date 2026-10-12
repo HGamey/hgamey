@@ -730,3 +730,28 @@ fn a_real_onboard_profile_conforms_and_applies() {
     assert!(t.pitfalls.iter().any(|p| p.id == "dynamic_idle_scene"));
     let _ = std::fs::remove_dir_all(&store.root);
 }
+
+/// kind=whitebox 的请求 (阶段 3 第三层, phonefarm `eval` 的 whitebox_eval 消费) 必须过契约:
+/// kind 在枚举里, 信封必填齐全。payload 的细则由 phonefarm 侧校验并有单测。
+#[test]
+fn whitebox_request_matches_its_contract() {
+    let v: Value = serde_json::json!({
+        "version": 2,
+        "kind": "whitebox",
+        "candidate_id": "wb_msaa1",
+        "package": "com.unity.megacity.metro",
+        "workload": {
+            "carrier": "game_replay",
+            "seconds": 30,
+            "launch": {
+                "extras": "--es scene city_flythrough --es frames 3600 --es vsync off",
+                "marker": "megacity_started",
+                "static_extras": "--es scene city_static --es frames 100000"
+            }
+        },
+        "conditions": { "cool_c": 45.0, "temp_cap_c": 70.0 },
+        "protocol": { "rounds": 5, "alternating": true, "p_threshold": 0.05 },
+        "payload": { "knobs": { "msaa": "1" }, "why": "W1: MSAA 搬运的上限" }
+    });
+    assert_conforms(&v, "eval_request.schema.json");
+}
