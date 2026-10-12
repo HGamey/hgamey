@@ -652,11 +652,21 @@ impl EvalDriver {
         std::fs::write(request_path, serde_json::to_string_pretty(request)?)
             .with_context(|| format!("写入评测请求失败: {}", request_path.display()))?;
 
-        let args = vec![
+        let mut args = vec![
             "--request".to_string(),
             request_path.display().to_string(),
             "--json".to_string(),
         ];
+        // 证据目录放进 optimize 的输出目录 (<out>/evidence/<候选>), 不放接收端的工作目录:
+        // 真机跑在远端节点上时只有输出目录会被拉回来, 落在别处的 apply 日志、快照、截图
+        // 就再也看不到了 (10-11 两次 ③ 的 ABORT 就是这样查不了原因)。
+        if let (Some(dir), Some(stem)) = (
+            request_path.parent().and_then(|p| p.parent()),
+            request_path.file_stem(),
+        ) {
+            args.push("--out".to_string());
+            args.push(dir.join("evidence").join(stem).display().to_string());
+        }
         let (code, stdout, stderr) = self.call("eval", &args)?;
 
         // 退出码契约与 gpu-op 同源 (phonefarm docs/SPEC_GPU_OP.md §1):
