@@ -13,7 +13,7 @@
 {"t": "2026-10-12T09:33:20+0800", "type": "verdict", "gen": 2, "candidate_id": "sys_g2c1", "verdict": "PASS", "metrics": {"power_watt": {"delta_pct": -3.1, "p": 0.008}, "fps_mean": {"delta_pct": -0.2, "p": 0.55}, "frame_p95": {"delta_pct": 0.6, "p": 0.42}}, "image_psnr": null, "contested_arms": 0}
 {"t": "2026-10-12T09:33:21+0800", "type": "keep", "gen": 2, "candidate_id": "sys_g2c1", "metric": "power_watt", "delta_pct": -3.1, "verdict": "PASS"}
 {"t": "2026-10-12T09:48:05+0800", "type": "verdict", "gen": 2, "candidate_id": "sys_g2c2", "verdict": "REJECT", "metrics": {"power_watt": {"delta_pct": -0.9, "p": 0.31}, "frame_p95": {"delta_pct": 4.2, "p": 0.016}}, "reason": "存在显著退化: frame_p95"}
-{"t": "2026-10-12T10:08:50+0800", "type": "steer", "gen": 3, "human_md_rev": 2, "text": "DDR 那几组已经看清楚了，把预算多留给画面那一层（gray）。", "interpreted": "从这一代起系统设置只再试 1 个，其余名额给精简画面步骤"}
+{"t": "2026-10-12T10:08:50+0800", "type": "steer", "gen": 3, "human_md_rev": 2, "text": "DDR 那几组已经看清楚了，把预算多留给画面那一层（精简画面步骤）。", "interpreted": "从这一代起系统设置只再试 1 个，其余名额给精简画面步骤"}
 {"t": "2026-10-12T10:09:00+0800", "type": "plan", "gen": 3, "layers": ["sysparam", "gray"], "per_generation": 1, "forbid": ["gpu.max_pwrlevel"], "budget_left_min": 106}
 {"t": "2026-10-12T10:09:30+0800", "type": "propose", "gen": 3, "candidate_id": "gray_g3c1", "layer": "gray", "changes": ["skip_redundant_clear[main_pass]"], "why": "主画面每帧多清了一次已被完全覆盖的颜色缓冲，去掉它省带宽"}
 {"t": "2026-10-12T10:09:31+0800", "type": "propose", "gen": 3, "candidate_id": "sys_g3c1", "layer": "sysparam", "changes": {"cpu.policy7.scaling_max_freq": "2611200", "bus.LLCC.boost_freq": "533000"}, "why": "在已保留的大核封顶上再叠缓存下限"}

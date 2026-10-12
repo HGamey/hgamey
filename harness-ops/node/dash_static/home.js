@@ -89,6 +89,38 @@
     return [...map.values()];
   }
   const shortWhy = (c) => { const w = (c && c.why || "").split(/[：:，,。；;]/)[0].trim(); return w ? (w.length > 18 ? w.slice(0, 18) + "…" : w) : (c ? c.id : ""); };
+  // 系统设置（节点名）→ 大白话；原名放悬浮提示
+  const CORE = (n) => n === 0 ? "小核" : n === 7 ? "大核" : "中核";
+  function knobName(k) {
+    let m;
+    if ((m = k.match(/^gpu\.(max|min)_pwrlevel$/))) return `GPU ${m[1] === "max" ? "最高" : "最低"}频率`;
+    if ((m = k.match(/^cpu\.policy(\d+)\.scaling_(max|min)_freq$/))) return `${CORE(+m[1])} CPU ${m[2] === "max" ? "最高" : "最低"}频率`;
+    if ((m = k.match(/^cpu\.policy(\d+)\.scaling_governor$/))) return `${CORE(+m[1])} CPU 调度方式`;
+    if (/^bus\.DDR\./.test(k)) return "内存频率下限";
+    if (/^bus\.LLCC\./.test(k)) return "缓存频率下限";
+    if (/^gpu[.:]/.test(k)) return "GPU 相关设置";
+    if (/^cpu[.:]/.test(k)) return "CPU 相关设置";
+    if (/^bus[.:]/.test(k)) return "内存总线设置";
+    return "一项系统设置";
+  }
+  // 自由文本（备注、理由、harness 的理解）里的方案编号和节点名换成中文名，原文进悬浮提示
+  function humanize(text, cmap) {
+    // 先把要换的东西换成占位符，最后再填回 HTML —— 免得后面的替换改到悬浮提示里的原文
+    const parts = [];
+    const hold = (html) => `\u0000${parts.push(html) - 1}\u0000`;
+    let t = String(text || "");
+    const ids = [...(cmap ? cmap.keys() : [])].sort((a, b) => b.length - a.length);
+    for (const id of ids) {
+      const c = cmap.get(id);
+      t = t.split(id).join(hold(`方案<span class="rel" title="${esc(id)}${c.why ? "：" + esc(c.why) : ""}">「${esc(shortWhy(c))}」</span>`));
+    }
+    t = t.replace(/\b(?:sys|gray|shader)_g\d+c\d+\b/g, (id) => hold(`<span class="rel" title="${esc(id)}">一个方案</span>`));
+    t = t.replace(/\b(?:gpu|cpu|bus|kgsl)(?:\.[A-Za-z0-9_]+)+/g, (k) => hold(`<span class="rel" title="${esc(k)}">${esc(knobName(k))}</span>`));
+    t = t.replace(/\b(sysparam|gray)\b/g, (w) => hold(esc(LAYER[w])));
+    t = t.replace(/goal\.md 已起草[,，]\s*等人确认/g, "目标草稿写好了，等你确认").replace(/\bgoal\.md\b/g, () => hold(`<span class="rel" title="goal.md">目标设置</span>`))
+      .replace(/\bhuman\.md\b/g, () => hold(`<span class="rel" title="human.md">你的指令</span>`));
+    return esc(t).replace(/\u0000(\d+)\u0000/g, (_, i) => parts[+i]);
+  }
   const candName = (c) => `<b class="cn" title="${esc(c.id)}${c.why ? "：" + esc(c.why) : ""}">「${esc(shortWhy(c))}」</b>`;
 
   // ───────── 首页数据 ─────────
@@ -296,7 +328,7 @@
         const ly = (e.layers || []).map((l) => LAYER[l] || l).join("、");
         return ["◆", "", `第 ${e.gen} 代开始：试${esc(ly || "—")}${e.per_generation ? `，每类 ${esc(e.per_generation)} 个方案` : ""}${e.budget_left_min != null ? `<span class="q">（还剩 ${Math.round(e.budget_left_min)} 分钟）</span>` : ""}`];
       }
-      case "steer": return ["✎", "steer", `读到你的新指令：“${esc(e.text || "")}”${e.interpreted ? ` <span class="q">→ ${esc(e.interpreted)}</span>` : ""}`];
+      case "steer": return ["✎", "steer", `读到你的新指令：“${humanize(e.text, cmap)}”${e.interpreted ? ` <span class="q">→ ${humanize(e.interpreted, cmap)}</span>` : ""}`];
       case "propose": return ["＋", "", `提出方案<span title="${esc(fmtChanges(e.changes))}">${candName(c)}</span><span class="q">（${esc(LAYER[e.layer] || e.layer || "")}）</span>`];
       case "gate": { const ok = /pass|allow|放行|ok/i.test(String(e.decision)); return ["⛨", "", `上手机前预审${candName(c)}：${ok ? "通过" : "拦下，不上手机"}`]; }
       case "measure": return ["◐", "", e.arms_done ? `测方案${candName(c)}：${esc(e.arms_done)} / ${esc(e.arms_planned)} 轮` : `开始测方案${candName(c)}<span class="q">（改前、改后轮流测 ${esc(e.arms_planned)} 轮）</span>`];
@@ -306,12 +338,12 @@
         const ms = Object.entries(e.metrics || {}).filter(([, m]) => m.delta_pct != null)
           .sort(([a], [b]) => (mkey(b) === runInfo(S.run).metric) - (mkey(a) === runInfo(S.run).metric))
           .map(([k, m]) => change(k, m.delta_pct, m.p)).join("，");
-        return [win ? "✓" : lose ? "✗" : "∅", win ? "win" : lose ? "lose" : "", `${word}${candName(c)}${ms ? `：${ms}` : e.reason ? `：<span class="q">${esc(e.reason)}</span>` : ""}`];
+        return [win ? "✓" : lose ? "✗" : "∅", win ? "win" : lose ? "lose" : "", `${word}${candName(c)}${ms ? `：${ms}` : e.reason ? `：<span class="q">${humanize(e.reason, cmap)}</span>` : ""}`];
       }
       case "keep": return null; // 「保留」已经在结论那行里
-      case "stop": return ["■", "", `停下了：${esc(STOP[e.reason] || e.reason || "")}${e.summary ? ` <span class="q">${esc(e.summary)}</span>` : ""}`];
-      case "error": return ["!", "lose", `出错：${esc(e.message || e.text || e.error || "")}`];
-      case "note": return ["·", "", (e.stage === "draft" ? `起草${e.by === "llm" ? "（大模型）" : e.by === "template" ? "（模板）" : ""}：` : "") + esc(e.text || e.message || "")];
+      case "stop": return ["■", "", `停下了：${esc(STOP[e.reason] || e.reason || "")}${e.summary ? ` <span class="q">${humanize(e.summary, cmap)}</span>` : ""}`];
+      case "error": return ["!", "lose", `出错：${humanize(e.message || e.text || e.error || "", cmap)}`];
+      case "note": return ["·", "", (e.stage === "draft" ? `起草${e.by === "llm" ? "（大模型）" : e.by === "template" ? "（模板）" : ""}：` : "") + humanize(e.text || e.message || "", cmap)];
       default: return ["·", "", esc(e.type)];
     }
   }
