@@ -5,7 +5,7 @@ import protocol as P
 import data as D
 class Contracts(unittest.TestCase):
  def test_duplicate_nonfinite_json(self):
-  for b in [b'{"x":1,"x":2}',b'{"x":NaN}']:
+  for b in [b'{"x":1,"x":2}',b'{"x":NaN}',b'{"x":1e999}',b'{"x":-1e999}']:
    with self.assertRaises(ValueError):P.parse(b)
  def test_frame_split_and_geometry_scope(self):
   v={'schema':'game_opt_loop/paired_training_dataset@1','source':'unknown','kind':'native_refbench','seed':1,'steps':8,'batch':1,'learning_rate':0.001,'train_frame_ids':[0,1,2],'heldout_frame_ids':[3],'capture':{},'synthetic_frames':[],'patches_per_frame':1}
@@ -18,6 +18,10 @@ class Contracts(unittest.TestCase):
   for p in a:self.assertEqual([x*3//2 for x in p['lr_origin']],p['hr_origin']);self.assertTrue(all(x%2==0 for x in p['lr_origin']))
  def test_current_pinned_native_consumer_identity(self):
   n=D.native_contract();self.assertEqual(n.SOURCE_NATIVE,'native_rendered_controlled_whitebox')
+  with self.assertRaisesRegex(ValueError,'nonfinite'):n.parse(b'{"x":1e999}')
+  with tempfile.TemporaryDirectory() as td:
+   d=Path(td).resolve();p=d/'image.rgba';p.write_bytes(b'bytes');alias=d/'alias';alias.symlink_to(d,target_is_directory=True)
+   with self.assertRaises(OSError):n.regular_bytes(alias/'image.rgba',128)
  def test_same_fd_snapshot_and_symlink_rejection(self):
   with tempfile.TemporaryDirectory() as td:
    d=Path(td).resolve();p=d/'data';p.write_bytes(b'bytes');self.assertEqual(P.read(p),b'bytes');s=d/'alias';s.symlink_to(p)

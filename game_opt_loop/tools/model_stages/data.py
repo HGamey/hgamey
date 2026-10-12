@@ -19,7 +19,10 @@ def config(v):
 
 def native_contract():
  path=Path(__file__).parent/'refbench_native_pairs_v1.py';b=P.read(path.absolute());P.require(P.hash_bytes(b)==VALIDATOR_SHA,'pinned refbench consumer changed')
- m=types.ModuleType('fixed_native_contract');m.__file__=str(path);exec(compile(b,str(path),'exec'),m.__dict__);return m
+ m=types.ModuleType('fixed_native_contract');m.__file__=str(path);exec(compile(b,str(path),'exec'),m.__dict__)
+ # Keep the pinned capture algorithms; bind their I/O/parser to this stage's
+ # stricter same-fd/ancestor-no-follow snapshots and finite JSON contract.
+ m.regular_bytes=lambda p,limit:P.read(P.absolute(p),limit);m.parse=P.parse;return m
 
 def frames(v):
  """Return checked immutable RGB snapshots, with actual original identities."""

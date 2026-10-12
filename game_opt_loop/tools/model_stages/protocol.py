@@ -1,5 +1,5 @@
 """Bounded existing GOL model-stage wire; no TensorFlow/device/network imports."""
-import hashlib,json,os,re,stat,time
+import hashlib,json,math,os,re,stat,time
 from pathlib import Path
 JSON_LIMIT=1024*1024
 OUTPUT_LIMIT=4*1024*1024
@@ -24,7 +24,9 @@ def object_unique(pairs):
  for k,v in pairs:require(k not in d,'duplicate JSON key');d[k]=v
  return d
 def parse(b):
- return json.loads(b,object_pairs_hook=object_unique,parse_constant=lambda _:(_ for _ in ()).throw(Rejected('nonfinite JSON')))
+ def finite_float(text):
+  value=float(text);require(math.isfinite(value),'nonfinite JSON');return value
+ return json.loads(b,object_pairs_hook=object_unique,parse_float=finite_float,parse_constant=lambda _:(_ for _ in ()).throw(Rejected('nonfinite JSON')))
 def encode(v):return json.dumps(v,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
 def digest(v):return hash_bytes(encode(v))
 def hash_ok(s):return isinstance(s,str) and re.fullmatch('[0-9a-f]{64}',s) is not None
