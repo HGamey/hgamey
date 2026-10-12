@@ -21,18 +21,24 @@ import hashlib, http.client, io, json, os, sys, tarfile, time, urllib.error, url
 
 URL = os.environ.get("PF_NODE_URL", "https://phone.liyao.space").rstrip("/")
 def _token():
-    """token 查找顺序：PF_NODE_TOKEN → PF_NODE_TOKEN_FILE → 工作根目录下的 .hgamey/node.token
-    （本脚本位于 <根>/projects/harness-ops/node/，跟着链接找到真实位置再往上三层）→ 旧位置 ~/.config/hgamey。"""
+    """token 查找顺序：PF_NODE_TOKEN → PF_NODE_TOKEN_FILE → 从本脚本所在目录（链接位置和真实位置都试）
+    逐级往上找 .hgamey/node.token → 旧位置 ~/.config/hgamey。"""
     if os.environ.get("PF_NODE_TOKEN"):
         return os.environ["PF_NODE_TOKEN"]
-    here = os.path.dirname(os.path.realpath(__file__))
-    for f in (os.environ.get("PF_NODE_TOKEN_FILE"),
-              os.path.join(here, "..", ".hgamey", "node.token"),               # 装在 <根>/bin/ 时
-              os.path.join(here, "..", "..", "..", ".hgamey", "node.token"),   # 在 <根>/projects/harness-ops/node/ 时
-              os.path.expanduser("~/.config/hgamey/node.token")):
+    cands = [os.environ.get("PF_NODE_TOKEN_FILE")]
+    for start in (os.path.dirname(os.path.abspath(sys.argv[0])), os.path.dirname(os.path.realpath(__file__))):
+        d = start
+        while True:
+            cands.append(os.path.join(d, ".hgamey", "node.token"))
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    cands.append(os.path.expanduser("~/.config/hgamey/node.token"))
+    for f in cands:
         if f and os.path.isfile(f):
             return open(f).read().strip()
-    sys.exit("pf-node: 找不到节点 token（PF_NODE_TOKEN / PF_NODE_TOKEN_FILE / <根>/.hgamey/node.token）")
+    sys.exit("pf-node: 找不到节点 token（PF_NODE_TOKEN / PF_NODE_TOKEN_FILE / 上级目录里的 .hgamey/node.token）")
 
 
 TOKEN = _token()
