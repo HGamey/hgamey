@@ -15,12 +15,27 @@
   下载分块进行（PF_NODE_CHUNK 字节一块，缺省 2MB），断了自动续，最后校验 sha256；中途中断的进度存在
   <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
 - 日志实时回显；退出码等于节点上命令的退出码。Ctrl-C 会让节点向任务发 SIGINT（phonefarm 会走还原流程）。
-- 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 在 ~/.config/hgamey/node.token 或 PF_NODE_TOKEN。
+- 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """
 import hashlib, http.client, io, json, os, sys, tarfile, time, urllib.error, urllib.parse, urllib.request
 
 URL = os.environ.get("PF_NODE_URL", "https://phone.liyao.space").rstrip("/")
-TOKEN = os.environ.get("PF_NODE_TOKEN") or open(os.path.expanduser("~/.config/hgamey/node.token")).read().strip()
+def _token():
+    """token 查找顺序：PF_NODE_TOKEN → PF_NODE_TOKEN_FILE → 工作根目录下的 .hgamey/node.token
+    （本脚本位于 <根>/projects/harness-ops/node/，跟着链接找到真实位置再往上三层）→ 旧位置 ~/.config/hgamey。"""
+    if os.environ.get("PF_NODE_TOKEN"):
+        return os.environ["PF_NODE_TOKEN"]
+    here = os.path.dirname(os.path.realpath(__file__))
+    for f in (os.environ.get("PF_NODE_TOKEN_FILE"),
+              os.path.join(here, "..", ".hgamey", "node.token"),               # 装在 <根>/bin/ 时
+              os.path.join(here, "..", "..", "..", ".hgamey", "node.token"),   # 在 <根>/projects/harness-ops/node/ 时
+              os.path.expanduser("~/.config/hgamey/node.token")):
+        if f and os.path.isfile(f):
+            return open(f).read().strip()
+    sys.exit("pf-node: 找不到节点 token（PF_NODE_TOKEN / PF_NODE_TOKEN_FILE / <根>/.hgamey/node.token）")
+
+
+TOKEN = _token()
 CHUNK = int(os.environ.get("PF_NODE_CHUNK", 2 << 20))
 
 
