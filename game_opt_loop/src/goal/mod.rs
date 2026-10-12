@@ -249,6 +249,21 @@ pub fn show(dir: &Path, last_events: usize) -> Result<String> {
     Ok(o)
 }
 
+/// `goal cancel`: 把一次卡住的运行收尾 (进程已经不在了, state 还是 running/paused)。
+/// 不碰设备, 只写 state / stop 事件 / report。
+pub fn cancel(dir: &Path, reason: &str) -> Result<State> {
+    let rd = RunDir::new(dir);
+    let mut st = rd.read_state()?;
+    if matches!(st.status.as_str(), "done" | "failed") {
+        bail!("状态已经是 {}, 不用收尾", st.status);
+    }
+    st.status = "done".into();
+    st.stop_reason = Some("human_stop".into());
+    rd.write_state(&mut st)?;
+    rd.event(st.generation, "stop", json!({"reason": "human_stop", "summary": format!("人工收尾: {reason}")}));
+    Ok(st)
+}
+
 /// `goal edit`: 确认前整份替换 goal.md。先校验; 已经开跑的不许改 (冻结的就是冻结的)。
 pub fn edit(dir: &Path, new_goal: &Path) -> Result<()> {
     let rd = RunDir::new(dir);
@@ -476,7 +491,15 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     };
     match st.status.as_str() {
         "awaiting_confirm" | "drafting" => {}
-        s => bail!("这次目标运行的状态是 {s}, 不能再启动 (要重跑请新建一个 run 目录)"),
+        // 冻结了、但一代都还没开始 (例如排队等锁时被杀掉): 可以接着跑, 前提是 goal.md 没被改过
+        "running" | "paused" if st.generation == 0 && st.goal_sha256.as_deref() == Some(sha.as_str()) => {
+            rd.event(0, "note", json!({"message": "接着跑: 上一次冻结后一代都没开始就停了 (排队时被杀或节点重启)"}));
+        }
+        s => bail!(
+            "这次目标运行的状态是 {s} (已跑到第 {} 代), 不能再启动; 要重跑请新建一个 run 目录, \
+             卡住的运行用 `goal cancel` 收尾",
+            st.generation
+        ),
     }
     // 云端出方案: 先确认这台机器上起得来, 别冻结了目标才发现第一代就出不了方案。
     let proposer_spec = proposer_spec_for(&spec.proposer)?;
@@ -500,7 +523,23 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
 
     let label = format!("goal-{}", rd.run_id());
     let mut guard = match &opts.lock {
-        Some(l) => Some(crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait)?),
+        Some(l) => match crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait) {
+            Ok(g) => Some(g),
+            Err(e) if optimize::interrupted() => {
+                // 排队时被叫停: 没碰设备, 按人叫停收尾
+                rd.event(0, "note", json!({"message": format!("排队等锁时被叫停, 没碰设备: {e:#}")}));
+                st.status = "done".into();
+                st.stop_reason = Some("human_stop".into());
+                rd.write_state(&mut st)?;
+                rd.event(0, "stop", json!({"reason": "human_stop", "summary": "排队等锁时被叫停, 一代都没跑"}));
+                return Ok(st);
+            }
+            Err(e) => {
+                // 等锁超时: 没碰设备。状态保持「已冻结、一代没开始」, 同一个目录可以再 goal run 接着排。
+                rd.event(0, "note", json!({"message": format!("没拿到设备锁, 没碰设备: {e:#}")}));
+                return Err(e);
+            }
+        },
         None => None,
     };
 

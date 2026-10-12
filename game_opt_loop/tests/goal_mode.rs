@@ -416,3 +416,98 @@ fn megacity_requests_carry_the_launch_and_skip_the_entry_flow() {
     check_contracts(&dir);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// 冻结后一代都没开始就停了 (排队时被杀): 同一个目录可以接着跑; goal.md 被改过就不行。
+/// 卡住的运行用 cancel 收尾, 已结束的不能再 cancel。
+#[test]
+fn a_frozen_but_unstarted_run_can_be_resumed_and_a_stuck_one_cancelled() {
+    let root = scaffold("resume", false);
+    let dir = root.join("goals/run_resume");
+    goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| {
+        s.layers = vec!["sysparam".into()];
+        s.per_generation = 1;
+        s.budget.max_generations = 1;
+        s.budget.min_generations = 1;
+    });
+    // 模拟「冻结了、排队时被杀」: status=running, generation=0, sha 与 goal.md 一致
+    let text = std::fs::read_to_string(dir.join("goal.md")).unwrap();
+    let sha = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(text.as_bytes()))
+    };
+    let mut st: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
+    st["status"] = "running".into();
+    st["goal_sha256"] = sha.clone().into();
+    std::fs::write(dir.join("state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    // goal.md 改过 → 拒绝
+    std::fs::write(dir.join("goal.md"), text.replace("per_generation: 1", "per_generation: 2")).unwrap();
+    assert!(goal::run(&dir, &opts(&root, None)).is_err());
+    std::fs::write(dir.join("goal.md"), &text).unwrap();
+    let st = goal::run(&dir, &opts(&root, None)).unwrap();
+    assert_eq!(st.status, "done");
+    assert_eq!(st.generation, 1);
+    assert!(goal::cancel(&dir, "x").is_err(), "已结束的不用收尾");
+
+    // 卡在 running 的另一次运行: cancel 收尾, 写 stop
+    let dir2 = root.join("goals/run_stuck");
+    goal::draft("省电", "com.miHoYo.Yuanshen", &dir2, goal::Drafter::Template).unwrap();
+    let mut st: Value = serde_json::from_str(&std::fs::read_to_string(dir2.join("state.json")).unwrap()).unwrap();
+    st["status"] = "running".into();
+    st["generation"] = 2.into();
+    std::fs::write(dir2.join("state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    assert!(goal::run(&dir2, &opts(&root, None)).is_err(), "跑到一半的不能接着跑");
+    let st = goal::cancel(&dir2, "节点重启, 进程不在了").unwrap();
+    assert_eq!((st.status.as_str(), st.stop_reason.as_deref()), ("done", Some("human_stop")));
+    assert_eq!(events(&dir2).last().unwrap()["type"], "stop");
+    check_contracts(&dir2);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 排队等锁时被叫停 (网页「停止」或节点停任务): 立即退出, 没碰设备, 写 stop(human_stop)。
+#[cfg(unix)]
+#[test]
+fn sigint_while_queuing_for_the_lock_stops_without_touching_the_device() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = scaffold("queue_sigint", false);
+    let dir = root.join("goals/run_q");
+    goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| s.layers = vec!["sysparam".into()]);
+    // 永远轮不到的锁
+    let lock = root.join("busy_devlock");
+    std::fs::write(&lock, "#!/bin/sh\necho 'not your turn: head=someone'\nexit 1\n").unwrap();
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
+        .args(["goal", "run"])
+        .arg(&dir)
+        .arg("--phonefarm")
+        .arg(root.join("phonefarm/phonefarm"))
+        .arg("--secrets")
+        .arg(root.join("no_secrets.env"))
+        .arg("--sysparam-probe")
+        .arg(root.join("probe.txt"))
+        .env("DEVLOCK_BIN", &lock)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let t0 = std::time::Instant::now();
+    while !std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default().contains("\"type\":\"start\"") {
+        assert!(t0.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let t1 = std::time::Instant::now();
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    let status = child.wait().unwrap();
+    assert!(t1.elapsed().as_secs() < 5, "排队时叫停应该马上退出");
+    assert!(status.success(), "{status:?}");
+    let st: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
+    assert_eq!(st["stop_reason"], "human_stop");
+    assert_eq!(events(&dir).last().unwrap()["type"], "stop");
+    assert!(!dir.join("optimize").exists(), "没拿到锁就不该碰设备");
+    check_contracts(&dir);
+    std::fs::remove_dir_all(&root).ok();
+}

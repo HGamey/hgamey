@@ -694,6 +694,12 @@ pub enum GoalCmd {
         #[arg(long, default_value_t = 20)]
         events: usize,
     },
+    /// 把一次卡住的运行收尾 (进程已经不在了, state 还显示 running): 写 stop 事件, 状态 done。
+    Cancel {
+        dir: PathBuf,
+        #[arg(long, default_value = "进程已不在, 人工收尾")]
+        reason: String,
+    },
     /// 人确认前改 goal.md: 用一份本地文件整份替换 (先校验格式; 只在 awaiting_confirm 时允许)。
     Edit {
         dir: PathBuf,
@@ -767,6 +773,11 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
         }
         GoalCmd::Show { dir, events } => {
             print!("{}", goal::show(&dir, events)?);
+            Ok(())
+        }
+        GoalCmd::Cancel { dir, reason } => {
+            let st = goal::cancel(&dir, &reason)?;
+            println!("已收尾: {} (第 {} 代)", st.status, st.generation);
             Ok(())
         }
         GoalCmd::Edit { dir, goal: file } => {
