@@ -11,7 +11,11 @@
                                  argv 里 @in/<路径> → 上传文件解开后的绝对路径；@out → 本任务输出目录
             GET  /jobs/<id>      状态 JSON（running / exit code）
             GET  /jobs/<id>/log?offset=N   stdout+stderr 增量
-            GET  /jobs/<id>/out  输出目录 tar.gz
+            GET  /jobs/<id>/out  输出目录 tar.gz（老接口，仍可用；现在从磁盘缓存发，支持 Range）
+                 /out?meta=1                → {"kind": "tar.gz"|"file", "size", "sha256", "etag"}
+                 /out?offset=N&length=M&etag=E  分块下载（断了从 offset 续）；etag 对不上回 409（输出变了，重来）
+                 /out?path=<相对路径>[&meta=1|&offset=..]  只下输出目录里的一个文件（目录则打成 tar.gz）
+                 也认标准 Range: bytes=a-b（回 206），If-Range 对不上就回整份
             POST /jobs/<id>/kill
           X-Job 可带 "exe": "@in/<路径>"，用上传的可执行代替缺省的（测未合并分支）。
   /admin/restart  退出进程，由 run_node.sh 的循环用新代码重新拉起。
@@ -20,7 +24,7 @@
 
 phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自己的仓库目录下执行（相对路径的 knobs/、loop_v1/ 照常可用）；碰设备的子命令自己拿设备锁、排队。
 """
-import argparse, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
+import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -39,6 +43,7 @@ MCP_ALLOW = {
     "phonefarm_run", "phonefarm_benchmark", "phonefarm_script",
 }
 CALL_TIMEOUT = 300
+OUT_CHUNK_MAX = 16 << 20   # 分块下载单块上限
 MAX_UPLOAD = 512 << 20
 
 
@@ -130,6 +135,14 @@ class McpChild:
 
 # ═════════════ /jobs ═════════════
 
+def _sha256_file(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
 def _pid_alive(pid):
     try:
         os.kill(int(pid), 0)
@@ -146,6 +159,7 @@ class Jobs:
         self.dir = os.path.join(root, "_jobs")
         os.makedirs(self.dir, exist_ok=True)
         self.procs = {}
+        self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
 
     def path(self, jid, *p):
         if not re.fullmatch(r"[0-9a-f]{12}", jid or ""):
@@ -212,11 +226,58 @@ class Jobs:
             f.seek(offset)
             return f.read(4 << 20)
 
-    def out_tar(self, jid):
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as t:
-            t.add(self.path(jid, "out"), arcname=".")
-        return buf.getvalue()
+    def out_blob(self, jid, rel=None):
+        """要下载的东西落在磁盘上的文件 + 元信息。rel 为空 = 整个输出目录打 tar.gz；rel 是文件 = 文件本身；
+        rel 是目录 = 该目录打 tar.gz。tar.gz 缓存在 _jobs/<id>/.outcache-*，目录内容（路径/大小/mtime）没变就复用，
+        所以分块下载的各块来自同一份字节；变了 etag 就变，客户端从头来。"""
+        base = os.path.realpath(self.path(jid, "out"))
+        if not os.path.isdir(base):
+            raise FileNotFoundError(base)
+        target = os.path.realpath(os.path.join(base, rel)) if rel else base
+        if target != base and not target.startswith(base + os.sep):
+            raise ValueError("path 必须在本任务的输出目录里")
+        if os.path.isfile(target):
+            st = os.stat(target)
+            key = (target, st.st_size, st.st_mtime_ns)
+            with self._out_guard:
+                sha = self._sha_cache.get(key)
+            if not sha:
+                sha = _sha256_file(target)
+                with self._out_guard:
+                    self._sha_cache[key] = sha
+            return target, {"kind": "file", "path": os.path.relpath(target, base), "size": st.st_size,
+                            "sha256": sha, "etag": sha[:16]}
+        if not os.path.isdir(target):
+            raise FileNotFoundError(target)
+        sig = hashlib.sha256()
+        for dp, dirs, files in os.walk(target):
+            dirs.sort()
+            sig.update(f"D {os.path.relpath(dp, target)}\n".encode())
+            for f in sorted(files):
+                try:
+                    st = os.lstat(os.path.join(dp, f))
+                except OSError:
+                    continue
+                sig.update(f"F {f} {st.st_size} {st.st_mtime_ns}\n".encode())
+        sig = sig.hexdigest()[:16]
+        cache = self.path(jid, ".outcache-" + hashlib.sha1((rel or "").encode()).hexdigest()[:10] + ".tar.gz")
+        with self._out_guard:
+            lock = self._out_locks.setdefault(cache, threading.Lock())
+        with lock:
+            try:
+                m = json.load(open(cache + ".json"))
+                if m["sig"] == sig and os.path.getsize(cache) == m["size"]:
+                    return cache, m["info"]
+            except (OSError, ValueError, KeyError):
+                pass
+            tmp = cache + ".tmp"
+            with tarfile.open(tmp, mode="w:gz") as t:
+                t.add(target, arcname=".")
+            size, sha = os.path.getsize(tmp), _sha256_file(tmp)
+            info = {"kind": "tar.gz", "path": os.path.relpath(target, base), "size": size, "sha256": sha, "etag": sha[:16]}
+            os.replace(tmp, cache)
+            json.dump({"sig": sig, "size": size, "info": info}, open(cache + ".json", "w"))
+            return cache, info
 
     def kill(self, jid):
         """先 SIGINT（让 phonefarm 走还原流程）；15 秒后还活着升 SIGTERM，再 15 秒升 SIGKILL（整个进程组）。
@@ -305,10 +366,58 @@ def make_handler(mcp, jobs, token, board=None):
                     off = int(parse_qs(u.query).get("offset", ["0"])[0])
                     return self._send(200, jobs.log_from(parts[1], off), "application/octet-stream")
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
-                    return self._send(200, jobs.out_tar(parts[1]), "application/gzip")
+                    return self._out(parts[1], parse_qs(u.query))
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
             self._send(404, {"error": "not found"})
+
+        def _out(self, jid, q):
+            rel = (q.get("path") or [""])[0].strip("/") or None
+            blob, info = jobs.out_blob(jid, rel)
+            if "meta" in q:
+                return self._send(200, info)
+            size, etag = info["size"], info["etag"]
+            if "etag" in q and q["etag"][0] != etag:
+                return self._send(409, {"error": "输出内容变了，从头下载", **info})
+            start, end, status = 0, size, 200
+            if "offset" in q:  # 分块接口（走 Cloudflare 稳妥，不依赖 Range 头被透传）
+                start = int(q["offset"][0])
+                end = min(size, start + min(int((q.get("length") or [OUT_CHUNK_MAX])[0]), OUT_CHUNK_MAX))
+                if not 0 <= start <= size:
+                    return self._send(416, {"error": "offset 越界", **info})
+            else:
+                m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+                ifr = self.headers.get("If-Range", "").strip('" ')
+                if m and m.group(0) != "bytes=-" and (not ifr or ifr == etag):
+                    a, b = m.groups()
+                    if a:
+                        start, end = int(a), min(size, int(b) + 1) if b else size
+                    else:  # bytes=-N：最后 N 字节
+                        start, end = max(0, size - int(b)), size
+                    if start >= size and size:
+                        return self._send(416, b"", extra={"Content-Range": f"bytes */{size}"})
+                    status = 206
+            self.send_response(status)
+            self.send_header("Content-Type", "application/gzip" if info["kind"] == "tar.gz" else "application/octet-stream")
+            self.send_header("Content-Length", str(end - start))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("ETag", f'"{etag}"')
+            self.send_header("X-Content-SHA256", info["sha256"])
+            self.send_header("X-Total-Size", str(size))
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
+            self.end_headers()
+            with open(blob, "rb") as f:  # 从磁盘边读边发，不把整份读进内存
+                f.seek(start)
+                left = end - start
+                while left > 0:
+                    b = f.read(min(left, 256 << 10))
+                    if not b:
+                        break
+                    self.wfile.write(b)
+                    left -= len(b)
 
         def do_DELETE(self):
             if self._authed():
