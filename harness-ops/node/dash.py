@@ -7,7 +7,12 @@
     锁刚释放的那一小段（别人可能马上又拿锁开测）连 fleet 都不跑。
   - 没人看页面时（VIEW_IDLE_S 内无请求）采样线程完全停下，对手机零开销。
 
-访问控制：独立查看密码 ~/.config/hgamey/dash.pass（与管理 token 无关）。
+首页（/dash）只放产品视角：手机槽位、目标运行（goal mode，见 dash_goals.py）、时间线、掌舵；
+开发 agent 的任务、设备锁、日志、旧的实验证据在维护页（/dash/maint）。
+
+访问控制：独立查看密码 ~/.config/hgamey/dash.pass（与管理 token 无关），只能看；
+  掌舵密码 ~/.config/hgamey/steer.pass：改 human.md、停止、起新目标（每次记时间与来源 IP，见 steer.audit.jsonl）。
+  写接口只收 JSON + X-HG 头（跨站表单发不出），cookie 均为 HttpOnly/Secure/SameSite=Strict。
   浏览器：/dash/login 表单 → HttpOnly cookie（值是密码的 HMAC，不是密码本身）。
   命令行：HTTP Basic，用户名随意，密码 = 查看密码。
 
@@ -17,16 +22,28 @@
   GET /dash/api/state       手机 + 设备锁 + 任务 + 温度/电量历史（页面每 3 秒拉一次）
   GET /dash/api/log?job=ID  任务日志尾部
   GET /dash/api/exps?ver=V  实验证据（optimize / autoloop / eval）汇总；ver 没变时只回 {"same": true}
-  GET /dash/api/shot        最近一张手机截图（jpeg）
+  GET /dash/api/shot[?serial=S]  最近一张手机截图（jpeg）
+  GET /dash/maint           维护页
+  GET /dash/api/home        首页：手机槽位（至少 4 格）+ 目标运行列表
+  GET /dash/api/run?id=R    一个目标运行：state、goal.md、human.md 与历史、events、report
+  POST /dash/api/steer/unlock|lock         掌舵解锁 / 上锁
+  POST /dash/api/run/human|stop            改 human.md / 停止（掌舵密码）
+  POST /dash/api/goal/draft|confirm        新目标起草 / 确认并开跑（掌舵密码）
 """
 import collections, glob, hashlib, hmac, json, os, re, subprocess, threading, time
 from urllib.parse import parse_qs
 
-PASS_FILE = os.path.expanduser("~/.config/hgamey/dash.pass")
+import dash_goals
+
+PASS_FILE = os.path.expanduser("~/.config/hgamey/dash.pass")     # 查看密码：只能看
+STEER_FILE = os.path.expanduser("~/.config/hgamey/steer.pass")   # 掌舵密码：改 human.md、起新目标、停止
+STEER_COOKIE = "hg_steer"
+STEER_MAX_AGE = 12 * 3600
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash_static")
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
 COOKIE = "hg_dash"
+SLOTS_MIN = 4
 VIEW_IDLE_S = 90          # 这么久没人看就停采样
 FLEET_EVERY_FREE_S = 10   # 锁空闲时多久采一次
 FLEET_EVERY_HELD_S = 20   # 锁被占时多久采一次（只读 sysfs）
@@ -302,8 +319,12 @@ def signature(d):
 # ═════════════ 主体 ═════════════
 
 class Dash:
-    def __init__(self, phonefarm_root, gol_root, jobs_dir):
+    def __init__(self, phonefarm_root, gol_root, jobs_dir, jobs=None):
         self.pf_root, self.gol_root, self.jobs_dir = phonefarm_root, gol_root, jobs_dir
+        node_dir = os.path.dirname(os.path.dirname(jobs_dir.rstrip("/")))  # ~/node
+        self.goals = dash_goals.Goals(os.environ.get("HG_GOALS_DIR", os.path.join(node_dir, "goals")),
+                                      os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "demo-goals"),
+                                      jobs=jobs, gol_exe=os.path.join(gol_root, "game_opt_loop"))
         self.lock_dir = os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501")
         self.shot_dir = os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "screens")
         self.last_view = 0.0
@@ -326,8 +347,32 @@ class Dash:
         except OSError:
             return None
 
-    def _cookie_val(self, pw):
-        return hmac.new(pw.encode(), b"hgamey-dash-v1", hashlib.sha256).hexdigest()
+    def _cookie_val(self, pw, salt=b"hgamey-dash-v1"):
+        return hmac.new(pw.encode(), salt, hashlib.sha256).hexdigest()
+
+    def _steer_pass(self):
+        try:
+            p = open(STEER_FILE).read().strip()
+            return p if len(p) >= 12 else None
+        except OSError:
+            return None
+
+    def _cookie(self, h, name):
+        for part in h.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name:
+                return v
+        return None
+
+    def steered(self, h):
+        pw = self._steer_pass()
+        v = self._cookie(h, STEER_COOKIE)
+        return bool(pw and v and hmac.compare_digest(v, self._cookie_val(pw, b"hgamey-steer-v1")))
+
+    def _throttled(self, ip):
+        now = _now()
+        self.fails[ip] = [t for t in self.fails[ip] if now - t < 600]
+        return len(self.fails[ip]) >= 10
 
     def authed(self, h):
         pw = self._pass()
@@ -363,7 +408,22 @@ class Dash:
         self.wake.set()
         q = parse_qs(query)
         if not sub:
-            return self._static(h, "index.html")
+            return self._static(h, "home.html")
+        if sub == ["maint"]:
+            return self._static(h, "maint.html")
+        if sub == ["api", "home"]:
+            return self._send(h, 200, self.home(h))
+        if sub == ["api", "run"]:
+            try:
+                return self._send(h, 200, self.goals.detail((q.get("id") or [""])[0]))
+            except KeyError:
+                return self._send(h, 404, {"error": "没有这个目标运行"})
+        if sub == ["api", "run", "human_rev"]:
+            try:
+                t = self.goals.history_text((q.get("id") or [""])[0], (q.get("name") or [""])[0])
+                return self._send(h, 200, {"text": t})
+            except KeyError:
+                return self._send(h, 404, {"error": "没有这个版本"})
         if sub[0] == "static" and len(sub) == 2:
             return self._static(h, sub[1])
         if sub == ["api", "state"]:
@@ -376,7 +436,7 @@ class Dash:
                 return self._send(h, 200, {"same": True, "ver": self.exps_ver})
             return self._send(h, 200, {"ver": self.exps_ver, "exps": self.exps})
         if sub == ["api", "shot"]:
-            return self._shot(h)
+            return self._shot(h, (q.get("serial") or [""])[0])
         return self._send(h, 404, {"error": "not found"})
 
     def handle_post(self, h, parts, body):
@@ -394,8 +454,59 @@ class Dash:
             time.sleep(1)
             return self._login_page(h, "密码不对", 401)
         if parts[1:] == ["logout"]:
-            return self._redirect(h, "/dash/login", {"Set-Cookie": f"{COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict"})
-        return self._send(h, 405, {"error": "只读看板，不接受写操作"})
+            return self._redirect(h, "/dash/login", {"Set-Cookie": [
+                f"{COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict",
+                f"{STEER_COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict"]})
+        sub = parts[1:]
+        if not (sub and sub[0] == "api"):
+            return self._send(h, 404, {"error": "not found"})
+        if not self.authed(h):
+            return self._send(h, 401, {"error": "需要查看密码"})
+        # 写接口一律要 JSON + 自定义头（跨站表单发不出来），再加掌舵密码
+        if h.headers.get("X-HG") != "1" or "application/json" not in h.headers.get("Content-Type", ""):
+            return self._send(h, 400, {"error": "请求格式不对"})
+        try:
+            data = json.loads(body or b"{}")
+            if not isinstance(data, dict):
+                raise ValueError
+        except ValueError:
+            return self._send(h, 400, {"error": "请求不是 JSON"})
+        ip = self._ip(h)
+        if sub == ["api", "steer", "unlock"]:
+            if self._throttled(ip):
+                return self._send(h, 429, {"error": "失败次数太多，10 分钟后再试"})
+            real = self._steer_pass()
+            if not real:
+                return self._send(h, 503, {"error": "节点上还没设置掌舵密码"})
+            if hmac.compare_digest(str(data.get("pw", "")).strip().encode(), real.encode()):
+                ck = (f"{STEER_COOKIE}={self._cookie_val(real, b'hgamey-steer-v1')}; Path=/dash; Max-Age={STEER_MAX_AGE}; "
+                      "HttpOnly; Secure; SameSite=Strict")
+                log_err(f"dash 掌舵解锁 来自 {ip}")
+                return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": ck})
+            self.fails[ip].append(_now())
+            time.sleep(1)
+            return self._send(h, 403, {"error": "掌舵密码不对"})
+        if sub == ["api", "steer", "lock"]:
+            return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": f"{STEER_COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict"})
+        if not self.steered(h):
+            return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
+        try:
+            if sub == ["api", "run", "human"]:
+                r = self.goals.save_human(str(data.get("id", "")), data.get("text"), ip, base_mtime=data.get("base_mtime"))
+            elif sub == ["api", "run", "stop"]:
+                r = self.goals.stop(str(data.get("id", "")), ip)
+            elif sub == ["api", "goal", "draft"]:
+                r = self.goals.draft(data.get("intent"), data.get("device"), ip)
+            elif sub == ["api", "goal", "confirm"]:
+                r = self.goals.confirm(str(data.get("id", "")), data.get("goal_md"), ip)
+            else:
+                return self._send(h, 404, {"error": "not found"})
+        except KeyError:
+            return self._send(h, 404, {"error": "没有这个目标运行"})
+        except ValueError as e:
+            return self._send(h, 409, {"error": str(e)})
+        log_err(f"dash 掌舵 {'/'.join(sub[1:])} 来自 {ip}: {json.dumps(r, ensure_ascii=False)[:200]}")
+        return self._send(h, 200, r)
 
     # ── 响应小工具 ──
     def _send(self, h, code, data, ctype="application/json; charset=utf-8", extra=None):
@@ -423,8 +534,9 @@ class Dash:
         html = html.replace("{{hint}}", "")
         self._send(h, code, html.encode(), "text/html; charset=utf-8")
 
-    def _shot(self, h):
-        shots = sorted(glob.glob(os.path.join(self.shot_dir, "*.jpg")), key=_mtime)
+    def _shot(self, h, serial=""):
+        pat = (re.sub(r"[^0-9A-Za-z_-]", "_", serial) if serial else "*") + ".jpg"
+        shots = sorted(glob.glob(os.path.join(self.shot_dir, pat)), key=_mtime)
         if not shots:
             return self._send(h, 404, {"error": "还没有截图"})
         self._send(h, 200, open(shots[-1], "rb").read(), "image/jpeg")
@@ -651,6 +763,34 @@ class Dash:
                 log_err(f"dash 扫实验证据出错: {e!r}")
 
     # ── 汇总 ──
+    def home(self, h):
+        """首页：手机槽位 + 目标运行列表。不含开发 agent 的任务、锁队列（那些在维护页）。"""
+        runs = self.goals.list()
+        running = [r for r in runs if r["status"] in ("running", "paused") and not r["demo"]]  # 示例不占真手机
+        lock = read_lock(self.lock_dir)
+        fl = self.fleet or {}
+        slots = []
+        for d in fl.get("devices") or []:
+            serial = d.get("serial")
+            goal = next((r for r in running if (r["state"].get("device") in (serial,)) or
+                         (lock.get("held_by") == f"goal-{r['run_id']}" and r["state"].get("device") in (None, "any"))), None)
+            shot = os.path.join(self.shot_dir, re.sub(r"[^0-9A-Za-z_-]", "_", serial or "") + ".jpg")
+            b, t = d.get("battery") or {}, d.get("thermal") or {}
+            slots.append({"serial": serial, "online": d.get("online"), "state": d.get("state"),
+                          "model": " ".join(x for x in (d.get("brand"), d.get("model")) if x) or None, "os": d.get("os"),
+                          "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
+                          "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
+                          "busy": bool(lock.get("held_by")) and not lock.get("stale"), "light": d.get("probe_depth") == "light",
+                          "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
+                          "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
+                                            "demo": goal["demo"]}})
+        while len(slots) < SLOTS_MIN:
+            slots.append(None)
+        return {"now": _now(), "slots": slots, "fleet_age_s": int(_now() - self.fleet_at) if self.fleet_at else None,
+                "fleet_err": self.fleet_err, "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
+                "harness_ready": self.goals.harness_support(),
+                "busy": bool(lock.get("held_by")) and not lock.get("stale")}
+
     def state(self):
         lock = read_lock(self.lock_dir)
         fl = self.fleet or {}

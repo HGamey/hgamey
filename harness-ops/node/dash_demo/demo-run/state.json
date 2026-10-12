@@ -1,0 +1,7 @@
+{"run_id": "demo-run", "status": "running", "demo": true,
+ "goal_summary": "原神跑图整机功耗降 5%，帧率和画面不变差",
+ "generation": 3, "max_generations": 6, "elapsed_min": 74, "budget_min": 180,
+ "best": {"candidate": "sys_g2c1", "metric": "power_watt", "delta_pct": -3.1, "verdict": "PASS",
+          "change": "cpu.policy7.scaling_max_freq=2611200"},
+ "progress_to_target": 0.62, "device": "91253241019A", "human_md_rev": 2,
+ "updated_at": "2026-10-12T10:14:20+0800"}

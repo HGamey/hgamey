@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>HGamey 作战室</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="首页">HG</a>
+    <div class="brand">
+      <h1>HGamey 作战室</h1>
+      <span class="sub">人定目标，harness 在真手机上自己调、自己判、自己停</span>
+    </div>
+    <nav class="nav"><a href="/dash" aria-current="page">首页</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right">
+    <span id="live" class="live"><i></i><span id="live-text">连接中</span></span>
+    <button id="steer-btn" class="btn sm" type="button">掌舵：未解锁</button>
+    <button id="new-btn" class="btn primary" type="button">＋ 新目标</button>
+    <form method="post" action="/dash/logout"><button class="ghost" title="退出">退出</button></form>
+  </div>
+</header>
+
+<main class="home">
+  <section aria-labelledby="h-slots">
+    <div class="sec-h"><h2 id="h-slots">手机</h2><span id="slots-note" class="muted"></span></div>
+    <div id="slots" class="slots"></div>
+  </section>
+
+  <div class="main-grid">
+    <div class="col">
+      <section class="card o-run" aria-labelledby="h-run">
+        <div class="run-top">
+          <h2 id="h-run" class="vh">目标运行</h2>
+          <span id="run-status" class="spill">—</span>
+          <span id="run-demo" class="demo-tag" hidden>示例数据</span>
+          <span id="run-when" class="muted"></span>
+          <select id="run-sel" aria-label="选择目标运行" hidden></select>
+        </div>
+        <div id="run-body"></div>
+      </section>
+
+      <section class="card o-tl" aria-labelledby="h-tl">
+        <div class="card-h"><h2 id="h-tl">时间线</h2><span id="tl-note" class="muted"></span></div>
+        <ul id="tl" class="tl"></ul>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card steer o-steer" aria-labelledby="h-steer">
+        <div class="card-h"><h2 id="h-steer">掌舵</h2><span class="muted">human.md</span></div>
+        <div id="steer-lock" class="lockline" hidden><span>改指令、停止、起新目标要先输入掌舵密码</span><button class="btn sm" type="button" data-act="unlock">解锁</button></div>
+        <p class="hint">harness 每一代开始前读一次这里。可以写 <b>停止</b>、<b>暂停</b>、<b>预算 +30 分钟</b>、<b>不要动 某个旋钮</b>、<b>只试 某一层</b>，也可以写任何大白话偏好。</p>
+        <textarea id="human" spellcheck="false" placeholder="（还没有指令）" aria-label="human.md"></textarea>
+        <div class="row-btns">
+          <button id="save-human" class="btn primary" type="button">保存指令</button>
+          <button id="stop-run" class="btn danger" type="button">停止</button>
+          <span id="steer-msg" class="msg"></span>
+        </div>
+        <div class="k" style="margin-top:12px">历史版本</div>
+        <ul id="hist" class="hist"></ul>
+        <div id="hist-view" class="hist-view" hidden></div>
+        <div id="audit" class="audit"></div>
+      </section>
+
+      <section class="card o-goal" aria-labelledby="h-goal">
+        <details class="gm" id="gm"><summary id="h-goal">目标详情（goal.md）</summary><pre id="goalmd">—</pre></details>
+      </section>
+    </div>
+  </div>
+</main>
+<footer class="foot">首页只放 harness 自己的运行。开发用的任务、设备锁、日志在「维护」页。测量进行中不截图、不跑 dumpsys。</footer>
+
+<dialog id="dlg-unlock" class="dlg">
+  <form id="f-unlock">
+    <h3>输入掌舵密码</h3>
+    <p class="note2">查看密码只能看。改 human.md、停止、起新目标需要掌舵密码。每次修改都会记下时间和来源 IP。</p>
+    <input type="password" id="steer-pw" placeholder="掌舵密码" autocomplete="current-password" required>
+    <div class="row-btns"><button class="btn primary" type="submit">解锁</button><button class="btn" type="button" data-close>取消</button><span id="unlock-msg" class="msg err"></span></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-new" class="dlg">
+  <div class="body">
+    <div class="steps"><span id="st1" class="on">① 说目标</span>›<span id="st2">② 看草稿</span>›<span id="st3">③ 开跑</span></div>
+    <div id="new-1">
+      <h3>你想让 harness 做到什么？</h3>
+      <label>用一句话说，比如：原神跑图功耗降 5%，帧率不能掉
+        <textarea id="intent" rows="3" maxlength="2000" required></textarea></label>
+      <label style="margin-top:8px">在哪台手机上跑
+        <select id="dev-sel"></select></label>
+      <div class="row-btns"><button id="do-draft" class="btn primary" type="button">让 harness 起草</button><button class="btn" type="button" data-close>取消</button><span id="draft-msg" class="msg"></span></div>
+    </div>
+    <div id="new-2" hidden>
+      <h3>目标草稿（可直接改）</h3>
+      <p id="draft-note" class="note2"></p>
+      <textarea id="goalmd-edit" class="goalmd" spellcheck="false"></textarea>
+      <div class="row-btns"><button id="do-confirm" class="btn primary" type="button">确认并开始</button><button class="btn" type="button" data-close>先放着</button><span id="confirm-msg" class="msg"></span></div>
+    </div>
+  </div>
+</dialog>
+
+<div id="tip" class="tip" hidden></div>
+<script src="/dash/static/home.js"></script>
+</body>
+</html>

@@ -118,6 +118,12 @@ if [[ ${1:-} == --git ]]; then
 fi
 
 src=$1
+# 作战室的两个密码（查看 dash.pass / 掌舵 steer.pass）：上传目录里有 secrets/ 就装到 ~/.config/hgamey/（600）
+for f in dash.pass steer.pass; do
+  [ -f "$src/secrets/$f" ] || continue
+  mkdir -p "$HOME/.config/hgamey" && install -m 600 "$src/secrets/$f" "$HOME/.config/hgamey/$f"
+  echo "updated ~/.config/hgamey/$f"
+done
 for d in phonefarm game_opt_loop harness-ops; do
   [ -d "$src/$d" ] || continue
   rsync -a "$src/$d/" "$HOME/node/$d/"

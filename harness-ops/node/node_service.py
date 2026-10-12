@@ -260,7 +260,8 @@ def make_handler(mcp, jobs, token, board=None):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             for k, v in (extra or {}).items():
-                self.send_header(k, v)
+                for one in (v if isinstance(v, list) else [v]):
+                    self.send_header(k, one)
             self.end_headers()
             self.wfile.write(data)
 
@@ -317,7 +318,14 @@ def make_handler(mcp, jobs, token, board=None):
             parts = [p for p in urlparse(self.path).path.split("/") if p]
             if board and parts[:1] == ["dash"]:
                 n = int(self.headers.get("Content-Length", 0))
-                return board.handle_post(self, parts, self.rfile.read(min(n, 4096)) if n else b"")
+                if n > (256 << 10):
+                    self.close_connection = True
+                    return self._send(413, {"error": "太大"})
+                try:
+                    return board.handle_post(self, parts, self.rfile.read(n) if n else b"")
+                except Exception as e:  # noqa: BLE001
+                    log(f"dash POST {self.path} 出错: {e!r}")
+                    return self._send(500, {"error": "dash 内部错误"})
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
@@ -379,7 +387,7 @@ def main():
     board = None
     if dash:
         try:
-            board = dash.Dash(root, gol, jobs.dir)
+            board = dash.Dash(root, gol, jobs.dir, jobs=jobs)
         except Exception as e:  # noqa: BLE001
             log(f"dash 起不来，/dash 不可用: {e!r}")
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board))
