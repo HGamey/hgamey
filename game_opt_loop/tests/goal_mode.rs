@@ -375,3 +375,33 @@ fn sigint_to_the_process_stops_the_generation_and_reaches_the_child() {
 fn sigint_to_the_process_group_also_works() {
     sigint_case("sigint_grp", true);
 }
+
+/// Megacity: 自驱动负载。请求带 workload.launch, 不走进门 (onboard), 并且合契约。
+#[test]
+fn megacity_requests_carry_the_launch_and_skip_the_entry_flow() {
+    let root = scaffold("megacity", false);
+    let dir = root.join("goals/run_mc");
+    goal::draft("Megacity 城市飞行省电", "com.unity.megacity.metro", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| {
+        s.per_generation = 1;
+        s.budget.max_generations = 1;
+        s.budget.min_generations = 1;
+    });
+    let st = goal::run(&dir, &opts(&root, None)).unwrap();
+    assert_eq!(st.generation, 1);
+    let gen = dir.join("optimize/gen1");
+    assert!(!gen.join("enter").exists(), "自驱动负载不该走进门流程");
+    for name in ["sys_g1c1.json", "gray_g1c1.json"] {
+        let req: Value = serde_json::from_str(&std::fs::read_to_string(gen.join("requests").join(name)).unwrap()).unwrap();
+        assert_eq!(req["package"], "com.unity.megacity.metro");
+        let l = &req["workload"]["launch"];
+        assert!(l["extras"].as_str().unwrap().contains("city_flythrough"), "{req}");
+        assert_eq!(l["marker"], "megacity_started");
+        assert!(req["workload"].get("script").is_none());
+        assert!(req["workload"].get("enter").is_none());
+        assert_eq!(req["workload"]["render_comm"], "UnityGfxDeviceW");
+        schema::assert_conforms(&req, "eval_request.schema.json");
+    }
+    check_contracts(&dir);
+    std::fs::remove_dir_all(&root).ok();
+}

@@ -30,6 +30,16 @@
         "frames": { "type": ["integer", "null"], "minimum": 1, "description": "refbench 每臂渲染帧数" },
         "intensity": { "type": ["integer", "null"], "minimum": 0, "description": "refbench 场景 fragment 负载强度" },
         "render_comm": { "type": ["string", "null"], "description": "game_replay 时解析帧时用的渲染线程名 (ftrace comm)。缺省按 Unity 的 UnityGfxDeviceW; 非 Unity 游戏由游戏档案 (game_profile.schema.json 的 workload.render_comm) 给出, 不给就解析出零帧。" },
+        "launch": {
+          "type": ["object", "null"],
+          "description": "自驱动负载: 应用带 intent extras 启动后自己跑确定性路线 (Megacity 的 city_flythrough)。有它就不看 script、不走进门。sysparam 每臂带 extras 重启应用, 等 marker 文件出现再采 seconds 秒; gray 挂层时带 extras 启动, 画面比对改为上机前用 static_extras 场景跑一次 storeop-check (孪生 pass 现场开关)。",
+          "required": ["extras"],
+          "properties": {
+            "extras": { "type": "string", "description": "am start 的 extras, 如 --es scene city_flythrough --es frames 3600 ..." },
+            "marker": { "type": ["string", "null"], "description": "应用进入被测窗口时在 Android/data/<包>/files/ 下落的文件名; null = 启动后固定等 20 秒" },
+            "static_extras": { "type": ["string", "null"], "description": "画面比对用的静态场景 extras (相机不动)" }
+          }
+        },
         "enter": { "type": ["string", "null"], "enum": ["onboard", null], "description": "每臂重启游戏 (gray 挂层) 之后怎么回到游戏场景。onboard = 接收端跑 phonefarm onboard 的白名单进门状态机, 进不去整次作废; 缺省 = 不管 (旧行为)。有游戏档案的目标才这么填。" }
       }
     },
