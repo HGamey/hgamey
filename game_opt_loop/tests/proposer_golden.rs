@@ -138,6 +138,7 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         frame_audit: Some(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/frame_audit/genshin_7.1_analysis.json"),
         ),
+        goal: Default::default(),
     }
 }
 

@@ -51,6 +51,28 @@ cargo run --release -- optimize --game com.example.game --game-profile runs/onbo
 
 ---
 
+## 目标模式（goal）
+
+人和 harness 一起定一个目标，harness 一代一代地自己跑、自己判、自己停。规格见 `GOAL_SPEC.md`（在 `_wt/goal-spec/`），契约见 `contracts/goal*.schema.json`。
+
+```bash
+# 1. 起草：一句话 → goal.md（出方案用的同一套大模型；没 key 或 --proposer local 时用模板）
+cargo run --release -- goal draft --intent "原神太费电了, 想省点电但别卡" --game com.miHoYo.Yuanshen --out goals/g1
+# 2. 人看 goal.md、直接改文本；确认后开跑（冻结 goal.md，拿锁 goal-g1）
+cargo run --release -- goal run goals/g1 --sysparam-probe probe.txt --frame-audit analysis.json
+# 3. 运行中随时改 goals/g1/human.md 掌舵：「停止」「暂停」「预算 +30 分钟」「不要动 gpu.min_pwrlevel」「只试 系统参数」，其余大白话原样交给出方案的一方
+```
+
+- 每一代 = 允许的各层各跑 1 代（每层 `per_generation` 个候选），前几代上机的结果接着喂给出方案的一方。
+- 每代开始前重读 human.md：能机读的转成对预算 / 禁止项 / 层的覆盖；其余作为最高优先级偏好进出方案的输入（`steer` 字段）。
+- `state.json` 每一步整份覆盖写，`events.jsonl` 只追加（start / plan / steer / propose / measure / verdict / keep / stop / error / note），网页读这两个文件。
+- 停的条件：最好的候选在主指标上显著改善达到 `target_pct`（target_reached）；代数或时间用完（budget_exhausted）；至少跑满 `min_generations` 之后连续 `no_gain` 代没有任何候选在主指标上显著改善（no_gain，报告里写「这条路没收益」）；人叫停（human_stop）；连续两代出错（error）。
+- ③ 的白名单与 ② 的 frame-audit 结果可以放在 `<run 目录>/inputs/probe.txt`、`inputs/frame_audit.json`，`goal run` 自己找。
+- 真机还没跑过一次完整的目标运行；端到端只在假 phonefarm 上验证过（`tests/goal_mode.rs`）。
+
+
+---
+
 ## 一次任务走完是什么样
 
 ```

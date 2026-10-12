@@ -22,6 +22,7 @@ env_logger = "0.11"
 naga = { version = "30.0", default-features = false, features = ["glsl-in", "wgsl-in", "spv-out"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "signal", "time"] }
+serde_yaml = "0.9"
 
 [lib]
 name = "game_opt_loop"

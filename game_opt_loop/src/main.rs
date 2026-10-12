@@ -30,6 +30,10 @@ enum Command {
     /// 一层都开不了就只测量并写清原因。
     Optimize(Box<OptimizeArgs>),
 
+    /// 目标模式: 人和 harness 一起定一个目标, harness 一代一代地自己跑、自己判、自己停。
+    #[command(subcommand)]
+    Goal(GoalCmd),
+
     /// 把分几段 (各自持锁) 跑出来的单臂 optimize 输出拼成一份对比报告。离线, 不碰设备。
     ///
     /// 每个 `--arm` 是一次 `optimize --proposer <一个>` 的 `--out` 目录。
@@ -449,6 +453,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Optimize(args)) => return run_optimize(*args),
+        Some(Command::Goal(g)) => return run_goal(g),
         Some(Command::Compare { arms, out }) => {
             let c = optimize::compare::from_arm_dirs(&arms, &out)?;
             println!("对比报告 ({} 臂): {}/compare.md", c.arms.len(), out.display());
@@ -660,6 +665,140 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[derive(Subcommand, Debug)]
+pub enum GoalCmd {
+    /// 从一句话起草 goal.md (state = awaiting_confirm)。人改完 goal.md 再 `goal run`。
+    Draft {
+        /// 人的一句话。
+        #[arg(long)]
+        intent: String,
+        /// 包名。
+        #[arg(long)]
+        game: String,
+        /// 这次目标运行的目录 (目录名就是 run_id)。
+        #[arg(long)]
+        out: PathBuf,
+        /// 起草用谁: llm (出方案用的同一套大模型, 没 key 时退回模板) / local (模板)。
+        #[arg(long, default_value = "llm")]
+        proposer: String,
+        #[arg(long, default_value = "../phonefarm/secrets.env")]
+        secrets: PathBuf,
+        #[arg(long)]
+        llm_provider: Option<String>,
+    },
+    /// 确认并开始: 冻结 goal.md, 拿锁 goal-<run_id>, 一代一代跑到停。
+    Run {
+        /// goal draft 产出的目录。
+        dir: PathBuf,
+        #[arg(long, default_value = "../phonefarm/phonefarm")]
+        phonefarm: PathBuf,
+        #[arg(long, default_value = "../phonefarm/secrets.env")]
+        secrets: PathBuf,
+        #[arg(long)]
+        llm_provider: Option<String>,
+        /// ③ 的白名单探测结果; 缺省取 <dir>/inputs/probe.txt (在的话)。
+        #[arg(long)]
+        sysparam_probe: Option<PathBuf>,
+        /// ② 的 frame-audit 结果; 缺省取 <dir>/inputs/frame_audit.json (在的话)。
+        #[arg(long)]
+        frame_audit: Option<PathBuf>,
+        #[arg(long, default_value = "profiles")]
+        profiles: PathBuf,
+        /// 最多排多久队。
+        #[arg(long, default_value = "4h")]
+        lock_wait: String,
+        /// 不拿设备锁 (只在确定没人共用这台手机时用)。
+        #[arg(long, default_value_t = false)]
+        no_devlock: bool,
+        /// 暂停时多久看一次 human.md (秒)。
+        #[arg(long, default_value_t = 30)]
+        poll_s: u64,
+    },
+}
+
+fn run_goal(cmd: GoalCmd) -> Result<()> {
+    use game_opt_loop::goal;
+    match cmd {
+        GoalCmd::Draft { intent, game, out, proposer, secrets, llm_provider } => {
+            let generator = if proposer == "llm" {
+                let s = game_opt_loop::engine::generator::load_secrets(&secrets);
+                match game_opt_loop::engine::generator::Generator::from_secrets_with_timeout(
+                    &s,
+                    llm_provider.as_deref(),
+                    Some(120),
+                ) {
+                    Ok(g) => Some(g),
+                    Err(e) => {
+                        println!("大模型不可用 ({e}), 用模板起草");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let drafter = match &generator {
+                Some(g) => goal::Drafter::Model(g),
+                None => goal::Drafter::Template,
+            };
+            let (path, by_template) = goal::draft(&intent, &game, &out, drafter)?;
+            println!(
+                "goal.md 已起草 ({}): {}
+人确认 (可直接改文本) 后: game_opt_loop goal run {}",
+                if by_template { "模板" } else { "大模型" },
+                path.display(),
+                out.display()
+            );
+            Ok(())
+        }
+        GoalCmd::Run {
+            dir,
+            phonefarm,
+            secrets,
+            llm_provider,
+            sysparam_probe,
+            frame_audit,
+            profiles,
+            lock_wait,
+            no_devlock,
+            poll_s,
+        } => {
+            let pick = |given: Option<PathBuf>, name: &str| {
+                given.or_else(|| Some(dir.join("inputs").join(name)).filter(|p| p.is_file()))
+            };
+            let lock = if no_devlock {
+                eprintln!("⚠ --no-devlock: 不拿设备锁直接碰设备。");
+                None
+            } else {
+                let Some(script) = game_opt_loop::devlock::script_path(&phonefarm) else {
+                    anyhow::bail!("找不到设备锁脚本; 没拿到锁不碰设备 (确实没人共用时加 --no-devlock)");
+                };
+                Some(goal::LockOpts { script, wait: game_opt_loop::devlock::parse_wait(&lock_wait)? })
+            };
+            let opts = goal::RunOpts {
+                phonefarm,
+                secrets,
+                llm_provider,
+                sysparam_probe: pick(sysparam_probe, "probe.txt"),
+                frame_audit: pick(frame_audit, "frame_audit.json"),
+                profiles_dir: profiles,
+                lock,
+                poll: std::time::Duration::from_secs(poll_s.max(1)),
+                before_generation: None,
+            };
+            let st = goal::run(&dir, &opts)?;
+            println!(
+                "
+目标运行结束: {} ({}), {} 代; 报告 {}",
+                st.status,
+                st.stop_reason.as_deref().unwrap_or("?"),
+                st.generation,
+                dir.join("report.md").display()
+            );
+            Ok(())
+        }
+    }
+}
+
 /// `optimize` 子命令。
 fn run_optimize(args: OptimizeArgs) -> Result<()> {
     let budget = match args.budget.as_deref() {
@@ -706,6 +845,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         profiles_dir: args.profiles,
         game_profile: args.game_profile,
         frame_audit: args.frame_audit,
+        goal: Default::default(),
     };
 
     // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——

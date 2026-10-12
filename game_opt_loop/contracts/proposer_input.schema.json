@@ -111,6 +111,7 @@
         }
       }
     },
+    "steer": { "type": ["string", "null"], "description": "目标模式下人的掌舵指令: 「人刚刚的指令」(human.md 里机读不了的行) + 「目标说明」(goal.md 正文)。最高优先级的偏好, 与别的考虑冲突时以它为准; 白名单 / 开关目录 / 冻结判定仍是硬约束。普通 optimize 不带这个字段。" },
     "history": {
       "type": "array",
       "description": "这一层之前上过机的候选, 按时间顺序, 含 ABORT。",

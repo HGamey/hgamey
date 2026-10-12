@@ -1,0 +1,668 @@
+//! 目标模式: 人和 harness 一起定一个目标 (goal.md), harness 一代一代地自己跑、自己判、自己停。
+//!
+//! 规格: `~/projects/_wt/goal-spec/GOAL_SPEC.md`; 契约: `contracts/goal*.schema.json`。
+//!
+//! ```text
+//!   goal draft --intent "..." --game <包名> --out <run 目录>
+//!       → intent.txt / goal.md / human.md / state.json (awaiting_confirm) / events.jsonl
+//!   (人改 goal.md, 点「确认并开始」)
+//!   goal run <run 目录>
+//!       → 冻结 goal.md (记 sha256) → 拿锁 goal-<run_id>
+//!       → 每代: 读 human.md → 覆盖 / 偏好 → optimize 跑一代 (各层 1 代) → 判 gain → 写 state/events
+//!       → 停 (target_reached / budget_exhausted / no_gain / human_stop / error) → report.md
+//! ```
+//!
+//! 分工照旧: 这里只决定**跑哪几层、跑几代、什么时候停**; 出方案、上机、判定都是 optimize
+//! 与 phonefarm 的事, 一行没搬。
+
+pub mod human;
+pub mod spec;
+
+use crate::optimize;
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+pub const STATE_SCHEMA: &str = "game_opt_loop/goal_state@1";
+
+/// 最好的那个候选 (state.json 的 best)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Best {
+    pub candidate: String,
+    pub metric: String,
+    pub delta_pct: f64,
+    pub verdict: String,
+}
+
+/// state.json。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct State {
+    pub schema: String,
+    pub run_id: String,
+    /// drafting | awaiting_confirm | running | paused | done | failed
+    pub status: String,
+    pub goal_summary: String,
+    pub generation: u32,
+    pub max_generations: u32,
+    pub elapsed_min: f64,
+    pub budget_min: f64,
+    pub best: Option<Best>,
+    pub progress_to_target: f64,
+    pub device: Option<String>,
+    pub human_md_rev: u32,
+    pub updated_at: String,
+    /// 冻结时 goal.md 的 sha256 (运行中 goal.md 被改了就拒绝继续)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_sha256: Option<String>,
+    /// 停下的原因 (done/failed 时)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    /// 连续没有收益的代数。
+    #[serde(default)]
+    pub no_gain_streak: u32,
+}
+
+/// 一次目标运行的目录。
+pub struct RunDir {
+    pub dir: PathBuf,
+}
+
+impl RunDir {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+    pub fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+    pub fn run_id(&self) -> String {
+        self.dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "goal".into())
+    }
+
+    /// 追加一条事件。
+    pub fn event(&self, gen: u32, kind: &str, mut ev: Value) {
+        ev["type"] = json!(kind);
+        hooks_for(self).emit(gen, ev);
+    }
+
+    pub fn write_state(&self, st: &mut State) -> Result<()> {
+        st.updated_at = chrono::Local::now().to_rfc3339();
+        let tmp = self.path("state.json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(st)?)?;
+        std::fs::rename(&tmp, self.path("state.json"))?;
+        Ok(())
+    }
+
+    pub fn read_state(&self) -> Result<State> {
+        let raw = std::fs::read_to_string(self.path("state.json"))
+            .with_context(|| format!("读不了 {}", self.path("state.json").display()))?;
+        Ok(serde_json::from_str(&raw)?)
+    }
+}
+
+fn hooks_for(rd: &RunDir) -> optimize::GoalHooks {
+    optimize::GoalHooks {
+        events: Some(rd.path("events.jsonl")),
+        ..Default::default()
+    }
+}
+
+fn sha256(s: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+// ───────────────────────────── 起草 ─────────────────────────────
+
+/// 起草用什么。
+pub enum Drafter<'a> {
+    /// 出方案用的同一套大模型。
+    Model(&'a dyn optimize::proposer::Complete),
+    /// 本地模板 (节点上没 key、或 --proposer local)。
+    Template,
+}
+
+pub const DRAFT_SYSTEM: &str = "你帮人把一句话的手机游戏优化需求起草成一份结构化目标 goal.md。\
+只输出 goal.md 全文, 不要解释, 不要代码块围栏。格式: 第一行 `---`, 然后 YAML front-matter, 再一行 `---`, 然后几句大白话正文。\n\
+front-matter 字段 (只能用这些, 取值只能在列出的范围里):\n\
+game: <包名, 原样用给你的>\n\
+device: any\n\
+objective: {metric: power_watt|frame_p95|fps_mean|gpu_busy_ms, direction: lower|higher, target_pct: <1-30 的数>}\n\
+constraints: 列表, 每项一个单键映射, 如 - fps_mean: no_worse / - frame_p95: no_worse / - image: psnr_min_db 30 (主指标不要再写进 constraints)\n\
+layers: [sysparam, gray] 的子集 (sysparam = 系统参数, 不动画面; gray = 画面流程改写, 会动画面)\n\
+forbid: [] (人明确说不许动的参数, 没说就空)\n\
+budget: {wall_minutes: 30-480, max_generations: 2-10, min_generations: 1-max}\n\
+stop_when: [target_reached, budget_exhausted, {no_gain: 2}]\n\
+proposer: llm\n\
+gate: off\n\
+per_generation: 2\n\
+正文写清楚: 人要什么、为什么这样定主指标与约束、人话里有哪些偏好。人没说的不要编, 用保守缺省。";
+
+/// `goal draft`: 起草 goal.md, state = awaiting_confirm。回 (goal.md 路径, 是不是模板起草的)。
+pub fn draft(intent: &str, game: &str, out: &Path, drafter: Drafter<'_>) -> Result<(PathBuf, bool)> {
+    std::fs::create_dir_all(out)?;
+    let rd = RunDir::new(out);
+    if rd.path("state.json").exists() {
+        let st = rd.read_state()?;
+        if !matches!(st.status.as_str(), "drafting" | "awaiting_confirm") {
+            bail!("{} 已经在跑或跑完了 (status={}), 不能重新起草", out.display(), st.status);
+        }
+    }
+    std::fs::write(rd.path("intent.txt"), intent)?;
+    let mut st = State {
+        schema: STATE_SCHEMA.into(),
+        run_id: rd.run_id(),
+        status: "drafting".into(),
+        goal_summary: intent.chars().take(80).collect(),
+        generation: 0,
+        max_generations: 0,
+        elapsed_min: 0.0,
+        budget_min: 0.0,
+        best: None,
+        progress_to_target: 0.0,
+        device: None,
+        human_md_rev: 0,
+        updated_at: String::new(),
+        goal_sha256: None,
+        stop_reason: None,
+        no_gain_streak: 0,
+    };
+    rd.write_state(&mut st)?;
+
+    let mut by_template = true;
+    let mut doc_text = None;
+    if let Drafter::Model(m) = drafter {
+        let user = format!("包名: {game}\n人的原话: {intent}\n\n起草 goal.md。");
+        match m.complete(DRAFT_SYSTEM, &user) {
+            Ok(raw) => {
+                let text = strip_fence(&raw);
+                match spec::parse(&text) {
+                    Ok(d) if d.spec.game == game => {
+                        doc_text = Some(spec::render(&d.spec, &d.body)?);
+                        by_template = false;
+                    }
+                    Ok(d) => rd.event(0, "note", json!({"stage": "draft",
+                        "message": format!("大模型草稿的 game 是 {:?}, 不是 {game:?}, 改用模板", d.spec.game)})),
+                    Err(e) => rd.event(0, "note", json!({"stage": "draft",
+                        "message": format!("大模型草稿不合格式 ({e:#}), 改用模板")})),
+                }
+            }
+            Err(e) => rd.event(0, "note", json!({"stage": "draft",
+                "message": format!("大模型起草失败 ({e:#}), 改用模板")})),
+        }
+    }
+    let text = match doc_text {
+        Some(t) => t,
+        None => {
+            let (s, b) = spec::template(intent, game);
+            spec::render(&s, &b)?
+        }
+    };
+    let doc = spec::parse(&text)?;
+    std::fs::write(rd.path("goal.md"), &text)?;
+    if !rd.path("human.md").exists() {
+        std::fs::write(rd.path("human.md"), "")?;
+    }
+    rd.event(0, "note", json!({"stage": "draft", "by": if by_template { "template" } else { "llm" },
+        "message": "goal.md 已起草, 等人确认"}));
+    st.status = "awaiting_confirm".into();
+    st.goal_summary = doc.spec.summary();
+    st.max_generations = doc.spec.budget.max_generations;
+    st.budget_min = doc.spec.budget.wall_minutes as f64;
+    rd.write_state(&mut st)?;
+    Ok((rd.path("goal.md"), by_template))
+}
+
+fn strip_fence(raw: &str) -> String {
+    let t = raw.trim();
+    if let Some(rest) = t.strip_prefix("```") {
+        let rest = rest.split_once('\n').map(|x| x.1).unwrap_or("");
+        return rest.trim_end().trim_end_matches("```").trim().to_string();
+    }
+    t.to_string()
+}
+
+// ───────────────────────────── 运行 ─────────────────────────────
+
+/// `goal run` 的运行参数 (与目标无关的、环境里的东西)。
+pub struct RunOpts<'a> {
+    pub phonefarm: PathBuf,
+    pub secrets: PathBuf,
+    pub llm_provider: Option<String>,
+    pub sysparam_probe: Option<PathBuf>,
+    pub frame_audit: Option<PathBuf>,
+    pub profiles_dir: PathBuf,
+    /// 设备锁: None = 不拿 (--no-devlock / 测试)。
+    pub lock: Option<LockOpts>,
+    /// 暂停时多久看一次 human.md。
+    pub poll: Duration,
+    /// 测试用: 每代开始前回调 (代数)。
+    pub before_generation: Option<&'a dyn Fn(u32)>,
+}
+
+pub struct LockOpts {
+    pub script: PathBuf,
+    pub wait: Duration,
+}
+
+/// 一代的结算。
+#[derive(Debug, Clone, Default)]
+struct GenResult {
+    candidates: usize,
+    kept: usize,
+    /// (候选, 主指标变化 %, 判定) —— 只收「留下且主指标显著改善」的。
+    gains: Vec<(String, f64, String)>,
+}
+
+fn layers_effective(spec: &spec::GoalSpec, only: &Option<Vec<String>>) -> Vec<String> {
+    let mut l: Vec<String> = spec
+        .layers
+        .iter()
+        .filter(|x| x.as_str() != "upop")
+        .cloned()
+        .collect();
+    if let Some(o) = only {
+        l.retain(|x| o.contains(x));
+    }
+    l
+}
+
+fn kinds_of(layers: &[String]) -> Vec<optimize::eval::Kind> {
+    layers
+        .iter()
+        .filter_map(|l| match l.as_str() {
+            "sysparam" => Some(optimize::eval::Kind::Sysparam),
+            "gray" => Some(optimize::eval::Kind::Gray),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 一代的报告里挑出「留下且主指标显著朝目标方向变」的候选。
+fn settle(report_json: &Path, spec: &spec::GoalSpec) -> Result<GenResult> {
+    let r: Value = serde_json::from_str(&std::fs::read_to_string(report_json)?)?;
+    let key = spec.metric_key();
+    let mut g = GenResult::default();
+    for e in r["archive"].as_array().into_iter().flatten() {
+        g.candidates += 1;
+        if e["kept"].as_bool() != Some(true) {
+            continue;
+        }
+        g.kept += 1;
+        let won = e["verdict"]["wins"]
+            .as_array()
+            .is_some_and(|w| w.iter().any(|x| x.as_str() == Some(key)));
+        let delta = e["verdict"]["per_metric"][key]["diff_pct"].as_f64();
+        if let (true, Some(d)) = (won, delta) {
+            let right_way = if spec.objective.direction == "lower" { d < 0.0 } else { d > 0.0 };
+            if right_way {
+                g.gains.push((
+                    e["id"].as_str().unwrap_or("").to_string(),
+                    d,
+                    e["status"].as_str().unwrap_or("").to_string(),
+                ));
+            }
+        }
+    }
+    Ok(g)
+}
+
+/// `goal run`: 读冻结的 goal.md, 一代一代跑到停。回最终 state。
+pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
+    let rd = RunDir::new(dir);
+    let goal_text = std::fs::read_to_string(rd.path("goal.md"))
+        .with_context(|| format!("{} 里没有 goal.md (先 goal draft)", dir.display()))?;
+    let doc = spec::parse(&goal_text)?;
+    let spec = &doc.spec;
+    let sha = sha256(&goal_text);
+    let mut st = match rd.read_state() {
+        Ok(s) => s,
+        Err(_) => State {
+            schema: STATE_SCHEMA.into(),
+            run_id: rd.run_id(),
+            status: "awaiting_confirm".into(),
+            goal_summary: String::new(),
+            generation: 0,
+            max_generations: 0,
+            elapsed_min: 0.0,
+            budget_min: 0.0,
+            best: None,
+            progress_to_target: 0.0,
+            device: None,
+            human_md_rev: 0,
+            updated_at: String::new(),
+            goal_sha256: None,
+            stop_reason: None,
+            no_gain_streak: 0,
+        },
+    };
+    match st.status.as_str() {
+        "awaiting_confirm" | "drafting" => {}
+        s => bail!("这次目标运行的状态是 {s}, 不能再启动 (要重跑请新建一个 run 目录)"),
+    }
+    if spec.proposer == "cloud" {
+        bail!("proposer: cloud 还没接 (目前只有 llm / local)");
+    }
+
+    // ── 冻结 ──
+    std::fs::write(rd.path("goal.frozen.md"), &goal_text)?;
+    st.goal_sha256 = Some(sha.clone());
+    st.status = "running".into();
+    st.goal_summary = spec.summary();
+    st.max_generations = spec.budget.max_generations;
+    st.budget_min = spec.budget.wall_minutes as f64;
+    st.device = (spec.device != "any").then(|| spec.device.clone());
+    rd.write_state(&mut st)?;
+    rd.event(0, "start", json!({"goal_summary": st.goal_summary, "goal_sha256": sha,
+        "layers": spec.layers, "objective": spec.objective, "budget": spec.budget}));
+    if spec.layers.iter().any(|l| l == "upop") {
+        rd.event(0, "note", json!({"message": "layers 里的 upop (画面算子) optimize 还不驱动, 这次不跑"}));
+    }
+
+    let label = format!("goal-{}", rd.run_id());
+    let mut guard = match &opts.lock {
+        Some(l) => Some(crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait)?),
+        None => None,
+    };
+
+    let t0 = Instant::now();
+    let mut last_human: Option<String> = None;
+    let mut steer = human::Steer::default();
+    let mut history: Vec<optimize::proposer::HistoryItem> = Vec::new();
+    let mut per_gen: Vec<(u32, GenResult)> = Vec::new();
+    let mut steer_log: Vec<(u32, u32, String, String)> = Vec::new();
+    let mut errors_in_a_row = 0u32;
+    let no_gain_limit = spec.no_gain();
+    let stop_on_target = spec.stops_on("target_reached") || spec.stop_when.is_empty();
+
+    let stop = |st: &mut State, reason: &str, summary: String| -> Result<()> {
+        st.status = if reason == "error" { "failed" } else { "done" }.into();
+        st.stop_reason = Some(reason.into());
+        rd.write_state(st)?;
+        rd.event(st.generation, "stop", json!({"reason": reason, "summary": summary}));
+        Ok(())
+    };
+
+    let mut gen = 0u32;
+    loop {
+        // ── 掌舵: 每代开始前读 human.md ──
+        if let Some(cb) = opts.before_generation {
+            cb(gen + 1);
+        }
+        let text = std::fs::read_to_string(rd.path("human.md")).unwrap_or_default();
+        if last_human.as_deref() != Some(text.as_str()) {
+            let changed = last_human.is_some() || !text.trim().is_empty();
+            last_human = Some(text.clone());
+            if changed {
+                steer = human::parse(&text);
+                st.human_md_rev += 1;
+                let interp = steer.interpreted();
+                rd.event(gen, "steer", json!({"human_md_rev": st.human_md_rev, "text": text, "interpreted": interp}));
+                steer_log.push((gen, st.human_md_rev, text.clone(), interp));
+                rd.write_state(&mut st)?;
+            }
+        }
+        st.elapsed_min = t0.elapsed().as_secs_f64() / 60.0;
+        st.budget_min = (spec.budget.wall_minutes as i64 + steer.budget_add_min).max(0) as f64;
+
+        if steer.stop {
+            stop(&mut st, "human_stop", "人在 human.md 里写了停止".into())?;
+            break;
+        }
+        if steer.pause {
+            st.status = "paused".into();
+            rd.write_state(&mut st)?;
+            rd.event(gen, "note", json!({"message": "人要求暂停; 等 human.md 再改才继续, 期间放掉设备锁"}));
+            drop(guard.take());
+            let seen = last_human.clone().unwrap_or_default();
+            loop {
+                std::thread::sleep(opts.poll);
+                let now = std::fs::read_to_string(rd.path("human.md")).unwrap_or_default();
+                if now != seen {
+                    break;
+                }
+            }
+            if let Some(l) = &opts.lock {
+                guard = Some(crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait)?);
+            }
+            st.status = "running".into();
+            rd.write_state(&mut st)?;
+            continue;
+        }
+        if gen >= spec.budget.max_generations {
+            stop(&mut st, "budget_exhausted", format!("{} 代用完", spec.budget.max_generations))?;
+            break;
+        }
+        if st.elapsed_min >= st.budget_min {
+            let msg = format!("时间预算 {} 分钟用完", st.budget_min);
+            stop(&mut st, "budget_exhausted", msg)?;
+            break;
+        }
+
+        // ── 跑一代 ──
+        gen += 1;
+        st.generation = gen;
+        rd.write_state(&mut st)?;
+        let layers = layers_effective(spec, &steer.only_layers);
+        if layers.is_empty() {
+            stop(&mut st, "error", "按 goal.md 与 human.md, 一层都不剩可跑".into())?;
+            break;
+        }
+        let mut forbid = spec.forbid.clone();
+        forbid.extend(steer.forbid.iter().cloned());
+        // 出方案的一方看到的偏好: 人刚刚的指令 (最高优先级) + goal.md 正文。
+        let mut pref = Vec::new();
+        if !steer.free_text.trim().is_empty() {
+            pref.push(format!("人刚刚的指令: {}", steer.free_text.trim()));
+        }
+        if !doc.body.trim().is_empty() {
+            pref.push(format!("目标说明: {}", doc.body.trim()));
+        }
+        let steer_text = (!pref.is_empty()).then(|| pref.join("\n"));
+        rd.event(gen, "plan", json!({"layers": layers, "per_generation": spec.per_generation,
+            "forbid": forbid, "budget_left_min": (st.budget_min - st.elapsed_min).max(0.0)}));
+
+        let gate = match spec.gate.as_str() {
+            "off" => None,
+            g => Some(optimize::gate::Options {
+                spec: "jev".into(),
+                threshold: optimize::gate::DEFAULT_THRESHOLD,
+                shadow: g == "shadow",
+                key_file: None,
+            }),
+        };
+        let gen_dir = rd.path("optimize").join(format!("gen{gen}"));
+        std::fs::create_dir_all(&gen_dir)?;
+        let cfg = optimize::Config {
+            game: spec.game.clone(),
+            package: Some(spec.game.clone()),
+            serial: st.device.clone(),
+            extra_devices: vec![],
+            budget: optimize::plan::Budget { seconds: 24 * 3600 },
+            plan_only: false,
+            out_dir: gen_dir,
+            phonefarm: opts.phonefarm.clone(),
+            secrets: opts.secrets.clone(),
+            use_llm: spec.proposer == "llm",
+            llm_provider: opts.llm_provider.clone(),
+            llm_timeout_s: None,
+            seed: 20261011 + gen as u64,
+            quality_reference: None,
+            sysparam_probe: opts.sysparam_probe.clone(),
+            proposer: optimize::proposer::Options {
+                specs: vec![spec.proposer.clone()],
+                timeout_s: optimize::proposer::DEFAULT_TIMEOUT_S,
+                gate,
+            },
+            frame_audit: opts.frame_audit.clone(),
+            shape: optimize::plan::Shape {
+                layers: Some(kinds_of(&layers)),
+                generations: Some(1),
+                children: Some(spec.per_generation),
+            },
+            profiles_dir: opts.profiles_dir.clone(),
+            game_profile: None,
+            goal: optimize::GoalHooks {
+                gen_offset: gen - 1,
+                prior_history: history.clone(),
+                steer: steer_text,
+                forbid,
+                psnr_min_db: spec.psnr_min_db(),
+                events: Some(rd.path("events.jsonl")),
+            },
+        };
+        let outcome = match optimize::run(&cfg) {
+            Ok(o) => o,
+            Err(e) => {
+                errors_in_a_row += 1;
+                rd.event(gen, "error", json!({"message": format!("{e:#}")}));
+                if errors_in_a_row >= 2 {
+                    stop(&mut st, "error", format!("连续两代出错, 最后一次: {e:#}"))?;
+                    break;
+                }
+                continue;
+            }
+        };
+        errors_in_a_row = 0;
+        history.extend(outcome.history.iter().cloned());
+        let g = settle(Path::new(&outcome.report_json), spec)?;
+
+        // ── 结算 ──
+        for (cand, d, verdict) in &g.gains {
+            rd.event(gen, "keep", json!({"candidate_id": cand, "metric": spec.objective.metric,
+                "delta_pct": d, "verdict": verdict}));
+            let better = st.best.as_ref().is_none_or(|b| d.abs() > b.delta_pct.abs());
+            if better {
+                st.best = Some(Best {
+                    candidate: cand.clone(),
+                    metric: spec.objective.metric.clone(),
+                    delta_pct: *d,
+                    verdict: verdict.clone(),
+                });
+            }
+        }
+        if g.gains.is_empty() {
+            st.no_gain_streak += 1;
+        } else {
+            st.no_gain_streak = 0;
+        }
+        st.progress_to_target = st
+            .best
+            .as_ref()
+            .map(|b| (b.delta_pct.abs() / spec.objective.target_pct).min(1.0))
+            .unwrap_or(0.0);
+        st.elapsed_min = t0.elapsed().as_secs_f64() / 60.0;
+        rd.write_state(&mut st)?;
+        per_gen.push((gen, g));
+
+        if stop_on_target && st.progress_to_target >= 1.0 {
+            let msg = format!("达到目标: {}", best_line(&st));
+            stop(&mut st, "target_reached", msg)?;
+            break;
+        }
+        if let Some(n) = no_gain_limit {
+            if st.no_gain_streak >= n && gen >= spec.budget.min_generations {
+                let msg = format!("连续 {} 代没有任何候选在主指标上带来显著改善: 这条路没收益", st.no_gain_streak);
+                stop(&mut st, "no_gain", msg)?;
+                break;
+            }
+        }
+    }
+    drop(guard);
+    write_report(&rd, &doc, &st, &per_gen, &steer_log)?;
+    Ok(st)
+}
+
+fn best_line(st: &State) -> String {
+    match &st.best {
+        Some(b) => format!("{} 让 {} 变化 {:+.2}% ({})", b.candidate, b.metric, b.delta_pct, b.verdict),
+        None => "没有".into(),
+    }
+}
+
+fn write_report(
+    rd: &RunDir,
+    doc: &spec::GoalDoc,
+    st: &State,
+    per_gen: &[(u32, GenResult)],
+    steer_log: &[(u32, u32, String, String)],
+) -> Result<()> {
+    let mut o = String::new();
+    o.push_str(&format!("# 目标运行 {}\n\n", st.run_id));
+    o.push_str(&format!("**目标**: {}\n\n", st.goal_summary));
+    let reason = st.stop_reason.as_deref().unwrap_or("?");
+    let reason_text = match reason {
+        "target_reached" => "达到目标",
+        "budget_exhausted" => "预算用完",
+        "no_gain" => "这条路没收益 (连续几代没有任何候选在主指标上带来显著改善)",
+        "human_stop" => "人叫停",
+        "error" => "出错停下",
+        r => r,
+    };
+    o.push_str(&format!(
+        "**结果**: {reason_text}。跑了 {} 代, 用时 {:.1} 分钟 (预算 {:.0})。最好的候选: {}。\n\n",
+        st.generation,
+        st.elapsed_min,
+        st.budget_min,
+        best_line(st)
+    ));
+    o.push_str(&format!("进度 (最好的改善 / 目标幅度): {:.0}%\n\n", st.progress_to_target * 100.0));
+    o.push_str("## 每一代\n\n| 代 | 上机候选 | 留下 | 主指标显著朝目标方向 |\n|---|---|---|---|\n");
+    for (g, r) in per_gen {
+        o.push_str(&format!(
+            "| {g} | {} | {} | {} |\n",
+            r.candidates,
+            r.kept,
+            if r.gains.is_empty() {
+                "无".to_string()
+            } else {
+                r.gains
+                    .iter()
+                    .map(|(c, d, _)| format!("{c} {d:+.2}%"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ));
+    }
+    o.push_str("\n每一代的候选、数字和证据在 `optimize/gen<N>/report.md`。\n\n");
+    if !steer_log.is_empty() {
+        o.push_str("## 人的掌舵\n\n");
+        for (g, rev, text, interp) in steer_log {
+            o.push_str(&format!(
+                "- 第 {} 代开始前读到 human.md 第 {rev} 版: {interp}\n  > {}\n",
+                g + 1,
+                text.trim().replace('\n', "\n  > ")
+            ));
+        }
+        o.push('\n');
+    }
+    o.push_str("## 目标原文 (冻结)\n\n");
+    o.push_str(&format!("{}\n", doc.body));
+    std::fs::write(rd.path("report.md"), o)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fenced_drafts_are_unwrapped() {
+        assert_eq!(strip_fence("```markdown\n---\na: 1\n---\nx\n```"), "---\na: 1\n---\nx");
+        assert_eq!(strip_fence("---\nx"), "---\nx");
+    }
+
+    #[test]
+    fn upop_is_dropped_and_only_layers_filter() {
+        let (mut s, _) = spec::template("省电", "p");
+        s.layers = vec!["sysparam".into(), "gray".into(), "upop".into()];
+        assert_eq!(layers_effective(&s, &None), vec!["sysparam", "gray"]);
+        assert_eq!(layers_effective(&s, &Some(vec!["gray".into()])), vec!["gray"]);
+    }
+}
