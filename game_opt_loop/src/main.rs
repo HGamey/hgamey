@@ -686,6 +686,21 @@ pub enum GoalCmd {
         #[arg(long)]
         llm_provider: Option<String>,
     },
+    /// 看一次目标运行: goal.md、state.json、human.md、最后几条事件 (不碰设备, 不拿锁)。
+    /// run 目录在手机节点上时, 用 `pf-node game_opt_loop goal show <目录>` 远程看。
+    Show {
+        dir: PathBuf,
+        /// 最后几条事件。
+        #[arg(long, default_value_t = 20)]
+        events: usize,
+    },
+    /// 人确认前改 goal.md: 用一份本地文件整份替换 (先校验格式; 只在 awaiting_confirm 时允许)。
+    Edit {
+        dir: PathBuf,
+        /// 新的 goal.md。
+        #[arg(long)]
+        goal: PathBuf,
+    },
     /// 确认并开始: 冻结 goal.md, 拿锁 goal-<run_id>, 一代一代跑到停。
     Run {
         /// goal draft 产出的目录。
@@ -748,6 +763,15 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
                 path.display(),
                 out.display()
             );
+            Ok(())
+        }
+        GoalCmd::Show { dir, events } => {
+            print!("{}", goal::show(&dir, events)?);
+            Ok(())
+        }
+        GoalCmd::Edit { dir, goal: file } => {
+            goal::edit(&dir, &file)?;
+            println!("goal.md 已替换 (格式校验通过): {}", dir.join("goal.md").display());
             Ok(())
         }
         GoalCmd::Run {

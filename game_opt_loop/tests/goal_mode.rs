@@ -153,6 +153,13 @@ fn draft_confirm_three_generations_steer_then_no_gain() {
     assert!(by_template);
     let st: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
     assert_eq!(st["status"], "awaiting_confirm");
+    // 确认前可以整份替换 goal.md (坏的格式拒收)
+    let bad = root.join("bad_goal.md");
+    std::fs::write(&bad, "---\ngame: x\n---\n").unwrap();
+    assert!(goal::edit(&dir, &bad).is_err());
+    let same = root.join("same_goal.md");
+    std::fs::copy(dir.join("goal.md"), &same).unwrap();
+    goal::edit(&dir, &same).unwrap();
     confirm_with(&dir, |s| {
         assert_eq!(s.objective.metric, "frame_p95", "模板该从「卡顿」认出帧时");
         s.budget.max_generations = 6;
@@ -200,6 +207,13 @@ fn draft_confirm_three_generations_steer_then_no_gain() {
     assert!(report.contains("这条路没收益"), "{report}");
     assert!(report.contains("human.md 第 1 版"), "{report}");
     check_contracts(&dir);
+    // 这次用的输入留在 run 目录里
+    assert!(dir.join("inputs/probe.txt").is_file());
+    assert!(dir.join("inputs/frame_audit.json").is_file());
+    // show 看得到状态与事件; 冻结之后不许 edit
+    let shown = goal::show(&dir, 5).unwrap();
+    assert!(shown.contains("\"stop_reason\": \"no_gain\"") && shown.contains("-- report.md --"), "{shown}");
+    assert!(goal::edit(&dir, &dir.join("goal.md")).is_err());
     // 跑完的目录不能再启动
     assert!(goal::run(&dir, &opts(&root, None)).is_err());
     std::fs::remove_dir_all(&root).ok();
