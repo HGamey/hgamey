@@ -3,8 +3,9 @@
 #
 #   update_node.sh --git [phonefarm[@ref]] [game_opt_loop[@ref]] [harness-ops[@ref]]
 #       节点自己从 GitHub 拉代码（缺省 phonefarm 和 game_opt_loop，ref 缺省 origin/main）。
-#       phonefarm 的二进制和灰档层 .so 由 BH3GEI/phonefarm 的 GitHub Actions 云端编译，发在 release
-#       node-build；build.json 的 sha 等于要部署的提交就直接下载，不在节点上编译（节点内存/磁盘紧）。
+#       phonefarm 的二进制和灰档层 .so 由 BH3GEI/phonefarm 的 GitHub Actions 云端编译，优先用 git 从隐藏 ref
+#       refs/node-build/sha/<提交> 取（走 ssh github.com，稳），取不到再从 release node-build 下载；
+#       提交对得上就直接用，不在节点上编译（节点内存/磁盘紧）。
 #       部署的正好是 origin/main 最新而 CI 还没跑完，就最多等 10 分钟；仍对不上才退回本地编译。
 #       game_opt_loop（私有、很轻）照旧在节点上编译。
 #       开发机上行很慢，大文件一律不从开发机传；部署只发这一条小指令。
@@ -63,21 +64,47 @@ fetch_prebuilt() {  # $1 提交 sha $2 下载目录。0=下好且校验过 1=rel
   return 0
 }
 
+fetch_prebuilt_git() {  # 同 fetch_prebuilt，但走 git：CI 把产物做成孤立提交推到 refs/node-build/sha/<提交>。
+  # 节点访问 release 资产要跳到 release-assets.githubusercontent.com（Fastly），国内时好时坏（同网段的
+  # raw.githubusercontent.com 直接被重置）；拉源码用的 ssh github.com 一直稳，所以优先走它。
+  local sha=$1 d=$2 g=$2/.git-mirror ref=refs/node-build/sha/$1 f want lrc=0
+  mkdir -p $d
+  git ls-remote --exit-code ${REPO[phonefarm]} $ref >/dev/null 2>&1 || lrc=$?
+  (( lrc == 2 )) && return 1                       # 没有这个 ref：CI 还没推（或是老构建）
+  (( lrc )) && { echo "  git ls-remote 失败（$lrc）"; return 2; }
+  rm -rf $g && git init -q --bare $g
+  git -C $g fetch -q --depth 1 ${REPO[phonefarm]} "+${ref}:refs/b" || { echo "  git 取产物失败"; rm -rf $g; return 2; }
+  git -C $g cat-file blob refs/b:build.json > $d/build.json
+  [[ $(json_get $d/build.json 'j["sha"]') == $sha ]] || { echo "  git 产物里的 sha 不对"; rm -rf $g; return 2; }
+  for f in $(json_get $d/build.json '" ".join(j["files"])'); do
+    want=$(json_get $d/build.json "j['files']['$f']['sha256']")
+    git -C $g cat-file blob refs/b:$f > $d/$f
+    [[ $(shasum -a 256 $d/$f | cut -d' ' -f1) == $want ]] || { echo "  git 产物 $f sha256 不对"; rm -rf $g; return 2; }
+  done
+  rm -rf $g
+  return 0
+}
+
 prebuilt_phonefarm() {  # $1 源码目录 $2 下载目录。成功返回 0，需退回本地编译返回 1
-  local src=$1 d=$2 sha main rc waited=0 fails=0
+  local src=$1 d=$2 sha main rc grc waited=0 fails=0 from now
   sha=$(git -C $src rev-parse HEAD); main=$(git -C $src rev-parse origin/main)
   rm -rf $d
   while :; do
-    fetch_prebuilt $sha $d && rc=0 || rc=$?
-    (( rc == 0 )) && { echo "  用 CI 产物 $(json_get $d/build.json 'j["built_at"]+"  "+j["run_url"]')"; return 0; }
-    if (( rc == 2 )); then  # 网络问题：连续失败 5 轮才放弃（每轮 curl 自己还会重试 5 次）
-      (( ++fails >= 5 )) && { echo "  下载 CI 产物连续失败 $fails 轮，放弃"; return 1; }
+    from=git; fetch_prebuilt_git $sha $d && rc=0 || rc=$?
+    if (( rc )); then  # git 上没有（老构建 / CI 还没推）或 git 网络失败：再试 release 下载
+      grc=$rc; from=release; fetch_prebuilt $sha $d && rc=0 || rc=$?
+      (( rc && grc == 1 )) && rc=1   # git 明确说还没有，就当没好，不管 release 那边是不是网络错误
+    fi
+    (( rc == 0 )) && { echo "  用 CI 产物（经 $from）$(json_get $d/build.json 'j["built_at"]+"  "+j["run_url"]')"; return 0; }
+    if (( rc == 2 )); then  # git 和 release 都取不到：连续 5 轮才放弃
+      (( ++fails >= 5 )) && { echo "  git 和 release 都连续 $fails 轮取不到 CI 产物，放弃"; return 1; }
       sleep 15; (( waited += 15 )); continue
     fi
     fails=0
-    [[ $sha == $main ]] || { echo "  $sha 不是 origin/main 最新，CI 不会单独编它"; return 1; }
-    (( waited >= PF_WAIT )) && { echo "  等了 ${waited}s，node-build 仍是 $(json_get $d/build.json 'j["sha"]')"; return 1; }
-    echo "  CI 还没出 ${sha:0:7} 的产物（node-build 现在是 $(json_get $d/build.json 'j["sha"][:7]')），30 秒后再看（最多等 $((PF_WAIT/60)) 分钟）"
+    [[ $sha == $main ]] || { echo "  ${sha:0:7} 没有 CI 产物，也不是 origin/main 最新（CI 不会再编它）"; return 1; }
+    (( waited >= PF_WAIT )) && { echo "  等了 ${waited}s，CI 仍没出 ${sha:0:7} 的产物"; return 1; }
+    now=$(json_get $d/build.json 'j["sha"][:7]' 2>/dev/null || echo "?")
+    echo "  CI 还没出 ${sha:0:7} 的产物（release 上现在是 $now），30 秒后再看（最多等 $((PF_WAIT/60)) 分钟）"
     sleep 30; (( waited += 30 ))
   done
 }
