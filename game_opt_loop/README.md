@@ -68,6 +68,7 @@ cargo run --release -- goal run goals/g1 --sysparam-probe probe.txt --frame-audi
 - `state.json` 每一步整份覆盖写，`events.jsonl` 只追加（start / plan / steer / propose / measure / verdict / keep / stop / error / note），网页读这两个文件。
 - 停的条件：最好的候选在主指标上显著改善达到 `target_pct`（target_reached）；代数或时间用完（budget_exhausted）；至少跑满 `min_generations` 之后连续 `no_gain` 代没有任何候选在主指标上显著改善（no_gain，报告里写「这条路没收益」）；人叫停（human_stop）；连续两代出错（error）。
 - ③ 的白名单与 ② 的 frame-audit 结果可以放在 `<run 目录>/inputs/probe.txt`、`inputs/frame_audit.json`，`goal run` 自己找。
+- 第四层 `whitebox`（④ 引擎设置）：只对把渲染设置做成启动参数的白盒游戏开（目前 Megacity，旋钮 store_opt / fog_event / ssao_src / ssao_after_opaque / depth_priming，以及只量上限的 msaa / feat_off / shadowres；语义见 phonefarm `docs/MEGACITY_WHITEBOX_KNOBS.md`）。goal.md 的 layers 里写 `whitebox` 即可，大模型和本地变异器都会在这些旋钮之间组合。
 - 真机还没跑过一次完整的目标运行；端到端只在假 phonefarm 上验证过（`tests/goal_mode.rs`）。
 
 

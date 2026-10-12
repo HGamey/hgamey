@@ -410,6 +410,7 @@ fn kinds_of(layers: &[String]) -> Vec<optimize::eval::Kind> {
         .filter_map(|l| match l.as_str() {
             "sysparam" => Some(optimize::eval::Kind::Sysparam),
             "gray" => Some(optimize::eval::Kind::Gray),
+            "whitebox" => Some(optimize::eval::Kind::Whitebox),
             _ => None,
         })
         .collect()

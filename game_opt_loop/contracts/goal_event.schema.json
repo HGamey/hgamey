@@ -13,7 +13,7 @@
   "allOf": [
     { "if": { "properties": { "type": { "const": "propose" } } },
       "then": { "required": ["candidate_id", "layer", "changes", "why"],
-        "properties": { "layer": { "type": "string", "enum": ["sysparam", "gray"] } } } },
+        "properties": { "layer": { "type": "string", "enum": ["sysparam", "gray", "whitebox"] } } } },
     { "if": { "properties": { "type": { "const": "measure" } } },
       "then": { "required": ["candidate_id", "arms_done", "arms_planned"] } },
     { "if": { "properties": { "type": { "const": "verdict" } } },

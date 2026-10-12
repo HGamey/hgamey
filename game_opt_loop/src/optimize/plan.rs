@@ -35,6 +35,8 @@ fn arm_overhead_s(kind: Kind) -> u64 {
     match kind {
         Kind::Sysparam => 45,
         Kind::Gray => 75,
+        // ④: 每臂带 extras 重启应用、等城市装完 + 预热 (Megacity 实测 1–2 分钟)
+        Kind::Whitebox => 90,
         // ① 不在 optimize 的步骤里 (见 drives), 给个与 ② 相同的保守值
         Kind::Shader => 75,
     }
@@ -213,7 +215,7 @@ fn carrier_for(kind: Kind, caps: &Caps) -> CarrierKind {
     match kind {
         // 系统参数与画面流程改写都必须在**真实负载**里量 —— 它们改的是
         // 整机行为, 孤立工装量不出来。
-        Kind::Sysparam | Kind::Gray => match caps.carrier.box_kind {
+        Kind::Sysparam | Kind::Gray | Kind::Whitebox => match caps.carrier.box_kind {
             super::games::BoxKind::WhiteBox => CarrierKind::Refbench,
             super::games::BoxKind::BlackBox => CarrierKind::GameReplay,
         },
@@ -243,9 +245,10 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
     // 系统参数不动画面 (不必量画质, 最便宜也最安全), 画面流程改写次之,
     // 画面算子最贵 (要编译、要注入、要补测画质)。便宜的先跑, 预算见底时
     // 砍掉的是最贵的那一层, 而不是最有希望的那一层。
-    let order: [(Kind, &super::caps::LayerVerdict); 3] = [
+    let order: [(Kind, &super::caps::LayerVerdict); 4] = [
         (Kind::Sysparam, &caps.layers.sysparam),
         (Kind::Gray, &caps.layers.gray),
+        (Kind::Whitebox, &caps.layers.whitebox),
         (Kind::Shader, &caps.layers.shader),
     ];
 
@@ -408,7 +411,8 @@ impl Shape {
                 "sysparam" | "3" | "③" => Kind::Sysparam,
                 "gray" | "2" | "②" => Kind::Gray,
                 "shader" | "1" | "①" => Kind::Shader,
-                _ => bail!("--layers 看不懂 {raw:?} (要 sysparam / gray / shader, 逗号分隔)"),
+                "whitebox" | "4" | "④" => Kind::Whitebox,
+                _ => bail!("--layers 看不懂 {raw:?} (要 sysparam / gray / whitebox / shader, 逗号分隔)"),
             };
             if !out.contains(&k) {
                 out.push(k);
@@ -434,6 +438,7 @@ pub fn build_shaped(caps: &Caps, budget: Budget, use_llm: bool, shape: &Shape) -
             (Kind::Sysparam, &mut c.layers.sysparam),
             (Kind::Gray, &mut c.layers.gray),
             (Kind::Shader, &mut c.layers.shader),
+            (Kind::Whitebox, &mut c.layers.whitebox),
         ] {
             if v.open && !want.contains(&k) {
                 v.open = false;
@@ -472,7 +477,7 @@ pub fn build_shaped(caps: &Caps, budget: Budget, use_llm: bool, shape: &Shape) -
 /// 在本仓库另有入口, optimize 只负责把它排进计划并说清楚怎么单独跑。
 /// 把它算进预算分配等于替一件不会发生的事占着真机时间。
 pub fn drives(kind: Kind) -> bool {
-    matches!(kind, Kind::Sysparam | Kind::Gray)
+    matches!(kind, Kind::Sysparam | Kind::Gray | Kind::Whitebox)
 }
 
 /// 一层的冻结统计协议。
@@ -860,7 +865,7 @@ pkg_path=package:/data/app/x/base.apk\n";
         let plan = build(&caps_for(UNROOTED), Budget::parse("6h").unwrap(), true);
         assert!(plan.steps.is_empty());
         assert!(plan.measure_only);
-        assert_eq!(plan.skipped.len(), 3);
+        assert_eq!(plan.skipped.len(), 4, "三层 + ④ 白盒都列进不跑的层");
     }
 
     /// 等冷目标从实测温度推, 不是常数; 温度上限是固定安全线。

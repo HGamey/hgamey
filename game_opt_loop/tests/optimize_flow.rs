@@ -110,7 +110,7 @@ fn when_nothing_can_be_opened_every_reason_reaches_the_report() {
     let caps = survey(UNROOTED, "原神");
     let plan = plan::build(&caps, Budget::default(), true);
     assert!(plan.measure_only);
-    assert_eq!(plan.skipped.len(), 3);
+    assert_eq!(plan.skipped.len(), 4);
 
     let layers: Vec<report::LayerOutcome> = plan
         .skipped
@@ -120,7 +120,7 @@ fn when_nothing_can_be_opened_every_reason_reaches_the_report() {
     let r = report::build(&plan, &caps, layers, vec![], true);
     let md = report::markdown(&r, &caps);
 
-    for layer in ["① 画面算子", "② 画面流程改写", "③ 系统参数"] {
+    for layer in ["① 画面算子", "② 画面流程改写", "③ 系统参数", "④ 引擎设置 (白盒)"] {
         assert!(md.contains(layer), "报告里漏了 {layer}");
     }
     assert!(md.contains("root"), "没 root 这条原因没传到报告: {md}");

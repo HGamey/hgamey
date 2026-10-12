@@ -146,6 +146,28 @@ pub struct LayerCaps {
     pub gray: LayerVerdict,
     /// ③ 系统参数 (黑档)。
     pub sysparam: LayerVerdict,
+    /// ④ 引擎设置 (白盒启动参数)。
+    #[serde(default = "LayerVerdict::not_probed")]
+    pub whitebox: LayerVerdict,
+}
+
+/// 有白盒引擎设置旋钮的包 (harness 把渲染设置做成了启动参数)。
+pub const WHITEBOX_PACKAGES: &[&str] = &["com.unity.megacity.metro"];
+
+/// ④ 开不开: 目标是有白盒旋钮的包, 并且负载是自驱动启动 (改写臂 = extras 后追加旋钮)。
+pub fn whitebox_verdict(target: &Target) -> LayerVerdict {
+    let pkg = target.package.as_deref().unwrap_or("");
+    if WHITEBOX_PACKAGES.contains(&pkg) && target.workload.launch.is_some() {
+        LayerVerdict::open(
+            "phonefarm eval --request kind=whitebox",
+            "有源码的游戏: 渲染设置做成了启动参数, 每臂带不同 extras 启动",
+        )
+    } else {
+        LayerVerdict::shut(
+            "不是白盒游戏 (没有把引擎设置做成启动参数)",
+            vec!["只有 harness 支持旋钮的白盒游戏能开 (目前: Megacity)".into()],
+        )
+    }
 }
 
 /// 一层能不能开, 以及凭什么。
@@ -169,6 +191,10 @@ impl LayerVerdict {
             blockers: Vec::new(),
         }
     }
+    fn not_probed() -> Self {
+        Self::shut("旧版摸底结果, 没有这一层", vec![])
+    }
+
     fn shut(reason: impl Into<String>, blockers: Vec<String>) -> Self {
         Self {
             open: false,
@@ -197,7 +223,7 @@ pub struct Caps {
 impl Caps {
     /// 有没有哪一层是开的。三层全关时只测量, 不改动。
     pub fn any_layer_open(&self) -> bool {
-        self.layers.shader.open || self.layers.gray.open || self.layers.sysparam.open
+        self.layers.shader.open || self.layers.gray.open || self.layers.sysparam.open || self.layers.whitebox.open
     }
 }
 
@@ -559,7 +585,8 @@ pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
         workload_ready,
     };
 
-    let layers = decide_layers(&device, &carrier);
+    let mut layers = decide_layers(&device, &carrier);
+    layers.whitebox = whitebox_verdict(target);
 
     Caps {
         schema: "game_opt_loop/caps@1",
@@ -638,6 +665,8 @@ pub fn decide_layers(device: &DeviceCaps, carrier: &CarrierCaps) -> LayerCaps {
         shader,
         gray,
         sysparam,
+        // ④ 要看目标 (包名 + 启动方式), 由 assemble 填
+        whitebox: LayerVerdict::not_probed(),
     }
 }
 

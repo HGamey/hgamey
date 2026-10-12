@@ -22,7 +22,7 @@
       "description": "不能变差的东西, 每项一个单键映射: {fps_mean: no_worse} / {frame_p95: no_worse} / {image: \"psnr_min_db 30\"}。no_worse 由现有判定执行 (显著变差即淘汰); image 进 ② 每个候选的画面比对门槛",
       "items": { "type": "object" }
     },
-    "layers": { "type": "array", "items": { "type": "string", "enum": ["sysparam", "gray", "upop"] }, "description": "允许动的层。upop 目前 optimize 不驱动, 写了会记一条 note 并跳过" },
+    "layers": { "type": "array", "items": { "type": "string", "enum": ["sysparam", "gray", "whitebox", "upop"] }, "description": "允许动的层。whitebox = 白盒引擎设置 (只对把渲染设置做成启动参数的游戏可用, 目前 Megacity), 不可用时这一层记明原因后跳过; upop 目前 optimize 不驱动, 写了会记一条 note 并跳过" },
     "forbid": { "type": "array", "items": { "type": "string" }, "description": "禁止动的参数 id (如 gpu.max_pwrlevel, 前缀也算: gpu 禁掉整组) / 写回范围 (15a51a879df99c32:2) / 开关名 (storeop_dont_care)" },
     "budget": {
       "type": "object",

@@ -386,10 +386,21 @@ fn megacity_requests_carry_the_launch_and_skip_the_entry_flow() {
         s.per_generation = 1;
         s.budget.max_generations = 1;
         s.budget.min_generations = 1;
+        s.layers = vec!["sysparam".into(), "gray".into(), "whitebox".into()];
     });
     let st = goal::run(&dir, &opts(&root, None)).unwrap();
     assert_eq!(st.generation, 1);
     let gen = dir.join("optimize/gen1");
+    // ④ 白盒: 请求 kind=whitebox, 带 launch 与旋钮, 合契约; 出方案输入带白盒目录并合契约
+    let wb: Value = serde_json::from_str(&std::fs::read_to_string(gen.join("requests/wb_g1c1.json")).unwrap()).unwrap();
+    assert_eq!(wb["kind"], "whitebox");
+    assert!(wb["workload"]["launch"]["extras"].as_str().unwrap().contains("city_flythrough"));
+    assert!(!wb["payload"]["knobs"].as_object().unwrap().is_empty());
+    schema::assert_conforms(&wb, "eval_request.schema.json");
+    let inp: Value = serde_json::from_str(&std::fs::read_to_string(gen.join("proposer/whitebox_g1.input.json")).unwrap()).unwrap();
+    assert!(inp["constraints"]["whitebox"].as_array().unwrap().iter().any(|k| k["id"] == "fog_event"));
+    schema::assert_conforms(&inp, "proposer_input.schema.json");
+    assert!(events(&dir).iter().any(|e| e["type"] == "propose" && e["layer"] == "whitebox"));
     assert!(!gen.join("enter").exists(), "自驱动负载不该走进门流程");
     for name in ["sys_g1c1.json", "gray_g1c1.json"] {
         let req: Value = serde_json::from_str(&std::fs::read_to_string(gen.join("requests").join(name)).unwrap()).unwrap();

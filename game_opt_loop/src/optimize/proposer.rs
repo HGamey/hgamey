@@ -26,7 +26,7 @@
 
 use super::eval::{Conditions, Kind, MetricDetail, MetricSpec, Rewrite};
 use super::sysparam::{self, Origin, Params, Whitelist};
-use super::{caps, gray, plan};
+use super::{whitebox, caps, gray, plan};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -144,6 +144,22 @@ pub struct Constraints {
     /// ②: 改写开关目录。只有 `status = landed` 的能用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knobs: Option<Vec<KnobInfo>>,
+    /// ④: 白盒引擎设置旋钮目录 (旋钮 → 准用取值)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whitebox: Option<Vec<WhiteboxKnobInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhiteboxKnobInfo {
+    pub id: String,
+    /// 准用取值; 空 = 自由文本 (见 free)。
+    pub values: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free: Option<String>,
+    /// 改了画面必然变: 接收端只量上限, 永远不会被保留。
+    pub measure_only: bool,
+    pub what: String,
+    pub why: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +221,7 @@ pub struct Candidate {
 pub enum CandidatePayload {
     Sysparam { params: Params },
     Gray { rewrites: Vec<Rewrite> },
+    Whitebox { knobs: BTreeMap<String, String> },
 }
 
 impl Candidate {
@@ -224,17 +241,32 @@ impl Candidate {
         }
     }
 
+    pub fn whitebox(why: impl Into<String>, knobs: BTreeMap<String, String>) -> Self {
+        Self {
+            kind: Kind::Whitebox,
+            why: why.into(),
+            payload: CandidatePayload::Whitebox { knobs },
+        }
+    }
+
     pub fn params(&self) -> Option<&Params> {
         match &self.payload {
             CandidatePayload::Sysparam { params } => Some(params),
-            CandidatePayload::Gray { .. } => None,
+            _ => None,
         }
     }
 
     pub fn rewrites(&self) -> Option<&[Rewrite]> {
         match &self.payload {
             CandidatePayload::Gray { rewrites } => Some(rewrites),
-            CandidatePayload::Sysparam { .. } => None,
+            _ => None,
+        }
+    }
+
+    pub fn knobs(&self) -> Option<&BTreeMap<String, String>> {
+        match &self.payload {
+            CandidatePayload::Whitebox { knobs } => Some(knobs),
+            _ => None,
         }
     }
 
@@ -290,6 +322,19 @@ impl Candidate {
                 let rewrites: Vec<Rewrite> = serde_json::from_value(only("rewrites")?.clone())
                     .map_err(|e| format!("rewrites 形状不对: {e}"))?;
                 Ok(Self::gray(why, rewrites))
+            }
+            Kind::Whitebox => {
+                let raw = only("knobs")?.as_object().ok_or("knobs 必须是对象")?;
+                let mut knobs = BTreeMap::new();
+                for (k, v) in raw {
+                    let s = match v {
+                        Value::String(s) => s.clone(),
+                        Value::Number(n) => n.to_string(),
+                        _ => return Err(format!("knobs.{k} 必须是字符串或数字")),
+                    };
+                    knobs.insert(k.clone(), s);
+                }
+                Ok(Self::whitebox(why, knobs))
             }
             Kind::Shader => Err("optimize 不驱动 ① 画面算子层".into()),
         }
@@ -419,6 +464,26 @@ pub fn sysparam_history(items: &[HistoryItem]) -> Vec<sysparam::History> {
         .collect()
 }
 
+/// [`HistoryItem`] → ④ 吃的历史: 每个 `旋钮=值` 一个键; 不管量没量准都算「提过了」。
+pub fn whitebox_history(items: &[HistoryItem]) -> Vec<sysparam::History> {
+    items
+        .iter()
+        .filter_map(|h| {
+            let knobs = h.candidate.knobs()?;
+            Some(sysparam::History {
+                params: knobs.iter().map(|(k, v)| (format!("{k}={v}"), "on".to_string())).collect(),
+                verdict: h.status.clone(),
+                reason: format!("{} — {}", whitebox::label(knobs), h.candidate.why),
+                per_metric: if h.measurement_valid {
+                    h.summary.clone()
+                } else {
+                    vec!["这一轮没量准 (ABORT), 数字不算数".into()]
+                },
+            })
+        })
+        .collect()
+}
+
 /// [`HistoryItem`] → ② 原来吃的历史: 不管量没量准都算「提过了」,
 /// 否则下一代会原样再提一遍。
 pub fn gray_history(items: &[HistoryItem]) -> Vec<sysparam::History> {
@@ -511,6 +576,27 @@ impl Proposer for Builtin {
                         .iter()
                         .map(|(k, why)| format!("{k}: {why}"))
                         .collect(),
+                    origin: b.origin,
+                    error: b.llm_error,
+                    raw: b.llm_raw,
+                    usage: None,
+                    model_calls,
+                }
+            }
+            Kind::Whitebox => {
+                let b = whitebox::Proposer { generator }.propose(
+                    &input.device.note,
+                    &workload,
+                    &whitebox_history(&input.history),
+                    input.n,
+                );
+                Proposed {
+                    candidates: b
+                        .accepted
+                        .into_iter()
+                        .map(|p| Candidate::whitebox(p.why, p.knobs))
+                        .collect(),
+                    rejected: b.rejected.iter().map(|(k, why)| format!("{k}: {why}")).collect(),
                     origin: b.origin,
                     error: b.llm_error,
                     raw: b.llm_raw,
@@ -707,6 +793,9 @@ pub fn screen(input: &Input, proposed: &Proposed) -> Screened {
                 let wl = input.constraints.whitelist.clone().unwrap_or_default();
                 sysparam::validate(params, &wl).map_err(|e| format!("{params:?}: {e}"))
             }
+            (CandidatePayload::Whitebox { knobs }, Kind::Whitebox) if c.kind == Kind::Whitebox => {
+                whitebox::validate(knobs).map_err(|e| format!("{}: {e}", whitebox::label(knobs)))
+            }
             (CandidatePayload::Gray { rewrites }, Kind::Gray) if c.kind == Kind::Gray => {
                 gray::validate(rewrites, &gray_targets(&input.constraints)).map_err(|e| {
                     format!(
@@ -748,6 +837,7 @@ impl Candidate {
                 .map(gray::rewrite_label)
                 .collect::<Vec<_>>()
                 .join("+"),
+            CandidatePayload::Whitebox { knobs } => whitebox::label(knobs),
         }
     }
 }
@@ -768,6 +858,7 @@ pub fn constraints_with_targets(
             whitelist: wl.cloned(),
             deny_keywords: sysparam::DENY_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             knobs: None,
+            whitebox: None,
         },
         Kind::Gray => Constraints {
             whitelist: None,
@@ -781,6 +872,25 @@ pub fn constraints_with_targets(
                         what: k.what.into(),
                         why: k.why.into(),
                         scopes: if k.needs_scope { targets.to_vec() } else { vec![] },
+                    })
+                    .collect(),
+            ),
+            whitebox: None,
+        },
+        Kind::Whitebox => Constraints {
+            whitelist: None,
+            deny_keywords: Vec::new(),
+            knobs: None,
+            whitebox: Some(
+                whitebox::CATALOG
+                    .iter()
+                    .map(|k| WhiteboxKnobInfo {
+                        id: k.id.into(),
+                        values: k.values.iter().map(|v| v.to_string()).collect(),
+                        free: k.free.map(String::from),
+                        measure_only: k.measure_only,
+                        what: k.what.into(),
+                        why: k.why.into(),
                     })
                     .collect(),
             ),
@@ -1037,7 +1147,7 @@ impl Batch<Candidate> {
                 params,
                 origin,
             }),
-            CandidatePayload::Gray { .. } => None,
+            _ => None,
         })
     }
 
@@ -1049,7 +1159,15 @@ impl Batch<Candidate> {
                 rewrites,
                 origin,
             }),
-            CandidatePayload::Sysparam { .. } => None,
+            _ => None,
+        })
+    }
+
+    /// 还原成 ④ 的候选类型。
+    pub fn whitebox(self) -> Batch<whitebox::Proposal> {
+        self.map(|c, origin| match c.payload {
+            CandidatePayload::Whitebox { knobs } => Some(whitebox::Proposal { why: c.why, knobs, origin }),
+            _ => None,
         })
     }
 }

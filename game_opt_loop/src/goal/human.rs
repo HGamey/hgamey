@@ -24,6 +24,7 @@ fn layer_of(word: &str) -> Option<&'static str> {
     match w.as_str() {
         "sysparam" | "系统参数" | "③" | "3" => Some("sysparam"),
         "gray" | "画面流程" | "画面流程改写" | "灰档" | "②" | "2" => Some("gray"),
+        "whitebox" | "白盒" | "引擎设置" | "④" | "4" => Some("whitebox"),
         "upop" | "画面算子" | "①" | "1" => Some("upop"),
         _ => None,
     }
