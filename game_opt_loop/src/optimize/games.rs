@@ -94,6 +94,8 @@ struct Known {
     seconds: u32,
     input: InputMethod,
     pitfalls: &'static [Pitfall],
+    launch: Option<KnownLaunch>,
+    render_comm: Option<&'static str>,
 }
 
 const KNOWN: &[Known] = &[
@@ -114,6 +116,32 @@ const KNOWN: &[Known] = &[
             CHARGING_POWER_INVALID,
             FAN_STATE_UNRECORDED,
         ],
+        launch: None,
+        render_comm: None,
+    },
+    Known {
+        // Megacity (Unity 官方样例, 有源码的真游戏): 带 extras 启动后相机沿固定路线穿城飞行,
+        // 帧序钉死, frame_p95 离散度 ~1% (phonefarm loop_v1/carriers/megacity)。对 optimize
+        // 来说它是黑盒 —— ② 照样靠灰档层注入, 不改它的源码。
+        aliases: &["megacity", "megacity-metro", "com.unity.megacity.metro"],
+        display: "Megacity",
+        package: "com.unity.megacity.metro",
+        carrier: None,
+        script: None,
+        seconds: 30,
+        input: InputMethod::SelfDriven,
+        pitfalls: &[CHARGING_POWER_INVALID, FAN_STATE_UNRECORDED],
+        launch: Some(KnownLaunch {
+            extras: "--es scene city_flythrough --es run_id hgamey --es frames 3600 --es route route_a \
+                     --es warmup 600 --es settle 7200 --es resscale 1.0 --es vsync off",
+            marker: Some("megacity_started"),
+            static_extras: Some(
+                "--es scene city_static --es run_id hgamey_static --es frames 100000 --es route route_a \
+                 --es warmup 600 --es settle 7200 --es resscale 1.0 --es vsync off",
+            ),
+        }),
+        // 载体自报并固化进 contract (loop_v1/carriers/megacity/README.md)
+        render_comm: Some("UnityGfxDeviceW"),
     },
     Known {
         aliases: &["refbench", "io.github.hgamey.refbench", "白盒靶场"],
@@ -124,6 +152,8 @@ const KNOWN: &[Known] = &[
         seconds: 0,
         input: InputMethod::SelfDriven,
         pitfalls: &[CHARGING_POWER_INVALID, FAN_STATE_UNRECORDED],
+        launch: None,
+        render_comm: None,
     },
 ];
 
@@ -151,6 +181,28 @@ pub struct Workload {
     /// 非 Unity 游戏由游戏档案给出, 否则解析出零帧。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_comm: Option<String>,
+    /// 自驱动负载: 应用带 intent extras 启动后自己跑确定性路线 (Megacity city_flythrough)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<Launch>,
+}
+
+/// 自驱动负载的启动方式 (原样进评测请求 workload.launch)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Launch {
+    /// 测量用的 intent extras。
+    pub extras: String,
+    /// 应用进入被测窗口时在自己 files/ 下落的标记文件名。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    /// 画面比对用的静态场景 extras (相机不动)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_extras: Option<String>,
+}
+
+struct KnownLaunch {
+    extras: &'static str,
+    marker: Option<&'static str>,
+    static_extras: Option<&'static str>,
 }
 
 /// 解析出来的被测目标。
@@ -271,7 +323,8 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
         } else {
             BoxKind::BlackBox
         };
-        let script_present = k.script.is_some_and(|s| Path::new(s).is_file());
+        // 自驱动负载不需要回放脚本: 启动方式本身就是负载
+        let script_present = k.launch.is_some() || k.script.is_some_and(|s| Path::new(s).is_file());
         return Target {
             input: needle.to_string(),
             display: k.display.to_string(),
@@ -287,7 +340,12 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
                 seconds: k.seconds,
                 input: k.input,
                 script_present,
-                render_comm: None,
+                render_comm: k.render_comm.map(str::to_string),
+                launch: k.launch.as_ref().map(|l| Launch {
+                    extras: l.extras.split_whitespace().collect::<Vec<_>>().join(" "),
+                    marker: l.marker.map(str::to_string),
+                    static_extras: l.static_extras.map(|e| e.split_whitespace().collect::<Vec<_>>().join(" ")),
+                }),
             },
             pitfalls: k.pitfalls.to_vec(),
             resolved_via: format!("内置条目 `{}`", k.aliases[0]),
@@ -312,6 +370,7 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
                 input: InputMethod::SelfDriven,
                 script_present: true,
                 render_comm: None,
+                launch: None,
             },
             pitfalls: vec![CHARGING_POWER_INVALID, FAN_STATE_UNRECORDED],
             resolved_via: "载体目录里有 contract/launch.json".to_string(),
@@ -340,6 +399,7 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
             input: InputMethod::Touch,
             script_present: false,
             render_comm: None,
+            launch: None,
         },
         pitfalls: vec![CHARGING_POWER_INVALID, FAN_STATE_UNRECORDED],
         resolved_via,
@@ -429,4 +489,21 @@ mod tests {
         assert!(!looks_like_package("com..app"));
         assert!(!looks_like_package("1com.app"));
     }
+
+    /// Megacity 是自驱动负载: 不要回放脚本, 带 extras 启动, 渲染线程是 Unity 的。
+    #[test]
+    fn megacity_is_a_self_driven_black_box() {
+        let t = resolve("megacity", None, &CarrierRoots::default());
+        assert_eq!(t.package.as_deref(), Some("com.unity.megacity.metro"));
+        assert_eq!(t.box_kind, BoxKind::BlackBox, "② 靠灰档层注入, 对 optimize 是黑盒");
+        assert!(t.workload.script_present);
+        assert_eq!(t.workload.render_comm.as_deref(), Some("UnityGfxDeviceW"));
+        let l = t.workload.launch.unwrap();
+        assert!(l.extras.contains("--es scene city_flythrough") && !l.extras.contains("  "));
+        assert_eq!(l.marker.as_deref(), Some("megacity_started"));
+        assert!(l.static_extras.unwrap().contains("city_static"));
+        // 包名也认
+        assert_eq!(resolve("com.unity.megacity.metro", None, &CarrierRoots::default()).display, "Megacity");
+    }
 }
+

@@ -455,6 +455,7 @@ fn workload_of(step: &plan::Step, caps: &caps::Caps) -> WorkloadSpec {
             intensity: Some(5),
             render_comm: None,
             enter: None,
+            launch: None,
         },
         CarrierKind::GameReplay => WorkloadSpec {
             carrier: CarrierKind::GameReplay,
@@ -463,8 +464,15 @@ fn workload_of(step: &plan::Step, caps: &caps::Caps) -> WorkloadSpec {
             frames: None,
             intensity: None,
             render_comm: caps.target.workload.render_comm.clone(),
-            // 有档案 = 进门流程实测过, 接收端每次重启游戏后可以自己走回游戏场景
-            enter: caps.target.profile.as_ref().map(|_| "onboard".to_string()),
+            // 有档案 = 进门流程实测过, 接收端每次重启游戏后可以自己走回游戏场景。
+            // 自驱动负载由接收端带 extras 启动, 不走进门流程。
+            enter: caps
+                .target
+                .profile
+                .as_ref()
+                .filter(|_| caps.target.workload.launch.is_none())
+                .map(|_| "onboard".to_string()),
+            launch: caps.target.workload.launch.clone(),
         },
         CarrierKind::Headless => WorkloadSpec {
             carrier: CarrierKind::Headless,
@@ -474,6 +482,7 @@ fn workload_of(step: &plan::Step, caps: &caps::Caps) -> WorkloadSpec {
             intensity: None,
             render_comm: None,
             enter: None,
+            launch: None,
         },
     }
 }
@@ -571,7 +580,11 @@ fn evaluate_on(
         bail!("人叫停 (SIGINT): 不再上机");
     }
     // 黑盒游戏: 上机前先进门。量到桌面或登录页的一轮不是数据。
-    if caps.carrier.box_kind == games::BoxKind::BlackBox && !req.package.is_empty() {
+    // 自驱动负载 (workload.launch) 由接收端带 extras 启动, 不需要进门。
+    if caps.carrier.box_kind == games::BoxKind::BlackBox
+        && !req.package.is_empty()
+        && req.workload.launch.is_none()
+    {
         let dir = cfg.out_dir.join("enter").join(id);
         match driver.enter_scene(&req.package, serial, &dir) {
             eval::EnterOutcome::InGame => println!("        进门: 已在游戏场景"),

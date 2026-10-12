@@ -81,6 +81,9 @@ pub struct WorkloadSpec {
     /// --enter-only` 的白名单状态机 (有游戏档案的目标才这么填); 缺省 = 不管 (旧行为)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enter: Option<String>,
+    /// 自驱动负载 (应用带 extras 启动后自己跑确定性路线), 有它就不看 script。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<super::games::Launch>,
 }
 
 /// 停充意图。
@@ -767,6 +770,7 @@ mod tests {
                 intensity: None,
                 render_comm: None,
                 enter: None,
+                launch: None,
             },
             conditions: Conditions {
                 cool_c: Some(40.0),

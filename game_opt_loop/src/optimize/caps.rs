@@ -539,6 +539,10 @@ pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
 
     let workload_ready = match (target.box_kind, &target.workload.script) {
         (BoxKind::WhiteBox, _) => Probe::ok("载体契约", "白盒载体自带确定性负载, 不需要回放脚本"),
+        (BoxKind::BlackBox, _) if target.workload.launch.is_some() => Probe::ok(
+            "内置表",
+            "自驱动负载: 带 intent extras 启动后应用自己跑确定性路线, 不需要回放脚本",
+        ),
         (BoxKind::BlackBox, Some(s)) if target.workload.script_present => {
             Probe::ok("文件存在性", format!("负载脚本 {s}"))
         }
