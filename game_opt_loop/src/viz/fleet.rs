@@ -411,11 +411,7 @@ mod tests {
         assert_eq!(d.os.as_deref(), Some("Android 16 (SDK 36)"));
         assert!(d.online);
         assert_eq!(d.battery.level_pct, Some(100));
-        assert!(
-            d.thermal.gpu_c.is_some_and(|c| c > 20.0 && c < 100.0),
-            "GPU 温度要是个像样的读数: {:?}",
-            d.thermal.gpu_c
-        );
+        assert!(d.thermal.gpu_c.is_some_and(|c| c > 20.0 && c < 100.0), "GPU 温度要是个像样的读数: {:?}", d.thermal.gpu_c);
         assert_eq!(d.fan.enabled, Some(true));
         assert_eq!(d.fan.speed_level, Some(5));
 
@@ -483,10 +479,7 @@ mod tests {
         assert_eq!(argv[1], "fleet");
         assert!(argv.contains(&"--json".to_string()));
         assert!(argv.contains(&"/private/tmp/claude-501".to_string()));
-        assert!(
-            !argv.contains(&"--screenshot-dir".to_string()),
-            "截图默认不开"
-        );
+        assert!(!argv.contains(&"--screenshot-dir".to_string()), "截图默认不开");
     }
 
     #[test]

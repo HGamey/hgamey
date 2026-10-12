@@ -258,10 +258,7 @@ impl QualityReference {
         } else if self.is_procedural() {
             "runner 内置程序化图案 (非真实游戏帧)".to_string()
         } else {
-            format!(
-                "未知真值类型 {:?} (接收端报了本仓库不认识的来源)",
-                self.kind
-            )
+            format!("未知真值类型 {:?} (接收端报了本仓库不认识的来源)", self.kind)
         }
     }
 
@@ -377,13 +374,7 @@ mod tests {
         assert_ne!(fingerprint(a), fingerprint(b));
     }
 
-    fn report(
-        status: EvalStatus,
-        latency: f32,
-        psnr: f32,
-        p: f64,
-        src: MetricSource,
-    ) -> EvalReport {
+    fn report(status: EvalStatus, latency: f32, psnr: f32, p: f64, src: MetricSource) -> EvalReport {
         EvalReport {
             candidate_id: "t".into(),
             status,
@@ -405,11 +396,7 @@ mod tests {
 
     fn power_source(on_battery: bool, status: &str) -> PowerSource {
         PowerSource {
-            rail: if on_battery {
-                "battery".into()
-            } else {
-                "usb".into()
-            },
+            rail: if on_battery { "battery".into() } else { "usb".into() },
             battery_status: status.into(),
             battery_current_now_ua: None,
             battery_capacity_pct: None,
@@ -436,11 +423,7 @@ mod tests {
         r.power_source = Some(power_source(false, "Charging"));
         assert!(r.comparable_power_watt().is_err());
         assert!(r.power_exclusion_reason().unwrap().contains("非放电态"));
-        assert_eq!(
-            r.metrics.power_watt,
-            Some(4.8),
-            "排除的是比较资格, 不是数字本身"
-        );
+        assert_eq!(r.metrics.power_watt, Some(4.8), "排除的是比较资格, 不是数字本身");
 
         // 接收端没报供电状态 (旧版): 默认排除 —— 分辨不出是哪种情况时,
         // 少比一维只会让前沿更宽, 不会造出假改进。
@@ -491,10 +474,7 @@ mod tests {
         let mut r = report(EvalStatus::Pass, 1.0, 31.3, 0.001, MetricSource::Phonefarm);
         r.quality_reference = Some(real);
 
-        assert!(
-            (r.quality_floor_db(38.666) - 29.2).abs() < 1e-4,
-            "该用本场基线 29.2"
-        );
+        assert!((r.quality_floor_db(38.666) - 29.2).abs() < 1e-4, "该用本场基线 29.2");
         assert!(
             r.is_admissible(1.5, 38.666),
             "31.3 dB 比本场基线 29.2 好 2.1 dB, 不该被程序化图案的 38.666 卡掉"
@@ -554,25 +534,14 @@ mod tests {
     /// 成本模型的估计值没有 p 值可言, 不能拿显著性去卡它 (也永远不该被当成真机结论)。
     #[test]
     fn simulated_reports_are_not_judged_on_significance() {
-        let r = report(
-            EvalStatus::Pass,
-            0.9,
-            38.5,
-            1.0,
-            MetricSource::StaticCostModel,
-        );
+        let r = report(EvalStatus::Pass, 0.9, 38.5, 1.0, MetricSource::StaticCostModel);
         assert!(r.is_admissible(1.5, 37.286));
         assert!(!r.source.is_measured());
     }
 
     #[test]
     fn non_pass_status_is_never_admissible() {
-        for s in [
-            EvalStatus::Slow,
-            EvalStatus::PoorQuality,
-            EvalStatus::Crash,
-            EvalStatus::Reverted,
-        ] {
+        for s in [EvalStatus::Slow, EvalStatus::PoorQuality, EvalStatus::Crash, EvalStatus::Reverted] {
             let r = report(s, 0.5, 40.0, 0.0001, MetricSource::Phonefarm);
             assert!(!r.is_admissible(1.5, 37.286), "{s:?} 不该被接纳");
         }

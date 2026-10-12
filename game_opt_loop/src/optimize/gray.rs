@@ -125,10 +125,7 @@ impl StoreTarget {
 
 fn sig_of(s: &str) -> Option<String> {
     let i = s.find("sig=")?;
-    let hex: String = s[i + 4..]
-        .chars()
-        .take_while(|c| c.is_ascii_hexdigit())
-        .collect();
+    let hex: String = s[i + 4..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
     (hex.len() >= 8).then(|| hex.to_ascii_lowercase())
 }
 
@@ -152,16 +149,10 @@ pub fn targets_from_frame_audit(v: &Value) -> Vec<StoreTarget> {
     for (fi, f) in files.iter().enumerate() {
         let last = f["frames"]
             .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x["frame"].as_i64())
-                    .max()
-                    .unwrap_or(-1)
-            })
+            .map(|a| a.iter().filter_map(|x| x["frame"].as_i64()).max().unwrap_or(-1))
             .unwrap_or(-1);
         for p in f["pass_times"].as_array().into_iter().flatten() {
-            let (Some(fr), Some(sig)) = (p["frame"].as_i64(), p["sig"].as_str().and_then(sig_of))
-            else {
+            let (Some(fr), Some(sig)) = (p["frame"].as_i64(), p["sig"].as_str().and_then(sig_of)) else {
                 continue;
             };
             if fr < last {
@@ -172,9 +163,7 @@ pub fn targets_from_frame_audit(v: &Value) -> Vec<StoreTarget> {
             if x["rule"].as_str() != Some("dead_store") {
                 continue;
             }
-            let Some(sigtext) = x["sig"].as_str() else {
-                continue;
-            };
+            let Some(sigtext) = x["sig"].as_str() else { continue };
             let Some(sig) = sig_of(sigtext) else { continue };
             if x["certain"].as_bool() != Some(true) {
                 tainted.insert(sig);
@@ -205,12 +194,7 @@ pub fn targets_from_frame_audit(v: &Value) -> Vec<StoreTarget> {
         for ((fi, fr), sigs) in &inst {
             let Some(&n) = sigs.get(&sig) else { continue };
             frames_seen += 1;
-            if dead
-                .get(&(*fi, *fr, sig.clone(), att))
-                .copied()
-                .unwrap_or(0)
-                != n
-            {
+            if dead.get(&(*fi, *fr, sig.clone(), att)).copied().unwrap_or(0) != n {
                 ok = false;
                 break;
             }
@@ -224,21 +208,15 @@ pub fn targets_from_frame_audit(v: &Value) -> Vec<StoreTarget> {
             });
         }
     }
-    out.sort_by(|a, b| {
-        b.bytes_per_frame
-            .total_cmp(&a.bytes_per_frame)
-            .then(a.scope.cmp(&b.scope))
-    });
+    out.sort_by(|a, b| b.bytes_per_frame.total_cmp(&a.bytes_per_frame).then(a.scope.cmp(&b.scope)));
     out
 }
 
 /// 读 frame-audit 结果文件。
 pub fn load_targets(path: &Path) -> anyhow::Result<Vec<StoreTarget>> {
     use anyhow::Context;
-    let raw =
-        std::fs::read_to_string(path).with_context(|| format!("读不了 {}", path.display()))?;
-    let v: Value =
-        serde_json::from_str(&raw).with_context(|| format!("{} 不是 JSON", path.display()))?;
+    let raw = std::fs::read_to_string(path).with_context(|| format!("读不了 {}", path.display()))?;
+    let v: Value = serde_json::from_str(&raw).with_context(|| format!("{} 不是 JSON", path.display()))?;
     Ok(targets_from_frame_audit(&v))
 }
 
@@ -346,12 +324,7 @@ pub fn user_prompt(
     } else {
         lines.push("# 已经试过的改写组与真机实测结果".to_string());
         for h in history {
-            lines.push(format!(
-                "- {} → {} ({})",
-                h.reason,
-                h.verdict,
-                h.params.len()
-            ));
+            lines.push(format!("- {} → {} ({})", h.reason, h.verdict, h.params.len()));
             for m in &h.per_metric {
                 lines.push(format!("  {m}"));
             }
@@ -369,9 +342,7 @@ pub fn parse_proposals(text: &str, n: usize) -> Vec<Proposal> {
     };
     let mut out = Vec::new();
     for item in arr.as_array().into_iter().flatten() {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
+        let Some(obj) = item.as_object() else { continue };
         let rewrites: Vec<Rewrite> = obj
             .get("rewrites")
             .and_then(|r| r.as_array())
@@ -433,10 +404,7 @@ pub fn validate(rewrites: &[Rewrite], targets: &[StoreTarget]) -> Result<(), Str
         match k.status {
             KnobStatus::Landed => {}
             KnobStatus::Declared => {
-                return Err(format!(
-                    "{} 契约里声明了, 但层里还没实现 —— 提了也不会命中",
-                    r.knob
-                ))
+                return Err(format!("{} 契约里声明了, 但层里还没实现 —— 提了也不会命中", r.knob))
             }
             KnobStatus::Withdrawn => return Err(format!("{} 已撤回: {}", r.knob, k.why)),
         }
@@ -496,10 +464,7 @@ pub fn local_proposals(
         })
         .collect();
     if targets.len() > 1 {
-        let all: Vec<&StoreTarget> = targets
-            .iter()
-            .take(MAX_STORE_TARGETS_PER_CANDIDATE)
-            .collect();
+        let all: Vec<&StoreTarget> = targets.iter().take(MAX_STORE_TARGETS_PER_CANDIDATE).collect();
         cands.push(Proposal {
             why: format!("本地降级产出: {} 处确定没人读的写回一起去掉", all.len()),
             rewrites: all.into_iter().map(rw).collect(),
@@ -547,11 +512,7 @@ impl Proposer<'_> {
                             match validate(&p.rewrites, self.targets) {
                                 Ok(()) => batch.accepted.push(p),
                                 Err(e) => batch.rejected.push((
-                                    p.rewrites
-                                        .iter()
-                                        .map(rewrite_label)
-                                        .collect::<Vec<_>>()
-                                        .join("+"),
+                                    p.rewrites.iter().map(rewrite_label).collect::<Vec<_>>().join("+"),
                                     e,
                                 )),
                             }
@@ -601,11 +562,7 @@ mod tests {
         let scopes: Vec<&str> = t.iter().map(|x| x.scope.as_str()).collect();
         assert_eq!(
             scopes,
-            vec![
-                "15a51a879df99c32:2",
-                "9d0b4db80bf552b8:1",
-                "9d0b4db80bf552b8:0"
-            ],
+            vec!["15a51a879df99c32:2", "9d0b4db80bf552b8:1", "9d0b4db80bf552b8:0"],
             "{t:#?}"
         );
         assert!(!scopes.iter().any(|s| s.starts_with("ae75a3d4")));
@@ -643,42 +600,11 @@ mod tests {
         for (bad, why) in [
             (vec![so("ae75a3d4bc624906:0")], "清单"),
             (vec![so("15a51a879df99c32:1")], "清单"),
-            (
-                vec![Rewrite {
-                    knob: "storeop_dont_care".into(),
-                    scope: None,
-                    args: None,
-                }],
-                "scope",
-            ),
-            (
-                vec![so("15a51a879df99c32:2"), so("15a51a879df99c32:2")],
-                "两次",
-            ),
-            (
-                vec![Rewrite {
-                    knob: "loadop_dont_care".into(),
-                    scope: None,
-                    args: None,
-                }],
-                "撤回",
-            ),
-            (
-                vec![Rewrite {
-                    knob: "render_scale".into(),
-                    scope: None,
-                    args: None,
-                }],
-                "还没实现",
-            ),
-            (
-                vec![Rewrite {
-                    knob: "make_it_faster".into(),
-                    scope: None,
-                    args: None,
-                }],
-                "不在开关目录",
-            ),
+            (vec![Rewrite { knob: "storeop_dont_care".into(), scope: None, args: None }], "scope"),
+            (vec![so("15a51a879df99c32:2"), so("15a51a879df99c32:2")], "两次"),
+            (vec![Rewrite { knob: "loadop_dont_care".into(), scope: None, args: None }], "撤回"),
+            (vec![Rewrite { knob: "render_scale".into(), scope: None, args: None }], "还没实现"),
+            (vec![Rewrite { knob: "make_it_faster".into(), scope: None, args: None }], "不在开关目录"),
             (vec![], "空"),
         ] {
             let e = validate(&bad, &t).unwrap_err();
@@ -728,10 +654,7 @@ mod tests {
             \"rewrites\":[{\"knob\":\"storeop_dont_care\",\"scope\":\"15a51a879df99c32:2\"}]}]\n```";
         let p = parse_proposals(raw, 3);
         assert_eq!(p.len(), 1);
-        assert_eq!(
-            p[0].rewrites[0].scope.as_deref(),
-            Some("15a51a879df99c32:2")
-        );
+        assert_eq!(p[0].rewrites[0].scope.as_deref(), Some("15a51a879df99c32:2"));
         assert!(validate(&p[0].rewrites, &genshin()).is_ok());
     }
 
@@ -756,11 +679,7 @@ mod tests {
         let history: Vec<super::super::sysparam::History> = first[..2]
             .iter()
             .map(|p| super::super::sysparam::History {
-                params: p
-                    .rewrites
-                    .iter()
-                    .map(|r| (rewrite_label(r), "on".to_string()))
-                    .collect(),
+                params: p.rewrites.iter().map(|r| (rewrite_label(r), "on".to_string())).collect(),
                 verdict: "REJECT".into(),
                 reason: String::new(),
                 per_metric: vec![],
@@ -789,11 +708,7 @@ mod tests {
              {\"knob\":\"storeop_dont_care\",\"scope\":\"9d0b4db80bf552b8:1\"}]},\
              {\"why\":\"抄错\",\"rewrites\":[{\"knob\":\"storeop_dont_care\",\"scope\":\"15a51a87:2\"}]}]",
         );
-        let b = Proposer {
-            generator: Some(&g),
-            targets: &t,
-        }
-        .propose("d", "w", &[], 2);
+        let b = Proposer { generator: Some(&g), targets: &t }.propose("d", "w", &[], 2);
         assert_eq!(b.accepted.len(), 1);
         assert_eq!(b.accepted[0].rewrites.len(), 2);
         assert_eq!(b.rejected.len(), 1);

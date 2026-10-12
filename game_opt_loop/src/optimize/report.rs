@@ -23,10 +23,19 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Change {
-    Sysparam { params: BTreeMap<String, String> },
-    Gray { rewrites: Vec<String> },
-    Whitebox { knobs: BTreeMap<String, String> },
-    Shader { track: String, shader_path: String },
+    Sysparam {
+        params: BTreeMap<String, String>,
+    },
+    Gray {
+        rewrites: Vec<String>,
+    },
+    Whitebox {
+        knobs: BTreeMap<String, String>,
+    },
+    Shader {
+        track: String,
+        shader_path: String,
+    },
 }
 
 impl Change {
@@ -199,11 +208,7 @@ pub fn build(
     archive: Vec<Entry>,
     plan_only: bool,
 ) -> Report {
-    let kept: Vec<String> = archive
-        .iter()
-        .filter(|e| e.kept)
-        .map(|e| e.id.clone())
-        .collect();
+    let kept: Vec<String> = archive.iter().filter(|e| e.kept).map(|e| e.id.clone()).collect();
     // 有效样本与 ABORT 分开数。全是 ABORT 的一轮说"没有任何指标显著改善"
     // 是错的 —— 那一轮压根没量准, 谈不上改善不改善。
     let valid = archive.iter().filter(|e| e.measurement_valid).count();
@@ -292,21 +297,16 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
     o.push_str("| 条件 | 值 |\n|---|---|\n");
     o.push_str(&format!(
         "| 等冷目标 | {} |\n",
-        c.cool_c
-            .map(|v| format!("{v:.1}C"))
-            .unwrap_or("不等冷".into())
+        c.cool_c.map(|v| format!("{v:.1}C")).unwrap_or("不等冷".into())
     ));
     o.push_str(&format!(
         "| 温度上限 | {} |\n",
-        c.temp_cap_c
-            .map(|v| format!("{v:.1}C"))
-            .unwrap_or("无".into())
+        c.temp_cap_c.map(|v| format!("{v:.1}C")).unwrap_or("无".into())
     ));
     o.push_str(&format!(
         "| 停充 | {} |\n",
         match &c.charging_suspend {
-            Some(s) if s.enabled =>
-                format!("会尝试 ({})", s.node.as_deref().unwrap_or("接收端自探")),
+            Some(s) if s.enabled => format!("会尝试 ({})", s.node.as_deref().unwrap_or("接收端自探")),
             _ => "停不了 —— 充电态下功耗如实留空".to_string(),
         }
     ));
@@ -373,12 +373,7 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
                 .archive
                 .iter()
                 .filter(|e| e.layer == l.layer)
-                .filter_map(|e| {
-                    e.conditions_observed
-                        .as_ref()?
-                        .snapshot_vendor_drift
-                        .as_ref()
-                })
+                .filter_map(|e| e.conditions_observed.as_ref()?.snapshot_vendor_drift.as_ref())
                 .filter(|d| !d.is_empty())
                 .count();
             if contested > 0 || drift > 0 {
@@ -504,7 +499,10 @@ pkg_path=package:/data/app/x/base.apk\n";
             generation: 1,
             why: "抬总线下限".into(),
             change: Change::Sysparam {
-                params: BTreeMap::from([("bus.DDR.boost_freq".to_string(), "5333000".to_string())]),
+                params: BTreeMap::from([(
+                    "bus.DDR.boost_freq".to_string(),
+                    "5333000".to_string(),
+                )]),
             },
             status: status.into(),
             metrics: MetricsV2 {
@@ -543,8 +541,7 @@ pkg_path=package:/data/app/x/base.apk\n";
     fn the_report_always_states_the_test_conditions() {
         let (c, p) = fixture();
         let md = markdown(&build(&p, &c, vec![], vec![], false), &c);
-        for must in ["测试条件", "风扇", "游戏内帧率设置", "等冷目标", "温度上限"]
-        {
+        for must in ["测试条件", "风扇", "游戏内帧率设置", "等冷目标", "温度上限"] {
             assert!(md.contains(must), "报告里少了 `{must}`");
         }
     }

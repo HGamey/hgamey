@@ -34,8 +34,7 @@ where
             .collect();
     }
     let next = AtomicUsize::new(0);
-    let slots: Mutex<Vec<Option<(String, R)>>> =
-        Mutex::new((0..items.len()).map(|_| None).collect());
+    let slots: Mutex<Vec<Option<(String, R)>>> = Mutex::new((0..items.len()).map(|_| None).collect());
     std::thread::scope(|s| {
         for d in devices {
             let (next, slots, f) = (&next, &slots, &f);
@@ -108,10 +107,7 @@ mod tests {
             x * 100
         });
         assert_eq!(runs.load(Ordering::SeqCst), 6);
-        assert_eq!(
-            out.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-            vec![0, 100, 200, 300, 400, 500]
-        );
+        assert_eq!(out.iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![0, 100, 200, 300, 400, 500]);
         assert!(out.iter().all(|(d, _)| d.starts_with("dev")));
         let took = t0.elapsed();
         assert!(took < Duration::from_millis(200), "没有并行: {took:?}");

@@ -365,11 +365,14 @@ fn run_serve(
             bin: phonefarm_bin.unwrap_or_else(|| paths.phonefarm_root.join("phonefarm")),
             cwd: paths.phonefarm_root.clone(),
             ttl: std::time::Duration::from_secs(fleet_ttl_s),
-            timeout: std::time::Duration::from_secs(game_opt_loop::viz::fleet::DEFAULT_TIMEOUT_S),
+            timeout: std::time::Duration::from_secs(
+                game_opt_loop::viz::fleet::DEFAULT_TIMEOUT_S,
+            ),
             lock_dir: Some(lock_root),
             // 图必须落在 phonefarm 仓库之内 —— /api/file 的白名单只认两个仓库根,
             // 落在别处的话卡片上那个 <img> 会 403。
-            screenshot_dir: phone_screenshots.then(|| paths.phonefarm_root.join("tasks/_fleet")),
+            screenshot_dir: phone_screenshots
+                .then(|| paths.phonefarm_root.join("tasks/_fleet")),
             screenshot_every_s: phone_screenshot_every,
             enabled: true,
         })
@@ -437,8 +440,10 @@ fn main() -> Result<()> {
     // 作为 IR_VALIDATION_FAILED 违规原样收进门禁报告了, 再让它裸奔到终端上
     // 只会让「门禁正常拦截了一个非法算子」看起来像「工具自己炸了」。
     // 默认关掉它; 需要排查时仍可用 RUST_LOG=naga=debug 打开。
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,naga=off"))
-        .init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,naga=off"),
+    )
+    .init();
 
     let cli = Cli::parse();
 
@@ -451,11 +456,7 @@ fn main() -> Result<()> {
         Some(Command::Goal(g)) => return run_goal(g),
         Some(Command::Compare { arms, out }) => {
             let c = optimize::compare::from_arm_dirs(&arms, &out)?;
-            println!(
-                "对比报告 ({} 臂): {}/compare.md",
-                c.arms.len(),
-                out.display()
-            );
+            println!("对比报告 ({} 臂): {}/compare.md", c.arms.len(), out.display());
             return Ok(());
         }
         Some(Command::Serve {
@@ -565,7 +566,9 @@ fn main() -> Result<()> {
     // ---- 4. 演化 ----
     println!("\n[4/4] 启动自主进化闭环...");
     if cli.dry_run {
-        println!("      ⚠ DRY-RUN: 指标由静态成本模型估计, **不是真机测量值**, 不可作为性能结论。");
+        println!(
+            "      ⚠ DRY-RUN: 指标由静态成本模型估计, **不是真机测量值**, 不可作为性能结论。"
+        );
     }
 
     let config = EvolutionConfig {
@@ -592,9 +595,7 @@ fn main() -> Result<()> {
     match (evo.llm_available(), evo.llm_error()) {
         (true, _) => println!("      LLM 变异通道: 就绪 (单次多算子变异约需数分钟)"),
         (false, Some(e)) => println!("      LLM 变异通道: 不可用 ({e}) → 全程走本地确定性变异器"),
-        (false, None) => {
-            println!("      LLM 变异通道: 已按 --no-llm 关闭 → 全程走本地确定性变异器")
-        }
+        (false, None) => println!("      LLM 变异通道: 已按 --no-llm 关闭 → 全程走本地确定性变异器"),
     }
 
     let summary = evo.run()?;
@@ -642,7 +643,10 @@ fn main() -> Result<()> {
                     notes: e.notes.clone(),
                     operator_latency_ms: e.report.metrics.operator_latency_ms,
                     power_watt: e.report.metrics.power_watt,
-                    power_excluded_reason: e.report.power_exclusion_reason().map(str::to_string),
+                    power_excluded_reason: e
+                        .report
+                        .power_exclusion_reason()
+                        .map(str::to_string),
                     psnr_db: e.report.metrics.psnr_db,
                     source: e.report.source,
                 })
@@ -736,14 +740,7 @@ pub enum GoalCmd {
 fn run_goal(cmd: GoalCmd) -> Result<()> {
     use game_opt_loop::goal;
     match cmd {
-        GoalCmd::Draft {
-            intent,
-            game,
-            out,
-            proposer,
-            secrets,
-            llm_provider,
-        } => {
+        GoalCmd::Draft { intent, game, out, proposer, secrets, llm_provider } => {
             let generator = if proposer == "llm" {
                 let s = game_opt_loop::engine::generator::load_secrets(&secrets);
                 match game_opt_loop::engine::generator::Generator::from_secrets_with_timeout(
@@ -785,10 +782,7 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
         }
         GoalCmd::Edit { dir, goal: file } => {
             goal::edit(&dir, &file)?;
-            println!(
-                "goal.md 已替换 (格式校验通过): {}",
-                dir.join("goal.md").display()
-            );
+            println!("goal.md 已替换 (格式校验通过): {}", dir.join("goal.md").display());
             Ok(())
         }
         GoalCmd::Run {
@@ -811,14 +805,9 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
                 None
             } else {
                 let Some(script) = game_opt_loop::devlock::script_path(&phonefarm) else {
-                    anyhow::bail!(
-                        "找不到设备锁脚本; 没拿到锁不碰设备 (确实没人共用时加 --no-devlock)"
-                    );
+                    anyhow::bail!("找不到设备锁脚本; 没拿到锁不碰设备 (确实没人共用时加 --no-devlock)");
                 };
-                Some(goal::LockOpts {
-                    script,
-                    wait: game_opt_loop::devlock::parse_wait(&lock_wait)?,
-                })
+                Some(goal::LockOpts { script, wait: game_opt_loop::devlock::parse_wait(&lock_wait)? })
             };
             let opts = goal::RunOpts {
                 phonefarm,
@@ -931,11 +920,15 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
 /// 这样线上遇到可疑产物时, 不用先手工剪裁就能复现门禁判定。
 fn run_gate_file(path: &std::path::Path, track: TrackMode) -> Result<()> {
     let spec = tracks::spec(track);
-    let raw =
-        std::fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("读取 {} 失败", path.display()))?;
 
     let blocks = game_opt_loop::engine::generator::extract_shaders(&raw);
-    let shaders: Vec<String> = if blocks.is_empty() { vec![raw] } else { blocks };
+    let shaders: Vec<String> = if blocks.is_empty() {
+        vec![raw]
+    } else {
+        blocks
+    };
 
     let validator = game_opt_loop::engine::Validator::new();
     let mut passed = 0usize;
@@ -1013,10 +1006,7 @@ fn count_reference_frames(path: &str) -> Result<usize> {
         return Ok(1);
     }
     if !p.is_dir() {
-        anyhow::bail!(
-            "既不是文件也不是目录 (当前工作目录 {:?})",
-            std::env::current_dir()?
-        );
+        anyhow::bail!("既不是文件也不是目录 (当前工作目录 {:?})", std::env::current_dir()?);
     }
     let n = std::fs::read_dir(p)?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -1049,10 +1039,7 @@ fn print_summary(s: &EvolutionSummary, evo: &Evolution) {
             println!("    {code}: {n}");
         }
     }
-    println!(
-        "档案 {} 条, Pareto 前沿 {} 条",
-        s.archive_size, s.front_size
-    );
+    println!("档案 {} 条, Pareto 前沿 {} 条", s.archive_size, s.front_size);
 
     let series: Vec<String> = s
         .best_psnr_series
@@ -1127,10 +1114,7 @@ fn print_summary(s: &EvolutionSummary, evo: &Evolution) {
             e.id,
             e.report.metrics.operator_latency_ms,
             // 没参与支配排序的功耗后面缀个 *, 免得表格看着像它也在被比较。
-            match (
-                e.report.metrics.power_watt,
-                e.report.power_exclusion_reason()
-            ) {
+            match (e.report.metrics.power_watt, e.report.power_exclusion_reason()) {
                 (Some(w), None) => format!("{w:.3}"),
                 (Some(w), Some(_)) => format!("{w:.3}*"),
                 (None, _) => "未测量".to_string(),

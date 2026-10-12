@@ -404,9 +404,7 @@ pub fn validate(params: &Params, wl: &Whitelist) -> Result<(), String> {
 /// "放宽上限"排在"抬高下限"之前, 少踩一次内核的 `min<=max` 夹取。
 pub fn plan(params: &Params, wl: &Whitelist) -> Vec<PlanEntry> {
     let rank = |pid: &str| -> u8 {
-        if pid.ends_with("max_freq")
-            || pid.ends_with("max_pwrlevel")
-            || pid.contains("peak_refresh")
+        if pid.ends_with("max_freq") || pid.ends_with("max_pwrlevel") || pid.contains("peak_refresh")
         {
             0
         } else {
@@ -478,8 +476,7 @@ pub enum Origin {
 }
 
 /// 系统提示词。与 Python 版同一套硬规矩。
-pub const SYSTEM_PROMPT: &str =
-    "你是移动端系统性能调优专家。给你一台已 root 的手机的可写系统参数白名单, \
+pub const SYSTEM_PROMPT: &str = "你是移动端系统性能调优专家。给你一台已 root 的手机的可写系统参数白名单, \
 以及历史上每组参数在真机游戏负载下的实测结果。你的任务是挑下一批候选参数组。\n\
 硬规矩:\n\
 1. 只能用白名单里的参数名, 值只能从给出的取值表里选, 一个字都不能改。\n\
@@ -561,9 +558,7 @@ pub fn parse_proposals(text: &str, n: usize) -> Vec<Proposal> {
 
     let mut out = Vec::new();
     for item in arr {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
+        let Some(obj) = item.as_object() else { continue };
         let Some(params) = obj.get("params").and_then(|p| p.as_object()) else {
             continue;
         };
@@ -643,11 +638,10 @@ pub fn local_mutate(wl: &Whitelist, history: &[History], n: usize, seed: u64) ->
             let spec = &wl[pid];
             let cur = spec.current.trim();
             let numeric = !spec.values.is_empty()
-                && spec.values.iter().all(|v| {
-                    v.trim_start_matches('-')
-                        .chars()
-                        .all(|c| c.is_ascii_digit())
-                });
+                && spec
+                    .values
+                    .iter()
+                    .all(|v| v.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()));
             let candidates: Vec<&String> = if numeric && cur.parse::<i64>().is_ok() {
                 let c: i64 = cur.parse().unwrap();
                 // pwrlevel 语义反过来: 0 是最快档, 所以"更激进" = 往小走。
@@ -837,11 +831,7 @@ setting.system.min_refresh_rate.cur=60
     #[test]
     fn thermal_protection_never_enters_the_whitelist() {
         let w = wl();
-        assert!(
-            w.keys().all(|k| !denied(k)),
-            "{:?}",
-            w.keys().collect::<Vec<_>>()
-        );
+        assert!(w.keys().all(|k| !denied(k)), "{:?}", w.keys().collect::<Vec<_>>());
         assert!(w.values().all(|s| !denied(&s.path)));
         // 即使探测结果说它可写可生效。
         assert!(!w.contains_key("thermal.zone0.trip_point_0_temp"));
@@ -882,26 +872,14 @@ setting.system.min_refresh_rate.cur=60
     fn cross_parameter_constraints_hold() {
         let w = wl();
         let bad = Params::from([
-            (
-                "cpu.policy0.scaling_min_freq".to_string(),
-                "1200000".to_string(),
-            ),
-            (
-                "cpu.policy0.scaling_max_freq".to_string(),
-                "700000".to_string(),
-            ),
+            ("cpu.policy0.scaling_min_freq".to_string(), "1200000".to_string()),
+            ("cpu.policy0.scaling_max_freq".to_string(), "700000".to_string()),
         ]);
         assert!(validate(&bad, &w).unwrap_err().contains("超过同簇 max"));
 
         let ok = Params::from([
-            (
-                "cpu.policy0.scaling_min_freq".to_string(),
-                "700000".to_string(),
-            ),
-            (
-                "cpu.policy0.scaling_max_freq".to_string(),
-                "1200000".to_string(),
-            ),
+            ("cpu.policy0.scaling_min_freq".to_string(), "700000".to_string()),
+            ("cpu.policy0.scaling_max_freq".to_string(), "1200000".to_string()),
         ]);
         assert!(validate(&ok, &w).is_ok());
 
@@ -917,10 +895,7 @@ setting.system.min_refresh_rate.cur=60
     fn a_missing_sibling_does_not_cause_a_false_inversion() {
         let mut w = wl();
         w.remove("cpu.policy0.scaling_max_freq");
-        let p = Params::from([(
-            "cpu.policy0.scaling_min_freq".to_string(),
-            "1200000".to_string(),
-        )]);
+        let p = Params::from([("cpu.policy0.scaling_min_freq".to_string(), "1200000".to_string())]);
         assert!(validate(&p, &w).is_ok(), "{:?}", validate(&p, &w));
     }
 
@@ -929,14 +904,8 @@ setting.system.min_refresh_rate.cur=60
     fn plan_is_deterministic_and_puts_ceilings_first() {
         let w = wl();
         let p = Params::from([
-            (
-                "cpu.policy0.scaling_min_freq".to_string(),
-                "700000".to_string(),
-            ),
-            (
-                "cpu.policy0.scaling_max_freq".to_string(),
-                "1200000".to_string(),
-            ),
+            ("cpu.policy0.scaling_min_freq".to_string(), "700000".to_string()),
+            ("cpu.policy0.scaling_max_freq".to_string(), "1200000".to_string()),
         ]);
         let a = plan(&p, &w);
         assert_eq!(a, plan(&p, &w));
@@ -956,14 +925,7 @@ setting.system.min_refresh_rate.cur=60
 
     #[test]
     fn garbage_replies_yield_nothing_rather_than_panicking() {
-        for raw in [
-            "",
-            "抱歉我不能",
-            "{\"not\":\"an array\"}",
-            "[",
-            "[{}]",
-            "[{\"params\":{}}]",
-        ] {
+        for raw in ["", "抱歉我不能", "{\"not\":\"an array\"}", "[", "[{}]", "[{\"params\":{}}]"] {
             assert!(parse_proposals(raw, 4).is_empty(), "{raw}");
         }
     }

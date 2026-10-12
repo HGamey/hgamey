@@ -48,9 +48,7 @@ pub struct Pitfall {
 
 pub const GENSHIN_GAMEPAD: Pitfall = Pitfall {
     id: Cow::Borrowed("genshin_gamepad_dead_7_1_0"),
-    symptom: Cow::Borrowed(
-        "原神 7.1.0 起手柄输入失效, 摇杆推不动视角 —— 负载看着在跑, 画面其实没动",
-    ),
+    symptom: Cow::Borrowed("原神 7.1.0 起手柄输入失效, 摇杆推不动视角 —— 负载看着在跑, 画面其实没动"),
     workaround: Cow::Borrowed("改用触控负载 (phonefarm knobs/gray/workload_spin_touch_v1.json)"),
 };
 
@@ -69,9 +67,7 @@ pub const GENSHIN_NO_BACK_NO_A: Pitfall = Pitfall {
 pub const GENSHIN_FPS_SETTING: Pitfall = Pitfall {
     id: Cow::Borrowed("ingame_fps_setting_unrecorded"),
     symptom: Cow::Borrowed("游戏内帧率/画质设置改了, 之前所有基线全部作废, 而报告里看不出来"),
-    workaround: Cow::Borrowed(
-        "每轮把游戏内帧率设置记进 conditions.ingame_fps_setting; 量不到就如实写 null",
-    ),
+    workaround: Cow::Borrowed("每轮把游戏内帧率设置记进 conditions.ingame_fps_setting; 量不到就如实写 null"),
 };
 
 pub const CHARGING_POWER_INVALID: Pitfall = Pitfall {
@@ -82,9 +78,7 @@ pub const CHARGING_POWER_INVALID: Pitfall = Pitfall {
 
 pub const FAN_STATE_UNRECORDED: Pitfall = Pitfall {
     id: Cow::Borrowed("fan_state_unrecorded"),
-    symptom: Cow::Borrowed(
-        "挂不挂外置风扇, 同一台机器稳态温度差十几度, 帧时与功耗跨风扇状态不可比",
-    ),
+    symptom: Cow::Borrowed("挂不挂外置风扇, 同一台机器稳态温度差十几度, 帧时与功耗跨风扇状态不可比"),
     workaround: Cow::Borrowed("每轮把风扇状态记进 conditions.fan; 量不到写 unknown, 别猜"),
 };
 
@@ -319,11 +313,10 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
     let needle = name.trim();
     let lower = needle.to_ascii_lowercase();
 
-    if let Some(k) = KNOWN.iter().find(|k| {
-        k.aliases
-            .iter()
-            .any(|a| a.eq_ignore_ascii_case(&lower) || *a == needle)
-    }) {
+    if let Some(k) = KNOWN
+        .iter()
+        .find(|k| k.aliases.iter().any(|a| a.eq_ignore_ascii_case(&lower) || *a == needle))
+    {
         let carrier = k.carrier.and_then(|c| roots.find(c));
         let box_kind = if carrier.is_some() {
             BoxKind::WhiteBox
@@ -335,7 +328,11 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
         return Target {
             input: needle.to_string(),
             display: k.display.to_string(),
-            package: Some(package_override.unwrap_or(k.package).to_string()),
+            package: Some(
+                package_override
+                    .unwrap_or(k.package)
+                    .to_string(),
+            ),
             box_kind,
             carrier,
             workload: Workload {
@@ -347,9 +344,7 @@ pub fn resolve(name: &str, package_override: Option<&str>, roots: &CarrierRoots)
                 launch: k.launch.as_ref().map(|l| Launch {
                     extras: l.extras.split_whitespace().collect::<Vec<_>>().join(" "),
                     marker: l.marker.map(str::to_string),
-                    static_extras: l
-                        .static_extras
-                        .map(|e| e.split_whitespace().collect::<Vec<_>>().join(" ")),
+                    static_extras: l.static_extras.map(|e| e.split_whitespace().collect::<Vec<_>>().join(" ")),
                 }),
             },
             pitfalls: k.pitfalls.to_vec(),
@@ -500,11 +495,7 @@ mod tests {
     fn megacity_is_a_self_driven_black_box() {
         let t = resolve("megacity", None, &CarrierRoots::default());
         assert_eq!(t.package.as_deref(), Some("com.unity.megacity.metro"));
-        assert_eq!(
-            t.box_kind,
-            BoxKind::BlackBox,
-            "② 靠灰档层注入, 对 optimize 是黑盒"
-        );
+        assert_eq!(t.box_kind, BoxKind::BlackBox, "② 靠灰档层注入, 对 optimize 是黑盒");
         assert!(t.workload.script_present);
         assert_eq!(t.workload.render_comm.as_deref(), Some("UnityGfxDeviceW"));
         let l = t.workload.launch.unwrap();
@@ -512,9 +503,7 @@ mod tests {
         assert_eq!(l.marker.as_deref(), Some("megacity_started"));
         assert!(l.static_extras.unwrap().contains("city_static"));
         // 包名也认
-        assert_eq!(
-            resolve("com.unity.megacity.metro", None, &CarrierRoots::default()).display,
-            "Megacity"
-        );
+        assert_eq!(resolve("com.unity.megacity.metro", None, &CarrierRoots::default()).display, "Megacity");
     }
 }
+

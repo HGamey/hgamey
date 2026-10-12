@@ -223,10 +223,7 @@ pub struct Caps {
 impl Caps {
     /// 有没有哪一层是开的。三层全关时只测量, 不改动。
     pub fn any_layer_open(&self) -> bool {
-        self.layers.shader.open
-            || self.layers.gray.open
-            || self.layers.sysparam.open
-            || self.layers.whitebox.open
+        self.layers.shader.open || self.layers.gray.open || self.layers.sysparam.open || self.layers.whitebox.open
     }
 }
 
@@ -299,12 +296,8 @@ pub fn probe_script(package: Option<&str>) -> String {
     // 所以吞掉 stderr 并给一个哨兵值, 免得把"没有 su"变成一条看不懂的报错。
     s.push_str("echo \"root_uid=$(su -c id -u 2>/dev/null || echo NA)\";");
     s.push_str("echo \"vklayers=$(getprop debug.vulkan.layers)\";");
-    s.push_str(
-        "echo \"battery_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null)\";",
-    );
-    s.push_str(
-        "echo \"battery_capacity=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null)\";",
-    );
+    s.push_str("echo \"battery_status=$(cat /sys/class/power_supply/battery/status 2>/dev/null)\";");
+    s.push_str("echo \"battery_capacity=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null)\";");
     s.push_str(
         "echo \"battery_current_now=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null)\";",
     );
@@ -429,9 +422,9 @@ impl Prober {
                 out.status.code()
             );
         }
-        Ok(crate::harness::parse_device_list(&String::from_utf8_lossy(
-            &out.stdout,
-        )))
+        Ok(crate::harness::parse_device_list(
+            &String::from_utf8_lossy(&out.stdout),
+        ))
     }
 
     /// 在设备上跑一条只读命令。
@@ -764,13 +757,7 @@ zone=cpu-0-0 38000\npkg_path=package:/data/app/x/base.apk\n";
         assert!(caps.layers.sysparam.open, "有 root 就该开系统参数层");
         assert!(caps.layers.gray.open, "有 root + 应用已装就该开灰档层");
         assert!(caps.layers.shader.open, "能挂层的黑盒也该开算子层");
-        assert!(caps
-            .layers
-            .shader
-            .route
-            .as_deref()
-            .unwrap()
-            .contains("vulkan_layer"));
+        assert!(caps.layers.shader.route.as_deref().unwrap().contains("vulkan_layer"));
         assert!(caps.read_only, "摸底必须是只读的");
     }
 
@@ -778,11 +765,7 @@ zone=cpu-0-0 38000\npkg_path=package:/data/app/x/base.apk\n";
     fn unrooted_device_shuts_everything_and_says_why() {
         let caps = assemble(&blackbox_target(), "emulator-5554", UNROOTED);
         assert!(!caps.any_layer_open());
-        for v in [
-            &caps.layers.shader,
-            &caps.layers.gray,
-            &caps.layers.sysparam,
-        ] {
+        for v in [&caps.layers.shader, &caps.layers.gray, &caps.layers.sysparam] {
             assert!(!v.reason.is_empty(), "关掉一层必须给出理由");
             assert!(!v.blockers.is_empty(), "关掉一层必须说还差什么");
         }
@@ -831,10 +814,7 @@ zone=cpu-0-0 38000\npkg_path=package:/data/app/x/base.apk\n";
         let mut t = blackbox_target();
         t.package = None;
         let caps = assemble(&t, "s", "root_uid=0\n");
-        assert!(
-            caps.device.game_installed.value.is_none(),
-            "不知道包名就是不知道"
-        );
+        assert!(caps.device.game_installed.value.is_none(), "不知道包名就是不知道");
         assert!(caps.device.game_installed.detail.contains("包名"));
     }
 
@@ -893,9 +873,7 @@ zone=pm8550b-bcl 105000\n";
         let idx = s.find("charge_node=").expect("探测脚本里没有停充节点检查");
         let before = &s[..idx];
         assert!(
-            before
-                .rfind("su -c '")
-                .is_some_and(|su| su > before.rfind("';").unwrap_or(0)),
+            before.rfind("su -c '").is_some_and(|su| su > before.rfind("';").unwrap_or(0)),
             "停充节点的存在性检查不在 su 里: {s}"
         );
     }
@@ -907,11 +885,7 @@ zone=pm8550b-bcl 105000\n";
         let caps = assemble(&blackbox_target(), "s", &raw);
         assert!(caps.layers.gray.open);
         assert!(
-            caps.layers
-                .gray
-                .blockers
-                .iter()
-                .any(|b| b.contains("debug.vulkan.layers")),
+            caps.layers.gray.blockers.iter().any(|b| b.contains("debug.vulkan.layers")),
             "属性非空时必须提醒: {:?}",
             caps.layers.gray.blockers
         );
@@ -919,11 +893,12 @@ zone=pm8550b-bcl 105000\n";
 
     #[test]
     fn prober_uses_the_injected_shell() {
-        let p = Prober::new("/nonexistent/phonefarm").with_shell(|serial, cmd| {
-            assert_eq!(serial, "S1");
-            assert!(cmd.contains("getprop"));
-            Ok(ROOTED.to_string())
-        });
+        let p = Prober::new("/nonexistent/phonefarm")
+            .with_shell(|serial, cmd| {
+                assert_eq!(serial, "S1");
+                assert!(cmd.contains("getprop"));
+                Ok(ROOTED.to_string())
+            });
         let caps = p.run(&blackbox_target(), "S1").unwrap();
         assert!(caps.device.root.is_true());
     }

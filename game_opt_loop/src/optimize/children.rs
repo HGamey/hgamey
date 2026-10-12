@@ -14,9 +14,7 @@ static PIDS: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
 pub fn register(pid: u32) {
     let pid = pid as i32;
     for s in PIDS.iter() {
-        if s.compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
+        if s.compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
             return;
         }
     }
@@ -31,10 +29,7 @@ pub fn unregister(pid: u32) {
 
 /// 现在登记着的子进程。
 pub fn live() -> Vec<i32> {
-    PIDS.iter()
-        .map(|s| s.load(Ordering::SeqCst))
-        .filter(|p| *p > 0)
-        .collect()
+    PIDS.iter().map(|s| s.load(Ordering::SeqCst)).filter(|p| *p > 0).collect()
 }
 
 /// 给每个登记着的子进程发信号 (信号处理里调)。

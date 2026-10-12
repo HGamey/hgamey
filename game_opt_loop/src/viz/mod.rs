@@ -27,7 +27,9 @@ pub mod runlog;
 pub mod serve;
 pub mod stats;
 
-use model::{evidence_file, Condition, EvidenceFile, Layer, Notice, Round, RoundVerdict, Stat};
+use model::{
+    evidence_file, Condition, EvidenceFile, Layer, Notice, Round, RoundVerdict, Stat,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -494,9 +496,7 @@ fn unreported_round(
                 &d.join("summary.json"),
                 &format!(
                     "{} 汇总",
-                    d.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default()
+                    d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
                 ),
             )
         })
@@ -520,11 +520,7 @@ fn unreported_round(
         candidates: Vec::new(),
         arms: None,
         criteria: Vec::new(),
-        conditions: vec![Condition::new(
-            "验收报告",
-            None,
-            Some("目录下没有 report.json"),
-        )],
+        conditions: vec![Condition::new("验收报告", None, Some("目录下没有 report.json"))],
         pareto: None,
         evidence,
         notes: Vec::new(),
@@ -635,7 +631,8 @@ fn sysparam_layer(paths: &VizPaths) -> Layer {
             arm_parent: "loop_v1/runs",
             a_prefix: "ctrl",
             b_prefix: "knob",
-            what: "内核侧总线与 DDR 频率投票 (具体改了哪个键看下面的两臂快照差异)".to_string(),
+            what: "内核侧总线与 DDR 频率投票 (具体改了哪个键看下面的两臂快照差异)"
+                .to_string(),
             extra_evidence: vec![],
         },
         AbSpec {
@@ -685,11 +682,7 @@ fn notices(paths: &VizPaths) -> Vec<Notice> {
     let mut out = Vec::new();
     let evidence_dir = paths.gol_root.join("evidence");
 
-    for name in [
-        "M1_report.json",
-        "M0_report.json",
-        "M2_realframes_report.json",
-    ] {
+    for name in ["M1_report.json", "M0_report.json", "M2_realframes_report.json"] {
         let path = evidence_dir.join(name);
         let Ok(raw) = std::fs::read_to_string(&path) else {
             continue;
@@ -700,10 +693,7 @@ fn notices(paths: &VizPaths) -> Vec<Notice> {
         let Some(r) = v.get("retraction") else {
             continue;
         };
-        let scope = r
-            .get("scope")
-            .and_then(|s| s.as_str())
-            .unwrap_or("部分结论");
+        let scope = r.get("scope").and_then(|s| s.as_str()).unwrap_or("部分结论");
         let date = r.get("date").and_then(|s| s.as_str()).unwrap_or("未记日期");
         let mut body = r
             .get("statement")

@@ -174,7 +174,8 @@ impl SrGenome {
         let weight_expr = match self.kernel {
             Kernel::Bilinear => {
                 // 可分离三角权重, 半径外为 0。
-                "        float w = max(0.0, 1.0 - abs(d.x)) * max(0.0, 1.0 - abs(d.y));".to_string()
+                "        float w = max(0.0, 1.0 - abs(d.x)) * max(0.0, 1.0 - abs(d.y));"
+                    .to_string()
             }
             Kernel::Gaussian => format!(
                 "        float w = exp(-0.5 * dot(d, d) / ({:.4} * {:.4}));",
@@ -218,7 +219,9 @@ float crWeight(float x, float b) {
         let mut track_minmax = String::new();
         let mut apply_clamp = String::new();
         if self.clamp_ringing {
-            track_minmax.push_str("        nmin = min(nmin, s);\n        nmax = max(nmax, s);\n");
+            track_minmax.push_str(
+                "        nmin = min(nmin, s);\n        nmax = max(nmax, s);\n",
+            );
             apply_clamp.push_str(
                 "    // 邻域包络夹紧: 负瓣核与锐化都会过冲, 夹回去才不产生振铃亮边。\n\
                  \x20   col = clamp(col, nmin, nmax);\n",
@@ -361,16 +364,8 @@ impl FgGenome {
             "search r={} / phase={:.2}{}{}",
             self.search_radius,
             self.phase,
-            if self.static_fast_path {
-                " / fastpath"
-            } else {
-                ""
-            },
-            if self.occlusion_fallback {
-                " / occl-fallback"
-            } else {
-                ""
-            },
+            if self.static_fast_path { " / fastpath" } else { "" },
+            if self.occlusion_fallback { " / occl-fallback" } else { "" },
         )
     }
 
@@ -577,24 +572,13 @@ mod tests {
             g = g.mutate(&mut rng);
             seen.insert(g.describe());
         }
-        assert!(
-            seen.len() > 8,
-            "变异多样性不足: 只见到 {} 种形态",
-            seen.len()
-        );
+        assert!(seen.len() > 8, "变异多样性不足: 只见到 {} 种形态", seen.len());
     }
 
     #[test]
     fn tap_count_tracks_side_length() {
         for (side, taps) in [(2, 4), (3, 9), (4, 16), (5, 25)] {
-            assert_eq!(
-                SrGenome {
-                    side,
-                    ..Default::default()
-                }
-                .taps(),
-                taps
-            );
+            assert_eq!(SrGenome { side, ..Default::default() }.taps(), taps);
         }
     }
 
