@@ -23,6 +23,7 @@ naga = { version = "30.0", default-features = false, features = ["glsl-in", "wgs
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "net", "macros", "signal", "time"] }
 serde_yaml = "0.9"
+libc = "0.2"
 
 [lib]
 name = "game_opt_loop"
