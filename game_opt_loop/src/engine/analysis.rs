@@ -255,7 +255,10 @@ fn collect_in_block(func: &Function, block: &Block, defs: &mut Vec<Vec<Handle<Ex
 }
 
 /// 剥掉 Access / AccessIndex, 找到指针最终指向的局部变量。
-fn base_local(func: &Function, mut handle: Handle<Expression>) -> Option<Handle<naga::LocalVariable>> {
+fn base_local(
+    func: &Function,
+    mut handle: Handle<Expression>,
+) -> Option<Handle<naga::LocalVariable>> {
     for _ in 0..32 {
         match func.expressions.try_get(handle).ok()? {
             Expression::LocalVariable(v) => return Some(*v),
@@ -295,9 +298,7 @@ fn type_size(module: &Module, ty: Handle<naga::Type>) -> u32 {
             };
             type_size(module, *base).saturating_mul(n)
         }
-        TypeInner::Struct { members, .. } => {
-            members.iter().map(|m| type_size(module, m.ty)).sum()
-        }
+        TypeInner::Struct { members, .. } => members.iter().map(|m| type_size(module, m.ty)).sum(),
         _ => 0,
     }
 }
@@ -699,14 +700,13 @@ impl<'a> Walker<'a> {
         // `negated == false` 时该条件成立即 break, 故「继续循环」的条件是它的反面。
         let continue_op = if negated { *op } else { negate_cmp(*op)? };
 
-        let (var, bound, var_on_left) =
-            match (self.as_local_load(*left), self.const_i64(*right)) {
-                (Some(v), Some(c)) => (v, c, true),
-                _ => match (self.const_i64(*left), self.as_local_load(*right)) {
-                    (Some(c), Some(v)) => (v, c, false),
-                    _ => return None,
-                },
-            };
+        let (var, bound, var_on_left) = match (self.as_local_load(*left), self.const_i64(*right)) {
+            (Some(v), Some(c)) => (v, c, true),
+            _ => match (self.const_i64(*left), self.as_local_load(*right)) {
+                (Some(c), Some(v)) => (v, c, false),
+                _ => return None,
+            },
+        };
 
         Some(Comparison {
             var,
@@ -967,9 +967,10 @@ fn block_always_returns(block: &Block) -> bool {
                 }
             }
             Statement::If { accept, reject, .. }
-                if block_always_returns(accept) && block_always_returns(reject) => {
-                    return true;
-                }
+                if block_always_returns(accept) && block_always_returns(reject) =>
+            {
+                return true;
+            }
             _ => {}
         }
     }

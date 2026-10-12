@@ -17,6 +17,7 @@ use crate::tracks::TrackSpec;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// 一个 OpenAI 兼容的推理服务。
@@ -35,10 +36,23 @@ pub struct Provider {
     /// 变异任务要的是产量与多样性, 不是单个候选的深思熟虑 ——
     /// 好不好由真机裁决, 不由模型自己想清楚。
     pub thinking_disable: bool,
+    /// 服务只接受固定温度时填这里 (Kimi For Coding 只认 0.6), 否则用默认 0.85。
+    pub temperature: Option<f64>,
 }
 
 /// 候选服务表, 按优先级排列。与 phonefarm 现有的 provider 配置保持同源。
 pub const PROVIDERS: &[Provider] = &[
+    // Kimi For Coding 排第一: 手上有好几个号, 可以轮换 (KIMI_KEY、KIMI_KEY_2 … 或
+    // KIMI_KEYS_FILE), 一个号周额度用完 (403) 或被限流 (429) 就换下一个。
+    Provider {
+        name: "kimi-for-coding",
+        url: "https://api.kimi.com/coding/v1/chat/completions",
+        model: "kimi-for-coding",
+        key_env: "KIMI_KEY",
+        timeout_s: 420,
+        thinking_disable: true,
+        temperature: Some(0.6),
+    },
     Provider {
         name: "glm-4.7",
         url: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
@@ -46,14 +60,7 @@ pub const PROVIDERS: &[Provider] = &[
         key_env: "GLM_KEY",
         timeout_s: 420,
         thinking_disable: true,
-    },
-    Provider {
-        name: "kimi-k2.7-code",
-        url: "https://api.kimi.com/coding/v1/chat/completions",
-        model: "kimi-k2.7-code",
-        key_env: "KIMI_KEY",
-        timeout_s: 420,
-        thinking_disable: true,
+        temperature: None,
     },
     Provider {
         name: "siliconflow-qwen3-coder",
@@ -62,6 +69,7 @@ pub const PROVIDERS: &[Provider] = &[
         key_env: "SILICONFLOW_KEY",
         timeout_s: 420,
         thinking_disable: false,
+        temperature: None,
     },
     Provider {
         name: "openrouter",
@@ -70,6 +78,7 @@ pub const PROVIDERS: &[Provider] = &[
         key_env: "OPENROUTER_KEY",
         timeout_s: 420,
         thinking_disable: false,
+        temperature: None,
     },
 ];
 
@@ -112,15 +121,74 @@ pub fn parse_secrets(text: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// 同一家服务最多认几个号: `KEY`, `KEY_2` … `KEY_9`。
+const MAX_KEYS_PER_PROVIDER: usize = 9;
+
+fn key_slot(key_env: &str, i: usize) -> String {
+    if i == 1 {
+        key_env.to_string()
+    } else {
+        format!("{key_env}_{i}")
+    }
+}
+
+/// 某家服务手上的全部密钥, 按 `KEY`, `KEY_2` … 的顺序, 去重。
+pub fn provider_keys(secrets: &BTreeMap<String, String>, p: &Provider) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for i in 1..=MAX_KEYS_PER_PROVIDER {
+        if let Some(v) = secrets.get(&key_slot(p.key_env, i)) {
+            let v = v.trim();
+            if !v.is_empty() && !out.iter().any(|k| k == v) {
+                out.push(v.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 解析一份多密钥文件: 每行一个号, `名字 密钥` 或只写 `密钥`, `#` 开头是注释。
+pub fn parse_key_file(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_whitespace().last().map(str::to_string))
+        .collect()
+}
+
 /// 从磁盘读密钥表。环境变量优先于文件。
+///
+/// 除了 `KEY` / `KEY_2` … 之外, 还认 `KEYS_FILE` (如 `KIMI_KEYS_FILE`):
+/// 指向一份每行一个号的文件, 依次填进还空着的槽位。
 pub fn load_secrets(path: &Path) -> BTreeMap<String, String> {
     let mut secrets = std::fs::read_to_string(path)
         .map(|t| parse_secrets(&t))
         .unwrap_or_default();
     for p in PROVIDERS {
-        if let Ok(v) = std::env::var(p.key_env) {
-            if !v.trim().is_empty() {
-                secrets.insert(p.key_env.to_string(), v);
+        for i in 1..=MAX_KEYS_PER_PROVIDER {
+            let slot = key_slot(p.key_env, i);
+            if let Ok(v) = std::env::var(&slot) {
+                if !v.trim().is_empty() {
+                    secrets.insert(slot, v);
+                }
+            }
+        }
+        let file_var = format!("{}S_FILE", p.key_env);
+        let file = std::env::var(&file_var)
+            .ok()
+            .or_else(|| secrets.get(&file_var).cloned());
+        if let Some(file) = file {
+            let have = provider_keys(&secrets, p);
+            let extra = std::fs::read_to_string(file.trim())
+                .map(|t| parse_key_file(&t))
+                .unwrap_or_default();
+            let mut free = (1..=MAX_KEYS_PER_PROVIDER)
+                .map(|i| key_slot(p.key_env, i))
+                .filter(|s| !secrets.contains_key(s))
+                .collect::<Vec<_>>()
+                .into_iter();
+            for k in extra.into_iter().filter(|k| !have.contains(k)) {
+                let Some(slot) = free.next() else { break };
+                secrets.insert(slot, k);
             }
         }
     }
@@ -132,14 +200,19 @@ pub fn select_provider<'a>(
     secrets: &BTreeMap<String, String>,
     prefer: Option<&str>,
 ) -> Option<&'a Provider> {
-    if let Some(name) = prefer {
-        return PROVIDERS
-            .iter()
-            .find(|p| p.name == name && secrets.contains_key(p.key_env));
-    }
+    candidate_providers(secrets, prefer).into_iter().next()
+}
+
+/// 有密钥的服务, 按优先级。指名了就只给那一家 (没密钥则为空, 不静默换别家)。
+fn candidate_providers<'a>(
+    secrets: &BTreeMap<String, String>,
+    prefer: Option<&str>,
+) -> Vec<&'a Provider> {
     PROVIDERS
         .iter()
-        .find(|p| secrets.get(p.key_env).is_some_and(|v| !v.trim().is_empty()))
+        .filter(|p| prefer.is_none_or(|n| p.name == n))
+        .filter(|p| !provider_keys(secrets, p).is_empty())
+        .collect()
 }
 
 /// 喂给 LLM 的一条历史记录。
@@ -229,9 +302,7 @@ pub fn user_prompt(ctx: &MutationContext) -> String {
     s.push_str("\n```\n\n");
 
     if ctx.elites.is_empty() {
-        s.push_str(
-            "== 历史优胜 ==\n还没有任何通过真机验证的算子。请从模板出发做第一批探索。\n\n",
-        );
+        s.push_str("== 历史优胜 ==\n还没有任何通过真机验证的算子。请从模板出发做第一批探索。\n\n");
     } else {
         s.push_str("== 历史优胜 (Pareto 前沿; 请在它们的基础上继续推进) ==\n");
         for e in &ctx.elites {
@@ -309,20 +380,28 @@ pub fn extract_shaders(text: &str) -> Vec<String> {
     out
 }
 
+/// 一条线路的失败: 换下一条可能有救, 还是换了也没用。
+enum Attempt {
+    Next(anyhow::Error),
+    Fatal(anyhow::Error),
+}
+
 /// LLM 客户端。
+///
+/// 手里是一串「服务 + 密钥」线路: 同一家的多个号排在一起, 别家的排在后面。
+/// 当前线路因为额度、限流、鉴权或网络出错时, 换下一条重试; 成功的那条记住,
+/// 下次从它开始, 不用每次都先撞一遍已经没额度的号。
 pub struct Generator {
-    provider: &'static Provider,
-    api_key: String,
+    routes: Vec<(&'static Provider, String)>,
+    current: AtomicUsize,
+    timeout_override: Option<u64>,
     client: reqwest::blocking::Client,
 }
 
 impl Generator {
     /// 按 secrets 挑一个可用服务建客户端。没有任何可用密钥时返回 Err,
     /// 上层据此降级到本地变异器。
-    pub fn from_secrets(
-        secrets: &BTreeMap<String, String>,
-        prefer: Option<&str>,
-    ) -> Result<Self> {
+    pub fn from_secrets(secrets: &BTreeMap<String, String>, prefer: Option<&str>) -> Result<Self> {
         Self::from_secrets_with_timeout(secrets, prefer, None)
     }
 
@@ -332,65 +411,128 @@ impl Generator {
         prefer: Option<&str>,
         timeout_s: Option<u64>,
     ) -> Result<Self> {
-        let provider = select_provider(secrets, prefer)
-            .ok_or_else(|| anyhow!("secrets.env 里没有任何可用的模型密钥 (需要 {})",
-                PROVIDERS.iter().map(|p| p.key_env).collect::<Vec<_>>().join(" / ")))?;
-        let api_key = secrets
-            .get(provider.key_env)
-            .cloned()
-            .ok_or_else(|| anyhow!("缺少 {}", provider.key_env))?;
+        let routes: Vec<(&'static Provider, String)> = candidate_providers(secrets, prefer)
+            .into_iter()
+            .flat_map(|p| provider_keys(secrets, p).into_iter().map(move |k| (p, k)))
+            .collect();
+        if routes.is_empty() {
+            bail!(
+                "secrets.env 里没有任何可用的模型密钥 (需要 {})",
+                PROVIDERS
+                    .iter()
+                    .map(|p| p.key_env)
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            );
+        }
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(timeout_s.unwrap_or(provider.timeout_s)))
             .build()
             .context("构造 HTTP 客户端失败")?;
         Ok(Self {
-            provider,
-            api_key,
+            routes,
+            current: AtomicUsize::new(0),
+            timeout_override: timeout_s,
             client,
         })
     }
 
+    /// 当前 (最近一次成功或下一次先试) 的服务名。
     pub fn provider_name(&self) -> &'static str {
-        self.provider.name
+        self.routes[self.current.load(Ordering::Relaxed) % self.routes.len()]
+            .0
+            .name
     }
 
-    /// 发一轮变异请求, 返回原始文本。
+    /// 一共有几条线路 (服务 × 号)。
+    pub fn route_count(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// 发一轮变异请求, 返回原始文本。线路出错时依次换号、换服务。
     pub fn complete(&self, system: &str, user: &str) -> Result<String> {
+        let n = self.routes.len();
+        let start = self.current.load(Ordering::Relaxed) % n;
+        let mut errors = Vec::new();
+        for step in 0..n {
+            let i = (start + step) % n;
+            let (provider, key) = &self.routes[i];
+            match self.complete_on(provider, key, system, user) {
+                Ok(text) => {
+                    self.current.store(i, Ordering::Relaxed);
+                    return Ok(text);
+                }
+                Err(Attempt::Fatal(e)) => return Err(e),
+                Err(Attempt::Next(e)) => {
+                    // 只记服务名和第几个号, 不记密钥。
+                    let nth = self.routes[..i]
+                        .iter()
+                        .filter(|r| r.0.name == provider.name)
+                        .count()
+                        + 1;
+                    errors.push(format!("{} 第 {nth} 个号: {e:#}", provider.name));
+                }
+            }
+        }
+        bail!("所有线路都失败了:\n  {}", errors.join("\n  "))
+    }
+
+    fn complete_on(
+        &self,
+        provider: &Provider,
+        key: &str,
+        system: &str,
+        user: &str,
+    ) -> std::result::Result<String, Attempt> {
+        let next = |e: anyhow::Error| Attempt::Next(e);
         let mut body = serde_json::json!({
-            "model": self.provider.model,
+            "model": provider.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": 0.85,
+            "temperature": provider.temperature.unwrap_or(0.85),
             "stream": false,
         });
-        if self.provider.thinking_disable {
+        if provider.thinking_disable {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         }
 
         let resp = self
             .client
-            .post(self.provider.url)
-            .bearer_auth(&self.api_key)
+            .post(provider.url)
+            .timeout(Duration::from_secs(
+                self.timeout_override.unwrap_or(provider.timeout_s),
+            ))
+            .bearer_auth(key)
             .json(&body)
             .send()
-            .with_context(|| format!("调用 {} 失败", self.provider.name))?;
+            .with_context(|| format!("调用 {} 失败", provider.name))
+            .map_err(next)?;
 
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
         if !status.is_success() {
             // 只回状态码与截断的响应体, 绝不回显请求头 (里面有密钥)。
-            bail!(
+            let e = anyhow!(
                 "{} 返回 {}: {}",
-                self.provider.name,
+                provider.name,
                 status,
                 text.chars().take(300).collect::<String>()
             );
+            // 额度用完 / 限流 / 鉴权 / 服务端故障 → 换下一条线路; 其余 (如 400 请求本身有问题) 换了也没用。
+            let code = status.as_u16();
+            return Err(
+                if matches!(code, 401 | 402 | 403 | 408 | 429) || status.is_server_error() {
+                    Attempt::Next(e)
+                } else {
+                    Attempt::Fatal(e)
+                },
+            );
         }
 
-        let json: serde_json::Value =
-            serde_json::from_str(&text).with_context(|| "响应不是合法 JSON")?;
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .with_context(|| "响应不是合法 JSON")
+            .map_err(next)?;
         let msg = &json["choices"][0]["message"];
         let content = msg["content"]
             .as_str()
@@ -398,7 +540,7 @@ impl Generator {
             .or_else(|| msg["reasoning"].as_str())
             .unwrap_or_default();
         if content.trim().is_empty() {
-            bail!("{} 返回空内容", self.provider.name);
+            return Err(next(anyhow!("{} 返回空内容", provider.name)));
         }
         Ok(content.to_string())
     }
@@ -407,7 +549,11 @@ impl Generator {
     ///
     /// 这里**不**做门禁 —— 门禁由 `evolution` 统一执行, 这样 LLM 产物与本地变异
     /// 产物走的是同一条校验路径, 统计口径才一致。
-    pub fn mutate(&self, ctx: &MutationContext, next_id: &mut dyn FnMut() -> String) -> Result<Vec<Candidate>> {
+    pub fn mutate(
+        &self,
+        ctx: &MutationContext,
+        next_id: &mut dyn FnMut() -> String,
+    ) -> Result<Vec<Candidate>> {
         let system = system_prompt(ctx.track);
         let user = user_prompt(ctx);
         let raw = self.complete(&system, &user)?;
@@ -429,7 +575,7 @@ impl Generator {
                     ctx.track.budget_ms,
                     src,
                     CandidateOrigin::Llm,
-                    Some(format!("llm:{}", self.provider.name)),
+                    Some(format!("llm:{}", self.provider_name())),
                 )
             })
             .collect())
@@ -451,7 +597,8 @@ mod tests {
 
     #[test]
     fn parses_both_export_and_bare_assignments() {
-        let t = "# 注释\nexport GLM_KEY=\"abc.123\"\nKIMI_KEY=sk-plain\n\nexport EMPERO_KEY='free'\n";
+        let t =
+            "# 注释\nexport GLM_KEY=\"abc.123\"\nKIMI_KEY=sk-plain\n\nexport EMPERO_KEY='free'\n";
         let kv = parse_secrets(t);
         assert_eq!(kv.get("GLM_KEY").unwrap(), "abc.123");
         assert_eq!(kv.get("KIMI_KEY").unwrap(), "sk-plain");
@@ -480,6 +627,38 @@ mod tests {
         kv.insert("GLM_KEY".to_string(), "g".to_string());
         // GLM 在表里优先级更高。
         assert_eq!(select_provider(&kv, None).unwrap().key_env, "GLM_KEY");
+
+        kv.insert("KIMI_KEY_3".to_string(), "k".to_string());
+        // Kimi 排第一, 且不要求从 KIMI_KEY 这个槽位开始填。
+        assert_eq!(select_provider(&kv, None).unwrap().key_env, "KIMI_KEY");
+    }
+
+    #[test]
+    fn collects_every_key_of_a_provider_in_slot_order() {
+        let mut kv = BTreeMap::new();
+        kv.insert("KIMI_KEY_2".into(), "b".into());
+        kv.insert("KIMI_KEY".into(), "a".into());
+        kv.insert("KIMI_KEY_9".into(), "c".into());
+        kv.insert("KIMI_KEY_4".into(), "a".into()); // 重复的号只算一次
+        kv.insert("GLM_KEY".into(), "g".into());
+        assert_eq!(provider_keys(&kv, &PROVIDERS[0]), vec!["a", "b", "c"]);
+
+        let g = Generator::from_secrets(&kv, None).unwrap();
+        // 3 个 Kimi 号在前, GLM 兜底在后。
+        assert_eq!(g.route_count(), 4);
+        assert_eq!(g.provider_name(), "kimi-for-coding");
+        assert_eq!(
+            Generator::from_secrets(&kv, Some("glm-4.7"))
+                .unwrap()
+                .route_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn key_file_takes_named_or_bare_lines() {
+        let t = "# 注释\nkimi-1 sk-aaa\n\nsk-bbb\n";
+        assert_eq!(parse_key_file(t), vec!["sk-aaa", "sk-bbb"]);
     }
 
     #[test]
@@ -492,7 +671,7 @@ mod tests {
             "OPENROUTER_KEY"
         );
         // 指名了但没密钥 → 不静默回退到别家。
-        assert!(select_provider(&kv, Some("kimi-k2.7-code")).is_none());
+        assert!(select_provider(&kv, Some("kimi-for-coding")).is_none());
     }
 
     #[test]
@@ -565,8 +744,13 @@ mod tests {
         };
         let all = format!("{}\n{}", system_prompt(&SR), user_prompt(&ctx));
         let lower = all.to_lowercase();
-        for banned in ["fsr", "dlss", "lanczos", "amd", "nvidia", "espcn", "edsr", "xess", "gsr"] {
-            assert!(!lower.contains(banned), "提示词里出现了算法/厂商名: {banned}");
+        for banned in [
+            "fsr", "dlss", "lanczos", "amd", "nvidia", "espcn", "edsr", "xess", "gsr",
+        ] {
+            assert!(
+                !lower.contains(banned),
+                "提示词里出现了算法/厂商名: {banned}"
+            );
         }
     }
 
@@ -593,8 +777,10 @@ mod tests {
 
     #[test]
     fn gate_feedback_compresses_to_one_line() {
-        let gate = crate::engine::Validator::new()
-            .gate("#version 450\nlayout(local_size_x=16) in;\nvoid main() { }", &SR);
+        let gate = crate::engine::Validator::new().gate(
+            "#version 450\nlayout(local_size_x=16) in;\nvoid main() { }",
+            &SR,
+        );
         let r = rejection_from_gate("c1", &gate);
         assert_eq!(r.id, "c1");
         assert!(!r.reason.is_empty());

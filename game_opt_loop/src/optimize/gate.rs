@@ -107,7 +107,8 @@ impl Jev {
 }
 
 fn read_key(p: &Path) -> Result<String> {
-    let k = std::fs::read_to_string(p).with_context(|| format!("读不到守门 key {}", p.display()))?;
+    let k =
+        std::fs::read_to_string(p).with_context(|| format!("读不到守门 key {}", p.display()))?;
     let k = k.trim().to_string();
     if k.is_empty() {
         bail!("守门 key 文件是空的: {}", p.display());
@@ -121,9 +122,9 @@ pub fn question() -> Value {
         "worth_device_time": {
             "type": "noul",
             "instructions": "这是手机游戏性能优化流水线里的一个候选改动, 上真机评测一次要 20 分钟左右。\
-根据设备、这一层的判定口径、这个候选改了什么、以及这一层已经上过机的候选和真机结论, \
-判断这个候选值不值得花一次真机评测: 有合理的理由期望它能显著改善帧时/帧率/功耗且不退化, \
-并且不是已被真机否定过的候选的近似重复。",
+    根据设备、这一层的判定口径、这个候选改了什么、以及这一层已经上过机的候选和真机结论, \
+    判断这个候选值不值得花一次真机评测: 有合理的理由期望它能显著改善帧时/帧率/功耗且不退化, \
+    并且不是已被真机否定过的候选的近似重复。",
             "criteria": {
                 "true": "值得上机: 有合理的改善预期, 且不是已被否定方向的重复",
                 "false": "不值得上机: 几乎是已被否定候选的重复, 或没有合理的改善预期, 或风险明显大于收益"
@@ -149,7 +150,10 @@ impl Judge for Jev {
         let status = resp.status();
         let text = resp.text().unwrap_or_default();
         if !status.is_success() {
-            bail!("守门 HTTP {status}: {}", text.chars().take(200).collect::<String>());
+            bail!(
+                "守门 HTTP {status}: {}",
+                text.chars().take(200).collect::<String>()
+            );
         }
         parse_answer(&text)
     }
@@ -160,7 +164,10 @@ pub fn parse_answer(text: &str) -> Result<f64> {
     let v: Value = serde_json::from_str(text).context("守门回包不是 JSON")?;
     let a = &v["answers"]["worth_device_time"];
     if a["type"] != "noul" {
-        bail!("守门回包里没有 noul 答案: {}", text.chars().take(200).collect::<String>());
+        bail!(
+            "守门回包里没有 noul 答案: {}",
+            text.chars().take(200).collect::<String>()
+        );
     }
     let p = a["noul"].as_f64().context("noul 不是数")?;
     if !(0.0..=1.0).contains(&p) {
@@ -173,7 +180,11 @@ pub fn parse_answer(text: &str) -> Result<f64> {
 pub fn state_for(input: &Input, c: &Candidate) -> Value {
     // ABORT (没量准) 既不是正样本也不是负样本, 不给守门看: 回放里发现它会把
     // 「和一个 ABORT 候选参数相同」当成被否定过 (docs/DESIGN_CLOUD_PROPOSER.md)。
-    let valid: Vec<&HistoryItem> = input.history.iter().filter(|h| h.measurement_valid).collect();
+    let valid: Vec<&HistoryItem> = input
+        .history
+        .iter()
+        .filter(|h| h.measurement_valid)
+        .collect();
     let hist: Vec<Value> = valid[valid.len().saturating_sub(HISTORY_TAIL)..]
         .iter()
         .copied()
@@ -210,7 +221,12 @@ pub struct Gated<'a> {
 }
 
 impl<'a> Gated<'a> {
-    pub fn new(inner: &'a dyn Proposer, judge: Box<dyn Judge + 'a>, threshold: f64, shadow: bool) -> Self {
+    pub fn new(
+        inner: &'a dyn Proposer,
+        judge: Box<dyn Judge + 'a>,
+        threshold: f64,
+        shadow: bool,
+    ) -> Self {
         Self {
             inner,
             judge,
@@ -237,7 +253,11 @@ impl Proposer for Gated<'_> {
             self.inner.describe(),
             self.judge.describe(),
             self.threshold,
-            if self.shadow { ", 影子模式只记不挡" } else { "" }
+            if self.shadow {
+                ", 影子模式只记不挡"
+            } else {
+                ""
+            }
         )
     }
 
@@ -264,7 +284,12 @@ impl Proposer for Gated<'_> {
                         (true, true) => "shadow_drop",
                         (true, false) => "drop",
                     };
-                    Decision { candidate: name.clone(), p: Some(prob), action: action.into(), error: None }
+                    Decision {
+                        candidate: name.clone(),
+                        p: Some(prob),
+                        action: action.into(),
+                        error: None,
+                    }
                 }
                 Err(e) => Decision {
                     candidate: name.clone(),
@@ -330,7 +355,10 @@ mod tests {
         .unwrap();
         assert!((p - 0.39).abs() < 1e-9);
         assert!(parse_answer(r#"{"answers":{}}"#).is_err());
-        assert!(parse_answer(r#"{"answers":{"worth_device_time":{"type":"noul","noul":1.5}}}"#).is_err());
+        assert!(
+            parse_answer(r#"{"answers":{"worth_device_time":{"type":"noul","noul":1.5}}}"#)
+                .is_err()
+        );
     }
 
     #[test]
@@ -355,7 +383,12 @@ mod tests {
         let local = Builtin::local();
         let inp = input();
         let n = local.propose(&inp).candidates.len();
-        let g = Gated::new(&local, Box::new(Fixed(vec![Ok(0.0)], RefCell::new(0))), 0.3, true);
+        let g = Gated::new(
+            &local,
+            Box::new(Fixed(vec![Ok(0.0)], RefCell::new(0))),
+            0.3,
+            true,
+        );
         let p = g.propose(&inp);
         assert_eq!(p.candidates.len(), n);
         assert!(g.decisions().iter().all(|d| d.action == "shadow_drop"));
@@ -366,9 +399,17 @@ mod tests {
         let local = Builtin::local();
         let inp = input();
         let n = local.propose(&inp).candidates.len();
-        let g = Gated::new(&local, Box::new(Fixed(vec![Err("网络断了".into())], RefCell::new(0))), 0.3, false);
+        let g = Gated::new(
+            &local,
+            Box::new(Fixed(vec![Err("网络断了".into())], RefCell::new(0))),
+            0.3,
+            false,
+        );
         assert_eq!(g.propose(&inp).candidates.len(), n);
-        assert!(g.decisions().iter().all(|d| d.action == "error_pass" && d.error.is_some()));
+        assert!(g
+            .decisions()
+            .iter()
+            .all(|d| d.action == "error_pass" && d.error.is_some()));
     }
 
     #[test]

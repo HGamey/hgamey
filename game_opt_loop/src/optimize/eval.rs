@@ -535,7 +535,8 @@ impl EvalSupport {
 pub struct EvalDriver {
     binary: PathBuf,
     #[allow(clippy::type_complexity)]
-    runner: Option<Box<dyn Fn(&str, &[String]) -> Result<(Option<i32>, String, String)> + Send + Sync>>,
+    runner:
+        Option<Box<dyn Fn(&str, &[String]) -> Result<(Option<i32>, String, String)> + Send + Sync>>,
 }
 
 /// 进门的结果。
@@ -610,7 +611,8 @@ impl EvalDriver {
         let status = child.wait();
         super::children::unregister(pid);
         let stderr = reader.join().unwrap_or_default();
-        let status = status.with_context(|| format!("等 `{} {sub}` 退出失败", self.binary.display()))?;
+        let status =
+            status.with_context(|| format!("等 `{} {sub}` 退出失败", self.binary.display()))?;
         Ok((status.code(), stdout, stderr))
     }
 
@@ -808,13 +810,19 @@ mod tests {
             payload: match kind {
                 Kind::Whitebox => Payload::Whitebox(WhiteboxPayload {
                     why: Some("雾挪到透明物之后".into()),
-                    knobs: BTreeMap::from([("fog_event".to_string(), "AfterRenderingTransparents".to_string())]),
+                    knobs: BTreeMap::from([(
+                        "fog_event".to_string(),
+                        "AfterRenderingTransparents".to_string(),
+                    )]),
                     measure_only: None,
                     image_check: Some(ImageCheck { min_psnr_db: 30.0 }),
                 }),
                 Kind::Sysparam => Payload::Sysparam(SysparamPayload {
                     why: Some("试试总线下限".into()),
-                    params: BTreeMap::from([("bus.DDR.boost_freq".to_string(), "5333000".to_string())]),
+                    params: BTreeMap::from([(
+                        "bus.DDR.boost_freq".to_string(),
+                        "5333000".to_string(),
+                    )]),
                     plan: vec![PlanEntry {
                         kind: "sysfs".into(),
                         path: "/sys/devices/system/cpu/bus_dcvs/DDR/boost_freq".into(),
@@ -903,7 +911,10 @@ mod tests {
         assert_eq!(r.candidate_id, "c1");
         assert_eq!(r.kind, Some(Kind::Sysparam));
         assert_eq!(r.metrics.fps_p95_ms, Some(16.7));
-        assert!(r.metrics.power_watt.is_none(), "null 必须留成 None, 不能变 0");
+        assert!(
+            r.metrics.power_watt.is_none(),
+            "null 必须留成 None, 不能变 0"
+        );
     }
 
     /// 旧版 gpu-op 的扁平回包 (没有 version / kind) 照样解析得动。
@@ -1029,9 +1040,18 @@ mod tests {
                 Ok((code, "{\"status\":\"X\"}".into(), err.into()))
             })
         };
-        assert_eq!(run(Some(0), "").enter_scene("pkg", "S", p), EnterOutcome::InGame);
-        assert!(matches!(run(Some(3), "").enter_scene("pkg", "S", p), EnterOutcome::NeedsHuman(_)));
-        assert!(matches!(run(Some(1), "").enter_scene("pkg", "S", p), EnterOutcome::Failed(_)));
+        assert_eq!(
+            run(Some(0), "").enter_scene("pkg", "S", p),
+            EnterOutcome::InGame
+        );
+        assert!(matches!(
+            run(Some(3), "").enter_scene("pkg", "S", p),
+            EnterOutcome::NeedsHuman(_)
+        ));
+        assert!(matches!(
+            run(Some(1), "").enter_scene("pkg", "S", p),
+            EnterOutcome::Failed(_)
+        ));
         assert_eq!(
             run(Some(2), "未知子命令 onboard").enter_scene("pkg", "S", p),
             EnterOutcome::Unsupported

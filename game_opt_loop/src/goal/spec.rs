@@ -97,8 +97,12 @@ pub fn parse(text: &str) -> Result<GoalDoc> {
         .find("\n---")
         .context("goal.md 的 front-matter 没有结束的 `---`")?;
     let yaml = &rest[..end];
-    let body = rest[end + 4..].trim_start_matches(['-', '\r', '\n']).trim().to_string();
-    let spec: GoalSpec = serde_yaml::from_str(yaml).context("goal.md 的 front-matter 不是合法的目标格式")?;
+    let body = rest[end + 4..]
+        .trim_start_matches(['-', '\r', '\n'])
+        .trim()
+        .to_string();
+    let spec: GoalSpec =
+        serde_yaml::from_str(yaml).context("goal.md 的 front-matter 不是合法的目标格式")?;
     let doc = GoalDoc { spec, body };
     doc.spec.validate()?;
     Ok(doc)
@@ -110,7 +114,10 @@ impl GoalSpec {
             bail!("game 不能空 (要包名)");
         }
         if !METRICS.contains(&self.objective.metric.as_str()) {
-            bail!("objective.metric 只能是 {METRICS:?} 之一, 收到 {:?}", self.objective.metric);
+            bail!(
+                "objective.metric 只能是 {METRICS:?} 之一, 收到 {:?}",
+                self.objective.metric
+            );
         }
         if !matches!(self.objective.direction.as_str(), "lower" | "higher") {
             bail!("objective.direction 只能是 lower / higher");
@@ -176,7 +183,11 @@ impl GoalSpec {
             &crate::optimize::games::CarrierRoots::default(),
         )
         .display;
-        let game = if game.is_empty() { self.game.clone() } else { game };
+        let game = if game.is_empty() {
+            self.game.clone()
+        } else {
+            game
+        };
         let what = match self.objective.metric.as_str() {
             "power_watt" => "整机耗电",
             "frame_p95" => "卡顿 (帧时 p95)",
@@ -184,7 +195,11 @@ impl GoalSpec {
             "gpu_busy_ms" => "GPU 忙碌时间",
             m => m,
         };
-        let dir = if self.objective.direction == "lower" { "降" } else { "提高" };
+        let dir = if self.objective.direction == "lower" {
+            "降"
+        } else {
+            "提高"
+        };
         let layers: Vec<&str> = self
             .layers
             .iter()
@@ -197,7 +212,11 @@ impl GoalSpec {
             })
             .collect();
         let m = self.budget.wall_minutes;
-        let time = if m % 60 == 0 { format!("{} 小时", m / 60) } else { format!("{m} 分钟") };
+        let time = if m % 60 == 0 {
+            format!("{} 小时", m / 60)
+        } else {
+            format!("{m} 分钟")
+        };
         format!(
             "{game}：{what}{dir} {}%（{}；最多 {} 代、{time}）",
             fmt_pct(self.objective.target_pct),
@@ -218,7 +237,11 @@ impl GoalSpec {
 }
 
 fn fmt_pct(x: f64) -> String {
-    if x.fract() == 0.0 { format!("{}", x as i64) } else { format!("{x}") }
+    if x.fract() == 0.0 {
+        format!("{}", x as i64)
+    } else {
+        format!("{x}")
+    }
 }
 
 /// 写回 goal.md (front-matter + 正文)。
@@ -241,7 +264,11 @@ pub fn template(intent: &str, game: &str) -> (GoalSpec, String) {
         ("power_watt", "lower")
     };
     let mut constraints = Vec::new();
-    for (k, v) in [("fps_mean", "no_worse"), ("frame_p95", "no_worse"), ("image", "psnr_min_db 30")] {
+    for (k, v) in [
+        ("fps_mean", "no_worse"),
+        ("frame_p95", "no_worse"),
+        ("image", "psnr_min_db 30"),
+    ] {
         if k == metric {
             continue;
         }
@@ -306,7 +333,10 @@ mod tests {
     #[test]
     fn the_summary_is_plain_language() {
         let mut d = parse(SAMPLE).unwrap().spec;
-        assert_eq!(d.summary(), "原神：整机耗电降 5%（改系统设置、精简画面步骤；最多 6 代、3 小时）");
+        assert_eq!(
+            d.summary(),
+            "原神：整机耗电降 5%（改系统设置、精简画面步骤；最多 6 代、3 小时）"
+        );
         d.game = "com.unity.megacity.metro".into();
         d.objective.target_pct = 10.0;
         d.layers = vec!["sysparam".into(), "gray".into(), "whitebox".into()];
@@ -319,7 +349,11 @@ mod tests {
         d.objective.metric = "fps_mean".into();
         d.objective.direction = "higher".into();
         d.budget.wall_minutes = 90;
-        assert!(d.summary().contains("平均帧率提高 10%") && d.summary().contains("90 分钟"), "{}", d.summary());
+        assert!(
+            d.summary().contains("平均帧率提高 10%") && d.summary().contains("90 分钟"),
+            "{}",
+            d.summary()
+        );
     }
 
     #[test]
@@ -346,10 +380,19 @@ mod tests {
 
     #[test]
     fn the_template_reads_the_main_metric_from_the_sentence() {
-        assert_eq!(template("原神太费电了", "p").0.objective.metric, "power_watt");
-        assert_eq!(template("团战的时候卡顿", "p").0.objective.metric, "frame_p95");
+        assert_eq!(
+            template("原神太费电了", "p").0.objective.metric,
+            "power_watt"
+        );
+        assert_eq!(
+            template("团战的时候卡顿", "p").0.objective.metric,
+            "frame_p95"
+        );
         let (s, b) = template("帧率再高一点", "p");
-        assert_eq!((s.objective.metric.as_str(), s.objective.direction.as_str()), ("fps_mean", "higher"));
+        assert_eq!(
+            (s.objective.metric.as_str(), s.objective.direction.as_str()),
+            ("fps_mean", "higher")
+        );
         s.validate().unwrap();
         assert!(parse(&render(&s, &b).unwrap()).is_ok());
     }

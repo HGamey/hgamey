@@ -156,8 +156,7 @@ impl DeviceModel {
         let tex_ms = out_px * f.image_loads as f64 / self.tex_issue_per_ms;
 
         let alu_ms = out_px * f.alu_ops as f64 / self.alu_per_ms;
-        let transcendental_ms =
-            out_px * f.transcendental_ops as f64 / self.transcendental_per_ms;
+        let transcendental_ms = out_px * f.transcendental_ops as f64 / self.transcendental_per_ms;
 
         let memory_path_ms = dram_ms + tex_ms;
         let compute_path_ms = alu_ms + transcendental_ms;
@@ -341,9 +340,7 @@ mod tests {
                 transcendental_ops: trans,
                 ..Default::default()
             };
-            let est = NX809J_1080P
-                .estimate_latency(&f, TrackMode::Sr)
-                .latency_ms;
+            let est = NX809J_1080P.estimate_latency(&f, TrackMode::Sr).latency_ms;
             let rel = (est - real).abs() / real;
             worst = worst.max(rel);
             assert!(
@@ -418,7 +415,14 @@ mod tests {
         };
         let f = features_of(&g.to_glsl(), &SR);
         let (report, _) = evaluate(
-            "x", &f, TrackMode::Sr, &SR, &NX809J_1080P, 0.0, false, false,
+            "x",
+            &f,
+            TrackMode::Sr,
+            &SR,
+            &NX809J_1080P,
+            0.0,
+            false,
+            false,
         );
         assert_eq!(report.status, EvalStatus::Slow);
     }
@@ -490,7 +494,10 @@ mod tests {
     #[test]
     fn taps_beyond_the_kernel_support_earn_no_quality() {
         let at = |taps: u32| {
-            let f = ShaderFeatures { image_loads: taps, ..Default::default() };
+            let f = ShaderFeatures {
+                image_loads: taps,
+                ..Default::default()
+            };
             estimate_psnr_db(&f, &SR, 0.0, false, false)
         };
         assert!((at(4) - at(9)).abs() < 1e-4, "9 tap 不该比 4 tap 多拿分");

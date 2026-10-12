@@ -23,9 +23,7 @@
 
 use crate::engine::archive::ParetoArchive;
 use crate::engine::cost_model::{self, DeviceModel, NX809J_1080P};
-use crate::engine::generator::{
-    EliteSummary, Generator, MutationContext, RejectionSummary,
-};
+use crate::engine::generator::{EliteSummary, Generator, MutationContext, RejectionSummary};
 use crate::engine::mutate::{Genome, Rng};
 use crate::engine::validator::{GateReport, Validator, ViolationCode};
 use crate::engine::{Candidate, CandidateOrigin, EvalReport, MetricSource};
@@ -554,8 +552,7 @@ impl Evolution {
                 Ok(report) => {
                     if report.is_admissible(spec.budget_ms, spec.quality_baseline_db) {
                         if let Some(psnr) = report.metrics.psnr_db {
-                            gen_best_psnr =
-                                Some(gen_best_psnr.map_or(psnr, |b: f32| b.max(psnr)));
+                            gen_best_psnr = Some(gen_best_psnr.map_or(psnr, |b: f32| b.max(psnr)));
                         }
                     } else {
                         rejections.push(RejectionSummary {
@@ -653,7 +650,10 @@ impl Evolution {
 
         let mut llm = LlmStatus {
             attempted: false,
-            provider: self.generator.as_ref().map(|g| g.provider_name().to_string()),
+            provider: self
+                .generator
+                .as_ref()
+                .map(|g| g.provider_name().to_string()),
             produced: 0,
             error: self.llm_error.clone(),
         };
@@ -1126,12 +1126,14 @@ mod tests {
         let r = self_check();
         assert!(r.total >= 15, "红队语料太少, 覆盖不足");
         assert_eq!(
-            r.intercepted, r.total,
+            r.intercepted,
+            r.total,
             "有 {} 条恶意算子漏网",
             r.total - r.intercepted
         );
         assert_eq!(
-            r.exact_code_matches, r.total,
+            r.exact_code_matches,
+            r.total,
             "拦是拦下了, 但有 {} 条的违规码与预期不符",
             r.total - r.exact_code_matches
         );
@@ -1144,7 +1146,8 @@ mod tests {
         let r = self_check();
         assert!(r.benign_total >= 40);
         assert_eq!(
-            r.benign_passed, r.benign_total,
+            r.benign_passed,
+            r.benign_total,
             "{} 个合规算子被误杀",
             r.benign_total - r.benign_passed
         );

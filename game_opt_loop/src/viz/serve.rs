@@ -137,7 +137,10 @@ struct FileQuery {
 /// - 不在白名单 → 403 (不是 404: 文件可能真的在, 只是不该给)
 /// - 不存在 → 404
 /// - 太大 → 413
-pub fn resolve_allowed(raw: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, (StatusCode, String)> {
+pub fn resolve_allowed(
+    raw: &str,
+    allowed_roots: &[PathBuf],
+) -> Result<PathBuf, (StatusCode, String)> {
     let requested = Path::new(raw);
     let canonical = requested
         .canonicalize()
@@ -170,7 +173,10 @@ pub fn resolve_allowed(raw: &str, allowed_roots: &[PathBuf]) -> Result<PathBuf, 
     if !READABLE_EXTENSIONS.contains(&ext.as_str()) {
         return Err((
             StatusCode::FORBIDDEN,
-            format!("面板只读证据类文件 ({}), 不读 .{ext}", READABLE_EXTENSIONS.join("/")),
+            format!(
+                "面板只读证据类文件 ({}), 不读 .{ext}",
+                READABLE_EXTENSIONS.join("/")
+            ),
         ));
     }
     let size = std::fs::metadata(&canonical)
@@ -228,7 +234,9 @@ mod tests {
     use super::*;
 
     fn manifest() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap()
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .unwrap()
     }
 
     #[test]
@@ -273,8 +281,8 @@ mod tests {
     fn rejects_traversal_out_of_the_root() {
         let roots = vec![manifest().join("contracts")];
         let escape = manifest().join("contracts/../evidence/M1_report.json");
-        let (code, _) = resolve_allowed(escape.to_str().unwrap(), &roots)
-            .expect_err("穿出白名单必须被拒");
+        let (code, _) =
+            resolve_allowed(escape.to_str().unwrap(), &roots).expect_err("穿出白名单必须被拒");
         assert_eq!(code, StatusCode::FORBIDDEN);
     }
 
@@ -319,9 +327,12 @@ mod tests {
     async fn get(addr: std::net::SocketAddr, path: &str) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-        s.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes())
-            .await
-            .unwrap();
+        s.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
         let mut buf = Vec::new();
         s.read_to_end(&mut buf).await.unwrap();
         String::from_utf8_lossy(&buf).to_string()
@@ -348,7 +359,11 @@ mod tests {
         });
 
         let index = get(addr, "/").await;
-        assert!(index.contains("200 OK"), "首页取不到: {}", &index[..index.len().min(120)]);
+        assert!(
+            index.contains("200 OK"),
+            "首页取不到: {}",
+            &index[..index.len().min(120)]
+        );
         assert!(index.contains("<html"));
         assert!(index.contains("no-store"), "面板要自刷新, 不该被缓存");
 
@@ -357,7 +372,9 @@ mod tests {
         assert!(dash.contains("\"layers\""));
         assert!(dash.contains("sysknob-loop"), "设备锁持有者该出现在返回里");
 
-        assert!(get(addr, "/api/file?path=/etc/hosts").await.contains("403 Forbidden"));
+        assert!(get(addr, "/api/file?path=/etc/hosts")
+            .await
+            .contains("403 Forbidden"));
         assert!(get(addr, "/healthz").await.ends_with("ok"));
     }
 

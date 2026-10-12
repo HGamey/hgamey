@@ -90,16 +90,23 @@ pub struct Store {
 
 impl Default for Store {
     fn default() -> Self {
-        Self { root: PathBuf::from("profiles") }
+        Self {
+            root: PathBuf::from("profiles"),
+        }
     }
 }
 
 pub fn read(path: &Path) -> Result<GameProfile> {
-    let raw = std::fs::read_to_string(path).with_context(|| format!("读不到 {}", path.display()))?;
-    let p: GameProfile =
-        serde_json::from_str(&raw).with_context(|| format!("{} 不是一份游戏档案", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("读不到 {}", path.display()))?;
+    let p: GameProfile = serde_json::from_str(&raw)
+        .with_context(|| format!("{} 不是一份游戏档案", path.display()))?;
     if p.profile_version != 1 {
-        bail!("{}: 档案版本 {} 不认识 (只认 1)", path.display(), p.profile_version);
+        bail!(
+            "{}: 档案版本 {} 不认识 (只认 1)",
+            path.display(),
+            p.profile_version
+        );
     }
     Ok(p)
 }
@@ -117,7 +124,11 @@ impl Store {
         }
         let profile = read(&path)?;
         if profile.package != package {
-            bail!("{} 里写的包名是 {}, 不是 {package}", path.display(), profile.package);
+            bail!(
+                "{} 里写的包名是 {}, 不是 {package}",
+                path.display(),
+                profile.package
+            );
         }
         Ok(Some(Loaded { path, profile }))
     }
@@ -182,7 +193,11 @@ pub fn apply(target: &mut Target, loaded: &Loaded) -> bool {
             });
         }
     }
-    target.resolved_via = format!("{} + 游戏档案 {}", target.resolved_via, loaded.path.display());
+    target.resolved_via = format!(
+        "{} + 游戏档案 {}",
+        target.resolved_via,
+        loaded.path.display()
+    );
     target.profile = Some(ProfileRef {
         path: loaded.path.display().to_string(),
         status: p.status.clone(),
@@ -226,7 +241,10 @@ mod tests {
     }
 
     fn no_roots() -> CarrierRoots {
-        CarrierRoots { carriers_dir: "/nonexistent/c".into(), siblings_dir: "/nonexistent/s".into() }
+        CarrierRoots {
+            carriers_dir: "/nonexistent/c".into(),
+            siblings_dir: "/nonexistent/s".into(),
+        }
     }
 
     #[test]
@@ -247,8 +265,12 @@ mod tests {
     #[test]
     fn a_profile_turns_an_unknown_package_into_a_runnable_target() {
         let src = tmp("apply");
-        let store = Store { root: tmp("apply_store") };
-        store.install(&write_src(&src, &sample("PASS", "com.example.game"))).unwrap();
+        let store = Store {
+            root: tmp("apply_store"),
+        };
+        store
+            .install(&write_src(&src, &sample("PASS", "com.example.game")))
+            .unwrap();
         let mut t = resolve("com.example.game", None, &no_roots());
         assert!(!t.workload.script_present, "没有档案时黑盒目标没有负载");
         let l = store.find("com.example.game").unwrap().unwrap();
@@ -265,7 +287,10 @@ mod tests {
     fn a_non_pass_profile_changes_nothing() {
         let dir = tmp("nonpass");
         let p = write_src(&dir, &sample("NEEDS_HUMAN", "com.example.game"));
-        let loaded = Loaded { path: p.clone(), profile: read(&p).unwrap() };
+        let loaded = Loaded {
+            path: p.clone(),
+            profile: read(&p).unwrap(),
+        };
         let mut t = resolve("com.example.game", None, &no_roots());
         assert!(!apply(&mut t, &loaded));
         assert!(t.profile.is_none());
@@ -274,7 +299,9 @@ mod tests {
 
     #[test]
     fn package_mismatch_is_an_error_not_a_miss() {
-        let store = Store { root: tmp("mismatch") };
+        let store = Store {
+            root: tmp("mismatch"),
+        };
         let d = store.root.join("com.a.b");
         std::fs::create_dir_all(&d).unwrap();
         write_src(&d, &sample("PASS", "com.c.d"));
