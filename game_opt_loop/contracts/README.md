@@ -24,7 +24,7 @@ v2 把三类改动面收进同一个信封，由 `phonefarm eval --request <json
 ```
 {
   "version": 2,
-  "kind": "shader" | "sysparam" | "gray",
+  "kind": "shader" | "sysparam" | "gray" | "whitebox",
   "candidate_id": ..., "serial": ..., "package": ...,
   "workload":   { carrier / script / seconds / frames / intensity },
   "conditions": { 冻结的测试条件 },
@@ -42,6 +42,7 @@ v2 把三类改动面收进同一个信封，由 `phonefarm eval --request <json
 - **shader** — 算子 GLSL + 预编译 SPIR-V + 耗时预算 + 画质真值 + 在位冠军耗时 + （黑盒时）注入方式
 - **sysparam** — 一组参数 + 展开好的写入计划 + 白名单 + 温控保护关键词；`probe_only` 只探白名单不跑候选
 - **gray** — 一组渲染流程改写开关 + `require_hit`（改写没命中就整轮作废）
+- **whitebox** — 白盒载体（Megacity harness ≥0.2.0）的引擎设置旋钮 `knobs`（阶段 3 第三层）。两臂只差启动 extras，必须带 `workload.launch`；接收端每臂核对 `megacity_out.json` 的旋钮回读，没生效整组 ABORT；msaa / feat_off / shadowres 这类画面必然变化的只量上限（`verdict.measure_only=true`，status 恒 REJECT）
 
 ## 三条贯穿全部字段的纪律
 

@@ -8,7 +8,7 @@
     "version": { "type": "integer", "enum": [1, 2] },
     "kind": {
       "type": "string",
-      "enum": ["shader", "sysparam", "gray"],
+      "enum": ["shader", "sysparam", "gray", "whitebox"],
       "description": "改的是哪一层。shader = 画面算子 (超分/插帧/后处理算子, 白盒载体或能挂层的黑盒); sysparam = 系统参数 (需 root, 不动画面); gray = 画面流程改写 (Vulkan layer 注入, 改 LoadOp/精度/分辨率)。省略 = shader (兼容 v1)。"
     },
     "candidate_id": { "type": "string", "description": "上层给这个候选的唯一 id; 原样回到报告里" },
@@ -263,6 +263,36 @@
               "side_effect_ack": {
                 "type": ["string", "null"],
                 "description": "已知副作用的显式确认。debug.vulkan.layers 是全局属性, 挂层期间启动的、自己 lib 目录里没有这个 .so 的 Vulkan 应用会启动失败 (实测厂商应用 cn.nubia.gameassist 每 ~2 秒崩溃重启一次)。接收端应在层加载成功后立刻清属性, 并在这一轮结束时还原。"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "whitebox" } }, "required": ["kind"] },
+      "then": {
+        "required": ["workload"],
+        "properties": {
+          "workload": { "required": ["launch"] },
+          "payload": {
+            "type": "object",
+            "required": ["knobs"],
+            "properties": {
+              "why": { "type": ["string", "null"], "description": "这组旋钮想验证什么。只进证据, 不进判定。" },
+              "knobs": {
+                "type": "object",
+                "minProperties": 1,
+                "propertyNames": { "enum": ["msaa", "store_opt", "feat_off", "fog_event", "ssao_src", "ssao_after_opaque", "shadowres", "depth_priming"] },
+                "additionalProperties": { "type": ["string", "integer", "boolean"], "description": "旋钮值; 只许 [A-Za-z0-9_,.-], 长度 ≤ 64 (要拼进 am start)" },
+                "description": "白盒旋钮 (阶段 3 第三层) → 值。对照臂 = workload.launch.extras; 改写臂 = 它后面追加 `--es <旋钮> <值>`。语义见 phonefarm docs/MEGACITY_WHITEBOX_KNOBS.md 与 loop_v1/carriers/megacity/contract/launch.json: msaa=1/2/4, store_opt=auto/discard/store, feat_off=逗号分隔的渲染器特性名子串, fog_event=RenderPassEvent 名或整数, ssao_src=depth/depthnormals, ssao_after_opaque=0/1, shadowres=256..4096, depth_priming=off/auto/forced。接收端每臂核对 megacity_out.json 的 knobs 回读, 没生效整组 ABORT。msaa / feat_off / shadowres 改了画面必然变化, 只量上限 (报告 verdict.measure_only=true, status 恒 REJECT)。"
+              },
+              "measure_only": { "type": ["boolean", "null"], "description": "true = 不管旋钮是什么都只量上限 (status 恒 REJECT)。" },
+              "image_check": {
+                "type": ["object", "null"],
+                "properties": {
+                  "min_psnr_db": { "type": ["number", "null"], "description": "改写臂对对照臂 (workload.launch.static_extras 静态场景) 的 PSNR 下限; 缺省 30, 与 gray 相同。measure_only 时只记录不判。" }
+                }
               }
             }
           }
