@@ -75,6 +75,49 @@ pub struct Config {
     pub profiles_dir: PathBuf,
     /// 一份刚由 `phonefarm onboard` 产出的 profile.json: 先收进档案库 (只收 PASS), 再用。
     pub game_profile: Option<PathBuf>,
+    /// 目标模式 (`game_opt_loop goal run`) 逐代调用时带进来的东西; 单独跑 optimize 时全是缺省。
+    pub goal: GoalHooks,
+}
+
+/// 目标模式逐代调用 optimize 时的钩子。缺省 = 普通的一次 optimize。
+#[derive(Debug, Clone, Default)]
+pub struct GoalHooks {
+    /// 这一次的第 1 代在整次目标运行里是第几代减一 (候选编号与出方案输入里的代数都加上它)。
+    pub gen_offset: u32,
+    /// 之前几代上过机的候选 (含真机判定), 接着喂给出方案的一方。
+    pub prior_history: Vec<proposer::HistoryItem>,
+    /// 人的掌舵指令 (human.md 里机读不了的部分, 原文)。出方案时作为最高优先级偏好。
+    pub steer: Option<String>,
+    /// 禁止动的参数 id / 写回范围 / 开关名 (goal.md forbid + human.md「不要动 X」)。
+    pub forbid: Vec<String>,
+    /// ② 画面比对门槛 (goal.md constraints.image); None = 缺省 30 dB。
+    pub psnr_min_db: Option<f64>,
+    /// 逐候选事件 (propose / measure / verdict) 追加写到这里 (events.jsonl)。
+    pub events: Option<PathBuf>,
+}
+
+impl GoalHooks {
+    /// 一个参数 id / 范围是否被禁止 (完全相等, 或 forbid 项是它的前缀并以 `.`/`:`/`@` 断开)。
+    pub fn forbids(&self, id: &str) -> bool {
+        self.forbid.iter().any(|f| {
+            let f = f.trim();
+            !f.is_empty()
+                && (id == f
+                    || (id.starts_with(f)
+                        && matches!(id.as_bytes().get(f.len()), Some(b'.') | Some(b':') | Some(b'@'))))
+        })
+    }
+
+    /// 追加一条事件 (带时间与代数)。写不进不影响主流程。
+    pub fn emit(&self, gen: u32, mut ev: serde_json::Value) {
+        let Some(path) = &self.events else { return };
+        ev["t"] = serde_json::json!(chrono::Local::now().to_rfc3339());
+        ev["gen"] = serde_json::json!(gen);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write;
+            let _ = writeln!(f, "{}", ev);
+        }
+    }
 }
 
 /// 跑完之后的落点。
@@ -87,6 +130,9 @@ pub struct Outcome {
     pub layers_used: usize,
     pub candidates: usize,
     pub kept: usize,
+    /// 这一次上过机的候选 (目标模式拿去喂下一代)。
+    #[serde(default)]
+    pub history: Vec<proposer::HistoryItem>,
 }
 
 /// 挑一台设备。
@@ -286,6 +332,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             layers_used: 0,
             candidates: 0,
             kept: 0,
+            history: Vec::new(),
         });
     }
 
@@ -311,6 +358,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
 
     let mut layers: Vec<report::LayerOutcome> = Vec::new();
     let mut archive: Vec<report::Entry> = Vec::new();
+    let collected: std::cell::RefCell<Vec<proposer::HistoryItem>> = Default::default();
 
     for step in &plan.steps {
         println!("\n  --- {} ---", step.layer_display);
@@ -324,6 +372,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             devices: &devices,
             driver: &driver,
             support: &support,
+            collected: &collected,
         };
         // 一层出错不该把已经落袋的测量一起带走。跑到这里的每一份报告都
         // 代表几十分钟真机时间, 为了一个起不来的子进程把它们全丢掉,
@@ -377,6 +426,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         layers_used: r.layers.iter().filter(|l| l.used).count(),
         candidates: r.archive.len(),
         kept: r.kept.len(),
+        history: collected.into_inner(),
     })
 }
 
@@ -435,6 +485,29 @@ fn workload_note(caps: &caps::Caps) -> String {
             caps.target.display, caps.target.workload.seconds
         ),
     }
+}
+
+/// 一条 verdict 事件 (目标模式的时间线): 判定、逐指标变化、画面比对、被抢回的臂数。
+fn verdict_event(id: &str, rep: &eval::Report) -> serde_json::Value {
+    let metrics: serde_json::Map<String, serde_json::Value> = rep
+        .verdict
+        .per_metric
+        .iter()
+        .flatten()
+        .map(|(k, d)| (k.clone(), serde_json::json!({"delta_pct": d.diff_pct, "p": d.p, "status": d.status})))
+        .collect();
+    let co = rep.conditions_observed.as_ref();
+    serde_json::json!({
+        "type": "verdict",
+        "candidate_id": id,
+        "verdict": rep.status,
+        "kept": rep.kept(),
+        "reason": rep.verdict.reason,
+        "wins": rep.verdict.wins,
+        "metrics": metrics,
+        "image_psnr": rep.metrics.psnr_db,
+        "contested_arms": co.and_then(|c| c.contested_arms),
+    })
 }
 
 /// 日志里跟在判定后面的那句理由。ABORT 的原因 (超温 / 快照不一致 / 没量到帧)
@@ -516,6 +589,8 @@ struct LayerCtx<'a> {
     devices: &'a [String],
     driver: &'a eval::EvalDriver,
     support: &'a eval::EvalSupport,
+    /// 各层上过机的候选汇总 (Outcome.history)。
+    collected: &'a std::cell::RefCell<Vec<proposer::HistoryItem>>,
 }
 
 impl LayerCtx<'_> {
@@ -582,6 +657,8 @@ impl LayerCtx<'_> {
             constraints.clone(),
             history.to_vec(),
         );
+        let mut input = input;
+        input.steer = self.cfg.goal.steer.clone();
         proposer::generation(self.proposer, &input, &self.cfg.out_dir.join("proposer"))
     }
 }
@@ -674,11 +751,31 @@ fn run_sysparam(
         return Ok(o);
     }
 
+    let mut wl = wl;
+    let before = wl.len();
+    wl.retain(|id, _| !ctx.cfg.goal.forbids(id));
+    if wl.len() < before {
+        println!("      按禁止项去掉 {} 项, 白名单剩 {} 项", before - wl.len(), wl.len());
+    }
+    if wl.is_empty() {
+        out.used = false;
+        out.reason = "去掉禁止动的参数之后白名单是空的".into();
+        return Ok(out);
+    }
     let constraints = proposer::constraints_for(Kind::Sysparam, Some(&wl));
-    let mut history: Vec<proposer::HistoryItem> = Vec::new();
+    let mut history: Vec<proposer::HistoryItem> = ctx
+        .cfg
+        .goal
+        .prior_history
+        .iter()
+        .filter(|h| h.candidate.kind == Kind::Sysparam)
+        .cloned()
+        .collect();
+    let prior = history.len();
     let mut origins: Vec<sysparam::Origin> = Vec::new();
 
-    for gen in 1..=ctx.step.generations {
+    for g in 1..=ctx.step.generations {
+        let gen = ctx.cfg.goal.gen_offset + g;
         let batch = ctx.propose(gen, &constraints, &history).sysparam();
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
@@ -699,6 +796,14 @@ fn run_sysparam(
             .map(|(i, prop)| {
                 let id = format!("sys_g{gen}c{}", i + 1);
                 println!("      {id}: {} 项 — {}", prop.params.len(), prop.why);
+                ctx.cfg.goal.emit(gen, serde_json::json!({
+                    "type": "propose", "candidate_id": id, "layer": "sysparam",
+                    "changes": prop.params, "why": prop.why,
+                }));
+                ctx.cfg.goal.emit(gen, serde_json::json!({
+                    "type": "measure", "candidate_id": id, "arms_done": 0,
+                    "arms_planned": 2 * ctx.step.rounds,
+                }));
                 let req = Request {
                     version: eval::REQUEST_VERSION,
                     kind: Kind::Sysparam,
@@ -741,6 +846,7 @@ fn run_sysparam(
                     let who = if multi { format!("{id} [{dev}] ") } else { String::new() };
                     println!("        {who}→ 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
+                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e.to_string()}));
                     continue;
                 }
             };
@@ -763,6 +869,7 @@ fn run_sysparam(
             // 上过机的都进历史 (带 measurement_valid)。内置出方案还原历史时只取量准了的
             // (proposer::sysparam_history): ABORT 什么都没测到, 当成"这组不行"会让模型
             // 学到一条不存在的规律。
+            ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
             let cand = proposer::Candidate::sysparam(prop.why.clone(), prop.params.clone());
             history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             let mut entry = report::Entry::from_report(
@@ -782,6 +889,7 @@ fn run_sysparam(
             archive.push(entry);
         }
     }
+    ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
     Ok(out)
 }
 
@@ -812,10 +920,14 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
 
     // 候选空间 = frame-audit 判定「写回之后确定没人读」的附件, 每一个是一个旋钮。
     // 没有这份结果就一个都不提: 一刀切的 LoadOp 改写已撤回 (会画错), 不拿它凑数。
-    let targets = match ctx.cfg.frame_audit.as_ref() {
+    let mut targets = match ctx.cfg.frame_audit.as_ref() {
         Some(p) => gray::load_targets(p)?,
         None => Vec::new(),
     };
+    targets.retain(|t| !ctx.cfg.goal.forbids(&t.scope) && !ctx.cfg.goal.forbids(&t.label()));
+    if ctx.cfg.goal.forbids("storeop_dont_care") {
+        targets.clear();
+    }
     if targets.is_empty() {
         out.used = false;
         out.reason = match ctx.cfg.frame_audit.as_ref() {
@@ -837,10 +949,19 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
         targets.iter().map(|t| t.scope.as_str()).collect::<Vec<_>>().join(", ")
     );
     let constraints = proposer::constraints_with_targets(Kind::Gray, None, &targets);
-    let mut history: Vec<proposer::HistoryItem> = Vec::new();
+    let mut history: Vec<proposer::HistoryItem> = ctx
+        .cfg
+        .goal
+        .prior_history
+        .iter()
+        .filter(|h| h.candidate.kind == Kind::Gray)
+        .cloned()
+        .collect();
+    let prior = history.len();
     let mut origins: Vec<sysparam::Origin> = Vec::new();
 
-    for gen in 1..=ctx.step.generations {
+    for g in 1..=ctx.step.generations {
+        let gen = ctx.cfg.goal.gen_offset + g;
         let batch = ctx.propose(gen, &constraints, &history).gray();
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
@@ -860,6 +981,14 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             let id = format!("gray_g{gen}c{}", i + 1);
             let knobs: Vec<String> = prop.rewrites.iter().map(gray::rewrite_label).collect();
             println!("      {id}: {} — {}", knobs.join("+"), prop.why);
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "propose", "candidate_id": id, "layer": "gray",
+                "changes": knobs, "why": prop.why,
+            }));
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "measure", "candidate_id": id, "arms_done": 0,
+                "arms_planned": 2 * ctx.step.rounds,
+            }));
 
             let req = Request {
                 version: eval::REQUEST_VERSION,
@@ -881,7 +1010,7 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                     ),
                     // 每轮两臂同位置截图比对: 画面变了直接 ABORT, 不让「统计不显著」掩盖画错。
                     image_check: Some(eval::ImageCheck {
-                        min_psnr_db: gray::MIN_PSNR_DB,
+                        min_psnr_db: ctx.cfg.goal.psnr_min_db.unwrap_or(gray::MIN_PSNR_DB),
                     }),
                 }),
             };
@@ -891,6 +1020,7 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                 Err(e) => {
                     println!("        → 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
+                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e.to_string()}));
                     continue;
                 }
             };
@@ -911,6 +1041,7 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
 
             // 不管量没量准, 这些开关都算"提过了" —— 否则下一代会原样再提一遍,
             // 换回来的是同一个候选在真机上再跑一轮 (见 proposer::gray_history)。
+            ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
             let cand = proposer::Candidate::gray(prop.why.clone(), prop.rewrites.clone());
             history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             archive.push(report::Entry::from_report(
@@ -923,6 +1054,7 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             ));
         }
     }
+    ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
     Ok(out)
 }
 

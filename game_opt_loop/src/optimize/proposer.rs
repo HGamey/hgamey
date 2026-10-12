@@ -81,6 +81,10 @@ pub struct Input {
     pub constraints: Constraints,
     /// 这一层之前上过机的候选与真机判定 (按时间顺序, 含 ABORT)。
     pub history: Vec<HistoryItem>,
+    /// 人的掌舵指令 (目标模式 human.md 里机读不了的部分, 原文)。**最高优先级**的偏好:
+    /// 与别的考虑冲突时以它为准 (硬约束仍是白名单 / 开关目录 / 冻结判定)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<String>,
 }
 
 /// 设备能力 (摘自 caps.json)。`None` = 摸底时没探出来, 不是「否」。
@@ -412,6 +416,14 @@ impl Proposer for Builtin {
     fn propose(&self, input: &Input) -> Proposed {
         let generator = self.completer.as_deref();
         let model_calls = u32::from(generator.is_some());
+        // 人的掌舵指令跟在负载说明后面进提示词, 标明最高优先级。
+        let workload = match input.steer.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(st) => format!(
+                "{}\n\n# 人的掌舵指令 (最高优先级: 与上面任何考虑冲突时以这里为准; 白名单与开关目录仍是硬约束)\n{st}",
+                input.target.workload
+            ),
+            None => input.target.workload.clone(),
+        };
         match input.kind {
             Kind::Sysparam => {
                 let wl = input.constraints.whitelist.clone().unwrap_or_default();
@@ -421,7 +433,7 @@ impl Proposer for Builtin {
                 }
                 .propose(
                     &input.device.note,
-                    &input.target.workload,
+                    &workload,
                     &wl,
                     &sysparam_history(&input.history),
                     input.n,
@@ -447,7 +459,7 @@ impl Proposer for Builtin {
                 let targets = gray_targets(&input.constraints);
                 let b = gray::Proposer { generator, targets: &targets }.propose(
                     &input.device.note,
-                    &input.target.workload,
+                    &workload,
                     &gray_history(&input.history),
                     input.n,
                 );
@@ -1061,6 +1073,7 @@ pub fn input_for(
         judging: judging_for(&plan::protocol_for(step, caps)),
         constraints,
         history,
+        steer: None,
     }
 }
 
@@ -1149,6 +1162,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
             judging: judging_for(&super::super::eval::Protocol::for_kind(kind, 5, 36, 40.0)),
             constraints: constraints_for(kind, Some(&wl())),
             history,
+            steer: None,
         }
     }
 

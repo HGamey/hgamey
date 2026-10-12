@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod devlock;
 pub mod engine;
+pub mod goal;
 pub mod harness;
 pub mod optimize;
 pub mod tracks;
