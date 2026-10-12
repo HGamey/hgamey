@@ -190,8 +190,13 @@ class Jobs:
             if not exe.startswith(os.path.realpath(jin) + "/") or not os.path.isfile(exe):
                 raise ValueError("exe 只能是本任务上传的文件 @in/...")
             os.chmod(exe, 0o755)
-        cmd = [exe] + [sub(a) for a in argv]
-        env = dict(os.environ, DEVLOCK_LABEL=spec.get("label") or "node", PF_JOB_OUT=jout, PF_JOB_IN=jin)
+        # 外面包一层 sh：任务结束时把退出码写进 exitcode 文件。节点服务重启后不再是子进程的父进程，
+        # 也能从这个文件拿到真实退出码，重启不再丢任务状态。trap ":" 让 sh 自己不被 SIGINT/SIGTERM 打断
+        # （处理函数在 exec 时会复位，不影响子进程收到信号走还原）。
+        cmd = ["/bin/sh", "-c", 'trap ":" INT TERM; "$@"; rc=$?; echo $rc > "$PF_JOB_EXITF"; exit $rc', "pfjob",
+               exe] + [sub(a) for a in argv]
+        env = dict(os.environ, DEVLOCK_LABEL=spec.get("label") or "node", PF_JOB_OUT=jout, PF_JOB_IN=jin,
+                   PF_JOB_EXITF=self.path(jid, "exitcode"))
         logf = open(self.path(jid, "log"), "wb")
         p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
                              env=env, start_new_session=True)
@@ -212,6 +217,13 @@ class Jobs:
 
     def status(self, jid):
         meta = json.load(open(self.path(jid, "meta.json")))
+        if "exit" not in meta and jid not in self.procs:
+            try:   # 重启前起的任务：从 exitcode 文件拿真实退出码
+                rc = int(open(self.path(jid, "exitcode")).read().strip())
+                meta.update(exit=rc, ended=os.path.getmtime(self.path(jid, "exitcode")), adopted=True)
+                json.dump(meta, open(self.path(jid, "meta.json"), "w"), ensure_ascii=False)
+            except (FileNotFoundError, ValueError):
+                pass
         if "exit" not in meta and jid not in self.procs and not _pid_alive(meta.get("pid")):
             # 节点服务重启前起的任务：进程已经结束，但新进程不是它的父进程，拿不到真实退出码。
             # 记 -1 并标注，免得客户端（pf-node wait/follow）永远等 "running"。
