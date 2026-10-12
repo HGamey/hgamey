@@ -239,3 +239,72 @@ fn a_human_stop_before_the_first_generation_stops_without_touching_the_device() 
     check_contracts(&dir);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// 网页的「停止」= 向 goal run 进程发 SIGINT: 当前这一代中断, 正在上机的 phonefarm 子进程
+/// 同组收到 SIGINT 走还原 (这里用标记文件代替), 写 stop 事件, 状态 done / human_stop。
+#[cfg(unix)]
+#[test]
+fn sigint_stops_the_current_generation_and_reaches_the_child() {
+    let root = scaffold("sigint", false);
+    let mark = root.join("child_got_sigint");
+    // eval 慢一点, 并在收到 SIGINT 时留下标记 (真 phonefarm 在这里走还原)
+    let bin = root.join("phonefarm/phonefarm");
+    let script = std::fs::read_to_string(&bin).unwrap().replace(
+        "  eval)\n",
+        &format!(
+            "  eval)\n    trap 'echo restored > {}; exit 130' INT\n    sleep 20 >/dev/null 2>&1 &\n    wait $!\n",
+            mark.display()
+        ),
+    );
+    std::fs::write(&bin, script).unwrap();
+    let dir = root.join("goals/run4");
+    goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| {
+        s.layers = vec!["sysparam".into()];
+        s.per_generation = 1;
+    });
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
+        .args(["goal", "run"])
+        .arg(&dir)
+        .arg("--phonefarm")
+        .arg(&bin)
+        .arg("--secrets")
+        .arg(root.join("no_secrets.env"))
+        .arg("--sysparam-probe")
+        .arg(root.join("probe.txt"))
+        .arg("--profiles")
+        .arg(root.join("profiles"))
+        .arg("--no-devlock")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // 等到第一个候选上机 (measure 事件出现)
+    let t0 = std::time::Instant::now();
+    loop {
+        let ev = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+        if ev.contains("\"type\":\"measure\"") {
+            break;
+        }
+        assert!(t0.elapsed().as_secs() < 30, "等不到上机");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let t1 = std::time::Instant::now();
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    let status = child.wait().unwrap();
+    assert!(t1.elapsed().as_secs() < 10, "叫停之后应该很快退出 (正在上机的 eval 要睡 20 秒)");
+    assert!(status.success(), "{status:?}");
+    assert!(mark.exists(), "phonefarm 子进程没收到 SIGINT");
+    let st: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
+    assert_eq!(st["status"], "done");
+    assert_eq!(st["stop_reason"], "human_stop");
+    let ev = events(&dir);
+    assert_eq!(ev.last().unwrap()["type"], "stop");
+    assert_eq!(ev.last().unwrap()["reason"], "human_stop");
+    assert!(dir.join("report.md").exists());
+    check_contracts(&dir);
+    std::fs::remove_dir_all(&root).ok();
+}

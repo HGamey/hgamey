@@ -79,6 +79,19 @@ pub struct Config {
     pub goal: GoalHooks,
 }
 
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 有人叫停了 (目标模式收到 SIGINT)。之后不再出方案、不再上机; 正在跑的 phonefarm 子进程
+/// 同组收到 SIGINT, 自己走还原流程。
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 置位叫停标志 (信号处理里调, 只做一次原子写)。
+pub fn interrupt() {
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// 目标模式逐代调用 optimize 时的钩子。缺省 = 普通的一次 optimize。
 #[derive(Debug, Clone, Default)]
 pub struct GoalHooks {
@@ -553,6 +566,9 @@ fn evaluate_on(
     id: &str,
     req: &Request,
 ) -> Result<eval::Report> {
+    if interrupted() {
+        bail!("人叫停 (SIGINT): 不再上机");
+    }
     // 黑盒游戏: 上机前先进门。量到桌面或登录页的一轮不是数据。
     if caps.carrier.box_kind == games::BoxKind::BlackBox && !req.package.is_empty() {
         let dir = cfg.out_dir.join("enter").join(id);
@@ -776,6 +792,9 @@ fn run_sysparam(
 
     for g in 1..=ctx.step.generations {
         let gen = ctx.cfg.goal.gen_offset + g;
+        if interrupted() {
+            bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
+        }
         let batch = ctx.propose(gen, &constraints, &history).sysparam();
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
@@ -962,6 +981,9 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
 
     for g in 1..=ctx.step.generations {
         let gen = ctx.cfg.goal.gen_offset + g;
+        if interrupted() {
+            bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
+        }
         let batch = ctx.propose(gen, &constraints, &history).gray();
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();

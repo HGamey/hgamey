@@ -230,6 +230,39 @@ fn strip_fence(raw: &str) -> String {
 
 // ───────────────────────────── 运行 ─────────────────────────────
 
+/// SIGINT / SIGTERM: 置叫停标志, 并把信号转给本进程组 (正在跑的 phonefarm 子进程收到后
+/// 自己走还原流程)。只有 `goal run` 命令行入口调它; 调之前先 [`own_process_group`],
+/// 免得把信号转到节点服务头上。
+#[cfg(unix)]
+pub fn install_signal_handlers() {
+    extern "C" fn on_signal(_sig: libc::c_int) {
+        if !optimize::interrupted() {
+            optimize::interrupt();
+            // 转给整个进程组 (含自己; 再进来时标志已置, 直接返回)。只在自己是组长时转:
+            // 否则同组里可能有节点服务, 不能误伤。
+            if OWN_GROUP.load(std::sync::atomic::Ordering::SeqCst) {
+                unsafe {
+                    libc::kill(0, libc::SIGINT);
+                }
+            }
+        }
+    }
+    unsafe {
+        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+    }
+}
+
+/// 自己当进程组组长: 之后转发的 SIGINT 只落在 goal run 和它起的子进程上。
+#[cfg(unix)]
+pub fn own_process_group() {
+    let ok = unsafe { libc::setpgid(0, 0) == 0 || libc::getpgrp() == libc::getpid() };
+    OWN_GROUP.store(ok, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+static OWN_GROUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// `goal run` 的运行参数 (与目标无关的、环境里的东西)。
 pub struct RunOpts<'a> {
     pub phonefarm: PathBuf,
@@ -411,6 +444,10 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         st.elapsed_min = t0.elapsed().as_secs_f64() / 60.0;
         st.budget_min = (spec.budget.wall_minutes as i64 + steer.budget_add_min).max(0) as f64;
 
+        if optimize::interrupted() {
+            stop(&mut st, "human_stop", "人按了停止 (SIGINT)".into())?;
+            break;
+        }
         if steer.stop {
             stop(&mut st, "human_stop", "人在 human.md 里写了停止".into())?;
             break;
@@ -517,7 +554,20 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 events: Some(rd.path("events.jsonl")),
             },
         };
-        let outcome = match optimize::run(&cfg) {
+        let result = optimize::run(&cfg);
+        if optimize::interrupted() {
+            // 当前这一代被打断: 正在上机的那个候选由 phonefarm 收到 SIGINT 自己还原,
+            // 这一代已经量完的候选照样记账 (报告在的话)。
+            if let Ok(o) = &result {
+                if let Ok(g) = settle(Path::new(&o.report_json), spec) {
+                    per_gen.push((gen, g));
+                }
+            }
+            rd.event(gen, "note", json!({"message": format!("第 {gen} 代被人叫停打断, 正在上机的候选由 phonefarm 走还原")}));
+            stop(&mut st, "human_stop", format!("人按了停止 (SIGINT), 第 {gen} 代中断"))?;
+            break;
+        }
+        let outcome = match result {
             Ok(o) => o,
             Err(e) => {
                 errors_in_a_row += 1;
