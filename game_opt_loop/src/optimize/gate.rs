@@ -43,7 +43,7 @@ pub struct Options {
     pub threshold: f64,
     /// 只问只记, 不挡。
     pub shadow: bool,
-    /// key 文件。缺省: 环境 `TYPESAFE_API_KEY`, 再缺省 `~/.config/hgamey/typesafe.key`。
+    /// key 文件。缺省: 环境 `TYPESAFE_API_KEY` (key 本身), 再缺省环境 `TYPESAFE_KEY_FILE` (key 文件路径)。
     pub key_file: Option<PathBuf>,
 }
 
@@ -86,7 +86,8 @@ impl Jev {
         })
     }
 
-    /// 找 key: 显式文件 > 环境 `TYPESAFE_API_KEY` > `~/.config/hgamey/typesafe.key`。
+    /// 找 key: 显式文件 > 环境 `TYPESAFE_API_KEY` (key 本身) > 环境 `TYPESAFE_KEY_FILE` (文件路径)。
+    /// 不写死任何家目录下的默认路径 —— 机密放在哪由部署决定 (例如 `<工作根>/.hgamey/typesafe.key`)。
     pub fn load_key(file: Option<&Path>) -> Result<String> {
         if let Some(f) = file {
             return read_key(f);
@@ -96,8 +97,12 @@ impl Jev {
                 return Ok(k.trim().to_string());
             }
         }
-        let home = std::env::var("HOME").unwrap_or_default();
-        read_key(&Path::new(&home).join(".config/hgamey/typesafe.key"))
+        match std::env::var("TYPESAFE_KEY_FILE") {
+            Ok(f) if !f.trim().is_empty() => read_key(Path::new(f.trim())),
+            _ => bail!(
+                "没有守门 key: 用 --gate-key-file <文件>, 或设环境变量 TYPESAFE_API_KEY (key) / TYPESAFE_KEY_FILE (文件路径)"
+            ),
+        }
     }
 }
 

@@ -12,7 +12,7 @@
 理想的守门应该给低分 —— 这正是守门要挡的「已被真机否定的重复」。
 
 state 的形状与 src/optimize/gate.rs 的 state_for 一致 (改那边要同步改这里)。
-key: 环境 TYPESAFE_API_KEY, 或 ~/.config/hgamey/typesafe.key。只用标准库。
+key: 环境 TYPESAFE_API_KEY (key 本身), 或 TYPESAFE_KEY_FILE (key 文件路径)。只用标准库。
 """
 import argparse
 import json
@@ -53,7 +53,10 @@ def key():
     k = os.environ.get("TYPESAFE_API_KEY", "").strip()
     if k:
         return k
-    return open(os.path.expanduser("~/.config/hgamey/typesafe.key")).read().strip()
+    f = os.environ.get("TYPESAFE_KEY_FILE", "").strip()
+    if not f:
+        sys.exit("没有守门 key: 设环境变量 TYPESAFE_API_KEY (key) 或 TYPESAFE_KEY_FILE (文件路径)")
+    return open(f).read().strip()
 
 
 def change_of(params):

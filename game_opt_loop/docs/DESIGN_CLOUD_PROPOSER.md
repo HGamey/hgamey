@@ -31,8 +31,9 @@
   PASS 了。**建议先用影子模式攒数据，再决定开不开挡、阈值定多少**。
 - 守门出错（网络、key、回包格式）时一律放行，原因写进证据。守门坏了不该让流水线停。
 - 实现成 `Proposer` 的装饰器：层跑器一行没改；不管谁来出方案，都要过同一道门。
-- key：显式的 `--gate-key-file` 优先，其次环境变量 `TYPESAFE_API_KEY`，最后
-  `~/.config/hgamey/typesafe.key`。optimize 在节点上跑时节点上没有 key，可以用
+- key：显式的 `--gate-key-file` 优先，其次环境变量 `TYPESAFE_API_KEY`（key 本身），最后环境变量
+  `TYPESAFE_KEY_FILE`（key 文件路径，例如 `<工作根>/.hgamey/typesafe.key`）；代码里不写死任何家目录路径。
+  optimize 在节点上跑时节点上没有 key，可以用
   `--gate-key-file <本机路径>`（pf-node 会把本机文件传上去）。**这等于把 key 拷到节点上，
   要不要这么做请 owner 定**。
 

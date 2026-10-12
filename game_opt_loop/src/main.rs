@@ -190,7 +190,7 @@ pub struct OptimizeArgs {
     #[arg(long)]
     gate_shadow: bool,
 
-    /// 守门 key 文件。缺省: 环境 TYPESAFE_API_KEY, 再缺省 ~/.config/hgamey/typesafe.key。
+    /// 守门 key 文件。缺省: 环境 TYPESAFE_API_KEY (key 本身), 再缺省环境 TYPESAFE_KEY_FILE (文件路径)。
     #[arg(long)]
     gate_key_file: Option<PathBuf>,
 

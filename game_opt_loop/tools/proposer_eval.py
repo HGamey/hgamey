@@ -11,7 +11,7 @@
     **近似** (真正的校验在 src/optimize/sysparam.rs::validate), 只用来离线比较;
   - 是否原样重复了历史里被量准判 REJECT 的候选;
   - (--jev) 守门给的 p(值得上机), state 与 gate.rs 同形。
-只用标准库。--jev 要 TYPESAFE_API_KEY 或 ~/.config/hgamey/typesafe.key。
+只用标准库。--jev 要环境变量 TYPESAFE_API_KEY (key) 或 TYPESAFE_KEY_FILE (文件路径)。
 """
 import argparse
 import json
