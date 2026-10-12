@@ -14,6 +14,31 @@ schemas can add diagnostic child phases and model pipeline records. A malformed
 or unsupported record is diagnosed, never silently made successful. It never
 creates a fake log.jsonl to make confirmation sessions look like UI traversals.
 
+Completed producer `review.json`/`telemetry.json` records under `livephase` are
+indexed as `experiment_phase`, separately from UI runs, confirmation sessions,
+model pipelines and qualified optimization rounds. The adapter accepts finite
+physical-checkpoint/terminal-review schemas, not game directory names. Explicit
+legacy terminal shapes without schema remain legacy declarations. Unsupported
+JSON is diagnosed. Result files beside an accepted review do not count a second
+physical phase. Source tests/builds outside this producer branch are excluded.
+
+Only typed known scalars and finite nested observation objects are public.
+Scripts, argv, screenshots, marker contents, PID/UID/boot/token and arbitrary
+error/input strings remain private. Each phase retains its original review SHA.
+Declared artifact hashes are resolved lexically inside the phase, then opened
+with component NOFOLLOW/regular checks and bounded streaming hash verification:
+128 references/phase, 12MiB/reference, 512MiB/3000 references/export. Out-of-phase
+or private references are not read. Changed, missing or oversized refs give
+partial-integrity diagnostics; the declared producer status remains separate
+from UNKNOWN integrity and never becomes verified evidence. Public artifacts contain only typed review projections and opaque
+reference hashes. A manifest import receipt reconciles each original review
+and reference hash. Old successful recovery never updates a later phase.
+
+All diagnostic-phase performance qualification remains false. Completion, host
+success, restore and remote idle are separate fields. Values retain declared
+metric scope, null power and submit-proxy/display distinctions. SF fractions
+refer to retained labelled buckets, not continuous FPS or a precise jank limit.
+
 Traversal is bounded by depth, entry and file counts. Dot paths, private-auth,
 build/runtime caches, symlinks, nonregular files and oversize inputs are refused
 or skipped with diagnostics. Open files with O_NOFOLLOW and O_NONBLOCK, validate
@@ -44,7 +69,7 @@ remain separate. The immutable catalog contains tasks, runs, steps and artifact
 metadata, plus a native GOL dashboard snapshot if explicitly provided.
 
 - `GET /api/meta` => `{schema:'phonefarm_web/meta@1',snapshot,
-  counts:{tasks,ui_runs,confirmation,model_pipeline},diagnostics,device_live:false}`
+  counts:{tasks,ui_runs,confirmation,model_pipeline,experiment_phase},diagnostics,device_live:false}`
 - `GET /api/tasks?offset=0&limit=20` and
   `/api/tasks/{task_id}/runs?offset=0&limit=20&kind=all` =>
   `{schema:'phonefarm_web/page@1',snapshot,items,total,offset,limit}`
@@ -62,7 +87,7 @@ metadata, plus a native GOL dashboard snapshot if explicitly provided.
 Task item: `{id,name,run_count,latest_run_id,updated_at,kinds}`.
 Run item: `{id,task_id,kind,label,status,started_at,finished_at,updated_at,
 qualification:{eligible,scope},metrics,step_count,artifact_count,
-source:{schema,sha256,origin}}`. Kind is ui_run/confirmation/model_pipeline.
+source:{schema,sha256,origin}}`. Kind is ui_run/confirmation/model_pipeline/experiment_phase.
 Step: `{index,type,name,status,at,summary:{typed fields},artifact_ids}`.
 Artifact: `{id,label,kind,bytes,sha256,source_sha256,source_relative_path}`.
 Limits are strict nonnegative offsets and 1..200 pages; unknown IDs =>404,

@@ -104,6 +104,126 @@ def status(v):
     return v if isinstance(v, str) and re.fullmatch(r'[a-zA-Z_]{1,80}', v) else 'UNKNOWN'
 
 
+# Physical producer reviews are distinct from protocol sessions and code tests.
+PHASE_SCHEMAS = {
+ 'hgamey/live_phase_review@1','hgamey/live_checkpoint_review@1',
+ 'phonefarm/ui_checkpoint_review@1','phonefarm/frametimeline_capture_review@1',
+ 'phonefarm/live_helper_readonly_diagnostic_terminal_review@1',
+ 'phonefarm/live_existing_prepare_terminal_review@1','phonefarm/live_queued_prepare_review@1',
+ 'phonefarm/readonly_checkpoint_review@1','phonefarm/readonly_inventory_checkpoint@1',
+ 'phonefarm/live_control_attempt_review@1','phonefarm/carrier_smoke_review@1'}
+PHASE_REF_CAP=12*1024*1024
+PHASE_TOTAL_CAP=512*1024*1024
+PHASE_NUMBERS=set('''exit_code elapsed_s host_elapsed_s elapsed_wall_s duration_s code
+helper_actual_installed_files main_bundle_install_calls candidate_control_calls
+completed_baseline_raw_count performance_baselines_collected performance_baselines_requested
+original_gpu_min_pwrlevel actual_gpu_min_before actual_gpu_min_after actual_ddr_boost_after
+actual_llcc_boost_after actual_gpu_max_after actual_tracing_on_after lease_exit lease_recovery_exit
+normal_lease_after_recovery_exit_code normal_postfailure_lease_checkpoint_exit
+normal_postfailure_lease_exit original_lease_exit lease_wrapper_exit_code capture_cli_exit
+witness_exit witness_bytes actual_thread_count trace_bytes target_surface_rows
+tracing_sessions_after model_api_calls control_writes formal_samples device_writes
+successful_device_calls successful_device_commands successful_device_calls_in_this_phase
+actual_device_window_s actual_requested_sleep_count nominal_requested_sample_interval_s
+set_frame_rate_vote reported_average_fps total_frames histogram_interval_count slow_bucket_ratio
+slow_bucket_threshold_ms fps_mean frame_p95_ms power_watt display_fps target_queued_cadence_mean
+ target_queued_interval_p95_ms sample_count span_s max_single_sensor_range_c gap_after_warmup_s
+uptime_s warmup_last_uptime_s actual_span_s max_sensor_span_c frozen_max_span_c
+maximum_sensor_span_C readings device_warmup_span_s original_game_fps original_fps
+current_fixed_load_fps load_configuration_fps original_load_configuration_fps
+fps_setting last_known_fps celsius hal_status thermal_status status GPU_min_before
+GPU_min_blocked_after gpu_min_before gpu_min_terminal gpu_min_pwrlevel gpuclk_raw
+ gpu_clock_hz ddr_boost_freq_raw ddr_cur_freq_raw llcc_boost_freq_raw llcc_cur_freq_raw
+skin_C battery_C outer_timeout_s registered_timeout_s transport_timeout_s stdout_bytes
+stderr_bytes recorded_reader_exit reader_log_bytes new_baselines sf_stop_clear_exit
+self_reported_frames_submitted version_code'''.split())
+PHASE_BOOLS=set('''completed terminal eligible performance_eligible promotion_allowed
+real_game_optimization_proven real_game_qualification optimization_improvement_proven
+optimized_effect_proven performance_gain_proven display_verified display_fps_proven
+formal_metric_admitted present_timing_verified game_proof game_optimization_proven
+energy_improvement_proven independent_gpu_completion_proven gpu_completion_attested
+actual_clock_sustained_proven actual_device_executed actual_control_write_executed
+candidate_control_applied candidate_written readback_hold_executed hold_11s_executed
+restore_experiment_executed restoration_experiment_executed main_remote_tools_installed
+initial_snapshot_restore_graph_and_state_created initial_snapshot_and_restore_graph_frozen
+thermal_reference_warmup_passed main_frozen_inputs_exists timedout_remote_idle_verified
+helper_closed_proven helper_removed_proven full_control_restore_claimed old_samples_revalidated
+full_initial_snapshot_equal owned_groups_absent_verified_by_existing_receiver
+remote_session_permanently_revoked remote_idle_verified recovery_completed control_restore_claimed
+barrier_before barrier_after retained manually_edited marker_manually_edited
+stop_close_delete_performed no_further_normal_lease_or_media_phase no_automatic_retry
+real_device_operations_nonzero device_commands_nonzero device_calls_nonzero device_execution
+native_pair_capture_executed device_installed native_capture_executed native_capture_installed
+frequency_residency_proven package_uid_verified unique_display_join capture_repeated trace_repeated
+remote_owned_group_absent owned_directory_removed self_reported_clean_exit
+host_process_absence_after_owned_force_stop full_thread_inventory_complete terminal_marker end_marker
+raw_readings_saved rules_changed all_gaps_within_frozen_6_s diagnostic_complete
+all_registered_file_sections_read process_scan_record_present terminal_marker_present
+pending_file_present permit_present master_and_children_rows_have_final_lf
+safe_to_declare_old_group_absent safe_to_claim_reconciliation_success continuous_scene_proven
+visible_camp_before_prepare settings_changed other_graphics_values_unchanged restored_fps_visually_confirmed
+foreground_game_not_proven original_game_fps_restore_pending normal_lease_checkpoint_after_attempt_succeeded
+original_result_preserved diagnostic_calculations_not_a_qualification'''.split())
+PHASE_TEXT=set('''scope scene claim_scope metric_scope raw_clock_scope observed_image_state
+observed_screen observed_screens screenshot_scene graphics render_scale version_name
+status reason failed_operation selected_control selected_control_write pre_baseline_probe
+capture_ftrace_workload_env temperature_scope raw_scope baseline_repeatability full_restore
+control_write_and_11s_hold main_install_batch_wall_time_speedup background_download
+background_genshin_download normal_lease_or_prepare_after_diagnosis reconcile_after_diagnosis
+control_11s_hold full_restore_snapshot quantile_scope master_and_child_proc_stat_status_cmdline
+remote_master_current_liveness ledger_field_format fps histogram frequency gate'''.split())
+PHASE_OBJECTS=set('''prepare reconcile recovery recovery_barrier claims scene carrier
+warmup blocked_snapshot host remote observed analysis layer metrics metric_semantics
+cached_shell_skin actual_sysfs_at_warmup clock_observation thermal_diagnostics actual_thread_checkpoint
+candidate_requested'''.split())
+PHASE_SERIES={'hal_statuses','thermal_statuses','observed_gap_s','actual_gaps_s','actual_uptime_s',
+              'actual_sample_start_intervals_s_range','CPU_range_C','GPU_range_C'}
+
+
+def phase_project(v,depth=0):
+    """Finite producer fields, no argv/path/marker/UI input or unknown strings."""
+    if not isinstance(v,dict) or depth>4:return {}
+    out={}
+    for k,x in v.items():
+        if k=='power_watt':out[k]=None  # These diagnostic phases have no power qualification.
+        elif k in PHASE_BOOLS and type(x) is bool:out[k]=x
+        elif k in PHASE_NUMBERS and (number(x) is not None or x is None):out[k]=number(x)
+        elif k in PHASE_NUMBERS and isinstance(x,str) and re.fullmatch(r'[+-]?\d{1,12}(?:\.\d{1,8})?',x):out[k]=number(float(x))
+        elif k in PHASE_OBJECTS and isinstance(x,dict):out[k]=phase_project(x,depth+1)
+        elif k in PHASE_TEXT and isinstance(x,str):out[k]=label(x)
+        elif k in PHASE_SERIES and isinstance(x,list) and len(x)<=256:
+            if all(number(t) is not None for t in x):out[k]=x
+        elif k in {'sensor_spans_c','raw_span_by_sensor_C','histogram_counts'} and isinstance(x,dict) and len(x)<=256:
+            pattern=r'(?:\d{1,4}ms)' if k=='histogram_counts' else r'/sys/class/(?:thermal/thermal_zone\d+/temp|power_supply/battery/temp)'
+            out[k]={s:number(t) for s,t in x.items() if re.fullmatch(pattern,s) and number(t) is not None}
+    # Fixed receiver error grammar yields the remote code, never publishes stderr.
+    error=v.get('error')
+    if error is None and isinstance(v.get('status'),dict):error=v['status'].get('error')
+    if isinstance(error,str):
+        found=re.fullmatch(r'(worker_[a-z_]{1,48}|thermal_snapshot) exited ([0-9]{1,3}): .*',error,re.DOTALL)
+        if found:out['receiver_exit_code']=int(found[2])
+    # The historical name "threshold" does not establish a precise >=50ms cut.
+    if 'slow_bucket_ratio' in out:
+        out['histogram_fraction_scope']='50ms_label_bucket_over_retained_pairs_not_jank_or_whole_window'
+        out.pop('slow_bucket_threshold_ms',None)
+    return out
+
+
+def phase_schema(v):
+    schema=v.get('schema')
+    if schema in PHASE_SCHEMAS:
+        if schema=='hgamey/live_phase_review@1' and v.get('terminal') is not True:return None
+        if schema=='hgamey/live_checkpoint_review@1' and v.get('completed') is not True:return None
+        return schema
+    # Legacy terminal receipts have no schema; never accept arbitrary schema values.
+    if schema is None and v.get('terminal') is True and isinstance(v.get('scope'),str) and (
+        type(v.get('device_writes')) is int or type(v.get('control_writes')) is int or
+        v.get('performance_eligible') is False):return 'phonefarm_web/legacy_terminal_declaration@1'
+    if schema is None and status(v.get('status'))=='LEASE_RECONCILED' and type(v.get('lease_recovery_exit')) is int:
+        return 'phonefarm_web/legacy_lease_declaration@1'
+    return None
+
+
 class Reader:
     def __init__(self, root, scope='phonefarm', budget=None):
         self.root = Path(root).absolute()
@@ -167,6 +287,43 @@ class Reader:
         if not isinstance(v, dict): raise ValueError('object_required')
         return v, b, meta
 
+    def phase_reference(self, path, expected):
+        if not isinstance(expected,str) or not re.fullmatch('[0-9a-f]{64}',expected):
+            raise ValueError('invalid_reference_hash')
+        parts=path.split('/')
+        if any(not p or p in SKIP or p.startswith('.') or p=='..' for p in parts):
+            raise ValueError('private_or_invalid_reference')
+        ledger=self.budget.setdefault('phase_refs',{})
+        ident=self.identity(path)
+        if ident in ledger:
+            row=ledger[ident]
+            return {**row,'verified':row['sha256']==expected,'expected_sha256':expected}
+        if len(ledger)>=3000:raise ValueError('phase_reference_count_cap')
+        fd=os.dup(self.fd)
+        try:
+            for part in parts[:-1]:
+                child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+                os.close(fd);fd=child
+            child=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
+            with os.fdopen(child,'rb') as f:
+                meta=os.fstat(f.fileno())
+                if not stat.S_ISREG(meta.st_mode):raise ValueError('nonregular_phase_reference')
+                if meta.st_size>PHASE_REF_CAP:raise ValueError('phase_reference_size_cap')
+                h=hashlib.sha256();size=0
+                while True:
+                    b=f.read(min(65536,PHASE_REF_CAP+1-size))
+                    if not b:break
+                    size+=len(b)
+                    if size>PHASE_REF_CAP:raise ValueError('phase_reference_grew')
+                    total=self.budget.get('phase_ref_bytes',0)+len(b)
+                    if total>PHASE_TOTAL_CAP:raise ValueError('total_phase_reference_bytes_cap')
+                    self.budget['phase_ref_bytes']=total;h.update(b)
+                row={'source_id':opaque('source',ident),'source_root':self.scope,
+                     'bytes':size,'sha256':h.hexdigest()}
+                ledger[ident]=row
+                return {**row,'verified':row['sha256']==expected,'expected_sha256':expected}
+        finally:os.close(fd)
+
     def entries(self, relative=''):
         self.budget['visited'] += 1
         self.usage['visited']+=1
@@ -212,7 +369,7 @@ class Catalog:
     def __init__(self, reader, now=None):
         self.reader = reader
         self.time = now or dt.datetime.now(dt.timezone.utc).isoformat()
-        self.tasks = []; self.runs = []; self.artifacts = {}; self.public_files = {}
+        self.tasks = []; self.runs = []; self.artifacts = {}; self.public_files = {};self.phase_imports=[]
 
     def artifact(self, relative, value, source_hash, name):
         ident = opaque('artifact', self.reader.identity(relative))
@@ -380,6 +537,73 @@ class Catalog:
         a=self.artifact(relative,{'schema':MODEL_SCHEMA,'status':r['status'],'steps':r['steps'],'claims':r['summary']},digest(raw),'pipeline.json / 脱敏阶段')
         r['artifacts'].append(a)
 
+    def phase(self,task,relative,v,raw,meta):
+        schema=phase_schema(v)
+        if schema is None:return False
+        directory=relative.rsplit('/',1)[0]
+        if '/livephase/' not in '/'+directory+'/':return False
+        declared=v.get('artifact_sha256',v.get('files',{}))
+        if not isinstance(declared,dict):raise ValueError('phase_reference_map_required')
+        declared=dict(declared)
+        if isinstance(v.get('raw_file'),str):declared[v['raw_file']]=v.get('raw_sha256')
+        if isinstance(v.get('image_file'),str):declared[v['image_file']]=v.get('image_sha256')
+        if len(declared)>128:raise ValueError('phase_reference_map_cap')
+        references=[]
+        for path,expected in declared.items():
+            row={'source_id':opaque('source',self.reader.identity(str(path))),
+                 'expected_sha256':expected if isinstance(expected,str) and re.fullmatch('[0-9a-f]{64}',expected) else None,
+                 'verified':False}
+            try:
+                if not isinstance(path,str):raise ValueError('invalid_reference_path')
+                if path.startswith('/'):
+                    path=str(Path(path).relative_to(self.reader.root))
+                elif path.startswith('tasks/'):path=path[len('tasks/'):]
+                elif path.startswith('livephase/'):
+                    path=directory.split('/livephase/',1)[0]+'/'+path
+                else:path=directory+'/'+path
+                # No reference to another experiment, accepted binary, or private dir.
+                if not path.startswith(directory+'/'):raise ValueError('out_of_phase_reference')
+                row=self.reader.phase_reference(path,expected)
+                if not row['verified']:row['code']='reference_hash_mismatch'
+            except (ValueError,OSError,UnicodeError) as e:
+                code=str(e)
+                row['code']=code if isinstance(e,ValueError) and re.fullmatch('[a-z_]{1,80}',code) else 'reference_unreadable'
+            references.append(row)
+        good=sum(t['verified'] for t in references)
+        integrity={'status':'verified' if references and good==len(references) else 'partial' if references else 'not_declared',
+                   'declared_count':len(references),'verified_count':good,'failed_count':len(references)-good}
+        projected=phase_project(v)
+        declared_status=status(v.get('status'))
+        r=self.run(task,relative,'experiment_phase',schema,raw,meta,directory.split('/')[-1])
+        r['status']=declared_status
+        r['qualification']={'eligible':False,'scope':'physical_phase_declaration_not_optimization_or_whole_window_qualification'}
+        reviewed=next((stamp(v.get(k)) for k in ['written_at_unix_s','completed_at_unix_s','reviewed_at_unix_s','reviewed_unix_s'] if stamp(v.get(k))),None)
+        r['updated_at']=reviewed
+        r['finished_at']=stamp(v.get('completed_at_unix_s'))
+        r['source']['evidence_origin']='recorded_physical_phase_declaration'
+        r['summary']={'declared_status':declared_status,'reviewed_at':reviewed,
+                      'evidence_integrity':integrity,'observations':projected,
+                      'performance_eligible':False,'promotion_allowed':False,'real_game_optimization_proven':False,
+                      'metric_scope':'diagnostic_only; submit_proxy_is_not_display_fps; retained_SF_pairs_are_not_whole_window',
+                      'power_watt':None}
+        r['metrics']={'power_watt':None}
+        for name in ['prepare','reconcile','recovery','host','remote','warmup','layer','thermal_diagnostics','clock_observation']:
+            if name in projected:
+                item=projected[name]
+                r['steps'].append({'index':len(r['steps']),'type':'phase_observation','name':name,
+                    'status':status(item.get('status')),'at':None,'summary':item,'artifact_ids':[]})
+        if not r['steps']:r['steps']=[{'index':0,'type':'phase_observation','name':'checkpoint',
+                'status':r['status'],'at':None,'summary':projected,'artifact_ids':[]}]
+        if integrity['status']!='verified':r['diagnostics'].append({'code':'phase_reference_integrity_'+integrity['status']})
+        a=self.artifact(relative,{'schema':'phonefarm_web/sanitized_phase_review@1','producer_schema':schema,
+             'status':r['status'],'summary':r['summary'],'reference_receipts':references,
+             'raw_artifacts_and_private_identifiers_omitted':True},digest(raw),'review / 脱敏实验阶段')
+        r['artifacts'].append(a)
+        self.phase_imports.append({'run_id':r['id'],'source_root':self.reader.scope,
+            'source_id':opaque('source',self.reader.identity(relative)),'original_sha256':digest(raw),
+            'producer_schema':schema,'evidence_integrity':integrity,'reference_receipts':references})
+        return True
+
     def walk(self,task,relative,depth=0,recursive=True):
         children=[]
         if depth>MAX_DEPTH:
@@ -390,6 +614,15 @@ class Catalog:
         if {'state.json','request.json','journal.jsonl'}<=names:
             try:self.confirmation(task,relative)
             except (ValueError,OSError,UnicodeError):self.reader.diagnostic(relative,'confirmation_parse_failed')
+        phase_review=False
+        if '/livephase/' in '/'+relative+'/' and {'review.json','telemetry.json','result.json'}&names:
+            for name in ['review.json','telemetry.json','result.json']:
+                if name not in names:continue
+                try:
+                    v,b,meta=self.reader.json(relative+'/'+name)
+                    if self.phase(task,relative+'/'+name,v,b,meta):phase_review=True;break
+                    if name!='result.json':self.reader.diagnostic(relative+'/'+name,'unsupported_phase_review_schema')
+                except (ValueError,OSError,UnicodeError):self.reader.diagnostic(relative+'/'+name,'phase_review_parse_failed')
         for e in entries:
             rel=relative+'/'+e.name
             if e.is_dir(follow_symlinks=False):
@@ -397,7 +630,7 @@ class Catalog:
                 else:children.append((task,rel,depth+1))
             elif e.is_file(follow_symlinks=False):
                 if e.name=='log.jsonl' and '/runs/' in rel:self.ui(task,rel)
-                elif e.name in {'result.json','pipeline.json'}:
+                elif e.name in {'result.json','pipeline.json'} and not (phase_review and e.name=='result.json'):
                     try:
                         v,b,meta=self.reader.json(rel)
                         if e.name=='pipeline.json':self.model(task,rel,v,b,meta)
@@ -500,7 +733,8 @@ def export(tasks_root,out,dashboard=None,extra_tasks_roots=None):
             (out/relative).write_bytes(raw)
             manifest.append({'path':relative,'bytes':len(raw),'sha256':digest(raw)})
         result={'schema':'phonefarm_web/release_manifest@1','complete':True,'snapshot':catalog['snapshot'],
-                'files':manifest,'source_files':list(reader.files.values()),'device_calls':0,'model_api_calls':0}
+                'files':manifest,'source_files':list(reader.files.values()),'phase_imports':build.phase_imports,
+                'device_calls':0,'model_api_calls':0}
         (out/'release-manifest.json').write_bytes(encode(result))
         return catalog
     finally:

@@ -136,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path=='/api/meta':
                 if query:raise ValueError('meta query unsupported')
                 body={'schema':'phonefarm_web/meta@1','snapshot':snapshot,
-                      'counts':{'tasks':len(tasks),**{k:sum(r['kind']==k for r in runs.values()) for k in ['ui_run','confirmation','model_pipeline']}},
+                      'counts':{'tasks':len(tasks),**{k:sum(r['kind']==k for r in runs.values()) for k in ['ui_run','confirmation','model_pipeline','experiment_phase']}},
                       'diagnostics':value['diagnostics'],'device_live':False}
                 body['counts']['ui_runs']=body['counts'].pop('ui_run')
             elif u.path=='/api/tasks':
@@ -148,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts)==4 and 'task' in query:raise ValueError('ambiguous task query')
                 if task is not None and task not in tasks:raise KeyError('unknown task')
                 kind=query.get('kind',['all'])[0]
-                if kind not in {'all','ui_run','confirmation','model_pipeline'}:raise ValueError('unknown run kind')
+                if kind not in {'all','ui_run','confirmation','model_pipeline','experiment_phase'}:raise ValueError('unknown run kind')
                 rows=[public_run(r) for r in value['runs'] if (task is None or r['task_id']==task) and (kind=='all' or r['kind']==kind)]
                 body=page(query,rows,snapshot)
             elif len(parts)>=3 and parts[:2]==['api','runs']:

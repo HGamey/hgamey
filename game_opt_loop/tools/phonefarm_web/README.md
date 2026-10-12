@@ -2,6 +2,10 @@
 
 This Python service browses actual phonefarm task records and confirmation/model
 sessions. It has no execution endpoint and does not invoke a device or a model.
+It also indexes schema-identified physical `livephase` reviews as
+`experiment_phase`: diagnostic checkpoints, failed controls, prepare and
+recovery are separate from qualified optimization rounds. A physical stage
+with a successful old restore cannot resolve a later UNKNOWN barrier.
 The Tasks routes are provided by this server, **not** by the native GOL Rust
 `serve` command. Native GOL serves only the separate dashboard input.
 
@@ -53,6 +57,12 @@ use a different private port (8712), fixed tool identity and the same no-fleet
 mode; scheduling, synchronization and TLS deployment are separate from data
 indexing. Catalog directory counts are bounded and diagnostics disclose caps;
 counts describe indexed records, not an unbounded complete filesystem census.
+The completion manifest includes `phase_imports`, matching every imported
+review's original SHA and its bounded reference verification receipts. Only
+sanitized review JSON is public; reference images/argv/scripts/markers are not.
+Incomplete or undeclared reference integrity is explicit, and all diagnostic
+phase qualification remains false. `kind=experiment_phase` filters this kind;
+`/api/meta.counts.experiment_phase` counts these records, not measured gains.
 
 ## HTTP
 

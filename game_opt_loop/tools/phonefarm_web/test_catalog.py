@@ -132,6 +132,66 @@ class CatalogContract(unittest.TestCase):
         self.assertTrue(any(r['source']['schema']==catalog.STATE_SCHEMA and r['source']['source_root']=='models' for r in v['runs']))
         self.assertTrue(any('cap' in d['code'] for d in v['diagnostics']))
 
+    def test_physical_reviews_keep_latest_barrier_separate_from_old_restore(self):
+        root=self.root/'arbitrary-task/livephase'
+        data=b'raw local receipt with private input';p=root/'new-phase/raw.txt';p.parent.mkdir(parents=True);p.write_bytes(data)
+        put(self.root,'arbitrary-task/livephase/new-phase/review.json',{
+            'schema':'phonefarm/live_queued_prepare_review@1','status':'BLOCKED_HELPER_WITNESS_AND_RECONCILIATION_UNKNOWN',
+            'written_at_unix_s':1791763334.137372,'prepare':{'exit_code':1,'host_elapsed_s':121.491,
+                'helper_actual_installed_files':5,'main_bundle_install_calls':0,'candidate_control_calls':0,
+                'completed_baseline_raw_count':0},
+            'reconcile':{'exit_code':1,'host_elapsed_s':15.328,'status':{'error':'worker_reconcile_render exited 85: SECRET_ERROR'}},
+            'recovery_barrier':{'retained':True,'markers':[{'token':'MARKER_SECRET'}]},
+            'claims':{'full_restore':'UNKNOWN_NOT_CLAIMED','baseline_repeatability':'NOT_RUN_0_OF_3'},
+            'metrics':{'power_watt':999,'display_fps':None},'password':'PRIVATE_UNKNOWN_KEY',
+            'artifact_sha256':{'raw.txt':catalog.digest(data)}})
+        put(self.root,'arbitrary-task/livephase/old-phase/review.json',{
+            'schema':'phonefarm/live_existing_prepare_terminal_review@1','status':'BLOCKED',
+            'recovery':{'status':'RESTORED_REQUIRES_NEW_SESSION','full_initial_snapshot_equal':True,'exit_code':0}})
+        # No second physical record from a sibling result.
+        put(self.root,'arbitrary-task/livephase/new-phase/result.json',{'schema':'phonefarm/control_probe@1','status':'PASS'})
+        put(self.root,'arbitrary-task/build/review.json',{'schema':'phonefarm/live_queued_prepare_review@1','status':'PASS'})
+        v=catalog.export(self.root,self.out)
+        phases=[r for r in v['runs'] if r['kind']=='experiment_phase'];self.assertEqual(len(phases),2)
+        latest=next(r for r in phases if r['label']=='new-phase');old=next(r for r in phases if r['label']=='old-phase')
+        obs=latest['summary']['observations'];self.assertEqual(obs['prepare']['host_elapsed_s'],121.491)
+        self.assertEqual(obs['reconcile']['receiver_exit_code'],85);self.assertTrue(obs['recovery_barrier']['retained'])
+        self.assertNotIn('recovery',obs);self.assertTrue(old['summary']['observations']['recovery']['full_initial_snapshot_equal'])
+        self.assertIsNone(obs['metrics']['power_watt']);self.assertFalse(latest['qualification']['eligible'])
+        m=json.loads((self.out/'release-manifest.json').read_bytes());self.assertEqual(len(m['phase_imports']),2)
+        self.assertEqual(latest['summary']['evidence_integrity']['status'],'verified')
+        public=(self.out/'catalog.json').read_bytes()+b''.join(p.read_bytes() for p in (self.out/'artifacts').iterdir())
+        for secret in [b'PRIVATE_UNKNOWN_KEY',b'MARKER_SECRET',b'SECRET_ERROR',data]:self.assertNotIn(secret,public)
+
+    def test_phase_reference_failures_remain_explicit_without_reading_outside(self):
+        d=self.root/'t/livephase/any';d.mkdir(parents=True)
+        (d/'real.txt').write_text('changed');(d/'linked.txt').symlink_to(self.p/'outside-secret')
+        (self.p/'outside-secret').write_text('NEVER_PUBLIC');os.mkfifo(d/'fifo')
+        put(self.root,'t/private-auth/secret.json',{'password':'NEVER_READ'})
+        put(self.root,'t/livephase/any/review.json',{'schema':'hgamey/live_checkpoint_review@1','completed':True,
+            'status':'DIAGNOSTIC_OBSERVED','artifact_sha256':{'real.txt':'a'*64,'linked.txt':'a'*64,
+              'fifo':'a'*64,'../other.txt':'a'*64,'../../private-auth/secret.json':'a'*64,
+              str(self.p/'outside-secret'):'a'*64}})
+        v=catalog.export(self.root,self.out);r=next(r for r in v['runs'] if r['kind']=='experiment_phase')
+        self.assertEqual(r['summary']['evidence_integrity'],{'status':'partial','declared_count':6,'verified_count':0,'failed_count':6})
+        self.assertFalse(r['qualification']['eligible'])
+        m=json.loads((self.out/'release-manifest.json').read_bytes());refs=m['phase_imports'][0]['reference_receipts']
+        self.assertTrue(all(t['verified'] is False for t in refs));self.assertNotIn(str(self.p),catalog.encode(refs).decode())
+        self.assertNotIn(b'NEVER_PUBLIC',(self.out/'catalog.json').read_bytes())
+
+    def test_histogram_scope_and_schema_terminal_rules_are_not_optimization(self):
+        put(self.root,'t/livephase/buckets/review.json',{'schema':'hgamey/live_checkpoint_review@1','completed':True,
+            'layer':{'total_frames':900,'histogram_interval_count':900,'histogram_counts':{'16ms':1,'33ms':890,'50ms':9},
+                     'slow_bucket_ratio':.01,'slow_bucket_threshold_ms':50,'uid':99999,'layer_name':'PRIVATE_LAYER'}})
+        put(self.root,'t/livephase/not-final/review.json',{'schema':'hgamey/live_checkpoint_review@1','completed':False})
+        put(self.root,'t/livephase/unknown/review.json',{'schema':'unknown/test@1','terminal':True,'performance_eligible':False,'scope':'fake'})
+        v=catalog.export(self.root,self.out);phases=[r for r in v['runs'] if r['kind']=='experiment_phase']
+        self.assertEqual(len(phases),1);layer=phases[0]['summary']['observations']['layer']
+        self.assertEqual(layer['slow_bucket_ratio'],.01);self.assertEqual(sum(layer['histogram_counts'].values()),900)
+        self.assertIn('50ms_label_bucket',layer['histogram_fraction_scope']);self.assertNotIn('slow_bucket_threshold_ms',layer)
+        self.assertNotIn('uid',layer);self.assertNotIn('layer_name',layer)
+        self.assertFalse(phases[0]['qualification']['eligible'])
+
     def test_dashboard_types_ids_and_hashes_survive_without_private_live_state(self):
         h='a'*64
         raw={'generated_at':'2026-10-12T00:00:00Z','paths':{'phonefarm':'/Users/person/phonefarm','phonefarm_present':True},
@@ -187,6 +247,17 @@ class HTTPContract(unittest.TestCase):
         for path in ['/api/file?path=/etc/passwd','/api/runs/unknown','/api/artifacts/../../etc/passwd','/api/dashboard']:
             self.fail(path,404)
         self.fail('/api/tasks',405,'POST')
+
+    def test_phase_kind_filter_and_count_use_the_same_snapshot(self):
+        put(self.root,'arbitrary-task/livephase/arbitrary-phase/review.json',{
+            'schema':'phonefarm/live_queued_prepare_review@1','status':'BLOCKED',
+            'prepare':{'completed_baseline_raw_count':0},'claims':{'baseline_repeatability':'NOT_RUN_0_OF_3'}})
+        new=self.p/'phases';v=catalog.export(self.root,new);self.s.store=server.Store(new)
+        meta=self.get('/api/meta');self.assertEqual(meta['counts']['experiment_phase'],1)
+        page=self.get('/api/runs?kind=experiment_phase');self.assertEqual(page['total'],1)
+        detail=self.get('/api/runs/'+page['items'][0]['id'])
+        self.assertEqual(meta['snapshot'],detail['snapshot']);self.assertFalse(detail['run']['qualification']['eligible'])
+        self.assertEqual(detail['steps'][0]['summary']['completed_baseline_raw_count'],0)
 
     def test_corrupt_artifact_cannot_be_served(self):
         art=next(iter(self.value['artifacts'].values()));(self.snapshot/art['file']).write_bytes(b'{}')
