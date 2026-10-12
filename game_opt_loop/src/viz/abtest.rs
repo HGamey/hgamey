@@ -67,9 +67,7 @@ impl AbReport {
             goal: str_at(v, "goal"),
             primary_metric: str_at(v, "primary_metric"),
             criteria: collect_criteria(v),
-            all_pass: summary
-                .and_then(|s| s.get("all_pass"))
-                .and_then(Value::as_bool),
+            all_pass: summary.and_then(|s| s.get("all_pass")).and_then(Value::as_bool),
             criteria_total: u64_at(summary, "criteria_total"),
             criteria_evaluated: u64_at(summary, "criteria_evaluated"),
             criteria_passed: u64_at(summary, "criteria_passed"),
@@ -152,8 +150,7 @@ impl AbReport {
         if !evaluated_all {
             text.push_str(&format!(
                 " (另有 {} 条未评)",
-                self.criteria_total.unwrap_or_default()
-                    - self.criteria_evaluated.unwrap_or_default()
+                self.criteria_total.unwrap_or_default() - self.criteria_evaluated.unwrap_or_default()
             ));
         }
         (RoundVerdict::Eliminated, text)
@@ -279,10 +276,7 @@ fn runs_from_criteria(v: &Value) -> Vec<String> {
 }
 
 fn arm_dispersion(arm: Option<&Value>) -> Vec<(String, f64)> {
-    let Some(metrics) = arm
-        .and_then(|a| a.get("metrics"))
-        .and_then(Value::as_object)
-    else {
+    let Some(metrics) = arm.and_then(|a| a.get("metrics")).and_then(Value::as_object) else {
         return Vec::new();
     };
     metrics
@@ -292,10 +286,7 @@ fn arm_dispersion(arm: Option<&Value>) -> Vec<(String, f64)> {
 }
 
 fn arm_values(arm: Option<&Value>) -> Vec<(String, Vec<f64>)> {
-    let Some(metrics) = arm
-        .and_then(|a| a.get("metrics"))
-        .and_then(Value::as_object)
-    else {
+    let Some(metrics) = arm.and_then(|a| a.get("metrics")).and_then(Value::as_object) else {
         return Vec::new();
     };
     metrics
@@ -461,11 +452,7 @@ mod tests {
             "summary": {"criteria_total": 6, "criteria_passed": 6, "all_pass": true}
         });
         let r = AbReport::from_value(&v);
-        assert_eq!(
-            r.baseline_runs,
-            vec!["bw_ctrl1", "bw_ctrl2"],
-            "轮次名要从判据里捞"
-        );
+        assert_eq!(r.baseline_runs, vec!["bw_ctrl1", "bw_ctrl2"], "轮次名要从判据里捞");
         let arms = r.arms().expect("探针式也要出得来对比图数据");
         assert_eq!(arms.metric, "frame_p95");
         assert_eq!(r.verdict().0, RoundVerdict::Qualified);

@@ -145,22 +145,13 @@ per_generation: 2\n\
 正文写清楚: 人要什么、为什么这样定主指标与约束、人话里有哪些偏好。人没说的不要编, 用保守缺省。";
 
 /// `goal draft`: 起草 goal.md, state = awaiting_confirm。回 (goal.md 路径, 是不是模板起草的)。
-pub fn draft(
-    intent: &str,
-    game: &str,
-    out: &Path,
-    drafter: Drafter<'_>,
-) -> Result<(PathBuf, bool)> {
+pub fn draft(intent: &str, game: &str, out: &Path, drafter: Drafter<'_>) -> Result<(PathBuf, bool)> {
     std::fs::create_dir_all(out)?;
     let rd = RunDir::new(out);
     if rd.path("state.json").exists() {
         let st = rd.read_state()?;
         if !matches!(st.status.as_str(), "drafting" | "awaiting_confirm") {
-            bail!(
-                "{} 已经在跑或跑完了 (status={}), 不能重新起草",
-                out.display(),
-                st.status
-            );
+            bail!("{} 已经在跑或跑完了 (status={}), 不能重新起草", out.display(), st.status);
         }
     }
     std::fs::write(rd.path("intent.txt"), intent)?;
@@ -202,12 +193,8 @@ pub fn draft(
                         "message": format!("大模型草稿不合格式 ({e:#}), 改用模板")})),
                 }
             }
-            Err(e) => rd.event(
-                0,
-                "note",
-                json!({"stage": "draft",
-                "message": format!("大模型起草失败 ({e:#}), 改用模板")}),
-            ),
+            Err(e) => rd.event(0, "note", json!({"stage": "draft",
+                "message": format!("大模型起草失败 ({e:#}), 改用模板")})),
         }
     }
     let text = match doc_text {
@@ -222,12 +209,8 @@ pub fn draft(
     if !rd.path("human.md").exists() {
         std::fs::write(rd.path("human.md"), "")?;
     }
-    rd.event(
-        0,
-        "note",
-        json!({"stage": "draft", "by": if by_template { "template" } else { "llm" },
-        "message": "goal.md 已起草, 等人确认"}),
-    );
+    rd.event(0, "note", json!({"stage": "draft", "by": if by_template { "template" } else { "llm" },
+        "message": "goal.md 已起草, 等人确认"}));
     st.status = "awaiting_confirm".into();
     st.goal_summary = doc.spec.summary();
     st.max_generations = doc.spec.budget.max_generations;
@@ -248,23 +231,14 @@ fn strip_fence(raw: &str) -> String {
 /// `goal show`: 一次目标运行的现状 (纯文本)。
 pub fn show(dir: &Path, last_events: usize) -> Result<String> {
     let rd = RunDir::new(dir);
-    let read =
-        |n: &str| std::fs::read_to_string(rd.path(n)).unwrap_or_else(|_| format!("<没有 {n}>\n"));
+    let read = |n: &str| std::fs::read_to_string(rd.path(n)).unwrap_or_else(|_| format!("<没有 {n}>\n"));
     let mut o = String::new();
-    o.push_str(&format!(
-        "== {} ==\n\n-- state.json --\n{}\n",
-        dir.display(),
-        read("state.json")
-    ));
+    o.push_str(&format!("== {} ==\n\n-- state.json --\n{}\n", dir.display(), read("state.json")));
     o.push_str(&format!("\n-- goal.md --\n{}\n", read("goal.md")));
     o.push_str(&format!("-- human.md --\n{}\n", read("human.md")));
     let ev = read("events.jsonl");
     let lines: Vec<&str> = ev.lines().collect();
-    o.push_str(&format!(
-        "-- events.jsonl (最后 {} 条 / 共 {}) --\n",
-        last_events.min(lines.len()),
-        lines.len()
-    ));
+    o.push_str(&format!("-- events.jsonl (最后 {} 条 / 共 {}) --\n", last_events.min(lines.len()), lines.len()));
     for l in lines.iter().skip(lines.len().saturating_sub(last_events)) {
         o.push_str(l);
         o.push('\n');
@@ -286,11 +260,7 @@ pub fn cancel(dir: &Path, reason: &str) -> Result<State> {
     st.status = "done".into();
     st.stop_reason = Some("human_stop".into());
     rd.write_state(&mut st)?;
-    rd.event(
-        st.generation,
-        "stop",
-        json!({"reason": "human_stop", "summary": format!("人工收尾: {reason}")}),
-    );
+    rd.event(st.generation, "stop", json!({"reason": "human_stop", "summary": format!("人工收尾: {reason}")}));
     Ok(st)
 }
 
@@ -301,15 +271,10 @@ pub fn edit(dir: &Path, new_goal: &Path) -> Result<()> {
     if !matches!(st.status.as_str(), "drafting" | "awaiting_confirm") {
         bail!("状态是 {}, goal.md 已冻结, 不能再改", st.status);
     }
-    let text = std::fs::read_to_string(new_goal)
-        .with_context(|| format!("读不了 {}", new_goal.display()))?;
+    let text = std::fs::read_to_string(new_goal).with_context(|| format!("读不了 {}", new_goal.display()))?;
     let doc = spec::parse(&text)?;
     std::fs::write(rd.path("goal.md"), &text)?;
-    rd.event(
-        0,
-        "note",
-        json!({"stage": "draft", "message": "人改了 goal.md (整份替换)"}),
-    );
+    rd.event(0, "note", json!({"stage": "draft", "message": "人改了 goal.md (整份替换)"}));
     st.goal_summary = doc.spec.summary();
     st.max_generations = doc.spec.budget.max_generations;
     st.budget_min = doc.spec.budget.wall_minutes as f64;
@@ -381,9 +346,7 @@ pub fn proposer_spec_for(p: &str) -> Result<String> {
     match p {
         "llm" | "local" => Ok(p.to_string()),
         "cloud" => {
-            let custom = std::env::var("GOL_CLOUD_PROPOSER")
-                .ok()
-                .filter(|s| !s.trim().is_empty());
+            let custom = std::env::var("GOL_CLOUD_PROPOSER").ok().filter(|s| !s.trim().is_empty());
             let exe = custom.clone().unwrap_or_else(|| CLOUD_ADAPTER.to_string());
             if !std::path::Path::new(&exe).is_file() {
                 bail!(
@@ -393,11 +356,9 @@ pub fn proposer_spec_for(p: &str) -> Result<String> {
             }
             // 受限 token (只能触发这一个仓库的 workflow、读 artifact 的 fine-grained PAT) 放在
             // GH_TOKEN 里时, gh 直接用它, 不需要登录态; 只要求 gh 本身装着。
-            let has_token = ["GH_TOKEN", "GITHUB_TOKEN"].iter().any(|k| {
-                std::env::var(k)
-                    .map(|v| !v.trim().is_empty())
-                    .unwrap_or(false)
-            });
+            let has_token = ["GH_TOKEN", "GITHUB_TOKEN"]
+                .iter()
+                .any(|k| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false));
             if custom.is_none() && has_token {
                 let gh_ok = std::process::Command::new("gh")
                     .arg("--version")
@@ -486,11 +447,7 @@ fn settle(report_json: &Path, spec: &spec::GoalSpec) -> Result<GenResult> {
             .is_some_and(|w| w.iter().any(|x| x.as_str() == Some(key)));
         let delta = e["verdict"]["per_metric"][key]["diff_pct"].as_f64();
         if let (true, Some(d)) = (won, delta) {
-            let right_way = if spec.objective.direction == "lower" {
-                d < 0.0
-            } else {
-                d > 0.0
-            };
+            let right_way = if spec.objective.direction == "lower" { d < 0.0 } else { d > 0.0 };
             if right_way {
                 g.gains.push((
                     e["id"].as_str().unwrap_or("").to_string(),
@@ -535,14 +492,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     match st.status.as_str() {
         "awaiting_confirm" | "drafting" => {}
         // 冻结了、但一代都还没开始 (例如排队等锁时被杀掉): 可以接着跑, 前提是 goal.md 没被改过
-        "running" | "paused"
-            if st.generation == 0 && st.goal_sha256.as_deref() == Some(sha.as_str()) =>
-        {
-            rd.event(
-                0,
-                "note",
-                json!({"message": "接着跑: 上次确认目标后还没开始第一代就停了"}),
-            );
+        "running" | "paused" if st.generation == 0 && st.goal_sha256.as_deref() == Some(sha.as_str()) => {
+            rd.event(0, "note", json!({"message": "接着跑: 上次确认目标后还没开始第一代就停了"}));
         }
         s => bail!(
             "这次目标运行的状态是 {s} (已跑到第 {} 代), 不能再启动; 要重跑请新建一个 run 目录, \
@@ -564,49 +515,31 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     st.budget_min = spec.budget.wall_minutes as f64;
     st.device = (spec.device != "any").then(|| spec.device.clone());
     rd.write_state(&mut st)?;
-    rd.event(
-        0,
-        "start",
-        json!({"goal_summary": st.goal_summary, "goal_sha256": sha,
-        "layers": spec.layers, "objective": spec.objective, "budget": spec.budget}),
-    );
+    rd.event(0, "start", json!({"goal_summary": st.goal_summary, "goal_sha256": sha,
+        "layers": spec.layers, "objective": spec.objective, "budget": spec.budget}));
     if spec.layers.iter().any(|l| l == "upop") {
-        rd.event(
-            0,
-            "note",
-            json!({"message": "「加画面算子」这一层还不能自动跑, 这次跳过"}),
-        );
+        rd.event(0, "note", json!({"message": "「加画面算子」这一层还不能自动跑, 这次跳过"}));
     }
 
     let label = format!("goal-{}", rd.run_id());
     let mut guard = match &opts.lock {
-        Some(l) => {
-            match crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait) {
-                Ok(g) => Some(g),
-                Err(e) if optimize::interrupted() => {
-                    // 排队时被叫停: 没碰设备, 按人叫停收尾
-                    rd.event(
-                        0,
-                        "note",
-                        json!({"message": format!("排队等手机时被叫停, 没动手机: {e:#}")}),
-                    );
-                    st.status = "done".into();
-                    st.stop_reason = Some("human_stop".into());
-                    rd.write_state(&mut st)?;
-                    rd.event(0, "stop", json!({"reason": "human_stop", "summary": "排队等手机时被叫停, 一代都没跑"}));
-                    return Ok(st);
-                }
-                Err(e) => {
-                    // 等锁超时: 没碰设备。状态保持「已冻结、一代没开始」, 同一个目录可以再 goal run 接着排。
-                    rd.event(
-                        0,
-                        "note",
-                        json!({"message": format!("没排到手机, 没动手机: {e:#}")}),
-                    );
-                    return Err(e);
-                }
+        Some(l) => match crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait) {
+            Ok(g) => Some(g),
+            Err(e) if optimize::interrupted() => {
+                // 排队时被叫停: 没碰设备, 按人叫停收尾
+                rd.event(0, "note", json!({"message": format!("排队等手机时被叫停, 没动手机: {e:#}")}));
+                st.status = "done".into();
+                st.stop_reason = Some("human_stop".into());
+                rd.write_state(&mut st)?;
+                rd.event(0, "stop", json!({"reason": "human_stop", "summary": "排队等手机时被叫停, 一代都没跑"}));
+                return Ok(st);
             }
-        }
+            Err(e) => {
+                // 等锁超时: 没碰设备。状态保持「已冻结、一代没开始」, 同一个目录可以再 goal run 接着排。
+                rd.event(0, "note", json!({"message": format!("没排到手机, 没动手机: {e:#}")}));
+                return Err(e);
+            }
+        },
         None => None,
     };
 
@@ -624,11 +557,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         st.status = if reason == "error" { "failed" } else { "done" }.into();
         st.stop_reason = Some(reason.into());
         rd.write_state(st)?;
-        rd.event(
-            st.generation,
-            "stop",
-            json!({"reason": reason, "summary": summary}),
-        );
+        rd.event(st.generation, "stop", json!({"reason": reason, "summary": summary}));
         Ok(())
     };
 
@@ -646,11 +575,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 steer = human::parse(&text);
                 st.human_md_rev += 1;
                 let interp = steer.interpreted();
-                rd.event(
-                    gen,
-                    "steer",
-                    json!({"human_md_rev": st.human_md_rev, "text": text, "interpreted": interp}),
-                );
+                rd.event(gen, "steer", json!({"human_md_rev": st.human_md_rev, "text": text, "interpreted": interp}));
                 steer_log.push((gen, st.human_md_rev, text.clone(), interp));
                 rd.write_state(&mut st)?;
             }
@@ -669,11 +594,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         if steer.pause {
             st.status = "paused".into();
             rd.write_state(&mut st)?;
-            rd.event(
-                gen,
-                "note",
-                json!({"message": "人要求暂停: 等掌舵指令再改才继续, 这期间把手机让给别人"}),
-            );
+            rd.event(gen, "note", json!({"message": "人要求暂停: 等掌舵指令再改才继续, 这期间把手机让给别人"}));
             drop(guard.take());
             let seen = last_human.clone().unwrap_or_default();
             loop {
@@ -684,22 +605,14 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 }
             }
             if let Some(l) = &opts.lock {
-                guard = Some(crate::devlock::Guard::acquire(
-                    l.script.clone(),
-                    label.clone(),
-                    l.wait,
-                )?);
+                guard = Some(crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait)?);
             }
             st.status = "running".into();
             rd.write_state(&mut st)?;
             continue;
         }
         if gen >= spec.budget.max_generations {
-            stop(
-                &mut st,
-                "budget_exhausted",
-                format!("{} 代用完", spec.budget.max_generations),
-            )?;
+            stop(&mut st, "budget_exhausted", format!("{} 代用完", spec.budget.max_generations))?;
             break;
         }
         if st.elapsed_min >= st.budget_min {
@@ -714,11 +627,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         rd.write_state(&mut st)?;
         let layers = layers_effective(spec, &steer.only_layers);
         if layers.is_empty() {
-            stop(
-                &mut st,
-                "error",
-                "按 goal.md 与 human.md, 一层都不剩可跑".into(),
-            )?;
+            stop(&mut st, "error", "按 goal.md 与 human.md, 一层都不剩可跑".into())?;
             break;
         }
         let mut forbid = spec.forbid.clone();
@@ -732,12 +641,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             pref.push(format!("目标说明: {}", doc.body.trim()));
         }
         let steer_text = (!pref.is_empty()).then(|| pref.join("\n"));
-        rd.event(
-            gen,
-            "plan",
-            json!({"layers": layers, "per_generation": spec.per_generation,
-            "forbid": forbid, "budget_left_min": (st.budget_min - st.elapsed_min).max(0.0)}),
-        );
+        rd.event(gen, "plan", json!({"layers": layers, "per_generation": spec.per_generation,
+            "forbid": forbid, "budget_left_min": (st.budget_min - st.elapsed_min).max(0.0)}));
 
         let gate = match spec.gate.as_str() {
             "off" => None,
@@ -801,16 +706,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                     per_gen.push((gen, g));
                 }
             }
-            rd.event(
-                gen,
-                "note",
-                json!({"message": format!("第 {gen} 代被人叫停, 正在测的那组改动已经撤回")}),
-            );
-            stop(
-                &mut st,
-                "human_stop",
-                format!("人按了停止, 第 {gen} 代中途停下"),
-            )?;
+            rd.event(gen, "note", json!({"message": format!("第 {gen} 代被人叫停, 正在测的那组改动已经撤回")}));
+            stop(&mut st, "human_stop", format!("人按了停止, 第 {gen} 代中途停下"))?;
             break;
         }
         let outcome = match result {
@@ -831,12 +728,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
 
         // ── 结算 ──
         for (cand, d, verdict) in &g.gains {
-            rd.event(
-                gen,
-                "keep",
-                json!({"candidate_id": cand, "metric": spec.objective.metric,
-                "delta_pct": d, "verdict": verdict}),
-            );
+            rd.event(gen, "keep", json!({"candidate_id": cand, "metric": spec.objective.metric,
+                "delta_pct": d, "verdict": verdict}));
             let better = st.best.as_ref().is_none_or(|b| d.abs() > b.delta_pct.abs());
             if better {
                 st.best = Some(Best {
@@ -868,10 +761,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         }
         if let Some(n) = no_gain_limit {
             if st.no_gain_streak >= n && gen >= spec.budget.min_generations {
-                let msg = format!(
-                    "连续 {} 代没有任何候选在主指标上带来显著改善: 这条路没收益",
-                    st.no_gain_streak
-                );
+                let msg = format!("连续 {} 代没有任何候选在主指标上带来显著改善: 这条路没收益", st.no_gain_streak);
                 stop(&mut st, "no_gain", msg)?;
                 break;
             }
@@ -884,10 +774,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
 
 fn best_line(st: &State) -> String {
     match &st.best {
-        Some(b) => format!(
-            "{} 让 {} 变化 {:+.2}% ({})",
-            b.candidate, b.metric, b.delta_pct, b.verdict
-        ),
+        Some(b) => format!("{} 让 {} 变化 {:+.2}% ({})", b.candidate, b.metric, b.delta_pct, b.verdict),
         None => "没有".into(),
     }
 }
@@ -918,10 +805,7 @@ fn write_report(
         st.budget_min,
         best_line(st)
     ));
-    o.push_str(&format!(
-        "进度 (最好的改善 / 目标幅度): {:.0}%\n\n",
-        st.progress_to_target * 100.0
-    ));
+    o.push_str(&format!("进度 (最好的改善 / 目标幅度): {:.0}%\n\n", st.progress_to_target * 100.0));
     o.push_str("## 每一代\n\n| 代 | 上机候选 | 留下 | 主指标显著朝目标方向 |\n|---|---|---|---|\n");
     for (g, r) in per_gen {
         o.push_str(&format!(
@@ -963,11 +847,7 @@ mod tests {
     /// 受限 token 放在 GH_TOKEN 里时, 云端出方案不要求 gh 登录态 (装着 gh 就行)。
     #[test]
     fn cloud_accepts_a_restricted_gh_token_instead_of_a_login() {
-        if std::process::Command::new("gh")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
+        if std::process::Command::new("gh").arg("--version").output().is_err() {
             return; // 这台机器没装 gh, 测不了
         }
         std::env::remove_var("GOL_CLOUD_PROPOSER");
@@ -983,10 +863,7 @@ mod tests {
 
     #[test]
     fn fenced_drafts_are_unwrapped() {
-        assert_eq!(
-            strip_fence("```markdown\n---\na: 1\n---\nx\n```"),
-            "---\na: 1\n---\nx"
-        );
+        assert_eq!(strip_fence("```markdown\n---\na: 1\n---\nx\n```"), "---\na: 1\n---\nx");
         assert_eq!(strip_fence("---\nx"), "---\nx");
     }
 
@@ -995,9 +872,6 @@ mod tests {
         let (mut s, _) = spec::template("省电", "p");
         s.layers = vec!["sysparam".into(), "gray".into(), "upop".into()];
         assert_eq!(layers_effective(&s, &None), vec!["sysparam", "gray"]);
-        assert_eq!(
-            layers_effective(&s, &Some(vec!["gray".into()])),
-            vec!["gray"]
-        );
+        assert_eq!(layers_effective(&s, &Some(vec!["gray".into()])), vec!["gray"]);
     }
 }

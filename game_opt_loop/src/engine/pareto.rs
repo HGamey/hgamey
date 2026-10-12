@@ -52,12 +52,7 @@ impl Objectives {
 /// 计算非支配前沿 (rank 0) 的下标。
 pub fn front_indices(points: &[Objectives]) -> Vec<usize> {
     (0..points.len())
-        .filter(|&i| {
-            !points
-                .iter()
-                .enumerate()
-                .any(|(j, p)| j != i && p.dominates(&points[i]))
-        })
+        .filter(|&i| !points.iter().enumerate().any(|(j, p)| j != i && p.dominates(&points[i])))
         .collect()
 }
 
@@ -243,10 +238,7 @@ mod tests {
             .collect();
         let front: Vec<usize> = (0..pts.len()).collect();
         let dist = crowding_distance(&pts, &front);
-        assert!(
-            dist.iter().all(|d| !d.is_nan()),
-            "距离被 NaN 污染了: {dist:?}"
-        );
+        assert!(dist.iter().all(|d| !d.is_nan()), "距离被 NaN 污染了: {dist:?}");
         // 端点无穷, 中间两点拿到了来自延迟与画质两维的真实间距。
         assert!(dist[0].is_infinite() && dist[3].is_infinite());
         assert!(dist[1] > 0.0 && dist[2] > 0.0, "{dist:?}");
@@ -294,7 +286,11 @@ mod tests {
 
     #[test]
     fn crowding_marks_the_extremes_as_maximally_sparse() {
-        let pts = vec![o(0.4, 4.4, 37.6), o(0.9, 4.6, 38.6), o(1.4, 4.9, 39.5)];
+        let pts = vec![
+            o(0.4, 4.4, 37.6),
+            o(0.9, 4.6, 38.6),
+            o(1.4, 4.9, 39.5),
+        ];
         let front = vec![0usize, 1, 2];
         let d = crowding_distance(&pts, &front);
         assert!(d[0].is_infinite() && d[2].is_infinite());

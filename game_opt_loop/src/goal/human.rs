@@ -66,31 +66,20 @@ pub fn parse(text: &str) -> Steer {
         {
             let items: Vec<String> = rest
                 .split([',', '，', '、', ' '])
-                .map(|x| {
-                    x.trim()
-                        .trim_matches(['`', '"', '“', '”', '。'])
-                        .to_string()
-                })
+                .map(|x| x.trim().trim_matches(['`', '"', '“', '”', '。']).to_string())
                 .filter(|x| !x.is_empty())
                 .collect();
             if items.is_empty() {
                 free.push(line.to_string());
             }
             s.forbid.extend(items);
-        } else if let Some(rest) = line
-            .strip_prefix("只试")
-            .or_else(|| line.strip_prefix("只跑"))
-        {
+        } else if let Some(rest) = line.strip_prefix("只试").or_else(|| line.strip_prefix("只跑")) {
             let words: Vec<&str> = rest
                 .split([',', '，', '、', ' ', '和'])
                 .map(|x| x.trim().trim_matches(['。', '`']))
                 .filter(|x| !x.is_empty())
                 .collect();
-            let layers: Vec<String> = words
-                .iter()
-                .filter_map(|w| layer_of(w))
-                .map(String::from)
-                .collect();
+            let layers: Vec<String> = words.iter().filter_map(|w| layer_of(w)).map(String::from).collect();
             if !words.is_empty() && layers.len() == words.len() {
                 s.only_layers = Some(layers);
             } else {

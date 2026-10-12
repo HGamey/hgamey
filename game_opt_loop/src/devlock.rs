@@ -56,11 +56,7 @@ pub fn resolve_label(explicit: Option<&str>) -> String {
     explicit
         .map(str::to_string)
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::env::var("DEVLOCK_LABEL")
-                .ok()
-                .filter(|s| !s.is_empty())
-        })
+        .or_else(|| std::env::var("DEVLOCK_LABEL").ok().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| DEFAULT_LABEL.to_string())
 }
 
@@ -263,8 +259,7 @@ mod tests {
             assert!(g.owned);
             assert!(held.exists());
             // 外层已持有: 借用
-            let inner =
-                Guard::acquire(script.clone(), "t".into(), Duration::from_secs(60)).unwrap();
+            let inner = Guard::acquire(script.clone(), "t".into(), Duration::from_secs(60)).unwrap();
             assert!(!inner.owned);
             drop(inner);
             assert!(held.exists(), "借用的守卫不该释放外层的锁");

@@ -409,10 +409,7 @@ impl Validator {
                     out.push(Violation {
                         code: ViolationCode::NonZeroCopyResource,
                         stage: GateStage::Policy,
-                        message: format!(
-                            "`{name}` 使用了合成层插槽不支持的地址空间 {:?}",
-                            var.space
-                        ),
+                        message: format!("`{name}` 使用了合成层插槽不支持的地址空间 {:?}", var.space),
                     });
                     continue;
                 }
@@ -660,7 +657,8 @@ layout(binding = 1, rgba8) uniform writeonly image2D u_OutputTexture;\n";
 
     #[test]
     fn realistic_multi_tap_operator_passes() {
-        let src = sr("ivec2 isz = imageSize(u_InputTexture);
+        let src = sr(
+            "ivec2 isz = imageSize(u_InputTexture);
     vec2 uv = (vec2(p) + 0.5) / vec2(o) * vec2(isz) - 0.5;
     ivec2 b = ivec2(floor(uv));
     vec2 fr = uv - vec2(b);
@@ -675,7 +673,8 @@ layout(binding = 1, rgba8) uniform writeonly image2D u_OutputTexture;\n";
             wsum += w;
         }
     }
-    imageStore(u_OutputTexture, p, clamp(acc / max(wsum, 1e-5), 0.0, 1.0));");
+    imageStore(u_OutputTexture, p, clamp(acc / max(wsum, 1e-5), 0.0, 1.0));",
+        );
         let r = gate_sr(&src);
         assert!(r.passed, "真实多 tap 算子被误杀: {:?}", r.violations);
         // 4x4 邻域 = 16 次采样, 由静态迭代上界展开得到。
@@ -814,14 +813,9 @@ void main() {
     barrier();
     if (p.x >= o.x || p.y >= o.y) return;
     imageStore(u_OutputTexture, p, tile[l.y][l.x]);
-}"
-        .to_string();
+}".to_string();
         let r = gate_sr(&src);
-        assert!(
-            r.passed,
-            "片上 shared + 一致 barrier 被误杀: {:?}",
-            r.violations
-        );
+        assert!(r.passed, "片上 shared + 一致 barrier 被误杀: {:?}", r.violations);
         assert_eq!(r.features.workgroup_bytes, 16 * 16 * 16);
     }
 
@@ -835,9 +829,7 @@ void main() {
 
     #[test]
     fn rejects_for_ever() {
-        let src = sr(
-            "vec4 c = vec4(0.0); for (;;) { c += vec4(0.01); } imageStore(u_OutputTexture, p, c);",
-        );
+        let src = sr("vec4 c = vec4(0.0); for (;;) { c += vec4(0.01); } imageStore(u_OutputTexture, p, c);");
         assert_rejected(&gate_sr(&src), ViolationCode::UnboundedLoop);
     }
 
@@ -865,17 +857,21 @@ void main() {
     /// 上界来自运行期的 imageSize(): 静态定不了界, 保守打回。
     #[test]
     fn rejects_runtime_bounded_loop() {
-        let src = sr("vec4 c = vec4(0.0); int n = imageSize(u_InputTexture).x;
+        let src = sr(
+            "vec4 c = vec4(0.0); int n = imageSize(u_InputTexture).x;
     for (int i = 0; i < n; i++) { c += imageLoad(u_InputTexture, ivec2(i, 0)); }
-    imageStore(u_OutputTexture, p, c);");
+    imageStore(u_OutputTexture, p, c);",
+        );
         assert_rejected(&gate_sr(&src), ViolationCode::UnboundedLoop);
     }
 
     #[test]
     fn rejects_loop_trip_over_limit() {
-        let src = sr("vec4 c = vec4(0.0);
+        let src = sr(
+            "vec4 c = vec4(0.0);
     for (int i = 0; i < 4096; i++) { c += vec4(0.0001); }
-    imageStore(u_OutputTexture, p, c);");
+    imageStore(u_OutputTexture, p, c);",
+        );
         assert_rejected(&gate_sr(&src), ViolationCode::LoopTripTooLarge);
     }
 
@@ -919,8 +915,7 @@ void main() {
     ivec2 o = imageSize(u_OutputTexture);
     if (p.x >= o.x || p.y >= o.y) return;
     imageStore(u_OutputTexture, p, imageLoad(u_MyInput, p));
-}"
-        .to_string();
+}".to_string();
         assert_rejected(&gate_sr(&src), ViolationCode::BindingNameMismatch);
     }
 
@@ -977,10 +972,8 @@ void main() {
     /// 真的读了两帧就该放行。
     #[test]
     fn accepts_a_frame_gen_operator_that_reads_both_history_frames() {
-        let r = Validator::new().gate(
-            crate::tracks::embedded_template(crate::TrackMode::FrameGen),
-            &FRAME_GEN,
-        );
+        let r = Validator::new()
+            .gate(crate::tracks::embedded_template(crate::TrackMode::FrameGen), &FRAME_GEN);
         assert!(r.passed, "{:?}", r.violations);
         assert_eq!(r.features.images_read.len(), 2, "应当记录到两张被读的图");
     }
@@ -988,7 +981,8 @@ void main() {
     /// 输出槽位不要求必读 —— writeonly 本来就读不了。
     #[test]
     fn the_write_only_output_slot_is_not_required_to_be_read() {
-        let r = Validator::new().gate(crate::tracks::embedded_template(crate::TrackMode::Sr), &SR);
+        let r = Validator::new()
+            .gate(crate::tracks::embedded_template(crate::TrackMode::Sr), &SR);
         assert!(r.passed, "{:?}", r.violations);
     }
 

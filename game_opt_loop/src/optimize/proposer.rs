@@ -26,7 +26,7 @@
 
 use super::eval::{Conditions, Kind, MetricDetail, MetricSpec, Rewrite};
 use super::sysparam::{self, Origin, Params, Whitelist};
-use super::{caps, gray, plan, whitebox};
+use super::{whitebox, caps, gray, plan};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -275,10 +275,7 @@ impl Candidate {
     /// 碰 harness 的那一半, 这种候选不上机。
     pub fn from_value(v: &Value, want: Kind) -> Result<Self, String> {
         let obj = v.as_object().ok_or("候选不是 JSON 对象")?;
-        if let Some(k) = obj
-            .keys()
-            .find(|k| !matches!(k.as_str(), "kind" | "why" | "payload"))
-        {
+        if let Some(k) = obj.keys().find(|k| !matches!(k.as_str(), "kind" | "why" | "payload")) {
             return Err(format!(
                 "候选里有契约之外的字段 `{k}` —— 候选只能带 kind / why / payload, 其余由 harness 填"
             ));
@@ -387,9 +384,7 @@ impl Usage {
 
 /// 外部进程 stdout 里自报的用量 (没有或解析不了就是 None)。纯函数。
 pub fn parse_usage(stdout: &str) -> Option<Usage> {
-    serde_json::from_str::<Output>(stdout.trim())
-        .ok()
-        .and_then(|o| o.usage)
+    serde_json::from_str::<Output>(stdout.trim()).ok().and_then(|o| o.usage)
 }
 
 /// 一次出方案的结果 (还没过 harness 的校验)。
@@ -476,10 +471,7 @@ pub fn whitebox_history(items: &[HistoryItem]) -> Vec<sysparam::History> {
         .filter_map(|h| {
             let knobs = h.candidate.knobs()?;
             Some(sysparam::History {
-                params: knobs
-                    .iter()
-                    .map(|(k, v)| (format!("{k}={v}"), "on".to_string()))
-                    .collect(),
+                params: knobs.iter().map(|(k, v)| (format!("{k}={v}"), "on".to_string())).collect(),
                 verdict: h.status.clone(),
                 reason: format!("{} — {}", whitebox::label(knobs), h.candidate.why),
                 per_metric: if h.measurement_valid {
@@ -498,17 +490,9 @@ pub fn gray_history(items: &[HistoryItem]) -> Vec<sysparam::History> {
     items
         .iter()
         .filter_map(|h| {
-            let knobs: Vec<String> = h
-                .candidate
-                .rewrites()?
-                .iter()
-                .map(gray::rewrite_label)
-                .collect();
+            let knobs: Vec<String> = h.candidate.rewrites()?.iter().map(gray::rewrite_label).collect();
             Some(sysparam::History {
-                params: knobs
-                    .iter()
-                    .map(|k| (k.clone(), "on".to_string()))
-                    .collect(),
+                params: knobs.iter().map(|k| (k.clone(), "on".to_string())).collect(),
                 verdict: h.status.clone(),
                 reason: format!("{} — {}", knobs.join("+"), h.candidate.why),
                 per_metric: if h.measurement_valid {
@@ -575,11 +559,7 @@ impl Proposer for Builtin {
             }
             Kind::Gray => {
                 let targets = gray_targets(&input.constraints);
-                let b = gray::Proposer {
-                    generator,
-                    targets: &targets,
-                }
-                .propose(
+                let b = gray::Proposer { generator, targets: &targets }.propose(
                     &input.device.note,
                     &workload,
                     &gray_history(&input.history),
@@ -616,11 +596,7 @@ impl Proposer for Builtin {
                         .into_iter()
                         .map(|p| Candidate::whitebox(p.why, p.knobs))
                         .collect(),
-                    rejected: b
-                        .rejected
-                        .iter()
-                        .map(|(k, why)| format!("{k}: {why}"))
-                        .collect(),
+                    rejected: b.rejected.iter().map(|(k, why)| format!("{k}: {why}")).collect(),
                     origin: b.origin,
                     error: b.llm_error,
                     raw: b.llm_raw,
@@ -704,10 +680,7 @@ impl External {
             if start.elapsed() > self.timeout {
                 let _ = child.kill();
                 let _ = child.wait();
-                bail!(
-                    "外部出方案进程超过 {} 秒没回, 已杀掉",
-                    self.timeout.as_secs()
-                );
+                bail!("外部出方案进程超过 {} 秒没回, 已杀掉", self.timeout.as_secs());
             }
             std::thread::sleep(Duration::from_millis(50));
         };
@@ -775,15 +748,7 @@ impl Proposer for External {
         if code != Some(0) {
             p.error = Some(format!(
                 "外部出方案进程退出码 {code:?}: {}",
-                stderr
-                    .lines()
-                    .rev()
-                    .take(5)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                stderr.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ")
             ));
             return p;
         }
@@ -835,11 +800,7 @@ pub fn screen(input: &Input, proposed: &Proposed) -> Screened {
                 gray::validate(rewrites, &gray_targets(&input.constraints)).map_err(|e| {
                     format!(
                         "{}: {e}",
-                        rewrites
-                            .iter()
-                            .map(gray::rewrite_label)
-                            .collect::<Vec<_>>()
-                            .join("+")
+                        rewrites.iter().map(gray::rewrite_label).collect::<Vec<_>>().join("+")
                     )
                 })
             }
@@ -895,10 +856,7 @@ pub fn constraints_with_targets(
     match kind {
         Kind::Sysparam => Constraints {
             whitelist: wl.cloned(),
-            deny_keywords: sysparam::DENY_KEYWORDS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            deny_keywords: sysparam::DENY_KEYWORDS.iter().map(|s| s.to_string()).collect(),
             knobs: None,
             whitebox: None,
         },
@@ -913,11 +871,7 @@ pub fn constraints_with_targets(
                         status: k.status,
                         what: k.what.into(),
                         why: k.why.into(),
-                        scopes: if k.needs_scope {
-                            targets.to_vec()
-                        } else {
-                            vec![]
-                        },
+                        scopes: if k.needs_scope { targets.to_vec() } else { vec![] },
                     })
                     .collect(),
             ),
@@ -987,7 +941,10 @@ pub fn from_spec(
                     let label = format!("大模型 {} (挂了退回本地变异器)", g.provider_name());
                     Builtin::llm(Some(Box::new(g)), label)
                 }
-                Err(e) => Builtin::llm(None, format!("大模型不可用 ({e}) → 全程走本地变异器")),
+                Err(e) => Builtin::llm(
+                    None,
+                    format!("大模型不可用 ({e}) → 全程走本地变异器"),
+                ),
             },
         ));
     }
@@ -1175,11 +1132,7 @@ impl Batch<Candidate> {
     fn map<T>(self, f: impl Fn(Candidate, Origin) -> Option<T>) -> Batch<T> {
         let origin = self.origin.unwrap_or(Origin::LocalMutation);
         Batch {
-            accepted: self
-                .accepted
-                .into_iter()
-                .filter_map(|c| f(c, origin))
-                .collect(),
+            accepted: self.accepted.into_iter().filter_map(|c| f(c, origin)).collect(),
             rejected: self.rejected,
             origin: self.origin,
             llm_error: self.llm_error,
@@ -1213,11 +1166,7 @@ impl Batch<Candidate> {
     /// 还原成 ④ 的候选类型。
     pub fn whitebox(self) -> Batch<whitebox::Proposal> {
         self.map(|c, origin| match c.payload {
-            CandidatePayload::Whitebox { knobs } => Some(whitebox::Proposal {
-                why: c.why,
-                knobs,
-                origin,
-            }),
+            CandidatePayload::Whitebox { knobs } => Some(whitebox::Proposal { why: c.why, knobs, origin }),
             _ => None,
         })
     }
@@ -1306,10 +1255,7 @@ pub(crate) mod tests_support {
         super::tests::input(super::Kind::Sysparam, n, 20260923, vec![])
     }
 
-    pub fn history_item(
-        candidate: super::Candidate,
-        measurement_valid: bool,
-    ) -> super::HistoryItem {
+    pub fn history_item(candidate: super::Candidate, measurement_valid: bool) -> super::HistoryItem {
         super::HistoryItem {
             candidate_id: "h1".into(),
             generation: 1,
@@ -1414,28 +1360,21 @@ bus.DDR.avail_freqs=547000 1555000 5333000
             .propose("红魔 NX809J", "转视角 36 秒", &wl(), &[], 3);
             let new = Builtin::local().propose(&input(Kind::Sysparam, 3, seed, vec![]));
             let old_params: Vec<&Params> = old.accepted.iter().map(|p| &p.params).collect();
-            let new_params: Vec<&Params> =
-                new.candidates.iter().filter_map(|c| c.params()).collect();
+            let new_params: Vec<&Params> = new.candidates.iter().filter_map(|c| c.params()).collect();
             assert_eq!(old_params, new_params, "seed {seed}");
             assert_eq!(new.origin, Some(Origin::LocalMutation));
             assert_eq!(new.model_calls, 0);
             // 再跑一遍, 一字不差。
             assert_eq!(
                 new.candidates,
-                Builtin::local()
-                    .propose(&input(Kind::Sysparam, 3, seed, vec![]))
-                    .candidates
+                Builtin::local().propose(&input(Kind::Sysparam, 3, seed, vec![])).candidates
             );
         }
     }
 
     #[test]
     fn local_gray_through_the_interface_equals_the_old_entry_point() {
-        let old = gray::Proposer {
-            generator: None,
-            targets: &[],
-        }
-        .propose("d", "w", &[], 2);
+        let old = gray::Proposer { generator: None, targets: &[] }.propose("d", "w", &[], 2);
         let new = Builtin::local().propose(&input(Kind::Gray, 2, 0, vec![]));
         let old_k: Vec<&Vec<Rewrite>> = old.accepted.iter().map(|p| &p.rewrites).collect();
         let new_k: Vec<&[Rewrite]> = new.candidates.iter().filter_map(|c| c.rewrites()).collect();
@@ -1453,10 +1392,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
 
     impl Complete for Fake {
         fn complete(&self, system: &str, user: &str) -> Result<String> {
-            self.seen
-                .lock()
-                .unwrap()
-                .push(format!("{system}\n---\n{user}"));
+            self.seen.lock().unwrap().push(format!("{system}\n---\n{user}"));
             self.reply.clone().map_err(|e| anyhow::anyhow!(e))
         }
     }
@@ -1476,17 +1412,12 @@ bus.DDR.avail_freqs=547000 1555000 5333000
     /// 大模型那条路: 提示词与改造前同一个函数生成, 合法的收、越界的打回且原因不变。
     #[test]
     fn the_llm_path_sends_the_same_prompt_and_screens_the_same_way() {
-        let (b, seen) = fake(Ok(
-            r#"[{"why":"抬总线下限","params":{"bus.DDR.boost_freq":"5333000"}},
-                                    {"why":"越界","params":{"bus.DDR.boost_freq":"9"}}]"#,
-        ));
+        let (b, seen) = fake(Ok(r#"[{"why":"抬总线下限","params":{"bus.DDR.boost_freq":"5333000"}},
+                                    {"why":"越界","params":{"bus.DDR.boost_freq":"9"}}]"#));
         let hist = vec![HistoryItem {
             candidate_id: "sys_g1c1".into(),
             generation: 1,
-            candidate: Candidate::sysparam(
-                "x",
-                Params::from([("gpu.min_pwrlevel".into(), "2".into())]),
-            ),
+            candidate: Candidate::sysparam("x", Params::from([("gpu.min_pwrlevel".into(), "2".into())])),
             status: "REJECT".into(),
             measurement_valid: true,
             kept: false,
@@ -1506,13 +1437,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         let want = format!(
             "{}\n---\n{}",
             sysparam::SYSTEM_PROMPT,
-            sysparam::user_prompt(
-                "红魔 NX809J",
-                "转视角 36 秒",
-                &wl(),
-                &sysparam_history(&hist),
-                3
-            )
+            sysparam::user_prompt("红魔 NX809J", "转视角 36 秒", &wl(), &sysparam_history(&hist), 3)
         );
         assert_eq!(seen.lock().unwrap()[0], want);
 
@@ -1530,9 +1455,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         assert_eq!(p.error.as_deref(), Some("429 限流"));
         assert_eq!(
             p.candidates,
-            Builtin::local()
-                .propose(&input(Kind::Sysparam, 3, 42, vec![]))
-                .candidates
+            Builtin::local().propose(&input(Kind::Sysparam, 3, 42, vec![])).candidates
         );
     }
 
@@ -1561,10 +1484,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         let g = gray_history(std::slice::from_ref(&aborted));
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].reason, "loadop_dont_care — 省带宽");
-        assert_eq!(
-            g[0].per_metric,
-            vec!["这一轮没量准 (ABORT), 数字不算数".to_string()]
-        );
+        assert_eq!(g[0].per_metric, vec!["这一轮没量准 (ABORT), 数字不算数".to_string()]);
         assert!(sysparam_history(&[aborted]).is_empty());
     }
 
@@ -1601,18 +1521,9 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         let inp = input(Kind::Sysparam, 1, 0, vec![]);
         let p = Proposed {
             candidates: vec![
-                Candidate::sysparam(
-                    "",
-                    Params::from([("thermal.zone0.trip".into(), "1".into())]),
-                ),
-                Candidate::sysparam(
-                    "",
-                    Params::from([("bus.DDR.boost_freq".into(), "5333000".into())]),
-                ),
-                Candidate::sysparam(
-                    "",
-                    Params::from([("bus.DDR.boost_freq".into(), "1555000".into())]),
-                ),
+                Candidate::sysparam("", Params::from([("thermal.zone0.trip".into(), "1".into())])),
+                Candidate::sysparam("", Params::from([("bus.DDR.boost_freq".into(), "5333000".into())])),
+                Candidate::sysparam("", Params::from([("bus.DDR.boost_freq".into(), "1555000".into())])),
                 Candidate::gray("", vec![]),
             ],
             origin: Some(Origin::External),
@@ -1665,11 +1576,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         let seen: Input =
             serde_json::from_str(&std::fs::read_to_string(dir.join("seen.json")).unwrap()).unwrap();
         assert_eq!(seen.protocol, PROTOCOL);
-        assert!(seen
-            .constraints
-            .whitelist
-            .unwrap()
-            .contains_key("bus.DDR.boost_freq"));
+        assert!(seen.constraints.whitelist.unwrap().contains_key("bus.DDR.boost_freq"));
 
         // 退出码非 0 → error, 不退回本地。
         std::fs::write(&script, "#!/bin/sh\necho 坏了 >&2\nexit 3\n").unwrap();
@@ -1679,8 +1586,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
 
         // 超时 → 杀掉。
         std::fs::write(&script, "#!/bin/sh\nsleep 5\n").unwrap();
-        let slow =
-            External::parse(&script.display().to_string(), Duration::from_millis(300)).unwrap();
+        let slow = External::parse(&script.display().to_string(), Duration::from_millis(300)).unwrap();
         assert!(slow.propose(&inp).error.unwrap().contains("超过"));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1692,10 +1598,7 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         assert!(from_spec("gpt", p, None, None, t).is_err());
         assert!(from_spec("cmd:", p, None, None, t).is_err());
         assert!(from_spec("cmd:/nonexistent/x.sh", p, None, None, t).is_err());
-        assert_eq!(
-            from_spec("local", p, None, None, t).unwrap().spec(),
-            "local"
-        );
+        assert_eq!(from_spec("local", p, None, None, t).unwrap().spec(), "local");
         // 没有密钥时 llm 整程退回本地, 与改造前一致。
         let l = from_spec("llm", p, None, None, t).unwrap();
         assert_eq!(l.spec(), "llm");

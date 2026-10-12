@@ -119,10 +119,7 @@ impl GoalHooks {
             !f.is_empty()
                 && (id == f
                     || (id.starts_with(f)
-                        && matches!(
-                            id.as_bytes().get(f.len()),
-                            Some(b'.') | Some(b':') | Some(b'@')
-                        )))
+                        && matches!(id.as_bytes().get(f.len()), Some(b'.') | Some(b':') | Some(b'@'))))
         })
     }
 
@@ -131,11 +128,7 @@ impl GoalHooks {
         let Some(path) = &self.events else { return };
         ev["t"] = serde_json::json!(chrono::Local::now().to_rfc3339());
         ev["gen"] = serde_json::json!(gen);
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             use std::io::Write;
             let _ = writeln!(f, "{}", ev);
         }
@@ -228,10 +221,7 @@ fn extra_devices(
                 primary.device.root.is_true()
             );
         }
-        println!(
-            "      并行设备 {s} ({})",
-            c.device.model.as_deref().unwrap_or("?")
-        );
+        println!("      并行设备 {s} ({})", c.device.model.as_deref().unwrap_or("?"));
         devices.push(s.clone());
     }
     Ok(devices)
@@ -242,9 +232,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     // 出方案的 spec 写错了 (或与 --no-llm 矛盾) 应该在碰设备之前就停。
     let proposer_spec = cfg.proposer.spec(cfg.use_llm)?;
     let roots = games::CarrierRoots::default();
-    let store = profile::Store {
-        root: cfg.profiles_dir.clone(),
-    };
+    let store = profile::Store { root: cfg.profiles_dir.clone() };
     let mut package = cfg.package.clone();
     if let Some(src) = cfg.game_profile.as_ref() {
         let dst = store
@@ -298,14 +286,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     let caps_path = cfg.out_dir.join("caps.json");
     caps::write(&caps, &caps_path)?;
     println!("      caps: {}", caps_path.display());
-    let devices = extra_devices(
-        &prober,
-        &target,
-        &caps,
-        &serial,
-        &cfg.extra_devices,
-        &cfg.out_dir,
-    )?;
+    let devices = extra_devices(&prober, &target, &caps, &serial, &cfg.extra_devices, &cfg.out_dir)?;
 
     // ---- 2. 开路 + 排计划 ----
     //
@@ -321,14 +302,9 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     // 那一层的 psnr 约束没有真值就判不了。
     plan.conditions.quality_reference = cfg.quality_reference.clone();
     if let Some(line) = cfg.proposer.plan_line() {
-        plan.steps
-            .iter_mut()
-            .for_each(|s| s.proposer = line.clone());
+        plan.steps.iter_mut().for_each(|s| s.proposer = line.clone());
     }
-    println!(
-        "\n{}",
-        plan::render(&plan, &caps, Some(&support.describe()))
-    );
+    println!("\n{}", plan::render(&plan, &caps, Some(&support.describe())));
 
     if cfg.plan_only {
         let layers = plan
@@ -543,12 +519,7 @@ fn verdict_event(id: &str, rep: &eval::Report) -> serde_json::Value {
         .per_metric
         .iter()
         .flatten()
-        .map(|(k, d)| {
-            (
-                k.clone(),
-                serde_json::json!({"delta_pct": d.diff_pct, "p": d.p, "status": d.status}),
-            )
-        })
+        .map(|(k, d)| (k.clone(), serde_json::json!({"delta_pct": d.diff_pct, "p": d.p, "status": d.status})))
         .collect();
     let co = rep.conditions_observed.as_ref();
     serde_json::json!({
@@ -587,7 +558,8 @@ fn per_metric_lines(r: &eval::Report) -> Vec<String> {
                         d.diff_pct
                             .map(|v| format!("{v:+.2}%"))
                             .unwrap_or_else(|| "未测量".into()),
-                        d.p.map(|v| format!("{v:.4}")).unwrap_or_else(|| "-".into()),
+                        d.p.map(|v| format!("{v:.4}"))
+                            .unwrap_or_else(|| "-".into()),
                         d.status.as_deref().unwrap_or("")
                     )
                 })
@@ -595,6 +567,7 @@ fn per_metric_lines(r: &eval::Report) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
 
 /// 在指定设备上下发一个候选 (多机调度从各自的线程里调它, 所以不借 [`LayerCtx`])。
 fn evaluate_on(
@@ -736,10 +709,7 @@ fn record_proposer(
         origins.push(o);
     }
     let count = |o: sysparam::Origin| origins.iter().filter(|x| **x == o).count();
-    let (llm, ext) = (
-        count(sysparam::Origin::Llm),
-        count(sysparam::Origin::External),
-    );
+    let (llm, ext) = (count(sysparam::Origin::Llm), count(sysparam::Origin::External));
     let local = origins.len() - llm - ext;
     out.proposer = Some(match (llm, local, ext) {
         (0, 0, e) if e > 0 => "外部进程".to_string(),
@@ -778,11 +748,7 @@ fn run_sysparam(
     let probe_text = std::fs::read_to_string(probe_path)
         .with_context(|| format!("读取 {} 失败", probe_path.display()))?;
     let wl = sysparam::build_whitelist(&sysparam::parse_probe(&probe_text));
-    println!(
-        "      白名单 {} 项 (来自 {})",
-        wl.len(),
-        probe_path.display()
-    );
+    println!("      白名单 {} 项 (来自 {})", wl.len(), probe_path.display());
     if wl.is_empty() {
         out.used = false;
         out.reason = "白名单是空的 —— 探测结果里没有一个既可写又写了真生效的节点".into();
@@ -821,11 +787,7 @@ fn run_sysparam(
     let before = wl.len();
     wl.retain(|id, _| !ctx.cfg.goal.forbids(id));
     if wl.len() < before {
-        println!(
-            "      按禁止项去掉 {} 项, 白名单剩 {} 项",
-            before - wl.len(),
-            wl.len()
-        );
+        println!("      按禁止项去掉 {} 项, 白名单剩 {} 项", before - wl.len(), wl.len());
     }
     if wl.is_empty() {
         out.used = false;
@@ -850,12 +812,7 @@ fn run_sysparam(
             bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
         }
         let batch = ctx.propose(gen, &constraints, &history).sysparam();
-        record_proposer(
-            &mut out,
-            &mut origins,
-            batch.origin,
-            batch.llm_error.as_ref(),
-        );
+        record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         out.rejected_locally.extend(batch.rejected.iter().cloned());
         if batch.accepted.is_empty() {
@@ -874,20 +831,14 @@ fn run_sysparam(
             .map(|(i, prop)| {
                 let id = format!("sys_g{gen}c{}", i + 1);
                 println!("      {id}: {} 项 — {}", prop.params.len(), prop.why);
-                ctx.cfg.goal.emit(
-                    gen,
-                    serde_json::json!({
-                        "type": "propose", "candidate_id": id, "layer": "sysparam",
-                        "changes": prop.params, "why": prop.why,
-                    }),
-                );
-                ctx.cfg.goal.emit(
-                    gen,
-                    serde_json::json!({
-                        "type": "measure", "candidate_id": id, "arms_done": 0,
-                        "arms_planned": 2 * ctx.step.rounds,
-                    }),
-                );
+                ctx.cfg.goal.emit(gen, serde_json::json!({
+                    "type": "propose", "candidate_id": id, "layer": "sysparam",
+                    "changes": prop.params, "why": prop.why,
+                }));
+                ctx.cfg.goal.emit(gen, serde_json::json!({
+                    "type": "measure", "candidate_id": id, "arms_done": 0,
+                    "arms_planned": 2 * ctx.step.rounds,
+                }));
                 let req = Request {
                     version: eval::REQUEST_VERSION,
                     kind: Kind::Sysparam,
@@ -927,11 +878,7 @@ fn run_sysparam(
             let rep = match res {
                 Ok(r) => r,
                 Err(e) => {
-                    let who = if multi {
-                        format!("{id} [{dev}] ")
-                    } else {
-                        String::new()
-                    };
+                    let who = if multi { format!("{id} [{dev}] ") } else { String::new() };
                     println!("        {who}→ 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
                     ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e.to_string()}));
@@ -947,11 +894,7 @@ fn run_sysparam(
             }
             println!(
                 "        {}{} (p={:.4}){}{}",
-                if multi {
-                    format!("{id} [{dev}] → ")
-                } else {
-                    "→ ".into()
-                },
+                if multi { format!("{id} [{dev}] → ") } else { "→ ".into() },
                 rep.status,
                 rep.verdict.p_value,
                 if rep.kept() { " 留下" } else { "" },
@@ -963,13 +906,7 @@ fn run_sysparam(
             // 学到一条不存在的规律。
             ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
             let cand = proposer::Candidate::sysparam(prop.why.clone(), prop.params.clone());
-            history.push(proposer::history_item(
-                &id,
-                gen,
-                cand,
-                &rep,
-                per_metric_lines(&rep),
-            ));
+            history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             let mut entry = report::Entry::from_report(
                 id,
                 Kind::Sysparam,
@@ -987,9 +924,7 @@ fn run_sysparam(
             archive.push(entry);
         }
     }
-    ctx.collected
-        .borrow_mut()
-        .extend(history.into_iter().skip(prior));
+    ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
     Ok(out)
 }
 
@@ -1046,11 +981,7 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
     println!(
         "      旋钮 {} 个 (来自 frame-audit): {}",
         targets.len(),
-        targets
-            .iter()
-            .map(|t| t.scope.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
+        targets.iter().map(|t| t.scope.as_str()).collect::<Vec<_>>().join(", ")
     );
     let constraints = proposer::constraints_with_targets(Kind::Gray, None, &targets);
     let mut history: Vec<proposer::HistoryItem> = ctx
@@ -1070,19 +1001,15 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
         }
         let batch = ctx.propose(gen, &constraints, &history).gray();
-        record_proposer(
-            &mut out,
-            &mut origins,
-            batch.origin,
-            batch.llm_error.as_ref(),
-        );
+        record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         out.rejected_locally.extend(batch.rejected.iter().cloned());
         if batch.accepted.is_empty() {
             // 层里已实现的开关是有限的, 试完就没了。这时候停下来说清楚,
             // 比把同一个候选再上机一遍诚实。
-            let note =
-                format!("第 {gen} 代没有新的改写可提 (层里已实现的开关已经全试过), 这一层到此为止");
+            let note = format!(
+                "第 {gen} 代没有新的改写可提 (层里已实现的开关已经全试过), 这一层到此为止"
+            );
             println!("      {note}");
             out.blockers.push(note);
             break;
@@ -1092,20 +1019,14 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             let id = format!("gray_g{gen}c{}", i + 1);
             let knobs: Vec<String> = prop.rewrites.iter().map(gray::rewrite_label).collect();
             println!("      {id}: {} — {}", knobs.join("+"), prop.why);
-            ctx.cfg.goal.emit(
-                gen,
-                serde_json::json!({
-                    "type": "propose", "candidate_id": id, "layer": "gray",
-                    "changes": knobs, "why": prop.why,
-                }),
-            );
-            ctx.cfg.goal.emit(
-                gen,
-                serde_json::json!({
-                    "type": "measure", "candidate_id": id, "arms_done": 0,
-                    "arms_planned": 2 * ctx.step.rounds,
-                }),
-            );
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "propose", "candidate_id": id, "layer": "gray",
+                "changes": knobs, "why": prop.why,
+            }));
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "measure", "candidate_id": id, "arms_done": 0,
+                "arms_planned": 2 * ctx.step.rounds,
+            }));
 
             let req = Request {
                 version: eval::REQUEST_VERSION,
@@ -1160,13 +1081,7 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             // 换回来的是同一个候选在真机上再跑一轮 (见 proposer::gray_history)。
             ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
             let cand = proposer::Candidate::gray(prop.why.clone(), prop.rewrites.clone());
-            history.push(proposer::history_item(
-                &id,
-                gen,
-                cand,
-                &rep,
-                per_metric_lines(&rep),
-            ));
+            history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             archive.push(report::Entry::from_report(
                 id,
                 Kind::Gray,
@@ -1177,17 +1092,12 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             ));
         }
     }
-    ctx.collected
-        .borrow_mut()
-        .extend(history.into_iter().skip(prior));
+    ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
     Ok(out)
 }
 
 /// ④ 引擎设置层 (白盒启动参数)。
-fn run_whitebox(
-    ctx: &LayerCtx<'_>,
-    archive: &mut Vec<report::Entry>,
-) -> Result<report::LayerOutcome> {
+fn run_whitebox(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<report::LayerOutcome> {
     let mut out = ctx.new_outcome();
     if ctx.caps.target.workload.launch.is_none() {
         out.used = false;
@@ -1215,12 +1125,7 @@ fn run_whitebox(
             bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
         }
         let batch = ctx.propose(gen, &constraints, &history).whitebox();
-        record_proposer(
-            &mut out,
-            &mut origins,
-            batch.origin,
-            batch.llm_error.as_ref(),
-        );
+        record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         out.rejected_locally.extend(batch.rejected.iter().cloned());
         // 禁止项: 旋钮名或 `旋钮=值`
@@ -1228,12 +1133,9 @@ fn run_whitebox(
             .accepted
             .iter()
             .filter(|p| {
-                let bad = p.knobs.iter().any(|(k, v)| {
-                    ctx.cfg.goal.forbids(k) || ctx.cfg.goal.forbids(&format!("{k}={v}"))
-                });
+                let bad = p.knobs.iter().any(|(k, v)| ctx.cfg.goal.forbids(k) || ctx.cfg.goal.forbids(&format!("{k}={v}")));
                 if bad {
-                    out.rejected_locally
-                        .push(format!("{}: 碰了禁止项", whitebox::label(&p.knobs)));
+                    out.rejected_locally.push(format!("{}: 碰了禁止项", whitebox::label(&p.knobs)));
                 }
                 !bad
             })
@@ -1253,20 +1155,14 @@ fn run_whitebox(
                 if measure_only { " (只量上限)" } else { "" },
                 prop.why
             );
-            ctx.cfg.goal.emit(
-                gen,
-                serde_json::json!({
-                    "type": "propose", "candidate_id": id, "layer": "whitebox",
-                    "changes": prop.knobs, "why": prop.why,
-                }),
-            );
-            ctx.cfg.goal.emit(
-                gen,
-                serde_json::json!({
-                    "type": "measure", "candidate_id": id, "arms_done": 0,
-                    "arms_planned": 2 * ctx.step.rounds,
-                }),
-            );
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "propose", "candidate_id": id, "layer": "whitebox",
+                "changes": prop.knobs, "why": prop.why,
+            }));
+            ctx.cfg.goal.emit(gen, serde_json::json!({
+                "type": "measure", "candidate_id": id, "arms_done": 0,
+                "arms_planned": 2 * ctx.step.rounds,
+            }));
             let req = Request {
                 version: eval::REQUEST_VERSION,
                 kind: Kind::Whitebox,
@@ -1310,28 +1206,18 @@ fn run_whitebox(
             );
             ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
             let cand = proposer::Candidate::whitebox(prop.why.clone(), prop.knobs.clone());
-            history.push(proposer::history_item(
-                &id,
-                gen,
-                cand,
-                &rep,
-                per_metric_lines(&rep),
-            ));
+            history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             archive.push(report::Entry::from_report(
                 id,
                 Kind::Whitebox,
                 gen,
                 prop.why.clone(),
-                report::Change::Whitebox {
-                    knobs: prop.knobs.clone(),
-                },
+                report::Change::Whitebox { knobs: prop.knobs.clone() },
                 &rep,
             ));
         }
     }
-    ctx.collected
-        .borrow_mut()
-        .extend(history.into_iter().skip(prior));
+    ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
     Ok(out)
 }
 

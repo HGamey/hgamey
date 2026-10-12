@@ -266,7 +266,10 @@ pub fn build(caps: &Caps, budget: Budget, use_llm: bool) -> Plan {
     // 所以按**剩下几层**均分: 轮到某一层时把剩余预算除以还没排的层数,
     // 除不出一个候选但剩余预算够一个的时候给一个。预算涨上去时各层大致
     // 均分, 预算紧的时候按顺序一层一个地给, 给不出就砍后面的。
-    let driven_open = order.iter().filter(|(k, v)| v.open && drives(*k)).count();
+    let driven_open = order
+        .iter()
+        .filter(|(k, v)| v.open && drives(*k))
+        .count();
     let mut remaining = driven_open;
     let mut left = budget.seconds;
 
@@ -409,9 +412,7 @@ impl Shape {
                 "gray" | "2" | "②" => Kind::Gray,
                 "shader" | "1" | "①" => Kind::Shader,
                 "whitebox" | "4" | "④" => Kind::Whitebox,
-                _ => bail!(
-                    "--layers 看不懂 {raw:?} (要 sysparam / gray / whitebox / shader, 逗号分隔)"
-                ),
+                _ => bail!("--layers 看不懂 {raw:?} (要 sysparam / gray / whitebox / shader, 逗号分隔)"),
             };
             if !out.contains(&k) {
                 out.push(k);
@@ -452,13 +453,7 @@ pub fn build_shaped(caps: &Caps, budget: Budget, use_llm: bool, shape: &Shape) -
     // 前面的层按新形状吃掉预算, 后面选中的层被当成"预算不够"砍掉, 跟人要的正相反。
     // 计划里照旧写原预算, 估计超出时 render 会说明。
     let mut plan = if overridden {
-        let mut p = build(
-            &c,
-            Budget {
-                seconds: u64::MAX / 4,
-            },
-            use_llm,
-        );
+        let mut p = build(&c, Budget { seconds: u64::MAX / 4 }, use_llm);
         p.budget_s = budget.seconds;
         p
     } else {
@@ -617,9 +612,7 @@ pub fn render(plan: &Plan, caps: &Caps, receiver: Option<&str>) -> String {
     o.push_str("\n冻结的测试条件 (看到任何候选数据之前就定下, 事后不改):\n");
     o.push_str(&format!(
         "  等冷目标 {} | 温度上限 {} | 要 root {} | 要放电态 {}\n",
-        c.cool_c
-            .map(|v| format!("{v:.1}C"))
-            .unwrap_or("不等冷".into()),
+        c.cool_c.map(|v| format!("{v:.1}C")).unwrap_or("不等冷".into()),
         c.temp_cap_c
             .map(|v| format!("{v:.1}C"))
             .unwrap_or("无".into()),
@@ -666,10 +659,7 @@ mod tests {
     fn per_candidate_estimate_tracks_measured_wall_time() {
         assert_eq!(per_candidate_estimate_s(Kind::Sysparam, 36), 870);
         assert_eq!(per_candidate_estimate_s(Kind::Gray, 36), 1170);
-        assert!(
-            per_candidate_estimate_s(Kind::Sysparam, 36) >= 786,
-            "不能比实测 13m06s 还乐观"
-        );
+        assert!(per_candidate_estimate_s(Kind::Sysparam, 36) >= 786, "不能比实测 13m06s 还乐观");
     }
     use crate::optimize::caps;
     use crate::optimize::games::{self, CarrierRoots};
@@ -692,8 +682,7 @@ battery_capacity=84\nbattery_current_now=-1200000\n\
 charge_node=/sys/class/qcom-battery/charging_enabled\nzone=cpu-0-0 41300\nzone=gpuss-0 38900\nzone=skin-therm 33000\nzone=pm8550b-bcl 105000\n\
 pkg_path=package:/data/app/x/base.apk\n";
 
-    const UNROOTED: &str =
-        "model=Pixel\nroot_uid=NA\nbattery_status=Charging\nzone=cpu-0-0 38000\n\
+    const UNROOTED: &str = "model=Pixel\nroot_uid=NA\nbattery_status=Charging\nzone=cpu-0-0 38000\n\
 pkg_path=package:/data/app/x/base.apk\n";
 
     #[test]
@@ -737,20 +726,14 @@ pkg_path=package:/data/app/x/base.apk\n";
         };
         let p2 = build_shaped(&c, Budget::parse("30m").unwrap(), true, &both);
         assert_eq!(p2.steps.len(), 2, "{:?}", p2.skipped);
-        assert!(p2
-            .steps
-            .iter()
-            .all(|s| (s.generations, s.children) == (2, 1)));
+        assert!(p2.steps.iter().all(|s| (s.generations, s.children) == (2, 1)));
         // 只给代数: 每代 1 个
         let g3 = Shape {
             generations: Some(3),
             ..Default::default()
         };
         let p3 = build_shaped(&c, Budget::parse("30m").unwrap(), true, &g3);
-        assert!(p3
-            .steps
-            .iter()
-            .all(|s| (s.generations, s.children) == (3, 1)));
+        assert!(p3.steps.iter().all(|s| (s.generations, s.children) == (3, 1)));
         assert_eq!(p2.budget_s, 1800);
         assert!(p2.estimate_s > p2.budget_s);
 
@@ -760,11 +743,7 @@ pkg_path=package:/data/app/x/base.apk\n";
         assert_eq!((p.steps[0].generations, p.steps[0].children), (2, 1));
         assert_eq!(p.steps[0].estimate_s, 2 * p.steps[0].per_candidate_s);
         assert_eq!(p.estimate_s, p.steps[0].estimate_s);
-        let sys = p
-            .skipped
-            .iter()
-            .find(|s| s.layer == Kind::Sysparam)
-            .unwrap();
+        let sys = p.skipped.iter().find(|s| s.layer == Kind::Sysparam).unwrap();
         assert!(sys.reason.contains("--layers"), "{}", sys.reason);
         // 不给形状 = 原来的计划
         let a = build_shaped(&c, Budget::parse("3h").unwrap(), true, &Shape::default());
