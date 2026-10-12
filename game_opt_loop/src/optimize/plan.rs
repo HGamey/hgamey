@@ -160,6 +160,9 @@ pub struct Plan {
     pub pitfalls: Vec<super::games::Pitfall>,
 }
 
+/// 等冷目标的下限: 游戏前台、不开风扇时 SoC 实际降得到的温度 (10-11 NX809J 实测待机 46–47°C)。
+pub const COOL_FLOOR_C: f32 = 48.0;
+
 /// 温度安全线 (农场规矩: SoC 不超过 70C)。
 pub const TEMP_CAP_C: f32 = 70.0;
 
@@ -176,7 +179,10 @@ pub fn conditions_from(caps: &Caps) -> Conditions {
     // 它是安全线, 不是可比性条件 —— 可比性由等冷目标和交替 ABBA 管。
     let temp_cap = TEMP_CAP_C;
     // 等冷目标: "回到基线是在什么热态下量的"。超时不作废, 安全由上限单独把关。
-    let cool = (base + 1.0).max(40.0).min(temp_cap - 2.0);
+    // 不能定得比这台手机在游戏前台、不开风扇时实际降得到的温度还低: 定低了每臂都等满超时,
+    // 10 臂就是 50 分钟干等 (10-11 实测: NX809J 原神前台待机 46–47°C)。所以摸底温度上加 2°C
+    // 余量, 并且不低于 COOL_FLOOR_C。
+    let cool = (base + 2.0).max(COOL_FLOOR_C).min(temp_cap - 2.0);
 
     let suspend = caps.device.charging_suspend.is_true();
     Conditions {
@@ -863,13 +869,13 @@ pkg_path=package:/data/app/x/base.apk\n";
         let hot = caps_for(&ROOTED.replace("zone=cpu-0-0 41300", "zone=cpu-0-0 52000"));
         let c = conditions_from(&hot);
         assert_eq!(c.temp_cap_c, Some(TEMP_CAP_C));
-        assert_eq!(c.cool_c, Some(53.0));
+        assert_eq!(c.cool_c, Some(54.0));
 
         // 凉机上有下限兜底, 不会把目标定到一个永远等不到的低温。
         let cool = caps_for(&ROOTED.replace("zone=cpu-0-0 41300", "zone=cpu-0-0 25000"));
         let c = conditions_from(&cool);
         assert_eq!(c.temp_cap_c, Some(TEMP_CAP_C));
-        assert_eq!(c.cool_c, Some(40.0));
+        assert_eq!(c.cool_c, Some(COOL_FLOOR_C));
         assert!(c.cool_c.unwrap() < c.temp_cap_c.unwrap());
     }
 

@@ -786,10 +786,7 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
                 before_generation: None,
             };
             #[cfg(unix)]
-            {
-                goal::own_process_group();
-                goal::install_signal_handlers();
-            }
+            goal::install_signal_handlers();
             let st = goal::run(&dir, &opts)?;
             println!(
                 "

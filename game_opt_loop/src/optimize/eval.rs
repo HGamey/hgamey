@@ -554,16 +554,44 @@ impl EvalDriver {
         if let Some(f) = self.runner.as_ref() {
             return f(sub, args);
         }
-        let out = Command::new(&self.binary)
+        // stderr 一边收集一边实时转进自己的日志: 接收端的进度 (等冷、轮次) 只往 stderr 打,
+        // 不转的话一次几十分钟的评测在节点日志里一行都看不到, 分不清是在等冷还是卡死了。
+        use std::io::{BufRead, Read};
+        let mut child = Command::new(&self.binary)
             .arg(sub)
             .args(args)
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .with_context(|| format!("调起 `{} {sub}` 失败", self.binary.display()))?;
-        Ok((
-            out.status.code(),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        ))
+        let pid = child.id();
+        super::children::register(pid);
+        let echo = matches!(sub, "eval" | "onboard");
+        let err = child.stderr.take();
+        let reader = std::thread::spawn(move || {
+            let mut all = String::new();
+            if let Some(e) = err {
+                for line in std::io::BufReader::new(e).lines().map_while(|l| l.ok()) {
+                    if echo && !line.trim().is_empty() {
+                        println!("        │ {line}");
+                    }
+                    all.push_str(&line);
+                    all.push('\n');
+                }
+            }
+            all
+        });
+        let mut stdout = String::new();
+        if let Some(mut o) = child.stdout.take() {
+            let mut buf = Vec::new();
+            let _ = o.read_to_end(&mut buf);
+            stdout = String::from_utf8_lossy(&buf).into_owned();
+        }
+        let status = child.wait();
+        super::children::unregister(pid);
+        let stderr = reader.join().unwrap_or_default();
+        let status = status.with_context(|| format!("等 `{} {sub}` 退出失败", self.binary.display()))?;
+        Ok((status.code(), stdout, stderr))
     }
 
     /// 探一下接收端认不认 `eval --request`。
