@@ -796,7 +796,10 @@ class Dash:
         return {"now": _now(), "slots": slots, "fleet_age_s": int(_now() - self.fleet_at) if self.fleet_at else None,
                 "fleet_err": self.fleet_err, "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
-                "busy": bool(lock.get("held_by")) and not lock.get("stale")}
+                "busy": bool(lock.get("held_by")) and not lock.get("stale"),
+                # 首页「现在」一行要用：谁在用手机、排队顺序（只给名字，不给日志）
+                "lock": {"held_by": lock.get("held_by"), "since": lock.get("since"), "stale": lock.get("stale"),
+                         "queue": lock.get("queue") or []}}
 
     def state(self):
         lock = read_lock(self.lock_dir)

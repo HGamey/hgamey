@@ -7,6 +7,7 @@
 <title>HGamey 实时看板</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/home.css">
 </head>
 <body>
 <header class="top">
@@ -27,50 +28,72 @@
 </header>
 
 <main class="home">
-  <section aria-labelledby="h-slots">
-    <div class="sec-h"><h2 id="h-slots">手机</h2><span id="slots-note" class="muted"></span></div>
-    <div id="slots" class="slots"></div>
+  <section class="nowbar" aria-live="polite">
+    <p class="now"><b>现在：</b><span id="now-text">读取中…</span></p>
+    <p class="next" id="next-text"></p>
+  </section>
+
+  <section aria-labelledby="h-phones">
+    <h2 id="h-phones" class="sec-title">手机</h2>
+    <div id="phones" class="phones"></div>
+    <p id="phones-more" class="phones-more"></p>
   </section>
 
   <div class="main-grid">
     <div class="col">
-      <section class="card o-run" aria-labelledby="h-run">
+      <section class="card o-run" aria-labelledby="run-title">
         <div class="run-top">
-          <h2 id="h-run" class="vh">目标运行</h2>
           <span id="run-status" class="spill">—</span>
           <span id="run-demo" class="demo-tag" hidden>示例数据</span>
-          <span id="run-when" class="muted"></span>
-          <select id="run-sel" aria-label="选择目标运行" hidden></select>
+          <span id="run-when" class="when"></span>
+          <select id="run-sel" aria-label="选择目标" hidden></select>
         </div>
         <div id="run-body"></div>
       </section>
 
       <section class="card o-tl" aria-labelledby="h-tl">
-        <div class="card-h"><h2 id="h-tl">时间线</h2><span id="tl-note" class="muted"></span></div>
-        <ul id="tl" class="tl"></ul>
+        <div class="card-h"><h2 id="h-tl">发生了什么</h2><span id="tl-note" class="when"></span></div>
+        <ul id="tl" class="tl2"></ul>
       </section>
     </div>
 
     <div class="col">
       <section class="card steer o-steer" aria-labelledby="h-steer">
-        <div class="card-h"><h2 id="h-steer">掌舵</h2><span class="muted">human.md</span></div>
-        <div id="steer-lock" class="lockline" hidden><span>改指令、停止、起新目标要先输入掌舵密码</span><button class="btn sm" type="button" data-act="unlock">解锁</button></div>
-        <p class="hint">harness 每一代开始前读一次这里。可以写 <b>停止</b>、<b>暂停</b>、<b>预算 +30 分钟</b>、<b>不要动 某个设置</b>、<b>只试 系统参数</b>（或 <b>只试 画面流程</b>），也可以写任何大白话的要求。</p>
-        <textarea id="human" spellcheck="false" placeholder="（还没有指令）" aria-label="human.md"></textarea>
+        <h2 id="h-steer">掌舵</h2>
+        <p class="lead">想改方向就在这里写一句话，下一代开始前生效。</p>
+        <div class="chips" role="group" aria-label="常用指令">
+          <button class="chip-btn" type="button" data-ins="暂停">暂停</button>
+          <button class="chip-btn" type="button" data-ins="预算 +30 分钟">预算 +30 分钟</button>
+          <button class="chip-btn" type="button" data-ins="不要动 cpu">不要动 CPU</button>
+        </div>
+        <div id="steer-lock" class="lockline" hidden><span>写指令、停止、起新目标要先输入掌舵密码</span><button class="btn sm" type="button" data-act="unlock">解锁</button></div>
+        <textarea id="human" spellcheck="false" placeholder="比如：先只试系统设置，别动画面" aria-label="给 harness 的指令（human.md）"></textarea>
         <div class="row-btns">
           <button id="save-human" class="btn primary" type="button">保存指令</button>
           <button id="stop-run" class="btn danger" type="button">停止</button>
           <span id="steer-msg" class="msg"></span>
         </div>
-        <div class="k" style="margin-top:12px">历史版本</div>
-        <ul id="hist" class="hist"></ul>
-        <div id="hist-view" class="hist-view" hidden></div>
-        <div id="audit" class="audit"></div>
+        <details class="howto">
+          <summary>怎么用？</summary>
+          <p>harness 每一代开始前读一次这里。它看得懂这几种写法：</p>
+          <ul>
+            <li><b>停止</b>：这一代测完就停，写总报告。（右边「停止」按钮是马上停：正在测的会先把手机还原）</li>
+            <li><b>暂停</b>：这一代测完先停下、让出手机；再改一次指令就接着跑。</li>
+            <li><b>预算 +30 分钟</b>：多给 30 分钟。</li>
+            <li><b>不要动 某个设置</b>：比如「不要动 cpu」「不要动 gpu.max_pwrlevel」。</li>
+            <li><b>只试 系统参数</b> 或 <b>只试 画面流程</b>：只试一类改动。</li>
+          </ul>
+          <p>其他大白话的要求（比如「别让画面变暗」）会原样交给出方案的大模型参考。每次保存都会留一个版本，并记下时间和来源 IP。</p>
+          <div class="hist-h">历史版本</div>
+          <ul id="hist" class="hist"></ul>
+          <div id="hist-view" class="hist-view" hidden></div>
+          <div id="audit" class="audit"></div>
+        </details>
       </section>
 
       <section class="card o-goal" aria-labelledby="h-goal">
-        <details class="gm" id="gm"><summary id="h-goal">目标详情（goal.md）</summary><pre id="goalmd">—</pre></details>
-        <details class="gm" id="rep" hidden style="margin-top:10px"><summary>总报告（report.md）</summary><pre id="reportmd"></pre></details>
+        <details class="gm" id="gm"><summary id="h-goal">目标的完整设置（goal.md）</summary><pre id="goalmd">—</pre></details>
+        <details class="gm" id="rep" hidden><summary>总报告（report.md）</summary><pre id="reportmd"></pre></details>
       </section>
     </div>
   </div>
@@ -80,7 +103,7 @@
 <dialog id="dlg-unlock" class="dlg">
   <form id="f-unlock">
     <h3>输入掌舵密码</h3>
-    <p class="note2">查看密码只能看。改 human.md、停止、起新目标需要掌舵密码。每次修改都会记下时间和来源 IP。</p>
+    <p class="note2">查看密码只能看。写指令、停止、起新目标需要掌舵密码。每次修改都会记下时间和来源 IP。</p>
     <input type="password" id="steer-pw" placeholder="掌舵密码" autocomplete="current-password" required>
     <div class="row-btns"><button class="btn primary" type="submit">解锁</button><button class="btn" type="button" data-close>取消</button><span id="unlock-msg" class="msg err"></span></div>
   </form>
@@ -91,13 +114,13 @@
     <div class="steps"><span id="st1" class="on">① 说目标</span>›<span id="st2">② 看草稿</span>›<span id="st3">③ 开跑</span></div>
     <div id="new-1">
       <h3>你想让 harness 做到什么？</h3>
-      <label>用一句话说，比如：原神跑图功耗降 5%，帧率不能掉
+      <label>用一句话说，比如：原神跑图省电 5%，帧率不能掉
         <textarea id="intent" rows="3" maxlength="2000" required></textarea></label>
-      <label style="margin-top:8px">哪个游戏（包名）
-        <input id="game" list="games" value="com.miHoYo.Yuanshen" autocomplete="off" spellcheck="false">
-        <datalist id="games"><option value="com.miHoYo.Yuanshen">原神</option><option value="com.miHoYo.hkrpg">崩坏：星穹铁道</option>
-          <option value="com.miHoYo.Nap">绝区零</option><option value="com.tencent.tmgp.sgame">王者荣耀</option><option value="com.tencent.tmgp.pubgmhd">和平精英</option></datalist></label>
-      <label style="margin-top:8px">在哪台手机上跑
+      <label>哪个游戏
+        <select id="game"><option value="com.miHoYo.Yuanshen">原神</option><option value="com.unity.megacity.metro">Megacity</option>
+          <option value="com.miHoYo.hkrpg">崩坏：星穹铁道</option><option value="com.miHoYo.Nap">绝区零</option>
+          <option value="com.tencent.tmgp.sgame">王者荣耀</option><option value="com.tencent.tmgp.pubgmhd">和平精英</option></select></label>
+      <label>在哪台手机上跑
         <select id="dev-sel"></select></label>
       <div class="row-btns"><button id="do-draft" class="btn primary" type="button">让 harness 起草</button><button class="btn" type="button" data-close>取消</button><span id="draft-msg" class="msg"></span></div>
     </div>
