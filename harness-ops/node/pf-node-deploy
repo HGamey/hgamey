@@ -5,7 +5,7 @@
 #   --restart：更新后 /admin/restart 节点服务（只在 node_service.py / dash 有改动时才需要；
 #   任务退出码已落盘，重启不再丢任务状态；仍建议先看 `pf-node devlock status` 和实时看板）。
 set -eu
-TOKF=${PF_NODE_TOKEN_FILE:-}; for c in ${0:A:h}/../.hgamey/node.token ${0:A:h}/../../../.hgamey/node.token ~/.config/hgamey/node.token; do [[ -z $TOKF && -f $c ]] && TOKF=$c; done
+TOKF=${PF_NODE_TOKEN_FILE:-}; for start in ${0:a:h} ${0:A:h}; do d=$start; while [[ -z $TOKF && $d != / ]]; do [[ -f $d/.hgamey/node.token ]] && TOKF=$d/.hgamey/node.token; d=${d:h}; done; done; [[ -n $TOKF ]] || TOKF=~/.config/hgamey/node.token
 restart=0; [[ ${1:-} == --restart ]] && { restart=1; shift; }
 ${0:A:h}/pf-node --label deploy update_node --git "$@"
 if (( restart )); then
