@@ -3,7 +3,10 @@
 
     game_opt_loop optimize ... --proposer cmd:tools/proposers/cloud_actions.py --proposer-timeout-s 900
 
-需要: 跑 optimize 的那台机器上有已登录、对仓库有 actions 写权限的 gh;
+需要: 跑 optimize 的那台机器上有 gh, 并且二选一:
+  - 环境变量 GH_TOKEN = 受限 token (fine-grained PAT, 只对本仓库: Actions 读写 + Contents 只读),
+    gh 直接用它, 不需要登录态 (推荐: 节点上不放有完整仓库权限的登录态);
+  - 或 gh 已登录、对仓库有 actions 写权限。
 仓库里配好 .github/workflows/proposer.yml 要的 secrets。环境变量 GOL_PROPOSER_REPO 可换仓库
 (缺省 HGamey/game_opt_loop), GOL_PROPOSER_REF 可换分支 (缺省 main)。
 
@@ -43,6 +46,8 @@ def main() -> int:
         log(f"输入压缩后仍有 {len(b64)} 字符, 超过 workflow_dispatch 输入上限")
         return 2
     nonce = uuid.uuid4().hex[:12]
+    log("鉴权: " + ("环境变量 GH_TOKEN" if os.environ.get("GH_TOKEN", "").strip() else
+                   "环境变量 GITHUB_TOKEN" if os.environ.get("GITHUB_TOKEN", "").strip() else "gh 登录态"))
     gh("workflow", "run", WORKFLOW, "-R", REPO, "--ref", REF, "-f", f"nonce={nonce}", "-f", f"input_b64={b64}")
     log(f"已触发 {REPO} {WORKFLOW} nonce={nonce}")
 

@@ -77,8 +77,9 @@ def quota_or_rate_limited(text: str) -> bool:
 
 
 def parse_events(stdout: str):
-    """pi --mode json 的事件流 → (最后一条 assistant 文本, [(工具名, 成功否)])。"""
+    """pi --mode json 的事件流 → (最后一条 assistant 文本, [(工具名, 成功否)], 用量)。"""
     texts, calls, names = [], [], {}
+    usage = {"model_calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0}
     for line in stdout.splitlines():
         try:
             ev = json.loads(line)
@@ -89,6 +90,11 @@ def parse_events(stdout: str):
         m = ev.get("message") or {}
         content = m.get("content") if isinstance(m.get("content"), list) else []
         if m.get("role") == "assistant":
+            u = m.get("usage") or {}
+            usage["model_calls"] += 1
+            usage["input_tokens"] += int(u.get("input") or 0)
+            usage["output_tokens"] += int(u.get("output") or 0)
+            usage["cache_read_tokens"] += int(u.get("cacheRead") or 0)
             t = "".join(c.get("text", "") for c in content if c.get("type") == "text")
             if t.strip():
                 texts.append(t)
@@ -97,7 +103,7 @@ def parse_events(stdout: str):
                     names[c.get("id")] = c.get("name")
         elif m.get("role") == "toolResult":
             calls.append((m.get("toolName") or names.get(m.get("toolCallId"), "?"), not m.get("isError")))
-    return (texts[-1] if texts else ""), calls
+    return (texts[-1] if texts else ""), calls, usage
 
 
 def extract_json(text: str):
@@ -156,7 +162,9 @@ def main() -> int:
         return 3
     if model is None:
         return 3
-    text, calls = parse_events(r.stdout)
+    text, calls, usage = parse_events(r.stdout)
+    log(f"用量: 模型调用 {usage['model_calls']} 次, 输入 {usage['input_tokens']} (缓存命中 {usage['cache_read_tokens']}), "
+        f"输出 {usage['output_tokens']} tokens")
     for name, ok in calls:
         log(f"调用工具 {name}: {'成功' if ok else '出错'}")
     if tools and not calls:
@@ -166,6 +174,7 @@ def main() -> int:
         log("回复里找不到合法 JSON:", text[-800:])
         return 4
     out["protocol"], out["version"] = PROTOCOL, 1
+    out["usage"] = usage
     out.setdefault("proposer", f"pi_kimi ({model})")
     # 只留契约里的三个字段, 其余的 (模型手滑带上的) 去掉; 真正的校验在 harness。
     cands = []

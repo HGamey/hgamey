@@ -307,6 +307,39 @@ pub struct Output {
     pub proposer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// 出方案一方自报的用量 (经费口径, 可选)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+/// 出方案一方自报的用量。外部进程不报就是 None; 报了就进报告的经费账。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    /// 调了几次大模型 (一轮对话里每次模型回复算一次)。
+    #[serde(default)]
+    pub model_calls: u32,
+    /// 未命中缓存的输入 token。
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// 命中缓存的输入 token。
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+}
+
+impl Usage {
+    fn add(&mut self, o: &Usage) {
+        self.model_calls += o.model_calls;
+        self.input_tokens += o.input_tokens;
+        self.output_tokens += o.output_tokens;
+        self.cache_read_tokens += o.cache_read_tokens;
+    }
+}
+
+/// 外部进程 stdout 里自报的用量 (没有或解析不了就是 None)。纯函数。
+pub fn parse_usage(stdout: &str) -> Option<Usage> {
+    serde_json::from_str::<Output>(stdout.trim()).ok().and_then(|o| o.usage)
 }
 
 /// 一次出方案的结果 (还没过 harness 的校验)。
@@ -322,6 +355,9 @@ pub struct Proposed {
     pub raw: Option<String>,
     /// 这次出方案调了几次大模型 (经费口径)。
     pub model_calls: u32,
+    /// token 用量 (外部进程自报的; 内置的不统计)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 /// 出方案的一方。
@@ -452,6 +488,7 @@ impl Proposer for Builtin {
                     origin: b.origin,
                     error: b.llm_error,
                     raw: b.llm_raw,
+                    usage: None,
                     model_calls,
                 }
             }
@@ -477,6 +514,7 @@ impl Proposer for Builtin {
                     origin: b.origin,
                     error: b.llm_error,
                     raw: b.llm_raw,
+                    usage: None,
                     model_calls,
                 }
             }
@@ -627,6 +665,10 @@ impl Proposer for External {
                 stderr.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ")
             ));
             return p;
+        }
+        if let Some(u) = parse_usage(&stdout) {
+            p.model_calls = u.model_calls;
+            p.usage = Some(u);
         }
         match parse_output(&stdout, input.kind) {
             Ok((cands, bad)) => {
@@ -896,6 +938,9 @@ pub struct Summary {
     /// 上机前守门的每一次判断 (开了 `--gate` 才有)。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gate: Vec<super::gate::Decision>,
+    /// 整程 token 用量 (只有自报用量的外部出方案才有)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
 }
 
 /// 记账用的包装: 对内原样转交, 对外多数几个数。
@@ -903,6 +948,7 @@ pub struct Counting<'a> {
     inner: &'a dyn Proposer,
     calls: std::cell::Cell<u32>,
     model_calls: std::cell::Cell<u32>,
+    usage: std::cell::Cell<Option<Usage>>,
 }
 
 impl<'a> Counting<'a> {
@@ -911,6 +957,7 @@ impl<'a> Counting<'a> {
             inner,
             calls: Default::default(),
             model_calls: Default::default(),
+            usage: Default::default(),
         }
     }
 
@@ -921,6 +968,7 @@ impl<'a> Counting<'a> {
             calls: self.calls.get(),
             model_calls: self.model_calls.get(),
             gate: Vec::new(),
+            usage: self.usage.get(),
         }
     }
 }
@@ -936,6 +984,11 @@ impl Proposer for Counting<'_> {
         let p = self.inner.propose(input);
         self.calls.set(self.calls.get() + 1);
         self.model_calls.set(self.model_calls.get() + p.model_calls);
+        if let Some(u) = &p.usage {
+            let mut acc = self.usage.get().unwrap_or_default();
+            acc.add(u);
+            self.usage.set(Some(acc));
+        }
         p
     }
 }
@@ -1378,7 +1431,8 @@ bus.DDR.avail_freqs=547000 1555000 5333000
             &script,
             "#!/bin/sh\ncat > \"$(dirname \"$0\")/seen.json\"\necho 日志写 stderr >&2\n\
              echo '{\"protocol\":\"game_opt_loop/proposer@1\",\"version\":1,\"candidates\":[\
-             {\"kind\":\"sysparam\",\"why\":\"固定给一个\",\"payload\":{\"params\":{\"gpu.min_pwrlevel\":\"2\"}}}]}'\n",
+             {\"kind\":\"sysparam\",\"why\":\"固定给一个\",\"payload\":{\"params\":{\"gpu.min_pwrlevel\":\"2\"}}}],\
+             \"usage\":{\"model_calls\":2,\"input_tokens\":1200,\"output_tokens\":300,\"cache_read_tokens\":512}}'\n",
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1389,6 +1443,14 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         assert!(p.error.is_none(), "{:?}", p.error);
         assert_eq!(p.origin, Some(Origin::External));
         assert_eq!(p.candidates.len(), 1);
+        // 自报的用量进经费账。
+        assert_eq!(p.model_calls, 2);
+        assert_eq!(p.usage.unwrap().input_tokens, 1200);
+        let counted = Counting::new(&ext);
+        counted.propose(&inp);
+        counted.propose(&inp);
+        let s = counted.summary();
+        assert_eq!((s.model_calls, s.usage.unwrap().output_tokens), (4, 600));
         let s = screen(&inp, &p);
         assert_eq!(s.accepted.len(), 1);
 

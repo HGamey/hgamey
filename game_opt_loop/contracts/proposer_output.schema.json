@@ -9,6 +9,16 @@
     "version": { "const": 1 },
     "candidates": { "type": "array", "items": { "$ref": "proposer_candidate.schema.json" } },
     "proposer": { "type": ["string", "null"], "description": "出方案一方自报的名字/版本, 只进证据" },
-    "notes": { "type": ["string", "null"], "description": "自由文本, 只进证据" }
+    "notes": { "type": ["string", "null"], "description": "自由文本, 只进证据" },
+    "usage": {
+      "type": ["object", "null"],
+      "description": "可选: 出方案一方自报的用量, 进报告的经费账 (report.json 的 proposer.model_calls / proposer.usage)",
+      "properties": {
+        "model_calls": { "type": "integer", "minimum": 0, "description": "调了几次大模型 (每次模型回复算一次)" },
+        "input_tokens": { "type": "integer", "minimum": 0, "description": "未命中缓存的输入 token" },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_tokens": { "type": "integer", "minimum": 0, "description": "命中缓存的输入 token" }
+      }
+    }
   }
 }

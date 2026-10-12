@@ -325,7 +325,8 @@ pub const CLOUD_ADAPTER: &str = "tools/proposers/cloud_actions.py";
 ///
 /// - `llm` / `local`: 原样。
 /// - `cloud`: `cmd:<GOL_CLOUD_PROPOSER 或 tools/proposers/cloud_actions.py>`。用缺省适配器时
-///   先确认 `gh` 已登录 (它靠 gh 触发 GitHub Actions、取回结果), 不然第一代必然出不了方案。
+///   先确认 gh 用得上 (它靠 gh 触发 GitHub Actions、取回结果): 环境里有 `GH_TOKEN` (受限 token)
+///   且装了 gh, 或 gh 已登录。不然第一代必然出不了方案。
 pub fn proposer_spec_for(p: &str) -> Result<String> {
     match p {
         "llm" | "local" => Ok(p.to_string()),
@@ -338,7 +339,23 @@ pub fn proposer_spec_for(p: &str) -> Result<String> {
                      或用 GOL_CLOUD_PROPOSER 指定)"
                 );
             }
-            if custom.is_none() {
+            // 受限 token (只能触发这一个仓库的 workflow、读 artifact 的 fine-grained PAT) 放在
+            // GH_TOKEN 里时, gh 直接用它, 不需要登录态; 只要求 gh 本身装着。
+            let has_token = ["GH_TOKEN", "GITHUB_TOKEN"]
+                .iter()
+                .any(|k| std::env::var(k).map(|v| !v.trim().is_empty()).unwrap_or(false));
+            if custom.is_none() && has_token {
+                let gh_ok = std::process::Command::new("gh")
+                    .arg("--version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if !gh_ok {
+                    bail!("proposer: cloud 要 gh 命令行 (GH_TOKEN 已设, 但这台机器上没有 gh)");
+                }
+            } else if custom.is_none() {
                 let ok = std::process::Command::new("gh")
                     .args(["auth", "status"])
                     .stdout(std::process::Stdio::null())
@@ -348,8 +365,9 @@ pub fn proposer_spec_for(p: &str) -> Result<String> {
                     .unwrap_or(false);
                 if !ok {
                     bail!(
-                        "proposer: cloud 靠 gh 触发 GitHub Actions, 但这台机器上 gh 没登录 (gh auth status 失败)。\
-                         登录后再跑, 或用 GOL_CLOUD_PROPOSER 换成本机的 tools/proposers/pi_kimi.py"
+                        "proposer: cloud 靠 gh 触发 GitHub Actions, 但这台机器上 gh 没登录 (gh auth status 失败), \
+                         也没有 GH_TOKEN。设 GH_TOKEN (只能触发本仓库 workflow、读 artifact 的受限 token) 或登录后再跑, \
+                         或用 GOL_CLOUD_PROPOSER 换成本机的 tools/proposers/pi_kimi.py"
                     );
                 }
             }
@@ -785,6 +803,22 @@ fn write_report(
 
 #[cfg(test)]
 mod tests {
+
+    /// 受限 token 放在 GH_TOKEN 里时, 云端出方案不要求 gh 登录态 (装着 gh 就行)。
+    #[test]
+    fn cloud_accepts_a_restricted_gh_token_instead_of_a_login() {
+        if std::process::Command::new("gh").arg("--version").output().is_err() {
+            return; // 这台机器没装 gh, 测不了
+        }
+        std::env::remove_var("GOL_CLOUD_PROPOSER");
+        std::env::set_var("GH_TOKEN", "github_pat_test_only");
+        let got = proposer_spec_for("cloud");
+        std::env::remove_var("GH_TOKEN");
+        assert_eq!(got.unwrap(), format!("cmd:{CLOUD_ADAPTER}"));
+        assert_eq!(proposer_spec_for("local").unwrap(), "local");
+        assert!(proposer_spec_for("magic").is_err());
+    }
+
     use super::*;
 
     #[test]
