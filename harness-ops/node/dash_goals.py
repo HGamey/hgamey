@@ -13,7 +13,7 @@ harness 的 `goal draft / goal run` 还没上线时：
   - 「确认并开始」只保存 goal.md，不起任务，明确回「harness 的 goal run 还没上线」。
 没有任何真实目标运行时，首页展示 dash_demo/ 下的示例运行（复制到 ~/node/_dash/demo-goals/，标「示例」）。
 """
-import json, os, re, shutil, subprocess, threading, time
+import json, os, re, shutil, signal, subprocess, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO_SRC = os.path.join(HERE, "dash_demo")
@@ -80,10 +80,10 @@ def read_events(path, limit=600):
     return out
 
 
-def template_goal_md(intent, device):
+def template_goal_md(intent, device, game="com.miHoYo.Yuanshen"):
     """harness 起草上线前的本地模板：GOAL_SPEC 的默认值 + 人的原话。"""
     return f"""---
-game: com.miHoYo.Yuanshen
+game: {game}
 device: {device or 'any'}
 objective:
   metric: power_watt
@@ -94,6 +94,7 @@ constraints:
   - frame_p95: no_worse
   - image: psnr_min_db 30
 layers: [sysparam, gray]
+per_generation: 2
 forbid: []
 budget:
   wall_minutes: 180
@@ -201,7 +202,8 @@ class Goals:
         s.update(goal_md=_read(os.path.join(d, "goal.md")), human_md=_read(os.path.join(d, "human.md")) or "",
                  human_mtime=_mtime(os.path.join(d, "human.md")), human_history=hist, audit=audit[::-1],
                  events=read_events(os.path.join(d, "events.jsonl")), report_md=_read(os.path.join(d, "report.md")),
-                 harness_ready=self.harness_support())
+                 harness_ready=self.harness_support(), dash=self._dash_meta(d),
+                 frozen=os.path.exists(os.path.join(d, "goal.frozen.md")), run_alive=bool(self._run_pid(d)))
         return s
 
     def history_text(self, run_id, name):
@@ -218,7 +220,9 @@ class Goals:
         rec = {"t": _now_iso(), "ip": ip, "action": action, **kw}
         with open(os.path.join(d, "steer.audit.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        with open(os.path.join(os.path.dirname(self.demo_dir.rstrip("/")), "steer_audit.jsonl"), "a", encoding="utf-8") as f:
+        gdir = os.path.dirname(self.demo_dir.rstrip("/"))
+        os.makedirs(gdir, exist_ok=True)
+        with open(os.path.join(gdir, "steer_audit.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({**rec, "run_id": os.path.basename(d)}, ensure_ascii=False) + "\n")
 
     def save_human(self, run_id, text, ip, action="edit_human", base_mtime=None):
@@ -243,20 +247,54 @@ class Goals:
             self._audit(d, ip, action, bytes=len(text.encode()), history=name)
         return {"saved": True, "history": name, "mtime": _mtime(p)}
 
+    def _run_pid(self, d):
+        """这个目标运行的 goal run 进程（经本节点 /jobs 起的）还活着就回 pid。"""
+        m = self._dash_meta(d)
+        jid = m.get("run_job")
+        if not jid or not self.jobs:
+            return None
+        try:
+            jm = self.jobs.status(jid)
+        except (KeyError, OSError, ValueError):
+            return None
+        return jm.get("pid") if jm.get("state") == "running" else None
+
     def stop(self, run_id, ip):
         d, _ = self.find(run_id)
+        pid = self._run_pid(d)
+        if pid:
+            # v1.1：只给 goal run 本身发 SIGINT，它转给本进程组（phonefarm 走还原），不再出方案、不再上机。
+            # 不用 Jobs.kill：那个会逐级升到 SIGKILL，可能打断 phonefarm 的还原。
+            try:
+                os.kill(int(pid), signal.SIGINT)
+            except OSError as e:
+                raise ValueError(f"发停止信号失败：{e}")
+            self._audit(d, ip, "stop", via="SIGINT", pid=pid)
+            return {"saved": False, "signaled": True,
+                    "note": "已叫停：harness 马上停止出方案和上机，正在测的那一轮会先把手机还原，再写报告"}
         cur = _read(os.path.join(d, "human.md")) or ""
         if re.search(r"(?im)^\s*(停止|stop)\s*$", cur):
-            return {"saved": False, "note": "human.md 里已经写了「停止」，harness 会在本代结束后停"}
+            return {"saved": False, "note": "human.md 里已经写了「停止」，harness 下一代开始前读到就停"}
         text = cur.rstrip("\n") + ("\n\n" if cur.strip() else "") + "停止\n"
         r = self.save_human(run_id, text, ip, action="stop")
-        r["note"] = "已在 human.md 末尾写上「停止」：harness 会在这一代测完后停下，不会中途打断测量"
+        r["note"] = "没找到正在跑的 harness 进程，已在 human.md 末尾写上「停止」：harness 下一代开始前读到就停"
         return r
 
-    def draft(self, intent, device, ip):
+    def _dash_meta(self, d, **upd):
+        p = os.path.join(d, "dash.json")
+        m = _load(p) or {}
+        if upd:
+            m.update(upd)
+            _write_atomic(p, json.dumps(m, ensure_ascii=False, indent=1))
+        return m
+
+    def draft(self, intent, game, device, ip):
         intent = (intent or "").strip()
+        game = (game or "").strip()
         if not intent or len(intent) > 2000:
             raise ValueError("目标要写一句话（2000 字以内）")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+", game):
+            raise ValueError("游戏要填包名，比如 com.miHoYo.Yuanshen")
         if device and device != "any" and not re.fullmatch(r"[0-9A-Za-z._:-]{1,64}", device):
             raise ValueError("手机序列号不对")
         rid = time.strftime("%Y%m%d-%H%M%S")
@@ -265,23 +303,22 @@ class Goals:
         d = os.path.join(self.dir, rid)
         os.makedirs(d)
         _write_atomic(os.path.join(d, "intent.txt"), intent + "\n")
-        _write_atomic(os.path.join(d, "human.md"), "")
-        st = {"run_id": rid, "status": "drafting", "goal_summary": intent[:80], "device": device or "any",
-              "generation": 0, "updated_at": _now_iso()}
-        self._audit(d, ip, "new_goal", intent=intent[:200], device=device or "any")
+        self._dash_meta(d, device=device or "any", game=game)
+        self._audit(d, ip, "new_goal", intent=intent[:200], game=game, device=device or "any")
         if self.harness_support() and self.jobs:
-            _write_atomic(os.path.join(d, "state.json"), json.dumps(st, ensure_ascii=False, indent=1))
             meta = self.jobs.start({"bin": "game_opt_loop", "label": f"goal-draft-{rid}",
-                                    "argv": ["goal", "draft", "--dir", d, "--intent-file", os.path.join(d, "intent.txt"),
-                                             "--device", device or "any"]}, b"")
+                                    "argv": ["goal", "draft", "--intent", intent, "--game", game, "--out", d]}, b"")
+            self._dash_meta(d, draft_job=meta["id"])
             return {"run_id": rid, "job": meta["id"], "mode": "harness"}
         # harness 还没上线：本地模板起草，直接等人确认
-        _write_atomic(os.path.join(d, "goal.md"), template_goal_md(intent, device))
-        st.update(status="awaiting_confirm", updated_at=_now_iso())
+        _write_atomic(os.path.join(d, "human.md"), "")
+        _write_atomic(os.path.join(d, "goal.md"), template_goal_md(intent, device, game))
+        st = {"run_id": rid, "status": "awaiting_confirm", "goal_summary": intent[:80], "device": device or None,
+              "generation": 0, "updated_at": _now_iso()}
         _write_atomic(os.path.join(d, "state.json"), json.dumps(st, ensure_ascii=False, indent=1))
         with open(os.path.join(d, "events.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps({"t": _now_iso(), "type": "note", "gen": 0,
-                                "text": "草稿用本地模板生成（harness 的自动起草还没上线），请检查后确认"}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"t": _now_iso(), "type": "note", "gen": 0, "stage": "draft", "by": "template",
+                                "message": "草稿用网页的本地模板生成（节点上的 harness 不认 goal 命令），请检查后确认"}, ensure_ascii=False) + "\n")
         return {"run_id": rid, "mode": "template"}
 
     def confirm(self, run_id, goal_md, ip):
@@ -298,6 +335,7 @@ class Goals:
             self._audit(d, ip, "confirm", bytes=len(goal_md.encode()))
         if not (self.harness_support() and self.jobs):
             return {"started": False, "note": "goal.md 已保存。harness 的 goal run 还没上线（core 在做），上线后再点「确认并开始」"}
-        meta = self.jobs.start({"bin": "game_opt_loop", "label": f"goal-{run_id}",
-                                "argv": ["goal", "run", "--dir", d]}, b"")
-        return {"started": True, "job": meta["id"], "lock_label": f"goal-{run_id}"}
+        meta = self.jobs.start({"bin": "game_opt_loop", "label": f"goal-{run_id}", "argv": ["goal", "run", d]}, b"")
+        self._dash_meta(d, run_job=meta["id"], run_pid=meta["pid"])
+        return {"started": True, "job": meta["id"], "lock_label": f"goal-{run_id}",
+                "note": "已开跑：harness 会冻结 goal.md，去排队拿手机（锁名 goal-" + run_id + "）"}

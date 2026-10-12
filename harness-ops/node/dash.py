@@ -45,11 +45,11 @@ STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
 VIEW_IDLE_S = 90          # 这么久没人看就停采样
-FLEET_EVERY_FREE_S = 10   # 锁空闲时多久采一次
-FLEET_EVERY_HELD_S = 20   # 锁被占时多久采一次（只读 sysfs）
+FLEET_EVERY_FREE_S = 30   # 锁空闲时多久采一次（节点 mini 负载紧，别再密）
+FLEET_EVERY_HELD_S = 60   # 锁被占时多久采一次（只读 sysfs）
 FREE_GRACE_S = 30         # 锁释放后这么久内不碰手机
 SHOT_EVERY_S = 60         # 截图最小间隔
-SCAN_EVERY_S = 15         # 实验证据多久扫一次
+SCAN_EVERY_S = 30         # 实验证据多久扫一次（只在有人看时）
 JOBS_SHOWN = 30
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
 REDACT = re.compile(r"(Bearer\s+|sk-[A-Za-z0-9]{4})[A-Za-z0-9._\-]{8,}|((?:api[_-]?key|token|secret|password)\s*[=:]\s*)\S+", re.I)
@@ -496,7 +496,7 @@ class Dash:
             elif sub == ["api", "run", "stop"]:
                 r = self.goals.stop(str(data.get("id", "")), ip)
             elif sub == ["api", "goal", "draft"]:
-                r = self.goals.draft(data.get("intent"), data.get("device"), ip)
+                r = self.goals.draft(data.get("intent"), data.get("game"), data.get("device"), ip)
             elif sub == ["api", "goal", "confirm"]:
                 r = self.goals.confirm(str(data.get("id", "")), data.get("goal_md"), ip)
             else:

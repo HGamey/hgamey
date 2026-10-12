@@ -147,6 +147,8 @@
     const bestHtml = best ? `<div class="v ${improve > 0 ? "good-txt" : ""}">${pct(best.delta_pct)} <small>${esc(mname(best.metric || metric))}</small></div>
         <div class="s">${esc(best.candidate || "")}${best.change ? " · " + esc(best.change) : ""}<br>${esc((VERDICT[best.verdict] || [best.verdict || ""])[0])}</div>`
       : `<div class="v">—</div><div class="s">还没有判赢的方案</div>`;
+    const why = r.status === "paused" ? `<p class="note2" style="margin-top:12px">已暂停：手机锁已放掉，改「掌舵」里的指令后 harness 会重新排队继续。</p>`
+      : st.stop_reason ? `<p class="note2" style="margin-top:12px">停下原因：${esc(STOP[st.stop_reason] || st.stop_reason)}${r.report_md ? "。总报告在右边「总报告」里。" : ""}</p>` : "";
     const action = r.status === "awaiting_confirm" && !r.demo ? `<div class="row-btns"><button class="btn primary" type="button" data-act="review">查看草稿并开跑</button></div>` : "";
     $("run-body").innerHTML = `
       <div class="goal-title">${esc(st.goal_summary || r.intent || r.run_id)}</div>
@@ -154,14 +156,15 @@
       <div class="prog"><div class="prog-h"><span>${esc(progText)}</span><b>${Math.round(Math.max(0, Math.min(1, prog)) * 100)}%</b></div>
         <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(prog * 100)}"><i style="width:${Math.max(0, Math.min(1, prog)) * 100}%"></i></div></div>
       <div class="stats">
-        <div class="stat"><div class="k">第几代</div><div class="v">${gen || "—"}<small> / ${maxGen || "?"} 代</small></div><div class="gens-dots">${dots}</div></div>
+        <div class="stat"><div class="k">第几代</div><div class="v">${gen || "—"}<small> / ${maxGen || "?"} 代</small></div><div class="gens-dots">${dots}</div>${st.no_gain_streak ? `<div class="s">已连续 ${st.no_gain_streak} 代没收益</div>` : ""}</div>
         <div class="stat"><div class="k">时间预算</div><div class="v">${used ?? "—"}<small> / ${budget ?? "?"} 分钟</small></div>
           <div class="bar thin amber" style="margin-top:10px"><i style="width:${used != null && budget ? Math.min(100, used / budget * 100) : 0}%"></i></div></div>
         <div class="stat"><div class="k">目前最好的方案</div>${bestHtml}</div>
-      </div>${action}
+      </div>${why}${action}
       <div class="cchart" id="cchart"></div>`;
     renderCandChart(candidates(r.events || []), metric, dir, target);
     $("goalmd").textContent = r.goal_md || "（还没有 goal.md）";
+    $("rep").hidden = !r.report_md; if (r.report_md) $("reportmd").textContent = r.report_md;
   }
 
   // 每个方案在主指标上的改善（向上 = 更好），颜色 = 结局：保留 蓝 / 淘汰 琥珀 / 测量中 绿
@@ -215,21 +218,27 @@
     const cid = e.candidate_id ? `<code>${esc(e.candidate_id)}</code>` : "";
     switch (e.type) {
       case "start": return ["▶", "blue", `开始运行${e.summary ? "：" + esc(e.summary) : ""}${e.device ? `<span class="sub2">手机 ${esc(e.device)}</span>` : ""}`];
-      case "plan": return ["◆", "blue", `定好计划：${esc(e.text || e.summary || "")}`];
+      case "plan": {
+        if (e.text || e.summary) return ["◆", "blue", `定好计划：${esc(e.text || e.summary)}`];
+        const ly = (e.layers || []).map((l) => LAYER[l] || l).join("、");
+        const fb = (e.forbid || []).length ? `<span class="sub2">不动：<code>${esc(e.forbid.join(", "))}</code></span>` : "";
+        return ["◆", "blue", `这一代要试：${esc(ly || "—")}${e.per_generation ? `，每层 ${esc(e.per_generation)} 个方案` : ""}${e.budget_left_min != null ? `；还剩 ${Math.round(e.budget_left_min)} 分钟预算` : ""}${fb}`];
+      }
       case "steer": return ["✎", "brown", `读到你的新指令（第 ${esc(e.human_md_rev ?? "?")} 版）：“${esc(e.text || "")}”${e.interpreted ? `<span class="sub2">harness 的理解：${esc(e.interpreted)}</span>` : ""}`];
       case "propose": return ["＋", "", `提出方案 ${cid}（${esc(LAYER[e.layer] || e.layer || "")}）：${esc(e.why || "")}${e.changes ? `<span class="sub2">改动：<code>${esc(fmtChanges(e.changes))}</code></span>` : ""}`];
       case "gate": { const ok = /pass|allow|放行|ok/i.test(String(e.decision)); return ["⛨", ok ? "teal" : "amber", `上机前守门给 ${cid} 打了 ${num(e.score, 2)} 分 → ${ok ? "放行" : "拦下，不上机"}`]; }
-      case "measure": return ["◐", "teal", `在真手机上测 ${cid}：第 ${esc(e.arms_done)} / ${esc(e.arms_planned)} 轮`];
+      case "measure": return ["◐", "teal", e.arms_done ? `在真手机上测 ${cid}：第 ${esc(e.arms_done)} / ${esc(e.arms_planned)} 轮`
+        : `开始在真手机上测 ${cid}（对照和方案交替共 ${esc(e.arms_planned)} 轮，测完才出结论）`];
       case "verdict": {
         const v = VERDICT[e.verdict] || [e.verdict, "void"];
         const ms = Object.entries(e.metrics || {}).map(([k, m]) => `${esc(mname(k))} ${pct(m.delta_pct)}${m.p != null ? `（p=${num(m.p, 3)}）` : ""}`).join("，");
         const extra = [e.image_psnr != null ? `画面相似度 ${num(e.image_psnr)} dB` : "", e.contested_arms ? `${e.contested_arms} 轮被厂商性能服务干扰` : "", e.reason ? `理由：${esc(e.reason)}` : ""].filter(Boolean).join("；");
         return [v[1] === "win" ? "✓" : v[1] === "lose" ? "✗" : "∅", v[1] === "win" ? "blue" : v[1] === "lose" ? "amber" : "", `判官：${cid} ${esc(v[0])}${ms ? `<span class="sub2">${ms}</span>` : ""}${extra ? `<span class="sub2">${extra}</span>` : ""}`];
       }
-      case "keep": return ["★", "blue", `${cid} 进入保留名单，后面的方案在它基础上继续`];
+      case "keep": return ["★", "blue", `${cid} 进入保留名单${e.delta_pct != null ? `（${esc(mname(e.metric || ""))} ${pct(e.delta_pct)}）` : ""}，后面的方案在它基础上继续`];
       case "stop": return ["■", e.reason === "error" ? "red" : "brown", `停下了：${esc(STOP[e.reason] || e.reason || "")}${e.summary ? `<span class="sub2">${esc(e.summary)}</span>` : ""}`];
       case "error": return ["!", "red", `出错：${esc(e.message || e.text || e.error || "")}`];
-      case "note": return ["·", "", esc(e.text || e.message || "")];
+      case "note": return ["·", e.stage === "draft" ? "brown" : "", (e.stage === "draft" ? `起草：${e.by === "llm" ? "大模型" : e.by === "template" ? "模板" : esc(e.by || "")} · ` : "") + esc(e.text || e.message || "")];
       default: return ["·", "", `${esc(e.type)} ${esc(JSON.stringify(e).slice(0, 160))}`];
     }
   }
@@ -264,7 +273,7 @@
     const can = editable(r) && S.home && S.home.steer;
     ta.readOnly = !can;
     $("save-human").disabled = !can;
-    $("stop-run").disabled = !can || !["running", "paused"].includes(r.status);
+    $("stop-run").disabled = !can || !(["running", "paused"].includes(r.status) || r.run_alive);
     if (!editable(r)) $("steer-msg").textContent = "这个目标已经结束，指令只读";
     $("hist").innerHTML = (r.human_history || []).slice(0, 12).map((h, i) =>
       `<li><span class="t">${esc(h.name.replace(/^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)\.md$/, "$2-$3 $4:$5:$6"))}</span><span class="muted">第 ${(r.human_history.length - i)} 版</span>
@@ -313,7 +322,7 @@
     if (r) { S.humanDirty = false; S.humanBase = null; if (r.saved) $("steer-msg").textContent = "已保存，harness 下一代开始前会读到"; pollRun(); }
   });
   $("stop-run").addEventListener("click", async () => {
-    if (!confirm("让 harness 停下来？\n它会在这一代测完后停，不会中途打断测量。")) return;
+    if (!confirm("让 harness 立刻停下来？\n正在测的那一轮会先把手机还原，然后写总报告。")) return;
     const r = await steerCall("/dash/api/run/stop", { id: S.runId }, "steer-msg");
     if (r) { S.humanDirty = false; S.humanBase = null; pollRun(); }
   });
@@ -334,7 +343,7 @@
   $("do-draft").addEventListener("click", async () => {
     const intent = $("intent").value.trim();
     if (!intent) { $("draft-msg").textContent = "先写一句话"; return; }
-    const r = await steerCall("/dash/api/goal/draft", { intent, device: $("dev-sel").value }, "draft-msg");
+    const r = await steerCall("/dash/api/goal/draft", { intent, game: $("game").value.trim(), device: $("dev-sel").value }, "draft-msg");
     if (!r) return;
     S.draftId = r.run_id; S.runId = r.run_id; S.userPicked = true;
     $("draft-msg").innerHTML = `<span class="spin"></span> harness 正在起草…`;
@@ -353,10 +362,13 @@
   }
   function showDraft(r, mode) {
     S.draftId = r.run_id;
-    $("goalmd-edit").value = r.goal_md || "";
-    $("draft-note").textContent = (mode === "template" || !r.harness_ready)
-      ? "这份草稿是模板填的（harness 的自动起草还没上线）。请改成你要的：主指标、目标幅度、预算、允许动的层。"
-      : "这是 harness 根据你的话起草的。确认后 goal.md 就冻结了，运行中想调整请改「掌舵」里的指令。";
+    let md = r.goal_md || "";
+    const want = r.dash && r.dash.device;
+    if (want && want !== "any") md = md.replace(/^device:.*$/m, `device: ${want}`);
+    $("goalmd-edit").value = md;
+    const byTpl = (r.events || []).some((e) => e.type === "note" && e.stage === "draft" && e.by === "template") || mode === "template";
+    $("draft-note").textContent = (byTpl ? "这份草稿是模板填的（大模型没起草成功），请重点检查主指标和目标幅度。" : "这是 harness 根据你的话让大模型起草的。")
+      + "可以直接改：主指标、目标幅度、预算、每代几个方案、允许动的层、不许动的旋钮。点「确认并开始」后 goal.md 就冻结，运行中想调整请改「掌舵」里的指令。";
     $("confirm-msg").textContent = "";
     openNew(2);
   }
@@ -392,5 +404,5 @@
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(timer); tick(); } });
     return tick;
   }
-  (async () => { await pollHome(); every(4000, pollHome)(); every(4000, pollRun)(); })();
+  (async () => { await pollHome(); every(8000, pollHome)(); every(8000, pollRun)(); })();
 })();

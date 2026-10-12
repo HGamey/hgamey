@@ -10,6 +10,7 @@ constraints:
   - frame_p95: no_worse
   - image: psnr_min_db 30
 layers: [sysparam, gray]
+per_generation: 2
 forbid: []
 budget:
   wall_minutes: 180

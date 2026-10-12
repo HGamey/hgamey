@@ -323,7 +323,7 @@ details.gm pre { margin: 8px 0 0; background: var(--panel); border-radius: 10px;
 .dlg label { font-size: 12px; color: var(--ink2); display: flex; flex-direction: column; gap: 4px; }
 .dlg input, .dlg select { font: inherit; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
 .dlg .goalmd { font: 12.5px/1.5 ui-monospace, Menlo, monospace; min-height: 300px; }
-.dlg .note2 { font-size: 12px; color: var(--ink2); background: var(--wash); border-radius: 9px; padding: 8px 10px; }
+.note2 { font-size: 12px; color: var(--ink2); background: var(--wash); border-radius: 9px; padding: 8px 10px; }
 .dlg .steps { display: flex; gap: 6px; font-size: 12px; color: var(--muted); }
 .dlg .steps span.on { color: var(--blue); font-weight: 700; }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--grid); border-top-color: var(--blue); border-radius: 50%; animation: rot 1s linear infinite; vertical-align: -2px; }

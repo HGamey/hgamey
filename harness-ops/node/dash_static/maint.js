@@ -316,7 +316,7 @@
     tick();
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(timer); tick(); } });
   }
-  every(3000, pollState);
-  every(2000, pollLog);
-  every(10000, pollExps);
+  every(6000, pollState);
+  every(4000, pollLog);
+  every(30000, pollExps);
 })();

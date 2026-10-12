@@ -70,6 +70,7 @@
 
       <section class="card o-goal" aria-labelledby="h-goal">
         <details class="gm" id="gm"><summary id="h-goal">目标详情（goal.md）</summary><pre id="goalmd">—</pre></details>
+        <details class="gm" id="rep" hidden style="margin-top:10px"><summary>总报告（report.md）</summary><pre id="reportmd"></pre></details>
       </section>
     </div>
   </div>
@@ -92,6 +93,10 @@
       <h3>你想让 harness 做到什么？</h3>
       <label>用一句话说，比如：原神跑图功耗降 5%，帧率不能掉
         <textarea id="intent" rows="3" maxlength="2000" required></textarea></label>
+      <label style="margin-top:8px">哪个游戏（包名）
+        <input id="game" list="games" value="com.miHoYo.Yuanshen" autocomplete="off" spellcheck="false">
+        <datalist id="games"><option value="com.miHoYo.Yuanshen">原神</option><option value="com.miHoYo.hkrpg">崩坏：星穹铁道</option>
+          <option value="com.miHoYo.Nap">绝区零</option><option value="com.tencent.tmgp.sgame">王者荣耀</option><option value="com.tencent.tmgp.pubgmhd">和平精英</option></datalist></label>
       <label style="margin-top:8px">在哪台手机上跑
         <select id="dev-sel"></select></label>
       <div class="row-btns"><button id="do-draft" class="btn primary" type="button">让 harness 起草</button><button class="btn" type="button" data-close>取消</button><span id="draft-msg" class="msg"></span></div>

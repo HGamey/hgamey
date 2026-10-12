@@ -371,6 +371,10 @@ def main():
     ap.add_argument("--game-opt-loop", default=os.path.expanduser("~/node/game_opt_loop"), help="game_opt_loop 仓库目录（含 game_opt_loop 可执行），与 phonefarm 同级")
     ap.add_argument("--port", type=int, default=8765)
     a = ap.parse_args()
+    # run_node.sh 用 & 在后台起本进程：非交互 shell 会把后台命令的 SIGINT 设成「忽略」，并一路遗传给
+    # 我们起的任务（忽略态跨 exec 保留）—— 结果 kill/停止发的 SIGINT 对 bash 脚本、排队等锁的 devlock 无效。
+    # 这里装回 Python 自己的处理器：exec 时处理器会被重置为默认，子进程就能正常收 SIGINT。
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     token = os.environ.get("PHONEFARM_NODE_TOKEN", "")
     if len(token) < 32:
         sys.exit("PHONEFARM_NODE_TOKEN 未设置或太短（至少 32 字符）")
