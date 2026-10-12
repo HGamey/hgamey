@@ -37,6 +37,8 @@ Initial tests use a small static LR patch (even dimensions) and matched HR patch
 
 Real existing GOL CLI → these actual external stage drivers: source-tag propagation, real GradientTape/weight change/H5 reload, actual fp32/fp16 conversions and TFLite interpreter shape/finite-output checks, separate heldout IDs and no leakage. Negative cases bind tampered input/weights, missing completion, incorrect3/2 dimensions, mixed color/source, split overlap, missing/nonfinite data, absent outputs/receipt, budget/UNKNOWN and unsupported Deploy/Evaluate. Synthetic positives are actual training/quantization mechanism checks only. Native-data training/Android run and gain remain NOT_RUN until separately performed.
 
+Each actual TFLite invocation records the identity of the selected patch from the actual heldout array, including frame/host-frame ID, LR/HR original raw SHA, crop origin/shape and little-endian float32 input SHA. The declared heldout list is a split membership contract, not the physical sample order; a reversed multi-frame heldout declaration must not mislabel the first invoked source frame. Acceptance includes a real CPU training/conversion/invocation with heldout IDs `[3,2]` and actual first patch from frame2.
+
 No Rust production change is expected for the external driver; full existing Rust tests and strict Clippy will still be required before a source PR, alongside actual local runtime tests. New Python source/tests live under `tools/model_stages/`; examples/plan builder should produce explicitly frozen user-configured argv. Large weights/TFLite/data stay in tasks, never Git.
 
 ## Registered budget

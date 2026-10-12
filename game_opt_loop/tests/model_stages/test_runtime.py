@@ -2,7 +2,7 @@
 Requires GOL_MODEL_TEST_PYTHON and GOL_MODEL_TEST_GOL, real local TensorFlow2.20.
 Data/output source synthetic; actual math/format evidence, no Android/game gain.
 """
-import copy,hashlib,json,os,shutil,subprocess,sys,tempfile,time,unittest
+import copy,hashlib,json,os,shutil,struct,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'tools/model_stages'))
 import protocol as P
@@ -66,4 +66,11 @@ class Runtime(unittest.TestCase):
  def test_rehashed_output_format_is_rejected_by_actual_gol_cli(self):
   d=self.base/'wrong-format';d.mkdir();plan=P.parse(P.read(self.good/'plan.json'));plan['pipeline_id']='wrong-format';plan['stages'][0]['outputs'][0]['format']='pretend_android_gpu_model';path=d/'plan.json';P.write_new(path,P.encode(plan))
   value=P.parse(self.command('wrong-format-actual-gol',[GOL,'model-pipeline','start','--plan',str(path),'--out',str(d/'pipeline')],1,10));self.assertEqual(value['entries'][0]['state'],'failed');self.assertFalse(value['promotion_allowed']);self.assertFalse(value['model_semantics_verified']);self.assertIn(b'output role/format/set differs',P.read(d/'pipeline/0_design/stderr.log'));self.assertFalse((d/'pipeline/0_design/architecture.json').exists());self.assertTrue(all(x['state']=='pending' for x in value['entries'][1:]))
+ def test_actual_tflite_sample_uses_actual_patch_identity_with_reordered_heldout(self):
+  d=self.base/'reordered-heldout';self.command('make-reordered',[sys.executable,str(ROOT/'tools/model_stages/make_plan.py'),'--out',str(d),'--python',PYTHON,'--synthetic'],0,10)
+  dataset=P.parse(P.read(d/'dataset.json'));dataset['train_frame_ids']=[0,1];dataset['heldout_frame_ids']=[3,2];(d/'dataset.json').write_bytes(P.encode(dataset));plan=P.parse(P.read(d/'plan.json'));plan['data'][0]['sha256']=P.hash_bytes(P.read(d/'dataset.json'));(d/'plan.json').write_bytes(P.encode(plan))
+  result=P.parse(self.command('actual-reordered-pipeline',[GOL,'model-pipeline','start','--plan',str(d/'plan.json'),'--out',str(d/'pipeline')],1,360));self.assertEqual([x['state'] for x in result['entries']],['completed','completed','completed','failed','pending']);self.assertFalse(result['real_game_optimization_proven'])
+  evidence=P.parse(P.read(d/'pipeline/2_quantize/quantize-evidence.json'));frame=next(f for f in dataset['synthetic_frames'] if f['frame_id']==2);raw=P.snapshot(frame['lr']);float_bytes=b''.join(struct.pack('<f',value/255.0) for value in raw);sample_sha=P.hash_bytes(float_bytes)
+  for model in evidence['models']:
+   self.assertTrue(model['host_cpu_invocation_finite']);self.assertEqual(model['input_frame_id'],2);self.assertNotEqual(model['input_frame_id'],dataset['heldout_frame_ids'][0]);identity=model['input_patch_identity'];self.assertEqual(identity['frame_id'],2);self.assertEqual(identity['host_frame_id'],'synthetic:2');self.assertEqual(identity['lr_raw_sha256'],frame['lr']['sha256']);self.assertEqual(identity['hr_raw_sha256'],frame['hr']['sha256']);self.assertEqual(identity['lr_origin'],[0,0]);self.assertEqual(identity['hr_origin'],[0,0]);self.assertEqual(model['input_sample_float32_sha256'],sample_sha)
 if __name__=='__main__':unittest.main(verbosity=2)
