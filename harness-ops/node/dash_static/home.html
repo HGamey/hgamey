@@ -21,7 +21,7 @@
   </div>
   <div class="top-right">
     <span id="live" class="live"><i></i><span id="live-text">连接中</span></span>
-    <button id="steer-btn" class="btn sm" type="button">掌舵：未解锁</button>
+    <button id="steer-btn" class="btn sm" type="button">人工干预：未解锁</button>
     <button id="new-btn" class="btn primary" type="button">＋ 新目标</button>
     <form method="post" action="/dash/logout"><button class="ghost" title="退出">退出</button></form>
   </div>
@@ -59,14 +59,14 @@
 
     <div class="col">
       <section class="card steer o-steer" aria-labelledby="h-steer">
-        <h2 id="h-steer">掌舵</h2>
+        <h2 id="h-steer">人工干预</h2>
         <p class="lead">想改方向就在这里写一句话，下一代开始前生效。</p>
         <div class="chips" role="group" aria-label="常用指令">
           <button class="chip-btn" type="button" data-ins="暂停">暂停</button>
           <button class="chip-btn" type="button" data-ins="预算 +30 分钟">预算 +30 分钟</button>
           <button class="chip-btn" type="button" data-ins="不要动 cpu">不要动 CPU</button>
         </div>
-        <div id="steer-lock" class="lockline" hidden><span>写指令、停止、起新目标要先输入掌舵密码</span><button class="btn sm" type="button" data-act="unlock">解锁</button></div>
+        <div id="steer-lock" class="lockline" hidden><span>写指令、停止、起新目标要先输入操作密码</span><button class="btn sm" type="button" data-act="unlock">解锁</button></div>
         <textarea id="human" spellcheck="false" placeholder="比如：先只试系统设置，别动画面" aria-label="给 harness 的指令（human.md）"></textarea>
         <div class="row-btns">
           <button id="save-human" class="btn primary" type="button">保存指令</button>
@@ -102,9 +102,9 @@
 
 <dialog id="dlg-unlock" class="dlg">
   <form id="f-unlock">
-    <h3>输入掌舵密码</h3>
-    <p class="note2">查看密码只能看。写指令、停止、起新目标需要掌舵密码。每次修改都会记下时间和来源 IP。</p>
-    <input type="password" id="steer-pw" placeholder="掌舵密码" autocomplete="current-password" required>
+    <h3>输入操作密码</h3>
+    <p class="note2">查看密码只能看。写指令、停止、起新目标需要操作密码。每次修改都会记下时间和来源 IP。</p>
+    <input type="password" id="steer-pw" placeholder="操作密码" autocomplete="current-password" required>
     <div class="row-btns"><button class="btn primary" type="submit">解锁</button><button class="btn" type="button" data-close>取消</button><span id="unlock-msg" class="msg err"></span></div>
   </form>
 </dialog>

@@ -1,4 +1,4 @@
-// HGamey 实时看板首页：「现在」一行 + 手机 + 目标 + 发生了什么 + 掌舵。纯静态，轮询节点上的 JSON 接口。
+// HGamey 实时看板首页：「现在」一行 + 手机 + 目标 + 发生了什么 + 人工干预。纯静态，轮询节点上的 JSON 接口。
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
@@ -135,8 +135,8 @@
 
   function renderSteerBtn(h) {
     const b = $("steer-btn");
-    b.textContent = h.steer ? "掌舵：已解锁" : "掌舵：未解锁";
-    b.title = h.steer ? "点一下重新上锁" : "输入掌舵密码";
+    b.textContent = h.steer ? "人工干预：已解锁" : "人工干预：未解锁";
+    b.title = h.steer ? "点一下重新上锁" : "输入操作密码";
     $("steer-lock").hidden = !!h.steer;
   }
 
@@ -198,7 +198,7 @@
       if (r.demo) { now = `（示例）${name}，第 ${gen} 代正在测「${esc(shortWhy(cands.find((c) => c.measuring) || cands[cands.length - 1]))}」。`; next = "这是示例数据，等真正的目标跑起来后这里会换成实时情况。"; }
       else if (r.status === "drafting") { now = `正在起草「${esc(I.gname)}」的目标。`; next = "草稿出来后点「查看草稿并开跑」，看一眼、改一改、确认。"; }
       else if (r.status === "awaiting_confirm") { now = `${esc(name)}的草稿等你确认。`; next = "点目标卡上的「查看草稿并开跑」，确认后 harness 去排队拿手机。"; }
-      else if (r.status === "paused") { now = `${esc(name)}已暂停，手机已经让出来了。`; next = "在「掌舵」里改一句指令（比如删掉「暂停」）就会继续。"; }
+      else if (r.status === "paused") { now = `${esc(name)}已暂停，手机已经让出来了。`; next = "在「人工干预」里改一句指令（比如删掉「暂停」）就会继续。"; }
       else if (r.status === "done" || r.status === "failed") {
         now = `没有目标在跑。上一个${esc(name)}${r.status === "failed" ? "出错停了" : "已经结束"}：${esc(STOP[st.stop_reason] || st.stop_reason || "")}。`;
         next = r.report_md ? "总报告在页面下方「总报告」里；也可以点「＋ 新目标」再来一个。" : "可以点「＋ 新目标」再来一个。";
@@ -247,7 +247,7 @@
     const dir = I.lower ? "降" : "提高";
     const dots = maxGen ? Array.from({ length: maxGen }, (_, i) => `<i class="${i + 1 < gen ? "done" : i + 1 === gen ? (r.status === "running" ? "cur" : "done") : ""}"></i>`).join("") : "";
     const bestCand = best ? candidates(r.events).find((c) => c.id === best.candidate) : null;
-    const why = r.status === "paused" ? `已暂停：手机已经让出，在「掌舵」里改一句指令就会继续。`
+    const why = r.status === "paused" ? `已暂停：手机已经让出，在「人工干预」里改一句指令就会继续。`
       : st.stop_reason ? `停下原因：${STOP[st.stop_reason] || st.stop_reason}${st.no_gain_streak ? `（连续 ${st.no_gain_streak} 代没有收益）` : ""}。` : "";
     const barText = r.status === "awaiting_confirm" || r.status === "drafting" ? "草稿等你确认后开跑"
       : improve == null ? `目标${dir} ${I.target ?? "?"}%，还没有有效的方案` : `目标${dir} ${I.target ?? "?"}%，目前最好${improve >= 0 ? dir : "反而变差"} ${Math.abs(improve).toFixed(1)}%`;
@@ -370,7 +370,7 @@
     $("tl").innerHTML = html;
   }
 
-  // ───────── 掌舵 ─────────
+  // ───────── 人工干预 ─────────
   const editable = (r) => r && ["running", "paused", "awaiting_confirm", "drafting"].includes(r.status);
   function renderSteer(r) {
     const ta = $("human");
@@ -480,7 +480,7 @@
     $("goalmd-edit").value = md;
     const byTpl = (r.events || []).some((e) => e.type === "note" && e.stage === "draft" && e.by === "template") || mode === "template";
     $("draft-note").textContent = (byTpl ? "这份草稿是模板填的（大模型没起草成功），请重点检查主指标和目标幅度。" : "这是 harness 根据你的话让大模型起草的。")
-      + "可以直接改：主要看哪个数、想改善多少、时间预算、每代试几个方案、允许哪几类改动、哪些设置不许碰。点「确认并开始」后 goal.md 就冻结，运行中想调整请改「掌舵」里的指令。";
+      + "可以直接改：主要看哪个数、想改善多少、时间预算、每代试几个方案、允许哪几类改动、哪些设置不许碰。点「确认并开始」后 goal.md 就冻结，运行中想调整请改「人工干预」里的指令。";
     $("confirm-msg").textContent = "";
     openNew(2);
   }
