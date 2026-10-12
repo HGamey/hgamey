@@ -17,6 +17,7 @@
 //! `--plan` 在"开路"之后就停: 打印计划、写 caps.json 与 report.json, 不碰设备。
 
 pub mod caps;
+pub mod children;
 pub mod compare;
 pub mod dispatch;
 pub mod eval;

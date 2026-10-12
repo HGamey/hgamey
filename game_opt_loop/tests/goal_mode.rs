@@ -243,9 +243,9 @@ fn a_human_stop_before_the_first_generation_stops_without_touching_the_device() 
 /// 网页的「停止」= 向 goal run 进程发 SIGINT: 当前这一代中断, 正在上机的 phonefarm 子进程
 /// 同组收到 SIGINT 走还原 (这里用标记文件代替), 写 stop 事件, 状态 done / human_stop。
 #[cfg(unix)]
-#[test]
-fn sigint_stops_the_current_generation_and_reaches_the_child() {
-    let root = scaffold("sigint", false);
+fn sigint_case(tag: &str, to_group: bool) {
+    use std::os::unix::process::CommandExt;
+    let root = scaffold(tag, false);
     let mark = root.join("child_got_sigint");
     // eval 慢一点, 并在收到 SIGINT 时留下标记 (真 phonefarm 在这里走还原)
     let bin = root.join("phonefarm/phonefarm");
@@ -277,6 +277,8 @@ fn sigint_stops_the_current_generation_and_reaches_the_child() {
         .arg("--no-devlock")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        // 节点那样: 每个任务自己一个进程组, 停任务时对整组发信号
+        .process_group(0)
         .spawn()
         .unwrap();
     // 等到第一个候选上机 (measure 事件出现)
@@ -291,8 +293,9 @@ fn sigint_stops_the_current_generation_and_reaches_the_child() {
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
     let t1 = std::time::Instant::now();
+    let target = if to_group { -(child.id() as i32) } else { child.id() as i32 };
     unsafe {
-        libc::kill(child.id() as i32, libc::SIGINT);
+        libc::kill(target, libc::SIGINT);
     }
     let status = child.wait().unwrap();
     assert!(t1.elapsed().as_secs() < 10, "叫停之后应该很快退出 (正在上机的 eval 要睡 20 秒)");
@@ -343,4 +346,18 @@ fn proposer_cloud_runs_through_the_external_adapter() {
     assert!(events(&dir).iter().any(|e| e["type"] == "propose" && e["gen"] == 1));
     check_contracts(&dir);
     std::fs::remove_dir_all(&root).ok();
+}
+
+/// 网页只给 goal run 本身发 SIGINT: 由它转给正在上机的 phonefarm。
+#[cfg(unix)]
+#[test]
+fn sigint_to_the_process_stops_the_generation_and_reaches_the_child() {
+    sigint_case("sigint_pid", false);
+}
+
+/// 节点停任务是对整个进程组发 INT: goal run 不另开进程组/会话, 子进程一起收到。
+#[cfg(unix)]
+#[test]
+fn sigint_to_the_process_group_also_works() {
+    sigint_case("sigint_grp", true);
 }

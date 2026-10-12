@@ -5,7 +5,7 @@
       "enabled": true,
       "node": "/sys/class/qcom-battery/charging_enabled"
     },
-    "cool_c": 42.3,
+    "cool_c": 48.0,
     "fan": "unknown",
     "require_discharging": true,
     "require_root": true,
@@ -37,7 +37,7 @@
   },
   "protocol": {
     "alternating": true,
-    "cool_c": 42.3,
+    "cool_c": 48.0,
     "metrics": [
       {
         "better": "lower",

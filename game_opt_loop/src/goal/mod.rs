@@ -230,21 +230,15 @@ fn strip_fence(raw: &str) -> String {
 
 // ───────────────────────────── 运行 ─────────────────────────────
 
-/// SIGINT / SIGTERM: 置叫停标志, 并把信号转给本进程组 (正在跑的 phonefarm 子进程收到后
-/// 自己走还原流程)。只有 `goal run` 命令行入口调它; 调之前先 [`own_process_group`],
-/// 免得把信号转到节点服务头上。
+/// SIGINT / SIGTERM: 置叫停标志, 并把 SIGINT 转给登记着的 phonefarm 子进程 (它们收到后
+/// 自己走还原流程)。进程组不动 —— 节点按进程组逐级发 INT/TERM/KILL 停任务, 另开进程组
+/// 会让那一下漏掉 goal run 和它的子进程。只有 `goal run` 命令行入口调它。
 #[cfg(unix)]
 pub fn install_signal_handlers() {
     extern "C" fn on_signal(_sig: libc::c_int) {
         if !optimize::interrupted() {
             optimize::interrupt();
-            // 转给整个进程组 (含自己; 再进来时标志已置, 直接返回)。只在自己是组长时转:
-            // 否则同组里可能有节点服务, 不能误伤。
-            if OWN_GROUP.load(std::sync::atomic::Ordering::SeqCst) {
-                unsafe {
-                    libc::kill(0, libc::SIGINT);
-                }
-            }
+            optimize::children::signal_all(libc::SIGINT);
         }
     }
     unsafe {
@@ -252,16 +246,6 @@ pub fn install_signal_handlers() {
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
     }
 }
-
-/// 自己当进程组组长: 之后转发的 SIGINT 只落在 goal run 和它起的子进程上。
-#[cfg(unix)]
-pub fn own_process_group() {
-    let ok = unsafe { libc::setpgid(0, 0) == 0 || libc::getpgrp() == libc::getpid() };
-    OWN_GROUP.store(ok, std::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(unix)]
-static OWN_GROUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `goal run` 的运行参数 (与目标无关的、环境里的东西)。
 pub struct RunOpts<'a> {
