@@ -122,6 +122,7 @@ src=$1
 for f in dash.pass steer.pass; do
   [ -f "$src/secrets/$f" ] || continue
   mkdir -p "$HOME/.config/hgamey" && install -m 600 "$src/secrets/$f" "$HOME/.config/hgamey/$f"
+  rm -f "$src/secrets/$f"   # 上传目录在 _jobs/<id>/in 下，不留副本
   echo "updated ~/.config/hgamey/$f"
 done
 for d in phonefarm game_opt_loop harness-ops; do
