@@ -14,6 +14,10 @@
 #   update_node.sh <上传目录>
 #       旧方式：上传目录里的 phonefarm/、game_opt_loop/、harness-ops/ 逐个 rsync 到 ~/node/ 下同名目录。
 set -eu
+# 同一时间只允许一个部署（两个 agent 同时部署会互相覆盖 .new 文件）
+LOCKD=$HOME/node/.deploy.lock
+for i in {1..60}; do mkdir $LOCKD 2>/dev/null && break; [[ $i == 60 ]] && { echo "另一个部署 10 分钟没结束，放弃"; exit 4; }; echo "等另一个部署结束…"; sleep 10; done
+trap 'rmdir $LOCKD 2>/dev/null' EXIT
 export PATH=/opt/homebrew/bin:$HOME/.cargo/bin:$PATH
 typeset -A REPO=(
   phonefarm     git@github.com:BH3GEI/phonefarm.git
@@ -118,6 +122,13 @@ if [[ ${1:-} == --git ]]; then
 fi
 
 src=$1
+# 作战室的两个密码（查看 dash.pass / 掌舵 steer.pass）：上传目录里有 secrets/ 就装到 ~/.config/hgamey/（600）
+for f in dash.pass steer.pass; do
+  [ -f "$src/secrets/$f" ] || continue
+  mkdir -p "$HOME/.config/hgamey" && install -m 600 "$src/secrets/$f" "$HOME/.config/hgamey/$f"
+  rm -f "$src/secrets/$f"   # 上传目录在 _jobs/<id>/in 下，不留副本
+  echo "updated ~/.config/hgamey/$f"
+done
 for d in phonefarm game_opt_loop harness-ops; do
   [ -d "$src/$d" ] || continue
   rsync -a "$src/$d/" "$HOME/node/$d/"

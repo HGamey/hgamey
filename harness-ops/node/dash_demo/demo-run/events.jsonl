@@ -1,0 +1,19 @@
+{"t": "2026-10-12T09:00:05+0800", "type": "start", "gen": 0, "summary": "原神跑图整机功耗降 5%，帧率和画面不变差", "device": "91253241019A"}
+{"t": "2026-10-12T09:01:40+0800", "type": "plan", "gen": 0, "text": "先跑系统参数（每个候选约 14 分钟），再跑画面改写；预算 180 分钟够 6 代", "layers": ["sysparam", "gray"]}
+{"t": "2026-10-12T09:02:10+0800", "type": "propose", "gen": 1, "candidate_id": "sys_g1c1", "layer": "sysparam", "changes": {"bus.DDR.boost_freq": "1555000"}, "why": "访存下限抬一档，看帧时抖动是不是被带宽卡住"}
+{"t": "2026-10-12T09:02:11+0800", "type": "propose", "gen": 1, "candidate_id": "sys_g1c2", "layer": "sysparam", "changes": {"gpu.max_pwrlevel": "2"}, "why": "GPU 最高档压一档，原神 60 帧下可能用不满"}
+{"t": "2026-10-12T09:02:30+0800", "type": "gate", "gen": 1, "candidate_id": "sys_g1c1", "score": 0.64, "decision": "pass"}
+{"t": "2026-10-12T09:09:00+0800", "type": "measure", "gen": 1, "candidate_id": "sys_g1c1", "arms_done": 10, "arms_planned": 10}
+{"t": "2026-10-12T09:15:02+0800", "type": "steer", "gen": 1, "human_md_rev": 1, "text": "先别动 GPU 最高档（之前试过会掉帧）。", "interpreted": "forbid 加上 gpu.max_pwrlevel；sys_g1c2 撤下不测"}
+{"t": "2026-10-12T09:16:40+0800", "type": "verdict", "gen": 1, "candidate_id": "sys_g1c1", "verdict": "REJECT", "metrics": {"power_watt": {"delta_pct": 1.8, "p": 0.21}, "fps_mean": {"delta_pct": 0.1, "p": 0.7}}, "reason": "没有任何指标显著改善"}
+{"t": "2026-10-12T09:17:00+0800", "type": "note", "gen": 1, "text": "sys_g1c2 动的是 gpu.max_pwrlevel，按你的指令撤下，不上机"}
+{"t": "2026-10-12T09:18:10+0800", "type": "propose", "gen": 2, "candidate_id": "sys_g2c1", "layer": "sysparam", "changes": {"cpu.policy7.scaling_max_freq": "2611200"}, "why": "大核封顶降一档：原神主线程用不满最高频，省下的是升压的那段功耗"}
+{"t": "2026-10-12T09:18:11+0800", "type": "propose", "gen": 2, "candidate_id": "sys_g2c2", "layer": "sysparam", "changes": {"cpu.policy0.scaling_governor": "powersave"}, "why": "小核换省电调度"}
+{"t": "2026-10-12T09:33:20+0800", "type": "verdict", "gen": 2, "candidate_id": "sys_g2c1", "verdict": "PASS", "metrics": {"power_watt": {"delta_pct": -3.1, "p": 0.008}, "fps_mean": {"delta_pct": -0.2, "p": 0.55}, "frame_p95": {"delta_pct": 0.6, "p": 0.42}}, "image_psnr": null, "contested_arms": 0}
+{"t": "2026-10-12T09:33:21+0800", "type": "keep", "gen": 2, "candidate_id": "sys_g2c1"}
+{"t": "2026-10-12T09:48:05+0800", "type": "verdict", "gen": 2, "candidate_id": "sys_g2c2", "verdict": "REJECT", "metrics": {"power_watt": {"delta_pct": -0.9, "p": 0.31}, "frame_p95": {"delta_pct": 4.2, "p": 0.016}}, "reason": "存在显著退化: frame_p95"}
+{"t": "2026-10-12T10:08:50+0800", "type": "steer", "gen": 3, "human_md_rev": 2, "text": "DDR 那几组已经看清楚了，把预算多留给画面那一层（gray）。", "interpreted": "本代起 sysparam 只再试 1 个，其余名额给 gray"}
+{"t": "2026-10-12T10:09:30+0800", "type": "propose", "gen": 3, "candidate_id": "gray_g3c1", "layer": "gray", "changes": ["skip_redundant_clear[main_pass]"], "why": "主画面每帧多清了一次已被完全覆盖的颜色缓冲，去掉它省带宽"}
+{"t": "2026-10-12T10:09:31+0800", "type": "propose", "gen": 3, "candidate_id": "sys_g3c1", "layer": "sysparam", "changes": {"cpu.policy7.scaling_max_freq": "2611200", "bus.LLCC.boost_freq": "533000"}, "why": "在已保留的大核封顶上再叠缓存下限"}
+{"t": "2026-10-12T10:10:00+0800", "type": "gate", "gen": 3, "candidate_id": "gray_g3c1", "score": 0.72, "decision": "pass"}
+{"t": "2026-10-12T10:14:20+0800", "type": "measure", "gen": 3, "candidate_id": "gray_g3c1", "arms_done": 4, "arms_planned": 10}
