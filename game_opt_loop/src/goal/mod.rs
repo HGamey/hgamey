@@ -379,6 +379,8 @@ pub struct RunOpts<'a> {
     pub poll: Duration,
     /// 测试用: 每代开始前回调 (代数)。
     pub before_generation: Option<&'a dyn Fn(u32)>,
+    /// true = 断点续跑: 状态 running/paused、跑到一半进程死了，从最后完成的一代之后接着跑。
+    pub resume: bool,
 }
 
 /// 云端出方案单代超时: Actions 排队 + 装 pi + Kimi, 实测一次约 1.5 分钟, 留足余量。
@@ -540,37 +542,77 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             no_gain_streak: 0,
         },
     };
-    match st.status.as_str() {
-        "awaiting_confirm" | "drafting" => {}
+    // resume=false 时：同以前，只有「确认后一代没跑」才能再启动。
+    // resume=true（goal resume）：跑到一半进程死了（宕机/被杀），从最后完成的一代之后接着跑。
+    let resuming = match st.status.as_str() {
+        "awaiting_confirm" | "drafting" => false,
         // 冻结了、但一代都还没开始 (例如排队等锁时被杀掉): 可以接着跑, 前提是 goal.md 没被改过
         "running" | "paused" if st.generation == 0 && st.goal_sha256.as_deref() == Some(sha.as_str()) => {
             rd.event(0, "note", json!({"message": "接着跑: 上次确认目标后还没开始第一代就停了"}));
+            false
+        }
+        "running" | "paused" if st.goal_sha256.as_deref() == Some(sha.as_str()) => {
+            if !opts.resume {
+                bail!(
+                    "这次目标运行已跑到第 {} 代、状态 {} 但进程已不在。\n  进程确实死了要接着跑: game_opt_loop goal resume {};\n  记错了、想让它彻底收场: game_opt_loop goal cancel {}",
+                    st.generation,
+                    st.status,
+                    rd.dir.display(),
+                    rd.dir.display()
+                );
+            }
+            true
         }
         s => bail!(
             "这次目标运行的状态是 {s} (已跑到第 {} 代), 不能再启动; 要重跑请新建一个 run 目录, \
              卡住的运行用 `goal cancel` 收尾",
             st.generation
         ),
-    }
+    };
     // 云端出方案: 先确认这台机器上起得来, 别冻结了目标才发现第一代就出不了方案。
     let proposer_spec = proposer_spec_for(&spec.proposer)?;
 
-    // ── 冻结 ──
-    std::fs::write(rd.path("goal.frozen.md"), &goal_text)?;
-    let sysparam_probe = keep_input(&rd, opts.sysparam_probe.as_ref(), "probe.txt");
-    let frame_audit = keep_input(&rd, opts.frame_audit.as_ref(), "frame_audit.json");
-    st.goal_sha256 = Some(sha.clone());
-    st.status = "running".into();
-    st.goal_summary = spec.summary();
-    st.max_generations = spec.budget.max_generations;
-    st.budget_min = spec.budget.wall_minutes as f64;
-    st.device = (spec.device != "any").then(|| spec.device.clone());
-    rd.write_state(&mut st)?;
-    rd.event(0, "start", json!({"goal_summary": st.goal_summary, "goal_sha256": sha,
-        "layers": spec.layers, "objective": spec.objective, "budget": spec.budget}));
-    if spec.layers.iter().any(|l| l == "upop") {
-        rd.event(0, "note", json!({"message": "「加画面算子」这一层还不能自动跑, 这次跳过"}));
-    }
+    // ── 冻结（断点续跑时跳过：已冻结过，goal.md 未改已在上面核过）──
+    let (sysparam_probe, frame_audit, mut per_gen, elapsed0, start_gen) = if resuming {
+        // 重建已完成代数：gen{g}/report.json 能结算的才算完成；中途死掉的那代重跑。
+        let mut per_gen: Vec<(u32, GenResult)> = Vec::new();
+        let mut completed = 0u32;
+        for g in 1..=st.generation {
+            let rp = rd.path("optimize").join(format!("gen{g}")).join("report.json");
+            match settle(&rp, spec) {
+                Ok(gr) => {
+                    per_gen.push((g, gr));
+                    completed = g;
+                }
+                Err(_) => break,
+            }
+        }
+        let elapsed0 = st.elapsed_min;
+        st.generation = completed;
+        st.status = "running".into();
+        rd.write_state(&mut st)?;
+        rd.event(completed, "note", json!({"message": format!(
+            "断点续跑: 前 {completed} 代已完成并保留, 从第 {} 代继续; 已花的 {} 分钟照算, 宕机那段时间不计时",
+            completed + 1, elapsed0.round())}));
+        (opts.sysparam_probe.clone(), opts.frame_audit.clone(), per_gen, elapsed0, completed)
+    } else {
+        std::fs::write(rd.path("goal.frozen.md"), &goal_text)?;
+        let sysparam_probe = keep_input(&rd, opts.sysparam_probe.as_ref(), "probe.txt");
+        let frame_audit = keep_input(&rd, opts.frame_audit.as_ref(), "frame_audit.json");
+        st.goal_sha256 = Some(sha.clone());
+        st.status = "running".into();
+        st.goal_summary = spec.summary();
+        st.max_generations = spec.budget.max_generations;
+        st.budget_min = spec.budget.wall_minutes as f64;
+        st.device = (spec.device != "any").then(|| spec.device.clone());
+        rd.write_state(&mut st)?;
+        rd.event(0, "start", json!({"goal_summary": st.goal_summary, "goal_sha256": sha,
+            "layers": spec.layers, "objective": spec.objective, "budget": spec.budget}));
+        if spec.layers.iter().any(|l| l == "upop") {
+            rd.event(0, "note", json!({"message": "「加画面算子」这一层还不能自动跑, 这次跳过"}));
+        }
+        (sysparam_probe, frame_audit, Vec::new(), 0.0, 0)
+    };
 
     let label = format!("goal-{}", rd.run_id());
     let mut guard = match &opts.lock {
@@ -595,14 +637,38 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     };
 
     let t0 = Instant::now();
-    let mut last_human: Option<String> = None;
-    let mut steer = human::Steer::default();
+    // 断点续跑: human.md 当前内容直接生效，不重复记 steer 事件、不涨 rev
+    let cur_human = std::fs::read_to_string(rd.path("human.md")).unwrap_or_default();
+    let (mut last_human, mut steer) = if resuming {
+        // 断点续跑: human.md 当前内容直接生效，不重复记 steer 事件、不涨 rev
+        (Some(cur_human.clone()), human::parse(&cur_human))
+    } else if human::parse(&cur_human) == human::Steer::default() {
+        // 空文件或 draft 带的注释模板：不算指令，不配 steer 事件、不涨 rev
+        (Some(cur_human), human::Steer::default())
+    } else {
+        (None, human::Steer::default())
+    };
     let mut history: Vec<optimize::proposer::HistoryItem> = archive_seed(&rd, &spec.game);
     if !history.is_empty() {
         rd.event(0, "note", json!({"message": format!("带档案 {} 条结论出题（含过往运行的已测候选，避免重测）", history.len())}));
     }
-    let mut per_gen: Vec<(u32, GenResult)> = Vec::new();
-    let mut steer_log: Vec<(u32, u32, String, String)> = Vec::new();
+    let mut steer_log: Vec<(u32, u32, String, String)> = if resuming {
+        // 从 events.jsonl 重建掌舵记录（最终报告用）
+        std::fs::read_to_string(rd.path("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|e| e["type"] == "steer")
+            .map(|e| {
+                (e["gen"].as_u64().unwrap_or(0) as u32,
+                 e["human_md_rev"].as_u64().unwrap_or(0) as u32,
+                 e["text"].as_str().unwrap_or_default().to_string(),
+                 e["interpreted"].as_str().unwrap_or_default().to_string())
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut errors_in_a_row = 0u32;
     let no_gain_limit = spec.no_gain();
     let stop_on_target = spec.stops_on("target_reached") || spec.stop_when.is_empty();
@@ -615,7 +681,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
         Ok(())
     };
 
-    let mut gen = 0u32;
+    let mut gen = start_gen;
     loop {
         // ── 掌舵: 每代开始前读 human.md ──
         if let Some(cb) = opts.before_generation {
@@ -634,7 +700,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 rd.write_state(&mut st)?;
             }
         }
-        st.elapsed_min = t0.elapsed().as_secs_f64() / 60.0;
+        st.elapsed_min = elapsed0 + t0.elapsed().as_secs_f64() / 60.0;
         st.budget_min = (spec.budget.wall_minutes as i64 + steer.budget_add_min).max(0) as f64;
 
         if optimize::interrupted() {
@@ -805,7 +871,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             .as_ref()
             .map(|b| (b.delta_pct.abs() / spec.objective.target_pct).min(1.0))
             .unwrap_or(0.0);
-        st.elapsed_min = t0.elapsed().as_secs_f64() / 60.0;
+        st.elapsed_min = elapsed0 + t0.elapsed().as_secs_f64() / 60.0;
         rd.write_state(&mut st)?;
         per_gen.push((gen, g));
 
