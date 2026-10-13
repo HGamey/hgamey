@@ -10,3 +10,4 @@ runs/
 # 上面那几条忽略规则不该把它们一起吃掉。
 !tests/fixtures/
 !tests/fixtures/**
+eval_evidence/
