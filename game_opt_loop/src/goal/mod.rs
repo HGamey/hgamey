@@ -105,6 +105,57 @@ impl RunDir {
     }
 }
 
+/// 跨运行的档案：run 目录的上一级放一份 `archive.jsonl`，每个测过的候选一条
+/// （含迁移/重建前的旧目录的结论）。出题的一方经 `prior_history` 读到——
+/// 不再每次宕机迁移后就失忆、重测已证无效的候选。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArchiveEntry {
+    ts: String,
+    run_id: String,
+    game: String,
+    item: optimize::proposer::HistoryItem,
+}
+
+fn archive_file(rd: &RunDir) -> PathBuf {
+    rd.dir
+        .parent()
+        .map(|p| p.join("archive.jsonl"))
+        .unwrap_or_else(|| rd.path("archive.jsonl"))
+}
+
+/// 读档案里同一个游戏的全部结论（坏行跳过，一行坏不拖整场）。
+fn archive_seed(rd: &RunDir, game: &str) -> Vec<optimize::proposer::HistoryItem> {
+    let Ok(text) = std::fs::read_to_string(archive_file(rd)) else { return Vec::new() };
+    text.lines()
+        .filter_map(|l| serde_json::from_str::<ArchiveEntry>(l).ok())
+        .filter(|e| e.game == game)
+        .map(|e| e.item)
+        .collect()
+}
+
+/// 这一代测过的结论追加进档案。
+fn archive_append(rd: &RunDir, game: &str, items: &[optimize::proposer::HistoryItem]) {
+    if items.is_empty() {
+        return;
+    }
+    let ts = chrono::Local::now().to_rfc3339();
+    let mut out = String::new();
+    for item in items {
+        let e = ArchiveEntry { ts: ts.clone(), run_id: rd.run_id(), game: game.into(), item: item.clone() };
+        if let Ok(l) = serde_json::to_string(&e) {
+            out.push_str(&l);
+            out.push('\n');
+        }
+    }
+    if !out.is_empty() {
+        let p = archive_file(rd);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+            use std::io::Write;
+            let _ = f.write_all(out.as_bytes());
+        }
+    }
+}
+
 fn hooks_for(rd: &RunDir) -> optimize::GoalHooks {
     optimize::GoalHooks {
         events: Some(rd.path("events.jsonl")),
@@ -546,7 +597,10 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     let t0 = Instant::now();
     let mut last_human: Option<String> = None;
     let mut steer = human::Steer::default();
-    let mut history: Vec<optimize::proposer::HistoryItem> = Vec::new();
+    let mut history: Vec<optimize::proposer::HistoryItem> = archive_seed(&rd, &spec.game);
+    if !history.is_empty() {
+        rd.event(0, "note", json!({"message": format!("带档案 {} 条结论出题（含过往运行的已测候选，避免重测）", history.len())}));
+    }
     let mut per_gen: Vec<(u32, GenResult)> = Vec::new();
     let mut steer_log: Vec<(u32, u32, String, String)> = Vec::new();
     let mut errors_in_a_row = 0u32;
@@ -723,6 +777,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             }
         };
         errors_in_a_row = 0;
+        archive_append(&rd, &spec.game, &outcome.history);
         history.extend(outcome.history.iter().cloned());
         let g = settle(Path::new(&outcome.report_json), spec)?;
 
@@ -873,5 +928,38 @@ mod tests {
         s.layers = vec!["sysparam".into(), "gray".into(), "upop".into()];
         assert_eq!(layers_effective(&s, &None), vec!["sysparam", "gray"]);
         assert_eq!(layers_effective(&s, &Some(vec!["gray".into()])), vec!["gray"]);
+    }
+
+    #[test]
+    fn archive_roundtrip_filters_game_and_tolerates_bad_lines() {
+        let tmp = std::env::temp_dir().join(format!("gol-archive-test-{}", std::process::id()));
+        let rd = RunDir::new(tmp.join("run-a"));
+        std::fs::create_dir_all(&rd.dir).unwrap();
+        let item = |id: &str| optimize::proposer::HistoryItem {
+            candidate_id: id.into(),
+            generation: 1,
+            candidate: optimize::proposer::Candidate::sysparam("t", Default::default()),
+            status: "PASS".into(),
+            measurement_valid: true,
+            kept: false,
+            reason: None,
+            p_value: 1.0,
+            per_metric: Default::default(),
+            summary: vec![],
+        };
+        archive_append(&rd, "com.a.game", &[item("a1"), item("a2")]);
+        archive_append(&rd, "com.b.game", &[item("b1")]);
+        // 塞一行坏数据：不能拖垮读取
+        let p = archive_file(&rd);
+        let mut c = std::fs::read_to_string(&p).unwrap();
+        c.push_str("{not json}\n");
+        std::fs::write(&p, c).unwrap();
+        // 相邻的另一个 run 目录（模拟宕机迁移后的新目录）读到同一份档案
+        let rd2 = RunDir::new(tmp.join("run-b"));
+        let seed = archive_seed(&rd2, "com.a.game");
+        assert_eq!(seed.len(), 2);
+        assert_eq!(seed[0].candidate_id, "a1");
+        assert!(archive_seed(&rd2, "com.c.game").is_empty());
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
