@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""pf-fleet：跨节点调度层 —— 在多台手机节点之间看全貌、派任务。
+
+  pf-fleet nodes                          # 列出注册表里的节点
+  pf-fleet status [--json]                # 并行问所有节点：在线？锁谁持有？手机清单（fleet 只读快照）
+  pf-fleet run --node mini1 -- <pf-node 参数…>        # 派到指定节点
+  pf-fleet run --tag nx809j -- <…>                    # 派到第一台「在线、锁空闲、带这个标签」的节点
+  pf-fleet run --any-free -- <…>                      # 派到第一台「在线、锁空闲」的节点
+
+设计纪律：
+- 本层只做「去哪台」，不做第二把锁。拿到任务后的排队/互斥仍然只有节点上的 devlock 一份语义。
+- 节点故障（宕机/530）是常态：status 对每个节点有界超时（PF_FLEET_TIMEOUT 秒，缺省 12），
+  连不上记 "ok": false 继续看下一台，绝不让一台死节点拖住整场。
+- run 不自己实现传输/任务协议：选好节点后置 PF_NODE_URL / PF_NODE_TOKEN_FILE，exec 同目录的 pf-node。
+
+注册表（JSON）：环境变量 PF_FLEET_REGISTRY，缺省从本脚本所在目录逐级往上找 .hgamey/nodes.json：
+{
+  "nodes": [
+    {"name": "mini1", "url": "https://phone.liyao.space",
+     "token_file": ".hgamey/node.token",          # 相对注册表所在目录；也可给绝对路径
+     "tags": ["nx809j", "redmagic", "android", "root", "megacity", "genshin"],
+     "note": "Mac mini 1，红魔 NX809J"}
+  ]
+}
+"""
+import json, os, subprocess, sys, threading, time
+import urllib.request, urllib.error
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def _registry_path():
+    if os.environ.get("PF_FLEET_REGISTRY"):
+        return os.environ["PF_FLEET_REGISTRY"]
+    d = HERE
+    while True:
+        p = os.path.join(d, ".hgamey", "nodes.json")
+        if os.path.isfile(p):
+            return p
+        parent = os.path.dirname(d)
+        if parent == d:
+            sys.exit("pf-fleet: 找不到节点注册表（PF_FLEET_REGISTRY / 上级目录里的 .hgamey/nodes.json）")
+        d = parent
+
+
+def load_registry():
+    p = _registry_path()
+    reg = json.load(open(p))
+    base = os.path.dirname(p)
+    for n in reg.get("nodes", []):
+        tf = n.get("token_file", "")
+        if tf and not os.path.isabs(tf):
+            n["token_file"] = os.path.normpath(os.path.join(base, tf))
+        n.setdefault("tags", [])
+    return reg.get("nodes", [])
+
+
+def _req(url, token, method, path, timeout, job_spec=None):
+    """对齐 node_service.py 的真实协议：POST /jobs（头 X-Job，body 可为空 tar）、GET /jobs/<id>、GET /jobs/<id>/log。"""
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": "pf-fleet/1"}
+    data = None
+    if job_spec is not None:
+        headers["X-Job"] = json.dumps(job_spec)
+        data = b""
+    req = urllib.request.Request(url.rstrip("/") + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read()
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return body
+
+
+def _run_job(url, token, binname, argv, timeout):
+    """在节点上跑一个短任务，收 stdout+stderr 文本；未完成返回 None。"""
+    meta = _req(url, token, "POST", "/jobs", timeout, {"bin": binname, "argv": argv})
+    jid = meta["id"]
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.6)
+        st = _req(url, token, "GET", f"/jobs/{jid}", timeout)
+        if st.get("state") == "finished":
+            out = _req(url, token, "GET", f"/jobs/{jid}/log?offset=0", timeout)
+            # _req 会顺手 json.loads：日志本身恰好是 JSON 时被解析成 dict，这里统一交回文本
+            if isinstance(out, (dict, list)):
+                return json.dumps(out, ensure_ascii=False)
+            return out.decode(errors="replace") if isinstance(out, bytes) else str(out)
+    return None
+
+
+def probe_node(node, out):
+    """有界地问一台节点：/health 活性 → devlock status → phonefarm fleet --json（锁被持有时自动降级轻量档）。"""
+    timeout = int(os.environ.get("PF_FLEET_TIMEOUT", 12))
+    res = {"name": node["name"], "url": node["url"], "tags": node["tags"], "ok": False}
+    try:
+        # /health 不需要 token，先确认活没活
+        req = urllib.request.Request(node["url"].rstrip("/") + "/health", method="GET",
+                                     headers={"User-Agent": "pf-fleet/1"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            r.read()
+        token = open(node["token_file"]).read().strip()
+        lock_txt = _run_job(node["url"], token, "devlock", ["status"], timeout)
+        res["lock"] = (lock_txt or "?").strip().splitlines()[-1] if lock_txt else "?"
+        res["lock_free"] = (lock_txt or "").strip() == "free"
+        fleet_txt = _run_job(node["url"], token, "phonefarm", ["fleet", "--json"], timeout * 2)
+        if fleet_txt:
+            i = fleet_txt.find("{")
+            if i >= 0:
+                try:
+                    fl = json.loads(fleet_txt[i:])
+                    devs = fl.get("devices") or fl.get("fleet") or []
+                    res["devices"] = [
+                        {k: d.get(k) for k in ("serial", "model", "battery", "soc_temp_c", "fan", "online") if k in d}
+                        for d in devs
+                    ]
+                except json.JSONDecodeError:
+                    res["devices_raw"] = fleet_txt[-300:]
+        res["ok"] = True
+    except Exception as e:  # 宕机/530/超时都走这里：记下原因，不拖住其他节点
+        res["error"] = f"{type(e).__name__}: {e}"[:200]
+    out.append(res)
+
+
+def cmd_nodes(nodes, _):
+    for n in nodes:
+        print(f"{n['name']:<12} {n['url']:<40} tags={','.join(n['tags'])}  {n.get('note', '')}")
+
+
+def cmd_status(nodes, argv):
+    as_json = "--json" in argv
+    out, threads = [], []
+    for n in nodes:
+        t = threading.Thread(target=probe_node, args=(n, out), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=int(os.environ.get("PF_FLEET_TIMEOUT", 12)) * 3 + 5)
+    out.sort(key=lambda r: r["name"])
+    if as_json:
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+    for r in out:
+        if not r["ok"]:
+            print(f"{r['name']:<12} ✗ 连不上（{r.get('error', '?')}）")
+            continue
+        lock = r.get("lock", "?")
+        if lock == "free":
+            locks = "空闲"
+        elif lock.startswith("held:"):
+            locks = "占用(" + lock[6:].split(" since")[0] + ")"
+        parts = []
+        for d in r.get("devices", []):
+            bat = d.get("battery") or {}
+            fan = d.get("fan") or {}
+            s = f"{d.get('model', '?')}({str(d.get('serial', '?'))[:8]})"
+            if bat.get("level_pct") is not None:
+                s += f" 电{bat['level_pct']}%"
+            if bat.get("temp_c") is not None:
+                s += f" {bat['temp_c']:.0f}°C"
+            if fan.get("supported"):
+                s += " 风扇" + ("开!" if fan.get("enabled") else "关")
+            parts.append(s)
+        dsum = "；".join(parts) or "设备清单未取到"
+        print(f"{r['name']:<12} ✓ 锁: {locks:<40} 设备: {dsum}")
+
+
+def cmd_run(nodes, argv):
+    node_name, use_tag, any_free = None, None, False
+    rest = list(argv)
+    while rest and rest[0] != "--":
+        a = rest.pop(0)
+        if a == "--node":
+            node_name = rest.pop(0)
+        elif a == "--tag":
+            use_tag = rest.pop(0)
+        elif a == "--any-free":
+            any_free = True
+        else:
+            sys.exit(f"pf-fleet run: 不认识 {a}（支持 --node/--tag/--any-free，之后用 -- 隔开 pf-node 参数）")
+    if rest and rest[0] == "--":
+        rest.pop(0)
+    if not rest:
+        sys.exit("pf-fleet run: -- 后面要给 pf-node 的参数")
+    if not (node_name or use_tag or any_free):
+        sys.exit("pf-fleet run: 要指定 --node NAME 或 --tag TAG 或 --any-free")
+
+    cands = nodes
+    if node_name:
+        cands = [n for n in nodes if n["name"] == node_name]
+        if not cands:
+            sys.exit(f"pf-fleet run: 注册表里没有节点 {node_name}")
+    if use_tag:
+        cands = [n for n in cands if use_tag in n["tags"]]
+        if not cands:
+            sys.exit(f"pf-fleet run: 没有带标签 {use_tag} 的节点")
+
+    # 逐台探测，挑第一台 在线 + 锁空闲 的（--node 精确指定时也照样核，避免把任务派进死节点）
+    probe_out, threads = [], []
+    for n in cands:
+        t = threading.Thread(target=probe_node, args=(n, probe_out), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=int(os.environ.get("PF_FLEET_TIMEOUT", 12)) * 3 + 5)
+    by_name = {r["name"]: r for r in probe_out}
+    chosen = None
+    for n in cands:  # 保持注册表顺序 = 优先级
+        r = by_name.get(n["name"])
+        if r and r.get("ok") and (r.get("lock_free") or node_name):
+            chosen = n
+            break
+    if not chosen:
+        detail = "; ".join(f"{r['name']}: {'锁占用 ' + r.get('lock', '')[:40] if r.get('ok') else '连不上'}" for r in probe_out)
+        sys.exit(f"pf-fleet run: 没有可用节点（{detail or '无候选'}）")
+
+    print(f"pf-fleet: 派到 {chosen['name']}（{chosen['url']}）", file=sys.stderr)
+    env = dict(os.environ)
+    env["PF_NODE_URL"] = chosen["url"]
+    env["PF_NODE_TOKEN_FILE"] = chosen["token_file"]
+    os.execvpe(os.path.join(HERE, "pf-node"), ["pf-node"] + rest, env)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(2)
+    cmd, argv = sys.argv[1], sys.argv[2:]
+    nodes = load_registry()
+    {"nodes": cmd_nodes, "status": cmd_status, "run": cmd_run}.get(
+        cmd, lambda *_: sys.exit(f"pf-fleet: 不认识子命令 {cmd}（nodes/status/run）")
+    )(nodes, argv)
+
+
+if __name__ == "__main__":
+    main()
