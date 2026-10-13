@@ -19,11 +19,17 @@
     {"name": "mini1", "url": "https://phone.liyao.space",
      "token_file": ".hgamey/node.token",          # 相对注册表所在目录；也可给绝对路径
      "tags": ["nx809j", "redmagic", "android", "root", "megacity", "genshin"],
+     "ssh": "macmini1",                            # 可选：migrate 用（ssh config 里的别名）
+     "goals_dir": "/Users/mac/node/goals",         # 可选：目标运行目录的父目录（migrate 用）
      "note": "Mac mini 1，红魔 NX809J"}
   ]
 }
+
+  pf-fleet migrate <run_id> --from mini1 --to mini2   # 把一次目标运行整体搬到另一台节点续跑
+      机制：经本机中继 rsync（from 必须 ssh 可达；彻底死的节点只能等它活），
+      搬完在目标节点上 goal resume（GOL#83：已完成的代保留，中途死的那代重跑）。
 """
-import json, os, subprocess, sys, threading, time
+import json, os, shutil, subprocess, sys, tempfile, threading, time
 import urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -220,14 +226,57 @@ def cmd_run(nodes, argv):
     os.execvpe(os.path.join(HERE, "pf-node"), ["pf-node"] + rest, env)
 
 
+def cmd_migrate(nodes, argv):
+    """pf-fleet migrate <run_id> --from A --to B：整体搬一次目标运行到另一台节点续跑。"""
+    run_id, src_name, dst_name = None, None, None
+    rest = list(argv)
+    while rest:
+        a = rest.pop(0)
+        if a == "--from":
+            src_name = rest.pop(0)
+        elif a == "--to":
+            dst_name = rest.pop(0)
+        elif run_id is None:
+            run_id = a
+        else:
+            sys.exit(f"pf-fleet migrate: 不认识 {a}")
+    if not (run_id and src_name and dst_name):
+        sys.exit("用法: pf-fleet migrate <run_id> --from <节点> --to <节点>")
+    by = {n["name"]: n for n in nodes}
+    src, dst = by.get(src_name), by.get(dst_name)
+    if not src or not dst:
+        sys.exit(f"pf-fleet migrate: 节点不在注册表（{src_name}/{dst_name}）")
+    for n, role in ((src, "--from"), (dst, "--to")):
+        if not n.get("ssh") or not n.get("goals_dir"):
+            sys.exit(f"pf-fleet migrate: {n['name']} 的注册表项缺 ssh/goals_dir 字段")
+    if src_name == dst_name:
+        sys.exit("pf-fleet migrate: --from 和 --to 是同一台")
+
+    staging = os.path.join(tempfile.mkdtemp(prefix="pf-fleet-migrate-"), run_id)
+    src_dir = f"{src['goals_dir'].rstrip('/')}/{run_id}"
+    dst_dir = f"{dst['goals_dir'].rstrip('/')}/{run_id}"
+    print(f"[1/3] {src_name}:{src_dir} → 本机中继", file=sys.stderr)
+    subprocess.run(["rsync", "-az", "--timeout=60", f"{src['ssh']}:{src_dir}/", staging + "/"], check=True)
+    # 状态别带跑：源上的 state 是 running 才好（进程已死前提）；done/failed 没必要搬
+    st = json.load(open(os.path.join(staging, "state.json")))
+    if st.get("status") not in ("running", "paused"):
+        sys.exit(f"这次运行状态是 {st.get('status')}（第 {st.get('generation')} 代），不是半死状态，不用搬")
+    print(f"[2/3] 本机中继 → {dst_name}:{dst_dir}", file=sys.stderr)
+    subprocess.run(["ssh", "-o", "BatchMode=yes", dst["ssh"], "mkdir", "-p", dst["goals_dir"]], check=True)
+    subprocess.run(["rsync", "-az", "--timeout=60", staging + "/", f"{dst['ssh']}:{dst_dir}/"], check=True)
+    shutil.rmtree(os.path.dirname(staging), ignore_errors=True)
+    print(f"[3/3] 在 {dst_name} 上 goal resume", file=sys.stderr)
+    cmd_run(nodes, ["--node", dst_name, "--", "game_opt_loop", "goal", "resume", dst_dir])
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
     cmd, argv = sys.argv[1], sys.argv[2:]
     nodes = load_registry()
-    {"nodes": cmd_nodes, "status": cmd_status, "run": cmd_run}.get(
-        cmd, lambda *_: sys.exit(f"pf-fleet: 不认识子命令 {cmd}（nodes/status/run）")
+    {"nodes": cmd_nodes, "status": cmd_status, "run": cmd_run, "migrate": cmd_migrate}.get(
+        cmd, lambda *_: sys.exit(f"pf-fleet: 不认识子命令 {cmd}（nodes/status/run/migrate）")
     )(nodes, argv)
 
 
