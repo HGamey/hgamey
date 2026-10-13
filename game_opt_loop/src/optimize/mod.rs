@@ -70,6 +70,8 @@ pub struct Config {
     pub proposer: proposer::Options,
     /// `phonefarm frame-audit analyze --json` 的输出: ② 层的旋钮从这里来。
     pub frame_audit: Option<PathBuf>,
+    /// 两级测量 (`--screen` / goal.md `screen: true`)：候选先 2 轮快测，明显更差直接淘汰。
+    pub screen: bool,
     /// 人工指定的计划形状 (`--layers` / `--generations` / `--children`)。
     pub shape: plan::Shape,
     /// 游戏档案库 (`<目录>/<包名>/profile.json`)。目标包名在库里有 PASS 的档案就用它的
@@ -109,6 +111,8 @@ pub struct GoalHooks {
     pub psnr_min_db: Option<f64>,
     /// 逐候选事件 (propose / measure / verdict) 追加写到这里 (events.jsonl)。
     pub events: Option<PathBuf>,
+    /// 目标模式的主指标 (名字, 方向 lower/higher) —— 两级测量的初筛淘汰规则用。
+    pub objective: Option<(String, String)>,
 }
 
 impl GoalHooks {
@@ -726,6 +730,92 @@ fn record_proposer(
 }
 
 /// ③ 系统参数层。
+/// 初筛的淘汰判定：明显更差才淘汰（宁多测，不错杀）。
+/// Some(原因) = 不进全量对照；None = 进全量（初筛没量准也不敢据此淘汰）。
+fn screened_out_reason(rep: &eval::Report, objective: Option<&(String, String)>) -> Option<String> {
+    if !rep.is_measurement_valid() {
+        return None;
+    }
+    if let Some((metric, dir)) = objective {
+        let d = rep.verdict.per_metric.as_ref()?.get(metric)?;
+        let pct = d.diff_pct?;
+        let p = d.p.unwrap_or(1.0);
+        let worse = if dir == "higher" { pct < 0.0 } else { pct > 0.0 };
+        if worse && pct.abs() >= 1.0 && p < 0.3 {
+            return Some(format!("初筛淘汰: {metric} {pct:+.1}%（变差，2 轮快测 p={p:.2}）"));
+        }
+        return None;
+    }
+    // 裸 optimize --screen（没给主指标）：快测全票否决才算差
+    if !rep.kept()
+        && !rep.verdict.is_pareto_improvement
+        && rep.verdict.p_value < 0.2
+        && rep.verdict.wins.as_ref().is_none_or(|w| w.is_empty())
+    {
+        return Some(format!("初筛淘汰: 快测 REJECT（p={:.2}，无胜项）", rep.verdict.p_value));
+    }
+    None
+}
+
+/// 两级测量的第一级：少量轮次快测，明显更差的直接淘汰（screened_out 事件 + SCREENED_OUT 历史，
+/// 让出方案的一方知道这条路被快证据否掉了），胜者才进全量对照。
+/// 初筛省钱的大头在轮数（5→2：每臂都要重启游戏+等冷），不是单臂时长。
+fn screen_sysparam(
+    ctx: &LayerCtx<'_>,
+    gen: u32,
+    accepted: &[sysparam::Proposal],
+    reqs: Vec<(usize, String, Request)>,
+    history: &mut Vec<proposer::HistoryItem>,
+) -> Vec<(usize, String, Request)> {
+    if reqs.is_empty() {
+        return reqs;
+    }
+    println!("      —— 初筛 {} 个候选（2 轮快测）——", reqs.len());
+    let screen_reqs: Vec<(usize, String, Request)> = reqs
+        .iter()
+        .map(|(i, id, r)| {
+            let mut r = r.clone();
+            r.protocol = eval::Protocol::screen_from(&r.protocol);
+            if let Some(s) = r.workload.seconds {
+                r.workload.seconds = Some((s / 2).max(10));
+            }
+            (*i, id.clone(), r)
+        })
+        .collect();
+    let (cfg, caps, driver) = (ctx.cfg, ctx.caps, ctx.driver);
+    let results = dispatch::run_on_devices(&screen_reqs, ctx.devices, |dev, _, (_, id, req)| {
+        let mut req = req.clone();
+        req.serial = Some(dev.to_string());
+        evaluate_on(cfg, caps, driver, dev, id, &req)
+    });
+    let mut keep = Vec::new();
+    for ((idx, id, req), (_dev, res)) in screen_reqs.into_iter().zip(results) {
+        let reason = match &res {
+            Ok(rep) => screened_out_reason(rep, ctx.cfg.goal.objective.as_ref()),
+            Err(_) => None, // 初筛失败不淘汰，进全量
+        };
+        match reason {
+            None => keep.push((idx, id, req)),
+            Some(reason) => {
+                let rep = res.unwrap();
+                println!("        {id} {reason}");
+                ctx.cfg.goal.emit(gen, serde_json::json!({
+                    "type": "screened_out", "candidate_id": id, "layer": "sysparam", "reason": reason,
+                }));
+                let prop = &accepted[idx];
+                let cand = proposer::Candidate::sysparam(prop.why.clone(), prop.params.clone());
+                let mut h = proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep));
+                h.status = "SCREENED_OUT".into();
+                h.measurement_valid = false;
+                h.kept = false;
+                h.reason = Some(reason);
+                history.push(h);
+            }
+        }
+    }
+    keep
+}
+
 fn run_sysparam(
     ctx: &LayerCtx<'_>,
     archive: &mut Vec<report::Entry>,
@@ -824,7 +914,7 @@ fn run_sysparam(
         }
 
         // 先把这一代的请求全部排好 (打印顺序与单机时相同), 再分给设备并行量。
-        let reqs: Vec<(String, Request)> = batch
+        let reqs: Vec<(usize, String, Request)> = batch
             .accepted
             .iter()
             .enumerate()
@@ -859,12 +949,24 @@ fn run_sysparam(
                             .collect(),
                     }),
                 };
-                (id, req)
+                (i, id, req)
             })
             .collect();
+        // 两级测量：明显更差的候选在 2 轮快测里直接淘汰，胜者才进全量对照
+        let reqs = if ctx.cfg.screen {
+            screen_sysparam(ctx, gen, &batch.accepted, reqs, &mut history)
+        } else {
+            reqs
+        };
+        if reqs.is_empty() {
+            let note = format!("第 {gen} 代候选全在初筛里淘汰了，这一代不再花全量的钱");
+            println!("      {note}");
+            ctx.cfg.goal.emit(gen, serde_json::json!({"type": "note", "message": note}));
+            continue;
+        }
         let multi = ctx.devices.len() > 1;
         let (cfg, caps, driver) = (ctx.cfg, ctx.caps, ctx.driver);
-        let results = dispatch::run_on_devices(&reqs, ctx.devices, |dev, _, (id, req)| {
+        let results = dispatch::run_on_devices(&reqs, ctx.devices, |dev, _, (_, id, req)| {
             let mut req = req.clone();
             req.serial = Some(dev.to_string());
             if multi {
@@ -873,7 +975,8 @@ fn run_sysparam(
             evaluate_on(cfg, caps, driver, dev, id, &req)
         });
 
-        for ((prop, (id, _)), (dev, res)) in batch.accepted.iter().zip(&reqs).zip(results) {
+        for ((idx, id, _), (dev, res)) in reqs.iter().zip(results) {
+            let prop = &batch.accepted[*idx];
             let id = id.clone();
             let rep = match res {
                 Ok(r) => r,
@@ -1224,6 +1327,55 @@ fn run_whitebox(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_protocol_halves_the_cost() {
+        let full = eval::Protocol::for_kind(Kind::Sysparam, 5, 36, 40.0);
+        let s = eval::Protocol::screen_from(&full);
+        assert_eq!(s.rounds, 2);
+        assert_eq!(s.replay_seconds, 18);
+        let short = eval::Protocol::for_kind(Kind::Sysparam, 5, 12, 40.0);
+        assert_eq!(eval::Protocol::screen_from(&short).replay_seconds, 10, "单臂时长有 10s 下限");
+    }
+
+    #[test]
+    fn screen_drops_only_clearly_worse() {
+        let mk = |status: &str, pct: f64, p: f64| {
+            let mut pm = std::collections::BTreeMap::new();
+            pm.insert(
+                "power_watt".to_string(),
+                eval::MetricDetail { diff_pct: Some(pct), p: Some(p), ..Default::default() },
+            );
+            eval::Report {
+                version: Some(2),
+                kind: Some(Kind::Sysparam),
+                candidate_id: "c".into(),
+                status: status.into(),
+                metrics: Default::default(),
+                verdict: eval::VerdictV2 { per_metric: Some(pm), ..Default::default() },
+                source: "phonefarm".into(),
+                power_source: None,
+                quality_reference: None,
+                conditions_observed: None,
+                evidence_dir: None,
+                phonefarm_version: None,
+                obtained_via: None,
+            }
+        };
+        let obj = ("power_watt".to_string(), "lower".to_string());
+        // 明显更差 → 淘汰
+        assert!(screened_out_reason(&mk("REJECT", 3.2, 0.08), Some(&obj)).is_some());
+        // 更好 → 进全量
+        assert!(screened_out_reason(&mk("PASS", -2.1, 0.05), Some(&obj)).is_none());
+        // 变差但幅度不到 1% → 不敢淘汰
+        assert!(screened_out_reason(&mk("REJECT", 0.4, 0.10), Some(&obj)).is_none());
+        // 变差且幅度大但 p 太离谱 → 快测没谱，进全量
+        assert!(screened_out_reason(&mk("REJECT", 3.0, 0.60), Some(&obj)).is_none());
+        // ABORT（没量准）→ 不敢据此淘汰，进全量
+        assert!(screened_out_reason(&mk("ABORT", 5.0, 0.01), Some(&obj)).is_none());
+        // 方向反了不算差（lower 指标变 -3% 是好事）
+        assert!(screened_out_reason(&mk("REJECT", -3.2, 0.08), Some(&obj)).is_none());
+    }
 
     #[test]
     fn a_single_online_device_is_picked_automatically() {
