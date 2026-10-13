@@ -185,6 +185,17 @@ pub struct Protocol {
 }
 
 impl Protocol {
+    /// 初筛口径：轮数砍到 2、单臂时长减半。省的钱来自两处——臂数少了（每臂都要
+    /// 重启游戏+等冷，是真机时间的大头），单臂也短了。淘汰规则用的是逐指标点估计+p，
+    /// 不动这里的 p_threshold（它只管全量判定的显著性口径）。
+    pub fn screen_from(full: &Protocol) -> Self {
+        Self {
+            rounds: 2,
+            replay_seconds: (full.replay_seconds / 2).max(10),
+            ..full.clone()
+        }
+    }
+
     /// 某一层的缺省判定口径。
     ///
     /// 三层看的东西不一样, 这不是随便选的:

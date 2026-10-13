@@ -53,6 +53,11 @@ setting.system.peak_refresh_rate.cur=120
 setting.system.min_refresh_rate.cur=60
 ";
 
+/// 假 phonefarm（明显更差版）：eval 一律 REJECT 且帧时 p95 变差 3.5% —— 给两级测量的初筛用。
+fn fake_phonefarm_worse(probe_out: &Path) -> String {
+    fake_phonefarm_d(probe_out, "REJECT", "false", "[]", "3.5", 1)
+}
+
 /// 假 phonefarm。`win` = eval 一律回 PASS 且帧时 p95 显著改善 6%; 否则一律 REJECT。
 fn fake_phonefarm(probe_out: &Path, win: bool) -> String {
     let (status, keep, wins, d, code) = if win {
@@ -60,6 +65,10 @@ fn fake_phonefarm(probe_out: &Path, win: bool) -> String {
     } else {
         ("REJECT", "false", "[]", "-0.91", 1)
     };
+    fake_phonefarm_d(probe_out, status, keep, wins, d, code)
+}
+
+fn fake_phonefarm_d(probe_out: &Path, status: &str, keep: &str, wins: &str, d: &str, code: u8) -> String {
     let mut s = String::new();
     s.push_str("#!/bin/sh\ncase \"$1\" in\n");
     s.push_str("  devices) echo \"91253241019A  NX809J  adb\"; exit 0 ;;\n");
@@ -92,6 +101,25 @@ fn scaffold(tag: &str, win: bool) -> PathBuf {
     std::fs::write(root.join("probe.txt"), PROBE).unwrap();
     let bin = pf.join("phonefarm");
     std::fs::write(&bin, fake_phonefarm(&root.join("probe_out.txt"), win)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    root
+}
+
+/// 「明显更差」假机的脚手架（初筛集成测试用）。
+fn scaffold_worse(tag: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("gol_goal_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let pf = root.join("phonefarm");
+    std::fs::create_dir_all(pf.join("knobs/gray/build")).unwrap();
+    std::fs::write(pf.join("knobs/gray/build/build_layer.sh"), "#!/bin/sh\n").unwrap();
+    std::fs::write(root.join("probe_out.txt"), ROOTED_NX809J).unwrap();
+    std::fs::write(root.join("probe.txt"), PROBE).unwrap();
+    let bin = pf.join("phonefarm");
+    std::fs::write(&bin, fake_phonefarm_worse(&root.join("probe_out.txt"))).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -337,6 +365,40 @@ fn resume_redoes_the_half_done_generation() {
         "第 2 代应该被测了两次（第一次中途死了）"
     );
     assert_eq!(ev.iter().filter(|e| e["type"] == "propose" && e["gen"] == 1).count(), 1, "第 1 代不该重测");
+    check_contracts(&dir);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 两级测量：明显更差的候选在初筛就被淘汰，不花全量对照的钱；
+/// SCREENED_OUT 进历史与档案，下一代出题看得到。
+#[test]
+fn screen_drops_clearly_worse_candidates_before_full_measurement() {
+    let root = scaffold_worse("screen");
+    let dir = root.join("goals/run_screen");
+    goal::draft("团战卡顿", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| {
+        s.layers = vec!["sysparam".into()];
+        s.per_generation = 1;
+        s.screen = true;
+        s.budget.max_generations = 2;
+        s.budget.min_generations = 1;
+    });
+    let st = goal::run(&dir, &opts(&root, None)).unwrap();
+    let ev = events(&dir);
+    let so: Vec<_> = ev.iter().filter(|e| e["type"] == "screened_out").collect();
+    assert!(!so.is_empty(), "明显更差的候选没被初筛淘汰: {ev:?}");
+    assert!(so[0]["reason"].as_str().unwrap().contains("初筛淘汰"));
+    // 初筛淘汰的候选没有进全量对照（没有全量 verdict 事件）
+    let screened_id = so[0]["candidate_id"].as_str().unwrap().to_string();
+    assert!(
+        !ev.iter().any(|e| e["type"] == "verdict" && e["candidate_id"] == screened_id),
+        "被淘汰的候选还跑了全量对照"
+    );
+    // 连续无收益收尾（初筛淘汰不算收益）
+    assert_eq!(st.stop_reason.as_deref(), Some("no_gain"));
+    // SCREENED_OUT 进了档案（下次迁移后出题仍看得到）
+    let arch = std::fs::read_to_string(root.join("goals/archive.jsonl")).unwrap();
+    assert!(arch.contains("SCREENED_OUT"), "{arch}");
     check_contracts(&dir);
     std::fs::remove_dir_all(&root).ok();
 }

@@ -452,7 +452,9 @@ impl Builtin {
 pub fn sysparam_history(items: &[HistoryItem]) -> Vec<sysparam::History> {
     items
         .iter()
-        .filter(|h| h.measurement_valid)
+        // 量准的是正/负样本；SCREENED_OUT 是快证据否掉的方向 (2 轮初筛明显更差)，
+        // 也给出题的一方看到，别再把钱花在同一组参数上。
+        .filter(|h| h.measurement_valid || h.status == "SCREENED_OUT")
         .filter_map(|h| {
             Some(sysparam::History {
                 params: h.candidate.params()?.clone(),

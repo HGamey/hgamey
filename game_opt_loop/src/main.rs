@@ -199,6 +199,10 @@ pub struct OptimizeArgs {
     #[arg(long)]
     frame_audit: Option<PathBuf>,
 
+    /// 两级测量: 每个候选先 2 轮快测，明显更差的直接淘汰不进全量对照。
+    #[arg(long, default_value_t = false)]
+    screen: bool,
+
     /// 只跑哪几层: `sysparam,gray` (也认 `3,2`)。缺省按摸底能开的都排。
     /// 长实验拆段 (每段持锁 ≤45 分钟) 时一次跑一层。
     #[arg(long)]
@@ -942,6 +946,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         profiles_dir: args.profiles,
         game_profile: args.game_profile,
         frame_audit: args.frame_audit,
+        screen: args.screen,
         goal: Default::default(),
     };
 

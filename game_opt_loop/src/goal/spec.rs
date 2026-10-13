@@ -74,6 +74,10 @@ pub struct GoalSpec {
     /// 每一代每层上机几个候选 (规格 v1 没写, 缺省 2)。
     #[serde(default = "two")]
     pub per_generation: u32,
+    /// 两级测量: 每个候选先少量轮次初筛，明显更差的直接淘汰不进全量对照，胜者才花全量的钱。
+    /// 缺省 false（全量测），goal.md 写 `screen: true` 打开。
+    #[serde(default)]
+    pub screen: bool,
 }
 
 /// 读出来的整份 goal.md。
@@ -275,6 +279,7 @@ pub fn template(intent: &str, game: &str) -> (GoalSpec, String) {
         proposer: "llm".into(),
         gate: "off".into(),
         per_generation: 2,
+        screen: false,
     };
     let body = format!(
         "（本地模板起草, 没有经过大模型。）\n\n人的原话: {intent}\n\n\

@@ -801,6 +801,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 gate,
             },
             frame_audit: frame_audit.clone(),
+            screen: spec.screen,
             shape: optimize::plan::Shape {
                 layers: Some(kinds_of(&layers)),
                 generations: Some(1),
@@ -815,6 +816,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 forbid,
                 psnr_min_db: spec.psnr_min_db(),
                 events: Some(rd.path("events.jsonl")),
+                objective: Some((spec.objective.metric.clone(), spec.objective.direction.clone())),
             },
         };
         let result = optimize::run(&cfg);
