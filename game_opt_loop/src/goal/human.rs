@@ -39,19 +39,63 @@ fn first_int(s: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
-/// 读 human.md。按行认: 认得的转成覆盖, 认不得的进 free_text。
-pub fn parse(text: &str) -> Steer {
-    let mut s = Steer::default();
-    let mut free = Vec::new();
-    for raw in text.lines() {
+/// 中文否定词：关键词前面贴着这些字，意思就是反的（「无暂停」「不要停止」「取消暂停」）。
+const NEGATIONS: [&str; 6] = ["无", "不", "别", "勿", "取消", "解除"];
+
+/// `kw`（暂停/停止）在这行里是不是被否定了。看关键词前 3 个字符内有没有否定词。
+fn negated(line: &str, kw: &str) -> bool {
+    let Some(i) = line.find(kw) else { return false };
+    let tail: Vec<char> = line[..i].chars().rev().take(3).collect();
+    let before: String = tail.into_iter().rev().collect();
+    NEGATIONS.iter().any(|n| before.contains(n))
+}
+
+/// 第一行结构化指令：`action: go|pause|stop`（也认 `指令: 继续|暂停|停止`）。
+/// 写了就是权威：body 里再出现「暂停/停止」字样也不再按关键词猜，只走其他覆盖解析。
+/// 返回 (action, body)。
+fn split_action(text: &str) -> (Option<&str>, &str) {
+    for (idx, raw) in text.lines().enumerate() {
         let line = raw.trim().trim_start_matches(['-', '*', '•']).trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let low = line.to_lowercase();
-        if line.contains("暂停") || low == "pause" {
+        for pre in ["action:", "action：", "指令:", "指令："] {
+            if let Some(v) = low.strip_prefix(pre).map(str::trim) {
+                let body_start = text.lines().take(idx + 1).map(|l| l.len() + 1).sum::<usize>();
+                let action = match v {
+                    "go" | "continue" | "run" | "继续" | "正常推进" | "放行" => Some("go"),
+                    "pause" | "hold" | "暂停" => Some("pause"),
+                    "stop" | "halt" | "停止" => Some("stop"),
+                    _ => None,
+                };
+                if action.is_some() {
+                    return (action, text.get(body_start..).unwrap_or(""));
+                }
+            }
+        }
+        // 第一条有效行不是 action 指令 → 全文走兼容路径
+        return (None, text);
+    }
+    (None, text)
+}
+
+/// 读 human.md。第一行是 `action: go|pause|stop`（或 `指令: 继续|暂停|停止`）时以它为准；
+/// 没写则按行认关键词（带否定词防护：「无暂停」「不要停止」不再误判）。认得的转成覆盖, 认不得的进 free_text。
+pub fn parse(text: &str) -> Steer {
+    let mut s = Steer::default();
+    let (action, body) = split_action(text);
+    let mut free = Vec::new();
+    for raw in body.lines() {
+        let line = raw.trim().trim_start_matches(['-', '*', '•']).trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let low = line.to_lowercase();
+        if action.is_none() && line.contains("暂停") && !negated(line, "暂停") || (action.is_none() && low == "pause") {
             s.pause = true;
-        } else if line.contains("停止") || low == "stop" || low.starts_with("stop ") {
+        } else if action.is_none() && line.contains("停止") && !negated(line, "停止")
+            || (action.is_none() && (low == "stop" || low.starts_with("stop "))) {
             s.stop = true;
         } else if line.contains("预算") && (line.contains('+') || line.contains("加")) {
             match first_int(line) {
@@ -89,6 +133,11 @@ pub fn parse(text: &str) -> Steer {
         } else {
             free.push(line.to_string());
         }
+    }
+    match action {
+        Some("pause") => s.pause = true,
+        Some("stop") => s.stop = true,
+        _ => {}
     }
     s.free_text = free.join("\n");
     s
@@ -160,5 +209,30 @@ mod tests {
     #[test]
     fn empty_means_no_instruction() {
         assert_eq!(parse("\n# 在这里写\n").interpreted(), "没有指令");
+    }
+
+    #[test]
+    fn action_line_is_authoritative() {
+        // 结构化指令行：body 里的「停止/暂停」字样不再被关键词猜中
+        let s = parse("action: go\n这次不要停止得太早，也别暂停测量\n");
+        assert!(!s.stop && !s.pause);
+        assert!(s.free_text.contains("不要停止得太早"));
+        assert!(parse("action: pause\n正常推进\n").pause);
+        assert!(parse("action: stop\n").stop);
+        assert!(parse("指令：暂停\n").pause);
+        assert!(!parse("指令: 继续\n先暂停一下\n").pause);
+    }
+
+    #[test]
+    fn negation_is_not_pause_or_stop() {
+        // 兼容路径的否定词防护（今天的事故：「无暂停」被当成「暂停」）
+        assert!(!parse("无暂停，正常推进").pause);
+        assert!(!parse("解除暂停，直接开始第 1 代").pause);
+        assert!(!parse("取消暂停").pause);
+        assert!(!parse("不要停止").stop);
+        assert!(!parse("别停止").stop);
+        // 真指令照样认
+        assert!(parse("先暂停一下").pause);
+        assert!(parse("停止").stop);
     }
 }

@@ -207,7 +207,7 @@ pub fn draft(intent: &str, game: &str, out: &Path, drafter: Drafter<'_>) -> Resu
     let doc = spec::parse(&text)?;
     std::fs::write(rd.path("goal.md"), &text)?;
     if !rd.path("human.md").exists() {
-        std::fs::write(rd.path("human.md"), "")?;
+        std::fs::write(rd.path("human.md"), "# 人工干预：第一条非注释行写 action: go | pause | stop（也认 指令: 继续|暂停|停止），这是权威指令，\n# 写了它正文里的「暂停/停止」字样就不会被误读。下面还可以写：预算 +30 分钟 / 不要动 xxx / 只试 系统参数 /\n# 以及任何大白话（原样转给出主意的一方，优先照办）。\n")?;
     }
     rd.event(0, "note", json!({"stage": "draft", "by": if by_template { "template" } else { "llm" },
         "message": "goal.md 已起草, 等人确认"}));
