@@ -707,6 +707,35 @@ pub enum GoalCmd {
         #[arg(long)]
         goal: PathBuf,
     },
+    /// 断点续跑: 跑到一半进程死了（宕机/被杀），从最后完成的一代之后接着跑。
+    /// 已完成代的测量保留，中途死掉的那代重跑；宕机那段时间不计入时间预算。
+    Resume {
+        /// goal run 的目录。
+        dir: PathBuf,
+        #[arg(long, default_value = "../phonefarm/phonefarm")]
+        phonefarm: PathBuf,
+        #[arg(long, default_value = "../phonefarm/secrets.env")]
+        secrets: PathBuf,
+        #[arg(long)]
+        llm_provider: Option<String>,
+        /// ③ 的白名单探测结果; 缺省取 <dir>/inputs/probe.txt (在的话)。
+        #[arg(long)]
+        sysparam_probe: Option<PathBuf>,
+        /// ② 的 frame-audit 结果; 缺省取 <dir>/inputs/frame_audit.json (在的话)。
+        #[arg(long)]
+        frame_audit: Option<PathBuf>,
+        #[arg(long, default_value = "profiles")]
+        profiles: PathBuf,
+        /// 最多排多久队。
+        #[arg(long, default_value = "4h")]
+        lock_wait: String,
+        /// 不拿设备锁 (只在确定没人共用这台手机时用)。
+        #[arg(long, default_value_t = false)]
+        no_devlock: bool,
+        /// 暂停时多久看一次 human.md (秒)。
+        #[arg(long, default_value_t = 30)]
+        poll_s: u64,
+    },
     /// 确认并开始: 冻结 goal.md, 拿锁 goal-<run_id>, 一代一代跑到停。
     Run {
         /// goal draft 产出的目录。
@@ -796,7 +825,38 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
             lock_wait,
             no_devlock,
             poll_s,
-        } => {
+        } => run_goal_run(dir, phonefarm, secrets, llm_provider, sysparam_probe, frame_audit, profiles, lock_wait, no_devlock, poll_s, false),
+        GoalCmd::Resume {
+            dir,
+            phonefarm,
+            secrets,
+            llm_provider,
+            sysparam_probe,
+            frame_audit,
+            profiles,
+            lock_wait,
+            no_devlock,
+            poll_s,
+        } => run_goal_run(dir, phonefarm, secrets, llm_provider, sysparam_probe, frame_audit, profiles, lock_wait, no_devlock, poll_s, true),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_goal_run(
+    dir: PathBuf,
+    phonefarm: PathBuf,
+    secrets: PathBuf,
+    llm_provider: Option<String>,
+    sysparam_probe: Option<PathBuf>,
+    frame_audit: Option<PathBuf>,
+    profiles: PathBuf,
+    lock_wait: String,
+    no_devlock: bool,
+    poll_s: u64,
+    resume: bool,
+) -> Result<()> {
+    use game_opt_loop::goal;
+    {
             let pick = |given: Option<PathBuf>, name: &str| {
                 given.or_else(|| Some(dir.join("inputs").join(name)).filter(|p| p.is_file()))
             };
@@ -819,6 +879,7 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
                 lock,
                 poll: std::time::Duration::from_secs(poll_s.max(1)),
                 before_generation: None,
+                resume,
             };
             #[cfg(unix)]
             goal::install_signal_handlers();
@@ -832,7 +893,6 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
                 dir.join("report.md").display()
             );
             Ok(())
-        }
     }
 }
 

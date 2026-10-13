@@ -113,6 +113,7 @@ fn opts<'a>(root: &Path, cb: Option<&'a dyn Fn(u32)>) -> goal::RunOpts<'a> {
         lock: None,
         poll: std::time::Duration::from_millis(50),
         before_generation: cb,
+        resume: false,
     }
 }
 
@@ -250,6 +251,92 @@ fn a_human_stop_before_the_first_generation_stops_without_touching_the_device() 
     assert_eq!(st.stop_reason.as_deref(), Some("human_stop"));
     assert_eq!(st.generation, 0);
     assert!(!dir.join("optimize/gen1").exists());
+    check_contracts(&dir);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 宕机/被杀后续跑：已完成的代保留（报告还在），状态、最优、档案都接着用。
+#[test]
+fn resume_after_crash_keeps_completed_generations() {
+    let root = scaffold("resumekeep", true);
+    let dir = root.join("goals/run4");
+    goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| {
+        s.layers = vec!["sysparam".into()];
+        s.budget.max_generations = 2;
+        s.budget.min_generations = 1;
+        s.per_generation = 1;
+        s.stop_when = vec!["budget_exhausted".into()];
+    });
+    let st = goal::run(&dir, &opts(&root, None)).unwrap();
+    assert_eq!(st.stop_reason.as_deref(), Some("budget_exhausted"));
+    assert_eq!(st.generation, 2);
+
+    // 伪装成「第 3 代开始前进程死了」：状态还是 running（其余字段就是第 2 代完成时的样子）
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
+    v["status"] = "running".into();
+    v["stop_reason"] = Value::Null;
+    std::fs::write(dir.join("state.json"), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    // 不带 resume：拒绝，并提示 goal resume
+    let e = goal::run(&dir, &opts(&root, None)).unwrap_err();
+    assert!(format!("{e:#}").contains("goal resume"), "{e:#}");
+
+    // 带 resume：重建已完成的 2 代，立刻按代预算用完收尾，不重测
+    let ro = goal::RunOpts { resume: true, ..opts(&root, None) };
+    let st = goal::run(&dir, &ro).unwrap();
+    assert_eq!(st.status, "done");
+    assert_eq!(st.stop_reason.as_deref(), Some("budget_exhausted"));
+    assert_eq!(st.generation, 2, "已完成的 2 代保留，不重跑");
+    let ev = events(&dir);
+    assert!(
+        ev.iter().any(|e| e["type"] == "note" && e["message"].as_str().unwrap_or_default().contains("断点续跑")),
+        "缺断点续跑事件"
+    );
+    // 重跑没有发生：每代仍只有一条 propose
+    for g in 1..=2u64 {
+        assert_eq!(ev.iter().filter(|e| e["type"] == "propose" && e["gen"] == g).count(), 1, "第 {g} 代被重测了");
+    }
+    // 档案: 第一次跑的结论已落盘（迁移后的新 run 也能读到）
+    let arch = std::fs::read_to_string(root.join("goals/archive.jsonl")).unwrap();
+    assert!(arch.lines().count() >= 2, "{arch}");
+    check_contracts(&dir);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 测到一半死的那一代重跑：report.json 不在的代不算完成。
+#[test]
+fn resume_redoes_the_half_done_generation() {
+    let root = scaffold("resumeredo", true);
+    let dir = root.join("goals/run5");
+    goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
+    confirm_with(&dir, |s| {
+        s.layers = vec!["sysparam".into()];
+        s.budget.max_generations = 2;
+        s.budget.min_generations = 1;
+        s.per_generation = 1;
+        s.stop_when = vec!["budget_exhausted".into()];
+    });
+    let st = goal::run(&dir, &opts(&root, None)).unwrap();
+    assert_eq!(st.generation, 2);
+    // 伪装成「第 2 代测到一半死了」：gen2 报告没了，目录残渣还在
+    std::fs::remove_file(dir.join("optimize/gen2/report.json")).unwrap();
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
+    v["status"] = "running".into();
+    v["stop_reason"] = Value::Null;
+    std::fs::write(dir.join("state.json"), serde_json::to_string_pretty(&v).unwrap()).unwrap();
+
+    let ro = goal::RunOpts { resume: true, ..opts(&root, None) };
+    let st = goal::run(&dir, &ro).unwrap();
+    assert_eq!(st.status, "done");
+    assert_eq!(st.generation, 2, "第 2 代重跑后按预算收尾");
+    let ev = events(&dir);
+    assert_eq!(
+        ev.iter().filter(|e| e["type"] == "propose" && e["gen"] == 2).count(),
+        2,
+        "第 2 代应该被测了两次（第一次中途死了）"
+    );
+    assert_eq!(ev.iter().filter(|e| e["type"] == "propose" && e["gen"] == 1).count(), 1, "第 1 代不该重测");
     check_contracts(&dir);
     std::fs::remove_dir_all(&root).ok();
 }
