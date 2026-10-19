@@ -190,7 +190,7 @@
     },
     "postfx": {
       "type": "object",
-      "description": "sr_pipeline 的 postfx 配置事实。只有配置, 没有任何时间量 —— 测量与判定在 phonefarm 侧 (DESIGN.md §1 跑测分离)。",
+      "description": "sr_pipeline 的 postfx 配置事实。只有配置, 没有任何时间量 —— 测量与判定在 phonefarm 侧 (https://github.com/HGamey/docs/blob/main/repos/refbench/DESIGN.md §1 跑测分离)。",
       "properties": {
         "active": {
           "type": "boolean",
