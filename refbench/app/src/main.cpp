@@ -1,6 +1,6 @@
 // refbench — 白盒基准靶场, 单文件 Vulkan NativeActivity (hasCode=false, 零 Java)
 //
-// 纪律 (DESIGN.md §1): 本文件不含任何测量或判定逻辑。不读时钟决定内容、无随机数。
+// 纪律 (https://github.com/HGamey/docs/blob/main/repos/refbench/DESIGN.md §1): 本文件不含任何测量或判定逻辑。不读时钟决定内容、无随机数。
 // 内容只是 frame_index 的函数。输出 JSON 只有配置事实与提交计数, 没有时间量。
 //
 // 生命周期: 解析 intent extras → 起 Vulkan → 渲染固定帧数 (每帧恰好一次
@@ -220,7 +220,7 @@ static void write_output_json() {
     if (g.cfg.scene == "sr_pipeline") { j += "\"postfx\": \""; j += g.cfg.knob_postfx; j += "\""; }
     j += "},\n";
     // postfx 的配置事实。只记"装了什么、几字节、进出多大", 不含任何时间量 ——
-    // 测量与判定是 phonefarm 侧的事 (DESIGN.md §1 跑测分离)。
+    // 测量与判定是 phonefarm 侧的事 (https://github.com/HGamey/docs/blob/main/repos/refbench/DESIGN.md §1 跑测分离)。
     if (g.cfg.scene == "sr_pipeline") {
         char pb[512];
         std::string esc;
