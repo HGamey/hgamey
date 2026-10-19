@@ -11,3 +11,7 @@ runs/
 !tests/fixtures/
 !tests/fixtures/**
 eval_evidence/
+
+# Python 字节码缓存
+__pycache__/
+*.pyc

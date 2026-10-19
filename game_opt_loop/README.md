@@ -1,249 +1,29 @@
 # game_opt_loop
 
-手机游戏性能优化的入口与决策层。
+手机游戏性能优化的入口与决策层（Rust）。接一句话任务「把 <游戏> 在 <手机> 上优化一下」：摸底设备、决定开哪几层优化、让大模型出候选改动、交给 [phonefarm](https://github.com/HGamey/phonefarm) 在真机上做对照实验、按统计结果保留或回退，最后出报告。
 
-用户只提一种任务：**「把 \<游戏\> 在 \<手机\> 上优化一下」**。剩下的由这个仓库决定——先摸清这台设备和这个游戏当前是什么状况，判断该开哪几条优化路线，让大模型提出候选改动，交给 [phonefarm](https://github.com/BH3GEI/phonefarm) 在真机上做对照实验，按统计结果留下能站住的改动，其余回退，最后出一份总报告。
-
-harness 本身就是产品。交付的不是某一个优化算子，而是这条从一句话任务到一份可核对报告的流水线。
-
----
-
-## 怎么用
+## 构建与运行
 
 ```bash
-# 只摸底 + 打印计划：这台设备上能开哪几层、每层打算跑多少、为什么开不了别的。
-# 一个字节都不往设备上写，可以在别人占着机器的间隙跑。
+cargo build --release
+
+# 只摸底并打印计划，不往手机写任何东西
 cargo run --release -- optimize --game 原神 --plan
 
-# 真跑：指定设备与真机时长预算（预算不够时砍整层，不降轮数）
-cargo run --release -- optimize --game 原神 --device 91253241019A --budget 2h
+# 真跑：指定设备和真机时长预算
+cargo run --release -- optimize --game 原神 --device <serial> --budget 2h
 
-# 换一个出方案的一方：llm（缺省）/ local（本地确定性变异器）/ cmd:<可执行文件>（外部进程）
-cargo run --release -- optimize --game 原神 --device 91253241019A --budget 1h \
-    --proposer cmd:examples/proposers/fixed_one.py
-
-# 指定形状：只跑 ③、2 代、每代 1 个（长实验拆段时一次跑一层，单段持锁不超过 45 分钟左右）
-cargo run --release -- optimize --game 原神 --device 91253241019A \
-    --layers sysparam --generations 2 --children 1 --lock-label <名字>
-
-# 多台同型号手机并行：③ 同一代的候选分给几台同时量（每个候选只在自己那台上比对照臂，不跨设备比；
-# 型号或 root 与主设备不同就停；设备锁仍是一把，optimize 持锁期间这几台都归它）
-cargo run --release -- optimize --game 原神 --device 91253241019A --extra-device <同型号第二台> --layers sysparam
-
-# 内置表里没有的游戏：先用 phonefarm onboard 实测出一份游戏档案，再直接按包名跑
-../phonefarm/phonefarm onboard --package com.example.game --out runs/onboard/example
-cargo run --release -- optimize --game com.example.game --game-profile runs/onboard/example/profile.json --plan
+# 本机只读面板
+cargo run --release -- serve --port 8765
 ```
 
-游戏档案（契约 [`contracts/game_profile.schema.json`](contracts/game_profile.schema.json)）只收 `PASS` 的，
-收进 `--profiles` 目录（缺省 `profiles/<包名>/profile.json`，连同负载脚本一起拷）；之后
-`optimize --game <包名>` 自动读它：负载、每轮秒数、渲染线程（`render_comm`，非 Unity 游戏必需）、
-已知的坑，并在评测请求里带 `workload.enter = "onboard"`，让接收端每次重启游戏后自己走回游戏场景。
+需要 `../phonefarm` 与本仓库并排放。大模型密钥从 `../phonefarm/secrets.env` 读取（KIMI_KEY / GLM_KEY / SILICONFLOW_KEY / OPENROUTER_KEY 任填一个）；不填或加 `--no-llm` 时用本地变异器。
 
-出方案的一方是可插拔的（接口 `game_opt_loop/proposer@1`，stdin/stdout JSON），
-怎么写一个见 [`docs/INTEGRATION.md`](docs/INTEGRATION.md)。
+## 文档
 
-产物落在 `--out`（缺省 `runs/optimize`）：`caps.json`（摸到了什么，每条结论带出处）、
-`report.json` / `report.md`（每层用没用与为什么、哪些留下哪些淘汰、数字，以及测试条件）。
+- 完整说明、目标模式、面板：[HGamey/docs · repos/game_opt_loop](https://github.com/HGamey/docs/tree/main/repos/game_opt_loop)
+- 现状：[STATUS.md](https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/STATUS.md)
+- 第三方接入：[INTEGRATION.md](https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/docs/INTEGRATION.md)
+- 给 AI 编程助手：[skills/game_opt_loop/SKILL.md](skills/game_opt_loop/SKILL.md)
 
-给 agent 看的说明书在 [`skills/game_opt_loop/SKILL.md`](skills/game_opt_loop/SKILL.md)：
-三个仓库怎么放、私有仓库需要的权限、设备锁怎么排队、以及原神上那几个踩过的坑。
-
----
-
-## 目标模式（goal）
-
-人和 harness 一起定一个目标，harness 一代一代地自己跑、自己判、自己停。规格见 `GOAL_SPEC.md`（在 `_wt/goal-spec/`），契约见 `contracts/goal*.schema.json`。
-
-```bash
-# 1. 起草：一句话 → goal.md（出方案用的同一套大模型；没 key 或 --proposer local 时用模板）
-cargo run --release -- goal draft --intent "原神太费电了, 想省点电但别卡" --game com.miHoYo.Yuanshen --out goals/g1
-# 2. 人看 goal.md、直接改文本；确认后开跑（冻结 goal.md，拿锁 goal-g1）
-cargo run --release -- goal run goals/g1 --sysparam-probe probe.txt --frame-audit analysis.json
-# 3. 运行中随时改 goals/g1/human.md 掌舵：「停止」「暂停」「预算 +30 分钟」「不要动 gpu.min_pwrlevel」「只试 系统参数」，其余大白话原样交给出方案的一方
-```
-
-- 每一代 = 允许的各层各跑 1 代（每层 `per_generation` 个候选），前几代上机的结果接着喂给出方案的一方。
-- 每代开始前重读 human.md：能机读的转成对预算 / 禁止项 / 层的覆盖；其余作为最高优先级偏好进出方案的输入（`steer` 字段）。
-- `state.json` 每一步整份覆盖写，`events.jsonl` 只追加（start / plan / steer / propose / measure / verdict / keep / stop / error / note），网页读这两个文件。
-- 停的条件：最好的候选在主指标上显著改善达到 `target_pct`（target_reached）；代数或时间用完（budget_exhausted）；至少跑满 `min_generations` 之后连续 `no_gain` 代没有任何候选在主指标上显著改善（no_gain，报告里写「这条路没收益」）；人叫停（human_stop）；连续两代出错（error）。
-- ③ 的白名单与 ② 的 frame-audit 结果可以放在 `<run 目录>/inputs/probe.txt`、`inputs/frame_audit.json`，`goal run` 自己找。
-- 第四层 `whitebox`（④ 引擎设置）：只对把渲染设置做成启动参数的白盒游戏开（目前 Megacity，旋钮 store_opt / fog_event / ssao_src / ssao_after_opaque / depth_priming，以及只量上限的 msaa / feat_off / shadowres；语义见 phonefarm `docs/MEGACITY_WHITEBOX_KNOBS.md`）。goal.md 的 layers 里写 `whitebox` 即可，大模型和本地变异器都会在这些旋钮之间组合。
-- 真机还没跑过一次完整的目标运行；端到端只在假 phonefarm 上验证过（`tests/goal_mode.rs`）。
-
-
----
-
-## 一次任务走完是什么样
-
-```
-   「把原神在这台红魔上优化一下」
-                │
-                ▼
-   ① 摸底：设备是什么芯片、有没有 root、能不能停充、能不能挂        ← 已接上
-          Vulkan 层、游戏是白盒还是黑盒                            （只读）
-                │
-                ▼
-   ② 决定开哪几路：三层里哪几层在这台设备上真的可改                ← 已接上
-                │
-                ▼
-   ③ 大模型出方案（三类，见下）
-                │
-                ▼
-   ④ 本地静态检查：编不过、有无界循环、读写越界的，本地就打回，
-                    不推到真机上浪费一轮
-                │
-                ▼
-   ⑤ phonefarm 真机对照：冷机 → 确定性回放 → A/B 交替 → 统计判定 → 还原
-                │
-                ▼
-   ⑥ 优胜档案：评测过的全部入档；过了预算与画质底线的参与排前沿，
-                下一代的亲本从非支配分层里挑
-                │
-                ▼
-   ⑦ 总报告 + 可视化                                             ← 已落地
-```
-
-①②由 `optimize` 子命令接上了：摸底是只读的，所以 `--plan` 可以在别人占着机器的间隙跑，
-只打印计划不动设备。③ 之后，画面算子那一路已经能连着跑完；系统参数与画面流程改写
-两路的候选已经会生成并下发；phonefarm 的统一测评接口（`phonefarm eval --request`）
-已经落地并真机验证（③ 系统参数端到端已出报告，② 灰档机械链路已通、命中口径已对齐——真机实测命中 27 处 / begins 9195），游戏没进渲染态时 `optimize` 如实报「这一层跑不了」，不伪造报告。
-
-耗时预算只出现在两个地方：写进给大模型的提示词里，以及实测回来之后判候选能不能进档案
-——**本地静态检查不估开销，也就挡不住「写得很贵」的候选**。
-
-### 大模型出的三类方案
-
-| 类别 | 改什么 | 前提 |
-|---|---|---|
-| **画面算子** | 往渲染管线里插一个轻量 compute shader：超分、插帧、锐化、后处理简化 | 有挂载点 |
-| **系统参数** | DVFS、总线频率、调度、热策略、刷新率 | 系统写权限 |
-| **画面流程改写** | 改渲染流程本身：绘制顺序、RT 精度、pass 的 LoadOp/StoreOp、分辨率策略 | 白盒源码，或可注入的 Vulkan 层 |
-
----
-
-## 优化分三层，能开哪几层取决于设备和游戏
-
-| 层 | 改什么 | 需要什么 |
-|---|---|---|
-| ① 游戏代码 | 渲染流程本身 | 源码（白盒） |
-| ② Vulkan 层 | 在游戏与驱动之间插一层，改写 API 调用 | **不需要源码，但需要 root** |
-| ③ 系统参数 | 系统级开关 | 需要 root |
-
-白盒游戏三层都能用，黑盒商用游戏只剩 ② 和 ③。
-
-② 和 ③ 都要 root，区别只在 ② 不需要游戏源码。所以国内鸿蒙商用机上 ①②③ **一层都改不了**——没有 root，只能测。
-
-几条可能的出路：工程机、厂商官方性能接口、开发者模式下自签名应用，以及海外版华为手机（EMUI，基于安卓改的系统，麒麟芯片，能 root）——在它上面可以测 ② 和 ③ 的改动在麒麟上到底有多少效果，国内鸿蒙机只能做对照。这几条都还没有核实过，先记在这里。
-
----
-
-## 和 phonefarm 怎么分工
-
-- **game_opt_loop（本仓库）**：接任务、摸底、决定开哪几路、组织大模型出方案、本地静态检查、维护优胜档案、出总报告与可视化，以及给 agent 用的 skill。
-- **[phonefarm](https://github.com/BH3GEI/phonefarm)（底座）**：设备连接（adb / hdc）、把改动应用到应用上（`knobs/`：系统参数与 Vulkan 层）、测量（安卓走 sysfs + ftrace，鸿蒙走 HiSmartPerf，统一 JSON 输出，测功耗时可以停充走电池）、统计判定、跑完还原现场。
-
-这条分界有一个明确的理由：**出方案的一方改不了判定。** 统计检验在 phonefarm 那一侧算，回包的来源由接收端判定，不信发送端自称；采样协议（冷机门槛、回放时长、交替轮数、显著性阈值）在看到候选数据之前就落盘冻结，跑完不合格自动回退。否则很容易发生的事情是，调参的人顺手把及格线也一起调了。
-
-协议本身是从本仓库下发的，命令行能放宽其中的冷机门槛——那是为了适配没有外置风扇的机器。放宽了就必须写进当轮的条件说明，DESIGN §2 里有具体做法。
-
-白盒测试载体在 phonefarm 那边：refbench 是专门造的靶子，Megacity / Vulkan-Samples / AnKi 挂在 `loop_v1/carriers/` 下。`sr_loop` 是已经结项的前序实验。
-
----
-
-## 现在到哪一步了
-
-**已经跑通的**
-
-- 本地静态检查：红队语料 16/16 拦下且拦对原因，合规算子 48/48 放行，单次检查 < 10 ms。
-- 真机评测闭环：候选 → 静态检查 → phonefarm 实测 → 写进档案。2026-09-22 那一轮（M1）走的是大模型出候选。
-- 画质用真机帧当真值：2026-09-23 在 NX809J 上，19 张原神实拍帧，赛道基线模板均值 34.52 dB，演化出的最好一个算子多花 0.22 ms 换来 +3.3 dB，凭画质进了前沿。那一轮为了可复现用的是 `--no-llm` 的本地确定性变异器，不是大模型（`evidence/M2_realframes_report.json`）。
-- 可视化前端：只读、离线的本机面板，总览 / 轮次 / 图 / 手机四页（见下面「可视化面板」）。
-- 给 agent 用的 skill 说明书：`skills/game_opt_loop/SKILL.md` 已就位。
-
-**进行中 / 目标形态**
-
-- `optimize` 总入口：摸底、选路、排计划、出方案、统一档案与总报告都已接上（见上面「怎么用」）。
-  ②③ 两路的真机评测已经跑通：③ 系统参数已端到端出报告（首候选 REJECT），② 灰档机械链路已通、命中口径已对齐（真机实测命中 27 处 / begins 9195）。
-- phonefarm 那边 loop_v1 的判定口径、两通路对照、Vulkan-Samples 三道闸与两臂判读面、refbench/vks 报告都已经收进 Rust，`autoloop` 编排（`phonefarm autoloop`）与灰档主机侧编排（`phonefarm gray-layer` / `gray-ab` / `shot-diff`）也已收进，剩下载体构建/路线工具、设备端 shell 与 knobs/ 超分那批实验脚本还没收。
-
-**还没接上的**
-
-- **停充**。phonefarm 已经能在测功耗期间停止充电（PR #27）。本仓库 v2 计划里已经把停充条件（`charging_suspend` + 放电态要求）填上了，真机那一端：②③ 两路的 eval 接收端已按契约接停充（#66 实际停充、节点记进 `power_source.charging_suspended_via`，停不掉功耗如实 null），① 画面算子现在还降级成 v1 `gpu-op`（不带停充）。所以 ① 那条路真机跑出来的功耗还是充电态下量的，按 §6.9 的规则一律排除在 Pareto 之外。
-
----
-
-## 快速开始
-
-整条链路的入口是上面「怎么用」里的 `optimize`。下面这几条是单独跑画面算子那一路时用的。
-
-```bash
-# 本地测试
-cargo test
-
-# 离线跑通闭环，不连设备、不叫大模型
-cargo run -- --track sr --generations 3 --children 4 --dry-run --no-llm
-
-# 换一条赛道（sr / frame_gen）
-cargo run -- --track frame_gen --generations 3 --children 4 --dry-run --no-llm
-
-# 把已有的产物摊在浏览器里看（只读，离线可用）
-cargo run -- serve --port 8765
-```
-
-`--dry-run` 只是不连设备（指标退回成本模型的估计值），`--no-llm` 才是不叫大模型（改用本地确定性变异器，固定种子可复现）。想完全离线跑，两个都要带。
-
-真机评测需要同级目录下有编译好的 `../phonefarm/phonefarm` 和至少一台在线设备。
-
-设备是共享的，用 phonefarm 仓库里的设备锁 `tools/devlock`（安装见 phonefarm README）抢锁排队。`optimize`（含 `--plan`）自己拿锁、每 60 秒续心跳、跑完释放：`--lock-label`（缺省取环境 `DEVLOCK_LABEL`，再缺省 `game_opt_loop`；lead 预排了队列时用队列里那个名字）、`--lock-wait`（缺省 `2h`，等满没轮到就退出，不碰设备）、`--no-devlock`（显式不拿，打警告）。锁脚本按 `DEVLOCK_BIN` > `<--phonefarm 所在目录>/tools/devlock` > PATH 上的 `devlock` 找。持锁期间调起的 `phonefarm probe/eval` 认得是同一侧的锁，原地执行。外面不要再用 `devlock run` 包**另一个** label（会自己等自己）；包同一个 label 没问题。自主进化入口（不带子命令）的真机评测每一次都经 `phonefarm gpu-op`，由 phonefarm 那边逐次拿锁。A/B 两臂之间插进来一条别的负载，这一轮就白跑了。同一个候选的 A/B 两臂必须跑在同一台手机上，跨机比较拿不到可比的数字。
-
----
-
-## 可视化面板
-
-`serve` 子命令起一个**只读**的本机面板，把三层优化闭环散在两个仓库里的产物摊在一页里：
-
-| 层 | 改什么 | 数据来源 |
-|---|---|---|
-| ① 算子 | 超分算子源码自主进化 | `runs/<run>/{archive.json, gen_*.json}` |
-| ② 图形接口改写 | Vulkan 灰档层改写应用的 render pass | `../phonefarm/loop_v1/runs_graylayer/` |
-| ③ 系统参数 | 内核 / 总线旋钮 | `../phonefarm/loop_v1/runs*/` |
-
-四个页面：总览（每层多少轮、合格／淘汰／无效，以及各载体的帧时离散度）、
-轮次详情（候选、判据、两臂逐轮数值、测试条件、证据文件）、
-图（Pareto 散点与 A/B 两臂对比，原生 SVG，不引任何图表库）、
-手机（每台机器一张卡片 + 谁在用、心跳、排队、最近的真机任务）。30 秒自动刷新。
-
-「手机」那一页的数据来自 `phonefarm fleet --json`——设备的事归 phonefarm 管，
-面板自己不碰设备。卡片上有在线状态、型号与系统版本、电量与充放电、电池／GPU／SoC 温度、
-风扇、亮屏、前台应用、root、不息屏策略、开机时长。
-
-**别人占着手机时 phonefarm 会自动降成轻量档**（只读 sysfs，不跑 `dumpsys`，免得给对面
-正在做的测量添噪声），卡片上会标「轻量档」，拿不到的字段写明是「这一轮没读」而不是
-「读不到」。探测结果按 `--fleet-ttl-s`（默认 25 秒）缓存，开几个浏览器标签也只探一次。
-
-屏幕缩略图默认关闭，`--phone-screenshots` 打开；它同样受设备锁与最小间隔约束。
-
-几条硬约束：
-
-- **只读**：没有任何写接口，不碰设备。设备页读的是 `devlock` 那几个文件（不去 exec 那个脚本），
-  只是把「谁在用手机」显示出来——抢锁排队这件事本仓库仍然没接。
-- **离线**：前端资源编译进二进制，不引任何外网资源；只绑 `127.0.0.1`。
-- **不编数**：读不到的字段一律显示「未知/未测」，不用 0 或默认值填空；
-  指标来源（真机实测 / 静态估计）、画质真值出处、已撤回的结论都显式标出。
-- `/api/file` 只交出两个仓库根之下、2 MB 以内的文件（原始 `trace.txt` 动辄几十 MB，走命令行看）。
-
-参数：`--root`（本仓库根，缺省 `.`）、`--phonefarm-root`（缺省 `<root>/../phonefarm`）、`--lock-root`。
-
----
-
-## 目录
-
-| 位置 | 内容 |
-|---|---|
-| [DESIGN.md](DESIGN.md) | 设计与实现契约，以及实现过程中被数据推翻的那些假设 |
-| [GOAL.md](GOAL.md) | 目标形态与当前进度 |
-| [contracts/](contracts/) | 候选算子、评测请求、判定报告、优胜档案的 JSON 结构定义 |
-| `templates/` | 各赛道的基础 shader 模板 |
-| `src/` | 演化调度、静态检查、大模型通道、评测驱动 |
-| `evidence/` | 各里程碑的实测报告与测试条件说明 |
+本仓库只放代码，规则见 [AGENTS.md](AGENTS.md)。

@@ -172,7 +172,7 @@ pub fn parse_answer(text: &str) -> Result<f64> {
 /// 给守门看的状态: 设备、层、判定口径、这个候选、最近的历史。只用出方案输入里已有的东西。
 pub fn state_for(input: &Input, c: &Candidate) -> Value {
     // ABORT (没量准) 既不是正样本也不是负样本, 不给守门看: 回放里发现它会把
-    // 「和一个 ABORT 候选参数相同」当成被否定过 (docs/DESIGN_CLOUD_PROPOSER.md)。
+    // 「和一个 ABORT 候选参数相同」当成被否定过 (https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/docs/DESIGN_CLOUD_PROPOSER.md)。
     let valid: Vec<&HistoryItem> = input.history.iter().filter(|h| h.measurement_valid).collect();
     let hist: Vec<Value> = valid[valid.len().saturating_sub(HISTORY_TAIL)..]
         .iter()

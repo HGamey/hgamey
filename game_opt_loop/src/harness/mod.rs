@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// 评测协议参数 —— 防硬件噪声欺骗的那一套 (DESIGN.md §2 红线 4)。
+/// 评测协议参数 —— 防硬件噪声欺骗的那一套 (https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/DESIGN.md §2 红线 4)。
 ///
 /// 这些数字在**看到候选数据之前**就落盘冻结, 事后不得调整。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

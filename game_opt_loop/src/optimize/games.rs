@@ -140,7 +140,7 @@ const KNOWN: &[Known] = &[
                  --es warmup 600 --es settle 7200 --es resscale 1.0 --es vsync off",
             ),
         }),
-        // 载体自报并固化进 contract (loop_v1/carriers/megacity/README.md)
+        // 载体自报并固化进 contract (https://github.com/HGamey/docs/blob/main/repos/phonefarm/loop_v1/carriers/megacity/README.md)
         render_comm: Some("UnityGfxDeviceW"),
     },
     Known {
