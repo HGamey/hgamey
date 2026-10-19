@@ -22,7 +22,7 @@
 //! | `cmd:<可执行文件>` | 外部进程: stdin 收一份 Input, stdout 回一份 Output |
 //!
 //! 契约见 `contracts/proposer_input.schema.json` / `contracts/proposer_output.schema.json`,
-//! 给第三方的说明见 `docs/INTEGRATION.md`。
+//! 给第三方的说明见 `https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/docs/INTEGRATION.md`。
 
 use super::eval::{Conditions, Kind, MetricDetail, MetricSpec, Rewrite};
 use super::sysparam::{self, Origin, Params, Whitelist};

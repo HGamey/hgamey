@@ -394,7 +394,7 @@ Stated plainly so you do not mistake a gap for a bug:
 
 `contracts/eval_request.schema.json` and `contracts/eval_report.schema.json` are
 the only agreement between `game_opt_loop` and `phonefarm`. Both sides pin their
-tests to the same files. See `contracts/README.md` for the v1 → v2 story and the
+tests to the same files. See `https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/contracts/README.md` for the v1 → v2 story and the
 three disciplines that run through every field.
 
 ## Using phonefarm on its own

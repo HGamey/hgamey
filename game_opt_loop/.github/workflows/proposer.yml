@@ -1,5 +1,5 @@
 # 云端出方案: 在 Actions runner 上用 pi + Kimi 跑一次 proposer@1 (tools/proposers/pi_kimi.py)。
-# 由 tools/proposers/cloud_actions.py 触发、取回; 设计见 docs/DESIGN_CLOUD_PROPOSER.md。
+# 由 tools/proposers/cloud_actions.py 触发、取回; 设计见 https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/docs/DESIGN_CLOUD_PROPOSER.md。
 #
 # 需要的 secrets (owner 配):
 #   KIMI_API_KEY   Kimi For Coding 的 key (必需)

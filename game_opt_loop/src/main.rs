@@ -169,7 +169,7 @@ pub struct OptimizeArgs {
 
     /// 出方案的一方: `llm` (缺省: 大模型, 挂了退回本地变异器) / `local` (本地确定性
     /// 变异器, 同 --no-llm) / `cmd:<可执行文件>` (外部进程: stdin 收一份 proposer@1 输入,
-    /// stdout 回一份候选; 契约见 contracts/proposer_*.schema.json, 接入说明见 docs/INTEGRATION.md)。
+    /// stdout 回一份候选; 契约见 contracts/proposer_*.schema.json, 接入说明见 https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/docs/INTEGRATION.md)。
     /// 给两个以上就是对比模式: 同一游戏 / 设备 / 预算依次各跑一遍, 输出目录下多一份 compare.md。
     #[arg(long = "proposer", value_name = "SPEC")]
     proposer: Vec<String>,
