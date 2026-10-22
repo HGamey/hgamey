@@ -187,7 +187,7 @@
     const blocked = currentJob.queue?.state === 'blocked';
     $('queue-release-panel').hidden = !blocked;
     const releaseBusy = releasing.has(currentJob.id);
-    const leaseBlocked = ['write', 'recovery'].includes(currentJob.device_access) && leaseSnapshot?.status !== 'clear';
+    const leaseBlocked = ['write', 'recovery'].includes(currentJob.device_access) && (leaseSnapshot?.status !== 'clear' || leaseStorageBlocked(leaseSnapshot));
     $('recovery-prepare-panel').hidden = !blocked;
     $('prepare-recovery').disabled = !blocked || !access?.steer || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
     message('recovery-prepare-help', !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : '只预填恢复目标和模式；请由人或 Agent 填写实际恢复命令，执行后仍需核查并解除资源保留。');
@@ -195,7 +195,7 @@
     $('queue-release-submit').disabled = !blocked || !access?.steer || accessBusy || releaseBusy || leaseBlocked || !$('queue-release-note').value.trim();
     $('queue-release-submit').setAttribute('aria-busy', String(releaseBusy));
     $('queue-release-submit').textContent = releaseBusy ? '提交中…' : '确认解除资源保留';
-    message('queue-release-help', !access?.steer || accessBusy ? '请先解锁任务操作权限。' : leaseBlocked ? '设备写入或恢复任务的实际 lease 尚未确认 clear。请先执行恢复、核查设备屏障，再刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。');
+    message('queue-release-help', !access?.steer || accessBusy ? '请先解锁任务操作权限。' : leaseBlocked ? '设备写入或恢复任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。请核查屏障与存储状态后刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。');
     const released = releaseReceipts.get(currentJob.id);
     $('queue-release-result').hidden = !released;
     if (released) message('queue-release-result', released.message, released.error);
@@ -245,12 +245,26 @@
     return button;
   }
   function recoverySupported() { return !!nodeInfo?.capabilities?.includes('jobs.recovery-v1'); }
+  function leaseStorageBlocked(lease) { return !!lease?.storage && lease.storage.readiness !== 'ready'; }
+  function renderLeaseStorage(storage) {
+    const states = {ready: ['存储已就绪', 'finished'], migration_required: ['需要协调迁移', 'unknown'], unavailable: ['存储不可用', 'unknown']};
+    const state = states[storage?.readiness] || ['未报告存储状态', 'unknown'];
+    $('lease-storage-state').textContent = state[0];
+    $('lease-storage-state').className = `task-state ${state[1]}`;
+    $('lease-storage-mode').textContent = storage ? `模式：${({default: '默认（default）', custom: '自定义（custom）'})[storage.mode] || text(storage.mode)}` : '';
+    const description = !storage ? '节点未提供存储位置与准备状态，持久根尚未确认。' : storage.readiness === 'migration_required' ? '设备写入暂不可调度。迁移需先协调停止旧 worker；此页面不会初始化或迁移目录。' : storage.readiness === 'unavailable' ? '设备写入暂不可调度。请先处理存储错误，再刷新状态。' : '存储就绪只表示记录目录可用；设备占用与恢复仍以实际 lease 状态为准。';
+    message('lease-storage-message', `${description}${storage?.error ? ` 错误：${storage.error}` : ''}`, !!storage?.error || (!!storage && storage.readiness !== 'ready'));
+    $('lease-storage-details').hidden = !storage;
+    facts('lease-storage-paths', storage ? [['状态根', storage.state_dir], ['兼容锁目录', storage.devlock_dir], ['设备 lease 根', storage.device_lease_dir]] : []);
+  }
   function renderLease(lease, error = '') {
     leaseSnapshot = lease || null;
-    const state = ({clear: ['屏障已清除', 'finished'], held: ['设备占用', 'unknown'], blocked: ['需要恢复', 'unknown'], unknown: ['状态未知', 'unknown']})[lease?.status] || ['尚未取得状态', 'unknown'];
+    const storageBlocked = leaseStorageBlocked(lease);
+    const state = storageBlocked ? [lease.storage.readiness === 'migration_required' ? '等待存储迁移' : '存储不可用', 'unknown'] : ({clear: ['屏障已清除', 'finished'], held: ['设备占用', 'unknown'], blocked: ['需要恢复', 'unknown'], unknown: ['状态未知', 'unknown']})[lease?.status] || ['尚未取得状态', 'unknown'];
     $('lease-state').textContent = state[0];
     $('lease-state').className = `task-state ${state[1]}`;
-    message('lease-message', error || (!lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。`), !!error || !!lease?.error);
+    message('lease-message', error || (storageBlocked ? '存储尚未就绪，不能据此判断设备空闲或放行设备任务。' : !lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。`), !!error || !!lease?.error || storageBlocked);
+    renderLeaseStorage(lease?.storage);
     $('lease-sampled').textContent = lease ? `采样于 ${time(lease.sampled_at)}` : '';
     $('lease-list').replaceChildren(...(lease?.entries || []).map(entry => {
       const item = el('li'), details = el('details');

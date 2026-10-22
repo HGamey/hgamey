@@ -260,3 +260,13 @@
 .lease-receipt .receipt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 12px; }
 .lease-receipt-errors { color: var(--bad-ink); background: var(--bad-soft); border-radius: 6px; padding: 12px 16px 12px 32px; font-size: 12px; overflow-wrap: anywhere; }
 .lease-evidence { padding-left: 20px; margin: 6px 0 0; color: var(--ink2); font-size: 12px; overflow-wrap: anywhere; }
+
+.lease-storage { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+.lease-storage h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.lease-storage .section-heading { min-height: 28px; }
+.lease-storage details { margin-top: 8px; font-size: 13px; }
+.lease-storage summary { cursor: pointer; color: var(--ink2); padding: 4px 0; }
+.lease-storage .facts { margin-top: 10px; }
+.lease-storage .facts dd { font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.lease-storage .note { margin: 4px 0; }
+@media (max-width: 480px) { .lease-storage summary { padding: 8px 0; } }
