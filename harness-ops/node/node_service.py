@@ -22,7 +22,9 @@
   /health 无需 token，只回 ok（给隧道探活）。
   /dash   实时看板只读看板，用独立查看密码（~/.config/hgamey/dash.pass），逻辑在 dash.py。
 
-phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自己的仓库目录下执行（相对路径的 knobs/、loop_v1/ 照常可用）；碰设备的子命令自己拿设备锁、排队。
+phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自己的仓库目录下执行。
+执行任务使用独立的锁 owner，label 只供展示；phonefarm/GOL/helper 保留内部锁路线，raw adb/fetch_apk 由 devlock run 包裹。
+显式 devlock 管理命令的 acquire/renew/release 等身份仍可跨请求，不改写其位置参数。
 """
 import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -148,6 +150,25 @@ def _pid_alive(pid):
         return False
 
 
+def _job_lock_args(argv, owner):
+    """An explicit CLI label must not turn separate jobs into nested owners."""
+    result, i = [], 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--lock-label":
+            if i + 1 == len(argv):
+                raise ValueError("--lock-label 缺少值；显示名请用任务 label")
+            result.extend([arg, owner])
+            i += 2
+        elif arg.startswith("--lock-label="):
+            result.extend(["--lock-label", owner])
+            i += 1
+        else:
+            result.append(arg)
+            i += 1
+    return result
+
+
 class Jobs:
     def __init__(self, root, bins, data_dir=None):
         self.root, self.bins = root, bins
@@ -180,9 +201,17 @@ class Jobs:
         binname, argv = spec.get("bin"), spec.get("argv") or []
         if binname not in self.bins:
             raise ValueError(f"bin 只能是 {sorted(self.bins)}")
-        if not all(isinstance(a, str) for a in argv):
+        if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
             raise ValueError("argv 必须是字符串数组")
+        if spec.get("label") is not None and not isinstance(spec["label"], str):
+            raise ValueError("label 必须是字符串")
+        external_lock = binname in {"adb", "fetch_apk"}
+        if external_lock and spec.get("exe"):
+            raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
         jid = uuid.uuid4().hex[:12]
+        owner = f"job-{jid}"
+        # devlock management commands retain their explicit cross-request labels.
+        effective_argv = _job_lock_args(argv, owner) if binname in {"phonefarm", "game_opt_loop"} else argv
         jin, jout = self.path(jid, "in"), self.path(jid, "out")
         os.makedirs(jin)
         os.makedirs(jout)
@@ -203,14 +232,19 @@ class Jobs:
         # 外面包一层 sh：任务结束时把退出码写进 exitcode 文件。节点服务重启后不再是子进程的父进程，
         # 也能从这个文件拿到真实退出码，重启不再丢任务状态。trap ":" 让 sh 自己不被 SIGINT/SIGTERM 打断
         # （处理函数在 exec 时会复位，不影响子进程收到信号走还原）。
-        cmd = ["/bin/sh", "-c", 'trap ":" INT TERM; "$@"; rc=$?; echo $rc > "$PF_JOB_EXITF"; exit $rc', "pfjob",
-               exe] + [sub(a) for a in argv]
-        env = dict(os.environ, DEVLOCK_LABEL=spec.get("label") or "node", PF_JOB_OUT=jout, PF_JOB_IN=jin,
+        command = [exe] + [sub(a) for a in effective_argv]
+        if external_lock:
+            command = [self.bins["devlock"][0], "run", owner, "--"] + command
+        cmd = ["/bin/sh", "-c", 'trap ":" INT TERM; "$@"; rc=$?; echo $rc > "$PF_JOB_EXITF"; exit $rc', "pfjob"] + command
+        env = dict(os.environ, DEVLOCK_LABEL=owner, PF_JOB_OUT=jout, PF_JOB_IN=jin,
                    PF_JOB_EXITF=self.path(jid, "exitcode"))
         logf = open(self.path(jid, "log"), "wb")
         p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
                              env=env, start_new_session=True)
-        meta = {"id": jid, "bin": binname, "argv": argv, "label": spec.get("label"), "started": time.time(), "pid": p.pid}
+        meta = {"id": jid, "bin": binname, "argv": argv, "label": spec.get("label"),
+                "lock_label": None if binname == "devlock" else owner,
+                "lock_mode": "management" if binname == "devlock" else ("devlock_run" if external_lock else "internal_or_helper"),
+                "started": time.time(), "pid": p.pid}
         self._write_meta(jid, meta)
         self.procs[jid] = p
         threading.Thread(target=self._wait, args=(jid, p, logf), daemon=True).start()
