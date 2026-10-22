@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>任务与结果 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/jobs.css">
+</head>
+<body class="jobs-view">
+<a class="skip-link" href="#tasks-heading">跳到任务列表</a>
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a>
+    <span class="brand-name">HGamey</span>
+    <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/jobs" aria-current="page">任务与结果</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right">
+    <button id="refresh-all" class="ghost" type="button">刷新页面数据</button>
+    <form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form>
+  </div>
+</header>
+<main class="jobs-page">
+  <div class="page-heading">
+    <div><p class="eyebrow">研究工作台</p><h1>任务与结果</h1><p class="page-description">找到一次执行，沿着日志与原始文件核对结果。</p></div>
+    <span class="snapshot-label">按需刷新</span>
+  </div>
+  <section id="node-card" class="node-card" aria-labelledby="node-heading">
+    <div class="node-context">
+      <div><h2 id="node-heading">当前节点</h2><p id="node-summary" class="node-summary" hidden></p></div>
+      <span id="node-updated" class="muted"></span>
+    </div>
+    <p id="node-message" class="note" role="status">正在读取节点信息…</p>
+    <details id="node-details" class="node-details" hidden>
+      <summary>节点信息与数据位置</summary>
+      <dl id="node-info" class="facts"></dl>
+    </details>
+  </section>
+  <div class="jobs-layout">
+    <section id="task-browser" class="task-browser" aria-labelledby="tasks-heading">
+      <div class="section-heading"><h2 id="tasks-heading" tabindex="-1">任务列表</h2><span id="task-count" class="count-label" hidden></span></div>
+      <form id="filters" class="task-filters">
+        <label for="query">搜索任务</label>
+        <div class="filter-query"><input id="query" type="search" maxlength="200" placeholder="ID、标签或命令"><button id="search-jobs" class="ghost primary" type="submit">搜索</button></div>
+        <div class="state-filter"><label for="state">执行状态</label><select id="state"><option value="">全部状态</option><option value="running">运行中</option><option value="finished">已结束（含失败）</option></select></div>
+      </form>
+      <p id="list-message" class="note" role="status">正在读取任务…</p>
+      <p id="list-warnings" class="task-warning" hidden></p>
+      <ul id="task-list" class="task-list" aria-label="任务记录"></ul>
+      <button id="more-jobs" class="ghost more" type="button" hidden>加载更多任务</button>
+    </section>
+    <section id="task-detail" class="task-detail" aria-labelledby="detail-heading">
+      <div class="section-heading"><h2 id="detail-heading" tabindex="-1">任务详情</h2><button id="refresh-detail" class="ghost" type="button" hidden>刷新任务</button></div>
+      <div id="detail-placeholder" class="detail-placeholder"><p id="detail-message" role="status">选择一个任务，查看执行记录和文件。</p></div>
+      <div id="detail-content" hidden>
+        <div class="job-heading"><h3 id="job-title"></h3><span id="job-state" class="task-state"></span></div>
+        <p id="detail-updated" class="read-time"></p>
+        <dl id="job-info" class="facts job-facts"></dl>
+        <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
+        <p class="evidence-note"><strong>结果需核对证据</strong>退出码只说明命令执行情况。实验是否有效、是否有收益、设备是否已恢复，请核对报告和原始证据。</p>
+        <section id="artifacts" class="artifacts" aria-labelledby="artifacts-heading">
+          <div class="section-heading"><h3 id="artifacts-heading">输出文件</h3><button id="refresh-artifacts" class="ghost" type="button">刷新目录</button></div>
+          <nav id="breadcrumbs" class="breadcrumbs" aria-label="输出目录"></nav>
+          <p id="artifact-message" class="note" role="status"></p>
+          <ul id="artifact-list" class="artifact-list"></ul>
+          <button id="more-artifacts" class="ghost more" type="button" hidden>加载更多文件</button>
+          <div id="artifact-meta" class="artifact-meta" role="status" hidden></div>
+        </section>
+        <section id="task-log" class="task-log" aria-labelledby="log-heading">
+          <div class="section-heading"><h3 id="log-heading">执行日志</h3><div class="log-actions"><button id="log-reset" class="ghost" type="button">从头读取</button><button id="log-next" class="ghost" type="button">读取下一段</button></div></div>
+          <p id="log-message" class="note" role="status">每次读取最多 64 KiB，页面保留最近 262,144 个字符；按需读取。</p>
+          <pre id="job-log" class="logbox" aria-label="任务日志" tabindex="0"></pre>
+        </section>
+      </div>
+    </section>
+  </div>
+</main>
+<footer class="foot">文件保存在当前节点。本页只读宿主上的任务文件，不访问手机；运行中的日志和输出可能仍在更新。</footer>
+<script src="/dash/static/jobs.js"></script>
+</body>
+</html>

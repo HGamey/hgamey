@@ -8,6 +8,9 @@
   pf-node --detach phonefarm autoloop ...      # 只回任务 id
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
+  pf-node node                            # 执行宿主、持久节点身份、数据位置、服务版本
+  pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
+  pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 
 - 参数里凡是本机存在的文件/目录（含 --flag=路径 的写法）自动打包上传，在节点上替换成对应路径。
@@ -220,6 +223,24 @@ def main():
             sys.exit(f"pf-node: 未知选项 {a}")
     if not args:
         sys.exit(__doc__)
+    if args[0] in ("node", "jobs", "artifacts"):
+        cmd = args.pop(0)
+        if cmd == "artifacts":
+            if not args or not __import__("re").fullmatch(r"[0-9a-f]{12}", args[0]):
+                sys.exit("pf-node: artifacts requires a 12-character job id")
+            path = f"/jobs/{args.pop(0)}/artifacts"
+            allowed = {"--path", "--limit", "--cursor"}
+        else:
+            path = "/" + cmd
+            allowed = {"--query", "--state", "--limit", "--cursor"} if cmd == "jobs" else set()
+        query = {}
+        while args:
+            opt = args.pop(0)
+            if opt not in allowed or not args:
+                sys.exit(f"pf-node: invalid {cmd} option {opt}")
+            query[opt[2:]] = args.pop(0)
+        print(call("GET", path + ("?" + urllib.parse.urlencode(query) if query else "")).decode())
+        return
     if args[0] == "out" and len(args) == 3:
         fetch_out(args[1], outdir or os.path.join("pf-node-out", args[1]), args[2])
         return

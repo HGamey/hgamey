@@ -1,6 +1,6 @@
 # harness-ops
 
-测试主机（节点）的运维代码：节点服务、跨节点调度、实时监控面板、离线兜底页。
+外部 Agent 使用远程真机的节点服务、客户端和网页；研究任务可独立于内置优化 Agent。
 
 | 路径 | 作用 |
 |---|---|
@@ -18,10 +18,15 @@
 node/pf-fleet status                                   # 所有节点在线情况、设备锁、手机清单
 node/pf-fleet run --any-free -- phonefarm eval ...     # 派到一台空闲节点
 node/pf-node devlock status                            # 查看某节点的设备锁
+node/pf-node node                                      # 节点身份、版本、执行宿主和数据位置
+node/pf-node jobs --query Doom                         # 任意任务检索、分页，含失败与历史任务
+node/pf-node artifacts <job-id>                        # 列举输出；用 out <job-id> <path> 下载
 node/pf-node-deploy --restart                          # 更新节点代码并重启服务
 ```
 
 节点令牌放在 `~/.config/hgamey/node.token` 或 `.hgamey/node.token`，不进仓库。
+只读 token 可查询 `/node`、`/jobs`、日志和输出；网页使用查看密码打开 `/dash/jobs`，不触发手机采样。
+服务可用 `--data-dir` 指定独立数据根（`jobs/`）；不指定时继续读写原 `phonefarm/_jobs`，不自动迁移。
 
 ## 文档
 

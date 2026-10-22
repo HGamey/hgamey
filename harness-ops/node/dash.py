@@ -404,6 +404,10 @@ class Dash:
             if sub and sub[0] == "api":
                 return self._send(h, 401, {"error": "需要查看密码"}, extra={"WWW-Authenticate": 'Basic realm="HGamey dash"'})
             return self._redirect(h, "/dash/login")
+        if sub == ["jobs"]:
+            return self._static(h, "jobs.html")
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "app.css"):
+            return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()
         q = parse_qs(query)
@@ -522,7 +526,8 @@ class Dash:
         if not re.fullmatch(r"[a-z0-9_.-]+", name) or ext not in STATIC_TYPES:
             return self._send(h, 404, {"error": "not found"})
         try:
-            data = open(os.path.join(STATIC_DIR, name), "rb").read()
+            with open(os.path.join(STATIC_DIR, name), "rb") as f:
+                data = f.read()
         except OSError:
             return self._send(h, 404, {"error": "not found"})
         self._send(h, 200, data, STATIC_TYPES[ext])

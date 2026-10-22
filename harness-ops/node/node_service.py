@@ -2,7 +2,7 @@
 """HGamey 手机节点服务：跑在插着手机的那台机器上，只监听 127.0.0.1，由 cloudflared 隧道出网。
 
 两张脸，管理 token（Authorization: Bearer <PHONEFARM_NODE_TOKEN>）全部可用；
-另有**只读 token** = HMAC-SHA256(管理 token, "hgamey-node-readonly-v1") 的十六进制，只能 POST /mcp、只能调只读工具
+另有**只读 token** = HMAC-SHA256(管理 token, "hgamey-node-readonly-v1") 的十六进制，可读 /node、/jobs 与产物，以及 POST /mcp 的只读工具
 （给云端 Actions 用：泄露了也碰不了手机）。两边各自从管理 token 推导，不用传文件。
 
   /mcp    MCP streamable HTTP（JSON 响应形态）⇄ stdio `phonefarm serve`，工具白名单。给云端 pi 用。
@@ -27,6 +27,9 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+from node_read import NodeRead
+from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
+                         directory_signature, archive_directory)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -135,14 +138,6 @@ class McpChild:
 
 # ═════════════ /jobs ═════════════
 
-def _sha256_file(p):
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        for b in iter(lambda: f.read(1 << 20), b""):
-            h.update(b)
-    return h.hexdigest()
-
-
 def _pid_alive(pid):
     try:
         os.kill(int(pid), 0)
@@ -154,17 +149,32 @@ def _pid_alive(pid):
 
 
 class Jobs:
-    def __init__(self, root, bins):
+    def __init__(self, root, bins, data_dir=None):
         self.root, self.bins = root, bins
-        self.dir = os.path.join(root, "_jobs")
+        self.data_root = os.path.abspath(data_dir or root)
+        self.dir = os.path.join(self.data_root, "jobs" if data_dir else "_jobs")
         os.makedirs(self.dir, exist_ok=True)
+        self._read_root = SafeRoot(self.dir)
         self.procs = {}
         self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
 
     def path(self, jid, *p):
         if not re.fullmatch(r"[0-9a-f]{12}", jid or ""):
             raise KeyError(jid)
-        return os.path.join(self.dir, jid, *p)
+        path = os.path.join(self.dir, jid)
+        for part in ("", *p):
+            path = os.path.join(path, part) if part else path
+            if os.path.islink(path):
+                raise ValueError("job paths cannot be symbolic links")
+        return path
+
+    def _write_meta(self, jid, meta):
+        self.path(jid)  # Validate the public ID before constructing a relative path.
+        self._read_root.write_json(jid + "/meta.json", meta)
+
+    def _read_meta(self, jid):
+        self.path(jid)
+        return self._read_root.read_json(jid + "/meta.json")
 
     def start(self, spec, body):
         binname, argv = spec.get("bin"), spec.get("argv") or []
@@ -201,7 +211,7 @@ class Jobs:
         p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
                              env=env, start_new_session=True)
         meta = {"id": jid, "bin": binname, "argv": argv, "label": spec.get("label"), "started": time.time(), "pid": p.pid}
-        json.dump(meta, open(self.path(jid, "meta.json"), "w"), ensure_ascii=False)
+        self._write_meta(jid, meta)
         self.procs[jid] = p
         threading.Thread(target=self._wait, args=(jid, p, logf), daemon=True).start()
         log(f"job {jid} [{spec.get('label')}] {binname} {' '.join(argv)[:200]}")
@@ -210,18 +220,22 @@ class Jobs:
     def _wait(self, jid, p, logf):
         rc = p.wait()
         logf.close()
-        meta = json.load(open(self.path(jid, "meta.json")))
+        meta = self._read_meta(jid)
         meta.update(exit=rc, ended=time.time())
-        json.dump(meta, open(self.path(jid, "meta.json"), "w"), ensure_ascii=False)
+        self._write_meta(jid, meta)
         log(f"job {jid} exit {rc}")
 
     def status(self, jid):
-        meta = json.load(open(self.path(jid, "meta.json")))
+        meta = self._read_meta(jid)
+        if not isinstance(meta, dict) or meta.get("id") != jid:
+            raise ValueError("invalid job metadata")
         if "exit" not in meta and jid not in self.procs:
             try:   # 重启前起的任务：从 exitcode 文件拿真实退出码
-                rc = int(open(self.path(jid, "exitcode")).read().strip())
-                meta.update(exit=rc, ended=os.path.getmtime(self.path(jid, "exitcode")), adopted=True)
-                json.dump(meta, open(self.path(jid, "meta.json"), "w"), ensure_ascii=False)
+                with self._read_root.open_file(jid + "/exitcode") as f:
+                    rc = int(f.read(128).strip())
+                    ended = os.fstat(f.fileno()).st_mtime
+                meta.update(exit=rc, ended=ended, adopted=True)
+                self._write_meta(jid, meta)
             except (FileNotFoundError, ValueError):
                 pass
         if "exit" not in meta and jid not in self.procs and not _pid_alive(meta.get("pid")):
@@ -229,67 +243,78 @@ class Jobs:
             # 记 -1 并标注，免得客户端（pf-node wait/follow）永远等 "running"。
             meta.update(exit=-1, ended=time.time(), lost=True,
                         note="节点服务重启过，这个任务的真实退出码丢了；看日志和输出目录判断结果")
-            json.dump(meta, open(self.path(jid, "meta.json"), "w"), ensure_ascii=False)
+            self._write_meta(jid, meta)
         meta["state"] = "finished" if "exit" in meta else "running"
         return meta
 
-    def log_from(self, jid, offset):
-        with open(self.path(jid, "log"), "rb") as f:
+    def log_from(self, jid, offset, limit=4 << 20):
+        if not 0 <= offset <= (1 << 63) - 1 or not 1 <= limit <= (4 << 20):
+            raise ValueError("offset must be nonnegative; limit must be between 1 and 4194304")
+        self.path(jid)
+        with self._read_root.open_file(jid + "/log") as f:
             f.seek(offset)
-            return f.read(4 << 20)
+            return f.read(limit)
 
     def out_blob(self, jid, rel=None):
-        """要下载的东西落在磁盘上的文件 + 元信息。rel 为空 = 整个输出目录打 tar.gz；rel 是文件 = 文件本身；
-        rel 是目录 = 该目录打 tar.gz。tar.gz 缓存在 _jobs/<id>/.outcache-*，目录内容（路径/大小/mtime）没变就复用，
-        所以分块下载的各块来自同一份字节；变了 etag 就变，客户端从头来。"""
-        base = os.path.realpath(self.path(jid, "out"))
-        if not os.path.isdir(base):
-            raise FileNotFoundError(base)
-        target = os.path.realpath(os.path.join(base, rel)) if rel else base
-        if target != base and not target.startswith(base + os.sep):
-            raise ValueError("path 必须在本任务的输出目录里")
-        if os.path.isfile(target):
-            st = os.stat(target)
-            key = (target, st.st_size, st.st_mtime_ns)
-            with self._out_guard:
-                sha = self._sha_cache.get(key)
-            if not sha:
-                sha = _sha256_file(target)
-                with self._out_guard:
-                    self._sha_cache[key] = sha
-            return target, {"kind": "file", "path": os.path.relpath(target, base), "size": st.st_size,
-                            "sha256": sha, "etag": sha[:16]}
-        if not os.path.isdir(target):
-            raise FileNotFoundError(target)
-        sig = hashlib.sha256()
-        for dp, dirs, files in os.walk(target):
-            dirs.sort()
-            sig.update(f"D {os.path.relpath(dp, target)}\n".encode())
-            for f in sorted(files):
-                try:
-                    st = os.lstat(os.path.join(dp, f))
-                except OSError:
-                    continue
-                sig.update(f"F {f} {st.st_size} {st.st_mtime_ns}\n".encode())
-        sig = sig.hexdigest()[:16]
-        cache = self.path(jid, ".outcache-" + hashlib.sha1((rel or "").encode()).hexdigest()[:10] + ".tar.gz")
+        """Return an open regular file plus its metadata. Caller must close it.
+
+        Every component is opened relative to the pinned jobs root. Directory
+        exports retain disk caching; tar reads opened fds rather than path names.
+        """
+        import stat
+        self.path(jid)
+        rel = relative_path(rel or "")
+        target = jid + "/out" + ("/" + rel if rel else "")
+        fd = self._read_root.open_fd(target)
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            f = os.fdopen(fd, "rb")
+            try:
+                info = describe_file(f, self._sha_cache, self._out_guard)
+                return f, {"kind": "file", "path": os.path.normpath(rel), **info}
+            except BaseException:
+                f.close()
+                raise
+        cache = jid + "/.outcache-" + hashlib.sha1(rel.encode()).hexdigest()[:10] + ".tar.gz"
         with self._out_guard:
             lock = self._out_locks.setdefault(cache, threading.Lock())
-        with lock:
-            try:
-                m = json.load(open(cache + ".json"))
-                if m["sig"] == sig and os.path.getsize(cache) == m["size"]:
-                    return cache, m["info"]
-            except (OSError, ValueError, KeyError):
-                pass
-            tmp = cache + ".tmp"
-            with tarfile.open(tmp, mode="w:gz") as t:
-                t.add(target, arcname=".")
-            size, sha = os.path.getsize(tmp), _sha256_file(tmp)
-            info = {"kind": "tar.gz", "path": os.path.relpath(target, base), "size": size, "sha256": sha, "etag": sha[:16]}
-            os.replace(tmp, cache)
-            json.dump({"sig": sig, "size": size, "info": info}, open(cache + ".json", "w"))
-            return cache, info
+        try:
+            with lock:
+                signature = directory_signature(fd)
+                try:
+                    old = self._read_root.read_json(cache + ".json")
+                    if old.get("sig") == signature:
+                        f = self._read_root.open_file(cache)
+                        try:
+                            info = describe_file(f, self._sha_cache, self._out_guard)
+                            if info["size"] == old.get("size") and info["sha256"] == old.get("info", {}).get("sha256"):
+                                return f, {"kind": "tar.gz", "path": os.path.normpath(rel or "."), **info}
+                        except BaseException:
+                            f.close()
+                            raise
+                        f.close()
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    pass
+                temporary = cache + "." + uuid.uuid4().hex + ".tmp"
+                f = self._read_root.create_file(temporary)
+                try:
+                    archived_signature = archive_directory(fd, f)
+                    if archived_signature != signature:
+                        raise ArtifactChanged("artifact directory changed before archiving; retry")
+                    self._read_root.replace(temporary, cache)
+                    info = {"kind": "tar.gz", "path": os.path.normpath(rel or "."),
+                            **describe_file(f, self._sha_cache, self._out_guard)}
+                    self._read_root.write_json(cache + ".json", {"sig": signature, "size": info["size"], "info": info})
+                    return f, info
+                except BaseException:
+                    f.close()
+                    raise
+                finally:
+                    try:
+                        self._read_root.unlink(temporary)
+                    except FileNotFoundError:
+                        pass
+        finally:
+            os.close(fd)
 
     def kill(self, jid):
         """先 SIGINT（让 phonefarm 走还原流程）；15 秒后还活着升 SIGTERM，再 15 秒升 SIGKILL（整个进程组）。
@@ -318,8 +343,9 @@ class Jobs:
 
 # ═════════════ HTTP ═════════════
 
-def make_handler(mcp, jobs, token, board=None):
+def make_handler(mcp, jobs, token, board=None, node=None):
     ro_token = readonly_token(token)
+    node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -332,6 +358,8 @@ def make_handler(mcp, jobs, token, board=None):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             for k, v in (extra or {}).items():
                 for one in (v if isinstance(v, list) else [v]):
                     self.send_header(k, one)
@@ -352,7 +380,7 @@ def make_handler(mcp, jobs, token, board=None):
 
         def _body(self):
             n = int(self.headers.get("Content-Length", 0))
-            if n > MAX_UPLOAD:
+            if not 0 <= n <= MAX_UPLOAD:
                 raise ValueError("上传太大")
             return self.rfile.read(n) if n else b""
 
@@ -361,33 +389,56 @@ def make_handler(mcp, jobs, token, board=None):
             parts = [p for p in u.path.split("/") if p]
             if parts == ["health"]:
                 return self._send(200, b"ok", "text/plain")
+            # Dashboard and token clients share the same host-only read contract.
+            # These routes deliberately do not wake the dashboard's phone sampler.
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"]):
+                if not board.authed(self):
+                    return self._send(401, {"error": "需要查看密码"})
+                return self._read_get(parts[2:], parse_qs(u.query))
             if board and parts[:1] == ["dash"]:  # 实时看板自己管认证（查看密码，不是管理 token）
                 try:
                     return board.handle_get(self, parts, u.query)
                 except Exception as e:  # noqa: BLE001
                     log(f"dash GET {u.path} 出错: {e!r}")
                     return self._send(500, {"error": "dash 内部错误"})
-            if not self._authed():
+            if not self._authed(allow_ro=True):
                 return
+            return self._read_get(parts, parse_qs(u.query))
+
+        def _read_get(self, parts, q):
             try:
+                if parts == ["node"]:
+                    return self._send(200, node.identity())
+                if parts == ["jobs"]:
+                    return self._send(200, node.list_jobs(q))
                 if parts == ["mcp"]:
                     return self._send(405, b"", extra={"Allow": "POST"})
                 if len(parts) == 2 and parts[0] == "jobs":
                     return self._send(200, jobs.status(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "log":
-                    off = int(parse_qs(u.query).get("offset", ["0"])[0])
-                    return self._send(200, jobs.log_from(parts[1], off), "application/octet-stream")
+                    off = int(q.get("offset", ["0"])[0])
+                    limit = int(q.get("limit", [str(4 << 20)])[0])
+                    return self._send(200, jobs.log_from(parts[1], off, limit), "application/octet-stream")
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "artifacts":
+                    return self._send(200, node.artifacts(parts[1], q))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
-                    return self._out(parts[1], parse_qs(u.query))
+                    return self._out(parts[1], q)
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
+            except ArtifactChanged as e:
+                return self._send(409, {"error": str(e)})
             except ValueError as e:
                 return self._send(400, {"error": str(e)})
             self._send(404, {"error": "not found"})
 
         def _out(self, jid, q):
-            rel = (q.get("path") or [""])[0].strip("/") or None
+            rel = (q.get("path") or [""])[0] or None
             blob, info = jobs.out_blob(jid, rel)
+            with blob:
+                return self._stream_out(blob, info, q)
+
+        def _stream_out(self, blob, info, q):
+            ensure_unchanged(blob)
             if "meta" in q:
                 return self._send(200, info)
             size, etag = info["size"], info["etag"]
@@ -396,7 +447,10 @@ def make_handler(mcp, jobs, token, board=None):
             start, end, status = 0, size, 200
             if "offset" in q:  # 分块接口（走 Cloudflare 稳妥，不依赖 Range 头被透传）
                 start = int(q["offset"][0])
-                end = min(size, start + min(int((q.get("length") or [OUT_CHUNK_MAX])[0]), OUT_CHUNK_MAX))
+                length = int((q.get("length") or [OUT_CHUNK_MAX])[0])
+                if length < 1:
+                    return self._send(416, {"error": "length must be positive"})
+                end = min(size, start + min(length, OUT_CHUNK_MAX))
                 if not 0 <= start <= size:
                     return self._send(416, {"error": "offset 越界", **info})
             else:
@@ -408,12 +462,16 @@ def make_handler(mcp, jobs, token, board=None):
                         start, end = int(a), min(size, int(b) + 1) if b else size
                     else:  # bytes=-N：最后 N 字节
                         start, end = max(0, size - int(b)), size
-                    if start >= size and size:
+                    if start >= size or end <= start:
                         return self._send(416, b"", extra={"Content-Range": f"bytes */{size}"})
                     status = 206
+            ensure_unchanged(blob)
             self.send_response(status)
             self.send_header("Content-Type", "application/gzip" if info["kind"] == "tar.gz" else "application/octet-stream")
             self.send_header("Content-Length", str(end - start))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Disposition", "attachment")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("ETag", f'"{etag}"')
             self.send_header("X-Content-SHA256", info["sha256"])
@@ -421,15 +479,17 @@ def make_handler(mcp, jobs, token, board=None):
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
             self.end_headers()
-            with open(blob, "rb") as f:  # 从磁盘边读边发，不把整份读进内存
-                f.seek(start)
-                left = end - start
-                while left > 0:
-                    b = f.read(min(left, 256 << 10))
-                    if not b:
-                        break
-                    self.wfile.write(b)
-                    left -= len(b)
+            blob.seek(start)
+            left = end - start
+            while left > 0:
+                b = blob.read(min(left, 256 << 10))
+                if not b:
+                    # Content-Length was already sent: terminate this response
+                    # instead of leaving keep-alive clients waiting indefinitely.
+                    self.close_connection = True
+                    break
+                self.wfile.write(b)
+                left -= len(b)
 
         def do_DELETE(self):
             if self._authed():
@@ -491,6 +551,7 @@ def main():
     ap.add_argument("--phonefarm", default=os.path.expanduser("~/node/phonefarm"), help="phonefarm 根目录（含 phonefarm 可执行）")
     ap.add_argument("--game-opt-loop", default=os.path.expanduser("~/node/game_opt_loop"), help="game_opt_loop 仓库目录（含 game_opt_loop 可执行），与 phonefarm 同级")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--data-dir", help="独立运行数据根；新任务写到其中jobs/，不自动搬迁旧_jobs")
     a = ap.parse_args()
     # run_node.sh 用 & 在后台起本进程：非交互 shell 会把后台命令的 SIGINT 设成「忽略」，并一路遗传给
     # 我们起的任务（忽略态跨 exec 保留）—— 结果 kill/停止发的 SIGINT 对 bash 脚本、排队等锁的 devlock 无效。
@@ -508,7 +569,7 @@ def main():
             "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root)),
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
-    jobs = Jobs(root, bins)
+    jobs = Jobs(root, bins, data_dir=a.data_dir)
     board = None
     if dash:
         try:
