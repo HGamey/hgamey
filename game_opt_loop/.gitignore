@@ -5,6 +5,7 @@ Cargo.lock
 runs/
 *.spv
 *.log
+tools/phonefarm_web/__pycache__/
 
 # 面板的测试夹具是从真机产物里原样拷来的真文件 (运行目录、*.log 都在内),
 # 上面那几条忽略规则不该把它们一起吃掉。
