@@ -96,9 +96,9 @@ enum Command {
         #[arg(long)]
         phonefarm_root: Option<PathBuf>,
 
-        /// devlock.d / devlock.log 所在目录
-        #[arg(long, default_value = "/private/tmp/claude-501")]
-        lock_root: PathBuf,
+        /// 历史锁文件只读目录覆盖；默认从 phonefarm 查询，实时 fleet 仍使用其自身锁目录
+        #[arg(long)]
+        lock_root: Option<PathBuf>,
 
         /// phonefarm 可执行文件。缺省取 `<phonefarm-root>/phonefarm`。
         ///
@@ -496,7 +496,7 @@ fn run_serve(
     port: u16,
     root: PathBuf,
     phonefarm_root: Option<PathBuf>,
-    lock_root: PathBuf,
+    lock_root: Option<PathBuf>,
     phonefarm_bin: Option<PathBuf>,
     fleet_ttl_s: u64,
     no_fleet: bool,
@@ -506,21 +506,31 @@ fn run_serve(
     let root = root
         .canonicalize()
         .with_context(|| format!("--root {} 不存在", root.display()))?;
-    let mut paths = game_opt_loop::viz::VizPaths::from_gol_root(root);
-    if let Some(p) = phonefarm_root {
-        paths.phonefarm_root = p;
+    let phonefarm_root = std::path::absolute(
+        phonefarm_root.unwrap_or_else(|| root.parent().unwrap_or(&root).join("phonefarm")),
+    )?;
+    let phonefarm_bin = std::path::absolute(
+        phonefarm_bin.unwrap_or_else(|| phonefarm_root.join("phonefarm")),
+    )?;
+    let resolved_root = game_opt_loop::devlock::resolve_root(&phonefarm_bin, lock_root.as_deref())?;
+    if lock_root.is_some() {
+        eprintln!(
+            "--lock-root: 历史文件只读目录覆盖 {}；实时 fleet 仍使用 phonefarm 自身锁目录，不授予设备写入权限",
+            resolved_root.display()
+        );
     }
-    paths.lock_root = lock_root.clone();
+    let mut paths = game_opt_loop::viz::VizPaths::from_gol_root(root, resolved_root);
+    paths.phonefarm_root = phonefarm_root;
     // 路径是上面几个参数算出来的, 所以 fleet 配置要在它们定完之后重建一遍。
     paths.fleet = if no_fleet {
         None
     } else {
         Some(game_opt_loop::viz::fleet::FleetConfig {
-            bin: phonefarm_bin.unwrap_or_else(|| paths.phonefarm_root.join("phonefarm")),
+            bin: phonefarm_bin,
             cwd: paths.phonefarm_root.clone(),
             ttl: std::time::Duration::from_secs(fleet_ttl_s),
             timeout: std::time::Duration::from_secs(game_opt_loop::viz::fleet::DEFAULT_TIMEOUT_S),
-            lock_dir: Some(lock_root),
+            lock_dir: None,
             // 图必须落在 phonefarm 仓库之内 —— /api/file 的白名单只认两个仓库根,
             // 落在别处的话卡片上那个 <img> 会 403。
             screenshot_dir: phone_screenshots
@@ -1131,7 +1141,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
                 cfg.phonefarm.display()
             );
         };
-        game_opt_loop::devlock::Guard::acquire(script, label, wait)?
+        game_opt_loop::devlock::Guard::acquire(script, cfg.phonefarm.clone(), label, wait)?
     };
 
     // 给了两个以上 --proposer 就是对比模式: 同一游戏 / 设备 / 预算依次跑, 出 compare.md。

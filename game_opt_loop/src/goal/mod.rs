@@ -616,7 +616,9 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
 
     let label = format!("goal-{}", rd.run_id());
     let mut guard = match &opts.lock {
-        Some(l) => match crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait) {
+        Some(l) => match crate::devlock::Guard::acquire(
+            l.script.clone(), opts.phonefarm.clone(), label.clone(), l.wait,
+        ) {
             Ok(g) => Some(g),
             Err(e) if optimize::interrupted() => {
                 // 排队时被叫停: 没碰设备, 按人叫停收尾
@@ -725,7 +727,9 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
                 }
             }
             if let Some(l) = &opts.lock {
-                guard = Some(crate::devlock::Guard::acquire(l.script.clone(), label.clone(), l.wait)?);
+                guard = Some(crate::devlock::Guard::acquire(
+                    l.script.clone(), opts.phonefarm.clone(), label.clone(), l.wait,
+                )?);
             }
             st.status = "running".into();
             rd.write_state(&mut st)?;

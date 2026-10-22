@@ -122,7 +122,7 @@ fn mtime_rfc3339(path: &Path) -> Option<String> {
     Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
 }
 
-/// 读锁状态。`lock_dir` 是 `devlock.d` 的父目录 (缺省 `/private/tmp/claude-501`)。
+/// 读锁状态。`lock_dir` 是已解析的 `devlock.d` 父目录。
 pub fn load(lock_root: &Path, phonefarm_root: &Path, max_tasks: usize) -> DeviceView {
     let mut problems = Vec::new();
     let owner_path = lock_root.join("devlock.d/owner");

@@ -152,8 +152,11 @@ Read the output top down:
 ## Sharing one phone: the device lock
 
 Several agents work against one phone. Everything that touches the device —
-including `--plan` — goes through the lock at `/private/tmp/claude-501/devlock`
-(script: phonefarm repo `tools/devlock`).
+including `--plan` — goes through the phonefarm repo's `tools/devlock`.
+Use the same phonefarm binary and lock storage as the node. The script resolves
+storage through `PHONEFARM_BIN`; `phonefarm lease status --json` reports the
+resolved directories and readiness. Do not choose a different directory to
+bypass a migration error or a recovery barrier.
 
 **`optimize` takes the lock itself** (acquire, 60 s heartbeat, release on exit):
 pass `--lock-label <label>` (default: `$DEVLOCK_LABEL`, else `game_opt_loop`)
@@ -164,8 +167,11 @@ label is harmless. phonefarm's device subcommands do the same (`--lock-label`).
 The manual `devlock run` loop below is still how you guard ad-hoc `adb` commands.
 
 ```bash
-/private/tmp/claude-501/devlock status               # who holds it, who is queued
-/private/tmp/claude-501/devlock run <label> -- <cmd> # take it, run, release
+export PHONEFARM_BIN=/path/to/phonefarm/phonefarm
+DEVLOCK_BIN=/path/to/phonefarm/tools/devlock
+"$PHONEFARM_BIN" lease status --json
+"$DEVLOCK_BIN" status               # who holds it, who is queued
+"$DEVLOCK_BIN" run <label> -- <cmd> # take it, run, release
 ```
 
 **Read `status` before you do anything else, and take your label from it.**
@@ -192,20 +198,25 @@ free.** So:
 - **Re-issuing does not lose your place** — `acquire` only appends a label that
   is not already queued. So a retry loop is safe.
 - Poll at **30–60 s**, not faster, and expect to wait: on a shared phone a
-  single holder legitimately runs 45 minutes or more. Do not steal the lock; a
-  holder whose heartbeat is older than 600 s is considered abandoned and may be
-  taken over (the takeover is logged).
+  single holder legitimately runs 45 minutes or more. Do not steal the lock.
+  A strong lease or pending recovery cannot be cleared by heartbeat age;
+  follow phonefarm's explicit recovery workflow when it reports a barrier.
 
 ```bash
 # Take the label from `status`; retry until it is your turn.
 for i in $(seq 1 90); do
-  /private/tmp/claude-501/devlock run gol-probe -- \
-    adb -s 91253241019A shell dumpsys battery && break
+  "$DEVLOCK_BIN" run gol-probe -- \
+    adb -s "$SERIAL" shell dumpsys battery && break
   sleep 40
 done
 # optimize queues by itself:
 ./target/release/game_opt_loop optimize --game 原神 --plan --lock-label gol-probe
 ```
+
+The read-only `serve` page resolves `storage.devlock_dir` from its selected
+`--phonefarm-bin` and refuses unavailable or unmigrated storage. `--lock-root`
+only overrides historical lock-file reads; live fleet sampling still uses
+phonefarm's own lock storage. This override does not grant device write access.
 
 ### Picking the device
 

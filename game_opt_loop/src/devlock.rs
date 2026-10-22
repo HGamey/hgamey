@@ -16,7 +16,7 @@
 //! 持锁期间把 `DEVLOCK_LABEL=<label>` 放进环境: 我们调起的 `phonefarm probe/eval`
 //! 走它自己入口的第 1 步, 认出锁是这一侧的, 原地执行而不是再排一次队。
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,12 +51,52 @@ pub fn script_path(phonefarm_bin: &Path) -> Option<PathBuf> {
     })
 }
 
+/// 只读面板跟随所选 phonefarm 的锁目录，不根据主机或旧版本路径猜测。
+/// 显式目录只覆盖面板读取的位置，不授予设备写入权限。
+pub fn resolve_root(phonefarm: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
+    if let Some(root) = explicit {
+        return Ok(std::path::absolute(root)?);
+    }
+    let output = Command::new(phonefarm)
+        .args(["lease", "status", "--json"])
+        .output()
+        .with_context(|| format!("读取 {} 的锁目录失败", phonefarm.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} lease status --json 失败 ({}): {}",
+            phonefarm.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("phonefarm lease status 没有返回有效 JSON")?;
+    let storage = &status["storage"];
+    if storage["readiness"].as_str() != Some("ready") {
+        bail!(
+            "phonefarm 锁存储未就绪或版本不支持 storage.readiness: {}；请先升级或完成存储迁移",
+            storage
+        );
+    }
+    let root = storage["devlock_dir"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .context("phonefarm 未返回绝对路径 storage.devlock_dir；请升级 phonefarm")?;
+    Ok(root)
+}
+
 /// label 的来源: 显式参数 > 环境 `DEVLOCK_LABEL` > [`DEFAULT_LABEL`]。
 pub fn resolve_label(explicit: Option<&str>) -> String {
     explicit
         .map(str::to_string)
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("DEVLOCK_LABEL").ok().filter(|s| !s.is_empty()))
+        .or_else(|| {
+            std::env::var("DEVLOCK_LABEL")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_LABEL.to_string())
 }
 
@@ -75,8 +115,12 @@ pub fn parse_wait(s: &str) -> Result<Duration> {
     }
 }
 
-fn call(script: &Path, args: &[&str]) -> (bool, String) {
-    match Command::new(script).args(args).output() {
+fn call(script: &Path, phonefarm: &Path, args: &[&str]) -> (bool, String) {
+    match Command::new(script)
+        .env("PHONEFARM_BIN", phonefarm)
+        .args(args)
+        .output()
+    {
         Ok(o) => (
             o.status.success(),
             format!(
@@ -94,6 +138,7 @@ fn call(script: &Path, args: &[&str]) -> (bool, String) {
 /// 持锁守卫。drop 时停心跳并释放 (只释放自己拿的; 借外层的锁不动)。
 pub struct Guard {
     script: Option<PathBuf>,
+    phonefarm: PathBuf,
     label: String,
     owned: bool,
     stop: Arc<AtomicBool>,
@@ -106,6 +151,7 @@ impl Guard {
         eprintln!("⚠ --no-devlock: 不拿设备锁直接碰设备。共享手机上两边的数都可能作废。");
         Self {
             script: None,
+            phonefarm: PathBuf::new(),
             label: String::new(),
             owned: false,
             stop: Arc::new(AtomicBool::new(true)),
@@ -118,13 +164,20 @@ impl Guard {
     }
 
     /// 拿锁。拿不到返回 Err, 调用方据此不碰设备。
-    pub fn acquire(script: PathBuf, label: String, wait: Duration) -> Result<Self> {
+    pub fn acquire(
+        script: PathBuf,
+        phonefarm: PathBuf,
+        label: String,
+        wait: Duration,
+    ) -> Result<Self> {
+        let phonefarm = std::path::absolute(phonefarm)?;
         // 1. 已在本 label 手里: 借用, 不心跳不释放
-        if call(&script, &["renew", &label]).0 {
+        if call(&script, &phonefarm, &["renew", &label]).0 {
             println!("设备锁: 已在 {label} 手里 (外层持有), 原地执行");
             std::env::set_var("DEVLOCK_LABEL", &label);
             return Ok(Self {
                 script: Some(script),
+                phonefarm,
                 label,
                 owned: false,
                 stop: Arc::new(AtomicBool::new(true)),
@@ -134,7 +187,7 @@ impl Guard {
         // 2. 排队
         let t0 = Instant::now();
         loop {
-            let (ok, out) = call(&script, &["acquire", &label]);
+            let (ok, out) = call(&script, &phonefarm, &["acquire", &label]);
             if ok {
                 println!("设备锁: 已拿到 ({label})");
                 break;
@@ -163,7 +216,12 @@ impl Guard {
         // 3. 心跳
         let stop = Arc::new(AtomicBool::new(false));
         let hb = {
-            let (script, label, stop) = (script.clone(), label.clone(), stop.clone());
+            let (script, phonefarm, label, stop) = (
+                script.clone(),
+                phonefarm.clone(),
+                label.clone(),
+                stop.clone(),
+            );
             std::thread::spawn(move || {
                 let mut warned = false;
                 let mut last = Instant::now();
@@ -173,7 +231,7 @@ impl Guard {
                         continue;
                     }
                     last = Instant::now();
-                    let (ok, out) = call(&script, &["renew", &label]);
+                    let (ok, out) = call(&script, &phonefarm, &["renew", &label]);
                     if !ok && !warned {
                         // 不杀主流程: 正在跑的评测半途停下会把设备留在半施加态
                         eprintln!("⚠ 设备锁续期失败 ({label}): {out}");
@@ -184,6 +242,7 @@ impl Guard {
         };
         Ok(Self {
             script: Some(script),
+            phonefarm,
             label,
             owned: true,
             stop,
@@ -200,7 +259,7 @@ impl Drop for Guard {
         }
         if self.owned {
             if let Some(s) = &self.script {
-                let (ok, out) = call(s, &["release", &self.label]);
+                let (ok, out) = call(s, &self.phonefarm, &["release", &self.label]);
                 if ok {
                     println!("设备锁: 已释放 ({})", self.label);
                 } else {
@@ -229,6 +288,57 @@ mod tests {
         assert_eq!(resolve_label(Some("core")), "core");
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn root_follows_selected_phonefarm_and_rejects_unready_or_old_storage() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gol_lock_root_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let phonefarm = dir.join("phonefarm");
+        let response = dir.join("response.json");
+        std::fs::write(&phonefarm, "#!/bin/sh\n[ \"$*\" = 'lease status --json' ] || exit 2\ncat \"$(dirname \"$0\")/response.json\"\n").unwrap();
+        std::fs::set_permissions(&phonefarm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let root = dir.join("durable-locks");
+        std::fs::write(
+            &response,
+            serde_json::json!({"storage": {
+                "schema_version": 1, "readiness": "ready", "devlock_dir": root
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(resolve_root(&phonefarm, None).unwrap(), root);
+        for readiness in ["unavailable", "migration_required"] {
+            std::fs::write(
+                &response,
+                serde_json::json!({"storage": {
+                    "readiness": readiness, "devlock_dir": root
+                }})
+                .to_string(),
+            )
+            .unwrap();
+            assert!(resolve_root(&phonefarm, None)
+                .unwrap_err()
+                .to_string()
+                .contains(readiness));
+        }
+        std::fs::write(&response, "{\"status\":\"clear\"}").unwrap();
+        assert!(
+            resolve_root(&phonefarm, None).is_err(),
+            "旧协议不能被猜成空闲"
+        );
+        std::fs::write(&phonefarm, "#!/bin/sh\nexit 7\n").unwrap();
+        assert!(resolve_root(&phonefarm, None)
+            .unwrap_err()
+            .to_string()
+            .contains("失败"));
+        assert_eq!(
+            resolve_root(&dir.join("missing-phonefarm"), Some(&root)).unwrap(),
+            root
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// 用一个假锁脚本走一遍: 拿锁 → drop 释放; 外层已持有时借用、不释放。
     #[test]
     fn guard_acquires_releases_and_borrows() {
@@ -237,15 +347,17 @@ mod tests {
         let log = dir.join("log");
         let held = dir.join("held");
         let script = dir.join("devlock");
+        let phonefarm = dir.join("selected-phonefarm");
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho \"$1 $2\" >> {log}\ncase $1 in\n\
+                "#!/bin/sh\n[ \"$PHONEFARM_BIN\" = '{phonefarm}' ] || exit 9\necho \"$1 $2\" >> {log}\ncase $1 in\n\
                  renew) [ -f {held} ];;\n\
                  acquire) touch {held};;\n\
                  release) rm -f {held};;\nesac\n",
                 log = log.display(),
-                held = held.display()
+                held = held.display(),
+                phonefarm = phonefarm.display()
             ),
         )
         .unwrap();
@@ -255,11 +367,23 @@ mod tests {
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         {
-            let g = Guard::acquire(script.clone(), "t".into(), Duration::from_secs(60)).unwrap();
+            let g = Guard::acquire(
+                script.clone(),
+                phonefarm.clone(),
+                "t".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
             assert!(g.owned);
             assert!(held.exists());
             // 外层已持有: 借用
-            let inner = Guard::acquire(script.clone(), "t".into(), Duration::from_secs(60)).unwrap();
+            let inner = Guard::acquire(
+                script.clone(),
+                phonefarm,
+                "t".into(),
+                Duration::from_secs(60),
+            )
+            .unwrap();
             assert!(!inner.owned);
             drop(inner);
             assert!(held.exists(), "借用的守卫不该释放外层的锁");

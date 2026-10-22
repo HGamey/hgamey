@@ -46,21 +46,20 @@ pub struct VizPaths {
 }
 
 impl VizPaths {
-    /// 从 `game_opt_loop` 仓库根推出其余路径 —— phonefarm 与它同级,
+    /// 锁目录须先从 phonefarm 查询或显式指定；phonefarm 仓库默认与 GOL 同级,
     /// 这跟 `M0_report.json` 里记的 `phonefarm_binary: ../phonefarm/phonefarm` 一致。
-    pub fn from_gol_root(gol_root: PathBuf) -> Self {
+    pub fn from_gol_root(gol_root: PathBuf, lock_root: PathBuf) -> Self {
         let phonefarm_root = gol_root
             .parent()
             .map(|p| p.join("phonefarm"))
             .unwrap_or_else(|| PathBuf::from("../phonefarm"));
-        let lock_root = PathBuf::from("/private/tmp/claude-501");
         VizPaths {
             fleet: Some(fleet::FleetConfig {
                 bin: phonefarm_root.join("phonefarm"),
                 cwd: phonefarm_root.clone(),
                 ttl: std::time::Duration::from_secs(fleet::DEFAULT_TTL_S),
                 timeout: std::time::Duration::from_secs(fleet::DEFAULT_TIMEOUT_S),
-                lock_dir: Some(lock_root.clone()),
+                lock_dir: None,
                 screenshot_dir: None,
                 screenshot_every_s: 300,
                 enabled: true,
@@ -799,8 +798,12 @@ mod tests {
 
     #[test]
     fn phonefarm_root_defaults_to_sibling() {
-        let p = VizPaths::from_gol_root(PathBuf::from("/a/b/game_opt_loop"));
+        let p = VizPaths::from_gol_root(
+            PathBuf::from("/a/b/game_opt_loop"), PathBuf::from("/node/locks"),
+        );
         assert_eq!(p.phonefarm_root, PathBuf::from("/a/b/phonefarm"));
+        assert_eq!(p.lock_root, PathBuf::from("/node/locks"));
+        assert!(!p.fleet.unwrap().argv().iter().any(|arg| arg == "--lock-dir"));
     }
 
     #[test]
