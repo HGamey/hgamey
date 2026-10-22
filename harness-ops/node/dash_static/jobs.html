@@ -24,7 +24,7 @@
 </header>
 <main class="jobs-page">
   <div class="page-heading">
-    <div><p class="eyebrow">研究工作台</p><h1>任务与结果</h1><p class="page-description">找到一次执行，沿着日志与原始文件核对结果。</p></div>
+    <div><p class="eyebrow">研究工作台</p><h1>任务与结果</h1><p class="page-description">提交本节点任务，查看排队进度，并沿着日志与原始文件核对结果。</p></div>
     <span class="snapshot-label">按需刷新</span>
   </div>
   <section id="node-card" class="node-card" aria-labelledby="node-heading">
@@ -47,13 +47,42 @@
     </form>
     <a id="access-login" class="access-login" href="/dash/login" hidden>重新登录查看页面</a>
   </section>
+  <section id="queue-panel" class="queue-panel" aria-labelledby="queue-heading">
+    <div class="section-heading"><h2 id="queue-heading">本节点队列</h2><button id="refresh-queue" class="ghost" type="button">刷新队列</button></div>
+    <p id="queue-message" class="note" role="status">正在读取队列…</p>
+    <div id="queue-summary" class="queue-summary" hidden></div>
+    <ul id="queue-list" class="queue-list" aria-label="尚未结束调度的任务"></ul>
+    <p id="queue-updated" class="read-time"></p>
+  </section>
+  <details id="submit-panel" class="submit-panel">
+    <summary>提交任务 / 按请求 ID 找回</summary>
+    <p class="note">运行节点已有命令和文件。游戏分发与文件上传暂未接入此入口。</p>
+    <form id="submit-job-form" class="submit-job-form">
+      <div class="submit-fields">
+        <label>命令<select id="submit-bin" required disabled><option value="">正在读取可用命令…</option></select></label>
+        <label>标签 <span class="field-optional">可选</span><input id="submit-label" type="text" placeholder="便于识别这次执行"></label>
+        <label class="wide-field">参数 <span class="field-optional">JSON 字符串数组</span><textarea id="submit-argv" rows="3" spellcheck="false" required aria-describedby="argv-help">[]</textarea><span id="argv-help" class="field-help">例如 ["--help"]；每个参数写成一个字符串。</span></label>
+        <label class="wide-field">独占资源 <span class="field-optional">可选，每行一个键</span><textarea id="submit-resources" rows="2" spellcheck="false" placeholder="留空使用节点默认资源" aria-describedby="resources-help"></textarea><span id="resources-help" class="field-help">相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。</span></label>
+      </div>
+      <div class="submission-actions"><button id="submit-job" class="ghost primary" type="submit" disabled>提交任务</button><span id="submit-help" class="note"></span></div>
+    </form>
+    <div id="submission-receipt" class="submission-receipt" hidden>
+      <p id="submit-message" role="status"></p><p id="submit-request-id" class="request-id"></p>
+      <div class="submission-actions"><button id="submit-retry" class="ghost" type="button" hidden>使用原请求 ID 重试</button><button id="submit-open-job" class="ghost" type="button" hidden>查看对应任务</button></div>
+    </div>
+    <form id="request-lookup-form" class="request-lookup-form">
+      <label for="request-id">按请求 ID 找回</label>
+      <div class="lookup-input"><input id="request-id" type="text" autocomplete="off" spellcheck="false" required placeholder="请求 ID"><button id="request-lookup" class="ghost" type="submit">查询请求</button></div>
+      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页只保存未确认的请求 ID，不保存参数或掌舵密码；刷新后可继续查询。</p>
+    </form>
+  </details>
   <div class="jobs-layout">
     <section id="task-browser" class="task-browser" aria-labelledby="tasks-heading">
       <div class="section-heading"><h2 id="tasks-heading" tabindex="-1">任务列表</h2><span id="task-count" class="count-label" hidden></span></div>
       <form id="filters" class="task-filters">
         <label for="query">搜索任务</label>
         <div class="filter-query"><input id="query" type="search" maxlength="200" placeholder="ID、标签或命令"><button id="search-jobs" class="ghost primary" type="submit">搜索</button></div>
-        <div class="state-filter"><label for="state">执行状态</label><select id="state"><option value="">全部状态</option><option value="running">运行中</option><option value="finished">已结束（含失败）</option></select></div>
+        <div class="state-filter"><label for="state">执行状态</label><select id="state"><option value="">全部状态</option><option value="running">未结束（含排队）</option><option value="finished">已结束（含失败）</option></select></div>
       </form>
       <p id="list-message" class="note" role="status">正在读取任务…</p>
       <p id="list-warnings" class="task-warning" hidden></p>
@@ -78,6 +107,17 @@
           </form>
           <details id="execution-details" class="execution-details"><summary>停止请求、信号与恢复记录</summary><dl id="execution-info" class="facts"></dl><ul id="cancel-signals" class="cancel-signals"></ul></details>
         </section>
+        <details id="queue-release-panel" class="queue-release-panel" hidden>
+          <summary>解除资源保留…</summary>
+          <p class="note">此任务异常结束后仍保留资源。管理员核查后可允许后续任务继续调度；平台不会代替设备还原验证。</p>
+          <form id="queue-release-form">
+            <label for="queue-release-note">核查说明 <span class="field-optional">必填</span></label>
+            <textarea id="queue-release-note" rows="3" required placeholder="记录已核查的进程、设备状态和恢复证据"></textarea>
+            <div class="submission-actions"><button id="queue-release-submit" class="ghost danger" type="submit" disabled>确认解除资源保留</button></div>
+            <p id="queue-release-help" class="note" role="status"></p>
+          </form>
+        </details>
+        <p id="queue-release-result" class="cancel-result" role="status" hidden></p>
         <p class="evidence-note"><strong>结果需核对证据</strong>退出码只说明命令执行情况。实验是否有效、是否有收益、设备是否已恢复，请核对报告和原始证据。</p>
         <section id="artifacts" class="artifacts" aria-labelledby="artifacts-heading">
           <div class="section-heading"><h3 id="artifacts-heading">输出文件</h3><button id="refresh-artifacts" class="ghost" type="button">刷新目录</button></div>
@@ -96,7 +136,7 @@
     </section>
   </div>
 </main>
-<footer class="foot">文件保存在当前节点。读取页面只访问宿主记录，不启动设备采样；停止操作需掌舵权限。运行中的日志和输出可能仍在更新。</footer>
+<footer class="foot">文件保存在当前节点。读取页面只访问宿主记录，不启动设备采样；提交、停止和解除资源保留需掌舵权限。运行中的日志和输出可能仍在更新。</footer>
 <script src="/dash/static/jobs.js"></script>
 </body>
 </html>

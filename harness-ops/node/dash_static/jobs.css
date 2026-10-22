@@ -38,7 +38,7 @@
 .jobs-view button:active:not(:disabled) { transform: translateY(1px); }
 .jobs-view button:disabled { opacity: .6; cursor: wait; }
 .jobs-view button[aria-busy="true"] { opacity: .75; }
-.jobs-view :is(button, a, input, select, summary, pre, [tabindex]):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.jobs-view :is(button, a, input, select, textarea, summary, pre, [tabindex]):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 .skip-link { position: absolute; left: 16px; top: -80px; padding: 8px 14px; z-index: 10; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; }
 .skip-link:focus { top: 12px; }
 .jobs-page { max-width: 1440px; margin: 0 auto; padding: 32px 32px 0; }
@@ -194,3 +194,39 @@
   .execution-details .facts { grid-template-columns: 76px minmax(0,1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .jobs-view button.ghost { transition: none; } .jobs-view button:active:not(:disabled) { transform: none; } }
+
+/* Queue and submission share the workspace, without implying a multi-node fleet. */
+.queue-panel, .submit-panel { margin-bottom: 24px; padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.queue-panel .read-time { margin: 12px 0 0; }
+.queue-summary { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 12px 0; font-size: 13px; color: var(--ink2); }
+.queue-summary strong { font-size: 18px; font-weight: 650; color: var(--ink); margin-right: 5px; font-variant-numeric: tabular-nums; }
+.queue-list { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; }
+.queue-item { display: grid; grid-template-columns: minmax(130px, .65fr) minmax(0, 1.7fr) auto; align-items: start; gap: 10px 20px; padding: 14px 0; border-top: 1px solid var(--grid); font-size: 13px; }
+.queue-item > div { min-width: 0; overflow-wrap: anywhere; }
+.queue-item .task-state { margin-top: 6px; }
+.queue-item p { margin: 0; }
+.queue-item .queue-resource { margin-top: 4px; font-size: 12px; color: var(--muted); }
+.queue-blockers { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.queue-blockers button { border: 0; background: none; padding: 3px 0; color: var(--blue-ink); cursor: pointer; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.submit-panel > summary, .queue-release-panel > summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 4px 0; color: var(--ink2); }
+.submit-panel > .note { margin: 12px 0 16px; }
+.submit-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; }
+.submit-fields label, .request-lookup-form > label, .queue-release-panel label { display: block; min-width: 0; font-size: 13px; color: var(--ink2); }
+.wide-field { grid-column: 1 / -1; }
+.field-optional { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 6px; }
+.field-help { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.submit-panel :is(input, select, textarea), .queue-release-panel textarea { width: 100%; min-width: 0; box-sizing: border-box; margin-top: 6px; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); font: inherit; }
+.submit-panel textarea, .queue-release-panel textarea { resize: vertical; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.submit-panel :is(input, select, textarea):disabled { background: var(--panel); color: var(--muted); cursor: not-allowed; }
+.submission-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 16px; }
+.submission-receipt { margin-top: 16px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.submission-receipt p { margin: 0; }
+.request-id { margin-top: 8px !important; color: var(--muted); font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.request-lookup-form { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--grid); }
+.lookup-input { display: flex; gap: 8px; max-width: 620px; align-items: center; }
+.lookup-input input { flex: 1; margin-top: 0; }
+.lookup-input { margin-top: 6px; }
+.queue-release-panel { padding: 14px 16px; margin-top: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--amber-soft); }
+.queue-release-panel .note { color: var(--amber-ink); }
+@media (max-width: 780px) { .queue-item { grid-template-columns: minmax(120px, .8fr) minmax(0, 1.2fr); } .queue-item > button { grid-column: 1 / -1; justify-self: start; } }
+@media (max-width: 480px) { .queue-panel, .submit-panel { padding: 16px; margin-bottom: 20px; } .queue-item { grid-template-columns: minmax(0, 1fr); gap: 8px; } .queue-summary { gap: 8px 16px; } .submit-fields { grid-template-columns: minmax(0, 1fr); } .lookup-input { flex-wrap: wrap; } .lookup-input input { flex-basis: 100%; } .submit-panel :is(input, select), .submit-panel summary, .queue-release-panel summary { min-height: 44px; } }
