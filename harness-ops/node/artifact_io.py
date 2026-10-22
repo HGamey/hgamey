@@ -142,6 +142,31 @@ class SafeRoot:
             except FileNotFoundError:
                 pass
 
+    def publish_json_once(self, rel, value):
+        """Atomically publish complete JSON without replacing an earlier request."""
+        temporary = rel + "." + uuid.uuid4().hex + ".tmp"
+        try:
+            with self.create_file(temporary) as f:
+                f.write(json.dumps(value, ensure_ascii=False).encode())
+                f.flush()
+                os.fsync(f.fileno())
+            parent, name = self._parent(rel)
+            try:
+                try:
+                    os.link(os.path.basename(temporary), name, src_dir_fd=parent,
+                            dst_dir_fd=parent, follow_symlinks=False)
+                except FileExistsError:
+                    return False
+                os.fsync(parent)
+                return True
+            finally:
+                os.close(parent)
+        finally:
+            try:
+                self.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
 
 def describe_file(file, cache=None, cache_lock=None):
     """Hash a stable regular fd and retain it for the matching response bytes."""
