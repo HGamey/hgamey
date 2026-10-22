@@ -57,6 +57,10 @@ impl Change {
 /// 档案里的一条。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expert_decisions: Vec<crate::campaign::Decision>,
     pub id: String,
     pub layer: Kind,
     pub generation: u32,
@@ -66,6 +70,11 @@ pub struct Entry {
     pub status: String,
     pub metrics: MetricsV2,
     pub verdict: VerdictV2,
+    /// Original receiver evidence, separate from candidate metadata.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub measurement_evidence: crate::evidence::Extensions,
+    #[serde(default)]
+    pub qualification_state: crate::evidence::QualificationState,
     /// 这一轮**实际**在什么条件下量的。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conditions_observed: Option<super::eval::ConditionsObserved>,
@@ -95,6 +104,8 @@ impl Entry {
         r: &EvalReport,
     ) -> Self {
         Self {
+            campaign_binding_sha256: None,
+            expert_decisions: vec![],
             id: id.into(),
             layer,
             generation,
@@ -103,6 +114,8 @@ impl Entry {
             status: r.status.clone(),
             metrics: r.metrics.clone(),
             verdict: r.verdict.clone(),
+            measurement_evidence: r.extensions.clone(),
+            qualification_state: crate::evidence::qualification_state(&r.extensions),
             conditions_observed: r.conditions_observed.clone(),
             power_source: r.power_source.clone(),
             quality_reference: r.quality_reference.clone(),
@@ -118,7 +131,7 @@ impl Entry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerOutcome {
     pub layer: Kind,
-    pub layer_display: &'static str,
+    pub layer_display: String,
     /// 用没用这一层。
     pub used: bool,
     /// 为什么用 / 为什么没用。
@@ -150,7 +163,7 @@ impl LayerOutcome {
     pub fn unused(layer: Kind, reason: impl Into<String>, blockers: Vec<String>) -> Self {
         Self {
             layer,
-            layer_display: layer.display(),
+            layer_display: layer.display().into(),
             used: false,
             reason: reason.into(),
             blockers,
@@ -170,6 +183,8 @@ impl LayerOutcome {
 /// 总报告。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign: Option<crate::campaign::Summary>,
     pub schema: &'static str,
     pub tool: &'static str,
     pub tool_version: &'static str,
@@ -245,6 +260,7 @@ pub fn build(
     };
 
     Report {
+        campaign: None,
         schema: "game_opt_loop/optimize_report@1",
         tool: "game_opt_loop",
         tool_version: crate::VERSION,
@@ -399,12 +415,12 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
         o.push_str("这一轮没有任何候选上机。\n\n");
     } else {
         o.push_str(
-            "| 候选 | 层 | 改了什么 | 判定 | 帧时p95 | 帧率 | 功耗 | 画质 | p | 留下 |\n\
-             |---|---|---|---|---|---|---|---|---|---|\n",
+            "| 候选 | 层 | 改了什么 | 判定 | 帧时p95 | 帧率 | 功耗 | 画质 | p | 留下 | 结论资格 |\n\
+             |---|---|---|---|---|---|---|---|---|---|---|\n",
         );
         for e in &r.archive {
             o.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.4} | {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.4} | {} | {} |\n",
                 e.id,
                 e.layer.id(),
                 e.change.summary(),
@@ -415,6 +431,11 @@ pub fn markdown(r: &Report, caps: &super::caps::Caps) -> String {
                 num(e.metrics.psnr_db, "dB"),
                 e.verdict.p_value,
                 if e.kept { "是" } else { "否" },
+                match e.qualification_state {
+                    crate::evidence::QualificationState::LegacyUnqualified => "旧报告，未核资格",
+                    crate::evidence::QualificationState::Qualified => "证据资格成立",
+                    crate::evidence::QualificationState::Ineligible => "证据资格不成立",
+                },
             ));
         }
         o.push('\n');
@@ -460,8 +481,11 @@ pub fn write(r: &Report, caps: &super::caps::Caps, dir: &Path) -> Result<(String
     let md = dir.join("report.md");
     std::fs::write(&json, serde_json::to_string_pretty(r)?)
         .with_context(|| format!("写入 {} 失败", json.display()))?;
-    std::fs::write(&md, markdown(r, caps))
-        .with_context(|| format!("写入 {} 失败", md.display()))?;
+    let mut rendered = markdown(r, caps);
+    if let Some(campaign) = &r.campaign {
+        rendered.push_str(&format!("\n## 实验方向决策\n\n模式：{:?}；专家决定数：{}；待决：{}。\n\n账本：{}（含每代风险、收益/成本估计、候选与冻结协议绑定、决定理由和评测回执）。\n", campaign.mode, campaign.expert_reviewed, campaign.waiting_for_review, campaign.journal));
+    }
+    std::fs::write(&md, rendered).with_context(|| format!("写入 {} 失败", md.display()))?;
     Ok((json.display().to_string(), md.display().to_string()))
 }
 
@@ -494,15 +518,14 @@ pkg_path=package:/data/app/x/base.apk\n";
 
     fn entry(id: &str, status: &str, kept: bool) -> Entry {
         Entry {
+            campaign_binding_sha256: None,
+            expert_decisions: vec![],
             id: id.into(),
             layer: Kind::Sysparam,
             generation: 1,
             why: "抬总线下限".into(),
             change: Change::Sysparam {
-                params: BTreeMap::from([(
-                    "bus.DDR.boost_freq".to_string(),
-                    "5333000".to_string(),
-                )]),
+                params: BTreeMap::from([("bus.DDR.boost_freq".to_string(), "5333000".to_string())]),
             },
             status: status.into(),
             metrics: MetricsV2 {
@@ -524,6 +547,8 @@ pkg_path=package:/data/app/x/base.apk\n";
             device: None,
             kept,
             measurement_valid: status != "ABORT",
+            measurement_evidence: Default::default(),
+            qualification_state: Default::default(),
         }
     }
 

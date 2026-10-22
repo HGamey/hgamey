@@ -23,7 +23,7 @@
       "required": ["operator_latency_ms", "fps_p95_ms", "power_watt", "psnr_db"],
       "properties": {
         "operator_latency_ms": { "type": ["number", "null"], "description": "算子自身的 GPU compute pass 耗时。headless 载体是单次 dispatch 的 VkQueryPool 时间戳; refbench 载体是每帧 GPU 忙时的 A/B 之差 (算子的**边际**开销) —— 同一算子两者可差一倍, 不可混比。sysparam / gray 类为 null。" },
-        "fps_p95_ms": { "type": ["number", "null"], "description": "整帧时间 p95 (毫秒, 越小越好)。null = 本次未测量 (headless 载体没有渲染上下文), 不可当成 0。" },
+        "fps_p95_ms": { "type": ["number", "null"], "description": "帧间隔 p95 (毫秒, 越小越好)。KGSL提交分组来源只代表渲染提交代理，不代表present/display实测，来源见metric_provenance。null = 本次未测量 (headless 载体没有渲染上下文), 不可当成 0。" },
         "frame_p95_ms": { "type": ["number", "null"], "description": "fps_p95_ms 的别名, 兼容 loop_v1 的 frame_p95 口径。两者同时出现时必须相等。" },
         "fps_mean": { "type": ["number", "null"], "description": "平均帧率 (帧/秒, 越大越好)。\n\n原神这类**每帧发多次 cmdbatch** 的应用必须先自检每帧几次提交, 直接把提交间隔当帧间隔会把帧率算成两倍 (见 loop_v1/tools/parse_trace.py 的 detect_submits_per_frame)。" },
         "power_watt": { "type": ["number", "null"], "description": "整机功耗。null = 本次未测量, 不可当成 0。接收端在非放电态下这一项必须回 null —— 充电时电池轨量到的是充放相抵的余量, USB 轨含着灌进电池的那一份, 两者都不是整机功耗。该项是否可比看 power_source.on_battery。" },
@@ -77,6 +77,51 @@
         },
         "reason": { "type": ["string", "null"], "description": "一句话说明为什么是这个判定。ABORT 时**必须**写清是哪一条前置没成立。" }
       }
+    },
+    "qualification": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "接收端结论资格，不是统计改善。存在时仅stage=conclusion且eligible=true允许上游晋级；缺失是legacy_unqualified，不能称已资格化游戏收益。",
+      "required": [
+        "stage",
+        "eligible"
+      ],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": [
+            "probe",
+            "experiment",
+            "conclusion"
+          ]
+        },
+        "eligible": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array"
+        },
+        "claim_scope": {
+          "type": "string"
+        }
+      }
+    },
+    "artifacts": {
+      "description": "接收端原始证据；上游逐值透传，未知字段不转为测量/通过。"
+    },
+    "metric_provenance": {
+      "description": "接收端原始证据；上游逐值透传，未知字段不转为测量/通过。"
+    },
+    "metrics_provenance": {
+      "description": "接收端原始证据；上游逐值透传，未知字段不转为测量/通过。"
+    },
+    "sequence_quality": {
+      "description": "接收端原始证据；上游逐值透传，未知字段不转为测量/通过。"
     },
     "source": {
       "type": "string",

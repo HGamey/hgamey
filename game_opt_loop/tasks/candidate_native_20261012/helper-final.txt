@@ -1,0 +1,9 @@
+   Compiling game_opt_loop v0.2.0 (/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-native)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.02s
+     Running tests/candidate_native_cli.rs (target/debug/deps/candidate_native_cli-b4d5aa0a06253b59)
+
+running 1 test
+test actual_helper_hang_and_full_stderr_are_unknown_and_bounded ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 49.27s
+

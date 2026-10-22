@@ -208,9 +208,9 @@ impl LayerVerdict {
 /// 摸底总结果。落盘即 `caps.json`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Caps {
-    pub schema: &'static str,
+    pub schema: String,
     pub generated_at: String,
-    pub tool_version: &'static str,
+    pub tool_version: String,
     pub target: Target,
     pub device: DeviceCaps,
     pub carrier: CarrierCaps,
@@ -589,9 +589,9 @@ pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
     layers.whitebox = whitebox_verdict(target);
 
     Caps {
-        schema: "game_opt_loop/caps@1",
+        schema: "game_opt_loop/caps@1".into(),
         generated_at: crate::engine::evolution::now(),
-        tool_version: crate::VERSION,
+        tool_version: crate::VERSION.into(),
         target: target.clone(),
         device,
         carrier,

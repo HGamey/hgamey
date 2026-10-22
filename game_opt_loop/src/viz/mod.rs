@@ -19,6 +19,7 @@
 
 pub mod abtest;
 pub mod carrier;
+pub mod cases;
 pub mod device;
 pub mod fleet;
 pub mod model;
@@ -27,9 +28,7 @@ pub mod runlog;
 pub mod serve;
 pub mod stats;
 
-use model::{
-    evidence_file, Condition, EvidenceFile, Layer, Notice, Round, RoundVerdict, Stat,
-};
+use model::{evidence_file, Condition, EvidenceFile, Layer, Notice, Round, RoundVerdict, Stat};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -94,6 +93,7 @@ pub struct Dashboard {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fleet: Option<fleet::FleetView>,
     pub notices: Vec<Notice>,
+    pub cases: cases::Collection,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +126,7 @@ pub fn build(paths: &VizPaths) -> Dashboard {
         device: device::load(&paths.lock_root, &paths.phonefarm_root, 8),
         fleet: paths.fleet.as_ref().and_then(fleet::get),
         notices: notices(paths),
+        cases: cases::collect(&paths.gol_root, &paths.phonefarm_root),
     }
 }
 
@@ -186,6 +187,46 @@ fn ab_round(paths: &VizPaths, spec: &AbSpec) -> Option<Round> {
     let report_path = root.join(spec.report);
     let report = abtest::AbReport::load(&report_path).ok()?;
     let (verdict, verdict_text) = report.verdict();
+    let extensions: crate::evidence::Extensions = ["qualification", "qualification_only"]
+        .into_iter()
+        .filter_map(|k| {
+            report
+                .receiver_report
+                .get(k)
+                .cloned()
+                .map(|v| (k.to_string(), v))
+        })
+        .collect();
+    let (verdict, verdict_text) = match crate::evidence::qualification_state(&extensions) {
+        crate::evidence::QualificationState::LegacyUnqualified => (
+            RoundVerdict::Evidence,
+            format!("旧报告未资格化；原判据：{verdict_text}"),
+        ),
+        crate::evidence::QualificationState::Ineligible => (
+            RoundVerdict::Invalid,
+            format!("不具结论资格；原判据：{verdict_text}"),
+        ),
+        crate::evidence::QualificationState::Qualified
+            if report.receiver_report["source"].as_str() == Some("static_cost_model") =>
+        {
+            (
+                RoundVerdict::Evidence,
+                format!("静态估计，无测量结论；原判据：{verdict_text}"),
+            )
+        }
+        crate::evidence::QualificationState::Qualified
+            if !matches!(
+                report.receiver_report["qualification"]["evidence_origin"].as_str(),
+                Some("live_device" | "recorded_device")
+            ) =>
+        {
+            (
+                RoundVerdict::Evidence,
+                format!("资格声明缺有效设备来源；原判据：{verdict_text}"),
+            )
+        }
+        crate::evidence::QualificationState::Qualified => (verdict, verdict_text),
+    };
     let primary = report.primary();
 
     let arm_parent = root.join(spec.arm_parent);
@@ -379,7 +420,7 @@ fn ab_round(paths: &VizPaths, spec: &AbSpec) -> Option<Round> {
             }),
         verdict,
         verdict_text,
-        metric_source: "真机实测".to_string(),
+        metric_source: "保存的 A/B 报告（来源未认证）".to_string(),
         headline,
         candidates: Vec::new(),
         arms: report.arms(),
@@ -387,6 +428,9 @@ fn ab_round(paths: &VizPaths, spec: &AbSpec) -> Option<Round> {
         conditions,
         pareto: None,
         evidence,
+        receiver_report: Some(report.receiver_report.clone()),
+        view_grants_game_proof: false,
+        view_allows_promotion: false,
         notes,
     })
 }
@@ -460,6 +504,9 @@ fn evidence_round(
         )],
         pareto: None,
         evidence,
+        receiver_report: None,
+        view_grants_game_proof: false,
+        view_allows_promotion: false,
         notes: Vec::new(),
     })
 }
@@ -496,7 +543,9 @@ fn unreported_round(
                 &d.join("summary.json"),
                 &format!(
                     "{} 汇总",
-                    d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+                    d.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default()
                 ),
             )
         })
@@ -512,7 +561,7 @@ fn unreported_round(
             a.len(),
             b.len()
         ),
-        metric_source: "真机实测".to_string(),
+        metric_source: "保存的逐轮记录（来源未认证）".to_string(),
         headline: vec![
             Stat::toned("对照臂", Some(a.len().to_string()), Some("轮"), "warn"),
             Stat::toned("处理臂", Some(b.len().to_string()), Some("轮"), "warn"),
@@ -520,9 +569,16 @@ fn unreported_round(
         candidates: Vec::new(),
         arms: None,
         criteria: Vec::new(),
-        conditions: vec![Condition::new("验收报告", None, Some("目录下没有 report.json"))],
+        conditions: vec![Condition::new(
+            "验收报告",
+            None,
+            Some("目录下没有 report.json"),
+        )],
         pareto: None,
         evidence,
+        receiver_report: None,
+        view_grants_game_proof: false,
+        view_allows_promotion: false,
         notes: Vec::new(),
     })
 }
@@ -631,8 +687,7 @@ fn sysparam_layer(paths: &VizPaths) -> Layer {
             arm_parent: "loop_v1/runs",
             a_prefix: "ctrl",
             b_prefix: "knob",
-            what: "内核侧总线与 DDR 频率投票 (具体改了哪个键看下面的两臂快照差异)"
-                .to_string(),
+            what: "内核侧总线与 DDR 频率投票 (具体改了哪个键看下面的两臂快照差异)".to_string(),
             extra_evidence: vec![],
         },
         AbSpec {
@@ -682,7 +737,11 @@ fn notices(paths: &VizPaths) -> Vec<Notice> {
     let mut out = Vec::new();
     let evidence_dir = paths.gol_root.join("evidence");
 
-    for name in ["M1_report.json", "M0_report.json", "M2_realframes_report.json"] {
+    for name in [
+        "M1_report.json",
+        "M0_report.json",
+        "M2_realframes_report.json",
+    ] {
         let path = evidence_dir.join(name);
         let Ok(raw) = std::fs::read_to_string(&path) else {
             continue;
@@ -693,7 +752,10 @@ fn notices(paths: &VizPaths) -> Vec<Notice> {
         let Some(r) = v.get("retraction") else {
             continue;
         };
-        let scope = r.get("scope").and_then(|s| s.as_str()).unwrap_or("部分结论");
+        let scope = r
+            .get("scope")
+            .and_then(|s| s.as_str())
+            .unwrap_or("部分结论");
         let date = r.get("date").and_then(|s| s.as_str()).unwrap_or("未记日期");
         let mut body = r
             .get("statement")

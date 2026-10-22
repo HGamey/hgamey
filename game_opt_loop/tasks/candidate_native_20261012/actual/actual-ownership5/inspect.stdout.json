@@ -1,0 +1,758 @@
+{
+  "inspection_scope": "current_local_integrity_only_no_commands_or_new_gate_replay",
+  "journal": {
+    "frozen_inputs_sha256": "2eafb6f4d3102610e0ea3c2086ca800fb7037c75875cc198939b91a0ddd2e22a",
+    "inputs": {
+      "build": true,
+      "candidate": {
+        "bytes": 1014,
+        "sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f"
+      },
+      "execution_scope": "trusted_local_binaries_and_OS_shell_process_groups_not_sandbox_or_remote_attestation",
+      "gate_sha256": "10212fe5f2c297f934da6bb810645f5bff9bc378c1dfcf5851b4220fd06e2ff1",
+      "gol": {
+        "bytes": 46920192,
+        "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+      },
+      "implementation_sha256": "a47ede0a59472aced2776f8907449ea0c031c5e80d2aa5b3a93aa8884cb71374",
+      "native_implementation_sha256": "0ac1c3240a534ef0891bc80740444d8b83ad7b3bfe663fcac3d9dcdcd789e2e3",
+      "native_layer_input_root": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/knobs/gray/layer",
+      "native_plan": {
+        "inventory": [
+          {
+            "directory": false,
+            "identity": {
+              "bytes": 2800,
+              "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+            },
+            "path": "copy-fixture.spv"
+          },
+          {
+            "directory": true,
+            "identity": null,
+            "path": "shader-tools"
+          },
+          {
+            "directory": true,
+            "identity": null,
+            "path": "shader-tools/linux-x86_64"
+          },
+          {
+            "directory": false,
+            "identity": {
+              "bytes": 1653,
+              "sha256": "3f85251789f1ccf9c22be9b192beaeb174d29ac836c0923b6fcb557c847b4a51"
+            },
+            "path": "shader-tools/linux-x86_64/glslc"
+          },
+          {
+            "directory": true,
+            "identity": null,
+            "path": "toolchains"
+          },
+          {
+            "directory": true,
+            "identity": null,
+            "path": "toolchains/llvm"
+          },
+          {
+            "directory": true,
+            "identity": null,
+            "path": "toolchains/llvm/prebuilt"
+          },
+          {
+            "directory": true,
+            "identity": null,
+            "path": "toolchains/llvm/prebuilt/linux-x86_64"
+          },
+          {
+            "directory": true,
+            "identity": null,
+            "path": "toolchains/llvm/prebuilt/linux-x86_64/bin"
+          },
+          {
+            "directory": false,
+            "identity": {
+              "bytes": 1653,
+              "sha256": "c80cab22dd267e9a00f44e9fa521ce298e5e8b050548fe87a9ab647711b68f23"
+            },
+            "path": "toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++"
+          },
+          {
+            "directory": false,
+            "identity": {
+              "bytes": 1649,
+              "sha256": "fc7144a13259032a419b15b3486715c0f717fc5dd1e3fd9354f114038217c897"
+            },
+            "path": "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          },
+          {
+            "directory": false,
+            "identity": {
+              "bytes": 1654,
+              "sha256": "45ef97ed2d03764b79ae95e946b98afb9c1a44bf980a86888817f870c48dae29"
+            },
+            "path": "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          }
+        ],
+        "inventory_sha256": "ce37c53f7db9cf31ec82c34bc9bca9812486fc6d47c88b3dde98d0bd7743b6a9",
+        "layer_contract": "ownership5",
+        "layer_inputs": {
+          "VkLayer_refknobs.json": {
+            "bytes": 449,
+            "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+          },
+          "artifact_stats.h": {
+            "bytes": 2367,
+            "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+          },
+          "copyprobe_copy.comp": {
+            "bytes": 668,
+            "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+          },
+          "dispatch_ownership.h": {
+            "bytes": 36371,
+            "sha256": "41b5169f27f3ff5216c3293afad40ccc16457e29bb2d79033e1c6e78a6e09823"
+          },
+          "vk_layer_refknobs.cpp": {
+            "bytes": 100464,
+            "sha256": "ba97bc7b9bfca3d81993b87fa7b3d363c2dc10fc46792cbf59037d9dd2061956"
+          }
+        },
+        "layer_root": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/knobs/gray/layer",
+        "reason": null,
+        "sdk_path": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/ndk.snapshot",
+        "state": "READY"
+      },
+      "native_tool_timeout_seconds": 30,
+      "ndk": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/sdk",
+      "phonefarm": {
+        "bytes": 36280200,
+        "sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+      },
+      "provenance": "synthetic_mechanism_fixture",
+      "stage_wall_ms": 30000,
+      "stream_bytes": 1048576,
+      "whole_wall_ms": 180000
+    },
+    "prepared_receipt": {
+      "bytes": 13375,
+      "sha256": "21d105245a927f31f004d18e9405e622813bf1a64e7141e97539d0a0b7ee7f00"
+    },
+    "proof_flags": {
+      "deployable": false,
+      "gpu_validated": false,
+      "promotion_allowed": false,
+      "quality_verified": false,
+      "real_game_optimization_proven": false,
+      "semantic_equivalence_proven": false
+    },
+    "schema": "game_opt_loop/candidate_prepare@2",
+    "stages": [
+      {
+        "argv": [
+          "candidate-artifact",
+          "compile",
+          "--candidate",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/candidate.json",
+          "--out",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/compiled"
+        ],
+        "elapsed_ms": 2242,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "compile",
+        "pid": 95507,
+        "result": {
+          "adapter_input": {
+            "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+            "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+            "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+            "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+            "original_spirv_path": "original.spv",
+            "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+            "source_path": "original.comp",
+            "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+            "source_spirv_association": "repository_gate_compiler_replayable",
+            "trust_scope": "local_integrity_not_authenticated_attestation"
+          },
+          "candidate_id": "actual-naga-sr-interface",
+          "claim_scope": "static_gate_and_local_compilation_only",
+          "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "gate_passed": true,
+          "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+          "proof_flags": {
+            "deployable": false,
+            "gpu_validated": false,
+            "promotion_allowed": false,
+            "quality_verified": false,
+            "real_game_optimization_proven": false,
+            "semantic_equivalence_proven": false
+          },
+          "schema": "game_opt_loop/candidate_compilation@1",
+          "state": "host_compiled",
+          "track": "sr"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1524,
+          "sha256": "a6a5dc32f18e69e25933c9cbd317a9845536209fd3283dd4968ea63d398a4090"
+        },
+        "tool_sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+      },
+      {
+        "argv": [
+          "candidate-artifact",
+          "verify",
+          "--artifact",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/compiled",
+          "--expected-identity",
+          "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de"
+        ],
+        "elapsed_ms": 1818,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "verify_compile",
+        "pid": 95511,
+        "result": {
+          "adapter_input": {
+            "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+            "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+            "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+            "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+            "original_spirv_path": "original.spv",
+            "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+            "source_path": "original.comp",
+            "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+            "source_spirv_association": "repository_gate_compiler_replayable",
+            "trust_scope": "local_integrity_not_authenticated_attestation"
+          },
+          "candidate_id": "actual-naga-sr-interface",
+          "claim_scope": "static_gate_and_local_compilation_only",
+          "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+          "gate_passed": true,
+          "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+          "proof_flags": {
+            "deployable": false,
+            "gpu_validated": false,
+            "promotion_allowed": false,
+            "quality_verified": false,
+            "real_game_optimization_proven": false,
+            "semantic_equivalence_proven": false
+          },
+          "schema": "game_opt_loop/candidate_compilation@1",
+          "state": "host_compiled_replay_match",
+          "track": "sr"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1537,
+          "sha256": "97e84be1921f972fecd8b4a06ce5b364b80a546fa1174f2891b035278a990e89"
+        },
+        "tool_sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+      },
+      {
+        "argv": [
+          "gray-artifact",
+          "adapt-storage",
+          "--source",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/compiled/original.comp",
+          "--spirv",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/compiled/original.spv",
+          "--out",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/adapted"
+        ],
+        "elapsed_ms": 458,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "adapt",
+        "pid": 95515,
+        "result": {
+          "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "deployable": false,
+          "descriptor": {
+            "adapted_abi": {
+              "entry_point": "main",
+              "input": "set0/binding0:combined_sampler_2d_float32",
+              "local_size": [
+                16,
+                16,
+                1
+              ],
+              "output": "set0/binding1:writeonly_rgba8_2d",
+              "version": 1
+            },
+            "adapted_spirv_sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325",
+            "changes": {
+              "direct_loads": 2,
+              "image_reads_to_fetch": 1,
+              "image_sizes_to_lod": 1,
+              "input_variable": 33,
+              "original_image_type": 5,
+              "original_pointer_type": 34,
+              "output_shared_original_type": true,
+              "output_variable": 35,
+              "unused_loads": 1
+            },
+            "original_source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+            "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+            "protocol_version": 1,
+            "source_spirv_association": "caller_supplied_unverified",
+            "transform": "direct_rgba8_storage_to_combined_fetch_lod0"
+          },
+          "device_validation": "not_run",
+          "path": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "qualification": "not_run",
+          "semantic_equivalence": "not_run",
+          "source_spirv_association": "caller_supplied_unverified",
+          "state": "verified_offline"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1488,
+          "sha256": "1553b2ee415fbe586ad2d6bbbd533914cb07b85dabc436635c074ae3dde39d42"
+        },
+        "tool_sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+      },
+      {
+        "argv": [
+          "gray-artifact",
+          "verify-adaptation",
+          "--artifact",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+        ],
+        "elapsed_ms": 40,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "verify_adaptation",
+        "pid": 95532,
+        "result": {
+          "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "compiler_binding_scope": "local_replayed_compilation_not_authenticated_attestation",
+          "descriptor_sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "files": {
+            "adapted.spv": {
+              "bytes": 2800,
+              "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+            },
+            "descriptor.json": {
+              "bytes": 947,
+              "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+            },
+            "manifest.json": {
+              "bytes": 698,
+              "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+            },
+            "original.comp": {
+              "bytes": 673,
+              "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+            },
+            "original.spv": {
+              "bytes": 2688,
+              "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+            }
+          },
+          "local_compiler_export_bytes_equal": true,
+          "manifest_sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f",
+          "source_spirv_association": "caller_supplied_unverified"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1488,
+          "sha256": "1553b2ee415fbe586ad2d6bbbd533914cb07b85dabc436635c074ae3dde39d42"
+        },
+        "tool_sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+      },
+      {
+        "argv": [
+          "gray-artifact",
+          "build",
+          "--adapted-artifact",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "--out",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/native",
+          "--ndk",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/ndk.snapshot",
+          "--timeout-seconds",
+          "30",
+          "--process-supervision",
+          "inherited-group"
+        ],
+        "elapsed_ms": 1990,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "native_build",
+        "pid": 95555,
+        "result": {
+          "android_codegen_validated": false,
+          "artifact": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+          "artifact_id": "upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+          "build_receipt": {
+            "artifact": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+            "artifact_id": "upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+            "deployable": false,
+            "device_validation": "not_run",
+            "outer_quiescence_verified": false,
+            "process_supervision": "inherited_group",
+            "requires_outer_quiescence": true,
+            "reused": false
+          },
+          "claim_scope": "local_artifact_integrity_and_process_supervision_not_toolchain_authenticity_or_GPU_correctness",
+          "deployable": false,
+          "descriptor": {
+            "bytes": 4482,
+            "sha256": "9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc"
+          },
+          "device_validation": "not_run",
+          "files": {
+            "VkLayer_refknobs.json": {
+              "bytes": 449,
+              "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+            },
+            "adaptation_descriptor.json": {
+              "bytes": 947,
+              "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+            },
+            "adaptation_manifest.json": {
+              "bytes": 698,
+              "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+            },
+            "artifact_metadata.h": {
+              "bytes": 371,
+              "sha256": "3290cf9b783ca095cf86a249d6de4b05a1a305c2270616f3874c39e578eb18ba"
+            },
+            "artifact_stats.h": {
+              "bytes": 2367,
+              "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+            },
+            "candidate.comp": {
+              "bytes": 673,
+              "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+            },
+            "candidate.spv": {
+              "bytes": 2800,
+              "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+            },
+            "candidate_compile.log": {
+              "bytes": 155,
+              "sha256": "22078a76eb0c6777ad5dcb9f37e553b86f7dcfb5bbd4446790cd4c28fcbd907d"
+            },
+            "copy_compile.log": {
+              "bytes": 1,
+              "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "copy_spv.h": {
+              "bytes": 13168,
+              "sha256": "0ff2a8b1ee09cedd712f0fb5e3199e3e3f34183498d7e80e257eb47da3417a27"
+            },
+            "copyprobe_copy.comp": {
+              "bytes": 668,
+              "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+            },
+            "copyprobe_copy.spv": {
+              "bytes": 2800,
+              "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+            },
+            "dependencies.log": {
+              "bytes": 81,
+              "sha256": "0985d198d252451f83d0f1cbb5661e30cc54721676d08562b68dca6d95ab6296"
+            },
+            "descriptor.json": {
+              "bytes": 4482,
+              "sha256": "9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc"
+            },
+            "dispatch_ownership.h": {
+              "bytes": 36371,
+              "sha256": "41b5169f27f3ff5216c3293afad40ccc16457e29bb2d79033e1c6e78a6e09823"
+            },
+            "exports.log": {
+              "bytes": 186,
+              "sha256": "1bfa602c3d6aeb263c19e11780c121b8312ac19f31c1c1eedba7fc72d8ee584e"
+            },
+            "layer_compile.log": {
+              "bytes": 1,
+              "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "libVkLayer_refknobs.so": {
+              "bytes": 64,
+              "sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443"
+            },
+            "original_candidate.spv": {
+              "bytes": 2688,
+              "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+            },
+            "vk_layer_refknobs.cpp": {
+              "bytes": 100464,
+              "sha256": "ba97bc7b9bfca3d81993b87fa7b3d363c2dc10fc46792cbf59037d9dd2061956"
+            }
+          },
+          "host_artifact_integrity_accepted": false,
+          "layer": {
+            "bytes": 64,
+            "sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443"
+          },
+          "layer_contract": "ownership5",
+          "layer_inputs": {
+            "VkLayer_refknobs.json": {
+              "bytes": 449,
+              "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+            },
+            "artifact_stats.h": {
+              "bytes": 2367,
+              "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+            },
+            "copyprobe_copy.comp": {
+              "bytes": 668,
+              "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+            },
+            "dispatch_ownership.h": {
+              "bytes": 36371,
+              "sha256": "41b5169f27f3ff5216c3293afad40ccc16457e29bb2d79033e1c6e78a6e09823"
+            },
+            "vk_layer_refknobs.cpp": {
+              "bytes": 100464,
+              "sha256": "ba97bc7b9bfca3d81993b87fa7b3d363c2dc10fc46792cbf59037d9dd2061956"
+            }
+          },
+          "manifest": {
+            "bytes": 7331,
+            "sha256": "bbf8d93493c16faaf7b7d0c59685eae9cc5ca982b995916d97690db217bb1acc"
+          },
+          "outer_build_group_absent": true,
+          "outer_verify_group_absent": false,
+          "pf_receipt": null,
+          "real_ndk_validation": "not_run",
+          "sdk_inventory_sha256": "ce37c53f7db9cf31ec82c34bc9bca9812486fc6d47c88b3dde98d0bd7743b6a9",
+          "source_spirv_association": "caller_supplied_unverified"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 448,
+          "sha256": "a2654d8a273c4d7eaf2b1a7c1394ee38764e68a7e010f34ba18f217b05a17db0"
+        },
+        "tool_sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+      },
+      {
+        "argv": [
+          "gray-artifact",
+          "verify",
+          "--artifact",
+          "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc"
+        ],
+        "elapsed_ms": 127,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "verify_native",
+        "pid": 95567,
+        "result": {
+          "android_codegen_validated": false,
+          "artifact": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+          "artifact_id": "upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+          "build_receipt": {
+            "artifact": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session/native/upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+            "artifact_id": "upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+            "deployable": false,
+            "device_validation": "not_run",
+            "outer_quiescence_verified": false,
+            "process_supervision": "inherited_group",
+            "requires_outer_quiescence": true,
+            "reused": false
+          },
+          "claim_scope": "local_artifact_integrity_and_process_supervision_not_toolchain_authenticity_or_GPU_correctness",
+          "deployable": false,
+          "descriptor": {
+            "bytes": 4482,
+            "sha256": "9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc"
+          },
+          "device_validation": "not_run",
+          "files": {
+            "VkLayer_refknobs.json": {
+              "bytes": 449,
+              "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+            },
+            "adaptation_descriptor.json": {
+              "bytes": 947,
+              "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+            },
+            "adaptation_manifest.json": {
+              "bytes": 698,
+              "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+            },
+            "artifact_metadata.h": {
+              "bytes": 371,
+              "sha256": "3290cf9b783ca095cf86a249d6de4b05a1a305c2270616f3874c39e578eb18ba"
+            },
+            "artifact_stats.h": {
+              "bytes": 2367,
+              "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+            },
+            "candidate.comp": {
+              "bytes": 673,
+              "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+            },
+            "candidate.spv": {
+              "bytes": 2800,
+              "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+            },
+            "candidate_compile.log": {
+              "bytes": 155,
+              "sha256": "22078a76eb0c6777ad5dcb9f37e553b86f7dcfb5bbd4446790cd4c28fcbd907d"
+            },
+            "copy_compile.log": {
+              "bytes": 1,
+              "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "copy_spv.h": {
+              "bytes": 13168,
+              "sha256": "0ff2a8b1ee09cedd712f0fb5e3199e3e3f34183498d7e80e257eb47da3417a27"
+            },
+            "copyprobe_copy.comp": {
+              "bytes": 668,
+              "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+            },
+            "copyprobe_copy.spv": {
+              "bytes": 2800,
+              "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+            },
+            "dependencies.log": {
+              "bytes": 81,
+              "sha256": "0985d198d252451f83d0f1cbb5661e30cc54721676d08562b68dca6d95ab6296"
+            },
+            "descriptor.json": {
+              "bytes": 4482,
+              "sha256": "9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc"
+            },
+            "dispatch_ownership.h": {
+              "bytes": 36371,
+              "sha256": "41b5169f27f3ff5216c3293afad40ccc16457e29bb2d79033e1c6e78a6e09823"
+            },
+            "exports.log": {
+              "bytes": 186,
+              "sha256": "1bfa602c3d6aeb263c19e11780c121b8312ac19f31c1c1eedba7fc72d8ee584e"
+            },
+            "layer_compile.log": {
+              "bytes": 1,
+              "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "libVkLayer_refknobs.so": {
+              "bytes": 64,
+              "sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443"
+            },
+            "original_candidate.spv": {
+              "bytes": 2688,
+              "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+            },
+            "vk_layer_refknobs.cpp": {
+              "bytes": 100464,
+              "sha256": "ba97bc7b9bfca3d81993b87fa7b3d363c2dc10fc46792cbf59037d9dd2061956"
+            }
+          },
+          "host_artifact_integrity_accepted": true,
+          "layer": {
+            "bytes": 64,
+            "sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443"
+          },
+          "layer_contract": "ownership5",
+          "layer_inputs": {
+            "VkLayer_refknobs.json": {
+              "bytes": 449,
+              "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+            },
+            "artifact_stats.h": {
+              "bytes": 2367,
+              "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+            },
+            "copyprobe_copy.comp": {
+              "bytes": 668,
+              "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+            },
+            "dispatch_ownership.h": {
+              "bytes": 36371,
+              "sha256": "41b5169f27f3ff5216c3293afad40ccc16457e29bb2d79033e1c6e78a6e09823"
+            },
+            "vk_layer_refknobs.cpp": {
+              "bytes": 100464,
+              "sha256": "ba97bc7b9bfca3d81993b87fa7b3d363c2dc10fc46792cbf59037d9dd2061956"
+            }
+          },
+          "manifest": {
+            "bytes": 7331,
+            "sha256": "bbf8d93493c16faaf7b7d0c59685eae9cc5ca982b995916d97690db217bb1acc"
+          },
+          "outer_build_group_absent": true,
+          "outer_verify_group_absent": true,
+          "pf_receipt": {
+            "artifact_id": "upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+            "deployable": false,
+            "device_validation": "not_run",
+            "files_verified": 20,
+            "layer_sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443",
+            "outer_quiescence_verified": false,
+            "process_supervision": "inherited_group",
+            "requires_outer_quiescence": true,
+            "state": "built_offline_outer_quiescence_required"
+          },
+          "real_ndk_validation": "not_run",
+          "sdk_inventory_sha256": "ce37c53f7db9cf31ec82c34bc9bca9812486fc6d47c88b3dde98d0bd7743b6a9",
+          "source_spirv_association": "caller_supplied_unverified"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 433,
+          "sha256": "408ed6c03d4018950541dd877446b3ae2438f6afdcf9b6dd6799abafb425a282"
+        },
+        "tool_sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+      }
+    ],
+    "status": "PREPARED_OFFLINE_NATIVE"
+  },
+  "proof_flags": {
+    "deployable": false,
+    "gpu_validated": false,
+    "promotion_allowed": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "semantic_equivalence_proven": false
+  },
+  "schema": "game_opt_loop/candidate_prepare@2",
+  "status": "PREPARED_OFFLINE_NATIVE",
+  "unknown_execution_retry_allowed": false
+}

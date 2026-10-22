@@ -1,0 +1,11 @@
+[
+  "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-prepare/target/debug/game_opt_loop",
+  "candidate-prepare",
+  "run",
+  "--candidate",
+  "/Users/kamico/work/GOSIM/HGamey/worktrees/game-loop-candidate-prepare/tasks/candidate_compilation_20261011/sr-candidate.json",
+  "--phonefarm-bin",
+  "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-storage-adapter/src/target/debug/phonefarm",
+  "--out",
+  "/private/tmp/gol-prepare-actual-srmfrnd2/actual-offline"
+]

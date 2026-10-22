@@ -23,6 +23,7 @@ cargo run --release -- serve --port 8765
 
 - 完整说明、目标模式、面板：[HGamey/docs · repos/game_opt_loop](https://github.com/HGamey/docs/tree/main/repos/game_opt_loop)
 - 现状：[STATUS.md](https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/STATUS.md)
+- 确认/案例/候选准备/模型工件等子系统规格：[docs/SPEC_*.md](https://github.com/HGamey/docs/tree/main/repos/game_opt_loop/docs)
 - 第三方接入：[INTEGRATION.md](https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/docs/INTEGRATION.md)
 - 给 AI 编程助手：[skills/game_opt_loop/SKILL.md](skills/game_opt_loop/SKILL.md)
 

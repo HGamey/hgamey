@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use game_opt_loop::campaign::{self, Action, Campaign, Mode, State};
 use game_opt_loop::engine::evolution::{self, Evolution, EvolutionConfig, EvolutionSummary};
 use game_opt_loop::engine::MetricSource;
 use game_opt_loop::harness::PhonefarmDriver;
@@ -23,6 +24,32 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// One deterministic system case through the receiver confirmation driver.
+    Case {
+        #[command(subcommand)]
+        action: game_opt_loop::system_case_blackbox::Action,
+    },
+    /// 离线注册独立确认规则或核对 heldout 配对报告；不调用设备或模型。
+    Confirm {
+        #[command(subcommand)]
+        action: game_opt_loop::confirmation::Action,
+    },
+    /// 用明确配置的外部驱动执行模型工件五阶段，记录证据与断点；不自动推广。
+    ModelPipeline {
+        #[command(subcommand)]
+        action: game_opt_loop::model_pipeline::PipelineCommand,
+    },
+    /// Prepare a local compiled candidate and finite PF adaptation; never deploy.
+    CandidatePrepare {
+        #[command(subcommand)]
+        action: game_opt_loop::candidate_prepare::Action,
+    },
+    /// Freeze/replay the actual local candidate gate and compiler; no device calls.
+    CandidateArtifact {
+        #[command(subcommand)]
+        action: game_opt_loop::candidate_artifact::Action,
+
+    },
     /// 一条命令跑完整条优化链路: 摸底 → 三层自动开路 → 真机评测 → 统一档案 + 总报告。
     ///
     /// 三层是: ③ 系统参数 (要 root)、② 画面流程改写 (要能挂 Vulkan 层)、
@@ -44,6 +71,12 @@ enum Command {
         /// compare.json / compare.md 写到哪。
         #[arg(long, default_value = "runs/compare")]
         out: PathBuf,
+    },
+
+    /// 查看实验方向、持久化专家决定或核对中断评测的回执。
+    Campaign {
+        #[command(subcommand)]
+        action: CampaignCommand,
     },
 
     /// 起一个本机只读可视化面板, 把三层闭环的产物摊在浏览器里。
@@ -95,8 +128,117 @@ enum Command {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum CampaignCommand {
+    Status {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    Decide {
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            conflicts_with = "all_pending",
+            required_unless_present = "all_pending"
+        )]
+        candidate: Vec<String>,
+        /// 只决定目前待决/延期的候选，不批准未来代际。
+        #[arg(long, conflicts_with = "candidate")]
+        all_pending: bool,
+        #[arg(long, value_enum)]
+        action: Action,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+    },
+    Reconcile {
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        candidate: String,
+        #[arg(long)]
+        report: PathBuf,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+    },
+}
+
+#[derive(Args, Debug)]
+struct CampaignArgs {
+    /// 显式自主策略或每代专家决定；不给则保持旧行为。
+    #[arg(long, value_enum)]
+    campaign_mode: Option<Mode>,
+    /// 恢复同一campaign，严格校验候选/冻结条件，不重复已下发评测。
+    #[arg(long, requires = "campaign_mode")]
+    resume: bool,
+}
+impl CampaignArgs {
+    fn options(&self) -> Option<campaign::Options> {
+        self.campaign_mode.map(|mode| campaign::Options {
+            mode,
+            resume: self.resume,
+        })
+    }
+}
+
+fn run_campaign(command: CampaignCommand) -> Result<()> {
+    match command {
+        CampaignCommand::Status { out } => {
+            let campaign = Campaign::inspect(&out)?;
+            println!("{}", serde_json::to_string_pretty(&campaign.journal)?);
+        }
+        CampaignCommand::Decide {
+            out,
+            mut candidate,
+            all_pending,
+            action,
+            reviewer,
+            reason,
+        } => {
+            let mut campaign = Campaign::inspect(&out)?;
+            if all_pending {
+                candidate = campaign
+                    .journal
+                    .entries
+                    .values()
+                    .filter(|e| matches!(e.state, State::Pending | State::Deferred))
+                    .map(|e| e.id.clone())
+                    .collect();
+            }
+            if candidate.is_empty() {
+                anyhow::bail!("没有待决候选，批量命令不批准未来候选");
+            }
+            campaign.decide(&candidate, action, &reviewer, &reason)?;
+            println!(
+                "已持久化 {} 个决定；恢复原命令并加 --resume 才评测",
+                candidate.len()
+            );
+        }
+        CampaignCommand::Reconcile {
+            out,
+            candidate,
+            report,
+            reviewer,
+            reason,
+        } => {
+            let mut campaign = Campaign::inspect(&out)?;
+            let receipt = serde_json::from_slice(&std::fs::read(report)?)?;
+            campaign.reconcile(&candidate, receipt, &reviewer, &reason)?;
+            println!("已核对回执；恢复将复用它，不重复评测");
+        }
+    }
+    Ok(())
+}
+
 #[derive(Args, Debug)]
 pub struct OptimizeArgs {
+    #[command(flatten)]
+    campaign: CampaignArgs,
     /// 游戏名 ("原神" / "genshin"), 白盒载体名 ("refbench"), 或直接给包名。
     #[arg(long)]
     game: String,
@@ -246,6 +388,14 @@ pub struct OptimizeArgs {
 
 #[derive(Args, Debug)]
 pub struct LegacyArgs {
+    #[command(flatten)]
+    campaign: CampaignArgs,
+    /// phonefarm 二进制路径。
+    #[arg(long, default_value = "../phonefarm/phonefarm")]
+    phonefarm: PathBuf,
+    /// 明确指定测试设备，不能用审批覆盖另一台机器。
+    #[arg(long)]
+    device: Option<String>,
     /// 目标优化赛道: sr (超分辨率) 或 frame_gen (双倍插帧)
     #[arg(short, long, value_enum, default_value_t = TrackMode::Sr)]
     track: TrackMode,
@@ -369,9 +519,7 @@ fn run_serve(
             bin: phonefarm_bin.unwrap_or_else(|| paths.phonefarm_root.join("phonefarm")),
             cwd: paths.phonefarm_root.clone(),
             ttl: std::time::Duration::from_secs(fleet_ttl_s),
-            timeout: std::time::Duration::from_secs(
-                game_opt_loop::viz::fleet::DEFAULT_TIMEOUT_S,
-            ),
+            timeout: std::time::Duration::from_secs(game_opt_loop::viz::fleet::DEFAULT_TIMEOUT_S),
             lock_dir: Some(lock_root),
             // 图必须落在 phonefarm 仓库之内 —— /api/file 的白名单只认两个仓库根,
             // 落在别处的话卡片上那个 <img> 会 403。
@@ -444,19 +592,30 @@ fn main() -> Result<()> {
     // 作为 IR_VALIDATION_FAILED 违规原样收进门禁报告了, 再让它裸奔到终端上
     // 只会让「门禁正常拦截了一个非法算子」看起来像「工具自己炸了」。
     // 默认关掉它; 需要排查时仍可用 RUST_LOG=naga=debug 打开。
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,naga=off"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,naga=off"))
+        .init();
 
     let cli = Cli::parse();
 
-    println!("==================================================");
-    println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
-    println!("==================================================");
+    // 确认与工件协议入口的 stdout 是可解析的 JSON。
+    if !matches!(
+        &cli.command,
+        Some(Command::Confirm { .. } | Command::Case { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. } | Command::CandidatePrepare { .. })
+    ) {
+        println!("==================================================");
+        println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
+        println!("==================================================");
+    }
+
 
     match cli.command {
+        Some(Command::CandidatePrepare { action }) => return game_opt_loop::candidate_prepare::run(action),
+        Some(Command::CandidateArtifact { action }) => return game_opt_loop::candidate_artifact::run(action),
+        Some(Command::Case { action }) => return game_opt_loop::system_case_blackbox::run(action),
+        Some(Command::Confirm { action }) => return game_opt_loop::confirmation::run(action),
+        Some(Command::ModelPipeline { action }) => return game_opt_loop::model_pipeline::run(action),
         Some(Command::Optimize(args)) => return run_optimize(*args),
+        Some(Command::Campaign { action }) => return run_campaign(action),
         Some(Command::Goal(g)) => return run_goal(g),
         Some(Command::Compare { arms, out }) => {
             let c = optimize::compare::from_arm_dirs(&arms, &out)?;
@@ -542,14 +701,16 @@ fn main() -> Result<()> {
 
     // ---- 3. 底座探活 ----
     println!("\n[3/4] phonefarm 物理底座探活...");
-    let driver = PhonefarmDriver::new();
+    let driver = PhonefarmDriver::new()
+        .with_binary(cli.phonefarm.clone())
+        .with_serial(cli.device.clone());
     let probe = driver.probe();
     println!("      {}", probe.describe());
     let subcommand = driver.probe_subcommand();
     println!("      {}", subcommand.describe());
     let device_path_ready = probe.can_evaluate() && subcommand.is_supported();
 
-    if !cli.dry_run && !device_path_ready {
+    if !cli.dry_run && !device_path_ready && cli.campaign.campaign_mode != Some(Mode::Expert) {
         anyhow::bail!(
             "真机模式拿不到实测数据。\n  底座: {}\n  接收端: {}\n\
              如果只想验证本地闭环, 加 --dry-run。",
@@ -593,13 +754,18 @@ fn main() -> Result<()> {
         scene_intensity: cli.scene_intensity,
         cool_c: cli.cool_c,
         quality_reference: cli.quality_reference.clone(),
+        campaign: cli.campaign.options(),
+        phonefarm: cli.phonefarm.clone(),
+        serial: cli.device.clone(),
     };
 
     let mut evo = Evolution::new(config)?;
     match (evo.llm_available(), evo.llm_error()) {
         (true, _) => println!("      LLM 变异通道: 就绪 (单次多算子变异约需数分钟)"),
         (false, Some(e)) => println!("      LLM 变异通道: 不可用 ({e}) → 全程走本地确定性变异器"),
-        (false, None) => println!("      LLM 变异通道: 已按 --no-llm 关闭 → 全程走本地确定性变异器"),
+        (false, None) => {
+            println!("      LLM 变异通道: 已按 --no-llm 关闭 → 全程走本地确定性变异器")
+        }
     }
 
     let summary = evo.run()?;
@@ -948,6 +1114,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
         frame_audit: args.frame_audit,
         screen: args.screen,
         goal: Default::default(),
+        campaign: args.campaign.options(),
     };
 
     // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——
@@ -969,6 +1136,9 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
 
     // 给了两个以上 --proposer 就是对比模式: 同一游戏 / 设备 / 预算依次跑, 出 compare.md。
     if cfg.proposer.specs.len() >= 2 {
+        if cfg.campaign.is_some() {
+            anyhow::bail!("对比模式 (多个 --proposer) 不支持 --campaign-mode：每臂各自的专家账本无法合并成一份对比");
+        }
         optimize::compare::run(&cfg)?;
         return Ok(());
     }
@@ -1094,6 +1264,17 @@ fn count_reference_frames(path: &str) -> Result<usize> {
 
 fn print_summary(s: &EvolutionSummary, evo: &Evolution) {
     println!("\n---------- 演化汇总 ----------");
+    if let Some(campaign) = &s.campaign {
+        println!(
+            "campaign模式 {:?}；待决 {}；专家决定 {}；完成代数 {}/{}\n账本 {}",
+            campaign.mode,
+            campaign.waiting_for_review,
+            campaign.expert_reviewed,
+            s.completed_generations,
+            s.generations,
+            campaign.journal
+        );
+    }
     println!(
         "候选 {} 个: 已评测 {} / 门禁打回 {} / 指纹去重 {} / 评测出错 {}",
         s.total_candidates, s.evaluated, s.gate_rejected, s.duplicates_skipped, s.eval_errors

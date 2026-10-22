@@ -153,6 +153,8 @@ pub enum EvalStatus {
     PoorQuality,
     Crash,
     Reverted,
+    /// Measurement or conclusion qualification did not hold.
+    Abort,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -165,6 +167,9 @@ pub struct Verdict {
 /// 一份完整评测报告。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalReport {
+    /// Receiver additions preserve exact JSON across archive round-trips.
+    #[serde(default, flatten)]
+    pub extensions: crate::evidence::Extensions,
     pub candidate_id: String,
     pub status: EvalStatus,
     pub metrics: Metrics,
@@ -336,6 +341,9 @@ impl EvalReport {
     /// - PSNR >= 基线 (§2 红线 3: 画质是约束, 不是目标)
     /// - 真机数据还要显著 (p < 0.01; §2 红线 4: 防硬件噪声欺骗)
     pub fn is_admissible(&self, budget_ms: f32, quality_baseline_db: f32) -> bool {
+        if !crate::evidence::permits_promotion(&self.extensions) {
+            return false;
+        }
         if self.status != EvalStatus::Pass {
             return false;
         }
@@ -376,6 +384,7 @@ mod tests {
 
     fn report(status: EvalStatus, latency: f32, psnr: f32, p: f64, src: MetricSource) -> EvalReport {
         EvalReport {
+            extensions: Default::default(),
             candidate_id: "t".into(),
             status,
             metrics: Metrics {

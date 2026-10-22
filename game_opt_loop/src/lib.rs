@@ -17,10 +17,17 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+pub mod campaign;
 pub mod devlock;
 pub mod engine;
+pub mod evidence;
 pub mod goal;
+pub mod confirmation;
+pub mod candidate_artifact;
+pub mod candidate_prepare;
+pub mod system_case;
 pub mod harness;
+pub mod model_pipeline;
 pub mod optimize;
 pub mod tracks;
 pub mod viz;
@@ -47,3 +54,5 @@ impl TrackMode {
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub mod system_case_blackbox;

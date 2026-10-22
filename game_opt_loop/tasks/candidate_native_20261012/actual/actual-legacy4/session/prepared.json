@@ -1,0 +1,344 @@
+{
+  "adapter_binding": {
+    "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+    "compiler_binding_scope": "local_replayed_compilation_not_authenticated_attestation",
+    "descriptor_sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+    "files": {
+      "adapted.spv": {
+        "bytes": 2800,
+        "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+      },
+      "descriptor.json": {
+        "bytes": 947,
+        "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+      },
+      "manifest.json": {
+        "bytes": 698,
+        "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+      },
+      "original.comp": {
+        "bytes": 673,
+        "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+      },
+      "original.spv": {
+        "bytes": 2688,
+        "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+      }
+    },
+    "local_compiler_export_bytes_equal": true,
+    "manifest_sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f",
+    "source_spirv_association": "caller_supplied_unverified"
+  },
+  "candidate_frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+  "candidate_json": {
+    "bytes": 1014,
+    "sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f"
+  },
+  "claim_scope": "offline_compilation_adapter_and_optional_native_host_integrity_not_full_candidate_driver",
+  "compiler_receipt": {
+    "adapter_input": {
+      "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+      "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+      "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+      "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+      "original_spirv_path": "original.spv",
+      "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+      "source_path": "original.comp",
+      "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+      "source_spirv_association": "repository_gate_compiler_replayable",
+      "trust_scope": "local_integrity_not_authenticated_attestation"
+    },
+    "candidate_id": "actual-naga-sr-interface",
+    "claim_scope": "static_gate_and_local_compilation_only",
+    "descriptor_sha256": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+    "frozen_identity": "f15ac9c0c5d9ba7c44a512779ac502ec8ae44a798ca1291e75db8cfe69f4d5de",
+    "gate_passed": true,
+    "manifest_sha256": "839d481c41ba56bea143830618f4521fb75bb5ddd4d7c6766ccfd6cd27500bde",
+    "proof_flags": {
+      "deployable": false,
+      "gpu_validated": false,
+      "promotion_allowed": false,
+      "quality_verified": false,
+      "real_game_optimization_proven": false,
+      "semantic_equivalence_proven": false
+    },
+    "schema": "game_opt_loop/candidate_compilation@1",
+    "state": "host_compiled_replay_match",
+    "track": "sr"
+  },
+  "frozen_inputs_sha256": "6b3dd8906da3c2b3e797682e1c437e723e62097d4cd91f3aa99f90693fe9a751",
+  "gol_executable": {
+    "bytes": 46920192,
+    "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+  },
+  "native_binding": {
+    "android_codegen_validated": false,
+    "artifact": "/private/tmp/gol-native-actual-ugppao8k/actual-legacy4/session/native/upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6",
+    "artifact_id": "upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6",
+    "build_receipt": {
+      "artifact": "/private/tmp/gol-native-actual-ugppao8k/actual-legacy4/session/native/upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6",
+      "artifact_id": "upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6",
+      "deployable": false,
+      "device_validation": "not_run",
+      "outer_quiescence_verified": false,
+      "process_supervision": "inherited_group",
+      "requires_outer_quiescence": true,
+      "reused": false
+    },
+    "claim_scope": "local_artifact_integrity_and_process_supervision_not_toolchain_authenticity_or_GPU_correctness",
+    "deployable": false,
+    "descriptor": {
+      "bytes": 4374,
+      "sha256": "eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6"
+    },
+    "device_validation": "not_run",
+    "files": {
+      "VkLayer_refknobs.json": {
+        "bytes": 449,
+        "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+      },
+      "adaptation_descriptor.json": {
+        "bytes": 947,
+        "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+      },
+      "adaptation_manifest.json": {
+        "bytes": 698,
+        "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+      },
+      "artifact_metadata.h": {
+        "bytes": 371,
+        "sha256": "1a0238860faeec42687edc08202f12a298b3bde2080e284ae821411569dad745"
+      },
+      "artifact_stats.h": {
+        "bytes": 2367,
+        "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+      },
+      "candidate.comp": {
+        "bytes": 673,
+        "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+      },
+      "candidate.spv": {
+        "bytes": 2800,
+        "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+      },
+      "candidate_compile.log": {
+        "bytes": 155,
+        "sha256": "22078a76eb0c6777ad5dcb9f37e553b86f7dcfb5bbd4446790cd4c28fcbd907d"
+      },
+      "copy_compile.log": {
+        "bytes": 1,
+        "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      },
+      "copy_spv.h": {
+        "bytes": 13168,
+        "sha256": "0ff2a8b1ee09cedd712f0fb5e3199e3e3f34183498d7e80e257eb47da3417a27"
+      },
+      "copyprobe_copy.comp": {
+        "bytes": 668,
+        "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+      },
+      "copyprobe_copy.spv": {
+        "bytes": 2800,
+        "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+      },
+      "dependencies.log": {
+        "bytes": 81,
+        "sha256": "0985d198d252451f83d0f1cbb5661e30cc54721676d08562b68dca6d95ab6296"
+      },
+      "descriptor.json": {
+        "bytes": 4374,
+        "sha256": "eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6"
+      },
+      "exports.log": {
+        "bytes": 186,
+        "sha256": "1bfa602c3d6aeb263c19e11780c121b8312ac19f31c1c1eedba7fc72d8ee584e"
+      },
+      "layer_compile.log": {
+        "bytes": 1,
+        "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+      },
+      "libVkLayer_refknobs.so": {
+        "bytes": 64,
+        "sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443"
+      },
+      "original_candidate.spv": {
+        "bytes": 2688,
+        "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+      },
+      "vk_layer_refknobs.cpp": {
+        "bytes": 97158,
+        "sha256": "cf9dcc89983f401434c4113d28ed95a6249ebdd8899eadb19453aea2590396bc"
+      }
+    },
+    "host_artifact_integrity_accepted": true,
+    "layer": {
+      "bytes": 64,
+      "sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443"
+    },
+    "layer_contract": "legacy4",
+    "layer_inputs": {
+      "VkLayer_refknobs.json": {
+        "bytes": 449,
+        "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+      },
+      "artifact_stats.h": {
+        "bytes": 2367,
+        "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+      },
+      "copyprobe_copy.comp": {
+        "bytes": 668,
+        "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+      },
+      "vk_layer_refknobs.cpp": {
+        "bytes": 97158,
+        "sha256": "cf9dcc89983f401434c4113d28ed95a6249ebdd8899eadb19453aea2590396bc"
+      }
+    },
+    "manifest": {
+      "bytes": 7125,
+      "sha256": "001af304403637b0729ec67180e82b5228f7d73397dcdd4f29239bc97685c1a9"
+    },
+    "outer_build_group_absent": true,
+    "outer_verify_group_absent": true,
+    "pf_receipt": {
+      "artifact_id": "upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6",
+      "deployable": false,
+      "device_validation": "not_run",
+      "files_verified": 19,
+      "layer_sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443",
+      "outer_quiescence_verified": false,
+      "process_supervision": "inherited_group",
+      "requires_outer_quiescence": true,
+      "state": "built_offline_outer_quiescence_required"
+    },
+    "real_ndk_validation": "not_run",
+    "sdk_inventory_sha256": "950e39b3909cc08c552df60b05a6b17810a9a26648de23c6f4c1082eec1f1c75",
+    "source_spirv_association": "caller_supplied_unverified"
+  },
+  "native_build_reason": null,
+  "native_build_state": "COMPLETED",
+  "native_plan": {
+    "inventory": [
+      {
+        "directory": false,
+        "identity": {
+          "bytes": 2800,
+          "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+        },
+        "path": "copy-fixture.spv"
+      },
+      {
+        "directory": true,
+        "identity": null,
+        "path": "shader-tools"
+      },
+      {
+        "directory": true,
+        "identity": null,
+        "path": "shader-tools/linux-x86_64"
+      },
+      {
+        "directory": false,
+        "identity": {
+          "bytes": 1650,
+          "sha256": "c099e66eb0dbd4584b233df5adac42a938fc61e636d74fcab419e89720ab6426"
+        },
+        "path": "shader-tools/linux-x86_64/glslc"
+      },
+      {
+        "directory": true,
+        "identity": null,
+        "path": "toolchains"
+      },
+      {
+        "directory": true,
+        "identity": null,
+        "path": "toolchains/llvm"
+      },
+      {
+        "directory": true,
+        "identity": null,
+        "path": "toolchains/llvm/prebuilt"
+      },
+      {
+        "directory": true,
+        "identity": null,
+        "path": "toolchains/llvm/prebuilt/linux-x86_64"
+      },
+      {
+        "directory": true,
+        "identity": null,
+        "path": "toolchains/llvm/prebuilt/linux-x86_64/bin"
+      },
+      {
+        "directory": false,
+        "identity": {
+          "bytes": 1650,
+          "sha256": "45735efb6a2c887964e9bfb2d0dcfe29d9870da92f42a322a509154c63d66eed"
+        },
+        "path": "toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang++"
+      },
+      {
+        "directory": false,
+        "identity": {
+          "bytes": 1646,
+          "sha256": "e3dba25e6f430d2e45416caf8b66e4a8e0738807c7f6ddfbdab57cb057c0555b"
+        },
+        "path": "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+      },
+      {
+        "directory": false,
+        "identity": {
+          "bytes": 1651,
+          "sha256": "c9f20e3514bb0ab91627810db1dbcdd740f47fe9974b33479559cabcb53cd160"
+        },
+        "path": "toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+      }
+    ],
+    "inventory_sha256": "950e39b3909cc08c552df60b05a6b17810a9a26648de23c6f4c1082eec1f1c75",
+    "layer_contract": "legacy4",
+    "layer_inputs": {
+      "VkLayer_refknobs.json": {
+        "bytes": 449,
+        "sha256": "ec69a8c831a6ac4bd6521904269b5dc9809def25df36c9152b7403e1ac46776d"
+      },
+      "artifact_stats.h": {
+        "bytes": 2367,
+        "sha256": "a827991b4bab553ded8633f895556981645d605145f2b583a8d464820bdef648"
+      },
+      "copyprobe_copy.comp": {
+        "bytes": 668,
+        "sha256": "5a45495dbc18f185519f1cc1e0b398d477af2e13fe03c0a4c1f3de4710de21cd"
+      },
+      "vk_layer_refknobs.cpp": {
+        "bytes": 97158,
+        "sha256": "cf9dcc89983f401434c4113d28ed95a6249ebdd8899eadb19453aea2590396bc"
+      }
+    },
+    "layer_root": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-build-supervision/knobs/gray/layer",
+    "reason": null,
+    "sdk_path": "/private/tmp/gol-native-actual-ugppao8k/actual-legacy4/session/ndk.snapshot",
+    "state": "READY"
+  },
+  "offline_compilation_adapter_complete": true,
+  "phonefarm_executable": {
+    "bytes": 32183608,
+    "sha256": "db1721a7779741367f974b27d57e398b1392cd08fb4c16972e95015a5fe65005"
+  },
+  "preparation_chain_complete": true,
+  "proof_flags": {
+    "deployable": false,
+    "gpu_validated": false,
+    "promotion_allowed": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "semantic_equivalence_proven": false
+  },
+  "provenance": "synthetic_mechanism_fixture",
+  "rules": {
+    "bytes": 1817,
+    "sha256": "64bdee660bc9432bfa1cb9a6f1d890d4b9043d2e0548faf065d384980e737b6e"
+  },
+  "schema": "game_opt_loop/candidate_prepare@2",
+  "status": "PREPARED_OFFLINE_NATIVE"
+}

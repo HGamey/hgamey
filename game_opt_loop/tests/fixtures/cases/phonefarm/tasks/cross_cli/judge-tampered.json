@@ -1,0 +1,27 @@
+{
+  "schema": "game_opt_loop/confirmation_report@1",
+  "frozen_plan_sha256": "2c5c8054589f3e594fc3a6c1b06927b469a19278d4aa5f33494f846a0ceb22fd",
+  "samples_sha256": "b9b70f665bfb336caa7344795f544d53e953ea0eb0ecfc954eb9bfda820e553c",
+  "verdict": "BLOCKED",
+  "issues": [
+    "receiver not a valid single-run observation: b1"
+  ],
+  "metrics": [],
+  "report_hashes": {
+    "a1": "b42116f5abfe8a85dab682c4a3702208e5ea70360ca559d2e8e20953ca8885fb",
+    "a2": "34949234a3089c7ef575bce89a415d61269f92c006a7a4ccc3c4910850ef1d90",
+    "a3": "818d2eae45565e3253f650b088f487558728b28a17d60e7a98f512c2333adcd5",
+    "a4": "ddff9fcf60c9d01c475855dd395f49e50c30d38c9f2ee19a26365be2b6502c5b",
+    "a5": "3cdf4554a7fbda8078738d780353c972108e2ecacb5ee265dd99da88327c18ee",
+    "b1": "ba1842c12800bf998a0159b3a11a07cbde54a97515fe8fad75a660f2516d1c5b",
+    "b2": "f9e6ee56cc832a3316cfdaaa92b881228a1a078f9f52ffa9d9e90cf1c71dbc70",
+    "b3": "647fea37ae77beeaad23dedf2f6413f27bc2df371f82a470efc12965d5b0976b",
+    "b4": "3e4ff00953c122eb970424ef48ecdcc63691c2d7532f6a4aa830bffc46d06c19",
+    "b5": "ea0a0c0b63a9fcea8c4c5c3c718b068090df46b7c39f04c12bbc9a477161b9d9"
+  },
+  "assumption": "independent run pairs; approximately normal paired adverse differences; paired t upper bounds, Bonferroni family correction",
+  "source_attestation": "receiver declarations and byte hashes checked; acquisition and registration chronology not attested",
+  "real_game_optimization_proven": false,
+  "promotion_allowed": false,
+  "claim_scope": "none"
+}

@@ -1,0 +1,338 @@
+{
+  "inspection_scope": "current_local_integrity_only_no_commands_or_new_gate_replay",
+  "journal": {
+    "frozen_inputs_sha256": "0f9ed477df80147d24bddbb16a5a96977b0e72c070b96e40feadd70c3a60f61e",
+    "inputs": {
+      "build": true,
+      "candidate": {
+        "bytes": 1014,
+        "sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f"
+      },
+      "execution_scope": "trusted_local_binaries_and_OS_shell_process_groups_not_sandbox_or_remote_attestation",
+      "gate_sha256": "10212fe5f2c297f934da6bb810645f5bff9bc378c1dfcf5851b4220fd06e2ff1",
+      "gol": {
+        "bytes": 46449312,
+        "sha256": "176e788e7f50e07a936f4b589d775642f0bcf44ae6e2c9bc5fcd1be553e18b34"
+      },
+      "implementation_sha256": "3a765c1bed0fffdc354c9908aee4827944cacb8f2a7f478474bf0384f759bb2d",
+      "ndk": "/private/tmp/gol-prepare-actual-srmfrnd2/caller-missing-sdk",
+      "phonefarm": {
+        "bytes": 32151832,
+        "sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d"
+      },
+      "provenance": "caller_supplied_local_candidate_not_real_game_attestation",
+      "stage_wall_ms": 30000,
+      "stream_bytes": 1048576,
+      "whole_wall_ms": 180000
+    },
+    "prepared_receipt": {
+      "bytes": 4198,
+      "sha256": "501b279734b63224b5dc7fda3e20381b68bade3541ce31ef8e28f2f800337742"
+    },
+    "proof_flags": {
+      "deployable": false,
+      "gpu_validated": false,
+      "promotion_allowed": false,
+      "quality_verified": false,
+      "real_game_optimization_proven": false,
+      "semantic_equivalence_proven": false
+    },
+    "schema": "game_opt_loop/candidate_prepare@1",
+    "stages": [
+      {
+        "argv": [
+          "candidate-artifact",
+          "compile",
+          "--candidate",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/candidate.json",
+          "--out",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/compiled"
+        ],
+        "elapsed_ms": 3270,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "compile",
+        "pid": 23817,
+        "result": {
+          "adapter_input": {
+            "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+            "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+            "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+            "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+            "original_spirv_path": "original.spv",
+            "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+            "source_path": "original.comp",
+            "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+            "source_spirv_association": "repository_gate_compiler_replayable",
+            "trust_scope": "local_integrity_not_authenticated_attestation"
+          },
+          "candidate_id": "actual-naga-sr-interface",
+          "claim_scope": "static_gate_and_local_compilation_only",
+          "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+          "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+          "gate_passed": true,
+          "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+          "proof_flags": {
+            "deployable": false,
+            "gpu_validated": false,
+            "promotion_allowed": false,
+            "quality_verified": false,
+            "real_game_optimization_proven": false,
+            "semantic_equivalence_proven": false
+          },
+          "schema": "game_opt_loop/candidate_compilation@1",
+          "state": "host_compiled",
+          "track": "sr"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1524,
+          "sha256": "420754dc6a4211c63a7d9995715b47d112899497aef489fc168394e0218463f9"
+        },
+        "tool_sha256": "176e788e7f50e07a936f4b589d775642f0bcf44ae6e2c9bc5fcd1be553e18b34"
+      },
+      {
+        "argv": [
+          "candidate-artifact",
+          "verify",
+          "--artifact",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/compiled",
+          "--expected-identity",
+          "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584"
+        ],
+        "elapsed_ms": 7062,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "verify_compile",
+        "pid": 23969,
+        "result": {
+          "adapter_input": {
+            "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+            "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+            "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+            "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+            "original_spirv_path": "original.spv",
+            "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+            "source_path": "original.comp",
+            "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+            "source_spirv_association": "repository_gate_compiler_replayable",
+            "trust_scope": "local_integrity_not_authenticated_attestation"
+          },
+          "candidate_id": "actual-naga-sr-interface",
+          "claim_scope": "static_gate_and_local_compilation_only",
+          "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+          "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+          "gate_passed": true,
+          "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+          "proof_flags": {
+            "deployable": false,
+            "gpu_validated": false,
+            "promotion_allowed": false,
+            "quality_verified": false,
+            "real_game_optimization_proven": false,
+            "semantic_equivalence_proven": false
+          },
+          "schema": "game_opt_loop/candidate_compilation@1",
+          "state": "host_compiled_replay_match",
+          "track": "sr"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1537,
+          "sha256": "b34cc75d23292592cff2563005870122330774fee51509283ee757f9cdb623aa"
+        },
+        "tool_sha256": "176e788e7f50e07a936f4b589d775642f0bcf44ae6e2c9bc5fcd1be553e18b34"
+      },
+      {
+        "argv": [
+          "gray-artifact",
+          "adapt-storage",
+          "--source",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/compiled/original.comp",
+          "--spirv",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/compiled/original.spv",
+          "--out",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/adapted"
+        ],
+        "elapsed_ms": 393,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "adapt",
+        "pid": 24100,
+        "result": {
+          "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "deployable": false,
+          "descriptor": {
+            "adapted_abi": {
+              "entry_point": "main",
+              "input": "set0/binding0:combined_sampler_2d_float32",
+              "local_size": [
+                16,
+                16,
+                1
+              ],
+              "output": "set0/binding1:writeonly_rgba8_2d",
+              "version": 1
+            },
+            "adapted_spirv_sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325",
+            "changes": {
+              "direct_loads": 2,
+              "image_reads_to_fetch": 1,
+              "image_sizes_to_lod": 1,
+              "input_variable": 33,
+              "original_image_type": 5,
+              "original_pointer_type": 34,
+              "output_shared_original_type": true,
+              "output_variable": 35,
+              "unused_loads": 1
+            },
+            "original_source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+            "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+            "protocol_version": 1,
+            "source_spirv_association": "caller_supplied_unverified",
+            "transform": "direct_rgba8_storage_to_combined_fetch_lod0"
+          },
+          "device_validation": "not_run",
+          "path": "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "qualification": "not_run",
+          "semantic_equivalence": "not_run",
+          "source_spirv_association": "caller_supplied_unverified",
+          "state": "verified_offline"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1482,
+          "sha256": "ab6f218a37e17fd962161acee4b8ca830ded91850252acc914a3317d01d8a7d6"
+        },
+        "tool_sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d"
+      },
+      {
+        "argv": [
+          "gray-artifact",
+          "verify-adaptation",
+          "--artifact",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+        ],
+        "elapsed_ms": 56,
+        "error": null,
+        "exit_code": 0,
+        "group_absent": true,
+        "name": "verify_adaptation",
+        "pid": 24137,
+        "result": {
+          "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "compiler_binding_scope": "local_replayed_compilation_not_authenticated_attestation",
+          "descriptor_sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "files": {
+            "adapted.spv": {
+              "bytes": 2800,
+              "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+            },
+            "descriptor.json": {
+              "bytes": 947,
+              "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+            },
+            "manifest.json": {
+              "bytes": 698,
+              "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+            },
+            "original.comp": {
+              "bytes": 673,
+              "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+            },
+            "original.spv": {
+              "bytes": 2688,
+              "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+            }
+          },
+          "local_compiler_export_bytes_equal": true,
+          "manifest_sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f",
+          "source_spirv_association": "caller_supplied_unverified"
+        },
+        "signal": null,
+        "state": "COMPLETED",
+        "stderr": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "stdout": {
+          "bytes": 1482,
+          "sha256": "ab6f218a37e17fd962161acee4b8ca830ded91850252acc914a3317d01d8a7d6"
+        },
+        "tool_sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d"
+      },
+      {
+        "argv": [
+          "gray-artifact",
+          "build",
+          "--adapted-artifact",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/adapted/storage-01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+          "--out",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/native",
+          "--ndk",
+          "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/controlled-empty-sdk",
+          "--timeout-seconds",
+          "1"
+        ],
+        "elapsed_ms": 68,
+        "error": "MISSING_ANDROID_NDK",
+        "exit_code": 2,
+        "group_absent": true,
+        "name": "native_build",
+        "pid": 24197,
+        "result": {
+          "actual_ndk": "/private/tmp/gol-prepare-actual-srmfrnd2/actual-missing-sdk/controlled-empty-sdk",
+          "device_validation": "not_run",
+          "empty_sdk_inventory_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "native_build_accepted": false,
+          "probe_scope": "controlled_empty_sdk_not_caller_installation_or_native_build",
+          "reason": "MISSING_ANDROID_NDK",
+          "requested_ndk": "/private/tmp/gol-prepare-actual-srmfrnd2/caller-missing-sdk",
+          "requested_ndk_observation": "not_found_at_probe_time",
+          "tool_execution": "missing_tool_refusal"
+        },
+        "signal": null,
+        "state": "BLOCKED",
+        "stderr": {
+          "bytes": 375,
+          "sha256": "491663e411ce30ea533723bff31402105f2a299f0bd295847b72d5016f73496a"
+        },
+        "stdout": {
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "tool_sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d"
+      }
+    ],
+    "status": "BLOCKED"
+  },
+  "proof_flags": {
+    "deployable": false,
+    "gpu_validated": false,
+    "promotion_allowed": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "semantic_equivalence_proven": false
+  },
+  "schema": "game_opt_loop/candidate_prepare@1",
+  "status": "BLOCKED",
+  "unknown_execution_retry_allowed": false
+}

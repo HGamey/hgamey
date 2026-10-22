@@ -1,0 +1,11 @@
+{
+  "artifact_id": "upop-9baeb4e5de831553c69bb569889830b0ef1996547125066eee508e29c711e7cc",
+  "deployable": false,
+  "device_validation": "not_run",
+  "files_verified": 20,
+  "layer_sha256": "7f1ca7445f5b12a101ae098a4f6a64c19e90cff1083ea450a99f0e6bf5eb9443",
+  "outer_quiescence_verified": false,
+  "process_supervision": "inherited_group",
+  "requires_outer_quiescence": true,
+  "state": "built_offline_outer_quiescence_required"
+}

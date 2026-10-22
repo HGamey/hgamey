@@ -33,6 +33,7 @@ fn sample_candidate() -> Candidate {
 
 fn sample_report(source: MetricSource) -> EvalReport {
     EvalReport {
+        extensions: Default::default(),
         candidate_id: "gen2_llm1".into(),
         status: EvalStatus::Pass,
         metrics: Metrics {

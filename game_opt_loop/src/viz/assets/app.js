@@ -5,8 +5,10 @@
 var DASH = null;
 var PAGE = 'overview';
 var SELECTED_ROUND = null;
+var SELECTED_CASE = null;
 var REFRESH_MS = 30000;
 var timer = null;
+var EVIDENCE_OPEN = Object.create(null);
 
 /* ── 小工具 ───────────────────────────────────────── */
 function esc(s) {
@@ -64,7 +66,7 @@ function showPage(p) {
   for (var i = 0; i < buttons.length; i++) {
     buttons[i].className = buttons[i].dataset.page === p ? 'on' : '';
   }
-  ['overview', 'rounds', 'charts', 'device'].forEach(function (name) {
+  ['overview', 'rounds', 'cases', 'charts', 'device'].forEach(function (name) {
     el('page-' + name).classList.toggle('hidden', name !== p);
   });
   render();
@@ -75,6 +77,7 @@ function render() {
   renderNotices();
   if (PAGE === 'overview') renderOverview();
   if (PAGE === 'rounds') renderRounds();
+  if (PAGE === 'cases') renderCases();
   if (PAGE === 'charts') renderCharts();
   if (PAGE === 'device') renderDevice();
 }
@@ -121,8 +124,8 @@ function renderOverview() {
     '<h2 class="section">三层级 · 每层多少轮, 结果怎么分</h2>' +
     '<div class="grid3">' + cards + '</div>' +
     '<div class="card" style="margin-top:16px"><div class="dim" style="font-size:13px">' +
-      '合格 = 判据齐全且全部通过 &nbsp;·&nbsp; 淘汰 = 判据齐全但有未通过 &nbsp;·&nbsp; ' +
-      '无效 = 判据不齐 / 没测上, <b>下不出结论</b> (不是判负)' +
+      '合格 / 淘汰只展示报告声明结论资格后的前沿或判据结果；无效表示资格或测试不完整。' +
+      '<br>仅证据包括旧报告、静态估计与来源未知的记录。面板不认证采集，也不授予真实游戏证明或晋级权限。' +
     '</div></div>' +
     '<h2 class="section">载体可复现性 · 同一载体连跑 N 轮, 帧时散得有多开</h2>' +
     carrierTable() +
@@ -157,7 +160,8 @@ function carrierTable() {
   return '<div class="card"><table><thead><tr>' +
     '<th>载体</th><th>窗口</th><th>轮数</th><th>p95 离散度</th><th>p50 离散度</th>' +
     '<th>p95 中位</th><th>帧率中位</th><th>阈值</th><th>判定</th><th></th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    '</tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<p class="dim">本表判定仅描述保存记录的离散度是否符合该表阈值，不授予优化结论资格。</p></div>';
 }
 
 /* ── 轮次 ─────────────────────────────────────────── */
@@ -176,6 +180,8 @@ function findRound(id) {
 }
 
 function renderRounds() {
+  var details = el('page-rounds').querySelectorAll('details.receiver-evidence[data-key]');
+  for (var i = 0; i < details.length; i++) EVIDENCE_OPEN[details[i].dataset.key] = details[i].open;
   var all = allRounds();
   if (!all.length) {
     el('page-rounds').innerHTML = '<div class="card"><span class="unknown">还没有任何一轮数据</span></div>';
@@ -214,6 +220,101 @@ function verdictLabel(v) {
   return { qualified: '合格', eliminated: '淘汰', invalid: '无效', evidence: '仅证据' }[v] || v;
 }
 
+function evidenceDetailAttrs(parts) {
+  var key = JSON.stringify(parts);
+  return ' data-key="' + esc(key) + '"' + (EVIDENCE_OPEN[key] ? ' open' : '');
+}
+
+/* ── 独立确认 / 模型阶段案例：保存声明，不认证、不执行 ── */
+function jsonEvidence(v) {
+  return v === undefined || v === null ? val(null) : '<pre>' + esc(JSON.stringify(v, null, 2)) + '</pre>';
+}
+function caseNumber(v) {
+  return typeof v === 'number' && isFinite(v) ? esc(v.toFixed(3)) : val(null);
+}
+function savedState(s) {
+  return { PASS: 'PASS（保存裁决，未重新认证）', INCONCLUSIVE: 'INCONCLUSIVE（收益未确定）',
+    BLOCKED: 'BLOCKED（阻断）', completed_protocol_declaration: '五阶段协议声明完成',
+    saved_stage_states_only: '按保存阶段状态查看', unknown: 'UNKNOWN（外部作用未知）',
+    in_flight: 'IN_FLIGHT（不可在面板恢复）', completed: 'COMPLETED（协议声明）',
+    failed: 'FAILED（失败）', rejected: 'REJECTED（拒绝）', deferred: 'DEFERRED（延期）',
+    pending: 'PENDING（待审/待执行）', ready: 'READY（保存状态）' }[s] || s;
+}
+function caseDocument(collection, index, role, integrity, key) {
+  var d = collection.documents[index];
+  if (!d) return '<p class="err">文档快照未知/不可读</p>';
+  var html = '<div class="case-document"><p><b>' + esc(role) + '</b> · ' + esc(integrity) + '</p>' +
+    '<div class="dim case-path">' + esc(d.path) + '</div>' +
+    '<p class="dim case-path">快照 SHA-256: ' + esc(d.sha256) + ' · ' + kb(d.size_bytes) + '</p>' +
+    (d.problem ? '<p class="err">快照解析错误: ' + esc(d.problem) + '</p>' : '');
+  html += '<details class="receiver-evidence"' + evidenceDetailAttrs(['case', key, d.path, 'raw']) +
+    '><summary>原始 UTF-8 文本（保留字节和空白）</summary>' +
+    (d.raw_text === null ? val(null) : '<pre>' + esc(d.raw_text) + '</pre>') + '</details>';
+  html += '<details class="receiver-evidence"' + evidenceDetailAttrs(['case', key, d.path, 'json']) +
+    '><summary>完整 JSON 展示（派生格式，非原始字节）</summary>' + jsonEvidence(d.json) + '</details></div>';
+  return html;
+}
+function renderCases() {
+  var page = el('page-cases');
+  var details = page.querySelectorAll('details.receiver-evidence[data-key]');
+  for (var i = 0; i < details.length; i++) EVIDENCE_OPEN[details[i].dataset.key] = details[i].open;
+  var collection = DASH.cases;
+  if (!collection) { page.innerHTML = '<div class="card">案例接口未知/未提供</div>'; return; }
+  var items = collection.items;
+  var selected = items.filter(function (c) { return c.id === SELECTED_CASE; })[0];
+  if (!selected && items.length) { selected = items[0]; SELECTED_CASE = selected.id; }
+  var header = '<h2 class="section">案例证据 · 独立确认与模型阶段</h2><div class="card">' +
+    '<b>只展示保存声明，不认证来源、不执行驱动、不授予真实游戏证明或晋级权限。</b>' +
+    '<p class="dim">Hash 匹配只检查字节完整性。PASS 只保留原裁决；五阶段完成只描述驱动协议。' +
+    '合成/假设演示不会升级成真机案例。</p>' +
+    '<div>view_grants_game_proof=false · view_allows_promotion=false</div>' +
+    '<p class="dim">本次发现 ' + items.length + ' 份案例 · ' + collection.scanned_directories +
+    ' 目录 / ' + collection.scanned_entries + ' 条目 · ' + kb(collection.snapshot_bytes) + ' 输入快照</p>' +
+    (collection.partial ? '<p class="err"><b>部分列表：读取错误或达到读取/遍历/关联上限，不能作为全部实验的总览。</b></p>' : '') +
+    (collection.problems.length ? '<details><summary>读取限制 / 问题</summary><ul class="notes">' +
+      collection.problems.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></details>' : '') + '</div>';
+  if (!selected) { page.innerHTML = header + '<div class="card" style="margin-top:16px">未发现支持的保存案例；资格未知/未测。</div>'; return; }
+  var list = items.map(function (c) {
+    return '<button type="button" class="round-item case-choice' + (c.id === selected.id ? ' on' : '') + '" data-case="' + esc(c.id) + '">' +
+      '<div class="t">' + val(c.title) + '</div><div class="s">' + esc(c.kind) + ' · ' +
+      val(savedState(c.declared_status)) + '</div></button>';
+  }).join('');
+  var doc = collection.documents[selected.primary_document];
+  var primary = doc && doc.json;
+  var detail = '<h2 class="section">' + val(selected.title) + '</h2><div class="kv">' +
+    '<div class="k">保存状态</div><div>' + val(savedState(selected.declared_status)) + '</div>' +
+    '<div class="k">来源声明（未认证）</div><div>' + (selected.source_declarations.length ? selected.source_declarations.map(esc).join('<br>') : val(null)) + '</div>' +
+    '<div class="k">声明范围</div><div>' + val(selected.scope) + '</div>' +
+    '<div class="k">资格字段</div><div>' + (selected.qualification === null ? val(null) : jsonEvidence(selected.qualification)) + '</div></div>';
+  if (selected.kind === 'confirmation') {
+    detail += '<h3>冻结指标的保存统计值</h3>';
+    var metrics = primary && Array.isArray(primary.metrics) ? primary.metrics : [];
+    detail += metrics.length ? '<div class="case-table"><table><thead><tr><th>指标</th><th>Pairs / 单位</th><th>不利差均值</th><th>单侧上界</th><th>非劣效界 / 保存支持</th><th>改善界 / 保存支持</th></tr></thead><tbody>' +
+      metrics.slice(0, 32).map(function (m) { return '<tr><td>' + val(m.name) + '</td><td>' + val(m.pairs) + ' / ' + val(m.scale) + '</td>' +
+        '<td>' + caseNumber(m.mean_adverse_delta) + '</td><td>' + caseNumber(m.upper_adverse_bound) + '</td>' +
+        '<td>' + caseNumber(m.noninferiority_limit) + ' / ' + val(yesNo(m.noninferiority_supported)) + '</td>' +
+        '<td>' + caseNumber(m.improvement_limit) + ' / ' + val(yesNo(m.improvement_supported)) + '</td></tr>'; }).join('') + '</tbody></table></div>' : val(null);
+    detail += (metrics.length > 32 ? '<p class="err">统计摘要仅显示前 32 项；完整指标仍在原文中。</p>' : '') + '<p class="dim">本面板未重新裁决统计独立性、来源、画质或真实 GPU 挂点。</p>';
+  }
+  if (selected.stages.length) {
+    detail += '<h3>阶段 / 审批 / 恢复 / 用量</h3>' + selected.stages.map(function (s, i) {
+      return '<div class="case-stage"><b>' + val(s.name) + '</b> · ' + val(savedState(s.state)) +
+        (s.error ? '<p class="err">' + esc(s.error) + '</p>' : '') +
+        '<details class="receiver-evidence"' + evidenceDetailAttrs(['case', selected.id, 'stage', s.name || i]) +
+        '><summary>完整保存的审批、恢复和声明用量</summary>' +
+        '<p>审批记录</p>' + jsonEvidence(s.decisions) + '<p>Reconciliation（人工声明）</p>' +
+        jsonEvidence(s.reconciliation) + '<p>Usage（驱动声明，未可信计量）</p>' + jsonEvidence(s.usage) + '</details></div>';
+    }).join('');
+  }
+  detail += '<h3>否定结果 / UNKNOWN / 限制</h3>' + (selected.issues.length ? '<ul class="notes">' +
+    selected.issues.slice(0, 128).map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>' : '<p class="dim">保存记录未列出问题；这不表示已认证。</p>');
+  if (selected.issues.length > 128) detail += '<p class="err">问题摘要仅显示前 128 项；完整保存字段仍在原文中。</p>';
+  detail += '<h3>完整证据快照</h3>' + caseDocument(collection, selected.primary_document, 'Primary', '保存声明，未认证', selected.id);
+  selected.associations.forEach(function (a) { detail += caseDocument(collection, a.document, a.role, a.integrity, selected.id); });
+  page.innerHTML = header + '<div class="round-layout" style="margin-top:16px"><div class="card round-list">' + list +
+    '</div><div class="card case-detail">' + detail + '</div></div>';
+}
+
 function roundDetail(x) {
   if (!x) return '<span class="unknown">没有选中任何一轮</span>';
   var r = x.round;
@@ -243,7 +344,7 @@ function roundDetail(x) {
       '<th>功耗 W</th><th>画质 dB</th><th>p 值</th><th>说明</th></tr></thead><tbody>' +
       r.candidates.map(function (c) {
         return '<tr>' +
-          '<td><b>' + esc(c.id) + '</b>' + (c.on_front ? ' <span class="badge qualified">前沿</span>' : '') + '</td>' +
+          '<td><b>' + esc(c.id) + '</b>' + (c.on_front ? ' <span class="badge evidence">档案前沿</span>' : '') + '</td>' +
           '<td>' + esc(c.origin) + '</td>' +
           '<td><span class="badge ' + esc(c.verdict) + '">' + verdictLabel(c.verdict) + '</span></td>' +
           '<td class="num">' + num(c.latency_ms, 4) + '</td>' +
@@ -256,7 +357,15 @@ function roundDetail(x) {
             (c.violations && c.violations.length ? ' [' + esc(c.violations.join(',')) + ']' : '') +
             (c.notes ? '<br>' + esc(c.notes) : '') +
             (c.power_excluded_reason ? '<br>功耗未参与排序: ' + esc(c.power_excluded_reason) : '') +
-          '</td></tr>';
+          '</td></tr>' +
+            (c.evidence ? '<tr><td colspan="9"><details class="receiver-evidence"' +
+              evidenceDetailAttrs(['candidate', r.id, c.id]) +
+              '><summary>' + esc(c.id) + ' · 来源、资格与原始回包</summary>' +
+              '<p>' + esc(c.evidence.metric_source) + '<br>' + esc(c.evidence.qualification_label) +
+              '<br>声明来源: ' + val(c.evidence.evidence_origin) +
+              '<br>原报告状态: ' + val(c.evidence.reported_status) +
+              '<br>面板仅展示记录；真实游戏证明和晋级权限不由面板授予。</p>' +
+              '<pre>' + esc(JSON.stringify(c.evidence.receiver_report, null, 2)) + '</pre></details></td></tr>' : '');
       }).join('') + '</tbody></table>';
   }
 
@@ -266,6 +375,13 @@ function roundDetail(x) {
         '<span><i style="background:var(--dim)"></i>' + esc(r.arms.a_label) + '</span>' +
         '<span><i style="background:var(--accent)"></i>' + esc(r.arms.b_label) + '</span>' +
       '</div>';
+  }
+
+  if (r.receiver_report) {
+    html += '<details class="receiver-evidence"' + evidenceDetailAttrs(['ab', r.id]) +
+      '><summary>原始 A/B 回包与资格声明</summary>' +
+      '<p>保存的记录尚未认证采集；面板不授予真实游戏证明或晋级权限。</p>' +
+      '<pre>' + esc(JSON.stringify(r.receiver_report, null, 2)) + '</pre></details>';
   }
 
   html += '<h2 class="section">测试条件</h2><div class="kv">' +
@@ -321,9 +437,9 @@ function renderCharts() {
       ' — 绝对 dB 只在同一组参考图内可比</span></div>' +
       paretoSvg(pr.pareto, 980, 420) +
       '<div class="legend">' +
-        '<span><i style="background:var(--good)"></i>支配前沿</span>' +
+        '<span><i style="background:var(--good)"></i>档案前沿（历史成员关系）</span>' +
         '<span><i style="background:var(--dim)"></i>被支配</span>' +
-        '<span>点上的字是候选 id, 悬停看详情</span>' +
+        '<span>点上的字是候选 id；来源与结论资格见轮次详情</span>' +
       '</div></div>';
   }
 
@@ -414,7 +530,7 @@ function paretoSvg(p, w, h) {
     return '<g><circle cx="' + sx(d.x) + '" cy="' + sy(d.y) + '" r="' + rr + '" fill="' + c +
       '" fill-opacity="' + (d.on_front ? 1 : 0.55) + '"><title>' + esc(d.id) + ' · 第' + d.generation +
       '代 · ' + esc(d.origin) + '\n耗时 ' + d.x + ' ms · 画质 ' + d.y + ' dB' +
-      (d.on_front ? '\n在支配前沿上' : '') + '</title></circle>' +
+      (d.on_front ? '\n在档案前沿上（历史成员关系）' : '') + '</title></circle>' +
       '<text x="' + sx(d.x) + '" y="' + (sy(d.y) - rr - 5) + '" font-size="11" text-anchor="middle">' + esc(d.id) + '</text></g>';
   }).join('');
 
@@ -730,6 +846,7 @@ document.addEventListener('click', function (ev) {
     return;
   }
   var item = t.closest ? t.closest('.round-item') : null;
+  if (item && item.dataset.case) { SELECTED_CASE = item.dataset.case; renderCases(); return; }
   if (item) { SELECTED_ROUND = item.dataset.round; renderRounds(); return; }
 });
 

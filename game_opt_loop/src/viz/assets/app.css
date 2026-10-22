@@ -223,3 +223,18 @@ svg .grid { stroke: #20242d; }
 }
 #filedrawer-body img { max-width: 100%; border-radius: 8px; }
 .err { color: var(--bad); }
+.receiver-evidence { margin-top: 8px; }
+.receiver-evidence summary { cursor: pointer; color: var(--accent); }
+.receiver-evidence pre {
+  max-width: min(64vw, 760px); max-height: 480px; overflow: auto;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; color: #cfd6e2;
+}
+.case-detail { min-width: 0; }
+.case-choice { display: block; width: 100%; text-align: left; color: var(--fg); font-weight: normal; }
+.case-detail h3 { margin-top: 22px; }
+.case-path { overflow-wrap: anywhere; font-size: 12px; }
+.case-document, .case-stage { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.case-table { overflow-x: auto; }
+.case-table table { min-width: 640px; }
+.case-detail .kv > div { overflow-wrap: anywhere; }

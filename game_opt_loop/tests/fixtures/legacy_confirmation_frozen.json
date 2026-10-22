@@ -1,0 +1,61 @@
+{
+  "schema": "game_opt_loop/confirmation_plan@1",
+  "registered_at": "2026-10-11T17:47:41.101949+00:00",
+  "plan": {
+    "baseline_artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "candidate_artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "conditions_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "baseline_admission_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "exploration_run_ids": [
+      "exploration-1"
+    ],
+    "exploration_artifact_sha256": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "pairs": 5,
+    "schedule": [
+      {
+        "pair_id": "confirm-0",
+        "a_run_id": "confirm-0-a",
+        "b_run_id": "confirm-0-b",
+        "baseline_first": true
+      },
+      {
+        "pair_id": "confirm-1",
+        "a_run_id": "confirm-1-a",
+        "b_run_id": "confirm-1-b",
+        "baseline_first": false
+      },
+      {
+        "pair_id": "confirm-2",
+        "a_run_id": "confirm-2-a",
+        "b_run_id": "confirm-2-b",
+        "baseline_first": true
+      },
+      {
+        "pair_id": "confirm-3",
+        "a_run_id": "confirm-3-a",
+        "b_run_id": "confirm-3-b",
+        "baseline_first": false
+      },
+      {
+        "pair_id": "confirm-4",
+        "a_run_id": "confirm-4-a",
+        "b_run_id": "confirm-4-b",
+        "baseline_first": true
+      }
+    ],
+    "family_alpha": 0.05,
+    "paired_t_assumptions_acknowledged": true,
+    "metrics": [
+      {
+        "name": "power_watt",
+        "direction": "lower",
+        "scale": "percent",
+        "minimum_improvement": 1.0,
+        "maximum_regression": 3.0
+      }
+    ]
+  },
+  "sha256": "5c7b606a4804b7a4dff1ec2135af32a63e15b6963e313b9dd7dc197238b700b0"
+}
