@@ -158,7 +158,7 @@
     $('fleet-notes').hidden = !notes.length;
     if (snapshot?.policy) {
       const p = snapshot.policy;
-      $('sampling-policy').textContent = `设备采样策略：空闲间隔 ${numeric(p.fleet_every_free_s, ' 秒')}，占用间隔 ${numeric(p.fleet_every_held_s, ' 秒')}；释放后等待 ${numeric(p.free_grace_s, ' 秒')}，快照超过 ${numeric(p.stale_after_s, ' 秒')} 标记过期。页面刷新不会绕过此策略。`;
+      $('sampling-policy').textContent = `设备采样策略：空闲采样间隔 ${numeric(p.fleet_every_free_s, ' 秒')}；占用、排队或待恢复时暂缓；释放后等待 ${numeric(p.free_grace_s, ' 秒')}，快照超过 ${numeric(p.stale_after_s, ' 秒')} 标记过期。页面刷新不会绕过此策略。`;
     }
   }
   async function refresh(manual = false) {
