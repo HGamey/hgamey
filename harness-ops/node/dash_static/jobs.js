@@ -266,7 +266,7 @@
         item.append(identity, wait, openJobButton(job.job_id));
         $('queue-list').append(item);
       }
-      message('queue-message', queue.items.length ? '按声明的资源调度；资源保留的任务需核查后释放。' : '当前队列为空。');
+      message('queue-message', queue.dispatcher_error ? `调度异常：${queue.dispatcher_error}。队列记录保留，请核查调度服务后刷新。` : queue.items.length ? '按声明的资源调度；资源保留的任务需核查后释放。' : '当前队列为空。', !!queue.dispatcher_error);
       $('queue-updated').textContent = readTime();
     } catch (error) {
       if (revision === queueRevision) message('queue-message', error.status === 404 ? '此节点尚未提供队列入口。已有任务记录仍可查看。' : errorText(error), true);
