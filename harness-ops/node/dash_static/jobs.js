@@ -11,7 +11,7 @@
   let activeFilters = {query: '', state: ''};
   let currentJob = null, access = null, accessRevision = 0, accessBusy = false, accessError = '';
   const cancelling = new Set(), cancelReceipts = new Map(), releasing = new Set(), releaseReceipts = new Map();
-  let nodeInfo = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
+  let nodeInfo = null, leaseSnapshot = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
   const REQUEST_STORAGE = 'hgamey.pending-job-request';
   const PHASES = {preparing: '准备中', queued: '排队中', blocked: '资源保留 · 待核查', starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finished: '已结束', interrupted: '执行中断'};
 
@@ -186,11 +186,15 @@
     const blocked = currentJob.queue?.state === 'blocked';
     $('queue-release-panel').hidden = !blocked;
     const releaseBusy = releasing.has(currentJob.id);
+    const leaseBlocked = currentJob.device_access === 'write' && leaseSnapshot?.status !== 'clear';
+    $('recovery-prepare-panel').hidden = !blocked;
+    $('prepare-recovery').disabled = !blocked || !access?.steer || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
+    message('recovery-prepare-help', !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : '只预填恢复目标和模式；请由人或 Agent 填写实际恢复命令，执行后仍需核查并解除资源保留。');
     $('queue-release-note').disabled = releaseBusy;
-    $('queue-release-submit').disabled = !blocked || !access?.steer || accessBusy || releaseBusy || !$('queue-release-note').value.trim();
+    $('queue-release-submit').disabled = !blocked || !access?.steer || accessBusy || releaseBusy || leaseBlocked || !$('queue-release-note').value.trim();
     $('queue-release-submit').setAttribute('aria-busy', String(releaseBusy));
     $('queue-release-submit').textContent = releaseBusy ? '提交中…' : '确认解除资源保留';
-    message('queue-release-help', !access?.steer || accessBusy ? '请先解锁任务操作权限。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。');
+    message('queue-release-help', !access?.steer || accessBusy ? '请先解锁任务操作权限。' : leaseBlocked ? '设备写入任务的实际 lease 尚未确认 clear。请先执行恢复、核查设备屏障，再刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。');
     const released = releaseReceipts.get(currentJob.id);
     $('queue-release-result').hidden = !released;
     if (released) message('queue-release-result', released.message, released.error);
@@ -198,6 +202,7 @@
   function renderExecution(job) {
     const cancellation = job.cancel;
     facts('execution-info', [['执行阶段', PHASES[job.phase] || '旧版记录未提供'],
+      ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
       ['退出码', job.exit], ['请求时间', time(cancellation?.requested_at)],
       ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
@@ -229,13 +234,34 @@
   }
 
   function waitingText(waiting) {
-    return ({capacity: '等待执行名额', resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待核查并解除资源保留'})[waiting?.kind] || '无等待原因';
+    const label = ({capacity: '等待执行名额', resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待核查并解除资源保留', device_lease: '等待实际设备 lease'})[waiting?.kind] || '无等待原因';
+    return `${label}${waiting?.reason ? `：${waiting.reason}` : ''}${waiting?.lease_status ? `（${waiting.lease_status}）` : ''}`;
   }
   function openJobButton(id, label = '查看任务') {
     const button = el('button', label, 'ghost');
     button.type = 'button';
     button.addEventListener('click', () => { selectJob(id); $('detail-heading').focus(); });
     return button;
+  }
+  function recoverySupported() { return !!nodeInfo?.capabilities?.includes('jobs.recovery-v1'); }
+  function renderLease(lease, error = '') {
+    leaseSnapshot = lease || null;
+    const state = ({clear: ['屏障已清除', 'finished'], held: ['设备占用', 'unknown'], blocked: ['需要恢复', 'unknown'], unknown: ['状态未知', 'unknown']})[lease?.status] || ['尚未取得状态', 'unknown'];
+    $('lease-state').textContent = state[0];
+    $('lease-state').className = `task-state ${state[1]}`;
+    message('lease-message', error || (!lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。`), !!error || !!lease?.error);
+    $('lease-sampled').textContent = lease ? `采样于 ${time(lease.sampled_at)}` : '';
+    $('lease-list').replaceChildren(...(lease?.entries || []).map(entry => {
+      const item = el('li'), details = el('details');
+      const label = ({active: '使用中', command_pending: '命令待处理', recovery_required: '需要恢复', abandoned: '已遗留', unknown: '状态未知'})[entry.state] || text(entry.state);
+      details.append(el('summary', `${entry.serial || '设备未记录'} · ${label}${entry.label ? ` · ${entry.label}` : ''}`));
+      const info = el('dl', null, 'facts');
+      for (const [name, value] of [['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
+      details.append(info);
+      if (entry.recovery_context != null) details.append(el('pre', typeof entry.recovery_context === 'string' ? entry.recovery_context : JSON.stringify(entry.recovery_context, null, 2), 'lease-context'));
+      item.append(details); return item;
+    }));
+    renderControls();
   }
   async function loadQueue() {
     const revision = ++queueRevision;
@@ -245,9 +271,12 @@
     $('queue-list').replaceChildren();
     $('queue-updated').textContent = '';
     message('queue-message', '正在读取队列…');
+    renderLease(null);
+    message('lease-message', '正在读取实际设备 lease…');
     try {
       const queue = await json(`${API}/queue`);
       if (revision !== queueRevision) return;
+      renderLease(queue.lease);
       $('queue-summary').replaceChildren(...[[queue.active_count, `执行中 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '保留资源']].map(([value, label]) => {
         const part = el('span'); part.append(el('strong', text(value)), el('span', label)); return part;
       }));
@@ -263,13 +292,14 @@
           for (const id of job.waiting.blocking_jobs) blockers.append(openJobButton(id, `占用任务 ${id}`));
           wait.append(blockers);
         }
+        if (job.recovery_for) wait.append(openJobButton(job.recovery_for, `恢复目标 ${job.recovery_for}`));
         item.append(identity, wait, openJobButton(job.job_id));
         $('queue-list').append(item);
       }
       message('queue-message', queue.dispatcher_error ? `调度异常：${queue.dispatcher_error}。队列记录保留，请核查调度服务后刷新。` : queue.items.length ? '按声明的资源调度；资源保留的任务需核查后释放。' : '当前队列为空。', !!queue.dispatcher_error);
       $('queue-updated').textContent = readTime();
     } catch (error) {
-      if (revision === queueRevision) message('queue-message', error.status === 404 ? '此节点尚未提供队列入口。已有任务记录仍可查看。' : errorText(error), true);
+      if (revision === queueRevision) { message('queue-message', error.status === 404 ? '此节点尚未提供队列入口。已有任务记录仍可查看。' : errorText(error), true); renderLease(null, '实际设备 lease 未能取得，请刷新核对。'); }
     } finally {
       if (revision === queueRevision) { regionBusy('queue-panel', false); busy('refresh-queue', false); }
     }
@@ -283,8 +313,17 @@
     const allowed = supported && access?.steer && !accessBusy;
     const refilling = !!pendingRequest?.refilling;
     const locked = (!!pendingRequest && !refilling) || submissionBusy;
-    for (const id of ['submit-bin', 'submit-label', 'submit-argv', 'submit-resources']) $(id).disabled = !allowed || locked;
-    $('submit-job').disabled = !allowed || locked || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    const mode = $('submit-device-access').value;
+    const recovery = mode === 'recovery';
+    for (const id of ['submit-bin', 'submit-label', 'submit-argv']) $(id).disabled = !allowed || locked;
+    $('submit-device-access').disabled = !allowed || locked || !recoverySupported();
+    $('submit-resources').disabled = !allowed || locked || recovery;
+    $('submit-recovery-for').disabled = !allowed || locked || !recoverySupported();
+    $('submit-recovery-for').required = recovery;
+    $('recovery-target-field').hidden = !recovery;
+    message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
+    $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
+    $('submit-job').disabled = !allowed || locked || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。');
@@ -297,6 +336,7 @@
     $('submit-refill').disabled = !allowed || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
     $('submit-retry').disabled = !allowed || submissionBusy;
+    renderControls();
   }
   function submissionMessage(value, error = false, id = '') {
     $('submission-receipt').hidden = false;
@@ -319,8 +359,15 @@
         const argv = JSON.parse($('submit-argv').value);
         if (!Array.isArray(argv) || !argv.every(value => typeof value === 'string')) throw new Error('参数必须是 JSON 字符串数组，例如 ["--help"]。');
         const body = {bin: $('submit-bin').value, argv, label: $('submit-label').value.trim()};
+        const mode = $('submit-device-access').value;
+        if (mode) body.device_access = mode;
+        if (mode === 'recovery') {
+          const target = $('submit-recovery-for').value.trim();
+          if (!/^[0-9a-f]{12}$/.test(target)) throw new Error('恢复任务需要原资源保留任务的 12 位 ID。');
+          body.recovery_for = target;
+        }
         const resources = $('submit-resources').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-        if (resources.length) body.resources = [...new Set(resources)];
+        if (resources.length && mode !== 'recovery') body.resources = [...new Set(resources)];
         pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), body};
         savePending();
       } catch (error) { submissionMessage(error instanceof SyntaxError ? '参数不是有效的 JSON，请填写字符串数组。' : error.message, true); return; }
@@ -366,7 +413,7 @@
       const result = await post(`${API}/jobs/${encodeURIComponent(job.id)}/queue-release`, {note});
       releaseReceipts.set(job.id, {message: result.released ? '资源保留已解除，后续任务可继续调度。核查说明已记录；此操作不代表平台验证了设备恢复。' : '资源未释放，请核对最新任务状态。', error: !result.released});
     } catch (error) {
-      releaseReceipts.set(job.id, {message: !error.status || error.status >= 500 ? '释放结果尚未确认，请刷新任务和队列核对。' : errorText(error), error: true});
+      releaseReceipts.set(job.id, {message: !error.status || error.status >= 500 ? '释放结果尚未确认，请刷新任务和队列核对。' : error.status === 409 ? `资源未释放：当前条件不允许放行，请核查实际 lease 与任务状态。${errorText(error)}` : errorText(error), error: true});
       if (error.status === 401 || error.status === 403) await loadAccess();
     } finally {
       releasing.delete(job.id);
@@ -391,7 +438,7 @@
       const bins = node.execution?.bins || [];
       $('submit-bin').replaceChildren(...bins.map(bin => { const option = el('option', bin); option.value = bin; return option; }));
       if (bins.includes(chosen)) $('submit-bin').value = chosen;
-      else $('submit-bin').value = bins[0] || '';
+      else $('submit-bin').value = $('submit-device-access').value === 'recovery' ? '' : bins[0] || '';
       facts('node-info', [
         ['节点 ID', node.node_id], ['访问入口', location.origin],
         ['宿主', `${text(node.host?.hostname)} · ${text(node.host?.platform)}`],
@@ -719,6 +766,22 @@
   });
   $('request-lookup-form').addEventListener('submit', event => { event.preventDefault(); lookupRequest(); });
   $('submit-open-job').addEventListener('click', () => { if (submittedJob) { selectJob(submittedJob); $('detail-heading').focus(); } });
+  $('submit-device-access').addEventListener('change', renderSubmission);
+  $('prepare-recovery').addEventListener('click', () => {
+    if ($('prepare-recovery').disabled || !currentJob) return;
+    $('submit-device-access').value = 'recovery';
+    $('submit-recovery-for').value = currentJob.id;
+    $('submit-label').value = `恢复 ${currentJob.id}`;
+    $('submit-bin').value = '';
+    $('submit-argv').value = '';
+    $('submit-resources').value = '';
+    $('submit-panel').open = true;
+    submittedJob = '';
+    $('submit-open-job').hidden = true;
+    submissionMessage('已准备恢复表单，尚未提交。请填写实际恢复命令和参数；原任务的屏障不会自动解除。');
+    renderSubmission();
+    $('submit-bin').focus();
+  });
   $('queue-release-note').addEventListener('input', renderControls);
   $('queue-release-form').addEventListener('submit', event => { event.preventDefault(); releaseQueue(); });
   try {

@@ -50,6 +50,12 @@
   <section id="queue-panel" class="queue-panel" aria-labelledby="queue-heading">
     <div class="section-heading"><h2 id="queue-heading">本节点队列</h2><button id="refresh-queue" class="ghost" type="button">刷新队列</button></div>
     <p id="queue-message" class="note" role="status">正在读取队列…</p>
+    <section id="lease-panel" class="lease-panel" aria-labelledby="lease-heading">
+      <div class="section-heading"><h3 id="lease-heading">实际设备 lease</h3><span id="lease-state" class="task-state unknown">尚未读取</span></div>
+      <p id="lease-message" class="note" role="status">正在读取设备屏障记录…</p>
+      <p id="lease-sampled" class="read-time"></p>
+      <ul id="lease-list" class="lease-list" aria-label="设备 lease 记录"></ul>
+    </section>
     <div id="queue-summary" class="queue-summary" hidden></div>
     <ul id="queue-list" class="queue-list" aria-label="尚未结束调度的任务"></ul>
     <p id="queue-updated" class="read-time"></p>
@@ -62,6 +68,9 @@
         <label>命令<select id="submit-bin" required disabled><option value="">正在读取可用命令…</option></select></label>
         <label>标签 <span class="field-optional">可选</span><input id="submit-label" type="text" placeholder="便于识别这次执行"></label>
         <label class="wide-field">参数 <span class="field-optional">JSON 字符串数组</span><textarea id="submit-argv" rows="3" spellcheck="false" required aria-describedby="argv-help">[]</textarea><span id="argv-help" class="field-help">例如 ["--help"]；每个参数写成一个字符串。</span></label>
+        <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主任务 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复任务</option></select></label>
+        <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留任务的 12 位 ID" autocomplete="off" spellcheck="false"></label>
+        <p id="device-access-help" class="field-help wide-field"></p>
         <label class="wide-field">独占资源 <span class="field-optional">可选，每行一个键</span><textarea id="submit-resources" rows="2" spellcheck="false" placeholder="留空使用节点默认资源" aria-describedby="resources-help"></textarea><span id="resources-help" class="field-help">相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。</span></label>
       </div>
       <div class="submission-actions"><button id="submit-job" class="ghost primary" type="submit" disabled>提交任务</button><span id="submit-help" class="note"></span></div>
@@ -107,9 +116,13 @@
           </form>
           <details id="execution-details" class="execution-details"><summary>停止请求、信号与恢复记录</summary><dl id="execution-info" class="facts"></dl><ul id="cancel-signals" class="cancel-signals"></ul></details>
         </section>
+        <section id="recovery-prepare-panel" class="recovery-prepare-panel" hidden>
+          <div class="section-heading"><h3>恢复任务</h3><button id="prepare-recovery" class="ghost" type="button" disabled>准备恢复任务</button></div>
+          <p id="recovery-prepare-help" class="note"></p>
+        </section>
         <details id="queue-release-panel" class="queue-release-panel" hidden>
           <summary>解除资源保留…</summary>
-          <p class="note">此任务异常结束后仍保留资源。管理员核查后可允许后续任务继续调度；平台不会代替设备还原验证。</p>
+          <p class="note">此任务异常结束后仍保留资源。恢复任务结束不会自动解除保留；管理员需核查证据后明确放行。设备写入任务还要求实际 lease 屏障已清除。</p>
           <form id="queue-release-form">
             <label for="queue-release-note">核查说明 <span class="field-optional">必填</span></label>
             <textarea id="queue-release-note" rows="3" required placeholder="记录已核查的进程、设备状态和恢复证据"></textarea>

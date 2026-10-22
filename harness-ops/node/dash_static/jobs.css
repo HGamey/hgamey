@@ -230,3 +230,18 @@
 .queue-release-panel .note { color: var(--amber-ink); }
 @media (max-width: 780px) { .queue-item { grid-template-columns: minmax(120px, .8fr) minmax(0, 1.2fr); } .queue-item > button { grid-column: 1 / -1; justify-self: start; } }
 @media (max-width: 480px) { .queue-panel, .submit-panel { padding: 16px; margin-bottom: 20px; } .queue-item { grid-template-columns: minmax(0, 1fr); gap: 8px; } .queue-summary { gap: 8px 16px; } .submit-fields { grid-template-columns: minmax(0, 1fr); } .lookup-input { flex-wrap: wrap; } .lookup-input input { flex-basis: 100%; } .submit-panel :is(input, select), .submit-panel summary, .queue-release-panel summary { min-height: 44px; } }
+
+.lease-panel { margin: 16px 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.lease-panel h3 { font-size: 13px; }
+.lease-panel .read-time { margin-top: 4px; }
+.lease-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.lease-list:empty { display: none; }
+.lease-list li { border-top: 1px solid var(--line); padding: 10px 0; }
+.lease-list li:last-child { padding-bottom: 0; }
+.lease-list summary { color: var(--ink2); cursor: pointer; overflow-wrap: anywhere; font-size: 13px; }
+.lease-list .facts { margin-top: 10px; }
+.lease-context { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 10px 0 0; }
+.recovery-prepare-panel { padding: 14px 16px; margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; }
+.recovery-prepare-panel h3 { font-size: 14px; }
+.submit-fields > .field-help { margin: -8px 0 0; }
+@media (max-width: 480px) { .lease-panel { padding: 12px; } .lease-list summary { padding: 6px 0; } }
