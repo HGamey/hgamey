@@ -10,5 +10,5 @@ restart=0; [[ ${1:-} == --restart ]] && { restart=1; shift; }
 ${0:A:h}/pf-node --label deploy update_node --git "$@"
 if (( restart )); then
   curl -sS -m 30 -X POST -A pf-node/1 -H "Authorization: Bearer $(cat $TOKF)" \
-    ${PF_NODE_URL:-https://phone.liyao.space}/admin/restart; echo
+    ${PF_NODE_URL:-https://mbp1.liyao.space}/admin/restart; echo
 fi

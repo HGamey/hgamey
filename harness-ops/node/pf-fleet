@@ -3,7 +3,7 @@
 
   pf-fleet nodes                          # 列出注册表里的节点
   pf-fleet status [--json]                # 并行问所有节点：在线？锁谁持有？手机清单（fleet 只读快照）
-  pf-fleet run --node mini1 -- <pf-node 参数…>        # 派到指定节点
+  pf-fleet run --node mbp1 -- <pf-node 参数…>         # 派到指定节点
   pf-fleet run --tag nx809j -- <…>                    # 派到第一台「在线、锁空闲、带这个标签」的节点
   pf-fleet run --any-free -- <…>                      # 派到第一台「在线、锁空闲」的节点
 
@@ -16,16 +16,16 @@
 注册表（JSON）：环境变量 PF_FLEET_REGISTRY，缺省从本脚本所在目录逐级往上找 .hgamey/nodes.json：
 {
   "nodes": [
-    {"name": "mini1", "url": "https://phone.liyao.space",
+    {"name": "mbp1", "url": "https://mbp1.liyao.space",
      "token_file": ".hgamey/node.token",          # 相对注册表所在目录；也可给绝对路径
-     "tags": ["nx809j", "redmagic", "android", "root", "megacity", "genshin"],
-     "ssh": "macmini1",                            # 可选：migrate 用（ssh config 里的别名）
-     "goals_dir": "/Users/mac/node/goals",         # 可选：目标运行目录的父目录（migrate 用）
-     "note": "Mac mini 1，红魔 NX809J"}
+     "tags": ["nx809j", "redmagic", "android", "root", "openharmony", "ema-al00u", "honor"],
+     "ssh": "mbp1",                                # 可选：migrate 用（ssh config 里的别名）
+     "goals_dir": "/Users/me/node/goals",          # 可选：目标运行目录的父目录（migrate 用）
+     "note": "主力节点，红魔 NX809J / 华为 EMA-AL00U / 荣耀 AAP-AN00"}
   ]
 }
 
-  pf-fleet migrate <run_id> --from mini1 --to mini2   # 把一次目标运行整体搬到另一台节点续跑
+  pf-fleet migrate <run_id> --from mini1 --to mbp1    # 把一次目标运行整体搬到另一台节点续跑
       机制：经本机中继 rsync（from 必须 ssh 可达；彻底死的节点只能等它活），
       搬完在目标节点上 goal resume（GOL#83：已完成的代保留，中途死的那代重跑）。
 """

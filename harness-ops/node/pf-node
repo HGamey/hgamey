@@ -31,11 +31,11 @@
   preparing/queued 只代表准备或排队；提交前需节点支持幂等请求，结果未知时用 request 查询，不要换 id 重投。
 - --device-access none|write|recovery 显式声明设备访问；recovery 必须配 --recovery-for 原资源保留任务 ID，
   资源由父任务继承，不能同时传 --resource。恢复任务不自动解除原屏障；核查后另行 release。
-- 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
+- 节点地址 PF_NODE_URL（缺省 https://mbp1.liyao.space，主力节点），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """
 import gzip, hashlib, http.client, io, json, math, os, re, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
 
-URL = os.environ.get("PF_NODE_URL", "https://phone.liyao.space").rstrip("/")
+URL = os.environ.get("PF_NODE_URL", "https://mbp1.liyao.space").rstrip("/")
 def _token():
     """token 查找顺序：PF_NODE_TOKEN → PF_NODE_TOKEN_FILE → 从本脚本所在目录（链接位置和真实位置都试）
     逐级往上找 .hgamey/node.token → 旧位置 ~/.config/hgamey。"""
