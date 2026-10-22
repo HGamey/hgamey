@@ -61,7 +61,12 @@ fn the_three_layers_are_always_present_and_counted() {
             "层{} 的轮数必须等于三色之和 (仅证据不计入)",
             l.index
         );
-        assert!(l.problems.is_empty(), "层{} 读夹具不该出问题: {:?}", l.index, l.problems);
+        assert!(
+            l.problems.is_empty(),
+            "层{} 读夹具不该出问题: {:?}",
+            l.index,
+            l.problems
+        );
     }
 }
 
@@ -72,23 +77,36 @@ fn operator_generations_are_read_from_the_real_archive() {
     let d = dashboard();
     let l = layer(&d, "operator");
     // 夹具只放了 evo_realframes_20260923 的两代。
-    assert_eq!(l.rounds_total, 2);
-    assert_eq!(l.qualified, 1, "只有第 1 代有候选进了前沿");
+    assert_eq!(l.rounds_total, 0);
+    assert_eq!(l.evidence_only, 2, "历史两代均未资格化，仅证据");
+    assert_eq!(l.qualified, 0);
 
     let r = round(&d, "op:evo_realframes_20260923:1");
-    assert_eq!(r.verdict, RoundVerdict::Qualified);
-    assert_eq!(r.metric_source, "真机实测");
+    assert_eq!(r.verdict, RoundVerdict::Evidence);
+    assert_eq!(r.metric_source, "phonefarm 报告（未认证采集）");
     assert_eq!(r.candidates.len(), 3);
 
     // 档案 (runs/evo_realframes_20260923/archive.json) 里的前沿是
     // [gen0_baseline, gen1_loc3] —— 与 evidence/M2_realframes_conditions.md 一致。
     let loc3 = r.candidates.iter().find(|c| c.id == "gen1_loc3").unwrap();
-    assert_eq!(loc3.verdict, RoundVerdict::Qualified);
+    assert_eq!(loc3.verdict, RoundVerdict::Evidence);
     assert_eq!(loc3.on_front, Some(true));
+    assert_eq!(
+        loc3.evidence.as_ref().unwrap().qualification_state,
+        game_opt_loop::evidence::QualificationState::LegacyUnqualified
+    );
 
     let loc1 = r.candidates.iter().find(|c| c.id == "gen1_loc1").unwrap();
-    assert_eq!(loc1.verdict, RoundVerdict::Eliminated, "测了但没进前沿 = 淘汰");
-    assert_eq!(loc1.latency_ms, Some(0.5304), "gen_1.json 记的是 0.53044045");
+    assert_eq!(
+        loc1.verdict,
+        RoundVerdict::Evidence,
+        "旧报告仍保留数值和原状态，不能补资格"
+    );
+    assert_eq!(
+        loc1.latency_ms,
+        Some(0.5304),
+        "gen_1.json 记的是 0.53044045"
+    );
 
     // gen1_loc2 指纹重复, 从没上过机 —— 必须是「无效」, 不能算淘汰。
     let loc2 = r.candidates.iter().find(|c| c.id == "gen1_loc2").unwrap();
@@ -127,11 +145,11 @@ fn unreported_power_source_shows_as_unknown_instead_of_a_made_up_value() {
 // ──────────────────── 层② 图形接口改写 ────────────────────
 
 #[test]
-fn a_directionally_good_but_insignificant_result_is_eliminated_not_qualified() {
+fn historical_negative_judgment_remains_visible_without_backfilled_qualification() {
     let d = dashboard();
     let r = round(&d, "gfx:graylayer-loadop");
     // runs_graylayer/report.json: diff -0.51%, p = 0.3254 → criterion_3 未过。
-    assert_eq!(r.verdict, RoundVerdict::Eliminated);
+    assert_eq!(r.verdict, RoundVerdict::Evidence);
     assert!(
         r.verdict_text.contains("统计显著"),
         "要点名是哪条判据没过: {}",
@@ -170,7 +188,10 @@ fn an_arm_without_a_report_is_invalid_not_a_negative_verdict() {
 fn evidence_only_dirs_are_listed_but_not_counted_in_the_three_way_tally() {
     let d = dashboard();
     let l = layer(&d, "graphics");
-    assert_eq!(l.evidence_only, 1, "夹具里只拷了 04_reverify 一个证据目录");
+    assert_eq!(
+        l.evidence_only, 2,
+        "04_reverify 目录及未资格化的旧 A/B 均仅证据"
+    );
     let r = round(&d, "gfx:ev-04");
     assert_eq!(r.verdict, RoundVerdict::Evidence);
     assert!(!r.evidence.is_empty());
@@ -189,13 +210,15 @@ fn evidence_only_dirs_are_listed_but_not_counted_in_the_three_way_tally() {
 fn a_significant_result_passes_all_criteria() {
     let d = dashboard();
     let l = layer(&d, "sysparam");
-    assert_eq!(l.rounds_total, 2);
-    assert_eq!(l.qualified, 2);
+    assert_eq!(l.rounds_total, 0);
+    assert_eq!(l.evidence_only, 2);
+    assert_eq!(l.qualified, 0);
 
     let r = round(&d, "sys:genshin-ddr");
-    assert_eq!(r.verdict, RoundVerdict::Qualified);
+    assert_eq!(r.verdict, RoundVerdict::Evidence);
     // loop_v1/runs/report.json: 5 条判据全过。
-    assert!(r.verdict_text.starts_with("5/5"));
+    assert!(r.verdict_text.contains("5/5"));
+    assert!(r.verdict_text.contains("未资格化"));
     assert_eq!(r.criteria.len(), 5);
     assert!(r.criteria.iter().all(|c| c.pass == Some(true)));
 }
@@ -240,7 +263,7 @@ fn test_conditions_come_from_the_run_files_and_stay_unknown_when_absent() {
 fn the_probe_shaped_report_is_parsed_too() {
     let d = dashboard();
     let r = round(&d, "sys:refbench-bw");
-    assert_eq!(r.verdict, RoundVerdict::Qualified);
+    assert_eq!(r.verdict, RoundVerdict::Evidence);
     // runs_refbench/report.json 的对比块藏在 criterion_3_knob_effective 里。
     let arms = r.arms.as_ref().expect("探针式报告也该出得来对比图数据");
     assert_eq!(arms.metric, "frame_p95");
@@ -263,7 +286,10 @@ fn carrier_dispersion_matches_the_numbers_in_the_reports() {
     let refbench = find("refbench (白档)", "带宽场景 · 对照臂");
     assert_eq!(refbench.n_runs, 5);
     let p50 = refbench.p50_dispersion_pct.expect("该算得出 p50 离散度");
-    assert!((p50 - 0.2658).abs() < 0.002, "算出来是 {p50}, 报告是 0.2658");
+    assert!(
+        (p50 - 0.2658).abs() < 0.002,
+        "算出来是 {p50}, 报告是 0.2658"
+    );
     // refbench 的 0.5% 卡的是**中位**帧时 (report.json 的 repeatability_metric)。
     // 它的 p95 离散度是 0.4526%, 贴着 0.5% —— 若错拿 p95 去判, 一次更抖的尾巴
     // 就会让面板说"偏大", 而报告里写的是通过。
@@ -302,10 +328,9 @@ fn the_device_lock_is_read_from_its_files_and_not_by_running_the_script() {
     assert!(!history.is_empty());
     assert_eq!(history[0].at, "2026-09-23 10:12:31");
     assert_eq!(history[0].action, "acquire");
-    assert!(history.iter().all(|e| matches!(
-        e.action.as_str(),
-        "acquire" | "release" | "steal"
-    )));
+    assert!(history
+        .iter()
+        .all(|e| matches!(e.action.as_str(), "acquire" | "release" | "steal")));
 }
 
 /// 带 serial 的对局记录要能按设备回溯出「最近一次操作」;
@@ -341,7 +366,9 @@ fn recent_device_tasks_carry_their_goal() {
         .find(|t| t.task == "loop_v1_smoke")
         .expect("夹具里有一次 loop_v1_smoke 回放");
     assert!(
-        t.goal.as_deref().is_some_and(|g| g.contains("workload_spin_v1.json")),
+        t.goal
+            .as_deref()
+            .is_some_and(|g| g.contains("workload_spin_v1.json")),
         "目标应从 log.jsonl 的 goal 行读出来: {:?}",
         t.goal
     );
@@ -359,7 +386,10 @@ fn the_retracted_power_conclusion_is_surfaced_at_the_top() {
         .expect("M1 的功耗结论已撤回, 必须顶在最上面");
     assert!(n.title.contains("power_watt"));
     assert!(n.title.contains("M1_report.json"));
-    assert!(n.body.contains("仍然有效"), "撤回了什么、什么还算数, 都要写清楚");
+    assert!(
+        n.body.contains("仍然有效"),
+        "撤回了什么、什么还算数, 都要写清楚"
+    );
     assert!(n.evidence.is_some(), "撤回提示要能点开原始报告");
 }
 
@@ -387,4 +417,268 @@ fn the_tracked_evidence_report_still_declares_its_retraction() {
         d.notices.iter().any(|n| n.level == "warn"),
         "phonefarm 不在时要明说, 而不是画一页空白"
     );
+}
+
+#[test]
+fn operator_view_preserves_receiver_contract_and_never_grants_game_proof() {
+    use game_opt_loop::engine::evolution::GenerationRecord;
+    use game_opt_loop::viz::operator::{self, EvolutionRun};
+    use serde_json::json;
+    let paths = fixture_paths();
+    let dir = paths.gol_root.join("runs/evo_realframes_20260923");
+    let original: GenerationRecord =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("gen_1.json")).unwrap()).unwrap();
+    let archive = game_opt_loop::engine::ParetoArchive::load(&dir.join("archive.json")).unwrap();
+    for (name, qualification, replay, expected) in [
+        (
+            "valid declaration",
+            json!({"stage":"conclusion","eligible":true,"evidence_origin":"live_device"}),
+            None,
+            RoundVerdict::Qualified,
+        ),
+        (
+            "blocked",
+            json!({"stage":"conclusion","eligible":false,"evidence_origin":"live_device"}),
+            None,
+            RoundVerdict::Invalid,
+        ),
+        ("null", serde_json::Value::Null, None, RoundVerdict::Invalid),
+        (
+            "malformed",
+            json!({"stage":"conclusion","eligible":"true","evidence_origin":"live_device"}),
+            None,
+            RoundVerdict::Invalid,
+        ),
+        (
+            "replay",
+            json!({"stage":"conclusion","eligible":true,"evidence_origin":"live_device"}),
+            Some(serde_json::Value::Null),
+            RoundVerdict::Invalid,
+        ),
+        (
+            "synthetic",
+            json!({"stage":"conclusion","eligible":true,"evidence_origin":"synthetic_fixture"}),
+            None,
+            RoundVerdict::Evidence,
+        ),
+        (
+            "unknown origin",
+            json!({"stage":"conclusion","eligible":true}),
+            None,
+            RoundVerdict::Evidence,
+        ),
+    ] {
+        let mut gen = original.clone();
+        let report = gen
+            .outcomes
+            .iter_mut()
+            .find(|o| o.id == "gen1_loc3")
+            .unwrap()
+            .report
+            .as_mut()
+            .unwrap();
+        report
+            .extensions
+            .insert("qualification".into(), qualification.clone());
+        if let Some(marker) = replay {
+            report
+                .extensions
+                .insert("qualification_only".into(), marker);
+        }
+        let unknown = json!({"clock":"inferred","display_verified":false,"nested":[null, "<&>"]});
+        report
+            .extensions
+            .insert("metric_provenance".into(), unknown.clone());
+        report.extensions.insert(
+            "conditions_observed".into(),
+            json!({"fan":null,"snapshot_identical":false}),
+        );
+        let run = EvolutionRun {
+            name: "explicit_contract_fixture".into(),
+            dir: dir.clone(),
+            archive: Some(archive.clone()),
+            generations: vec![gen],
+            problems: vec![],
+        };
+        let rounds = operator::rounds(&run, &paths.gol_root);
+        let row = rounds[0]
+            .candidates
+            .iter()
+            .find(|c| c.id == "gen1_loc3")
+            .unwrap();
+        assert_eq!(row.verdict, expected, "{name}");
+        assert_eq!(
+            row.on_front,
+            Some(true),
+            "archive membership remains historical"
+        );
+        let evidence = row.evidence.as_ref().unwrap();
+        assert_eq!(evidence.receiver_report["qualification"], qualification);
+        assert_eq!(evidence.receiver_report["metric_provenance"], unknown);
+        assert_eq!(
+            evidence.receiver_report["conditions_observed"]["fan"],
+            serde_json::Value::Null
+        );
+        assert!(!evidence.view_grants_game_proof);
+        assert!(!evidence.view_allows_promotion);
+        let serialized = serde_json::to_value(&rounds).unwrap();
+        assert!(serialized.to_string().contains("snapshot_identical"));
+    }
+    let mut gen = original;
+    gen.outcomes
+        .iter_mut()
+        .find(|o| o.id == "gen1_loc3")
+        .unwrap()
+        .report
+        .as_mut()
+        .unwrap()
+        .quality_reference
+        .as_mut()
+        .unwrap()
+        .kind = "new_unknown_reference".into();
+    let run = EvolutionRun {
+        name: "unknown_quality_fixture".into(),
+        dir,
+        archive: Some(archive),
+        generations: vec![gen],
+        problems: vec![],
+    };
+    let rounds = operator::rounds(&run, &paths.gol_root);
+    // The first report supplies the generation-level reference; all candidates' exact kind is retained.
+    let row = rounds[0]
+        .candidates
+        .iter()
+        .find(|c| c.id == "gen1_loc3")
+        .unwrap();
+    assert_eq!(
+        row.evidence.as_ref().unwrap().receiver_report["quality_reference"]["kind"],
+        "new_unknown_reference"
+    );
+}
+
+#[test]
+fn ab_view_retains_raw_negative_and_unknown_fields_and_checks_qualification() {
+    use serde_json::json;
+    let fixtures = fixture_paths();
+    let original: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.phonefarm_root.join("loop_v1/runs/report.json")).unwrap(),
+    )
+    .unwrap();
+    let temporary = std::env::temp_dir().join(format!(
+        "gol-viz-contract-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(temporary.join("phonefarm/loop_v1/runs")).unwrap();
+    let paths = VizPaths {
+        gol_root: temporary.join("gol"),
+        phonefarm_root: temporary.join("phonefarm"),
+        lock_root: temporary.join("lock"),
+        fleet: None,
+    };
+    for (q, source, expected) in [
+        (None, None, RoundVerdict::Evidence),
+        (
+            Some(json!({"stage":"conclusion","eligible":true,"evidence_origin":"recorded_device"})),
+            None,
+            RoundVerdict::Qualified,
+        ),
+        (
+            Some(json!({"stage":"conclusion","eligible":true,"evidence_origin":"recorded_device"})),
+            Some("static_cost_model"),
+            RoundVerdict::Evidence,
+        ),
+        (
+            Some(
+                json!({"stage":"conclusion","eligible":false,"evidence_origin":"recorded_device"}),
+            ),
+            None,
+            RoundVerdict::Invalid,
+        ),
+        (Some(serde_json::Value::Null), None, RoundVerdict::Invalid),
+        (
+            Some(
+                json!({"stage":"conclusion","eligible":true,"evidence_origin":"synthetic_fixture"}),
+            ),
+            None,
+            RoundVerdict::Evidence,
+        ),
+    ] {
+        let mut v = original.clone();
+        if let Some(q) = q {
+            v["qualification"] = q;
+        }
+        if let Some(source) = source {
+            v["source"] = json!(source);
+        }
+        v["metric_provenance"] = json!({"clock":"inferred","display_verified":false});
+        v["conditions_observed"] = json!({"fan":null});
+        v["real_game_optimization_proven"] = json!(true); // declaration cannot authorize view proof
+        std::fs::write(
+            paths.phonefarm_root.join("loop_v1/runs/report.json"),
+            serde_json::to_vec(&v).unwrap(),
+        )
+        .unwrap();
+        let d = viz::build(&paths);
+        let r = round(&d, "sys:genshin-ddr");
+        assert_eq!(r.verdict, expected);
+        assert_eq!(r.receiver_report.as_ref().unwrap(), &v);
+        assert!(!r.view_grants_game_proof);
+        assert!(!r.view_allows_promotion);
+        assert!(r.metric_source.contains("未认证"));
+    }
+    let mut contradictory = original.clone();
+    contradictory["qualification"] =
+        json!({"stage":"conclusion","eligible":true,"evidence_origin":"recorded_device"});
+    contradictory["criterion_3_statistically_significant"]["pass"] = json!(false);
+    std::fs::write(
+        paths.phonefarm_root.join("loop_v1/runs/report.json"),
+        serde_json::to_vec(&contradictory).unwrap(),
+    )
+    .unwrap();
+    let d = viz::build(&paths);
+    let r = round(&d, "sys:genshin-ddr");
+    assert_eq!(r.verdict, RoundVerdict::Invalid);
+    assert!(r.verdict_text.contains("逐项未通过"));
+    assert!(r.criteria.iter().any(|c| c.pass == Some(false)));
+    assert_eq!(r.receiver_report.as_ref().unwrap(), &contradictory);
+
+    for broken in [
+        "missing_criterion",
+        "unknown_pass",
+        "excess_evaluated",
+        "wrong_passed",
+    ] {
+        let mut v = original.clone();
+        v["qualification"] =
+            json!({"stage":"conclusion","eligible":true,"evidence_origin":"recorded_device"});
+        match broken {
+            "missing_criterion" => {
+                v.as_object_mut()
+                    .unwrap()
+                    .remove("criterion_3_statistically_significant");
+            }
+            "unknown_pass" => {
+                v["criterion_3_statistically_significant"]["pass"] = serde_json::Value::Null
+            }
+            "excess_evaluated" => v["summary"]["criteria_evaluated"] = json!(6),
+            "wrong_passed" => v["summary"]["criteria_passed"] = json!(4),
+            _ => unreachable!(),
+        }
+        std::fs::write(
+            paths.phonefarm_root.join("loop_v1/runs/report.json"),
+            serde_json::to_vec(&v).unwrap(),
+        )
+        .unwrap();
+        let d = viz::build(&paths);
+        assert_eq!(
+            round(&d, "sys:genshin-ddr").verdict,
+            RoundVerdict::Invalid,
+            "{broken}"
+        );
+    }
+    std::fs::remove_dir_all(temporary).unwrap();
 }

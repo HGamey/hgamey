@@ -18,6 +18,10 @@ use std::path::Path;
 /// 档案里的一条记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_binding_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expert_decisions: Vec<crate::campaign::Decision>,
     pub id: String,
     pub generation: u32,
     pub track: String,
@@ -27,6 +31,8 @@ pub struct ArchiveEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub report: EvalReport,
+    #[serde(default)]
+    pub qualification_state: crate::evidence::QualificationState,
     /// 功耗为什么没参与这条记录的支配排序; None = 参与了。
     ///
     /// 落盘而不是每次现算: 档案是**跨轮追加**的历史。事后翻档案时,
@@ -112,6 +118,8 @@ impl ParetoArchive {
             return false;
         }
         self.entries.push(ArchiveEntry {
+            campaign_binding_sha256: None,
+            expert_decisions: vec![],
             id: candidate.id.clone(),
             generation: candidate.generation,
             track: candidate.track.clone(),
@@ -120,6 +128,7 @@ impl ParetoArchive {
             origin: candidate.origin,
             notes: candidate.notes.clone(),
             power_excluded_reason: report.power_exclusion_reason().map(str::to_string),
+            qualification_state: crate::evidence::qualification_state(&report.extensions),
             report,
             recorded_at: now,
             shader_source: candidate.shader_source.clone(),
@@ -242,6 +251,7 @@ mod tests {
             None,
         );
         let report = EvalReport {
+            extensions: Default::default(),
             candidate_id: id.to_string(),
             status: EvalStatus::Pass,
             metrics: Metrics {

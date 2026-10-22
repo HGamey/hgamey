@@ -31,9 +31,11 @@ pub mod report;
 pub mod sysparam;
 pub mod whitebox;
 
+use crate::campaign::{self, Campaign, Disposition};
 use anyhow::{bail, Context, Result};
 use eval::{CarrierKind, Kind, Payload, Request, WorkloadSpec};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 /// `optimize` 的配置。
@@ -81,6 +83,9 @@ pub struct Config {
     pub game_profile: Option<PathBuf>,
     /// 目标模式 (`game_opt_loop goal run`) 逐代调用时带进来的东西; 单独跑 optimize 时全是缺省。
     pub goal: GoalHooks,
+    /// 实验 campaign (`--campaign-mode expert|autonomous [--resume]`): 每个候选上机前
+    /// 先过专家审批 / 自主门禁, 已下发的评测有账本可核对, 断点续跑不重复上机。
+    pub campaign: Option<campaign::Options>,
 }
 
 static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -278,14 +283,58 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         );
     }
 
+    let campaign = if let Some(options) = &cfg.campaign {
+        if cfg.plan_only {
+            bail!("--plan 不创建实验 campaign；去掉 --campaign-mode 或 --plan");
+        }
+        // 专家账本按「一个候选一次单机评测」记账; 初筛与多机并行会绕开逐候选审批, 先不混用。
+        if cfg.screen {
+            bail!("--campaign-mode 暂不支持 --screen：初筛也要上机, 会绕开逐候选的专家审批");
+        }
+        if !cfg.extra_devices.is_empty() {
+            bail!("--campaign-mode 暂不支持 --extra-device：账本按单机逐候选评测记账");
+        }
+        let mut input_paths: Vec<PathBuf> =
+            cfg.quality_reference.iter().map(PathBuf::from).collect();
+        input_paths.extend(cfg.sysparam_probe.iter().cloned());
+        input_paths.extend(cfg.frame_audit.iter().cloned());
+        input_paths.extend(cfg.game_profile.iter().cloned());
+        if cfg.phonefarm.is_file() {
+            input_paths.push(cfg.phonefarm.clone());
+        }
+        let frozen = serde_json::json!({"entrypoint": "optimize", "game": cfg.game,
+            "package": cfg.package, "serial": cfg.serial, "budget": cfg.budget,
+            "seed": cfg.seed, "use_llm": cfg.use_llm, "llm_provider": cfg.llm_provider,
+            "llm_timeout_s": cfg.llm_timeout_s, "phonefarm": cfg.phonefarm,
+            "quality_reference": cfg.quality_reference, "sysparam_probe": cfg.sysparam_probe,
+            "frame_audit": cfg.frame_audit, "proposer": proposer_spec.to_string(),
+            "shape": format!("{:?}", cfg.shape),
+            "input_artifacts": campaign::artifacts(&input_paths)?, "tool_version": crate::VERSION});
+        Some(RefCell::new(Campaign::open(&cfg.out_dir, options, frozen)?))
+    } else {
+        None
+    };
+    let saved: Option<(caps::Caps, plan::Plan)> = campaign
+        .as_ref()
+        .map(|c| c.borrow().snapshot("optimize_baseline"))
+        .transpose()?
+        .flatten();
+
     // ---- 1. 摸底 (只读) ----
     println!("\n[1/3] 摸底 (只读, 不动设备)...");
     let prober = caps::Prober::new(&cfg.phonefarm);
-    let serial = pick_serial(&prober, cfg.serial.as_deref())?;
+    let (caps, restored_plan) = if let Some((caps, plan)) = saved {
+        println!("      恢复冻结摸底与计划，未重新测温改协议");
+        (caps, Some(plan))
+    } else {
+        let serial = pick_serial(&prober, cfg.serial.as_deref())?;
+        let caps = prober
+            .run(&target, &serial)
+            .with_context(|| format!("摸底失败 (设备 {serial})"))?;
+        (caps, None)
+    };
+    let serial = caps.device.serial.clone();
     println!("      设备 {serial}");
-    let caps = prober
-        .run(&target, &serial)
-        .with_context(|| format!("摸底失败 (设备 {serial})"))?;
 
     let caps_path = cfg.out_dir.join("caps.json");
     caps::write(&caps, &caps_path)?;
@@ -301,12 +350,17 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
     println!("\n[2/3] 按能力开路 + 接收端探活...");
     let driver = eval::EvalDriver::new(&cfg.phonefarm);
     let support = driver.probe();
-    let mut plan = plan::build_shaped(&caps, cfg.budget, cfg.use_llm, &cfg.shape);
+    let mut plan = restored_plan
+        .unwrap_or_else(|| plan::build_shaped(&caps, cfg.budget, cfg.use_llm, &cfg.shape));
     // 画质真值跟着冻结条件走, 不是某一层的私有参数: 灰档的每一个改写都动画面,
     // 那一层的 psnr 约束没有真值就判不了。
     plan.conditions.quality_reference = cfg.quality_reference.clone();
     if let Some(line) = cfg.proposer.plan_line() {
         plan.steps.iter_mut().for_each(|s| s.proposer = line.clone());
+    }
+    if let Some(c) = &campaign {
+        c.borrow_mut()
+            .store_snapshot("optimize_baseline", &(caps.clone(), plan.clone()))?;
     }
     println!("\n{}", plan::render(&plan, &caps, Some(&support.describe())));
 
@@ -316,7 +370,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             .iter()
             .map(|s| report::LayerOutcome {
                 layer: s.layer,
-                layer_display: s.layer_display,
+                layer_display: s.layer_display.clone(),
                 used: false,
                 reason: format!("{} (--plan: 只排计划, 没跑)", s.why),
                 blockers: if support.is_supported() {
@@ -392,6 +446,7 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
             driver: &driver,
             support: &support,
             collected: &collected,
+            campaign: campaign.as_ref(),
         };
         // 一层出错不该把已经落袋的测量一起带走。跑到这里的每一份报告都
         // 代表几十分钟真机时间, 为了一个起不来的子进程把它们全丢掉,
@@ -429,11 +484,27 @@ pub fn run(cfg: &Config) -> Result<Outcome> {
         ));
     }
 
+    if let Some(c) = &campaign {
+        let c = c.borrow();
+        for entry in &mut archive {
+            if let Some(review) = c.journal.entries.get(&entry.id) {
+                entry.campaign_binding_sha256 = Some(review.binding_sha256.clone());
+                entry.expert_decisions = review.decisions.clone();
+            }
+        }
+    }
     let mut r = report::build(&plan, &caps, layers, archive, false);
     r.proposer = Some(proposer::Summary {
         gate: gated.as_ref().map(|g| g.decisions()).unwrap_or_default(),
         ..counted.summary()
     });
+    r.campaign = campaign.as_ref().map(|c| c.borrow().summary());
+    if r.campaign.as_ref().is_some_and(|c| c.waiting_for_review) {
+        r.headline = format!(
+            "等待专家方向决定；已有 {} 份评测回执。未决候选未下发设备",
+            r.archive.len()
+        );
+    }
     let (json, md) = report::write(&r, &caps, &cfg.out_dir)?;
     println!("\n{}", r.headline);
     println!("报告: {json}\n      {md}");
@@ -627,13 +698,15 @@ struct LayerCtx<'a> {
     support: &'a eval::EvalSupport,
     /// 各层上过机的候选汇总 (Outcome.history)。
     collected: &'a std::cell::RefCell<Vec<proposer::HistoryItem>>,
+    /// 实验 campaign 账本 (None = 普通 optimize, 候选直接上机)。
+    campaign: Option<&'a RefCell<Campaign>>,
 }
 
 impl LayerCtx<'_> {
     fn new_outcome(&self) -> report::LayerOutcome {
         report::LayerOutcome {
             layer: self.step.layer,
-            layer_display: self.step.layer_display,
+            layer_display: self.step.layer_display.clone(),
             used: true,
             reason: self.step.why.clone(),
             blockers: vec![],
@@ -672,6 +745,144 @@ impl LayerCtx<'_> {
     /// 下发一个候选。失败只回 Err, 由调用方记进 `eval_errors` 并接着跑下一个。
     fn evaluate(&self, id: &str, req: &Request) -> Result<eval::Report> {
         evaluate_on(self.cfg, self.caps, self.driver, self.serial, id, req)
+    }
+
+    /// 过 campaign 审批再下发 (没开 campaign 时等于直接 [`Self::evaluate`])。
+    /// 已登记的候选以账本里冻结的请求为准, 续跑时不按新的历史重组请求。
+    fn reviewed_evaluate(
+        &self,
+        id: &str,
+        generation: u32,
+        candidate: serde_json::Value,
+        req: &Request,
+        history: &[proposer::HistoryItem],
+    ) -> Result<Disposition<eval::Report>> {
+        let Some(campaign) = self.campaign else {
+            return Ok(match self.evaluate(id, req) {
+                Ok(r) => Disposition::Completed(r),
+                Err(e) => Disposition::Failed(e.to_string()),
+            });
+        };
+        let request = campaign
+            .borrow()
+            .journal
+            .entries
+            .get(id)
+            .map(|e| e.request.clone())
+            .unwrap_or(serde_json::to_value(req)?);
+        let mut paths: Vec<PathBuf> = self
+            .cfg
+            .quality_reference
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        paths.extend(self.cfg.sysparam_probe.iter().cloned());
+        if let Some(path) = &req.workload.script {
+            paths.push(PathBuf::from(path));
+        }
+        campaign.borrow_mut().stage(
+            id,
+            generation,
+            self.step.layer.id(),
+            candidate,
+            request.clone(),
+            &paths,
+            campaign::Assessment {
+                hypothesis: match &req.payload {
+                    Payload::Sysparam(p) => p.why.clone(),
+                    Payload::Gray(p) => p.why.clone(),
+                    Payload::Whitebox(p) => p.why.clone(),
+                    _ => None,
+                }
+                .unwrap_or_else(|| self.step.why.clone()),
+                expected_benefit: "降低帧时/功耗或提高帧率；幅度未知，须由冻结A/B统计裁决".into(),
+                risks: match self.step.layer {
+                    Kind::Gray => vec![
+                        "改写可能破坏画面，必须核对命中和质量证据".into(),
+                        "当前接收端灰档缺少质量裁决，不可据机械链路宣称优化收益".into(),
+                    ],
+                    Kind::Whitebox => vec![
+                        "引擎设置可能降低画质，必须核对画面比对".into(),
+                        "降低帧时可能增加功耗".into(),
+                    ],
+                    _ => vec![
+                        "驱动可能覆盖频率写入，需确认apply_ok与现场还原".into(),
+                        "降低帧时可能增加功耗".into(),
+                    ],
+                },
+                estimated_device_seconds: Some(self.step.per_candidate_s),
+                cost_basis: "计划模型估计；保持每臂轮数，不因预算紧张降低统计分辨率".into(),
+                previous_evidence: serde_json::to_value(history)?,
+            },
+        )?;
+        campaign.borrow_mut().execute(id, || {
+            let request: Request = serde_json::from_value(request)?;
+            let report = self.evaluate(id, &request)?;
+            if report.candidate_id != id || report.source != "phonefarm" {
+                bail!("回包candidate_id/source与已审批真机请求不一致");
+            }
+            Ok(report)
+        })
+    }
+
+    /// 出一代方案, 开了 campaign 时这一代的结果冻结进账本: 续跑时原样取回,
+    /// 不因为档案变大而重新出方案 (候选编号与审批绑定的是那一份)。
+    fn propose_frozen(
+        &self,
+        generation: u32,
+        constraints: &proposer::Constraints,
+        history: &[proposer::HistoryItem],
+    ) -> Result<proposer::Batch<proposer::Candidate>> {
+        let key = format!("{}_generation_{generation}", self.step.layer.id());
+        let stored = self
+            .campaign
+            .map(|c| c.borrow().snapshot::<proposer::Batch<proposer::Candidate>>(&key))
+            .transpose()?
+            .flatten();
+        let batch = match stored {
+            Some(b) => b,
+            None => self.propose(generation, constraints, history),
+        };
+        if let Some(c) = self.campaign {
+            c.borrow_mut().store_snapshot(&key, &batch)?;
+        }
+        Ok(batch)
+    }
+
+    /// 专家拒绝的方向: 记进出方案历史 (未经测量, 不当性能负样本)。
+    fn expert_rejected(
+        &self,
+        id: &str,
+        gen: u32,
+        candidate: proposer::Candidate,
+        out: &mut report::LayerOutcome,
+        history: &mut Vec<proposer::HistoryItem>,
+    ) {
+        let reason = self
+            .campaign
+            .and_then(|c| {
+                c.borrow()
+                    .journal
+                    .entries
+                    .get(id)
+                    .and_then(|e| e.decisions.last())
+                    .map(|d| d.reason.clone())
+            })
+            .unwrap_or_default();
+        history.push(proposer::HistoryItem {
+            candidate_id: id.to_string(),
+            generation: gen,
+            candidate,
+            status: "EXPERT_REJECT".into(),
+            measurement_valid: false,
+            kept: false,
+            reason: Some(reason),
+            p_value: 1.0,
+            per_metric: Default::default(),
+            summary: vec!["方向判断，未经测量，不能当作性能负样本".into()],
+        });
+        out.rejected_locally
+            .push(format!("{id}: 专家拒绝方向（见campaign理由）"));
     }
 
     /// 出一代方案: 组 proposer@1 输入 → 出方案的一方 → harness 校验 → 落证据
@@ -901,7 +1112,8 @@ fn run_sysparam(
         if interrupted() {
             bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
         }
-        let batch = ctx.propose(gen, &constraints, &history).sysparam();
+        let batch = ctx.propose_frozen(gen, &constraints, &history)?.sysparam();
+        let mut waiting = false;
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         out.rejected_locally.extend(batch.rejected.iter().cloned());
@@ -965,26 +1177,61 @@ fn run_sysparam(
             continue;
         }
         let multi = ctx.devices.len() > 1;
-        let (cfg, caps, driver) = (ctx.cfg, ctx.caps, ctx.driver);
-        let results = dispatch::run_on_devices(&reqs, ctx.devices, |dev, _, (_, id, req)| {
-            let mut req = req.clone();
-            req.serial = Some(dev.to_string());
-            if multi {
-                println!("        {id} → 设备 {dev}");
+        // 开了 campaign: 逐个候选过审批、单机串行 (run 开头已拒绝与 --extra-device 混用)。
+        let results: Vec<(String, Disposition<eval::Report>)> = if ctx.campaign.is_some() {
+            let mut v = Vec::new();
+            for (idx, id, req) in &reqs {
+                let prop = &batch.accepted[*idx];
+                let cand = proposer::Candidate::sysparam(prop.why.clone(), prop.params.clone());
+                v.push((
+                    ctx.serial.to_string(),
+                    ctx.reviewed_evaluate(id, gen, serde_json::to_value(cand)?, req, &history)?,
+                ));
             }
-            evaluate_on(cfg, caps, driver, dev, id, &req)
-        });
+            v
+        } else {
+            let (cfg, caps, driver) = (ctx.cfg, ctx.caps, ctx.driver);
+            dispatch::run_on_devices(&reqs, ctx.devices, |dev, _, (_, id, req)| {
+                let mut req = req.clone();
+                req.serial = Some(dev.to_string());
+                if multi {
+                    println!("        {id} → 设备 {dev}");
+                }
+                evaluate_on(cfg, caps, driver, dev, id, &req)
+            })
+            .into_iter()
+            .map(|(dev, res)| {
+                (
+                    dev,
+                    match res {
+                        Ok(r) => Disposition::Completed(r),
+                        Err(e) => Disposition::Failed(e.to_string()),
+                    },
+                )
+            })
+            .collect()
+        };
 
         for ((idx, id, _), (dev, res)) in reqs.iter().zip(results) {
             let prop = &batch.accepted[*idx];
             let id = id.clone();
             let rep = match res {
-                Ok(r) => r,
-                Err(e) => {
+                Disposition::Completed(r) => r,
+                Disposition::Pending | Disposition::Deferred => {
+                    waiting = true;
+                    out.blockers.push(format!("{id}: 等待专家方向决定，未下发设备"));
+                    continue;
+                }
+                Disposition::Rejected => {
+                    let cand = proposer::Candidate::sysparam(prop.why.clone(), prop.params.clone());
+                    ctx.expert_rejected(&id, gen, cand, &mut out, &mut history);
+                    continue;
+                }
+                Disposition::Failed(e) => {
                     let who = if multi { format!("{id} [{dev}] ") } else { String::new() };
                     println!("        {who}→ 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
-                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e.to_string()}));
+                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e}));
                     continue;
                 }
             };
@@ -1025,6 +1272,9 @@ fn run_sysparam(
                 entry.device = Some(dev);
             }
             archive.push(entry);
+        }
+        if waiting {
+            break;
         }
     }
     ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
@@ -1103,7 +1353,8 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
         if interrupted() {
             bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
         }
-        let batch = ctx.propose(gen, &constraints, &history).gray();
+        let batch = ctx.propose_frozen(gen, &constraints, &history)?.gray();
+        let mut waiting = false;
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         out.rejected_locally.extend(batch.rejected.iter().cloned());
@@ -1156,12 +1407,22 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                 }),
             };
 
-            let rep = match ctx.evaluate(&id, &req) {
-                Ok(r) => r,
-                Err(e) => {
+            let cand = proposer::Candidate::gray(prop.why.clone(), prop.rewrites.clone());
+            let rep = match ctx.reviewed_evaluate(&id, gen, serde_json::to_value(&cand)?, &req, &history)? {
+                Disposition::Completed(r) => r,
+                Disposition::Pending | Disposition::Deferred => {
+                    waiting = true;
+                    out.blockers.push(format!("{id}: 等待专家方向决定，未下发设备"));
+                    continue;
+                }
+                Disposition::Rejected => {
+                    ctx.expert_rejected(&id, gen, cand, &mut out, &mut history);
+                    continue;
+                }
+                Disposition::Failed(e) => {
                     println!("        → 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
-                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e.to_string()}));
+                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e}));
                     continue;
                 }
             };
@@ -1183,7 +1444,6 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
             // 不管量没量准, 这些开关都算"提过了" —— 否则下一代会原样再提一遍,
             // 换回来的是同一个候选在真机上再跑一轮 (见 proposer::gray_history)。
             ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
-            let cand = proposer::Candidate::gray(prop.why.clone(), prop.rewrites.clone());
             history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             archive.push(report::Entry::from_report(
                 id,
@@ -1193,6 +1453,9 @@ fn run_gray(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<repo
                 report::Change::Gray { rewrites: knobs },
                 &rep,
             ));
+        }
+        if waiting {
+            break;
         }
     }
     ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
@@ -1227,7 +1490,8 @@ fn run_whitebox(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<
         if interrupted() {
             bail!("人叫停 (SIGINT): 第 {gen} 代不再出方案");
         }
-        let batch = ctx.propose(gen, &constraints, &history).whitebox();
+        let batch = ctx.propose_frozen(gen, &constraints, &history)?.whitebox();
+        let mut waiting = false;
         record_proposer(&mut out, &mut origins, batch.origin, batch.llm_error.as_ref());
         out.proposed += batch.accepted.len() + batch.rejected.len();
         out.rejected_locally.extend(batch.rejected.iter().cloned());
@@ -1284,12 +1548,22 @@ fn run_whitebox(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<
                     }),
                 }),
             };
-            let rep = match ctx.evaluate(&id, &req) {
-                Ok(r) => r,
-                Err(e) => {
+            let cand = proposer::Candidate::whitebox(prop.why.clone(), prop.knobs.clone());
+            let rep = match ctx.reviewed_evaluate(&id, gen, serde_json::to_value(&cand)?, &req, &history)? {
+                Disposition::Completed(r) => r,
+                Disposition::Pending | Disposition::Deferred => {
+                    waiting = true;
+                    out.blockers.push(format!("{id}: 等待专家方向决定，未下发设备"));
+                    continue;
+                }
+                Disposition::Rejected => {
+                    ctx.expert_rejected(&id, gen, cand, &mut out, &mut history);
+                    continue;
+                }
+                Disposition::Failed(e) => {
                     println!("        → 下发失败, 跳过这个候选: {e}");
                     out.eval_errors.push(format!("{id}: {e}"));
-                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e.to_string()}));
+                    ctx.cfg.goal.emit(gen, serde_json::json!({"type": "error", "candidate_id": id, "message": e}));
                     continue;
                 }
             };
@@ -1308,7 +1582,6 @@ fn run_whitebox(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<
                 verdict_note(&rep)
             );
             ctx.cfg.goal.emit(gen, verdict_event(&id, &rep));
-            let cand = proposer::Candidate::whitebox(prop.why.clone(), prop.knobs.clone());
             history.push(proposer::history_item(&id, gen, cand, &rep, per_metric_lines(&rep)));
             archive.push(report::Entry::from_report(
                 id,
@@ -1318,6 +1591,9 @@ fn run_whitebox(ctx: &LayerCtx<'_>, archive: &mut Vec<report::Entry>) -> Result<
                 report::Change::Whitebox { knobs: prop.knobs.clone() },
                 &rep,
             ));
+        }
+        if waiting {
+            break;
         }
     }
     ctx.collected.borrow_mut().extend(history.into_iter().skip(prior));
@@ -1347,6 +1623,7 @@ mod tests {
                 eval::MetricDetail { diff_pct: Some(pct), p: Some(p), ..Default::default() },
             );
             eval::Report {
+                extensions: Default::default(),
                 version: Some(2),
                 kind: Some(Kind::Sysparam),
                 candidate_id: "c".into(),
@@ -1388,6 +1665,7 @@ mod tests {
     #[test]
     fn the_verdict_reason_follows_the_status_in_the_log() {
         let mut r = eval::Report {
+            extensions: Default::default(),
             version: Some(2),
             kind: Some(Kind::Sysparam),
             candidate_id: "c".into(),
@@ -1410,6 +1688,7 @@ mod tests {
     #[test]
     fn per_metric_lines_survive_a_reply_without_details() {
         let r = eval::Report {
+            extensions: Default::default(),
             version: Some(2),
             kind: Some(Kind::Sysparam),
             candidate_id: "c".into(),
@@ -1432,6 +1711,7 @@ mod tests {
     #[test]
     fn unmeasured_metrics_are_not_reported_as_zero_to_the_proposer() {
         let mut r = eval::Report {
+            extensions: Default::default(),
             version: Some(2),
             kind: Some(Kind::Sysparam),
             candidate_id: "c".into(),

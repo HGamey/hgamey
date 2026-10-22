@@ -3,10 +3,12 @@
    一条原则: 后端给 null 就显示「未知/未测」, 前端绝不替数据编一个值。 */
 
 var DASH = null;
-var PAGE = 'overview';
+var PAGE = 'tasks';
 var SELECTED_ROUND = null;
+var SELECTED_CASE = null;
 var REFRESH_MS = 30000;
 var timer = null;
+var EVIDENCE_OPEN = Object.create(null);
 
 /* ── 小工具 ───────────────────────────────────────── */
 function esc(s) {
@@ -37,7 +39,7 @@ function shortTime(s) {
 
 /* ── 取数 ─────────────────────────────────────────── */
 function load() {
-  el('refresh-state').textContent = '读取中…';
+  if (!PF.nativeDashboardOnly) pfLoad();
   fetch('/api/dashboard', { cache: 'no-store' })
     .then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -45,15 +47,12 @@ function load() {
     })
     .then(function (d) {
       DASH = d;
-      el('refresh-state').textContent = '数据时间 ' + shortTime(d.generated_at);
-      el('footer-paths').innerHTML =
-        '层① ' + esc(d.paths.game_opt_loop) + ' · 层②③ ' + esc(d.paths.phonefarm) +
-        (d.paths.phonefarm_present ? '' : ' (没找到)') +
-        ' · 设备锁 ' + esc(d.paths.lock_root) + ' · v' + esc(d.version);
-      render();
+      if (PF.nativeDashboardOnly) el('refresh-state').textContent = '原生优化数据';
+      el('footer-paths').textContent = 'game_opt_loop 原生优化产物 · phonefarm 原始任务 · 公开只读';
+      if (PAGE !== 'tasks') render();
     })
     .catch(function (e) {
-      el('refresh-state').innerHTML = '<span class="err">读取失败: ' + esc(e.message) + '</span>';
+      if (PAGE !== 'tasks') el('page-' + PAGE).innerHTML = '<div class="card"><h2>优化数据读取失败</h2><p class="err">' + esc(e.message) + '</p></div>';
     });
 }
 
@@ -62,19 +61,21 @@ function showPage(p) {
   PAGE = p;
   var buttons = document.querySelectorAll('#nav button');
   for (var i = 0; i < buttons.length; i++) {
-    buttons[i].className = buttons[i].dataset.page === p ? 'on' : '';
+    buttons[i].classList.toggle('on', buttons[i].dataset.page === p);
   }
-  ['overview', 'rounds', 'charts', 'device'].forEach(function (name) {
+  ['tasks', 'overview', 'rounds', 'cases', 'charts', 'device'].forEach(function (name) {
     el('page-' + name).classList.toggle('hidden', name !== p);
   });
   render();
 }
 
 function render() {
+  if (PAGE === 'tasks') { pfRender(); return; }
   if (!DASH) return;
   renderNotices();
   if (PAGE === 'overview') renderOverview();
   if (PAGE === 'rounds') renderRounds();
+  if (PAGE === 'cases') renderCases();
   if (PAGE === 'charts') renderCharts();
   if (PAGE === 'device') renderDevice();
 }
@@ -94,6 +95,8 @@ function renderNotices() {
 /* ── 总览 ─────────────────────────────────────────── */
 function renderOverview() {
   var cards = DASH.layers.map(function (L) {
+    var absent = L.rounds_total === 0 && ((L.problems || []).length > 0 || L.evidence_only > 0);
+    var unavailable = (L.problems || []).length ? '读取不全' : '未接轮次';
     var extra = [];
     if (L.evidence_only) extra.push(L.evidence_only + ' 份附加证据');
     if (L.problems && L.problems.length) extra.push('读取问题 ' + L.problems.length + ' 条');
@@ -103,11 +106,12 @@ function renderOverview() {
         '<span class="layer-name">' + esc(L.name) + '</span></div>' +
         '<div class="layer-sub">' + esc(L.subtitle) + '</div>' +
         '<div class="counts">' +
-          '<div class="count plain"><div class="n">' + L.rounds_total + '</div><div class="t">轮</div></div>' +
-          '<div class="count good"><div class="n">' + L.qualified + '</div><div class="t">合格</div></div>' +
-          '<div class="count bad"><div class="n">' + L.eliminated + '</div><div class="t">淘汰</div></div>' +
-          '<div class="count warn"><div class="n">' + L.invalid + '</div><div class="t">无效</div></div>' +
+          '<div class="count plain"><div class="n">' + (absent ? '—' : L.rounds_total) + '</div><div class="t">旧格式轮次</div></div>' +
+          '<div class="count good"><div class="n">' + (absent ? '—' : L.qualified) + '</div><div class="t">合格</div></div>' +
+          '<div class="count bad"><div class="n">' + (absent ? '—' : L.eliminated) + '</div><div class="t">淘汰</div></div>' +
+          '<div class="count warn"><div class="n">' + (absent ? '—' : L.invalid) + '</div><div class="t">无效</div></div>' +
         '</div>' +
+        (absent ? '<p class="unknown">' + unavailable + '：' + (PF.nativeDashboardOnly ? '来源未提供可统计的轮次。' : '本轮 phonefarm 实验请在任务页查看。') + '</p>' : '') +
         (extra.length ? '<div class="layer-extra">' + esc(extra.join(' · ')) + '</div>' : '') +
       '</div>';
   }).join('');
@@ -118,11 +122,14 @@ function renderOverview() {
   });
 
   el('page-overview').innerHTML =
-    '<h2 class="section">三层级 · 每层多少轮, 结果怎么分</h2>' +
+    '<div class="card"><h2>优化轮次接收状态</h2><p class="dim">此处读取 game_opt_loop 旧三层轮次格式。' +
+    (PF.nativeDashboardOnly ? '任务与实测阶段索引由独立 phonefarm 只读服务提供；缺失来源不能判断为零次实验。</p>' :
+      '当前实测阶段与模型流水线在任务页独立索引；缺失来源不能判断为零次实验。</p><button class="ghost" id="pf-overview-tasks">查看真实任务与实验</button>') + '</div>' +
+    '<h2 class="section">旧三层产物 · 接收状态</h2>' +
     '<div class="grid3">' + cards + '</div>' +
     '<div class="card" style="margin-top:16px"><div class="dim" style="font-size:13px">' +
-      '合格 = 判据齐全且全部通过 &nbsp;·&nbsp; 淘汰 = 判据齐全但有未通过 &nbsp;·&nbsp; ' +
-      '无效 = 判据不齐 / 没测上, <b>下不出结论</b> (不是判负)' +
+      '合格 / 淘汰只展示报告声明结论资格后的前沿或判据结果；无效表示资格或测试不完整。' +
+      '<br>仅证据包括旧报告、静态估计与来源未知的记录。面板不认证采集，也不授予真实游戏证明或晋级权限。' +
     '</div></div>' +
     '<h2 class="section">载体可复现性 · 同一载体连跑 N 轮, 帧时散得有多开</h2>' +
     carrierTable() +
@@ -157,7 +164,8 @@ function carrierTable() {
   return '<div class="card"><table><thead><tr>' +
     '<th>载体</th><th>窗口</th><th>轮数</th><th>p95 离散度</th><th>p50 离散度</th>' +
     '<th>p95 中位</th><th>帧率中位</th><th>阈值</th><th>判定</th><th></th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    '</tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<p class="dim">本表判定仅描述保存记录的离散度是否符合该表阈值，不授予优化结论资格。</p></div>';
 }
 
 /* ── 轮次 ─────────────────────────────────────────── */
@@ -176,6 +184,8 @@ function findRound(id) {
 }
 
 function renderRounds() {
+  var details = el('page-rounds').querySelectorAll('details.receiver-evidence[data-key]');
+  for (var i = 0; i < details.length; i++) EVIDENCE_OPEN[details[i].dataset.key] = details[i].open;
   var all = allRounds();
   if (!all.length) {
     el('page-rounds').innerHTML = '<div class="card"><span class="unknown">还没有任何一轮数据</span></div>';
@@ -214,6 +224,101 @@ function verdictLabel(v) {
   return { qualified: '合格', eliminated: '淘汰', invalid: '无效', evidence: '仅证据' }[v] || v;
 }
 
+function evidenceDetailAttrs(parts) {
+  var key = JSON.stringify(parts);
+  return ' data-key="' + esc(key) + '"' + (EVIDENCE_OPEN[key] ? ' open' : '');
+}
+
+/* ── 独立确认 / 模型阶段案例：保存声明，不认证、不执行 ── */
+function jsonEvidence(v) {
+  return v === undefined || v === null ? val(null) : '<pre>' + esc(JSON.stringify(v, null, 2)) + '</pre>';
+}
+function caseNumber(v) {
+  return typeof v === 'number' && isFinite(v) ? esc(v.toFixed(3)) : val(null);
+}
+function savedState(s) {
+  return { PASS: 'PASS（保存裁决，未重新认证）', INCONCLUSIVE: 'INCONCLUSIVE（收益未确定）',
+    BLOCKED: 'BLOCKED（阻断）', completed_protocol_declaration: '五阶段协议声明完成',
+    saved_stage_states_only: '按保存阶段状态查看', unknown: 'UNKNOWN（外部作用未知）',
+    in_flight: 'IN_FLIGHT（不可在面板恢复）', completed: 'COMPLETED（协议声明）',
+    failed: 'FAILED（失败）', rejected: 'REJECTED（拒绝）', deferred: 'DEFERRED（延期）',
+    pending: 'PENDING（待审/待执行）', ready: 'READY（保存状态）' }[s] || s;
+}
+function caseDocument(collection, index, role, integrity, key) {
+  var d = collection.documents[index];
+  if (!d) return '<p class="err">文档快照未知/不可读</p>';
+  var html = '<div class="case-document"><p><b>' + esc(role) + '</b> · ' + esc(integrity) + '</p>' +
+    '<div class="dim case-path">' + esc(d.path) + '</div>' +
+    '<p class="dim case-path">快照 SHA-256: ' + esc(d.sha256) + ' · ' + kb(d.size_bytes) + '</p>' +
+    (d.problem ? '<p class="err">快照解析错误: ' + esc(d.problem) + '</p>' : '');
+  html += '<details class="receiver-evidence"' + evidenceDetailAttrs(['case', key, d.path, 'raw']) +
+    '><summary>原始 UTF-8 文本（保留字节和空白）</summary>' +
+    (d.raw_text === null ? val(null) : '<pre>' + esc(d.raw_text) + '</pre>') + '</details>';
+  html += '<details class="receiver-evidence"' + evidenceDetailAttrs(['case', key, d.path, 'json']) +
+    '><summary>完整 JSON 展示（派生格式，非原始字节）</summary>' + jsonEvidence(d.json) + '</details></div>';
+  return html;
+}
+function renderCases() {
+  var page = el('page-cases');
+  var details = page.querySelectorAll('details.receiver-evidence[data-key]');
+  for (var i = 0; i < details.length; i++) EVIDENCE_OPEN[details[i].dataset.key] = details[i].open;
+  var collection = DASH.cases;
+  if (!collection) { page.innerHTML = '<div class="card">案例接口未知/未提供</div>'; return; }
+  var items = collection.items;
+  var selected = items.filter(function (c) { return c.id === SELECTED_CASE; })[0];
+  if (!selected && items.length) { selected = items[0]; SELECTED_CASE = selected.id; }
+  var header = '<h2 class="section">案例证据 · 独立确认与模型阶段</h2><div class="card">' +
+    '<b>只展示保存声明，不认证来源、不执行驱动、不授予真实游戏证明或晋级权限。</b>' +
+    '<p class="dim">Hash 匹配只检查字节完整性。PASS 只保留原裁决；五阶段完成只描述驱动协议。' +
+    '合成/假设演示不会升级成真机案例。</p>' +
+    '<div>view_grants_game_proof=false · view_allows_promotion=false</div>' +
+    '<p class="dim">本次发现 ' + items.length + ' 份案例 · ' + collection.scanned_directories +
+    ' 目录 / ' + collection.scanned_entries + ' 条目 · ' + kb(collection.snapshot_bytes) + ' 输入快照</p>' +
+    (collection.partial ? '<p class="err"><b>部分列表：读取错误或达到读取/遍历/关联上限，不能作为全部实验的总览。</b></p>' : '') +
+    (collection.problems.length ? '<details><summary>读取限制 / 问题</summary><ul class="notes">' +
+      collection.problems.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></details>' : '') + '</div>';
+  if (!selected) { page.innerHTML = header + '<div class="card" style="margin-top:16px">未发现支持的保存案例；资格未知/未测。</div>'; return; }
+  var list = items.map(function (c) {
+    return '<button type="button" class="round-item case-choice' + (c.id === selected.id ? ' on' : '') + '" data-case="' + esc(c.id) + '">' +
+      '<div class="t">' + val(c.title) + '</div><div class="s">' + esc(c.kind) + ' · ' +
+      val(savedState(c.declared_status)) + '</div></button>';
+  }).join('');
+  var doc = collection.documents[selected.primary_document];
+  var primary = doc && doc.json;
+  var detail = '<h2 class="section">' + val(selected.title) + '</h2><div class="kv">' +
+    '<div class="k">保存状态</div><div>' + val(savedState(selected.declared_status)) + '</div>' +
+    '<div class="k">来源声明（未认证）</div><div>' + (selected.source_declarations.length ? selected.source_declarations.map(esc).join('<br>') : val(null)) + '</div>' +
+    '<div class="k">声明范围</div><div>' + val(selected.scope) + '</div>' +
+    '<div class="k">资格字段</div><div>' + (selected.qualification === null ? val(null) : jsonEvidence(selected.qualification)) + '</div></div>';
+  if (selected.kind === 'confirmation') {
+    detail += '<h3>冻结指标的保存统计值</h3>';
+    var metrics = primary && Array.isArray(primary.metrics) ? primary.metrics : [];
+    detail += metrics.length ? '<div class="case-table"><table><thead><tr><th>指标</th><th>Pairs / 单位</th><th>不利差均值</th><th>单侧上界</th><th>非劣效界 / 保存支持</th><th>改善界 / 保存支持</th></tr></thead><tbody>' +
+      metrics.slice(0, 32).map(function (m) { return '<tr><td>' + val(m.name) + '</td><td>' + val(m.pairs) + ' / ' + val(m.scale) + '</td>' +
+        '<td>' + caseNumber(m.mean_adverse_delta) + '</td><td>' + caseNumber(m.upper_adverse_bound) + '</td>' +
+        '<td>' + caseNumber(m.noninferiority_limit) + ' / ' + val(yesNo(m.noninferiority_supported)) + '</td>' +
+        '<td>' + caseNumber(m.improvement_limit) + ' / ' + val(yesNo(m.improvement_supported)) + '</td></tr>'; }).join('') + '</tbody></table></div>' : val(null);
+    detail += (metrics.length > 32 ? '<p class="err">统计摘要仅显示前 32 项；完整指标仍在原文中。</p>' : '') + '<p class="dim">本面板未重新裁决统计独立性、来源、画质或真实 GPU 挂点。</p>';
+  }
+  if (selected.stages.length) {
+    detail += '<h3>阶段 / 审批 / 恢复 / 用量</h3>' + selected.stages.map(function (s, i) {
+      return '<div class="case-stage"><b>' + val(s.name) + '</b> · ' + val(savedState(s.state)) +
+        (s.error ? '<p class="err">' + esc(s.error) + '</p>' : '') +
+        '<details class="receiver-evidence"' + evidenceDetailAttrs(['case', selected.id, 'stage', s.name || i]) +
+        '><summary>完整保存的审批、恢复和声明用量</summary>' +
+        '<p>审批记录</p>' + jsonEvidence(s.decisions) + '<p>Reconciliation（人工声明）</p>' +
+        jsonEvidence(s.reconciliation) + '<p>Usage（驱动声明，未可信计量）</p>' + jsonEvidence(s.usage) + '</details></div>';
+    }).join('');
+  }
+  detail += '<h3>否定结果 / UNKNOWN / 限制</h3>' + (selected.issues.length ? '<ul class="notes">' +
+    selected.issues.slice(0, 128).map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>' : '<p class="dim">保存记录未列出问题；这不表示已认证。</p>');
+  if (selected.issues.length > 128) detail += '<p class="err">问题摘要仅显示前 128 项；完整保存字段仍在原文中。</p>';
+  detail += '<h3>完整证据快照</h3>' + caseDocument(collection, selected.primary_document, 'Primary', '保存声明，未认证', selected.id);
+  selected.associations.forEach(function (a) { detail += caseDocument(collection, a.document, a.role, a.integrity, selected.id); });
+  page.innerHTML = header + '<div class="round-layout" style="margin-top:16px"><div class="card round-list">' + list +
+    '</div><div class="card case-detail">' + detail + '</div></div>';
+}
+
 function roundDetail(x) {
   if (!x) return '<span class="unknown">没有选中任何一轮</span>';
   var r = x.round;
@@ -243,7 +348,7 @@ function roundDetail(x) {
       '<th>功耗 W</th><th>画质 dB</th><th>p 值</th><th>说明</th></tr></thead><tbody>' +
       r.candidates.map(function (c) {
         return '<tr>' +
-          '<td><b>' + esc(c.id) + '</b>' + (c.on_front ? ' <span class="badge qualified">前沿</span>' : '') + '</td>' +
+          '<td><b>' + esc(c.id) + '</b>' + (c.on_front ? ' <span class="badge evidence">档案前沿</span>' : '') + '</td>' +
           '<td>' + esc(c.origin) + '</td>' +
           '<td><span class="badge ' + esc(c.verdict) + '">' + verdictLabel(c.verdict) + '</span></td>' +
           '<td class="num">' + num(c.latency_ms, 4) + '</td>' +
@@ -256,7 +361,15 @@ function roundDetail(x) {
             (c.violations && c.violations.length ? ' [' + esc(c.violations.join(',')) + ']' : '') +
             (c.notes ? '<br>' + esc(c.notes) : '') +
             (c.power_excluded_reason ? '<br>功耗未参与排序: ' + esc(c.power_excluded_reason) : '') +
-          '</td></tr>';
+          '</td></tr>' +
+            (c.evidence ? '<tr><td colspan="9"><details class="receiver-evidence"' +
+              evidenceDetailAttrs(['candidate', r.id, c.id]) +
+              '><summary>' + esc(c.id) + ' · 来源、资格与原始回包</summary>' +
+              '<p>' + esc(c.evidence.metric_source) + '<br>' + esc(c.evidence.qualification_label) +
+              '<br>声明来源: ' + val(c.evidence.evidence_origin) +
+              '<br>原报告状态: ' + val(c.evidence.reported_status) +
+              '<br>面板仅展示记录；真实游戏证明和晋级权限不由面板授予。</p>' +
+              '<pre>' + esc(JSON.stringify(c.evidence.receiver_report, null, 2)) + '</pre></details></td></tr>' : '');
       }).join('') + '</tbody></table>';
   }
 
@@ -266,6 +379,13 @@ function roundDetail(x) {
         '<span><i style="background:var(--dim)"></i>' + esc(r.arms.a_label) + '</span>' +
         '<span><i style="background:var(--accent)"></i>' + esc(r.arms.b_label) + '</span>' +
       '</div>';
+  }
+
+  if (r.receiver_report) {
+    html += '<details class="receiver-evidence"' + evidenceDetailAttrs(['ab', r.id]) +
+      '><summary>原始 A/B 回包与资格声明</summary>' +
+      '<p>保存的记录尚未认证采集；面板不授予真实游戏证明或晋级权限。</p>' +
+      '<pre>' + esc(JSON.stringify(r.receiver_report, null, 2)) + '</pre></details>';
   }
 
   html += '<h2 class="section">测试条件</h2><div class="kv">' +
@@ -321,9 +441,9 @@ function renderCharts() {
       ' — 绝对 dB 只在同一组参考图内可比</span></div>' +
       paretoSvg(pr.pareto, 980, 420) +
       '<div class="legend">' +
-        '<span><i style="background:var(--good)"></i>支配前沿</span>' +
+        '<span><i style="background:var(--good)"></i>档案前沿（历史成员关系）</span>' +
         '<span><i style="background:var(--dim)"></i>被支配</span>' +
-        '<span>点上的字是候选 id, 悬停看详情</span>' +
+        '<span>点上的字是候选 id；来源与结论资格见轮次详情</span>' +
       '</div></div>';
   }
 
@@ -414,7 +534,7 @@ function paretoSvg(p, w, h) {
     return '<g><circle cx="' + sx(d.x) + '" cy="' + sy(d.y) + '" r="' + rr + '" fill="' + c +
       '" fill-opacity="' + (d.on_front ? 1 : 0.55) + '"><title>' + esc(d.id) + ' · 第' + d.generation +
       '代 · ' + esc(d.origin) + '\n耗时 ' + d.x + ' ms · 画质 ' + d.y + ' dB' +
-      (d.on_front ? '\n在支配前沿上' : '') + '</title></circle>' +
+      (d.on_front ? '\n在档案前沿上（历史成员关系）' : '') + '</title></circle>' +
       '<text x="' + sx(d.x) + '" y="' + (sy(d.y) - rr - 5) + '" font-size="11" text-anchor="middle">' + esc(d.id) + '</text></g>';
   }).join('');
 
@@ -689,27 +809,279 @@ function renderDevice() {
 
 /* ── 文件抽屉 ─────────────────────────────────────── */
 function openFile(path) {
-  el('filedrawer').classList.remove('hidden');
-  el('filedrawer-title').textContent = path;
-  el('filedrawer-body').innerHTML = '<span class="dim">读取中…</span>';
-  var isImg = /\.(png|jpe?g)$/i.test(path);
-  if (isImg) {
-    el('filedrawer-body').innerHTML = '<img alt="" src="/api/file?path=' + encodeURIComponent(path) + '">';
+  if (typeof path === 'string' && path.indexOf('artifact:') === 0) {
+    pfOpenArtifact(path.slice(9), path);
     return;
   }
-  fetch('/api/file?path=' + encodeURIComponent(path), { cache: 'no-store' })
-    .then(function (r) { return r.text().then(function (t) { return { ok: r.ok, t: t }; }); })
-    .then(function (res) {
-      var text = res.t;
-      if (res.ok && /\.json$/i.test(path)) {
-        try { text = JSON.stringify(JSON.parse(text), null, 1); } catch (e) { /* 原样显示 */ }
+  el('filedrawer').classList.remove('hidden');
+  el('filedrawer-title').textContent = path;
+  el('filedrawer-body').innerHTML = '<p class="unknown">此原件未注册为公开工件。请在本机使用 phonefarm show / cat 查阅。</p>';
+}
+
+/* Generic phonefarm task explorer. Data comes only from the indexed task store. */
+var PF = { meta: null, tasks: [], task: null, runs: [], total: 0, offset: 0,
+  kind: 'all', search: '', detail: null, selected: null, error: null, busy: false, epoch: 0 };
+
+function pfJSON(url) {
+  return fetch(url, { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) {
+      var error = new Error('HTTP ' + r.status + ' · ' + url);
+      error.status = r.status; error.endpoint = url; throw error;
+    }
+    return r.json();
+  });
+}
+function pfTime(s) {
+  if (!s) return '未知';
+  var date = new Date(s);
+  return isNaN(date.getTime()) ? String(s) : date.toLocaleString('zh-CN', { hour12: false });
+}
+function pfKind(k) {
+  return ({ ui_run: 'UI 对局', confirmation: '系统实验', model_pipeline: '模型流水线', experiment_phase: '实测阶段' })[k] || k;
+}
+function pfStatus(s) {
+  var text = String(s || 'UNKNOWN');
+  var tone = /blocked|failed|error|died|stop|timeout/i.test(text) ? 'bad' :
+    /finish|completed|pass|restored/i.test(text) ? 'good' : 'plain';
+  return '<span class="pf-status ' + tone + '">' + esc(text) + '</span>';
+}
+function pfCatalogPair(attempt) {
+  return pfJSON('/api/meta').then(function (meta) {
+    return pfJSON('/api/tasks?offset=0&limit=200').then(function (tasks) { return [meta, tasks]; });
+  }).then(function (values) {
+    if (values[0].snapshot.id !== values[1].snapshot.id || values[0].snapshot.synchronized_at !== values[1].snapshot.synchronized_at) {
+      if (attempt === 0) return pfCatalogPair(1);
+      throw new Error('同步正在切换，请稍后刷新');
+    }
+    var first = values[1];
+    if (first.total <= first.items.length) return values;
+    var rest = [];
+    for (var offset = first.items.length; offset < Math.min(first.total, 2000); offset += 200) {
+      rest.push(pfJSON('/api/tasks?offset=' + offset + '&limit=200'));
+    }
+    return Promise.all(rest).then(function (pages) {
+      pages.forEach(function (p) {
+        if (p.snapshot.id !== first.snapshot.id || p.snapshot.synchronized_at !== first.snapshot.synchronized_at) throw new Error('任务索引同步已切换');
+        first.items = first.items.concat(p.items);
+      });
+      return values;
+    });
+  });
+}
+function pfLoad() {
+  var epoch = ++PF.epoch;
+  PF.busy = true;
+  el('refresh-state').textContent = '同步记录读取中…';
+  pfCatalogPair(0)
+    .then(function (values) {
+      if (epoch !== PF.epoch) return;
+      PF.meta = values[0]; PF.tasks = values[1].items.slice().sort(function (a,b) { return String(b.updated_at || '').localeCompare(String(a.updated_at || '')) || a.name.localeCompare(b.name); });
+      PF.error = null;
+      el('refresh-state').textContent = '同步 ' + pfTime(PF.meta.snapshot.synchronized_at);
+      var taskId = PF.task && PF.task.id;
+      PF.task = PF.tasks.find(function (t) { return t.id === taskId; }) || PF.tasks[0] || null;
+      return pfLoadRuns(epoch);
+    }).catch(function (e) {
+      if (epoch !== PF.epoch) return;
+      if (e.status === 404 && e.endpoint === '/api/meta') {
+        PF.nativeDashboardOnly = true;
+        document.querySelector('#nav [data-page="tasks"]').classList.add('hidden');
+        el('refresh-state').textContent = '原生优化数据';
+        if (PAGE === 'tasks') showPage('overview');
+        return;
       }
-      el('filedrawer-body').innerHTML = (res.ok ? '<pre>' : '<pre class="err">') + esc(text) + '</pre>';
-    })
-    .catch(function (e) {
-      el('filedrawer-body').innerHTML = '<pre class="err">' + esc(e.message) + '</pre>';
+      PF.error = e.message;
+      el('refresh-state').textContent = '读取失败';
+    }).finally(function () {
+      if (epoch !== PF.epoch) return;
+      PF.busy = false;
+      if (PAGE === 'tasks') pfRender();
     });
 }
+function pfLoadRuns(epoch) {
+  if (!PF.task) { PF.runs = []; PF.total = 0; return Promise.resolve(); }
+  var id = PF.task.id;
+  return pfJSON('/api/runs?task=' + encodeURIComponent(id) + '&kind=' + encodeURIComponent(PF.kind) +
+    '&offset=' + PF.offset + '&limit=30').then(function (data) {
+      if (epoch !== PF.epoch || !PF.task || id !== PF.task.id) return;
+      PF.runs = data.items; PF.total = data.total;
+      if (PF.selected) return pfFetchDetail(PF.selected, epoch);
+    });
+}
+function pfChooseTask(id) {
+  PF.task = PF.tasks.find(function (t) { return t.id === id; });
+  PF.detail = null; PF.selected = null; PF.offset = 0; PF.runs = []; PF.total = 0; PF.error = null;
+  var epoch = ++PF.epoch;
+  PF.busy = true; pfRender();
+  pfLoadRuns(epoch).catch(function (e) { if (epoch === PF.epoch) PF.error = e.message; })
+    .finally(function () { if (epoch === PF.epoch) { PF.busy = false; pfRender(); } });
+}
+function pfFetchDetail(id, epoch) {
+  return pfJSON('/api/runs/' + encodeURIComponent(id)).then(function (d) {
+    if (epoch !== PF.epoch || id !== PF.selected) return;
+    PF.detail = d;
+  });
+}
+function pfChooseRun(id) {
+  PF.selected = id; PF.detail = null; PF.error = null;
+  var epoch = ++PF.epoch;
+  PF.busy = true; pfRender();
+  pfFetchDetail(id, epoch).catch(function (e) { if (epoch === PF.epoch) PF.error = e.message; })
+    .finally(function () { if (epoch === PF.epoch) { PF.busy = false; pfRender(); } });
+}
+function pfTile(label, value, note) {
+  return '<div class="pf-tile"><span>' + esc(label) + '</span><strong>' + esc(value === null || value === undefined ? '未知' : value) +
+    '</strong><small>' + esc(note || '') + '</small></div>';
+}
+function pfRender() {
+  var page = el('page-tasks');
+  el('notices').innerHTML = '';
+  var meta = PF.meta, counts = meta && meta.counts || {};
+  var html = '<div class="pf-heading"><div><div class="dim">HGamey / phonefarm</div><h1>任务与实验记录</h1>' +
+    '<p class="dim">从原始任务目录发现运行，查看步骤、指标和证据。</p></div>' +
+    '<span class="pf-mode">公开只读 · Mac 数据同步</span></div>';
+  if (PF.error) html += '<div class="notice retracted"><h4>数据读取失败</h4><p>' + esc(PF.error) + '</p></div>';
+  if (!meta) {
+    page.innerHTML = html + '<div class="card">' + (PF.busy ? '读取任务索引…' : '没有取得任务索引。') + '</div>';
+    return;
+  }
+  html += '<div class="pf-summary">' + pfTile('任务', counts.tasks, '按原始目录索引') +
+    pfTile('UI 对局', counts.ui_runs, 'phonefarm runs/log.jsonl') +
+    pfTile('实测阶段', counts.experiment_phase, '采集 / 诊断 / 条件化 / 恢复') + pfTile('确认会话', counts.confirmation, '确认驱动会话') +
+    pfTile('模型流水线', counts.model_pipeline, '真实阶段及终态') + '</div>';
+  html += '<div class="pf-sync"><span>同步时间 <b>' + esc(pfTime(meta.snapshot.synchronized_at)) + '</b></span>' +
+    '<span>手机实时状态：<b>未连接至此 Web 服务</b></span>' +
+    '<details><summary>索引来源</summary><pre>' + esc(JSON.stringify(meta.snapshot, null, 2)) + '</pre></details></div>';
+  var diagnostics = meta.diagnostics || [];
+  if (diagnostics.length) html += '<details class="card pf-diagnostics"><summary>索引诊断（' + diagnostics.length +
+    '）</summary><pre>' + esc(JSON.stringify(diagnostics, null, 2)) + '</pre></details>';
+  html += '<div class="pf-layout"><aside class="card pf-task-list"><h2>索引任务</h2>' +
+    '<label class="pf-search"><span class="sr-only">搜索任务</span><input id="pf-search" placeholder="搜索任务名" value="' + esc(PF.search) + '"></label>';
+  var shown = PF.tasks.filter(function (t) { return t.name.toLowerCase().indexOf(PF.search.toLowerCase()) !== -1; });
+  shown.forEach(function (t) {
+    html += '<button class="pf-task ' + (PF.task && PF.task.id === t.id ? 'active' : '') + '" data-pf-task="' + esc(t.id) + '">' +
+      '<b>' + esc(t.name) + '</b><span>' + esc(t.run_count) + ' 条 · ' + esc((t.kinds || []).map(pfKind).join(' / ')) + '</span></button>';
+  });
+  if (!shown.length) html += '<p class="unknown">没有匹配的任务。</p>';
+  html += '</aside><div class="pf-workspace">';
+  if (!PF.task) html += '<div class="card"><h2>尚无任务</h2><p class="dim">索引没有发现任务。不会自动生成示例。</p></div>';
+  else if (PF.selected) html += pfDetail();
+  else html += pfRunList();
+  html += '</div></div>';
+  page.innerHTML = html;
+}
+function pfRunList() {
+  var html = '<div class="card"><div class="pf-section-head"><div><h2>' + esc(PF.task.name) + '</h2>' +
+    '<p class="dim">' + PF.total + ' 条运行 / 实验会话</p></div><label>类型 <select id="pf-kind">';
+  ['all','experiment_phase','ui_run','confirmation','model_pipeline'].forEach(function (k) {
+    html += '<option value="' + k + '"' + (PF.kind === k ? ' selected' : '') + '>' + esc(k === 'all' ? '全部' : pfKind(k)) + '</option>';
+  });
+  html += '</select></label></div><div class="pf-table-wrap"><table class="pf-run-table"><thead><tr><th>运行 / 会话</th><th>类型</th><th>状态</th><th>更新</th><th>步骤</th></tr></thead><tbody>';
+  PF.runs.forEach(function (r) {
+    html += '<tr><td><button class="pf-link" data-pf-run="' + esc(r.id) + '">' + esc(r.label) + '</button></td>' +
+      '<td>' + esc(pfKind(r.kind)) + '</td><td>' + pfStatus(r.status) + '</td><td>' + esc(pfTime(r.updated_at)) +
+      '</td><td>' + val(r.step_count) + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  if (!PF.runs.length) html += '<p class="unknown">' + (PF.busy ? '读取中…' : '没有该类型的运行。') + '</p>';
+  html += '<div class="pf-pagination"><button class="ghost" id="pf-prev"' + (PF.busy || PF.offset === 0 ? ' disabled' : '') + '>上一页</button>' +
+    '<span class="dim">' + (PF.runs.length ? PF.offset + 1 : 0) + '–' + (PF.offset + PF.runs.length) + ' / ' + PF.total +
+    '</span><button class="ghost" id="pf-next"' + (PF.busy || PF.offset + PF.runs.length >= PF.total ? ' disabled' : '') + '>下一页</button></div></div>';
+  return html;
+}
+function pfDetail() {
+  var html = '<button class="ghost pf-back" id="pf-back">← ' + esc(PF.task.name) + '</button>';
+  if (!PF.detail) return html + '<div class="card">读取运行详情…</div>';
+  var d = PF.detail, r = d.run;
+  html += '<article class="card"><div class="pf-section-head"><div><div class="dim">' + esc(pfKind(r.kind)) +
+    '</div><h2>' + esc(r.label) + '</h2></div>' + pfStatus(r.status) + '</div><div class="pf-run-meta">' +
+    '<span>开始 ' + esc(pfTime(r.started_at)) + '</span><span>结束 ' + esc(pfTime(r.finished_at)) + '</span>' +
+    '<span>步骤 ' + esc(r.step_count) + '</span><span>工件 ' + esc(r.artifact_count) + '</span></div>';
+  if (r.qualification) html += '<div class="pf-qualification">' +
+    '<b>接收端资格：</b>' + esc(r.qualification.eligible === null || r.qualification.eligible === undefined ? '未知' :
+      r.qualification.eligible ? '通过（限来源范围）' : '未获优化结论资格') +
+    ' <span class="dim">' + esc(r.qualification.scope || '') + '</span></div>';
+  if (r.summary && Object.keys(r.summary).length) html += '<h3>来源结论</h3><pre class="pf-summary-json">' + esc(JSON.stringify(r.summary, null, 2)) + '</pre>';
+  if (r.metrics && Object.keys(r.metrics).length) {
+    html += '<h3>来源指标</h3><div class="pf-table-wrap"><table><tbody>';
+    Object.keys(r.metrics).forEach(function (k) {
+      var v = r.metrics[k];
+      html += '<tr><th>' + esc(k) + '</th><td>' + val(typeof v === 'object' && v !== null ? JSON.stringify(v) : v) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  html += '<h3>步骤与阶段</h3><div class="pf-table-wrap"><table><thead><tr><th>#</th><th>阶段 / 记录类型</th><th>状态</th><th>摘要</th></tr></thead><tbody>';
+  (d.steps || []).forEach(function (s) {
+    html += '<tr><td>' + esc(s.index) + '</td><td>' + esc(s.name || s.type) + '</td><td>' + pfStatus(s.status) +
+      '</td><td><details><summary>' + esc(s.type) + ' · ' + esc(pfTime(s.at)) + '</summary><pre>' +
+      esc(JSON.stringify(s.summary, null, 2)) + '</pre></details></td></tr>';
+  });
+  html += '</tbody></table></div>';
+  if (!(d.steps || []).length) html += '<p class="unknown">原始记录没有可索引步骤。</p>';
+  if (d.step_total > (d.steps || []).length) html += '<p class="dim">此页展示前 ' + (d.steps || []).length + ' 条，共 ' + esc(d.step_total) +
+    ' 条。<button class="pf-link" id="pf-more-steps">加载后续步骤</button></p>';
+  html += '<h3>证据工件</h3><div class="pf-artifacts">';
+  (d.artifacts || []).forEach(function (a) {
+    html += '<div class="pf-artifact"><button class="pf-link" data-pf-artifact="' + esc(a.id) + '" data-pf-label="' + esc(a.label) + '">' +
+      esc(a.label) + '</button><span class="dim">' + esc(a.kind) + ' · ' + esc(kb(a.bytes)) + '</span>' +
+      '<code title="' + esc(a.sha256) + '">' + esc((a.sha256 || '').slice(0, 16)) + '…</code></div>';
+  });
+  html += '</div>';
+  if (!(d.artifacts || []).length) html += '<p class="unknown">没有注册的公开工件。</p>';
+  if ((d.diagnostics || []).length) html += '<h3>运行诊断</h3><pre>' + esc(JSON.stringify(d.diagnostics, null, 2)) + '</pre>';
+  html += '<details class="pf-source"><summary>来源与原件 SHA-256</summary><pre>' + esc(JSON.stringify(r.source, null, 2)) + '</pre></details></article>';
+  return html;
+}
+function pfOpenArtifact(id, label) {
+  el('filedrawer').classList.remove('hidden');
+  el('filedrawer-title').textContent = label;
+  el('filedrawer-body').innerHTML = '<span class="dim">读取注册工件…</span>';
+  fetch('/api/artifacts/' + encodeURIComponent(id), { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) throw new Error('工件读取失败 HTTP ' + r.status);
+    var type = r.headers.get('content-type') || '';
+    if (type.indexOf('image/') === 0) {
+      el('filedrawer-body').innerHTML = '<img alt="' + esc(label) + '" src="/api/artifacts/' + encodeURIComponent(id) + '">';
+      return;
+    }
+    return r.text().then(function (t) {
+      if (type.indexOf('json') !== -1) { try { t = JSON.stringify(JSON.parse(t), null, 2); } catch (_) {} }
+      el('filedrawer-body').innerHTML = '<pre>' + esc(t) + '</pre>';
+    });
+  }).catch(function (e) { el('filedrawer-body').innerHTML = '<p class="err">' + esc(e.message) + '</p>'; });
+}
+document.addEventListener('click', function (e) {
+  var t = e.target.closest ? e.target.closest('[data-pf-task],[data-pf-run],[data-pf-artifact],#pf-back,#pf-prev,#pf-next,#pf-more-steps') : null;
+  if (!t || t.disabled) return;
+  if (t.dataset.pfTask) { pfChooseTask(t.dataset.pfTask); return; }
+  if (t.dataset.pfRun) { pfChooseRun(t.dataset.pfRun); return; }
+  if (t.dataset.pfArtifact) { pfOpenArtifact(t.dataset.pfArtifact, t.dataset.pfLabel); return; }
+  if (t.id === 'pf-back') { PF.selected = null; PF.detail = null; pfRender(); return; }
+  if (t.id === 'pf-more-steps') {
+    var id = PF.selected, epoch = PF.epoch, offset = PF.detail.steps.length;
+    pfJSON('/api/runs/' + encodeURIComponent(id) + '/steps?offset=' + offset + '&limit=100').then(function (d) {
+      if (epoch === PF.epoch && id === PF.selected) {
+        PF.detail.steps = PF.detail.steps.concat(d.items); pfRender();
+      }
+    }).catch(function (e) { PF.error = e.message; pfRender(); });
+    return;
+  }
+  PF.offset = Math.max(0, PF.offset + (t.id === 'pf-next' ? 30 : -30));
+  var epoch = ++PF.epoch;
+  pfLoadRuns(epoch).then(pfRender).catch(function (e) { PF.error = e.message; pfRender(); });
+});
+document.addEventListener('input', function (e) {
+  if (e.target.id !== 'pf-search') return;
+  PF.search = e.target.value;
+  var start = e.target.selectionStart;
+  pfRender();
+  var field = el('pf-search'); field.focus(); field.setSelectionRange(start, start);
+});
+document.addEventListener('change', function (e) {
+  if (e.target.id !== 'pf-kind') return;
+  PF.kind = e.target.value; PF.offset = 0; PF.detail = null; PF.selected = null;
+  var epoch = ++PF.epoch;
+  pfLoadRuns(epoch).then(pfRender).catch(function (e) { PF.error = e.message; pfRender(); });
+});
 
 /* ── 事件 ─────────────────────────────────────────── */
 document.addEventListener('click', function (ev) {
@@ -717,6 +1089,7 @@ document.addEventListener('click', function (ev) {
   var navBtn = t.closest ? t.closest('#nav button') : null;
   if (navBtn) { showPage(navBtn.dataset.page); return; }
   if (t.id === 'refresh-now') { load(); return; }
+  if (t.id === 'pf-overview-tasks') { showPage('tasks'); return; }
   if (t.id === 'filedrawer-close') { el('filedrawer').classList.add('hidden'); return; }
 
   var file = t.closest ? t.closest('.file') : null;
@@ -730,6 +1103,7 @@ document.addEventListener('click', function (ev) {
     return;
   }
   var item = t.closest ? t.closest('.round-item') : null;
+  if (item && item.dataset.case) { SELECTED_CASE = item.dataset.case; renderCases(); return; }
   if (item) { SELECTED_ROUND = item.dataset.round; renderRounds(); return; }
 });
 

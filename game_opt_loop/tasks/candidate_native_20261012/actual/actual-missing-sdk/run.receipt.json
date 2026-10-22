@@ -1,0 +1,29 @@
+{
+  "argv": [
+    "/private/tmp/gol-native-review-after-0b6a45e5453d/game_opt_loop",
+    "candidate-prepare",
+    "run",
+    "--candidate",
+    "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/candidate.json",
+    "--phonefarm-bin",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/src/target/debug/phonefarm",
+    "--out",
+    "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session",
+    "--synthetic",
+    "--build",
+    "--ndk",
+    "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/sdk",
+    "--native-layer-input-root",
+    "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/knobs/gray/layer"
+  ],
+  "exit_code": 1,
+  "wall_seconds": 20.14797683386132,
+  "stdout": {
+    "sha256": "0f90f697f6faf30c4b03b06254b0f340fef226eed3eac94197e32c8067b032c2",
+    "bytes": 4587
+  },
+  "stderr": {
+    "sha256": "b67faf63a587bea4cd0043bb64c50bfab036d6a613b7793babf05342b8cc51ca",
+    "bytes": 54
+  }
+}

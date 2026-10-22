@@ -1,0 +1,26 @@
+#!/usr/bin/python3
+ROOT='/private/tmp/gol-native-actual-ugppao8k/actual-legacy4'
+BEHAVIOR='ok'
+KIND='readelf'
+
+import pathlib,sys,os,time,json
+r=pathlib.Path(ROOT)
+with (r/'tool-groups.jsonl').open('a') as f:f.write(json.dumps({'pid':os.getpid(),'pgid':os.getpgrp(),'tool':str(pathlib.Path(__file__).resolve()),'kind':KIND,'argv':sys.argv[1:]})+'\n')
+if KIND=='shader' and '--version' in sys.argv:
+ if BEHAVIOR=='hang':time.sleep(60)
+ if BEHAVIOR=='stderr':sys.stderr.write('x'*10000000);sys.stderr.flush();time.sleep(30)
+ if BEHAVIOR=='pf_mutation':(r/'caller-pf').write_bytes(b'caller changed after private snapshot')
+ if BEHAVIOR=='sdk_mutation':(r/'sdk/shader-tools/linux-x86_64/glslc').write_bytes(b'caller SDK changed after private snapshot')
+ if BEHAVIOR=='descendant':
+  p=os.fork()
+  if p==0:
+   os.close(1);os.close(2);time.sleep(60);(r/'late-writer').write_text('unsafe');os._exit(0)
+if '--version' in sys.argv:print('controlled synthetic SDK fixture v1');sys.exit(0)
+if KIND=='shader':
+ p=pathlib.Path(__file__).resolve()
+ while p.name!='ndk.snapshot':p=p.parent
+ pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_bytes((p/'copy-fixture.spv').read_bytes())
+elif KIND=='native':
+ d=bytearray(64);d[:6]=b'\x7fELF\x02\x01';d[16:20]=b'\x03\x00\xb7\x00';pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_bytes(d)
+elif KIND=='nm':print('000 T vkNegotiateLoaderLayerInterfaceVersion\n000 T vkGetInstanceProcAddr\n000 T vkGetDeviceProcAddr\n000 T vkEnumerateInstanceLayerProperties\n000 T vkEnumerateInstanceExtensionProperties')
+elif KIND=='readelf':print('0x1 (NEEDED) Shared library: [liblog.so]\n0x1 (NEEDED) Shared library: [libc.so]')

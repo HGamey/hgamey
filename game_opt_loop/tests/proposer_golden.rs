@@ -140,6 +140,7 @@ fn config(root: &Path, seed: u64) -> optimize::Config {
         ),
         screen: false,
         goal: Default::default(),
+        campaign: None,
     }
 }
 

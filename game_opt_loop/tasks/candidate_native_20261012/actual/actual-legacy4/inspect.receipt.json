@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "/private/tmp/gol-native-review-after-0b6a45e5453d/game_opt_loop",
+    "candidate-prepare",
+    "inspect",
+    "--session",
+    "/private/tmp/gol-native-actual-ugppao8k/actual-legacy4/session"
+  ],
+  "exit_code": 0,
+  "wall_seconds": 5.893037540838122,
+  "stdout": {
+    "sha256": "11ac217f944c64bee1b89d01ffbb3e380f9ad1024a1349f595bd14be8a7ecb2d",
+    "bytes": 30806
+  },
+  "stderr": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  }
+}

@@ -809,6 +809,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             },
             profiles_dir: opts.profiles_dir.clone(),
             game_profile: None,
+            campaign: None,
             goal: optimize::GoalHooks {
                 gen_offset: gen - 1,
                 prior_history: history.clone(),

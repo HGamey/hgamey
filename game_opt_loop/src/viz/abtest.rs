@@ -19,6 +19,7 @@ use std::path::Path;
 /// 一份 A/B 报告解析出来的东西。
 #[derive(Debug, Clone)]
 pub struct AbReport {
+    pub receiver_report: Value,
     pub goal: Option<String>,
     pub primary_metric: Option<String>,
     pub criteria: Vec<Criterion>,
@@ -64,10 +65,13 @@ impl AbReport {
         let knob = v.get("knob_arm");
 
         AbReport {
+            receiver_report: v.clone(),
             goal: str_at(v, "goal"),
             primary_metric: str_at(v, "primary_metric"),
             criteria: collect_criteria(v),
-            all_pass: summary.and_then(|s| s.get("all_pass")).and_then(Value::as_bool),
+            all_pass: summary
+                .and_then(|s| s.get("all_pass"))
+                .and_then(Value::as_bool),
             criteria_total: u64_at(summary, "criteria_total"),
             criteria_evaluated: u64_at(summary, "criteria_evaluated"),
             criteria_passed: u64_at(summary, "criteria_passed"),
@@ -102,6 +106,18 @@ impl AbReport {
             _ => true,
         };
         if all_pass {
+            let failed: Vec<&str> = self
+                .criteria
+                .iter()
+                .filter(|c| c.pass == Some(false))
+                .map(|c| c.name.as_str())
+                .collect();
+            if !failed.is_empty() {
+                return (
+                    RoundVerdict::Invalid,
+                    format!("汇总声明全部通过，但逐项未通过: {}", failed.join(" / ")),
+                );
+            }
             // `all_pass` 只说明"评过的都过了"。还有判据没评时, 结论就还没成立 ——
             // 这里若直接判合格, 会印出"4/5 条判据全部通过"这种自相矛盾的话,
             // 而且是往**好**的方向骗人, 比判错负更危险。
@@ -114,6 +130,20 @@ impl AbReport {
                         self.criteria_total.unwrap_or_default()
                             - self.criteria_evaluated.unwrap_or_default()
                     ),
+                );
+            }
+            let consistent = self
+                .criteria_total
+                .is_some_and(|n| n > 0 && n == self.criteria.len() as u64)
+                && self.criteria_passed == self.criteria_total
+                && self
+                    .criteria_evaluated
+                    .is_none_or(|n| Some(n) == self.criteria_total)
+                && self.criteria.iter().all(|c| c.pass == Some(true));
+            if !consistent {
+                return (
+                    RoundVerdict::Invalid,
+                    "汇总声明全部通过，但判据未齐全或计数不一致".into(),
                 );
             }
             return (
@@ -150,7 +180,8 @@ impl AbReport {
         if !evaluated_all {
             text.push_str(&format!(
                 " (另有 {} 条未评)",
-                self.criteria_total.unwrap_or_default() - self.criteria_evaluated.unwrap_or_default()
+                self.criteria_total.unwrap_or_default()
+                    - self.criteria_evaluated.unwrap_or_default()
             ));
         }
         (RoundVerdict::Eliminated, text)
@@ -276,7 +307,10 @@ fn runs_from_criteria(v: &Value) -> Vec<String> {
 }
 
 fn arm_dispersion(arm: Option<&Value>) -> Vec<(String, f64)> {
-    let Some(metrics) = arm.and_then(|a| a.get("metrics")).and_then(Value::as_object) else {
+    let Some(metrics) = arm
+        .and_then(|a| a.get("metrics"))
+        .and_then(Value::as_object)
+    else {
         return Vec::new();
     };
     metrics
@@ -286,7 +320,10 @@ fn arm_dispersion(arm: Option<&Value>) -> Vec<(String, f64)> {
 }
 
 fn arm_values(arm: Option<&Value>) -> Vec<(String, Vec<f64>)> {
-    let Some(metrics) = arm.and_then(|a| a.get("metrics")).and_then(Value::as_object) else {
+    let Some(metrics) = arm
+        .and_then(|a| a.get("metrics"))
+        .and_then(Value::as_object)
+    else {
         return Vec::new();
     };
     metrics
@@ -452,10 +489,18 @@ mod tests {
             "summary": {"criteria_total": 6, "criteria_passed": 6, "all_pass": true}
         });
         let r = AbReport::from_value(&v);
-        assert_eq!(r.baseline_runs, vec!["bw_ctrl1", "bw_ctrl2"], "轮次名要从判据里捞");
+        assert_eq!(
+            r.baseline_runs,
+            vec!["bw_ctrl1", "bw_ctrl2"],
+            "轮次名要从判据里捞"
+        );
         let arms = r.arms().expect("探针式也要出得来对比图数据");
         assert_eq!(arms.metric, "frame_p95");
-        assert_eq!(r.verdict().0, RoundVerdict::Qualified);
+        assert_eq!(
+            r.verdict().0,
+            RoundVerdict::Invalid,
+            "该形状夹具只有2条实际判据，不能证明6条齐全"
+        );
     }
 
     /// `all_pass` 只说明"评过的都过了"。还有判据没评时不能判合格 ——

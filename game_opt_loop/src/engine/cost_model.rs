@@ -276,6 +276,7 @@ pub fn evaluate(
     };
 
     let report = EvalReport {
+        extensions: Default::default(),
         candidate_id: candidate_id.to_string(),
         status,
         metrics: Metrics {

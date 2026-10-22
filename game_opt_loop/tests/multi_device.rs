@@ -125,6 +125,7 @@ fn config(root: &Path, extra: Vec<String>) -> optimize::Config {
         frame_audit: None,
         screen: false,
         goal: Default::default(),
+        campaign: None,
     }
 }
 

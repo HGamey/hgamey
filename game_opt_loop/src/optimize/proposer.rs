@@ -1107,7 +1107,7 @@ impl Proposer for Counting<'_> {
 
 /// 一代出方案的结果, 已过 harness 校验。`T` 是这一层原来用的候选类型,
 /// 层跑器拿到的东西与改造前同形 (`accepted` / `rejected` / `origin` / `llm_error`)。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Batch<T> {
     pub accepted: Vec<T>,
     /// `"<改动>: <原因>"`。

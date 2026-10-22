@@ -1,0 +1,33 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+     Running tests/candidate_native_cli.rs (target/debug/deps/candidate_native_cli-b4d5aa0a06253b59)
+
+running 8 tests
+test unsupported_sdk_symlink_and_wrong_layer_root_are_retained_negative ... ok
+test actual_helper_hang_and_full_stderr_are_unknown_and_bounded ... FAILED
+test actual_pf_descriptor_refuses_wrong_frozen_layer_expectation ... ok
+test actual_legacy_four_input_builder_remains_explicitly_compatible has been running for over 60 seconds
+test actual_native_descendant_closed_pipes_never_accepts_or_retries has been running for over 60 seconds
+test actual_supervised_fixture_binds_sdk_source_adapter_and_outer_groups has been running for over 60 seconds
+test caller_pf_and_sdk_mutation_cannot_replace_private_execution has been running for over 60 seconds
+test inspect_rejects_rehashed_native_receipt_and_changed_sdk has been running for over 60 seconds
+test actual_legacy_four_input_builder_remains_explicitly_compatible ... ok
+test actual_supervised_fixture_binds_sdk_source_adapter_and_outer_groups ... ok
+test actual_native_descendant_closed_pipes_never_accepts_or_retries ... ok
+test caller_pf_and_sdk_mutation_cannot_replace_private_execution ... ok
+test inspect_rejects_rehashed_native_receipt_and_changed_sdk ... ok
+
+failures:
+
+---- actual_helper_hang_and_full_stderr_are_unknown_and_bounded stdout ----
+
+thread 'actual_helper_hang_and_full_stderr_are_unknown_and_bounded' (91029964) panicked at tests/candidate_native_cli.rs:241:14:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    actual_helper_hang_and_full_stderr_are_unknown_and_bounded
+
+test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 110.52s
+
+error: test failed, to rerun pass `--test candidate_native_cli`

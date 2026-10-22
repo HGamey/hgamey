@@ -1,0 +1,335 @@
+{
+  "before-four-input": {
+    "executables": {
+      "gol": {
+        "sha256": "bf1a2290296b5dc04e7ad1759e1fc3aadc19b6801c383556e7325f2d9ffee482",
+        "bytes": 46847488
+      },
+      "pf": {
+        "sha256": "db1721a7779741367f974b27d57e398b1392cd08fb4c16972e95015a5fe65005",
+        "bytes": 32183608
+      },
+      "gol_source": "/private/tmp/gol-native-review-before-bf1a2290296b/game_opt_loop",
+      "pf_source": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-build-supervision/src/target/debug/phonefarm",
+      "scope": "controlled synthetic SDK; actual NDK/GPU/device/API calls zero"
+    },
+    "run_exit": 0,
+    "wall_seconds": 18.241972082760185,
+    "status": "PREPARED_OFFLINE_NATIVE",
+    "layer_contract": "preliminary_legacy4",
+    "layer_inputs": [
+      "VkLayer_refknobs.json",
+      "artifact_stats.h",
+      "copyprobe_copy.comp",
+      "vk_layer_refknobs.cpp"
+    ],
+    "proof_all_false": true,
+    "stages": [
+      {
+        "name": "compile",
+        "state": "COMPLETED",
+        "pid": 93113,
+        "group_absent": true,
+        "elapsed_ms": 2112,
+        "error": null
+      },
+      {
+        "name": "verify_compile",
+        "state": "COMPLETED",
+        "pid": 93160,
+        "group_absent": true,
+        "elapsed_ms": 1709,
+        "error": null
+      },
+      {
+        "name": "adapt",
+        "state": "COMPLETED",
+        "pid": 93166,
+        "group_absent": true,
+        "elapsed_ms": 401,
+        "error": null
+      },
+      {
+        "name": "verify_adaptation",
+        "state": "COMPLETED",
+        "pid": 93170,
+        "group_absent": true,
+        "elapsed_ms": 47,
+        "error": null
+      },
+      {
+        "name": "native_build",
+        "state": "COMPLETED",
+        "pid": 93175,
+        "group_absent": true,
+        "elapsed_ms": 1971,
+        "error": null
+      },
+      {
+        "name": "verify_native",
+        "state": "COMPLETED",
+        "pid": 93210,
+        "group_absent": true,
+        "elapsed_ms": 41,
+        "error": null
+      }
+    ],
+    "tool_records": 8,
+    "tool_groups_match_build_pid": true,
+    "tool_paths_private_sdk": true,
+    "late_writer_exists": false,
+    "rehashed_reused_accepted": true,
+    "tamper_inspect_exit": 0
+  },
+  "after-four-input": {
+    "executables": {
+      "gol": {
+        "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6",
+        "bytes": 46920192
+      },
+      "pf": {
+        "sha256": "db1721a7779741367f974b27d57e398b1392cd08fb4c16972e95015a5fe65005",
+        "bytes": 32183608
+      },
+      "gol_source": "/private/tmp/gol-native-review-after-0b6a45e5453d/game_opt_loop",
+      "pf_source": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-build-supervision/src/target/debug/phonefarm",
+      "scope": "controlled synthetic SDK; actual NDK/GPU/device/API calls zero"
+    },
+    "run_exit": 0,
+    "wall_seconds": 19.380440041888505,
+    "status": "PREPARED_OFFLINE_NATIVE",
+    "layer_contract": "legacy4",
+    "layer_inputs": [
+      "VkLayer_refknobs.json",
+      "artifact_stats.h",
+      "copyprobe_copy.comp",
+      "vk_layer_refknobs.cpp"
+    ],
+    "proof_all_false": true,
+    "stages": [
+      {
+        "name": "compile",
+        "state": "COMPLETED",
+        "pid": 95339,
+        "group_absent": true,
+        "elapsed_ms": 2296,
+        "error": null
+      },
+      {
+        "name": "verify_compile",
+        "state": "COMPLETED",
+        "pid": 95374,
+        "group_absent": true,
+        "elapsed_ms": 1889,
+        "error": null
+      },
+      {
+        "name": "adapt",
+        "state": "COMPLETED",
+        "pid": 95382,
+        "group_absent": true,
+        "elapsed_ms": 430,
+        "error": null
+      },
+      {
+        "name": "verify_adaptation",
+        "state": "COMPLETED",
+        "pid": 95388,
+        "group_absent": true,
+        "elapsed_ms": 39,
+        "error": null
+      },
+      {
+        "name": "native_build",
+        "state": "COMPLETED",
+        "pid": 95394,
+        "group_absent": true,
+        "elapsed_ms": 2003,
+        "error": null
+      },
+      {
+        "name": "verify_native",
+        "state": "COMPLETED",
+        "pid": 95415,
+        "group_absent": true,
+        "elapsed_ms": 61,
+        "error": null
+      }
+    ],
+    "tool_records": 8,
+    "tool_groups_match_build_pid": true,
+    "tool_paths_private_sdk": true,
+    "late_writer_exists": false,
+    "rehashed_reused_accepted": false,
+    "tamper_inspect_exit": 1
+  },
+  "after-five-input": {
+    "executables": {
+      "gol": {
+        "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6",
+        "bytes": 46920192
+      },
+      "pf": {
+        "sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de",
+        "bytes": 36280200
+      },
+      "gol_source": "/private/tmp/gol-native-review-after-0b6a45e5453d/game_opt_loop",
+      "pf_source": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/src/target/debug/phonefarm",
+      "scope": "controlled synthetic SDK; actual NDK/GPU/device/API calls zero"
+    },
+    "run_exit": 0,
+    "wall_seconds": 49.89987370930612,
+    "status": "PREPARED_OFFLINE_NATIVE",
+    "layer_contract": "ownership5",
+    "layer_inputs": [
+      "VkLayer_refknobs.json",
+      "artifact_stats.h",
+      "copyprobe_copy.comp",
+      "dispatch_ownership.h",
+      "vk_layer_refknobs.cpp"
+    ],
+    "proof_all_false": true,
+    "stages": [
+      {
+        "name": "compile",
+        "state": "COMPLETED",
+        "pid": 94717,
+        "group_absent": true,
+        "elapsed_ms": 11977,
+        "error": null
+      },
+      {
+        "name": "verify_compile",
+        "state": "COMPLETED",
+        "pid": 94773,
+        "group_absent": true,
+        "elapsed_ms": 2229,
+        "error": null
+      },
+      {
+        "name": "adapt",
+        "state": "COMPLETED",
+        "pid": 94832,
+        "group_absent": true,
+        "elapsed_ms": 351,
+        "error": null
+      },
+      {
+        "name": "verify_adaptation",
+        "state": "COMPLETED",
+        "pid": 94862,
+        "group_absent": true,
+        "elapsed_ms": 44,
+        "error": null
+      },
+      {
+        "name": "native_build",
+        "state": "COMPLETED",
+        "pid": 94884,
+        "group_absent": true,
+        "elapsed_ms": 2801,
+        "error": null
+      },
+      {
+        "name": "verify_native",
+        "state": "COMPLETED",
+        "pid": 94923,
+        "group_absent": true,
+        "elapsed_ms": 63,
+        "error": null
+      }
+    ],
+    "tool_records": 8,
+    "tool_groups_match_build_pid": true,
+    "tool_paths_private_sdk": true,
+    "late_writer_exists": false,
+    "rehashed_reused_accepted": false,
+    "tamper_inspect_exit": 1
+  },
+  "after-five-closed-pipes": {
+    "executables": {
+      "gol": {
+        "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6",
+        "bytes": 46920192
+      },
+      "pf": {
+        "sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de",
+        "bytes": 36280200
+      },
+      "gol_source": "/private/tmp/gol-native-review-after-0b6a45e5453d/game_opt_loop",
+      "pf_source": "/Users/kamico/work/GOSIM/HGamey/worktrees/phonefarm-integration/src/target/debug/phonefarm",
+      "scope": "controlled synthetic SDK; actual NDK/GPU/device/API calls zero"
+    },
+    "run_exit": 1,
+    "wall_seconds": 47.65919762477279,
+    "status": "UNKNOWN",
+    "layer_contract": "ownership5",
+    "layer_inputs": [
+      "VkLayer_refknobs.json",
+      "artifact_stats.h",
+      "copyprobe_copy.comp",
+      "dispatch_ownership.h",
+      "vk_layer_refknobs.cpp"
+    ],
+    "proof_all_false": true,
+    "stages": [
+      {
+        "name": "compile",
+        "state": "COMPLETED",
+        "pid": 94713,
+        "group_absent": true,
+        "elapsed_ms": 12618,
+        "error": null
+      },
+      {
+        "name": "verify_compile",
+        "state": "COMPLETED",
+        "pid": 94769,
+        "group_absent": true,
+        "elapsed_ms": 2189,
+        "error": null
+      },
+      {
+        "name": "adapt",
+        "state": "COMPLETED",
+        "pid": 94828,
+        "group_absent": true,
+        "elapsed_ms": 384,
+        "error": null
+      },
+      {
+        "name": "verify_adaptation",
+        "state": "COMPLETED",
+        "pid": 94858,
+        "group_absent": true,
+        "elapsed_ms": 43,
+        "error": null
+      },
+      {
+        "name": "native_build",
+        "state": "UNKNOWN",
+        "pid": 94879,
+        "group_absent": false,
+        "elapsed_ms": 2725,
+        "error": "execution unknown: launcher exited but controlled group remains live/unknown"
+      },
+      {
+        "name": "verify_native",
+        "state": "PENDING",
+        "pid": null,
+        "group_absent": null,
+        "elapsed_ms": null,
+        "error": null
+      }
+    ],
+    "tool_records": 8,
+    "tool_groups_match_build_pid": true,
+    "tool_paths_private_sdk": true,
+    "late_writer_exists": false,
+    "final_owned_group_observation": {
+      "owned_native_pgid": 94879,
+      "absent": true,
+      "errno": 3
+    }
+  }
+}

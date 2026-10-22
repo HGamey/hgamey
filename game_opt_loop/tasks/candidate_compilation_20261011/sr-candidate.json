@@ -1,0 +1,11 @@
+{
+  "id": "actual-naga-sr-interface",
+  "generation": 0,
+  "track": "sr",
+  "parent_id": null,
+  "budget_ms": 1.5,
+  "shader_source": "#version 450\nlayout(local_size_x = 16, local_size_y = 16) in;\n\nlayout(binding = 0, rgba8) uniform readonly image2D u_InputTexture;\nlayout(binding = 1, rgba8) uniform writeonly image2D u_OutputTexture;\n\nvoid main() {\n    ivec2 outPos = ivec2(gl_GlobalInvocationID.xy);\n    ivec2 outSize = imageSize(u_OutputTexture);\n    if (outPos.x >= outSize.x || outPos.y >= outSize.y) return;\n\n    vec2 inCoord = (vec2(outPos) + 0.5) / vec2(outSize);\n    ivec2 inPos = ivec2(inCoord * vec2(imageSize(u_InputTexture)));\n    vec4 color = imageLoad(u_InputTexture, inPos);\n\n    // [LLM \u53d8\u5f02\u63d2\u69fd: \u9ad8\u9891\u91cd\u6784\u4e0e\u8fb9\u7f18\u81ea\u9002\u5e94\u9510\u5316]\n\n    imageStore(u_OutputTexture, outPos, color);\n}\n",
+  "fingerprint": "8e728462102d85b7",
+  "origin": "baseline",
+  "notes": "Actual host compiler interface fixture; no GPU/game evidence"
+}

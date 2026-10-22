@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phonefarm_web/catalog@1",
+  "type": "object",
+  "required": ["schema", "snapshot", "tasks", "runs", "artifacts", "diagnostics", "dashboard"],
+  "properties": {
+    "schema": {"const": "phonefarm_web/catalog@1"},
+    "snapshot": {"$ref": "#/$defs/snapshot"},
+    "tasks": {"type": "array", "items": {"$ref": "#/$defs/task"}},
+    "runs": {"type": "array", "items": {"$ref": "#/$defs/run"}},
+    "artifacts": {"type": "object"},
+    "diagnostics": {"type": "array"},
+    "dashboard": {"type": ["object", "null"]},
+    "dashboard_source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "snapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "synchronized_at", "origin", "live_device"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^snapshot_[0-9a-f]{24}$"},
+        "synchronized_at": {"type": "string", "format": "date-time"},
+        "origin": {"const": "mac_filesystem_sync"}, "live_device": {"const": false}
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "name", "run_count", "latest_run_id", "updated_at", "kinds", "source_root"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^task_[0-9a-f]{24}$"},
+        "name": {"type": "string"}, "source_root": {"type": "string"},
+        "run_count": {"type": "integer", "minimum": 0},
+        "latest_run_id": {"type": ["string", "null"]}, "updated_at": {"type": ["string", "null"]},
+        "kinds": {"type": "array", "items": {"enum": ["ui_run", "confirmation", "model_pipeline", "experiment_phase"]}}
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": ["id", "task_id", "kind", "label", "status", "started_at", "finished_at", "updated_at", "qualification", "metrics", "steps", "artifacts", "source"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^run_[0-9a-f]{24}$"},
+        "task_id": {"type": "string", "pattern": "^task_[0-9a-f]{24}$"},
+        "kind": {"enum": ["ui_run", "confirmation", "model_pipeline", "experiment_phase"]},
+        "status": {"type": "string"}, "label": {"type": "string"},
+        "started_at": {"type": ["string", "null"]}, "finished_at": {"type": ["string", "null"]},
+        "updated_at": {"type": ["string", "null"]},
+        "qualification": {"type": "object", "required": ["eligible", "scope"],
+          "properties": {"eligible": {"type": ["boolean", "null"]}, "scope": {"type": "string"}}},
+        "metrics": {"type": "object", "additionalProperties": {"type": ["number", "null"]}},
+        "steps": {"type": "array"}, "artifacts": {"type": "array", "items": {"type": "string"}},
+        "source": {"type": "object", "required": ["schema", "sha256", "origin", "source_root", "source_mtime"]}
+      }
+    }
+  }
+}
