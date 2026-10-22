@@ -157,6 +157,15 @@
 .session-sample-input input { width: 110px; padding: 8px 10px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
 .session-sample-input .session-render-comm { flex: 1 1 180px; min-width: 0; }
 .session-sample-input .session-render-comm input { width: 100%; min-width: 0; }
+.session-finite-choice { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-size: 13px; color: var(--ink2); }
+.session-finite-choice input { margin: 0; accent-color: var(--blue-ink); }
+.session-finite-fields { border-top: 1px solid var(--grid); margin-top: 14px; padding-top: 2px; }
+.session-finite-fields > label { display: block; margin: 16px 0 6px; font-size: 12px; color: var(--ink2); }
+.session-finite-fields textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--card); color: var(--ink); font: 12px/1.6 ui-monospace, monospace; }
+.session-sample-example { font-size: 12px; color: var(--ink2); margin: 14px 0; }
+.session-sample-example summary { cursor: pointer; padding: 4px 0; }
+.session-sample-example pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#session-sample-frame { overflow-wrap: anywhere; }
 .session-sample-result .facts { margin-top: 14px; }
 .session-sample-limitations { margin: 14px 0; padding-left: 18px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .session-sample-artifacts { list-style: none; margin: 14px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; overflow-wrap: anywhere; }

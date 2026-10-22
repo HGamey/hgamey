@@ -309,7 +309,8 @@ class JobCLI(unittest.TestCase):
     def test_session_actions_use_original_json_once_and_status_only_reads(self):
         cli = self.load_cli()
         action = {"schema": "phonefarm/gray-control-action@1", "request_id": "capture-1", "session_id": "session-1",
-                  "actor_id": "agent", "control_epoch": 2, "action": "sample", "params": {"seconds": 30}}
+                  "actor_id": "agent", "control_epoch": 2, "action": "sample", "params": {"seconds": 3, "frame_id": "frame-1",
+                  "input": [{"action": "sleep", "ms": 6000}, {"action": "tap", "x": 80, "y": 100}, {"action": "sleep", "ms": 7000}]}}
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "action.json"
             source.write_text(json.dumps(action))

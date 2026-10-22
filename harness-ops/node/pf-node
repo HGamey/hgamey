@@ -36,6 +36,10 @@
 - 当前场景采样沿 session-action：动作 JSON 的 action="sample"、params={"seconds":30}（整数1–120）；
   需会话 allowed_actions 提供 sample，匹配 controller/epoch。accepted 不是采集完成，用原 ID 查询回执。
   params 可选 render_comm（1–64 UTF-8 字节、无控制字符）；不选线程仍收集原件，帧相关指标保持未知。
+  默认无输入；仅 action_capabilities.sample=2 的会话支持 params.input 数组/仅steps对象 + frame_id。
+  例如 seconds=3、input=[{"action":"sleep","ms":6000},{"action":"tap","x":80,"y":100},{"action":"sleep","ms":7000}]。
+  frame_id 须引用最新且30秒内、方向已知的原图；不自动截图。声明计划至少 seconds+10 秒、最多600秒。
+  输入自然完成、采集完成和设备恢复分别核对；结果未知仍用原请求 ID 查询，不自动重发。
   GPU submit proxy 不是显示 FPS；此批不计算每帧能耗。
 - 节点地址 PF_NODE_URL（缺省 https://mbp1.liyao.space，主力节点），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """

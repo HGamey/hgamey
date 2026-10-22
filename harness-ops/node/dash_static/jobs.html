@@ -123,8 +123,26 @@
             <p id="session-action-help" class="note"></p>
             <form id="session-sample-form" class="session-sample-form" aria-labelledby="session-sample-heading">
               <h4 id="session-sample-heading">当前场景采样</h4>
-              <p class="note">采集有限 trace 与环境数据；保持当前场景，不发送触控，不调整充电或频率。</p>
-              <div class="session-sample-input"><label for="session-sample-seconds">采样秒数<input id="session-sample-seconds" type="number" min="1" max="120" step="1" value="30" required></label><label for="session-render-comm" class="session-render-comm">渲染线程筛选（可选）<input id="session-render-comm" type="text" maxlength="64" spellcheck="false" autocomplete="off" placeholder="留空仍采集原始数据"></label><button id="session-sample-submit" class="ghost" type="submit" disabled>开始采样</button></div>
+              <p class="note">采集有限 trace 与环境数据，默认无输入；可明确提供有限触控步骤。采样不调整充电或频率。</p>
+              <div class="session-sample-input"><label for="session-sample-seconds">采样秒数<input id="session-sample-seconds" type="number" min="1" max="120" step="1" value="30" required></label><label for="session-render-comm" class="session-render-comm">渲染线程筛选（可选）<input id="session-render-comm" type="text" maxlength="64" spellcheck="false" autocomplete="off" placeholder="留空仍采集原始数据"></label></div>
+              <label class="session-finite-choice"><input id="session-sample-finite" type="checkbox" disabled> 执行有限输入</label>
+              <p id="session-finite-help" class="note"></p>
+              <div id="session-finite-fields" class="session-finite-fields" hidden>
+                <p id="session-sample-frame" class="note" role="status"></p>
+                <button id="session-sample-rebind" class="ghost" type="button">重新绑定当前原图</button>
+                <label for="session-sample-steps">有限步骤（JSON）</label>
+                <textarea id="session-sample-steps" rows="8" spellcheck="false" autocomplete="off" placeholder='[{"action":"sleep","ms":40000}]'></textarea>
+                <p id="session-sample-plan" class="note"></p>
+                <details class="session-sample-example"><summary>30 秒采样示例 · 声明计划 40 秒</summary>
+                  <p class="note">两次有限滑动；坐标必须按上方原图调整。填写示例只修改表单，不发送动作。</p>
+                  <pre class="command-box">[{"action":"sleep","ms":6000},
+ {"action":"repeat","count":2,"steps":[
+   {"action":"swipe","x":80,"y":100,"to_x":120,"to_y":100,"duration_ms":1000},
+   {"action":"sleep","ms":16000}]}]</pre>
+                  <button id="session-sample-example" class="ghost" type="button">填入 30 秒示例</button>
+                </details>
+              </div>
+              <div class="session-actions"><button id="session-sample-submit" class="ghost" type="submit" disabled>开始采样</button></div>
               <p id="session-sample-help" class="note" role="status"></p>
             </form>
             <details class="session-tools"><summary>接管与有限输入</summary>

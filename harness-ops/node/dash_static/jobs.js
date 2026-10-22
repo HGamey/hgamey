@@ -602,9 +602,9 @@
     }
   }
   let sessionState = null, sessionFresh = false, sessionRevision = 0, sessionBusy = false, sessionActionBusy = false;
-  let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0, sessionSampleReceipt = null;
+  let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0, sessionSampleReceipt = null, sampleFrame = null;
   const pendingActions = new Map();
-  const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 输入暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
+  const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 其他操作暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
   const ACTION_STATES = {accepted: '请求已记录，尚未执行完成。', started: '动作执行中。', completed: '此动作已完成；请核对结果与证据。', failed: '动作失败，请核对错误和恢复状态。', unknown: '执行结果未知，不要换 ID 重复输入。', not_executed: '请求未执行。'};
   function sessionKey(id = selected) { return `hgamey.session-actions.${id}`; }
   function sessionPending(id = selected) {
@@ -625,6 +625,9 @@
     ++sessionRevision; ++receiptRevision;
     sessionState = null; sessionFresh = false; sessionBusy = sessionActionBusy = false;
     sessionSampleReceipt = null;
+    sampleFrame = null;
+    $('session-sample-finite').checked = false;
+    $('session-sample-steps').value = '';
     sessionImageKey = '';
     if (sessionImageURL) URL.revokeObjectURL(sessionImageURL);
     sessionImageURL = null;
@@ -649,6 +652,40 @@
       (['take_control', 'stop'].includes(action) || controller?.actor_id === actor) &&
       (!pending.length || action === 'stop' && !pending.some(p => p.action === 'stop')) && /^[A-Za-z0-9_-]{1,64}$/.test(actor) && globalThis.crypto?.randomUUID);
   }
+  function sampleFrameFresh(frame) {
+    if (!frame || frame.rotation == null) return false;
+    const age = Date.now() - new Date(typeof frame.captured_at === 'number' ? frame.captured_at * 1000 : frame.captured_at).getTime();
+    return Number.isFinite(age) && age >= 0 && age <= 30000;
+  }
+  function sampleInputIssue() {
+    if (sessionState?.action_capabilities?.sample !== 2) return '当前会话仅支持无输入采样；请关闭有限输入选项。';
+    if (!sampleFrame) return '尚未绑定原图。请先明确采集原图，再绑定并核对坐标。';
+    const latest = sessionState?.latest_image;
+    if (!latest || ['request_id', 'width', 'height', 'rotation'].some(key => latest[key] !== sampleFrame[key])) return '当前原图已变化。核对步骤坐标后，请明确重新绑定；不会自动缩放坐标。';
+    if (!sampleFrameFresh(sampleFrame)) return '绑定原图已过期或方向未知。请明确采集新原图，再重新绑定；要求 30 秒内的原图。';
+    return '';
+  }
+  function bindSampleFrame() {
+    if (sessionFresh && sessionState?.action_capabilities?.sample === 2 && sampleFrameFresh(sessionState.latest_image)) sampleFrame = {...sessionState.latest_image};
+    renderSessionControls();
+  }
+  function renderSampleInput() {
+    const finite = $('session-sample-finite').checked, capable = sessionState?.action_capabilities?.sample === 2;
+    const measuring = sessionState?.phase === 'measuring';
+    const paused = sessionActionBusy || measuring;
+    $('session-sample-finite').disabled = paused || (!capable && !finite);
+    $('session-finite-fields').hidden = !finite;
+    $('session-sample-steps').disabled = paused;
+    $('session-sample-example').disabled = paused;
+    $('session-sample-rebind').disabled = paused || !sessionFresh || !capable || !sampleFrameFresh(sessionState?.latest_image);
+    message('session-finite-help', capable ? '默认无输入。开启后只执行明确填写的有限步骤；不会自动采图或还原游戏视角。' : '此会话未提供有限输入采样能力；仍可使用无输入采样。');
+    const issue = finite && !measuring ? sampleInputIssue() : '';
+    const frameText = sampleFrame ? `绑定原图 ${sampleFrame.request_id} · ${sampleFrame.width} × ${sampleFrame.height} · 方向 ${sampleFrame.rotation} · ${time(sampleFrame.captured_at)}。` : '';
+    message('session-sample-frame', `${frameText}${measuring ? '本次计划使用此原图；输入几何核验记录见原件。' : issue || '输入前 owner 会再次核验原图新鲜度、尺寸、方向及坐标。'}`, !!issue);
+    const seconds = Number($('session-sample-seconds').value);
+    message('session-sample-plan', `支持 sleep、tap、swipe、repeat。声明等待与滑动总时长须至少 ${Number.isInteger(seconds) && seconds >= 1 && seconds <= 120 ? seconds + 10 : '采样秒数 + 10'} 秒、最多 600 秒；不会自动补等待。实际耗时另记，完整计划由 owner 校验。`);
+    return !issue;
+  }
   function renderSessionControls() {
     $('session-panel').hidden = !currentJob || currentJob.bin !== 'phonefarm';
     $('session-refresh').disabled = !currentJob || !sessionSupported() || sessionBusy;
@@ -666,13 +703,14 @@
     $('session-query').disabled = !currentJob || !sessionSupported() || sessionActionBusy;
     const measuring = sessionState?.phase === 'measuring';
     const samplePosting = sessionActionBusy && $('session-panel').dataset.pendingAction === 'sample';
-    $('session-sample-submit').disabled = !sessionAllowed('sample');
+    const inputReady = renderSampleInput();
+    $('session-sample-submit').disabled = !sessionAllowed('sample') || !inputReady;
     $('session-sample-submit').setAttribute('aria-busy', String(samplePosting));
     $('session-sample-submit').textContent = samplePosting ? '投递中…' : measuring ? '采样进行中' : '开始采样';
     $('session-sample-seconds').disabled = measuring || sessionActionBusy;
     $('session-render-comm').disabled = measuring || sessionActionBusy;
     message('session-sample-help', !sessionState?.allowed_actions?.includes('sample') && !measuring ? '当前会话未提供采样动作；旧节点或模式保持不可用。' :
-      measuring ? '正在测量，显示的是先前采集的画面。截图、输入及灰层动作暂停；可请求停止，当前有界采样结束后收尾。' :
+      measuring ? '正在测量，显示的是先前采集的画面。其他截图、输入及灰层动作暂停；可请求停止，当前有界计划结束后收尾。' :
       '1–120 秒，默认 30 秒。线程筛选留空仍采原始数据，帧相关指标保持未知。提交只表示入队，请按原请求 ID 查询结果。');
     const pending = sessionPending();
     message('session-pending', pending.length ? `未决请求：${pending.map(v => v.request_id).join('、')}。先查询回执；不会自动重发输入。` : '回执读取不触发设备动作。accepted 仅表示入队，completed 才表示该动作结束。');
@@ -681,7 +719,7 @@
       sessionState?.phase === 'closed' ? '会话已关闭。请核对限定范围恢复报告，刷新任务后从现有入口核查并解除资源保留。' :
       !sessionState?.live_owner ? '会话 owner 已不存活；不能继续输入，请核对恢复上下文。' :
       !sessionState.accepting ? '会话已停止接收新动作。请核对恢复记录；关闭后刷新任务以处理资源保留。' :
-      sessionState.phase === 'measuring' ? '测量中不执行截图、输入或其他设备动作。旧图与原采集时间保留；停止请求会在安全边界处理。' :
+      sessionState.phase === 'measuring' ? '测量中只执行本次计划，暂停其他截图、输入及灰层动作。旧图与原采集时间保留；停止请求会在安全边界处理。' :
       pending.length ? '先核对未决请求。仍可请求停止并恢复；结果未知的输入不会自动重放。' :
       sessionState.controller?.actor_id !== $('session-actor').value.trim() ? '当前输入属于其他控制者。请先申请接管，再执行截图、输入或灰层动作。' :
       '所有动作由原会话 owner 串行执行；仅开放服务报告可用的动作。');
@@ -759,7 +797,10 @@
     facts('session-sample-info', [['请求 ID', receipt.request_id || result.request_id || '未知'], ['请求时长', Number.isInteger(result.requested_seconds) ? `${result.requested_seconds} 秒` : '未知'],
       ['GPU submit proxy', `${metric(metrics.gpu_submit_fps)}${Number.isFinite(metrics.gpu_submit_fps) ? ' /s' : ''}`],
       ['平均功率', `${metric(metrics.power_w_mean)}${Number.isFinite(metrics.power_w_mean) ? ' W' : ''}`],
-      ['来源', fromCache ? `最近采样缓存 · ${result.path || '报告路径未记录'}` : '当前查询的动作回执']]);
+      ['来源', fromCache ? `最近采样缓存 · ${result.path || '报告路径未记录'}` : '当前查询的动作回执'],
+      ...(result.input_kind ? [['输入方式', ({idle: '无输入', finite: '显式有限输入'})[result.input_kind] || '未知'],
+        ['声明计划时长', Number.isFinite(result.planned_input_ms) ? `${result.planned_input_ms / 1000} 秒（非实测耗时）` : '未知'],
+        ['输入参考原图', result.initial_frame ? `${text(result.initial_frame.request_id)} · ${text(result.initial_frame.width)} × ${text(result.initial_frame.height)} · 方向 ${text(result.initial_frame.rotation)}` : '无']] : [])]);
     const limitations = Array.isArray(result.limitations) ? result.limitations.filter(v => typeof v === 'string') : [];
     $('session-sample-limitations').replaceChildren(...limitations.map(value => el('li', value)));
     $('session-sample-limitations').hidden = !limitations.length;
@@ -1051,6 +1092,18 @@
   $('session-refresh').addEventListener('click', loadSession);
   $('session-receipt-form').addEventListener('submit', event => { event.preventDefault(); querySessionReceipt(); });
   $('session-input-kind').addEventListener('change', renderSessionControls);
+  $('session-sample-finite').addEventListener('change', () => {
+    if ($('session-sample-finite').checked && !sampleFrame) bindSampleFrame();
+    else renderSessionControls();
+  });
+  $('session-sample-rebind').addEventListener('click', bindSampleFrame);
+  $('session-sample-seconds').addEventListener('input', renderSampleInput);
+  $('session-sample-example').addEventListener('click', () => {
+    $('session-sample-seconds').value = '30';
+    $('session-sample-steps').value = JSON.stringify([{action: 'sleep', ms: 6000}, {action: 'repeat', count: 2, steps: [
+      {action: 'swipe', x: 80, y: 100, to_x: 120, to_y: 100, duration_ms: 1000}, {action: 'sleep', ms: 16000}]}], null, 2);
+    renderSampleInput();
+  });
   $('session-sample-form').addEventListener('submit', event => {
     event.preventDefault();
     const seconds = Number($('session-sample-seconds').value);
@@ -1061,7 +1114,18 @@
     if (renderComm && (new TextEncoder().encode(renderComm).length > 64 || /\p{Cc}/u.test(renderComm))) {
       message('session-sample-help', '线程筛选最多 64 个 UTF-8 字节，不能含控制字符；未发送请求。', true); return;
     }
-    sendSessionAction('sample', {seconds, ...(renderComm ? {render_comm: renderComm} : {})});
+    const params = {seconds, ...(renderComm ? {render_comm: renderComm} : {})};
+    if ($('session-sample-finite').checked) {
+      const issue = sampleInputIssue();
+      if (issue) { renderSessionControls(); message('session-sample-help', `${issue} 未发送请求。`, true); return; }
+      try {
+        const input = JSON.parse($('session-sample-steps').value);
+        if (!Array.isArray(input) && !(input && typeof input === 'object' && Object.keys(input).length === 1 && Array.isArray(input.steps))) throw new Error();
+        params.input = input;
+        params.frame_id = sampleFrame.request_id;
+      } catch (_) { message('session-sample-help', '有限步骤须为 JSON 数组或仅含 steps 数组的对象；未发送请求。', true); return; }
+    }
+    sendSessionAction('sample', params);
   });
   document.querySelectorAll('[data-session-action]').forEach(button => button.addEventListener('click', () => {
     const action = button.dataset.sessionAction;
