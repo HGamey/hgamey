@@ -72,6 +72,12 @@ pub fn resolve_root(phonefarm: &Path, explicit: Option<&Path>) -> Result<PathBuf
     let status: serde_json::Value = serde_json::from_slice(&output.stdout)
         .context("phonefarm lease status 没有返回有效 JSON")?;
     let storage = &status["storage"];
+    if storage["schema_version"].as_u64() != Some(1) {
+        bail!(
+            "phonefarm storage.schema_version 不支持: {} (需要版本 1)",
+            storage["schema_version"]
+        );
+    }
     if storage["readiness"].as_str() != Some("ready") {
         bail!(
             "phonefarm 锁存储未就绪或版本不支持 storage.readiness: {}；请先升级或完成存储迁移",
@@ -308,11 +314,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolve_root(&phonefarm, None).unwrap(), root);
+        for schema_version in [serde_json::Value::Null, serde_json::json!(2)] {
+            std::fs::write(
+                &response,
+                serde_json::json!({"storage": {
+                    "schema_version": schema_version, "readiness": "ready", "devlock_dir": root
+                }})
+                .to_string(),
+            )
+            .unwrap();
+            assert!(resolve_root(&phonefarm, None)
+                .unwrap_err()
+                .to_string()
+                .contains("schema_version"));
+        }
         for readiness in ["unavailable", "migration_required"] {
             std::fs::write(
                 &response,
                 serde_json::json!({"storage": {
-                    "readiness": readiness, "devlock_dir": root
+                    "schema_version": 1, "readiness": readiness, "devlock_dir": root
                 }})
                 .to_string(),
             )
