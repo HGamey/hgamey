@@ -186,7 +186,7 @@
     const blocked = currentJob.queue?.state === 'blocked';
     $('queue-release-panel').hidden = !blocked;
     const releaseBusy = releasing.has(currentJob.id);
-    const leaseBlocked = currentJob.device_access === 'write' && leaseSnapshot?.status !== 'clear';
+    const leaseBlocked = ['write', 'recovery'].includes(currentJob.device_access) && leaseSnapshot?.status !== 'clear';
     $('recovery-prepare-panel').hidden = !blocked;
     $('prepare-recovery').disabled = !blocked || !access?.steer || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
     message('recovery-prepare-help', !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : '只预填恢复目标和模式；请由人或 Agent 填写实际恢复命令，执行后仍需核查并解除资源保留。');
@@ -194,7 +194,7 @@
     $('queue-release-submit').disabled = !blocked || !access?.steer || accessBusy || releaseBusy || leaseBlocked || !$('queue-release-note').value.trim();
     $('queue-release-submit').setAttribute('aria-busy', String(releaseBusy));
     $('queue-release-submit').textContent = releaseBusy ? '提交中…' : '确认解除资源保留';
-    message('queue-release-help', !access?.steer || accessBusy ? '请先解锁任务操作权限。' : leaseBlocked ? '设备写入任务的实际 lease 尚未确认 clear。请先执行恢复、核查设备屏障，再刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。');
+    message('queue-release-help', !access?.steer || accessBusy ? '请先解锁任务操作权限。' : leaseBlocked ? '设备写入或恢复任务的实际 lease 尚未确认 clear。请先执行恢复、核查设备屏障，再刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。');
     const released = releaseReceipts.get(currentJob.id);
     $('queue-release-result').hidden = !released;
     if (released) message('queue-release-result', released.message, released.error);
