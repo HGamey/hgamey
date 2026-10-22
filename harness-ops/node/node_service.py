@@ -36,6 +36,7 @@ import job_runtime
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
 from node_lease import LeaseState, device_access, job_lease_receipts
+from node_session import session_call, SessionError, MAX_REQUEST
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -159,9 +160,17 @@ def _pid_alive(pid):
 def _job_lock_args(argv, owner):
     """An explicit CLI label must not turn separate jobs into nested owners."""
     result, i = [], 0
+    values = ({"--serial", "--so", "--mode", "--package", "--out", "--max-seconds", "--actor-id",
+               "--evidence-origin", "--request-id", "--request", "--session"} if argv[:1] == ["gray-layer"] else
+              {"--serial", "--out", "--pairs", "--mode", "--evidence-origin"} if argv[:1] == ["gray-ab"] else set())
     while i < len(argv):
         arg = argv[i]
-        if arg == "--lock-label":
+        if arg in values:
+            if i + 1 == len(argv):
+                raise ValueError(f"{arg} requires a value")
+            result.extend(argv[i:i + 2])
+            i += 2
+        elif arg == "--lock-label":
             if i + 1 == len(argv):
                 raise ValueError("--lock-label 缺少值；显示名请用任务 label")
             result.extend([arg, owner])
@@ -439,6 +448,9 @@ class Jobs:
         job_runtime.request_cancel(self._read_root, jid, force=force)
         return {"accepted": True, "job": self.status(jid)}
 
+    def session(self, jid, *, request_id=None, action=None):
+        return session_call(self, jid, request_id=request_id, action=action)
+
     def release_queue(self, jid, note):
         if not isinstance(note, str) or not note.strip() or len(note) > 2000:
             raise ValueError("release requires a nonempty review note (at most 2000 characters)")
@@ -570,8 +582,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "leases":
                     jobs._read_meta(parts[1])
                     return self._send(200, job_lease_receipts(jobs._read_root, parts[1]))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "session":
+                    return self._send(200, jobs.session(parts[1]))
+                if len(parts) == 5 and parts[0] == "jobs" and parts[2:4] == ["session", "actions"]:
+                    return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
+            except SessionError as e:
+                return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
             except ArtifactChanged as e:
@@ -659,6 +677,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["session", "actions"]:
+                    if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
+                        self.close_connection = True
+                        return self._send(413, {"error": "session action exceeds 64 KiB"})
+                    if "application/json" not in self.headers.get("Content-Type", ""):
+                        return self._send(400, {"error": "session action requires application/json"})
+                    action = json.loads(self._body())
+                    if not isinstance(action, dict):
+                        raise ValueError("session action must be a JSON object")
+                    return self._send(200, jobs.session(parts[1], action=action))
                 body = self._body()
                 if parts == ["mcp"]:
                     return self._mcp(body)
@@ -683,6 +711,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     if not isinstance(data, dict):
                         raise ValueError("release body must be an object")
                     return self._send(200, jobs.release_queue(parts[1], data.get("note")))
+            except SessionError as e:
+                return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
             except RequestConflict as e:

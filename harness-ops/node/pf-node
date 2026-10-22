@@ -10,6 +10,8 @@
   pf-node request <request_id>               # 断网后找回同一次提交的任务
   pf-node queue                              # 只读持久队列快照
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
+  pf-node session-status <id> [--request-id ID] # 只读灰层会话或动作回执
+  pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
   pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
@@ -106,7 +108,7 @@ def pack(argv):
 
 
 def valid_request_id(value):
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value):
         sys.exit("pf-node: request_id 须为 1–128 位，以字母或数字开头，只含字母、数字、点、下划线、冒号和连字符")
     return value
 
@@ -312,6 +314,58 @@ def fetch_out(jid, dest, rel=None):
         os.remove(got)
 
 
+def control_request_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+        sys.exit("pf-node: 会话请求 ID 仅允许 1–64 位 ASCII 字母、数字、下划线和连字符")
+    return value
+
+
+def session_command(args):
+    if len(args) < 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
+        sys.exit("用法: pf-node session-status <任务 id> [--request-id ID] 或 session-action <任务 id> --request FILE|-")
+    path = f"/jobs/{args[1]}/session"
+    if args[0] == "session-status":
+        if len(args) == 4 and args[2] == "--request-id":
+            path += "/actions/" + urllib.parse.quote(control_request_id(args[3]), safe="")
+        elif len(args) != 2:
+            sys.exit("用法: pf-node session-status <任务 id> [--request-id ID]")
+        print(call("GET", path, attempts=1).decode())
+        return
+    if len(args) != 4 or args[2] != "--request":
+        sys.exit("用法: pf-node session-action <任务 id> --request FILE|-")
+    try:
+        if args[3] == "-":
+            body = sys.stdin.buffer.read((64 << 10) + 1)
+        else:
+            with open(args[3], "rb") as source:
+                body = source.read((64 << 10) + 1)
+        if len(body) > 64 << 10:
+            sys.exit("pf-node: 动作请求不能超过 64 KiB；未发送")
+        value = json.loads(body)
+        if not isinstance(value, dict) or value.get("schema") != "phonefarm/gray-control-action@1":
+            sys.exit("pf-node: 需要完整 phonefarm/gray-control-action@1 请求；未发送")
+        request_id = control_request_id(value.get("request_id", ""))
+    except (OSError, ValueError) as error:
+        sys.exit(f"pf-node: 无法读取动作 JSON：{error}")
+    node = json.loads(call("GET", "/node", attempts=1))
+    if "jobs.session-control-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 jobs.session-control-v1，请升级；未发送动作")
+    print(f"pf-node: request_id={request_id}；仅投递一次，accepted 不是执行完成。", file=sys.stderr, flush=True)
+    lookup = f"pf-node session-status {args[1]} --request-id {request_id}"
+    try:
+        result = json.loads(call("POST", path + "/actions", body,
+                                 {"Content-Type": "application/json"}, attempts=1, timeout=15, raise_4xx=True))
+        if result.get("request_id") != request_id or result.get("schema") != "phonefarm/gray-control-action-result@1":
+            raise ValueError("动作回执不匹配")
+    except ClientError as error:
+        sys.exit(f"pf-node: 动作被拒绝：{error}；先用 {lookup} 核对，不换 ID 盲重发。")
+    except (SystemExit, ValueError, AttributeError, KeyboardInterrupt) as error:
+        print(f"pf-node: 动作结果未确认：{error}；请用 {lookup} 查询。不要换 ID 重复输入。", file=sys.stderr)
+        raise SystemExit(130 if isinstance(error, KeyboardInterrupt) else 1)
+    print(json.dumps(result, ensure_ascii=False))
+    print(f"pf-node: status={result.get('status')}；用 {lookup} 读取最新回执。", file=sys.stderr)
+
+
 def main():
     args, outdir, detach, label, exe = sys.argv[1:], None, False, os.environ.get("DEVLOCK_LABEL"), None
     request_id, resources = None, []
@@ -361,6 +415,8 @@ def main():
             sys.exit("pf-node: 恢复任务继承父任务资源，不能同时使用 --resource")
     elif recovery_for is not None:
         sys.exit("pf-node: --recovery-for 必须与 --device-access recovery 一起使用")
+    if args[0] in ("session-status", "session-action"):
+        return session_command(args)
     if args[0] == "request":
         if len(args) != 2:
             sys.exit("用法: pf-node request <request_id>")

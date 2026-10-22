@@ -306,6 +306,38 @@ class JobCLI(unittest.TestCase):
         self.assertIn("独立 worker", stderr.getvalue())
         self.assertIn("不是任务终态", stderr.getvalue())
 
+    def test_session_actions_use_original_json_once_and_status_only_reads(self):
+        cli = self.load_cli()
+        action = {"schema": "phonefarm/gray-control-action@1", "request_id": "capture-1", "session_id": "session-1",
+                  "actor_id": "agent", "control_epoch": 2, "action": "capture", "params": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "action.json"
+            source.write_text(json.dumps(action))
+            response = {"schema": "phonefarm/gray-control-action-result@1", "request_id": "capture-1", "status": "accepted"}
+            call = mock.Mock(side_effect=[json.dumps({"capabilities": ["jobs.session-control-v1"]}).encode(),
+                                          json.dumps(response).encode()])
+            with mock.patch.dict(cli["session_command"].__globals__, call=call), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                cli["session_command"](["session-action", JOB, "--request", str(source)])
+            posted = call.call_args_list[1]
+            self.assertEqual(posted.args[:2], ("POST", f"/jobs/{JOB}/session/actions"))
+            self.assertEqual(json.loads(posted.args[2]), action)
+            self.assertEqual(posted.kwargs["attempts"], 1)
+            call = mock.Mock(return_value=b'{"capabilities":[]}')
+            with mock.patch.dict(cli["session_command"].__globals__, call=call), self.assertRaises(SystemExit):
+                cli["session_command"](["session-action", JOB, "--request", str(source)])
+            self.assertEqual(call.call_count, 1)
+            call = mock.Mock(side_effect=[b'{"capabilities":["jobs.session-control-v1"]}', SystemExit("timeout")])
+            stderr = io.StringIO()
+            with mock.patch.dict(cli["session_command"].__globals__, call=call), contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
+                cli["session_command"](["session-action", JOB, "--request", str(source)])
+            self.assertEqual(call.call_count, 2)
+            self.assertIn(f"session-status {JOB} --request-id capture-1", stderr.getvalue())
+        call = mock.Mock(return_value=json.dumps(response).encode())
+        with mock.patch.dict(cli["session_command"].__globals__, call=call), contextlib.redirect_stdout(io.StringIO()):
+            cli["session_command"](["session-status", JOB, "--request-id", "capture-1"])
+        self.assertEqual(call.call_args.args, ("GET", f"/jobs/{JOB}/session/actions/capture-1"))
+
     def test_terminal_unknown_exit_is_not_success_and_legacy_exit_is_preserved(self):
         cli = self.load_cli()
         cases = [({"state": "finished", "phase": "interrupted", "exit": -1,

@@ -35,6 +35,7 @@ from urllib.parse import parse_qs
 
 import dash_goals
 from job_queue import RequestConflict
+from node_session import SessionError, MAX_REQUEST
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
                         FLEET_EVERY_HELD_S, FREE_GRACE_S, SHOT_EVERY_S)
 
@@ -455,6 +456,10 @@ class Dash:
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:
+            if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["session", "actions"]:
+                if len(body) > MAX_REQUEST:
+                    return self._send(h, 413, {"error": "session action exceeds 64 KiB"})
+                return self._send(h, 200, self.job_service.session(sub[2], action=data))
             if sub == ["api", "jobs"]:
                 return self._send(h, 200, self.job_service.start(data, b"", request_id=h.headers.get("X-Request-ID")))
             if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "queue-release":
@@ -476,6 +481,8 @@ class Dash:
                 r = self.goals.confirm(str(data.get("id", "")), data.get("goal_md"), ip)
             else:
                 return self._send(h, 404, {"error": "not found"})
+        except SessionError as e:
+            return self._send(h, e.status, e.payload)
         except (KeyError, FileNotFoundError):
             return self._send(h, 404, {"error": "没有这个任务或目标运行"})
         except RequestConflict as e:

@@ -123,6 +123,7 @@
       !access.steer_configured ? '本节点尚未配置掌舵密码，任务操作保持只读。' : access.steer ? '已解锁，可提交任务、停止请求和资源释放确认。' : '当前为只读模式，解锁后可提交任务操作。'), !!accessError);
     renderControls();
     renderSubmission();
+    renderSessionControls();
   }
   async function loadAccess() {
     const revision = ++accessRevision;
@@ -470,7 +471,7 @@
       $('node-updated').textContent = readTime();
     } catch (error) {
       if (revision === nodeRevision) message('node-message', errorText(error), true);
-    } finally { if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); } }
+    } finally { if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); renderSessionControls(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -544,6 +545,7 @@
     selected = id;
     currentJob = null;
     resetJobLeases();
+    resetSession();
     const revision = ++detailRevision;
     ++artifactRevision;
     ++metadataRevision;
@@ -567,6 +569,7 @@
       if (revision !== detailRevision) return;
       currentJob = job;
       updateJobLeaseAccess();
+      renderSessionControls();
       const [label, kind] = status(job);
       $('job-title').textContent = job.label || job.bin || '未命名任务';
       $('job-state').textContent = label;
@@ -584,7 +587,7 @@
       $('detail-placeholder').hidden = true;
       message('detail-message', '');
       resetLog();
-      await Promise.all([loadArtifacts(), loadLog()]);
+      await Promise.all([loadArtifacts(), loadLog(), job.bin === 'phonefarm' && job.argv?.[0] === 'gray-layer' && job.argv?.[1] === 'session' ? loadSession() : null]);
     } catch (error) {
       if (revision === detailRevision) {
         const receipt = cancelReceipts.get(id);
@@ -598,6 +601,176 @@
       }
     }
   }
+  let sessionState = null, sessionFresh = false, sessionRevision = 0, sessionBusy = false, sessionActionBusy = false;
+  let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0;
+  const pendingActions = new Map();
+  const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 输入暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
+  const ACTION_STATES = {accepted: '请求已记录，尚未执行完成。', started: '动作执行中。', completed: '此动作已完成；请核对结果与证据。', failed: '动作失败，请核对错误和恢复状态。', unknown: '执行结果未知，不要换 ID 重复输入。', not_executed: '请求未执行。'};
+  function sessionKey(id = selected) { return `hgamey.session-actions.${id}`; }
+  function sessionPending(id = selected) {
+    if (!pendingActions.has(id)) {
+      let saved = [];
+      try { saved = JSON.parse(sessionStorage.getItem(sessionKey(id)) || '[]'); } catch (_) { /* Query by ID remains available. */ }
+      pendingActions.set(id, Array.isArray(saved) ? saved.filter(v => v && typeof v.request_id === 'string').slice(0, 16) : []);
+    }
+    return pendingActions.get(id);
+  }
+  function keepAction(id, request, receipt) {
+    let pending = sessionPending(id).filter(item => item.request_id !== request.request_id);
+    if (!receipt || ['accepted', 'started', 'unknown'].includes(receipt.status)) pending.push({request_id: request.request_id, action: request.action || 'unknown'});
+    pendingActions.set(id, pending);
+    try { if (pending.length) sessionStorage.setItem(sessionKey(id), JSON.stringify(pending)); else sessionStorage.removeItem(sessionKey(id)); } catch (_) { /* Request IDs remain visible in this page. */ }
+  }
+  function resetSession() {
+    ++sessionRevision; ++receiptRevision;
+    sessionState = null; sessionFresh = false; sessionBusy = sessionActionBusy = false;
+    sessionImageKey = '';
+    if (sessionImageURL) URL.revokeObjectURL(sessionImageURL);
+    sessionImageURL = null;
+    $('session-image').removeAttribute('src');
+    $('session-frame').hidden = true;
+    $('session-content').hidden = true;
+    $('session-receipt-detail').hidden = true;
+    message('session-receipt-message', '');
+    message('session-message', '只读取宿主记录，不会采集新画面。');
+    $('session-request-id').value = sessionPending()[0]?.request_id || '';
+    renderSessionControls();
+  }
+  function sessionSupported() { return !!nodeInfo?.capabilities?.includes('jobs.session-control-v1'); }
+  function sessionAllowed(action) {
+    const controller = sessionState?.controller;
+    const actor = $('session-actor').value.trim();
+    const pending = sessionPending();
+    return !!(sessionFresh && !sessionBusy && !sessionActionBusy && sessionSupported() && access?.steer && !accessBusy &&
+      sessionState?.live_owner && sessionState.accepting && sessionState.allowed_actions?.includes(action) &&
+      (['take_control', 'stop'].includes(action) || controller?.actor_id === actor) &&
+      (!pending.length || action === 'stop' && !pending.some(p => p.action === 'stop')) && /^[A-Za-z0-9_-]{1,64}$/.test(actor) && globalThis.crypto?.randomUUID);
+  }
+  function renderSessionControls() {
+    $('session-panel').hidden = !currentJob || currentJob.bin !== 'phonefarm';
+    $('session-refresh').disabled = !currentJob || !sessionSupported() || sessionBusy;
+    $('session-refresh').setAttribute('aria-busy', String(sessionBusy));
+    $('session-refresh').textContent = sessionBusy ? '读取中…' : sessionState ? '刷新已存状态' : '读取会话状态';
+    if (currentJob?.bin === 'phonefarm' && !sessionSupported()) message('session-message', nodeInfo ? '此节点尚未提供交互会话能力；已有任务记录仍可查看。' : '正在核对节点会话能力…');
+    document.querySelectorAll('[data-session-action]').forEach(button => {
+      button.disabled = !sessionAllowed(button.dataset.sessionAction);
+      button.setAttribute('aria-busy', String(sessionActionBusy && button.dataset.sessionAction === $('session-panel').dataset.pendingAction));
+    });
+    const kind = $('session-input-kind').value;
+    $('session-input-submit').disabled = !sessionAllowed(kind) || !sessionState?.latest_image;
+    $('session-input-submit').textContent = kind === 'tap' ? '发送点击' : '发送滑动';
+    $('session-swipe-fields').hidden = kind !== 'swipe';
+    $('session-query').disabled = !currentJob || !sessionSupported() || sessionActionBusy;
+    const pending = sessionPending();
+    message('session-pending', pending.length ? `未决请求：${pending.map(v => v.request_id).join('、')}。先查询回执；不会自动重发输入。` : '回执读取不触发设备动作。accepted 仅表示入队，completed 才表示该动作结束。');
+    message('session-action-help', !access?.steer ? '查看权限只能读状态和已有画面；采集或输入需先解锁任务操作。' :
+      !sessionFresh ? '状态尚未取得或读取失败；刷新成功前暂停新动作。' :
+      sessionState?.phase === 'closed' ? '会话已关闭。请核对限定范围恢复报告，刷新任务后从现有入口核查并解除资源保留。' :
+      !sessionState?.live_owner ? '会话 owner 已不存活；不能继续输入，请核对恢复上下文。' :
+      !sessionState.accepting ? '会话已停止接收新动作。请核对恢复记录；关闭后刷新任务以处理资源保留。' :
+      pending.length ? '先核对未决请求。仍可请求停止并恢复；结果未知的输入不会自动重放。' :
+      sessionState.controller?.actor_id !== $('session-actor').value.trim() ? '当前输入属于其他控制者。请先申请接管，再执行截图、输入或灰层动作。' :
+      '所有动作由原会话 owner 串行执行；仅开放服务报告可用的动作。');
+  }
+  function renderSessionState() {
+    const s = sessionState;
+    if (!s) return;
+    $('session-content').hidden = false;
+    $('session-phase').textContent = SESSION_PHASES[s.phase] || text(s.phase);
+    $('session-phase').className = `task-state ${s.phase === 'ready' ? 'running' : ['recovery_required', 'restoring'].includes(s.phase) ? 'unknown' : ''}`;
+    $('session-updated').textContent = `状态更新 ${time(s.updated_at)} · ${readTime()}`;
+    const c = s.controller || {};
+    facts('session-info', [['会话', s.session_id], ['设备 / 模式', `${text(s.serial)} · ${text(s.mode)}`], ['目标', s.package],
+      ['当前控制者', `${text(c.actor_id)} · ${text(c.kind)} · epoch ${text(c.epoch)}`], ['接管到期', time(c.expires_at)], ['资源预算截止', time(s.deadline_at)], ['owner 存活', s.live_owner ? '是（宿主锁核验）' : '否']]);
+    const recovery = s.recovery || {};
+    const recoveryState = ({not_reported: '尚未报告恢复', required: '需要继续恢复', reported_complete: '已报告限定范围恢复；仍需核查任务资源保留'})[recovery.status] || text(recovery.status);
+    facts('session-recovery', [['恢复状态', recoveryState], ['上下文', recovery.session_path], ['报告', (recovery.reports || []).join('\n') || '尚无'], ['错误', recovery.error || '无']]);
+    const frame = s.latest_image;
+    $('session-image-empty').hidden = !!frame;
+    if (frame) {
+      const when = new Date(typeof frame.captured_at === 'number' ? frame.captured_at * 1000 : frame.captured_at).getTime();
+      const age = Number.isFinite(when) ? `${Math.max(0, Math.floor((Date.now() - when) / 1000))} 秒前` : '时间未知';
+      $('session-image-info').textContent = `${frame.width} × ${frame.height} · 方向 ${text(frame.rotation)} · 原始 PNG · 采集于 ${time(frame.captured_at)}（读取时 ${age}）· frame ${frame.request_id}`;
+      $('session-image-link').href = jobURL('/out', {path: frame.path});
+      $('session-image-link').download = '';
+    }
+  }
+  async function loadSession() {
+    if (!selected || !sessionSupported() || sessionBusy) return;
+    const id = selected, revision = ++sessionRevision;
+    sessionBusy = true; sessionFresh = false;
+    renderSessionControls();
+    message('session-message', '正在读取会话与已有画面，不采集新图…');
+    try {
+      const state = await json(`${API}/jobs/${id}/session`);
+      if (selected !== id || revision !== sessionRevision) return;
+      if (state.schema !== 'phonefarm/gray-control@1' || state.job_id !== id || typeof state.live_owner !== 'boolean') throw new Error('会话身份或状态格式不正确。');
+      sessionState = state; sessionFresh = true;
+      renderSessionState();
+      message('session-message', '显示宿主已存状态。采集原图需要单独提交动作。');
+      const frame = state.latest_image;
+      if (frame && frame.path !== sessionImageKey) {
+        const blob = await request(`${API}/jobs/${id}/out?${new URLSearchParams({path: frame.path})}`, r => r.blob());
+        if (selected !== id || revision !== sessionRevision) return;
+        if (sessionImageURL) URL.revokeObjectURL(sessionImageURL);
+        sessionImageURL = URL.createObjectURL(blob); sessionImageKey = frame.path;
+        $('session-image').src = sessionImageURL;
+        $('session-frame').hidden = false;
+      }
+      if (!frame) $('session-frame').hidden = true;
+    } catch (error) {
+      if (selected === id && revision === sessionRevision) {
+        sessionFresh = false;
+        message('session-message', error.status === 404 ? '此任务尚未产生灰层控制会话，或会话记录不可用。' : `${errorText(error)} 已显示的状态/画面是上次读取结果。`, true);
+      }
+    } finally { if (selected === id && revision === sessionRevision) { sessionBusy = false; renderSessionControls(); } }
+  }
+  function showSessionReceipt(receipt) {
+    $('session-receipt-detail').hidden = false;
+    $('session-receipt').textContent = JSON.stringify(receipt, null, 2);
+    message('session-receipt-message', `${receipt.request_id}：${ACTION_STATES[receipt.status] || '状态未知。'}${receipt.error ? ' ' + (typeof receipt.error === 'string' ? receipt.error : JSON.stringify(receipt.error)) : ''}`, ['failed', 'unknown'].includes(receipt.status));
+  }
+  async function querySessionReceipt() {
+    const id = selected, requestId = $('session-request-id').value.trim();
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(requestId) || !id || sessionActionBusy) { message('session-receipt-message', '请填写有效请求 ID。', true); return; }
+    const revision = ++receiptRevision;
+    busy('session-query', true, '查询中…');
+    try {
+      const receipt = await json(`${API}/jobs/${id}/session/actions/${encodeURIComponent(requestId)}`);
+      if (selected !== id || revision !== receiptRevision) return;
+      if (receipt.request_id !== requestId || receipt.schema !== 'phonefarm/gray-control-action-result@1') throw new Error('动作回执身份不匹配。');
+      keepAction(id, sessionPending(id).find(p => p.request_id === requestId) || {request_id: requestId}, receipt);
+      showSessionReceipt(receipt);
+      await loadSession();
+    } catch (error) {
+      if (selected === id && revision === receiptRevision) message('session-receipt-message', `${errorText(error)} 保留原请求 ID；未找到回执不等于输入没有执行。`, true);
+    } finally { if (selected === id && revision === receiptRevision) { busy('session-query', false); renderSessionControls(); } }
+  }
+  async function sendSessionAction(action, params = {}) {
+    if (!sessionAllowed(action)) return;
+    const id = selected, session = sessionState, revision = ++receiptRevision;
+    const requestBody = {schema: 'phonefarm/gray-control-action@1', request_id: crypto.randomUUID(), session_id: session.session_id,
+      actor_id: $('session-actor').value.trim(), control_epoch: session.controller.epoch, action, params};
+    keepAction(id, requestBody);
+    $('session-request-id').value = requestBody.request_id;
+    $('session-panel').dataset.pendingAction = action;
+    sessionActionBusy = true;
+    renderSessionControls();
+    message('session-receipt-message', `正在投递 ${requestBody.request_id}；请求已在本页固定，不自动重发。`);
+    try {
+      const receipt = await post(`${API}/jobs/${id}/session/actions`, requestBody);
+      if (receipt.request_id !== requestBody.request_id || receipt.session_id !== session.session_id) throw new Error('动作回执身份不匹配。');
+      keepAction(id, requestBody, receipt);
+      if (selected === id && revision === receiptRevision) showSessionReceipt(receipt);
+    } catch (error) {
+      if (error.status >= 400 && error.status < 500 && error.status !== 409) keepAction(id, requestBody, {status: 'not_executed'});
+      if (selected === id && revision === receiptRevision) message('session-receipt-message', `${errorText(error)} 请求 ID：${requestBody.request_id}。请先查询回执，不换 ID 重复输入。`, true);
+      if (error.status === 401 || error.status === 403) await loadAccess();
+    } finally {
+      if (selected === id && revision === receiptRevision) { sessionActionBusy = false; renderSessionControls(); await loadSession(); }
+    }
+  }
+
   function updateJobLeaseAccess() {
     const supported = nodeInfo?.capabilities?.includes('jobs.leases-v1');
     $('load-job-leases').disabled = !currentJob || !supported || jobLeasesBusy;
@@ -819,6 +992,57 @@
       }
     }
   }
+
+  let webActor;
+  try { webActor = sessionStorage.getItem('hgamey.session-actor'); } catch (_) { /* Optional preference. */ }
+  webActor ||= `web-${globalThis.crypto?.randomUUID?.() || 'unavailable'}`;
+  $('session-actor').value = webActor;
+  try { sessionStorage.setItem('hgamey.session-actor', webActor); } catch (_) { /* Manual actor entry remains available after reload. */ }
+  $('session-actor').addEventListener('change', () => {
+    try { sessionStorage.setItem('hgamey.session-actor', $('session-actor').value.trim()); } catch (_) { /* Optional preference. */ }
+    renderSessionControls();
+  });
+  $('session-refresh').addEventListener('click', loadSession);
+  $('session-receipt-form').addEventListener('submit', event => { event.preventDefault(); querySessionReceipt(); });
+  $('session-input-kind').addEventListener('change', renderSessionControls);
+  document.querySelectorAll('[data-session-action]').forEach(button => button.addEventListener('click', () => {
+    const action = button.dataset.sessionAction;
+    let params = {};
+    if (action === 'take_control') {
+      const ttl = Number($('session-ttl').value);
+      if (!Number.isInteger(ttl) || ttl < 1 || ttl > 300) { message('session-receipt-message', '接管时长须为 1–300 秒。', true); return; }
+      params = {kind: 'human', ttl_seconds: ttl};
+    } else if (['audit', 'trigger'].includes(action)) {
+      const go = Number($('session-go').value);
+      if (!Number.isInteger(go) || go < 1) { message('session-receipt-message', 'go 须为正整数。', true); return; }
+      params = {go};
+    }
+    sendSessionAction(action, params);
+  }));
+  $('session-input-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const frame = sessionState?.latest_image, kind = $('session-input-kind').value;
+    if (!frame || !sessionAllowed(kind)) return;
+    const x1 = Number($('session-x1').value), y1 = Number($('session-y1').value);
+    const x2 = Number($('session-x2').value), y2 = Number($('session-y2').value), duration = Number($('session-duration').value);
+    const point = (x, y) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < frame.width && y < frame.height;
+    if (!point(x1, y1) || kind === 'swipe' && (!point(x2, y2) || !Number.isInteger(duration) || duration < 1 || duration > 2000)) {
+      message('session-receipt-message', '请按当前原图填写有效像素坐标；滑动时长须为 1–2000 毫秒。', true); return;
+    }
+    sendSessionAction(kind, kind === 'tap' ? {x: x1, y: y1, frame_id: frame.request_id} : {x1, y1, x2, y2, duration_ms: duration, frame_id: frame.request_id});
+  });
+  $('session-image').addEventListener('click', event => {
+    const frame = sessionState?.latest_image, image = $('session-image');
+    if (!frame || !image.naturalWidth || !sessionFresh) return;
+    const rect = image.getBoundingClientRect(), scale = Math.min(rect.width / frame.width, rect.height / frame.height);
+    const x = (event.clientX - rect.left - (rect.width - frame.width * scale) / 2) / scale;
+    const y = (event.clientY - rect.top - (rect.height - frame.height * scale) / 2) / scale;
+    if (x >= 0 && y >= 0 && x < frame.width && y < frame.height) {
+      $('session-x1').value = Math.floor(x); $('session-y1').value = Math.floor(y);
+      message('session-receipt-message', '起点坐标已填写，尚未发送输入。');
+    }
+  });
+  window.addEventListener('pagehide', () => { ++sessionRevision; ++receiptRevision; if (sessionImageURL) URL.revokeObjectURL(sessionImageURL); });
 
   $('filters').addEventListener('submit', event => {
     event.preventDefault();

@@ -111,6 +111,38 @@
         <p id="detail-updated" class="read-time"></p>
         <dl id="job-info" class="facts job-facts"></dl>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
+        <section id="session-panel" class="session-panel" aria-labelledby="session-heading" hidden>
+          <div class="section-heading"><h3 id="session-heading">灰层交互会话</h3><button id="session-refresh" class="ghost" type="button">读取会话状态</button></div>
+          <p id="session-message" class="note" role="status">只读取宿主记录，不会采集新画面。</p>
+          <div id="session-content" hidden>
+            <div class="session-heading"><span id="session-phase" class="task-state"></span><span id="session-updated" class="read-time"></span></div>
+            <dl id="session-info" class="facts"></dl>
+            <figure id="session-frame" class="session-frame" hidden><img id="session-image" alt="该灰层会话最近采集的原始 PNG" decoding="async"><figcaption id="session-image-info"></figcaption><a id="session-image-link">下载原始 PNG</a></figure>
+            <p id="session-image-empty" class="note">尚未采集画面。读取状态不会触发截图。</p>
+            <div class="session-actions"><button class="ghost primary" data-session-action="capture" type="button">采集原图</button><button class="ghost danger" data-session-action="stop" type="button">停止并恢复</button></div>
+            <p id="session-action-help" class="note"></p>
+            <details class="session-tools"><summary>接管与有限输入</summary>
+              <p class="note">接管只改变此会话内的输入控制者，设备 lease 仍由原 owner 持有。到期后交回原控制者；不要求 Agent 等待人类。</p>
+              <div class="session-fields"><label>操作归属<input id="session-actor" maxlength="64" spellcheck="false" autocomplete="off"></label><label>接管时长（秒）<input id="session-ttl" type="number" min="1" max="300" value="60"></label></div>
+              <div class="session-actions"><button class="ghost" data-session-action="take_control" type="button">接管 / 续期</button><button class="ghost" data-session-action="release_control" type="button">交回控制</button></div>
+              <form id="session-input-form">
+                <div class="session-fields"><label>输入方式<select id="session-input-kind"><option value="tap">点击</option><option value="swipe">滑动</option></select></label><label>起点 X<input id="session-x1" type="number" min="0" step="1" required></label><label>起点 Y<input id="session-y1" type="number" min="0" step="1" required></label></div>
+                <div id="session-swipe-fields" class="session-fields" hidden><label>终点 X<input id="session-x2" type="number" min="0" step="1"></label><label>终点 Y<input id="session-y2" type="number" min="0" step="1"></label><label>时长（毫秒）<input id="session-duration" type="number" min="1" max="2000" value="300"></label></div>
+                <p class="note">坐标对应上方原图的实际像素，点击图片可填起点；仅填写不会发送输入。会话会核验图片时间、方向与坐标。</p>
+                <button id="session-input-submit" class="ghost" type="submit">发送点击</button>
+              </form>
+            </details>
+            <details class="session-tools"><summary>灰层采集与加载范围</summary>
+              <div class="session-fields"><label>Frame Audit go<input id="session-go" type="number" min="1" step="1" value="1"></label></div>
+              <div class="session-actions"><button class="ghost" data-session-action="marker" type="button">读取 marker</button><button class="ghost" data-session-action="audit" type="button">读取 audit</button><button class="ghost" data-session-action="trigger" type="button">触发 Frame Audit</button><button class="ghost" data-session-action="narrow" type="button">收窄后续加载</button></div>
+              <p class="note">动作仅在当前模式支持时开放。narrow 清理全局加载属性，不能卸掉目标进程已加载的层；停止并恢复另有证据。</p>
+            </details>
+            <details class="session-tools"><summary>会话恢复记录</summary><dl id="session-recovery" class="facts"></dl><p class="note">会话关闭与整个任务的资源释放分别记录。关闭后刷新任务，核查现有 lease 证据，再从“解除资源保留”填写说明放行。</p></details>
+          </div>
+          <form id="session-receipt-form" class="session-receipt-form"><label for="session-request-id">动作请求 ID</label><div class="lookup-input"><input id="session-request-id" autocomplete="off" spellcheck="false" placeholder="查询已提交动作"><button id="session-query" class="ghost" type="submit">查询回执</button></div></form>
+          <p id="session-pending" class="note"></p><p id="session-receipt-message" class="note" role="status"></p>
+          <details id="session-receipt-detail" class="session-tools" hidden><summary>完整动作回执</summary><pre id="session-receipt" class="command-box"></pre></details>
+        </section>
         <section class="execution-panel" aria-labelledby="execution-heading">
           <div class="section-heading"><h3 id="execution-heading">执行与停止</h3><div class="execution-actions"><button id="cancel-job" class="ghost" type="button" aria-describedby="cancel-help" disabled>请求停止</button><button id="force-open" class="ghost danger" type="button" aria-describedby="cancel-help" disabled>升级终止…</button></div></div>
           <p id="cancel-help" class="note"></p><p id="cancel-result" class="cancel-result" role="status" hidden></p>
@@ -127,7 +159,7 @@
         </section>
         <details id="queue-release-panel" class="queue-release-panel" hidden>
           <summary>解除资源保留…</summary>
-          <p class="note">此任务异常结束后仍保留资源。恢复任务结束不会自动解除保留；管理员需核查证据后明确放行。设备写入或恢复任务还要求实际 lease 屏障已清除。</p>
+          <p class="note">此任务仍保留独占资源。恢复任务结束不会自动解除保留；管理员需核查证据后明确放行。设备写入或恢复任务还要求实际 lease 屏障已清除。</p>
           <form id="queue-release-form">
             <label for="queue-release-note">核查说明 <span class="field-optional">必填</span></label>
             <textarea id="queue-release-note" rows="3" required placeholder="记录已核查的进程、设备状态和恢复证据"></textarea>
@@ -161,7 +193,7 @@
     </section>
   </div>
 </main>
-<footer class="foot">文件保存在当前节点。读取页面只访问宿主记录，不启动设备采样；提交、停止和解除资源保留需掌舵权限。运行中的日志和输出可能仍在更新。</footer>
+<footer class="foot">文件保存在当前节点。读取记录不启动设备采样；显式会话采集与输入由原 owner 执行，需掌舵权限。提交、停止和资源释放也需掌舵权限；运行中的日志和输出可能仍在更新。</footer>
 <script src="/dash/static/jobs.js"></script>
 </body>
 </html>

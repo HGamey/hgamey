@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from node_service import Jobs
+from node_service import Jobs, _job_lock_args
 
 
 class JobOwnershipTests(unittest.TestCase):
@@ -36,6 +36,9 @@ class JobOwnershipTests(unittest.TestCase):
             self.assertEqual(meta["argv"], argv)  # Preserve the submitted record.
             self.assertEqual(command, [self.bins[name][0], argv[0], "--lock-label", meta["lock_label"]])
         self.assertNotEqual(metas[0]["lock_label"], metas[1]["lock_label"])
+        for sub, option in (("gray-layer", "--actor-id"), ("gray-ab", "--serial")):
+            self.assertEqual(_job_lock_args([sub, option, "--lock-label", "--lock-label", "external"], "job-owner"),
+                             [sub, option, "--lock-label", "--lock-label", "job-owner"])
 
     def test_raw_commands_use_devlock_and_lease_helper_stays_unwrapped(self):
         for name in ("adb", "fetch_apk"):
