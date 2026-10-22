@@ -577,6 +577,9 @@ impl Directory {
         Ok(())
     }
     pub(crate) fn names(&self) -> Result<BTreeSet<String>> {
+        self.names_with_limit(7)
+    }
+    pub(crate) fn names_with_limit(&self, limit: usize) -> Result<BTreeSet<String>> {
         // SAFETY: dup creates an owned fd for fdopendir; closedir releases it.
         let fd = unsafe { libc::dup(self.0.as_raw_fd()) };
         ensure!(fd >= 0, "cannot duplicate directory fd");
@@ -604,7 +607,7 @@ impl Directory {
                 }
                 let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_str()?;
                 if name != "." && name != ".." {
-                    ensure!(names.len() < 7, "too many artifact entries");
+                    ensure!(names.len() < limit, "too many artifact entries");
                     names.insert(name.to_owned());
                 }
             }

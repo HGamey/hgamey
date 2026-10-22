@@ -98,23 +98,31 @@ fn contract_names(contract: &str) -> Result<BTreeSet<String>> {
     let mut expected: BTreeSet<_> = LAYER_INPUTS.iter().map(|s| s.to_string()).collect();
     match contract {
         "legacy4" => {}
-        "ownership5" => {
+        "ownership5" | "npuprobe6" => {
             expected.insert("dispatch_ownership.h".into());
+            if contract == "npuprobe6" {
+                expected.insert("npuprobe.cpp".into());
+            }
         }
         _ => anyhow::bail!("unsupported layer input contract"),
     }
     Ok(expected)
 }
 fn source_contract(layer: &Directory) -> Result<String> {
-    let names = layer.names()?;
-    let contract = if names.contains("dispatch_ownership.h") {
+    let names = layer.names_with_limit(9)?;
+    let contract = if names.contains("npuprobe.cpp") {
+        "npuprobe6"
+    } else if names.contains("dispatch_ownership.h") {
         "ownership5"
     } else {
         "legacy4"
     };
     let mut allowed = contract_names(contract)?;
-    if names.contains("upop.comp") {
-        allowed.insert("upop.comp".into());
+    // These standalone shader sources are not consumed by the dynamic native build.
+    for name in ["upop.comp", "npu_pack.comp", "npu_unpack.comp"] {
+        if names.contains(name) {
+            allowed.insert(name.into());
+        }
     }
     ensure!(names == allowed, "unknown/missing layer source entries");
     Ok(contract.into())
@@ -348,28 +356,36 @@ fn provisional(v: &Value) -> Result<()> {
     );
     Ok(())
 }
-fn policy(descriptor: &Value, adaptation_descriptor: &Value, adaptation_id: &str) -> Result<()> {
+fn policy(
+    descriptor: &Value,
+    adaptation_descriptor: &Value,
+    adaptation_id: &str,
+    contract: &str,
+) -> Result<()> {
     let expected_origin = json!({"adaptation_id":adaptation_id,"state":"verified_offline","deployable":false,"device_validation":"not_run","semantic_equivalence":"not_run","qualification":"not_run","source_spirv_association":"caller_supplied_unverified","descriptor":adaptation_descriptor});
+    let mut flags = vec![
+        "-O2",
+        "-Wall",
+        "-fPIC",
+        "-std=c++17",
+        "-fno-exceptions",
+        "-fno-rtti",
+        "-static-libstdc++",
+        "-Wl,--exclude-libs,ALL",
+        "-DRK_DYNAMIC_UPOP_BUILD=1",
+    ];
+    if contract == "npuprobe6" {
+        flags.extend(["-I<snapshot>", "-shared", "-Wl,-z,defs", "-llog", "-ldl"]);
+    } else {
+        // Retain the original v1 descriptor flags for legacy4/ownership5 artifacts.
+        flags.extend(["-shared", "-I<snapshot>", "-llog"]);
+    }
     ensure!(
         descriptor["schema_version"] == 1
             && descriptor["target"] == "android-arm64-v8a-api30"
             && descriptor["abi"] == adaptation_descriptor["adapted_abi"]
             && descriptor["shader_flags"] == json!(["--target-env=vulkan1.0", "-O"])
-            && descriptor["native_flags"]
-                == json!([
-                    "-O2",
-                    "-Wall",
-                    "-fPIC",
-                    "-std=c++17",
-                    "-fno-exceptions",
-                    "-fno-rtti",
-                    "-static-libstdc++",
-                    "-Wl,--exclude-libs,ALL",
-                    "-DRK_DYNAMIC_UPOP_BUILD=1",
-                    "-shared",
-                    "-I<snapshot>",
-                    "-llog"
-                ])
+            && descriptor["native_flags"] == json!(flags)
             && descriptor["adaptation"] == expected_origin,
         "native fixed target/flags/ABI/adaptation policy differs"
     );
@@ -425,11 +441,7 @@ pub(super) fn artifact(
     let mut required_inputs: BTreeSet<String> = [
         "candidate.comp",
         "candidate.spv",
-        "copyprobe_copy.comp",
         "copyprobe_copy.spv",
-        "vk_layer_refknobs.cpp",
-        "artifact_stats.h",
-        "VkLayer_refknobs.json",
         "copy_spv.h",
         "original_candidate.spv",
         "adaptation_descriptor.json",
@@ -438,9 +450,7 @@ pub(super) fn artifact(
     .into_iter()
     .map(str::to_owned)
     .collect();
-    if plan.layer_contract == "ownership5" {
-        required_inputs.insert("dispatch_ownership.h".into());
-    }
+    required_inputs.extend(contract_names(&plan.layer_contract)?);
     let extra_files = [
         "artifact_metadata.h",
         "descriptor.json",
@@ -520,7 +530,12 @@ pub(super) fn artifact(
     }
     let adaptation_bytes = adapted_dir.read("descriptor.json", META_CAP)?;
     let adaptation_descriptor: Value = serde_json::from_slice(&adaptation_bytes)?;
-    policy(&descriptor, &adaptation_descriptor, &sha(&adaptation_bytes))?;
+    policy(
+        &descriptor,
+        &adaptation_descriptor,
+        &sha(&adaptation_bytes),
+        &plan.layer_contract,
+    )?;
     let tools = descriptor["tools"]
         .as_object()
         .context("native tools missing")?;
@@ -690,21 +705,30 @@ mod tests {
     }
     #[test]
     fn input_contract_presence_extras_and_post_execution_deadline_are_checked() {
-        let t = Temp::new();
-        fs::write(t.0.join("layer/dispatch_ownership.h"), b"ownership").unwrap();
-        let p = t.plan(Instant::now(), 30_000);
-        assert_eq!(p.state, "READY");
-        assert_eq!(p.layer_contract, "ownership5");
-        check(&p, &t.0.join("session"), true, None).unwrap();
-        assert!(check(
-            &p,
-            &t.0.join("session"),
-            true,
-            Some((Instant::now() - Duration::from_secs(1), 50))
-        )
-        .is_err());
-        fs::remove_file(t.0.join("layer/dispatch_ownership.h")).unwrap();
-        assert!(check(&p, &t.0.join("session"), true, None).is_err());
+        for contract in ["legacy4", "ownership5", "npuprobe6"] {
+            let t = Temp::new();
+            for name in contract_names(contract).unwrap() {
+                fs::write(t.0.join("layer").join(name), b"expected source").unwrap();
+            }
+            if contract == "npuprobe6" {
+                for name in ["upop.comp", "npu_pack.comp", "npu_unpack.comp"] {
+                    fs::write(t.0.join("layer").join(name), b"unused shader").unwrap();
+                }
+            }
+            let p = t.plan(Instant::now(), 30_000);
+            assert_eq!(p.state, "READY", "{}: {:?}", contract, p.reason);
+            assert_eq!(p.layer_contract, contract);
+            check(&p, &t.0.join("session"), true, None).unwrap();
+            assert!(check(
+                &p,
+                &t.0.join("session"),
+                true,
+                Some((Instant::now() - Duration::from_secs(1), 50))
+            )
+            .is_err());
+            fs::remove_file(t.0.join("layer/vk_layer_refknobs.cpp")).unwrap();
+            assert!(check(&p, &t.0.join("session"), true, None).is_err());
+        }
         let t = Temp::new();
         fs::write(t.0.join("layer/unknown.h"), b"not a declared input").unwrap();
         assert!(t
@@ -733,7 +757,15 @@ mod tests {
         let adaptation = json!({"adapted_abi":{"version":1}});
         let origin = json!({"adaptation_id":"id","state":"verified_offline","deployable":false,"device_validation":"not_run","semantic_equivalence":"not_run","qualification":"not_run","source_spirv_association":"caller_supplied_unverified","descriptor":adaptation});
         let d = json!({"schema_version":1,"target":"android-arm64-v8a-api30","abi":adaptation["adapted_abi"],"shader_flags":["--target-env=vulkan1.0","-O"],"native_flags":["-O2","-Wall","-fPIC","-std=c++17","-fno-exceptions","-fno-rtti","-static-libstdc++","-Wl,--exclude-libs,ALL","-DRK_DYNAMIC_UPOP_BUILD=1","-shared","-I<snapshot>","-llog"],"adaptation":origin});
-        policy(&d, &adaptation, "id").unwrap();
+        policy(&d, &adaptation, "id", "legacy4").unwrap();
+        policy(&d, &adaptation, "id", "ownership5").unwrap();
+        assert!(policy(&d, &adaptation, "id", "npuprobe6").is_err());
+        let mut current = d.clone();
+        let flags = current["native_flags"].as_array_mut().unwrap();
+        flags.swap(9, 10);
+        flags.insert(11, json!("-Wl,-z,defs"));
+        flags.push(json!("-ldl"));
+        policy(&current, &adaptation, "id", "npuprobe6").unwrap();
         for field in [
             "schema_version",
             "target",
@@ -744,10 +776,13 @@ mod tests {
         ] {
             let mut bad = d.clone();
             bad[field] = Value::Null;
-            assert!(policy(&bad, &adaptation, "id").is_err(), "{field}");
+            assert!(
+                policy(&bad, &adaptation, "id", "ownership5").is_err(),
+                "{field}"
+            );
         }
         let mut bad = d;
         bad["adaptation"]["semantic_equivalence"] = json!("proven");
-        assert!(policy(&bad, &adaptation, "id").is_err());
+        assert!(policy(&bad, &adaptation, "id", "ownership5").is_err());
     }
 }

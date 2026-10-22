@@ -183,7 +183,9 @@ fn actual_supervised_fixture_binds_sdk_source_adapter_and_outer_groups() {
     let j = f.read("session/journal.json");
     assert_eq!(
         v["native_plan"]["layer_contract"],
-        if f.layer.join("dispatch_ownership.h").exists() {
+        if f.layer.join("npuprobe.cpp").exists() {
+            "npuprobe6"
+        } else if f.layer.join("dispatch_ownership.h").exists() {
             "ownership5"
         } else {
             "legacy4"
