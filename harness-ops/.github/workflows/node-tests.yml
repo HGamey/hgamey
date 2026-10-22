@@ -1,7 +1,7 @@
 name: node-tests
 on:
   push:
-    branches: [main]
+    branches: [main, 'verify/**']
   pull_request:
 jobs:
   protocol:

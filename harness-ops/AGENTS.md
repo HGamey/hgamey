@@ -14,5 +14,6 @@
 - 目标、方向、实验、证据和异步人工反馈独立于聊天工具；一个方向等人时其他方向继续。
 - 产品准则与计划：https://github.com/HGamey/docs/tree/main/plans/2026-10-22-agent-platform 。维护者接续时先读准则、讨论、todo，并持续记录决定与验证范围。
 - 用户已授权直接 commit/push，不新开 PR。每批围绕一个可验收变化；提交前核对当前 main，保留同事改动，不 force push。
+- main 保留必需的 `code-only` 检查。先推同一提交到 `verify/<批次>` 等 CI 通过，再直接推 main；若 rebase 改变提交需重验。不关闭必需检查或强推保护。
 - 修改节点协议后运行 `python3 -m unittest discover -s node/tests -v`。模拟节点通过不能写成真机验证通过。
 - 测试聚焦关键合同和已发生故障，避免镜像实现或重复覆盖。优先简化状态与资源所有权；哈希用于传输完整性/内容标识，不对每层对象重复计算。

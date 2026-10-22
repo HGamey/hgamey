@@ -5,7 +5,7 @@ name: code-only
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'verify/**']
 permissions:
   contents: read
 jobs:
