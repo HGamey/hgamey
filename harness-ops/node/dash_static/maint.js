@@ -37,11 +37,12 @@
 
   function renderState(st) {
     const L = st.lock || {}, d = mainDevice(st);
-    const held = !!L.held_by && !L.stale;
+    const held = L.status === "held" || !!L.held_by;
+    const free = L.status === "free";
     // 顶栏锁状态
     const pill = $("lock-pill");
-    pill.className = "pill " + (held ? "held" : "free");
-    pill.textContent = held ? `● ${L.held_by} 正在用手机` : L.held_by ? `${L.held_by} 好久没动静了` : "手机空闲";
+    pill.className = "pill " + (free ? "free" : "held");
+    pill.textContent = held ? (L.stale ? `${L.held_by} 持锁心跳已过期，待核查` : `● ${L.held_by} 正在用手机`) : free ? "手机空闲" : "设备锁状态未知";
     $("dev-name").textContent = d ? `${d.brand || ""} ${d.model || d.serial}`.trim() : "没有设备";
 
     // 手机
@@ -75,10 +76,11 @@
     // 设备锁
     if (L.held_by) {
       const since = L.since ? `从 ${L.since.slice(11) || L.since} 起` : "";
-      $("lock-holder").innerHTML = `${esc(L.held_by)}<span class="s" title="设备锁心跳 ${L.heartbeat_age_s ?? "?"}s 前">${esc(since)} · ${L.heartbeat_age_s ?? "?"} 秒前还在用${L.stale ? " · 好久没动静，别人可以接手" : ""}</span>`;
-    } else {
+      $("lock-holder").innerHTML = `${esc(L.held_by)}<span class="s" title="设备锁心跳 ${L.heartbeat_age_s ?? "?"}s 前">${esc(since)} · ${L.heartbeat_age_s ?? "?"} 秒前还在用${L.stale ? " · 心跳已过期，仍按占用，需核查恢复状态" : ""}</span>`;
+    } else if (free) {
       $("lock-holder").innerHTML = `空闲<span class="s">${L.free_for_s != null ? "已空闲 " + dur(L.free_for_s) : ""}</span>`;
     }
+    if (!held && !free) $("lock-holder").innerHTML = `未知<span class="s">${esc(L.error || "暂时无法读取可信的设备锁状态")}</span>`;
     $("lock-age").textContent = "";
     $("queue").innerHTML = (L.queue || []).length ? L.queue.map((q) => `<li>${esc(q)}</li>`).join("") : `<li class="empty">没人排队</li>`;
     $("lock-events").innerHTML = (L.recent || []).map((e) =>
@@ -91,8 +93,8 @@
       $("shot").hidden = false; $("shot-empty").hidden = true;
       $("shot-age").textContent = `截于 ${ago(st.shot.age_s)}`;
     } else { $("shot").hidden = true; $("shot-empty").hidden = false; $("shot-age").textContent = ""; }
-    $("shot-veil").hidden = !held;
-    box.classList.toggle("stale", held);
+    $("shot-veil").hidden = free;
+    box.classList.toggle("stale", !free);
     const P = st.policy || {};
     $("shot-rule").textContent = `手机空闲满 ${P.free_grace_s} 秒才截，最多每 ${P.shot_every_s} 秒一张；有人在用手机时一张不截。`;
 

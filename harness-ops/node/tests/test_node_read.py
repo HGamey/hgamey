@@ -196,6 +196,21 @@ class NodeReadTests(unittest.TestCase):
             self.assertEqual(failed["devices"], sample["devices"])
             self.assertTrue(failed["stale"])
             self.assertIn("CalledProcessError", failed["error"])
+            # An incompatible sample is a failed attempt, not a dead sampler thread.
+            with monitor._condition:
+                monitor._next_at = 0
+            run.side_effect = None
+            run.return_value.stdout = b'{"devices":[{"online":true,"battery":"unavailable"}]}'
+            incompatible = self.get_json("/fleet?wait=2")
+            self.assertIn("battery must be an object", incompatible["error"])
+            self.assertFalse(incompatible["refreshing"])
+            self.assertEqual(incompatible["devices"], sample["devices"])
+            with monitor._condition:
+                monitor._next_at = 0
+            run.return_value.stdout = json.dumps(sample).encode()
+            recovered = self.get_json("/fleet?wait=2")
+            self.assertIsNone(recovered["error"])
+            self.assertFalse(recovered["stale"])
         for wait in ("nan", "6", "-1"):
             self.assertEqual(self.request("/fleet?wait=" + wait)[0], 400)
 

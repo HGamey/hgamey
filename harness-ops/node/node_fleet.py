@@ -155,8 +155,14 @@ class FleetState:
                 fleet = json.loads(result.stdout)
                 if not isinstance(fleet, dict) or not isinstance(fleet.get("devices"), list):
                     raise ValueError("fleet response must contain a devices array")
-                if any(not isinstance(device, dict) for device in fleet["devices"]):
-                    raise ValueError("fleet devices must be objects")
+                for device in fleet["devices"]:
+                    if not isinstance(device, dict):
+                        raise ValueError("fleet devices must be objects")
+                    for field in ("battery", "thermal"):
+                        if device.get(field) is not None and not isinstance(device[field], dict):
+                            raise ValueError(f"fleet device {field} must be an object or null")
+                if fleet.get("lock") is not None and not isinstance(fleet["lock"], dict):
+                    raise ValueError("fleet lock must be an object or null")
             except (subprocess.SubprocessError, OSError, ValueError) as e:
                 error = f"fleet 采样失败: {type(e).__name__} {str(e)[:200]}"
             with self._condition:

@@ -18,4 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --check node/dash_static/jobs.js
+      - run: |
+          node --check node/dash_static/jobs.js
+          node --check node/dash_static/fleet.js
+          node --check node/dash_static/maint.js
