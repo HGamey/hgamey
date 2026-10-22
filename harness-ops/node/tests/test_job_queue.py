@@ -23,8 +23,8 @@ class JobQueueTests(unittest.TestCase):
         self.path = Path(temporary.name) / "_node" / "job-queue.sqlite3"
         self.queue = JobQueue(self.path)
 
-    def submit(self, key, resources):
-        row, created = self.queue.reserve(key, "content:" + key, {"command": key}, resources)
+    def submit(self, key, resources, **spec):
+        row, created = self.queue.reserve(key, "content:" + key, {"command": key, **spec}, resources)
         self.assertTrue(created)
         self.queue.ready(row["job_id"])
         return row["job_id"]
@@ -68,7 +68,23 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual([row["job_id"] for row in claims if row], [jid])
         self.assertEqual(JobQueue(self.path).ready(jid)["state"], "claimed")
 
-    def test_resources_and_blocked_jobs_hold_slots_but_unrelated_jobs_can_pass(self):
+    def test_recovery_borrows_only_its_blocked_ancestor_chain(self):
+        parent = self.submit("parent", ["phone:a"])
+        self.queue.set_state(parent, "blocked")
+        failed = self.submit("failed-recovery", ["phone:a"], recovery_for=parent)
+        self.assertEqual(self.queue.claim_next(1)["job_id"], failed)
+        sibling = self.submit("sibling-recovery", ["phone:a"], recovery_for=parent)
+        self.queue.set_state(failed, "blocked")
+        self.assertIsNone(self.queue.claim_next(1))
+        nested = self.submit("recover-failed", ["phone:a"], recovery_for=failed)
+        self.assertEqual(self.queue.claim_next(1)["job_id"], nested)
+        self.assertIsNone(self.queue.claim_next(2))
+        self.queue.set_state(nested, "done")
+        self.assertIsNone(self.queue.claim_next(1))
+        self.queue.set_state(failed, "done")
+        self.assertEqual(self.queue.claim_next(1)["job_id"], sibling)
+
+    def test_blocked_jobs_hold_resources_without_consuming_execution_slots(self):
         first = self.submit("first", ["phone:a"])
         same = self.submit("same", ["phone:a"])
         other = self.submit("other", ["phone:b"])
@@ -77,9 +93,8 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(self.queue.claim_next(2)["job_id"], other)
         self.assertIsNone(self.queue.claim_next(2))
         self.queue.set_state(first, "blocked")
-        self.assertIsNone(self.queue.claim_next(2))
-        self.queue.set_state(other, "done")
         self.assertEqual(self.queue.claim_next(2)["job_id"], free)
+        self.queue.set_state(other, "done")
         self.queue.set_state(free, "done")
         self.assertIsNone(self.queue.claim_next(2))
         self.queue.set_state(first, "done")

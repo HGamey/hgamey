@@ -11,7 +11,17 @@ STATES = ("preparing", "queued", "claimed", "blocked", "done")
 
 
 class RequestConflict(ValueError):
-    """An idempotency key was already used for different request content."""
+    """Request content or resource state conflicts with an existing operation."""
+
+
+def recovery_reservations(row, owners):
+    """Borrow the blocked target's ancestor chain, never a sibling's reservation."""
+    blocked = {r["job_id"]: r for r in owners if r["state"] == "blocked"}
+    borrowed, target = set(), row["spec"].get("recovery_for")
+    while target in blocked and target not in borrowed:
+        borrowed.add(target)
+        target = blocked[target]["spec"].get("recovery_for")
+    return borrowed
 
 
 class JobQueue:
@@ -89,15 +99,20 @@ class JobQueue:
             result = db.execute("UPDATE jobs SET state='done' WHERE job_id=? AND state IN ('preparing', 'queued')", (jid,))
             return result.rowcount == 1
 
-    def claim_next(self, max_running):
+    def claim_next(self, max_running, admit=None):
         with self._transaction(write=True) as db:
-            active = db.execute("SELECT resources FROM jobs WHERE state IN ('claimed', 'blocked')").fetchall()
-            if len(active) >= max_running:
+            active = [self._row(row) for row in db.execute("SELECT * FROM jobs WHERE state IN ('claimed', 'blocked')")]
+            if sum(row["state"] == "claimed" for row in active) >= max_running:
                 return None
-            held = {resource for row in active for resource in json.loads(row["resources"])}
             # Insertion order survives wall-clock changes and equal timestamps.
             for row in db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY sequence"):
                 value = self._row(row)
+                if admit and not admit(value):
+                    continue
+                borrowed = recovery_reservations(value, active)
+                held = {resource for owner in active
+                        if owner["job_id"] not in borrowed
+                        for resource in owner["resources"]}
                 if held.isdisjoint(value["resources"]):
                     db.execute("UPDATE jobs SET state='claimed' WHERE job_id=?", (value["job_id"],))
                     value["state"] = "claimed"

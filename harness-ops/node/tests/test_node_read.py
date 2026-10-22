@@ -207,15 +207,36 @@ class NodeReadTests(unittest.TestCase):
             self.jobs._write_meta(jid, meta)
             self.jobs.dispatch.queue.set_state(jid, "blocked")
             self.assertEqual(self.get_json("/queue")["blocked_count"], 1)
+            # A missing/incompatible host lease reader must not become clear.
+            for prefix, headers in (("", {}), ("/dash/api", auth)):
+                self.assertEqual(self.get_json(prefix + "/leases", headers=headers)["status"], "unknown")
+            self.assertEqual(self.request("/dash/api/leases")[0], 401)
+            self.assertEqual(self.request("/leases", token="wrong")[0], 401)
             for path, headers in ((f"/jobs/{jid}/queue-release", {}),
                                   (f"/dash/api/jobs/{jid}/queue-release", {**auth, "X-HG": "1", "Content-Type": "application/json"})):
                 self.assertIn(self.request(path, method="POST", headers=headers, body=b'{"note":"checked"}')[0], (401, 403))
             self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{}')[0], 400)
-            receipt = self.get_json(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{"note":"checked fixture resource"}')
+            self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write,
+                body=b'{"note":"note alone is insufficient"}')[0], 409)
+            recovery = {"bin": "phonefarm", "argv": ["-c", "pass"], "device_access": "recovery", "recovery_for": jid}
+            child = self.get_json("/jobs", method="POST", token=self.admin,
+                headers={"X-Job": json.dumps(recovery), "X-Request-ID": "recovery:fixture"})
+            self.assertEqual(child["queue"]["resources"], job["queue"]["resources"])
+            self.assertEqual(child["recovery_for"], jid)
+            with patch.object(self.jobs.leases, "snapshot", return_value={"schema_version": 1, "status": "clear", "entries": []}):
+                self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write,
+                    body=b'{"note":"child still pending"}')[0], 409)
+                self.get_json(f"/jobs/{child['id']}/cancel", method="POST", token=self.admin, body=b'{}')
+                receipt = self.get_json(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{"note":"checked fixture resource"}')
             self.assertEqual(receipt["job"]["queue"]["state"], "done")
             self.assertEqual(receipt["job"]["queue"]["release"]["note"], "checked fixture resource")
+            self.assertEqual(receipt["job"]["queue"]["release"]["lease_observation"]["status"], "clear")
             self.assertEqual(receipt["job"]["recovery"]["status"], "required")
             self.assertEqual(self.get_json("/queue")["blocked_count"], 0)
+            self.assertEqual(self.request("/jobs", method="POST", token=self.admin,
+                headers={"X-Job": json.dumps(recovery), "X-Request-ID": "new-recovery"})[0], 409)
+            self.assertEqual(self.get_json("/jobs", method="POST", token=self.admin,
+                headers={"X-Job": json.dumps(recovery), "X-Request-ID": "recovery:fixture"})["id"], child["id"])
             self.assertEqual(self.request(f"/jobs/{jid}/queue-release", method="POST", token=self.admin,
                 body=b'{"note":"already released"}')[0], 409)
         self.assertEqual(self.board.last_view, 0)

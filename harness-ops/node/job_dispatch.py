@@ -10,7 +10,8 @@ import tarfile
 import time
 import uuid
 
-from job_queue import JobQueue
+from job_queue import JobQueue, RequestConflict, recovery_reservations
+from node_lease import device_access
 import job_runtime
 
 
@@ -50,6 +51,7 @@ class JobDispatch:
         name = spec["bin"]
         return {"id": jid, "bin": name, "argv": spec.get("argv", []), "label": spec.get("label"),
                 "request_id": row["request_id"], "started": row["submitted_at"],
+                "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
                 "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1"},
                 "lock_label": None if name == "devlock" else f"job-{jid}",
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
@@ -61,6 +63,10 @@ class JobDispatch:
         digest.update(b"\0")
         digest.update(body)
         with file_lock(self.intake_path):
+            if spec.get("recovery_for") and not self.queue.by_request(key):
+                parent = self.queue.get(spec["recovery_for"])
+                if not parent or parent["state"] != "blocked":
+                    raise RequestConflict("recovery_for must name a blocked reservation")
             row, created = self.queue.reserve(key, digest.hexdigest(), spec, spec["resources"])
             if created:
                 jid = row["job_id"]
@@ -125,20 +131,29 @@ class JobDispatch:
                     launched = True
             except FileNotFoundError:
                 launched = False
-            if not launched:
-                self.launch(row)
+            if not launched and self.launch(row) is False:
+                continue
             status = self.jobs.status(jid)
             if status["state"] == "finished":
-                blocked = status.get("lost") or status.get("recovery", {}).get("status") == "required"
+                recovery = status.get("recovery", {}).get("status")
+                blocked = (status.get("lost") or recovery == "required" or
+                           device_access(row["spec"]) == "write" and recovery == "not_reported")
                 self.queue.set_state(jid, "blocked" if blocked else "done")
+        lease = self.jobs.leases.snapshot(refresh=True) if any(
+            device_access(r["spec"]) == "write" for r in self.queue.rows(("queued",))) else None
         while True:
-            row = self.queue.claim_next(self.max_running)
+            row = self.queue.claim_next(self.max_running, admit=lambda r:
+                device_access(r["spec"]) != "write" or lease is not None and lease["status"] == "clear")
             if row is None:
                 break
-            self.launch(row)
+            if self.launch(row) is False:
+                break
 
     def launch(self, row):
         jid = row["job_id"]
+        if device_access(row["spec"]) == "write" and self.jobs.leases.snapshot(refresh=True)["status"] != "clear":
+            self.queue.set_state(jid, "queued")
+            return False
         try:
             prepared = self.jobs._read_root.read_json(jid + "/prepared.json")
             if not isinstance(prepared.get("command"), list) or not prepared["command"] or not isinstance(prepared.get("cwd"), str):
@@ -166,19 +181,28 @@ class JobDispatch:
             return {"kind": "preparing" if state == "preparing" else "recovery", "blocking_jobs": []}
         if state != "queued":
             return {"kind": None, "blocking_jobs": []}
-        owners = [r for r in rows if r["state"] in ("claimed", "blocked")]
+        borrowed = recovery_reservations(row, rows)
+        owners = [r for r in rows if r["state"] in ("claimed", "blocked") and r["job_id"] not in borrowed]
         collisions = [r["job_id"] for r in owners if set(row["resources"]) & set(r["resources"])]
         if collisions:
             return {"kind": "resource", "blocking_jobs": collisions}
-        if len(owners) >= self.max_running:
-            return {"kind": "capacity", "blocking_jobs": [r["job_id"] for r in owners]}
+        lease = self.jobs.leases.snapshot()
+        if device_access(row["spec"]) == "write" and lease["status"] != "clear":
+            return {"kind": "device_lease", "blocking_jobs": [], "lease_status": lease["status"],
+                    "reason": lease.get("error") or "device lease is " + lease["status"]}
+        running = [r for r in owners if r["state"] == "claimed"]
+        if len(running) >= self.max_running:
+            return {"kind": "capacity", "blocking_jobs": [r["job_id"] for r in running]}
         return {"kind": None, "blocking_jobs": []}
 
     def attach(self, meta, row):
         if row:
             meta["request_id"] = row["request_id"]
+            meta["device_access"] = device_access(row["spec"])
+            meta["recovery_for"] = row["spec"].get("recovery_for")
             meta["queue"] = {"state": row["state"], "submitted_at": row["submitted_at"],
-                             "resources": row["resources"], "waiting": self.waiting(row)}
+                             "resources": row["resources"], "waiting": self.waiting(row),
+                             "recovery_for": row["spec"].get("recovery_for")}
             try:
                 meta["queue"]["release"] = self.jobs._read_root.read_json(row["job_id"] + "/queue-release.json")
             except FileNotFoundError:
@@ -186,15 +210,17 @@ class JobDispatch:
         return meta
 
     def snapshot(self):
+        lease = self.jobs.leases.snapshot(refresh=True)
         rows = self.queue.rows(("preparing", "queued", "claimed", "blocked"))
         items = []
         for row in rows:
             state = row["state"]
             phase = self.jobs.status(row["job_id"])["phase"] if state == "claimed" else state
             items.append({"job_id": row["job_id"], "request_id": row["request_id"], "phase": phase,
+                          "recovery_for": row["spec"].get("recovery_for"),
                           "submitted_at": row["submitted_at"], "resources": row["resources"],
                           "waiting": self.waiting(row, rows)})
-        return {"schema_version": 1, "max_running": self.max_running,
+        return {"schema_version": 1, "max_running": self.max_running, "lease": lease,
                 "active_count": sum(r["state"] == "claimed" for r in rows),
                 "blocked_count": sum(r["state"] == "blocked" for r in rows),
                 "queued_count": sum(r["state"] in ("preparing", "queued") for r in rows),

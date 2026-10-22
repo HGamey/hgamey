@@ -33,8 +33,9 @@ from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from node_fleet import FleetState
 import job_runtime
-from job_dispatch import JobDispatch
+from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
+from node_lease import LeaseState, device_access
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -183,6 +184,7 @@ class Jobs:
         self._read_root = SafeRoot(self.dir)
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
+        self.leases = LeaseState(bins)
         self.dispatch = JobDispatch(self, max_running)
         self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
 
@@ -218,10 +220,24 @@ class Jobs:
         if external_lock and spec.get("exe"):
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
         resources = spec.get("resources", ["legacy-device"] if binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"} else [])
+        access = device_access(spec)
+        if access not in {"none", "write", "recovery"}:
+            raise ValueError("device_access must be none, write or recovery")
+        recovery_for = spec.get("recovery_for")
+        if access == "recovery":
+            self.path(recovery_for)
+            parent = self.dispatch.queue.get(recovery_for)
+            if not parent:
+                raise KeyError(recovery_for)
+            resources = parent["resources"]
+        elif recovery_for is not None:
+            raise ValueError("recovery_for requires device_access=recovery")
         if not isinstance(resources, list) or len(resources) > 32 or any(
                 not isinstance(r, str) or not r or len(r) > 160 or any(ord(c) < 32 for c in r) for r in resources):
             raise ValueError("resources must be at most 32 nonempty resource names")
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"), "resources": sorted(set(resources)),
+                **({"device_access": access} if "device_access" in spec else {}),
+                **({"recovery_for": recovery_for} if recovery_for else {}),
                 **({"exe": spec["exe"]} if spec.get("exe") else {})}
         return self.dispatch.submit(spec, body, request_id)
 
@@ -426,13 +442,21 @@ class Jobs:
     def release_queue(self, jid, note):
         if not isinstance(note, str) or not note.strip() or len(note) > 2000:
             raise ValueError("release requires a nonempty review note (at most 2000 characters)")
-        row = self.dispatch.queue.get(jid)
-        if not row:
-            raise KeyError(jid)
-        if row["state"] != "blocked":
-            raise RequestConflict("only a blocked reservation can be released")
-        self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time()})
-        self.dispatch.queue.set_state(jid, "done")
+        with file_lock(self.dispatch.intake_path):
+            row = self.dispatch.queue.get(jid)
+            if not row:
+                raise KeyError(jid)
+            if row["state"] != "blocked":
+                raise RequestConflict("only a blocked reservation can be released")
+            children = [r["job_id"] for r in self.dispatch.queue.rows(("preparing", "queued", "claimed", "blocked"))
+                        if r["spec"].get("recovery_for") == jid]
+            if children:
+                raise RequestConflict("recovery jobs must finish and release any blocked reservations first: " + ", ".join(children))
+            lease = self.leases.snapshot(refresh=True, force=True) if device_access(row["spec"]) != "none" else None
+            if lease and lease["status"] != "clear":
+                raise RequestConflict("device lease is " + lease["status"] + "; reconcile the actual lease before releasing the queue reservation")
+            self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease})
+            self.dispatch.queue.set_state(jid, "done")
         self.dispatch.start()
         return {"released": True, "job": self.status(jid)}
 
@@ -500,7 +524,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"], ["fleet"], ["queue"], ["requests"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -520,6 +544,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     return self._send(200, node.identity())
                 if parts == ["queue"]:
                     return self._send(200, {**jobs.dispatch.snapshot(), "node_id": node.node_id})
+                if parts == ["leases"]:
+                    return self._send(200, {**jobs.leases.snapshot(refresh=True), "node_id": node.node_id})
                 if len(parts) == 2 and parts[0] == "requests":
                     row = jobs.dispatch.queue.by_request(JobDispatch.request_key(unquote(parts[1])))
                     if not row:

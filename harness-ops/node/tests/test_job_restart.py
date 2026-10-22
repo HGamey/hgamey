@@ -41,7 +41,7 @@ class JobRestartTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             jobs = Jobs(root, {"phonefarm": (sys.executable, root)})
             jobs.dispatch.start = lambda: None
-            meta = jobs.start({"bin": "phonefarm", "argv": ["-c", "pass"]}, b"", request_id="cancel-race")
+            meta = jobs.start({"bin": "phonefarm", "device_access": "none", "argv": ["-c", "pass"]}, b"", request_id="cancel-race")
             stale = jobs._read_meta(meta["id"])
             self.assertTrue(jobs.cancel(meta["id"])["accepted"])
             # Intake finishes its file write, then dies before reconciling the DB.
@@ -115,7 +115,7 @@ class JobRestartTests(unittest.TestCase):
 
             try:
                 port = start()
-                submission = {"X-Job": json.dumps({"bin": "phonefarm", "argv": ["-u", "-c", CHILD]}),
+                submission = {"X-Job": json.dumps({"bin": "phonefarm", "device_access": "none", "argv": ["-u", "-c", CHILD]}),
                               "X-Request-ID": "restart:fixture"}
                 meta = request("/jobs", "POST", headers=submission)
                 jid = meta["id"]
@@ -129,13 +129,13 @@ class JobRestartTests(unittest.TestCase):
                     repeats = list(pool.map(lambda _: request("/jobs", "POST", headers=submission), range(4)))
                 self.assertEqual({r["id"] for r in repeats}, {jid})
                 request("/jobs", "POST", headers={**submission, "X-Job": json.dumps(
-                    {"bin": "phonefarm", "argv": ["-c", "pass"]})}, expected=409)
+                    {"bin": "phonefarm", "device_access": "none", "argv": ["-c", "pass"]})}, expected=409)
                 next_job = request("/jobs", "POST", headers={"X-Request-ID": "next-job", "X-Job": json.dumps(
-                    {"bin": "phonefarm", "argv": ["-c", "from pathlib import Path; p=Path('execution-count'); p.write_text(p.read_text()+'x' if p.exists() else 'x')"]})})
+                    {"bin": "phonefarm", "device_access": "none", "argv": ["-c", "from pathlib import Path; p=Path('execution-count'); p.write_text(p.read_text()+'x' if p.exists() else 'x')"]})})
                 self.assertEqual(next_job["phase"], "queued")
                 self.assertEqual(next_job["queue"]["waiting"]["blocking_jobs"], [jid])
                 cancelled = request("/jobs", "POST", headers={"X-Job": json.dumps(
-                    {"bin": "phonefarm", "argv": ["-c", "from pathlib import Path; Path('must-not-run').touch()"]})})
+                    {"bin": "phonefarm", "device_access": "none", "argv": ["-c", "from pathlib import Path; Path('must-not-run').touch()"]})})
                 pending_cancel = request("/jobs/" + cancelled["id"] + "/cancel", "POST")
                 self.assertTrue(pending_cancel["accepted"])
                 self.assertEqual(pending_cancel["job"]["outcome"], "cancelled")
