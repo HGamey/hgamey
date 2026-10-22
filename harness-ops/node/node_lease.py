@@ -95,6 +95,19 @@ def job_lease_receipts(store, jid):
     return result
 
 
+def storage_root(value):
+    """Resolve only from the configured phonefarm, never from a Python fallback."""
+    storage = value.get("storage")
+    if not isinstance(storage, dict) or storage.get("schema_version") != 1:
+        raise ValueError("lease storage contract unavailable; upgrade phonefarm")
+    if storage.get("readiness") != "ready":
+        raise ValueError(storage.get("error") or "lease storage requires explicit initialization")
+    root = storage.get("devlock_dir")
+    if not isinstance(root, str) or not os.path.isabs(root):
+        raise ValueError("phonefarm returned an invalid devlock directory")
+    return root
+
+
 class LeaseState:
     def __init__(self, bins):
         self.bins = bins
@@ -119,6 +132,10 @@ class LeaseState:
                         or value.get("status") not in {"clear", "held", "blocked", "unknown"}
                         or not isinstance(value.get("entries"), list)):
                     raise ValueError("incompatible lease status; upgrade phonefarm")
+                try:
+                    storage_root(value)
+                except ValueError as error:
+                    value.update(status="unknown", error=str(error))
             except (OSError, subprocess.SubprocessError, ValueError) as error:
                 value = {"schema_version": 1, "status": "unknown", "bridge_held": None,
                          "entries": [], "error": f"lease status unavailable: {type(error).__name__}: {error}"}

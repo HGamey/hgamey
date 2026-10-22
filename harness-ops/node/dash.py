@@ -284,10 +284,10 @@ class Dash:
         self.goals = dash_goals.Goals(os.environ.get("HG_GOALS_DIR", os.path.join(node_dir, "goals")),
                                       os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "demo-goals"),
                                       jobs=jobs, gol_exe=os.path.join(gol_root, "game_opt_loop"))
-        self.lock_dir = os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501")
         self.shot_dir = os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "screens")
         self.last_view = 0.0
-        self.monitor = fleet or FleetState(self.pf_root, self.lock_dir, self.shot_dir)
+        self.monitor = fleet or FleetState(self.pf_root, None, self.shot_dir,
+                                          lease_state=jobs.leases if jobs else None)
         self.meta_cache = {}
         self.walk_cache = {}
         self.exp_cache = {}

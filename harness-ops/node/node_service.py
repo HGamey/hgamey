@@ -472,8 +472,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
-        jobs.root, os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501"),
-        os.path.join(jobs.data_root, "_dash", "screens"))
+        jobs.root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -735,8 +734,7 @@ def main():
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running)
-    fleet = FleetState(root, os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501"),
-                       os.path.join(jobs.data_root, "_dash", "screens"))
+    fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:
         try:

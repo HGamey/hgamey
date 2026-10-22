@@ -169,6 +169,8 @@ class JobDispatch:
         env = dict(os.environ, DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
+        if "phonefarm" in self.jobs.bins:
+            env["PHONEFARM_BIN"] = self.jobs.bins["phonefarm"][0]
         try:
             proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"], env=env)
         except OSError as error:
