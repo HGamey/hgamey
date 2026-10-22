@@ -9,6 +9,8 @@
   pf-node --request-id study-001 --resource device:oneplus phonefarm eval ...
   pf-node request <request_id>               # 断网后找回同一次提交的任务
   pf-node queue                              # 只读持久队列快照
+  pf-node leases                             # 只读实际 lease 与恢复屏障
+  pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
   pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
@@ -27,6 +29,8 @@
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
 - 每次提交生成 request_id；同一次重试保持请求内容和 id 不变。--request-id 可手动指定，--resource 可重复声明独占资源。
   preparing/queued 只代表准备或排队；提交前需节点支持幂等请求，结果未知时用 request 查询，不要换 id 重投。
+- --device-access none|write|recovery 显式声明设备访问；recovery 必须配 --recovery-for 原资源保留任务 ID，
+  资源由父任务继承，不能同时传 --resource。恢复任务不自动解除原屏障；核查后另行 release。
 - 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """
 import gzip, hashlib, http.client, io, json, math, os, re, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
@@ -107,7 +111,7 @@ def valid_request_id(value):
     return value
 
 
-def require_idempotent_jobs():
+def require_idempotent_jobs(require_recovery=False):
     try:
         node = json.loads(call("GET", "/node", attempts=1, raise_4xx=True))
     except ClientError as e:
@@ -116,6 +120,8 @@ def require_idempotent_jobs():
         sys.exit(f"pf-node: 无法确认节点提交能力：{e}；未发送 POST /jobs")
     if "jobs.idempotency-v1" not in node.get("capabilities", []):
         sys.exit("pf-node: 节点缺少 jobs.idempotency-v1，请升级节点服务；未发送 POST /jobs")
+    if require_recovery and "jobs.recovery-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 jobs.recovery-v1，不能显式指定设备访问或恢复任务；请升级节点服务；未发送 POST /jobs")
 
 
 def submit_job(spec, body, request_id):
@@ -129,8 +135,9 @@ def submit_job(spec, body, request_id):
         return meta
     except ClientError as e:
         if e.code == 409:
-            sys.exit(f"pf-node: request_id={request_id} 与已有提交内容冲突（HTTP 409）；"
-                     f"请先用 pf-node request {request_id} 核对原任务，不要把冲突当成重试成功。")
+            sys.exit(f"pf-node: 提交条件冲突（HTTP 409），request_id={request_id}；服务端原因："
+                     f"{e.body.decode(errors='replace')}；请用 pf-node request {request_id} 核对已有任务，"
+                     "并检查恢复目标条件；不要换 request_id 盲目重投。")
         sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{e}")
     except (SystemExit, ValueError, KeyError, KeyboardInterrupt) as e:
         print(f"pf-node: 提交结果未知，request_id={request_id}：{e}；"
@@ -308,6 +315,7 @@ def fetch_out(jid, dest, rel=None):
 def main():
     args, outdir, detach, label, exe = sys.argv[1:], None, False, os.environ.get("DEVLOCK_LABEL"), None
     request_id, resources = None, []
+    device_access, recovery_for = None, None
     while args and args[0].startswith("-"):
         a = args.pop(0)
         if a in ("-o", "--out-dir"):
@@ -326,21 +334,42 @@ def main():
             if not args or not args[0].strip():
                 sys.exit("pf-node: --resource 需要一个独占资源名称")
             resources.append(args.pop(0))
+        elif a == "--device-access":
+            if not args or args[0] not in ("none", "write", "recovery"):
+                sys.exit("pf-node: --device-access 必须为 none、write 或 recovery")
+            value = args.pop(0)
+            if device_access is not None and device_access != value:
+                sys.exit("pf-node: --device-access 不能声明互相矛盾的模式")
+            device_access = value
+        elif a == "--recovery-for":
+            if not args or not re.fullmatch(r"[0-9a-f]{12}", args[0]):
+                sys.exit("pf-node: --recovery-for 需要原资源保留任务的 12 位 ID")
+            value = args.pop(0)
+            if recovery_for is not None and recovery_for != value:
+                sys.exit("pf-node: --recovery-for 只能指定一个恢复目标")
+            recovery_for = value
         elif a in ("-h", "--help"):
             sys.exit(__doc__)
         else:
             sys.exit(f"pf-node: 未知选项 {a}")
     if not args:
         sys.exit(__doc__)
+    if device_access == "recovery":
+        if recovery_for is None:
+            sys.exit("pf-node: --device-access recovery 必须配 --recovery-for 原资源保留任务 ID")
+        if resources:
+            sys.exit("pf-node: 恢复任务继承父任务资源，不能同时使用 --resource")
+    elif recovery_for is not None:
+        sys.exit("pf-node: --recovery-for 必须与 --device-access recovery 一起使用")
     if args[0] == "request":
         if len(args) != 2:
             sys.exit("用法: pf-node request <request_id>")
         print(call("GET", f"/requests/{valid_request_id(args[1])}").decode())
         return
-    if args[0] == "queue":
+    if args[0] in ("queue", "leases"):
         if len(args) != 1:
-            sys.exit("用法: pf-node queue")
-        print(call("GET", "/queue").decode())
+            sys.exit(f"用法: pf-node {args[0]}")
+        print(call("GET", "/" + args[0]).decode())
         return
     if args[0] == "release":
         if (len(args) != 4 or not re.fullmatch(r"[0-9a-f]{12}", args[1])
@@ -413,7 +442,7 @@ def main():
             sys.exit(rc)
         return
     binname, argv = args[0], args[1:]
-    require_idempotent_jobs()
+    require_idempotent_jobs(require_recovery=device_access is not None)
     request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
@@ -421,6 +450,10 @@ def main():
         spec["exe"] = argv[0]
     if resources:
         spec["resources"] = resources
+    if device_access is not None:
+        spec["device_access"] = device_access
+    if recovery_for is not None:
+        spec["recovery_for"] = recovery_for
     meta = submit_job(spec, body, request_id)
     jid = meta["id"]
     print(f"pf-node: 提交已记录 job={jid} phase={meta.get('phase', 'unknown')} request_id={request_id}",

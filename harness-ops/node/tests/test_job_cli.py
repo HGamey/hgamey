@@ -99,6 +99,8 @@ class JobCLI(unittest.TestCase):
                     self.reply(meta)
                 elif self.path == "/queue":
                     self.reply({"items": [meta]})
+                elif self.path == "/leases":
+                    self.reply({"status": "blocked", "entries": []})
                 else:
                     self.send_error(404)
 
@@ -144,11 +146,14 @@ class JobCLI(unittest.TestCase):
         self.assertEqual(posts[0][3], first_pack[1])
         recovered = run("request", "study-001")
         queued = run("queue")
+        leases = run("leases")
         self.assertEqual(recovered.returncode, 0, recovered.stderr)
         self.assertEqual(json.loads(recovered.stdout), meta)
         self.assertEqual(queued.returncode, 0, queued.stderr)
         self.assertEqual(json.loads(queued.stdout), {"items": [meta]})
-        self.assertEqual(gets, ["/node", "/requests/study-001", "/queue"])
+        self.assertEqual(leases.returncode, 0, leases.stderr)
+        self.assertEqual(json.loads(leases.stdout), {"status": "blocked", "entries": []})
+        self.assertEqual(gets, ["/node", "/requests/study-001", "/queue", "/leases"])
         self.assertEqual(len(posts), 2)
 
     def test_submission_refuses_old_nodes_and_reports_conflict_or_unknown_result(self):
@@ -164,7 +169,8 @@ class JobCLI(unittest.TestCase):
 
             def do_GET(self):
                 self.reply(404 if mode[0] == "404" else 200,
-                           {"capabilities": [] if mode[0] == "old" else ["jobs.idempotency-v1"]})
+                           {"capabilities": [] if mode[0] == "old" else ["jobs.idempotency-v1"] +
+                            (["jobs.recovery-v1"] if mode[0] in ("modern", "parent-conflict") else [])})
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -173,6 +179,8 @@ class JobCLI(unittest.TestCase):
                     self.close_connection = True
                 elif mode[0] == "conflict":
                     self.reply(409, {"error": "request content differs"})
+                elif mode[0] == "parent-conflict":
+                    self.reply(409, {"error": "recovery_for must name a blocked reservation"})
                 else:
                     self.reply(200, {"id": JOB, "phase": "preparing", "state": "running"})
 
@@ -205,9 +213,43 @@ class JobCLI(unittest.TestCase):
         code, _, _ = run("--request-id", "bad/id", "--detach", "phonefarm", "eval")
         self.assertIn("request_id", str(code))
         self.assertEqual(posts, [])
+        mode[0] = "idempotency-only"
+        code, _, _ = run("--device-access", "none", "--detach", "phonefarm", "eval")
+        self.assertIn("jobs.recovery-v1", str(code))
+        self.assertEqual(posts, [], "explicit access must not POST to an older node")
+        for options, explanation in [
+            (["--device-access", "recovery"], "--recovery-for"),
+            (["--recovery-for", JOB], "--device-access recovery"),
+            (["--device-access", "write", "--recovery-for", JOB], "--device-access recovery"),
+            (["--device-access", "recovery", "--recovery-for", JOB, "--resource", "override"], "继承"),
+            (["--device-access", "none", "--device-access", "write"], "矛盾"),
+        ]:
+            code, _, _ = run(*options, "--detach", "phonefarm", "eval")
+            self.assertIn(explanation, str(code))
+        self.assertEqual(posts, [])
+        mode[0] = "modern"
+        code, _, stderr = run("--device-access", "recovery", "--recovery-for", JOB,
+                             "--detach", "phonefarm", "fixture-recover")
+        self.assertEqual(code, 0, stderr)
+        spec = json.loads(posts.pop()[1])
+        self.assertEqual(spec["device_access"], "recovery")
+        self.assertEqual(spec["recovery_for"], JOB)
+        self.assertNotIn("resources", spec)
+        code, _, stderr = run("--device-access", "none", "--detach", "phonefarm", "fixture-host-only")
+        self.assertEqual(code, 0, stderr)
+        spec = json.loads(posts.pop()[1])
+        self.assertEqual(spec["device_access"], "none")
+        self.assertNotIn("recovery_for", spec)
+        mode[0] = "parent-conflict"
+        code, _, _ = run("--device-access", "recovery", "--recovery-for", JOB,
+                         "--request-id", "recover-001", "--detach", "phonefarm", "fixture-recover")
+        self.assertIn("recovery_for must name a blocked reservation", str(code))
+        self.assertNotIn("与已有提交内容冲突", str(code))
+        posts.clear()
         mode[0] = "conflict"
         code, _, _ = run("--request-id", "same-id", "--detach", "phonefarm", "eval")
         self.assertIn("冲突", str(code))
+        self.assertIn("request content differs", str(code))
         self.assertEqual(len(posts), 1)
         mode[0] = "unknown"
         posts.clear()
@@ -224,6 +266,8 @@ class JobCLI(unittest.TestCase):
         request_id, spec, body = posts[0]
         self.assertEqual(str(uuid.UUID(request_id)), request_id)
         self.assertNotIn("resources", json.loads(spec))
+        self.assertNotIn("device_access", json.loads(spec))
+        self.assertNotIn("recovery_for", json.loads(spec))
         self.assertEqual(body, b"")
         self.assertIn("phase=preparing", stderr)
 
