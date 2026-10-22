@@ -9,7 +9,7 @@
   pf-node --request-id study-001 --resource device:oneplus phonefarm eval ...
   pf-node request <request_id>               # 断网后找回同一次提交的任务
   pf-node queue                              # 只读持久队列快照
-  pf-node leases                             # 只读实际 lease 与恢复屏障
+  pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
   pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
@@ -366,10 +366,24 @@ def main():
             sys.exit("用法: pf-node request <request_id>")
         print(call("GET", f"/requests/{valid_request_id(args[1])}").decode())
         return
-    if args[0] in ("queue", "leases"):
+    if args[0] == "leases":
+        if len(args) == 1:
+            path = "/leases"
+        elif len(args) == 2 and re.fullmatch(r"[0-9a-f]{12}", args[1]):
+            path = f"/jobs/{args[1]}/leases"
+        else:
+            sys.exit("用法: pf-node leases [12 位任务 id]")
+        try:
+            print(call("GET", path, raise_4xx=True).decode())
+        except ClientError as e:
+            if e.code == 404:
+                sys.exit("pf-node: 任务不存在或节点未提供该 lease 证据入口（HTTP 404）；不能据此判断设备恢复状态")
+            sys.exit(f"pf-node: lease 证据读取失败：{e}")
+        return
+    if args[0] == "queue":
         if len(args) != 1:
-            sys.exit(f"用法: pf-node {args[0]}")
-        print(call("GET", "/" + args[0]).decode())
+            sys.exit("用法: pf-node queue")
+        print(call("GET", "/queue").decode())
         return
     if args[0] == "release":
         if (len(args) != 4 or not re.fullmatch(r"[0-9a-f]{12}", args[1])

@@ -5,6 +5,7 @@
   const API = '/dash/api';
   const LOG_CHUNK = 64 * 1024;
   const LOG_WINDOW = 256 * 1024;
+  let jobLeasesRevision = 0, jobLeasesBusy = false, jobLeasesRead = false;
   let nodeRevision = 0, listRevision = 0, detailRevision = 0, artifactRevision = 0, metadataRevision = 0, logRevision = 0;
   let jobsCursor = null, filesCursor = null, selected = '', directory = '';
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
@@ -258,6 +259,7 @@
       const info = el('dl', null, 'facts');
       for (const [name, value] of [['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
       details.append(info);
+      if (entry.job_id) details.append(openJobButton(entry.job_id, `关联任务 ${entry.job_id}`));
       if (entry.recovery_context != null) details.append(el('pre', typeof entry.recovery_context === 'string' ? entry.recovery_context : JSON.stringify(entry.recovery_context, null, 2), 'lease-context'));
       item.append(details); return item;
     }));
@@ -425,6 +427,7 @@
     const revision = ++nodeRevision;
     nodeInfo = null;
     renderSubmission();
+    updateJobLeaseAccess();
     regionBusy('node-card', true);
     $('node-summary').hidden = true;
     $('node-details').hidden = true;
@@ -453,7 +456,7 @@
       $('node-updated').textContent = readTime();
     } catch (error) {
       if (revision === nodeRevision) message('node-message', errorText(error), true);
-    } finally { if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); } }
+    } finally { if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -526,6 +529,7 @@
     }
     selected = id;
     currentJob = null;
+    resetJobLeases();
     const revision = ++detailRevision;
     ++artifactRevision;
     ++metadataRevision;
@@ -548,6 +552,7 @@
       const job = await json(jobURL());
       if (revision !== detailRevision) return;
       currentJob = job;
+      updateJobLeaseAccess();
       const [label, kind] = status(job);
       $('job-title').textContent = job.label || job.bin || '未命名任务';
       $('job-state').textContent = label;
@@ -577,6 +582,82 @@
         busy('refresh-detail', false);
         regionBusy('task-detail', false);
       }
+    }
+  }
+  function updateJobLeaseAccess() {
+    const supported = nodeInfo?.capabilities?.includes('jobs.leases-v1');
+    $('load-job-leases').disabled = !currentJob || !supported || jobLeasesBusy;
+    $('load-job-leases').setAttribute('aria-busy', String(jobLeasesBusy));
+    $('load-job-leases').textContent = jobLeasesBusy ? '读取中…' : jobLeasesRead ? '刷新 lease 证据' : '读取 lease 证据';
+    if (!jobLeasesRead && !jobLeasesBusy) message('job-leases-message', !nodeInfo ? '节点能力尚未取得，暂不能读取任务 lease 证据。' : !supported ? '此节点未提供任务关联的 lease 证据能力，不能据此判断恢复状态。' : '按需读取本任务记录，不访问或操作设备。');
+  }
+  function resetJobLeases() {
+    ++jobLeasesRevision;
+    jobLeasesBusy = false;
+    jobLeasesRead = false;
+    regionBusy('job-leases', false);
+    $('job-leases-list').replaceChildren();
+    $('job-leases-errors').replaceChildren();
+    $('job-leases-errors').hidden = true;
+    $('job-leases-updated').textContent = '';
+    updateJobLeaseAccess();
+  }
+  const structuredText = value => value == null ? '未记录' : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  function addJobLease(entry, id) {
+    const item = el('li', null, 'lease-receipt'), heading = el('div', null, 'section-heading');
+    const state = ({active: 'lease 使用中', released: 'lease 已释放', retained: 'lease 保留待恢复'})[entry.state] || text(entry.state);
+    heading.append(el('h4', `${entry.serial || '设备未记录'} · ${entry.lease_id}`), el('span', state, `task-state ${entry.state === 'retained' ? 'unknown' : ''}`));
+    const recovery = entry.recovery || {};
+    const report = ({not_reported: '尚未报告恢复完成。', required: '报告要求继续恢复。', reported_complete: '调用者报告局部完成；仅覆盖下述范围。'})[recovery.status] || '恢复报告状态未知。';
+    item.append(heading, el('p', `${report}${recovery.evidence_origin === 'synthetic' ? ' 模拟证据（synthetic），不是真机恢复证明。' : ''}`, 'lease-report'));
+    const info = el('dl', null, 'facts');
+    for (const [key, value] of [['标签', entry.label], ['原因', recovery.reason || '未记录'], ['报告范围', structuredText(recovery.scope)], ['证据来源', recovery.evidence_origin || '未记录'], ['记录更新', time(entry.updated_at)]]) info.append(el('dt', key), el('dd', text(value)));
+    item.append(info);
+    const details = el('details');
+    details.append(el('summary', '恢复上下文与证据引用'), el('pre', `上下文：\n${structuredText(recovery.context)}`, 'lease-context'), el('p', '已有证据路径（仅展示，不直接打开）', 'note'));
+    const evidence = el('ul', null, 'lease-evidence');
+    for (const path of recovery.evidence || []) evidence.append(el('li', path));
+    if (!evidence.children.length) evidence.append(el('li', '未记录证据路径'));
+    details.append(evidence);
+    item.append(details);
+    const actions = el('div', null, 'receipt-actions');
+    if (entry.artifact_path) {
+      const download = el('a', '下载原始收据');
+      download.href = `${API}/jobs/${encodeURIComponent(id)}/out?${new URLSearchParams({path: entry.artifact_path})}`;
+      download.download = entry.artifact_path.split('/').pop();
+      actions.append(download);
+    }
+    if (entry.recovery_of?.job_id) actions.append(openJobButton(entry.recovery_of.job_id, `先前任务 ${entry.recovery_of.job_id}`), el('span', `先前 lease：${text(entry.recovery_of.lease_id)}`, 'note'));
+    item.append(actions);
+    $('job-leases-list').append(item);
+  }
+  async function loadJobLeases() {
+    if ($('load-job-leases').disabled || !selected) return;
+    const id = selected, revision = ++jobLeasesRevision;
+    jobLeasesBusy = true;
+    jobLeasesRead = false;
+    $('job-leases-list').replaceChildren();
+    $('job-leases-errors').replaceChildren();
+    $('job-leases-errors').hidden = true;
+    $('job-leases-updated').textContent = '';
+    updateJobLeaseAccess();
+    regionBusy('job-leases', true);
+    message('job-leases-message', '正在读取任务 lease 证据…');
+    try {
+      const result = await json(`${API}/jobs/${encodeURIComponent(id)}/leases`);
+      if (revision !== jobLeasesRevision || selected !== id) return;
+      const warning = result.status === 'partial' || result.status === 'unknown' || result.errors.length > 0;
+      const description = ({not_reported: '尚无任务关联的 lease 收据；这不证明任务未操作设备或设备已恢复。', recorded: `已读取 ${result.entries.length} 份 lease 收据，请核查各自的范围与来源。`, partial: '只取得部分 lease 证据；下列错误尚未解决。', unknown: 'lease 证据状态未知，请核查读取错误。'})[result.status] || 'lease 证据状态未识别，请核查节点版本。';
+      message('job-leases-message', description, warning);
+      result.entries.forEach(entry => addJobLease(entry, id));
+      $('job-leases-errors').replaceChildren(...result.errors.map(error => el('li', `${error.path || '未指明路径'}：${error.error}`)));
+      $('job-leases-errors').hidden = !result.errors.length;
+      $('job-leases-updated').textContent = readTime();
+      jobLeasesRead = true;
+    } catch (error) {
+      if (revision === jobLeasesRevision && selected === id) { message('job-leases-message', error.status === 404 ? '任务不存在或节点未提供此证据入口，请刷新任务与节点信息。' : errorText(error), true); jobLeasesRead = true; }
+    } finally {
+      if (revision === jobLeasesRevision && selected === id) { jobLeasesBusy = false; regionBusy('job-leases', false); updateJobLeaseAccess(); }
     }
   }
   function breadcrumbs() {
@@ -739,6 +820,7 @@
   }
   $('refresh-all').addEventListener('click', refreshAll);
   $('refresh-detail').addEventListener('click', () => { if (selected) selectJob(selected, true); });
+  $('load-job-leases').addEventListener('click', loadJobLeases);
   $('refresh-artifacts').addEventListener('click', () => loadArtifacts());
   $('more-artifacts').addEventListener('click', () => loadArtifacts(true));
   $('log-next').addEventListener('click', loadLog);

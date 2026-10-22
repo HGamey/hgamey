@@ -101,6 +101,8 @@ class JobCLI(unittest.TestCase):
                     self.reply({"items": [meta]})
                 elif self.path == "/leases":
                     self.reply({"status": "blocked", "entries": []})
+                elif self.path == f"/jobs/{JOB}/leases":
+                    self.reply({"job_id": JOB, "status": "not_reported", "entries": [], "errors": []})
                 else:
                     self.send_error(404)
 
@@ -147,13 +149,21 @@ class JobCLI(unittest.TestCase):
         recovered = run("request", "study-001")
         queued = run("queue")
         leases = run("leases")
+        job_leases = run("leases", JOB)
+        missing_leases = run("leases", "ffffffffffff")
+        bad_leases = run("leases", "not-a-job")
         self.assertEqual(recovered.returncode, 0, recovered.stderr)
         self.assertEqual(json.loads(recovered.stdout), meta)
         self.assertEqual(queued.returncode, 0, queued.stderr)
         self.assertEqual(json.loads(queued.stdout), {"items": [meta]})
         self.assertEqual(leases.returncode, 0, leases.stderr)
         self.assertEqual(json.loads(leases.stdout), {"status": "blocked", "entries": []})
-        self.assertEqual(gets, ["/node", "/requests/study-001", "/queue", "/leases"])
+        self.assertEqual(job_leases.returncode, 0, job_leases.stderr)
+        self.assertEqual(json.loads(job_leases.stdout), {"job_id": JOB, "status": "not_reported", "entries": [], "errors": []})
+        self.assertNotEqual(missing_leases.returncode, 0)
+        self.assertIn("节点未提供该 lease 证据入口", missing_leases.stderr)
+        self.assertNotEqual(bad_leases.returncode, 0)
+        self.assertEqual(gets, ["/node", "/requests/study-001", "/queue", "/leases", f"/jobs/{JOB}/leases", "/jobs/ffffffffffff/leases"])
         self.assertEqual(len(posts), 2)
 
     def test_submission_refuses_old_nodes_and_reports_conflict_or_unknown_result(self):

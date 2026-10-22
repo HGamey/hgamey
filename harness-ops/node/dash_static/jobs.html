@@ -132,6 +132,13 @@
         </details>
         <p id="queue-release-result" class="cancel-result" role="status" hidden></p>
         <p class="evidence-note"><strong>结果需核对证据</strong>退出码只说明命令执行情况。实验是否有效、是否有收益、设备是否已恢复，请核对报告和原始证据。</p>
+        <section id="job-leases" class="job-leases" aria-labelledby="job-leases-heading">
+          <div class="section-heading"><h3 id="job-leases-heading">本任务的 lease 证据</h3><button id="load-job-leases" class="ghost" type="button" disabled>读取 lease 证据</button></div>
+          <p class="note">记录只覆盖对应 lease 的范围。局部完成报告、锁已释放或模拟证据，均不能单独证明整个任务或设备已恢复。</p>
+          <p id="job-leases-message" class="note" role="status"></p><p id="job-leases-updated" class="read-time"></p>
+          <ul id="job-leases-errors" class="lease-receipt-errors" hidden></ul>
+          <ul id="job-leases-list" class="lease-receipt-list" aria-label="任务关联的 lease 收据"></ul>
+        </section>
         <section id="artifacts" class="artifacts" aria-labelledby="artifacts-heading">
           <div class="section-heading"><h3 id="artifacts-heading">输出文件</h3><button id="refresh-artifacts" class="ghost" type="button">刷新目录</button></div>
           <nav id="breadcrumbs" class="breadcrumbs" aria-label="输出目录"></nav>
