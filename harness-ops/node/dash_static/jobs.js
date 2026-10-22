@@ -360,6 +360,7 @@
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
     $('submit-retry').disabled = !allowed || submissionBusy;
     renderSessionTemplate(allowed);
+    renderRefbenchTemplate(allowed);
     renderControls();
   }
   function renderSessionTemplate(allowed) {
@@ -386,6 +387,31 @@
     if (!$('submit-label').value.trim()) $('submit-label').value = `灰层会话 · ${pkg}`;
     renderSubmission();
     message('template-status', `已填入 ${policy} 策略的新会话参数，尚未提交。请核对下方 argv；运行中的会话不受影响。`);
+  }
+  function renderRefbenchTemplate(allowed) {
+    const unavailable = !allowed || !!pendingRequest || submissionBusy || !nodeInfo?.execution?.bins?.includes('phonefarm');
+    for (const id of ['refbench-serial', 'refbench-frames', 'refbench-intensity', 'refbench-timeout', 'refbench-so', 'refbench-apply']) $(id).disabled = unavailable;
+    message('refbench-status', pendingRequest ? '存在未确认提交，先按原请求 ID 找回；模板不会覆盖该请求。' : unavailable ? '需解锁任务操作，且节点提供 phonefarm 命令，才能填入模板。' : '模板只填入参数；核对下方命令后，再点击“提交任务”。');
+  }
+  function applyRefbenchTemplate() {
+    if ($('refbench-apply').disabled || pendingRequest || submissionBusy) return;
+    const serial = $('refbench-serial').value.trim(), frames = Number($('refbench-frames').value);
+    const intensity = Number($('refbench-intensity').value), timeout = Number($('refbench-timeout').value);
+    if (!serial || !Number.isInteger(frames) || frames < 60 || frames > 100000 ||
+        !Number.isInteger(intensity) || intensity < 1 || intensity > 64 ||
+        !Number.isInteger(timeout) || timeout < 1 || timeout > 600) {
+      message('refbench-status', '请填写设备、60–100000 帧、1–64 强度及 1–600 秒单臂超时；尚未填入。', true); return;
+    }
+    const argv = ['gray-layer', 'refbench-loadop', '--serial', serial, '--frames', String(frames), '--intensity', String(intensity), '--timeout-seconds', String(timeout), '--out', '@out', '--json'];
+    const so = $('refbench-so').value.trim();
+    if (so) argv.push('--so', so);
+    $('submit-bin').value = 'phonefarm';
+    $('submit-argv').value = JSON.stringify(argv, null, 2);
+    $('submit-device-access').value = recoverySupported() ? 'write' : '';
+    $('submit-recovery-for').value = '';
+    if (!$('submit-label').value.trim()) $('submit-label').value = 'refbench · 四臂 loadop';
+    renderSubmission();
+    message('refbench-status', '已填入四臂 refbench 参数，尚未提交。请核对设备、参数与独占资源后，再提交任务。');
   }
   function submissionMessage(value, error = false, id = '') {
     $('submission-receipt').hidden = false;
@@ -1519,6 +1545,7 @@
   $('refresh-queue').addEventListener('click', loadQueue);
   $('submit-job-form').addEventListener('submit', event => { event.preventDefault(); submitJob(); });
   $('session-template-form').addEventListener('submit', event => { event.preventDefault(); applySessionTemplate(); });
+  $('refbench-template-form').addEventListener('submit', event => { event.preventDefault(); applyRefbenchTemplate(); });
   $('template-power').addEventListener('change', () => renderSessionTemplate(!$('submit-bin').disabled));
   $('submit-retry').addEventListener('click', () => submitJob(true));
   $('submit-refill').addEventListener('click', () => {

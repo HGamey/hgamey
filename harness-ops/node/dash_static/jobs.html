@@ -86,6 +86,22 @@
         <p id="template-status" class="note" role="status"></p>
       </form>
     </details>
+    <details class="session-template">
+      <summary>四臂 refbench 模板</summary>
+      <p class="note">A/B 先核查实际无层，作为无层对照。C/D 加载改写层，分别核对应用开关关闭与开启的预期。这里只采集固定 refbench 的原件与自报，不代表游戏 FPS 或功耗收益。</p>
+      <form id="refbench-template-form">
+        <div class="submit-fields">
+          <label>设备 serial<input id="refbench-serial" required autocomplete="off" spellcheck="false" placeholder="明确指定设备"></label>
+          <label>每臂帧数<input id="refbench-frames" type="number" min="60" max="100000" step="1" value="1800" required></label>
+          <label>强度<input id="refbench-intensity" type="number" min="1" max="64" step="1" value="8" required></label>
+          <label>单臂超时（秒）<input id="refbench-timeout" type="number" min="1" max="600" step="1" value="150" required></label>
+          <label class="wide-field">节点已有 SO 路径 <span class="field-optional">可选</span><input id="refbench-so" autocomplete="off" spellcheck="false" placeholder="留空使用 producer 默认层"></label>
+        </div>
+        <p class="note">固定目标 io.github.hgamey.refbench。模板只填参数；提交后沿任务记录查看结果与失败原件，功能支持以 producer 返回为准。</p>
+        <button id="refbench-apply" class="ghost" type="submit" disabled>填入任务参数</button>
+        <p id="refbench-status" class="note" role="status"></p>
+      </form>
+    </details>
     <form id="submit-job-form" class="submit-job-form">
       <div class="submit-fields">
         <label>命令<select id="submit-bin" required disabled><option value="">正在读取可用命令…</option></select></label>

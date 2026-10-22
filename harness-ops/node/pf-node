@@ -13,6 +13,7 @@
   pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
   pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
   pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
+  pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
   pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
