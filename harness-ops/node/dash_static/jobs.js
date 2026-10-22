@@ -1,4 +1,4 @@
-/* Read host job records only. Device state and experiment validity are separate. */
+/* Reads stay host-only. Stop requests require steering access; recovery is separate evidence. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -9,6 +9,8 @@
   let jobsCursor = null, filesCursor = null, selected = '', directory = '';
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
   let activeFilters = {query: '', state: ''};
+  let currentJob = null, access = null, accessRevision = 0, accessBusy = false, accessError = '';
+  const cancelling = new Set(), cancelReceipts = new Map();
 
   const text = value => value == null ? '未记录' : String(value);
   function el(tag, value, className) {
@@ -45,6 +47,12 @@
     $(id).replaceChildren(...rows.flatMap(([key, value]) => [el('dt', key), el('dd', text(value))]));
   }
   function status(job) {
+    if (job.phase === 'interrupted' || job.outcome === 'interrupted') return ['执行中断 · 待核查', 'unknown'];
+    if (job.phase === 'cancelling') return ['停止请求处理中', 'unknown'];
+    if (job.phase === 'starting') return ['正在启动', 'running'];
+    if (job.outcome === 'cancelled') return ['已停止 · 恢复需核查', 'unknown'];
+    if (job.outcome === 'failed') return [`执行失败${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'failed'];
+    if (job.outcome === 'succeeded') return [`命令执行完成${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'finished'];
     if (job.lost) return ['退出状态丢失', 'unknown'];
     if (job.state === 'running') return ['运行中', 'running'];
     if (job.exit === 0) return ['已结束 · exit 0', 'finished'];
@@ -64,7 +72,9 @@
     try {
       const response = await fetch(url, {credentials: 'same-origin', cache: 'no-store', signal: controller.signal});
       if (response.status === 401 || response.status === 403 || (response.redirected && new URL(response.url).pathname === '/dash/login')) {
-        throw new Error('查看登录已失效，请通过首页重新登录。');
+        const error = new Error('查看登录已失效，请重新登录。');
+        error.status = response.status;
+        throw error;
       }
       if (!response.ok) throw new Error(`读取失败（HTTP ${response.status}），可刷新重试。`);
       return await consume(response);
@@ -75,6 +85,128 @@
       if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('服务返回了非 JSON 内容，请检查登录或节点连接。');
       return response.json();
     });
+  }
+  async function post(url, body) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(url, {method: 'POST', credentials: 'same-origin', signal: controller.signal,
+        headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify(body)});
+      if (response.redirected && new URL(response.url).pathname === '/dash/login') {
+        const error = new Error('查看登录已失效，请重新登录。');
+        error.status = 401;
+        throw error;
+      }
+      const data = (response.headers.get('content-type') || '').includes('application/json') ? await response.json() : {};
+      if (!response.ok) {
+        const prefix = ({401: '查看登录已失效，请重新登录。', 403: '操作未获授权，请重新解锁任务操作。',
+          409: '任务状态已变化，请核对最新记录。'})[response.status] || `请求失败（HTTP ${response.status}）。`;
+        const error = new Error(`${prefix}${data.error || data.reason || ''}`);
+        error.status = response.status;
+        throw error;
+      }
+      if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('请求结果未确认，节点未返回 JSON。');
+      return data;
+    } finally { clearTimeout(timeout); }
+  }
+  function renderAccess() {
+    $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定任务操作' : '解锁任务操作';
+    $('access-toggle').disabled = accessBusy || !access?.steer_configured;
+    $('access-toggle').setAttribute('aria-busy', String(accessBusy));
+    message('access-message', accessError || (accessBusy ? '正在核对操作权限…' : !access ? '权限尚未取得，任务操作保持只读。' :
+      !access.steer_configured ? '本节点尚未配置掌舵密码，任务操作保持只读。' : access.steer ? '已解锁，可对支持的任务提交停止请求。' : '当前为只读模式，解锁后可提交停止请求。'), !!accessError);
+    renderControls();
+  }
+  async function loadAccess() {
+    const revision = ++accessRevision;
+    accessBusy = true;
+    renderAccess();
+    try {
+      const result = await json(`${API}/access`);
+      if (revision !== accessRevision) return;
+      access = result;
+      accessError = '';
+      $('access-login').hidden = true;
+    } catch (error) {
+      if (revision !== accessRevision) return;
+      access = null;
+      accessError = errorText(error);
+      $('access-login').hidden = error.status !== 401;
+    } finally { if (revision === accessRevision) { accessBusy = false; renderAccess(); } }
+  }
+  function closeUnlock() { $('unlock-form').hidden = true; $('steer-password').value = ''; }
+  async function setAccess(unlock) {
+    if (accessBusy) return;
+    ++accessRevision;
+    accessBusy = true;
+    renderAccess();
+    busy('unlock-submit', true, '解锁中…');
+    const body = unlock ? {pw: $('steer-password').value} : {};
+    $('steer-password').value = '';
+    message('unlock-message', '');
+    try {
+      await post(`${API}/steer/${unlock ? 'unlock' : 'lock'}`, body);
+      closeUnlock();
+      await loadAccess();
+    } catch (error) {
+      accessError = errorText(error);
+      access = null;
+      $('access-login').hidden = error.status !== 401;
+      if (unlock) message('unlock-message', errorText(error), true);
+    } finally { accessBusy = false; busy('unlock-submit', false); renderAccess(); }
+  }
+  function renderControls() {
+    if (!currentJob || currentJob.id !== selected) return;
+    const terminal = currentJob.state === 'finished' || ['finished', 'interrupted'].includes(currentJob.phase);
+    const supported = currentJob.execution?.kind === 'supervised-v1';
+    const pending = cancelling.has(currentJob.id);
+    const allowed = !!access?.steer && !accessBusy && !pending && !terminal && supported;
+    const stopping = currentJob.phase === 'cancelling' && currentJob.cancel?.status !== 'not_applied';
+    $('cancel-job').disabled = !allowed || !currentJob.controls?.cancel_supported || stopping;
+    $('force-open').disabled = !allowed || !currentJob.controls?.force_supported;
+    $('force-submit').disabled = $('force-open').disabled || !$('force-confirm').checked;
+    $('cancel-job').setAttribute('aria-busy', String(pending));
+    $('cancel-job').textContent = pending ? '提交中…' : '请求停止';
+    $('force-submit').setAttribute('aria-busy', String(pending));
+    let reason = !supported ? '旧版任务仅支持查看，当前没有可核验的停止接口。' : terminal ? '任务执行已结束，无法继续发送停止请求。' :
+      !access?.steer || accessBusy ? '请先在上方解锁任务操作权限。' : stopping ? '停止请求已记录，等待任务处理；刷新任务可核对进度。' :
+      !currentJob.controls?.cancel_supported ? '当前任务不支持请求停止。' : '请求停止只发送 SIGINT，不会自动升级终止。接受请求不代表任务已停止或设备已恢复。';
+    if (currentJob.controls?.reason) reason += ` ${currentJob.controls.reason}`;
+    $('cancel-help').textContent = reason;
+    const receipt = cancelReceipts.get(currentJob.id);
+    $('cancel-result').hidden = !receipt;
+    if (receipt) message('cancel-result', receipt.message, receipt.error);
+  }
+  function renderExecution(job) {
+    const cancellation = job.cancel;
+    facts('execution-info', [['执行阶段', ({starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finished: '已结束', interrupted: '中断'})[job.phase] || '旧版记录未提供'],
+      ['退出码', job.exit], ['请求时间', time(cancellation?.requested_at)],
+      ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
+      ['请求处理', ({requested: '已记录，等待处理', signaled: '已发送信号', not_applied: '未应用'})[cancellation?.status] || '未记录'],
+      ['恢复状态', ({not_reported: '尚未上报', required: '需要核查与恢复', not_needed: '任务报告无需恢复'})[job.recovery?.status] || '尚未上报'],
+      ['恢复说明', job.recovery?.reason || '停止结果及退出码不能证明设备已恢复。']]);
+    $('cancel-signals').replaceChildren(...(cancellation?.signals || []).map(signal => el('li', `${text(signal.name)} · ${time(signal.at)}`)));
+    renderControls();
+  }
+  async function cancelJob(force) {
+    const job = currentJob;
+    if (!job || (force ? $('force-submit').disabled : $('cancel-job').disabled)) return;
+    const id = job.id;
+    cancelling.add(id);
+    $('force-form').hidden = true;
+    $('force-confirm').checked = false;
+    renderControls();
+    try {
+      const result = await post(`${API}/jobs/${encodeURIComponent(id)}/cancel`, {force});
+      cancelReceipts.set(id, {message: result.accepted ? `${force ? '升级终止' : '停止'}请求已记录，请以下方最新执行状态与恢复记录为准。` : `请求未接受：${result.reason || '请核对最新任务状态。'}`, error: !result.accepted});
+    } catch (error) {
+      const uncertain = !error.status;
+      cancelReceipts.set(id, {message: uncertain ? '请求结果未确认，可能已被节点记录。请刷新任务核对后再决定是否重试。' : errorText(error), error: true});
+      if (error.status === 401 || error.status === 403) await loadAccess();
+    } finally {
+      cancelling.delete(id);
+      if (selected === id) await selectJob(id, true);
+    }
   }
 
   async function loadNode() {
@@ -116,7 +248,7 @@
     button.dataset.job = job.id;
     button.append(el('div', job.label || job.bin || '未命名任务', 'task-item-title'));
     const row = el('div', null, 'task-item-line');
-    const [label, kind] = status(job);
+    const [label, kind] = status(currentJob?.id === job.id ? currentJob : job);
     row.append(el('span', job.id, 'task-item-id'), el('span', label, `task-state ${kind}`));
     const command = [job.bin, ...(Array.isArray(job.argv) ? job.argv : [])].map(text).join(' ');
     button.append(row, el('span', time(job.started), 'task-item-time'), el('span', command.length > 220 ? command.slice(0, 220) + '…' : command, 'task-item-command'));
@@ -173,12 +305,15 @@
       return;
     }
     selected = id;
+    currentJob = null;
     const revision = ++detailRevision;
     ++artifactRevision;
     ++metadataRevision;
     ++logRevision;
     if (!keepDirectory) directory = '';
     $('detail-content').hidden = true;
+    $('force-form').hidden = true;
+    $('force-confirm').checked = false;
     $('detail-placeholder').hidden = false;
     $('detail-updated').textContent = '';
     $('refresh-detail').hidden = false;
@@ -190,19 +325,31 @@
     try {
       const job = await json(jobURL());
       if (revision !== detailRevision) return;
+      currentJob = job;
       const [label, kind] = status(job);
       $('job-title').textContent = job.label || job.bin || '未命名任务';
       $('job-state').textContent = label;
       $('job-state').className = `task-state ${kind}`;
+      for (const button of $('task-list').querySelectorAll('button')) {
+        if (button.dataset.job !== job.id) continue;
+        const state = button.querySelector('.task-state');
+        if (state) { state.textContent = label; state.className = `task-state ${kind}`; }
+      }
       $('detail-updated').textContent = readTime();
       facts('job-info', [['任务 ID', job.id], ['命令', job.bin], ['开始', time(job.started)], ['结束', time(job.ended)], ['记录说明', job.note || '无']]);
       $('job-command').textContent = JSON.stringify({bin: job.bin, argv: job.argv || []}, null, 2);
+      renderExecution(job);
       $('detail-content').hidden = false;
       $('detail-placeholder').hidden = true;
       message('detail-message', '');
       resetLog();
       await Promise.all([loadArtifacts(), loadLog()]);
-    } catch (error) { if (revision === detailRevision) message('detail-message', errorText(error), true); }
+    } catch (error) {
+      if (revision === detailRevision) {
+        const receipt = cancelReceipts.get(id);
+        message('detail-message', `${errorText(error)}${receipt ? ` ${receipt.message}` : ''}`, true);
+      }
+    }
     finally {
       if (revision === detailRevision) {
         busy('refresh-detail', false);
@@ -365,7 +512,7 @@
   $('more-jobs').addEventListener('click', () => loadJobs(true));
   async function refreshAll() {
     busy('refresh-all', true, '刷新中…');
-    try { await Promise.all([loadNode(), loadJobs(), selected ? selectJob(selected, true) : null]); }
+    try { await Promise.all([loadNode(), loadJobs(), loadAccess(), selected ? selectJob(selected, true) : null]); }
     finally { busy('refresh-all', false); }
   }
   $('refresh-all').addEventListener('click', refreshAll);
@@ -374,6 +521,17 @@
   $('more-artifacts').addEventListener('click', () => loadArtifacts(true));
   $('log-next').addEventListener('click', loadLog);
   $('log-reset').addEventListener('click', () => { resetLog(); loadLog(); });
+  $('access-toggle').addEventListener('click', () => {
+    if (access?.steer) setAccess(false);
+    else { $('unlock-form').hidden = false; $('steer-password').focus(); }
+  });
+  $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess(true); });
+  $('unlock-dismiss').addEventListener('click', closeUnlock);
+  $('cancel-job').addEventListener('click', () => cancelJob(false));
+  $('force-open').addEventListener('click', () => { $('force-form').hidden = false; $('force-confirm').focus(); });
+  $('force-confirm').addEventListener('change', renderControls);
+  $('force-dismiss').addEventListener('click', () => { $('force-form').hidden = true; $('force-confirm').checked = false; renderControls(); });
+  $('force-form').addEventListener('submit', event => { event.preventDefault(); cancelJob(true); });
   const initial = new URLSearchParams(location.hash.slice(1)).get('job');
   if (initial && /^[0-9a-f]{12}$/.test(initial)) selected = initial;
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);

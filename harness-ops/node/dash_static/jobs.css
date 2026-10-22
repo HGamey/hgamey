@@ -120,6 +120,28 @@
 .log-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .task-log .logbox { margin-top: 12px; height: 300px; border: 1px solid var(--line); border-radius: 6px; padding: 16px; line-height: 1.7; }
 .jobs-view .foot { max-width: 1440px; margin: 0 auto; padding: 20px 32px 28px; text-align: left; font-size: 12px; }
+.access-panel { margin: -8px 0 24px; padding: 16px 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.access-panel h2 { font-size: 13px; font-weight: 600; }
+.access-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.access-row .note { margin-top: 4px; }
+.unlock-form { border-top: 1px solid var(--grid); padding-top: 14px; margin-top: 14px; font-size: 13px; }
+.unlock-input { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; max-width: 560px; }
+.unlock-input input { min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--card); color: var(--ink); font: inherit; }
+.access-login { display: inline-block; margin-top: 10px; font-size: 13px; color: var(--blue-ink); }
+.execution-panel { margin-top: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.execution-panel h3 { font-size: 14px; }
+.execution-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.jobs-view button.ghost.danger { color: var(--bad-ink); }
+.cancel-result { padding: 10px 0 0; margin: 10px 0 0; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink2); overflow-wrap: anywhere; }
+.execution-details { margin-top: 12px; font-size: 12px; }
+.execution-details summary { cursor: pointer; color: var(--ink2); padding: 5px 0; }
+.execution-details .facts { margin-top: 12px; font-size: 12px; grid-template-columns: 90px minmax(0,1fr); }
+.cancel-signals { margin: 10px 0 0; padding-left: 20px; color: var(--muted); overflow-wrap: anywhere; }
+.force-form { margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); font-size: 13px; }
+.force-form p { margin: 0 0 12px; color: var(--bad-ink); }
+.force-form label { display: flex; align-items: flex-start; gap: 8px; }
+.force-form input { margin-top: 4px; accent-color: var(--bad-ink); flex-shrink: 0; }
+.force-form .execution-actions { margin-top: 14px; }
 @media (max-width: 1000px) {
   .jobs-view .top { padding: 14px 24px; }
   .jobs-page { padding: 24px 24px 0; }
@@ -164,5 +186,11 @@
   .jobs-view button.ghost, .task-filters input, .task-filters select, .artifact-actions a { min-height: 44px; }
   .artifact-actions a { padding: 11px 0; }
   .jobs-view .foot { padding: 16px 16px 24px; }
+  .access-panel { padding: 14px 16px; }
+  .access-row { flex-wrap: wrap; gap: 10px; }
+  .unlock-input input { flex-basis: 100%; min-height: 44px; }
+  .execution-panel { padding: 14px; }
+  .execution-details summary { padding: 8px 0; }
+  .execution-details .facts { grid-template-columns: 76px minmax(0,1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .jobs-view button.ghost { transition: none; } .jobs-view button:active:not(:disabled) { transform: none; } }

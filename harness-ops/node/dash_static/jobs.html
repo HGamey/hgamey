@@ -38,6 +38,15 @@
       <dl id="node-info" class="facts"></dl>
     </details>
   </section>
+  <section class="access-panel" aria-labelledby="access-heading">
+    <div class="access-row"><div><h2 id="access-heading">任务操作权限</h2><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁任务操作</button></div>
+    <form id="unlock-form" class="unlock-form" autocomplete="off" hidden>
+      <label for="steer-password">掌舵密码</label>
+      <div class="unlock-input"><input id="steer-password" type="password" autocomplete="off" required><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-dismiss" class="ghost" type="button">收起</button></div>
+      <p id="unlock-message" class="note" role="status"></p>
+    </form>
+    <a id="access-login" class="access-login" href="/dash/login" hidden>重新登录查看页面</a>
+  </section>
   <div class="jobs-layout">
     <section id="task-browser" class="task-browser" aria-labelledby="tasks-heading">
       <div class="section-heading"><h2 id="tasks-heading" tabindex="-1">任务列表</h2><span id="task-count" class="count-label" hidden></span></div>
@@ -59,6 +68,16 @@
         <p id="detail-updated" class="read-time"></p>
         <dl id="job-info" class="facts job-facts"></dl>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
+        <section class="execution-panel" aria-labelledby="execution-heading">
+          <div class="section-heading"><h3 id="execution-heading">执行与停止</h3><div class="execution-actions"><button id="cancel-job" class="ghost" type="button" aria-describedby="cancel-help" disabled>请求停止</button><button id="force-open" class="ghost danger" type="button" aria-describedby="cancel-help" disabled>升级终止…</button></div></div>
+          <p id="cancel-help" class="note"></p><p id="cancel-result" class="cancel-result" role="status" hidden></p>
+          <form id="force-form" class="force-form" hidden>
+            <p>升级终止可能打断任务的还原流程。先核查任务仍未停止，再提交；提交后仍需核对设备恢复证据。</p>
+            <label><input id="force-confirm" type="checkbox" required> 我已核查任务仍未停止，并理解可能打断还原。</label>
+            <div class="execution-actions"><button id="force-submit" class="ghost danger" type="submit" disabled>确认升级终止</button><button id="force-dismiss" class="ghost" type="button">返回</button></div>
+          </form>
+          <details id="execution-details" class="execution-details"><summary>停止请求、信号与恢复记录</summary><dl id="execution-info" class="facts"></dl><ul id="cancel-signals" class="cancel-signals"></ul></details>
+        </section>
         <p class="evidence-note"><strong>结果需核对证据</strong>退出码只说明命令执行情况。实验是否有效、是否有收益、设备是否已恢复，请核对报告和原始证据。</p>
         <section id="artifacts" class="artifacts" aria-labelledby="artifacts-heading">
           <div class="section-heading"><h3 id="artifacts-heading">输出文件</h3><button id="refresh-artifacts" class="ghost" type="button">刷新目录</button></div>
@@ -77,7 +96,7 @@
     </section>
   </div>
 </main>
-<footer class="foot">文件保存在当前节点。本页只读宿主上的任务文件，不访问手机；运行中的日志和输出可能仍在更新。</footer>
+<footer class="foot">文件保存在当前节点。读取页面只访问宿主记录，不启动设备采样；停止操作需掌舵权限。运行中的日志和输出可能仍在更新。</footer>
 <script src="/dash/static/jobs.js"></script>
 </body>
 </html>
