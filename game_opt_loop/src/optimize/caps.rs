@@ -329,6 +329,59 @@ pub fn probe_script(package: Option<&str>) -> String {
     s
 }
 
+/// 鸿蒙 (hdc) 设备的只读探测脚本。输出口径与 [`probe_script`] 相同 (`key=value`),
+/// 由同一个 [`assemble`] 拼。安卓那套命令 (`getprop` / `pm path` / `su`) 在鸿蒙上
+/// 都不存在, 照搬会把「型号未知」「游戏没装」当成结论报上去。
+///
+/// 两处与安卓不同:
+/// - 鸿蒙 shell 没有 `tr`; `hidumper` 的正文只在**不经管道**时才输出 (管道里只剩
+///   标题行, EMA-AL00U / OH 6.1 实测), 所以电池段原样带回, 由主机端 [`battery_from_oh`] 解析。
+/// - 商用鸿蒙机 shell 是普通用户, 没有 su: root 直接看 `id -u`, 停充节点不探。
+pub fn probe_script_oh(package: Option<&str>) -> String {
+    let mut s = String::new();
+    s.push_str("echo \"model=$(param get const.product.model)\";");
+    s.push_str("echo \"sdk=$(param get const.ohos.apiversion)\";");
+    s.push_str("echo \"abi=$(param get const.product.cpu.abilist)\";");
+    s.push_str("echo \"root_uid=$(id -u 2>/dev/null || echo NA)\";");
+    s.push_str("hidumper -s BatteryService -a -i 2>/dev/null;");
+    s.push_str(
+        "for z in /sys/class/thermal/thermal_zone*; do echo \"zone=$(cat $z/type 2>/dev/null) $(cat $z/temp 2>/dev/null)\"; done 2>/dev/null;",
+    );
+    if let Some(pkg) = package {
+        // bm dump -a 一行一个 bundle 名 (前面带 tab); 整行匹配, 不让前缀相同的包冒充。
+        s.push_str(&format!(
+            "bm dump -a 2>/dev/null | grep -qx \"[[:space:]]*{pkg}\" && echo \"pkg_path=bundle:{pkg}\";"
+        ));
+    }
+    s
+}
+
+/// 鸿蒙 BatteryService dump (`capacity: 100` 这种冒号行) → 补进 kv, 口径对齐安卓 sysfs。
+///
+/// `chargingStatus`: 0 NONE / 1 ENABLE / 2 DISABLE / 3 FULL; `pluggedType`: 0 NONE / 1 AC / 2 USB / 3 WIRELESS。
+pub fn battery_from_oh(raw: &str, kv: &mut BTreeMap<String, Vec<String>>) {
+    let num = |key: &str| -> Option<i64> {
+        let l = raw.lines().map(str::trim).find(|l| l.starts_with(key))?;
+        l[key.len()..].trim().parse().ok()
+    };
+    let mut put = |k: &str, v: String| {
+        kv.entry(k.to_string()).or_insert_with(|| vec![v]);
+    };
+    if let Some(c) = num("capacity:") {
+        put("battery_capacity", c.to_string());
+    }
+    let status = match (num("chargingStatus:"), num("pluggedType:")) {
+        (Some(1), _) => Some("Charging"),
+        (Some(2), _) => Some("Not charging"),
+        (Some(3), _) => Some("Full"),
+        (Some(0), Some(0)) => Some("Discharging"),
+        _ => None,
+    };
+    if let Some(st) = status {
+        put("battery_status", st.to_string());
+    }
+}
+
 /// `key=value` 文本 → map。与 phonefarm `probe_sysparam.sh` 同一套口径。
 ///
 /// 同一个 key 出现多次时全部留下 (`charge_node` 会有多行), 所以值是 Vec。
@@ -455,7 +508,11 @@ impl Prober {
 
     /// 摸一台设备 + 一个目标。
     pub fn run(&self, target: &Target, serial: &str) -> Result<Caps> {
-        let raw = self.shell(serial, &probe_script(target.package.as_deref()))?;
+        let script = match Platform::of(serial) {
+            Platform::Hdc => probe_script_oh(target.package.as_deref()),
+            _ => probe_script(target.package.as_deref()),
+        };
+        let raw = self.shell(serial, &script)?;
         Ok(assemble(target, serial, &raw))
     }
 }
@@ -463,8 +520,11 @@ impl Prober {
 /// 把探测原始输出拼成 `Caps`。纯函数 —— 不读设备、不读时钟以外的东西,
 /// 所以同一份输出每次拼出来的结论一样, 可以拿录下来的输出做回归。
 pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
-    let kv = parse_kv(raw);
+    let mut kv = parse_kv(raw);
     let platform = Platform::of(serial);
+    if platform == Platform::Hdc {
+        battery_from_oh(raw, &mut kv);
+    }
 
     let root_uid = first(&kv, "root_uid");
     let root = match root_uid {
@@ -509,6 +569,12 @@ pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
         (None, _) => Probe::unknown("pm path <包名>", "还不知道包名, 没得查"),
         (Some(pkg), Some(p)) if p.starts_with("package:") => {
             Probe::ok("pm path", format!("{pkg} → {p}"))
+        }
+        (Some(pkg), Some(p)) if p.starts_with("bundle:") => {
+            Probe::ok("bm dump -a", format!("{pkg} 已装"))
+        }
+        (Some(pkg), _) if platform == Platform::Hdc => {
+            Probe::no("bm dump -a", format!("{pkg} 没装, 或 bm 查不到"))
         }
         (Some(pkg), _) => Probe::no("pm path", format!("{pkg} 没装, 或 pm 查不到")),
     };
@@ -901,5 +967,43 @@ zone=pm8550b-bcl 105000\n";
             });
         let caps = p.run(&blackbox_target(), "S1").unwrap();
         assert!(caps.device.root.is_true());
+    }
+
+    /// 鸿蒙真机 (EMA-AL00U, OH 6.1) 的一份摸底原文: hidumper 正文是冒号行, 混在 kv 里。
+    const OH_RAW: &str = "model=EMA-AL00U \nsdk=24 \nabi=arm64-v8a \nroot_uid=2000\n\
+-------------------------------[ability]-------------------------------\n\
+capacity: 100 \nbatteryLevel: 1 \nchargingStatus: 3 \npluggedType: 1 \nvoltage: 4439017 \n\
+temperature: 270 \npkg_path=bundle:com.miHoYo.Yuanshen\n";
+
+    #[test]
+    fn oh_probe_script_is_read_only_and_uses_oh_commands() {
+        let s = probe_script_oh(Some("com.miHoYo.Yuanshen"));
+        let redirect_free = s.replace("2>/dev/null", "");
+        for forbidden in ["setprop", "param set", "rm ", "mv ", "chmod", "aa start", "su "] {
+            assert!(!s.contains(forbidden), "鸿蒙探测脚本里出现了 `{forbidden}`: {s}");
+        }
+        assert!(!redirect_free.contains('>'), "{redirect_free}");
+        assert!(s.contains("param get const.product.model"));
+        assert!(s.contains("bm dump -a"));
+        assert!(!s.contains("getprop") && !s.contains("pm path"));
+    }
+
+    #[test]
+    fn oh_raw_assembles_model_battery_and_installed_game() {
+        let caps = assemble(&blackbox_target(), "hdc:88X9K26901026869", OH_RAW);
+        assert_eq!(caps.device.platform, Platform::Hdc);
+        assert_eq!(caps.device.model.as_deref(), Some("EMA-AL00U"));
+        assert_eq!(caps.device.battery.capacity_pct, Some(100));
+        assert_eq!(caps.device.battery.status.as_deref(), Some("Full"));
+        assert_eq!(caps.device.battery.on_battery, Some(false));
+        assert!(caps.device.game_installed.is_true(), "{:?}", caps.device.game_installed);
+        assert!(!caps.device.root.is_true());
+    }
+
+    #[test]
+    fn oh_missing_bundle_is_reported_via_bm() {
+        let caps = assemble(&blackbox_target(), "hdc:x", "model=EMA-AL00U\nroot_uid=2000\n");
+        assert!(!caps.device.game_installed.is_true());
+        assert!(format!("{:?}", caps.device.game_installed).contains("bm"));
     }
 }
