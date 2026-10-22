@@ -281,17 +281,20 @@
   function renderSubmission() {
     const supported = nodeInfo?.capabilities?.includes('jobs.idempotency-v1') && nodeInfo?.execution?.bins?.length;
     const allowed = supported && access?.steer && !accessBusy;
-    const locked = !!pendingRequest || submissionBusy;
+    const refilling = !!pendingRequest?.refilling;
+    const locked = (!!pendingRequest && !refilling) || submissionBusy;
     for (const id of ['submit-bin', 'submit-label', 'submit-argv', 'submit-resources']) $(id).disabled = !allowed || locked;
-    $('submit-job').disabled = !allowed || locked || !globalThis.crypto?.randomUUID;
+    $('submit-job').disabled = !allowed || locked || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
-    $('submit-job').textContent = submissionBusy ? '正在核对请求…' : '提交任务';
-    message('submit-help', pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。');
+    $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
+    message('submit-help', refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。');
     $('request-id').readOnly = !!pendingRequest;
     $('request-id').disabled = submissionBusy;
     if (pendingRequest) $('request-id').value = pendingRequest.id;
     $('request-lookup').disabled = submissionBusy;
     $('request-lookup').setAttribute('aria-busy', String(submissionBusy));
+    $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
+    $('submit-refill').disabled = !allowed || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
     $('submit-retry').disabled = !allowed || submissionBusy;
   }
@@ -318,7 +321,7 @@
         const body = {bin: $('submit-bin').value, argv, label: $('submit-label').value.trim()};
         const resources = $('submit-resources').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
         if (resources.length) body.resources = [...new Set(resources)];
-        pendingRequest = {id: crypto.randomUUID(), body};
+        pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), body};
         savePending();
       } catch (error) { submissionMessage(error instanceof SyntaxError ? '参数不是有效的 JSON，请填写字符串数组。' : error.message, true); return; }
     }
@@ -707,6 +710,13 @@
   $('refresh-queue').addEventListener('click', loadQueue);
   $('submit-job-form').addEventListener('submit', event => { event.preventDefault(); submitJob(); });
   $('submit-retry').addEventListener('click', () => submitJob(true));
+  $('submit-refill').addEventListener('click', () => {
+    if ($('submit-refill').disabled || !pendingRequest || pendingRequest.body) return;
+    pendingRequest.refilling = true;
+    submissionMessage('请按原任务重新填写参数。提交将复用此请求 ID；不同内容可能返回 409 冲突，请优先查询已有任务。', false, pendingRequest.id);
+    renderSubmission();
+    $('submit-argv').focus();
+  });
   $('request-lookup-form').addEventListener('submit', event => { event.preventDefault(); lookupRequest(); });
   $('submit-open-job').addEventListener('click', () => { if (submittedJob) { selectJob(submittedJob); $('detail-heading').focus(); } });
   $('queue-release-note').addEventListener('input', renderControls);
