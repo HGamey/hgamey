@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 pub const DEFAULT_TTL_S: u64 = 25;
 
 /// 单次 `phonefarm fleet` 的墙钟上限。
-pub const DEFAULT_TIMEOUT_S: u64 = 30;
+pub const DEFAULT_TIMEOUT_S: u64 = 40;
+const STALE_AFTER_S: u64 = 90;
 
 // ══════════════ phonefarm/fleet@1 的形状 ══════════════
 //
@@ -192,14 +193,17 @@ pub struct Screenshot {
 /// 面板拿到的东西: 要么是一份快照, 要么是一句"为什么没有"。
 #[derive(Debug, Clone, Serialize)]
 pub struct FleetView {
-    /// `None` = 这一轮没拿到 (原因在 `problem` 里)。
+    /// 最后一次成功快照；暂缓或失败时保留，未成功采样过时为 None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fleet: Option<Fleet>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    pub deferred: Option<String>,
+    pub attempted_at: String,
     /// 这份数据是什么时候探的 —— 缓存命中时它会比页面时间旧。
-    pub probed_at: String,
-    pub age_s: u64,
+    pub probed_at: Option<String>,
+    pub age_s: Option<u64>,
+    pub stale: bool,
     /// 探这一次花了多久。
     pub took_ms: u64,
     /// 跑的是哪条命令, 原样写出来 —— 出问题时能照着手敲一遍。
@@ -255,7 +259,17 @@ impl FleetConfig {
 
 struct Cached {
     view: FleetView,
-    at: Instant,
+    attempted_at: Instant,
+    sampled_at: Option<Instant>,
+}
+
+impl Cached {
+    fn view(&self) -> FleetView {
+        let mut view = self.view.clone();
+        view.age_s = self.sampled_at.map(|at| at.elapsed().as_secs());
+        view.stale = view.age_s.is_none_or(|age| age > STALE_AFTER_S);
+        view
+    }
 }
 
 fn cache() -> &'static Mutex<Option<Cached>> {
@@ -277,19 +291,28 @@ pub fn get(cfg: &FleetConfig) -> Option<FleetView> {
     }
     let mut guard = cache().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(c) = guard.as_ref() {
-        let age = c.at.elapsed();
-        if age < cfg.ttl {
-            let mut view = c.view.clone();
-            view.age_s = age.as_secs();
-            return Some(view);
+        if c.attempted_at.elapsed() < cfg.ttl {
+            return Some(c.view());
         }
     }
-    let view = probe(cfg);
-    *guard = Some(Cached {
-        view: view.clone(),
-        at: Instant::now(),
-    });
-    Some(view)
+    let mut view = probe(cfg);
+    let sampled_at = if view.fleet.is_some() {
+        Some(Instant::now())
+    } else if let Some(c) = guard.as_ref() {
+        view.fleet = c.view.fleet.clone();
+        view.probed_at = c.view.probed_at.clone();
+        c.sampled_at
+    } else {
+        None
+    };
+    let cached = Cached {
+        view,
+        attempted_at: Instant::now(),
+        sampled_at,
+    };
+    let result = cached.view();
+    *guard = Some(cached);
+    Some(result)
 }
 
 /// 真的去跑一次 `phonefarm fleet --json`。
@@ -300,8 +323,11 @@ fn probe(cfg: &FleetConfig) -> FleetView {
     let mut view = FleetView {
         fleet: None,
         problem: None,
-        probed_at: now_rfc3339(),
-        age_s: 0,
+        deferred: None,
+        attempted_at: now_rfc3339(),
+        probed_at: None,
+        age_s: None,
+        stale: true,
         took_ms: 0,
         command: command.clone(),
     };
@@ -367,8 +393,15 @@ fn probe(cfg: &FleetConfig) -> FleetView {
     view.took_ms = started.elapsed().as_millis() as u64;
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    match parse(&stdout) {
-        Ok(f) => view.fleet = Some(f),
+    match parse_response(&stdout, out.status.code()) {
+        Ok(Observation::Sampled(f)) => {
+            view.fleet = Some(f);
+            view.probed_at = Some(now_rfc3339());
+            view.age_s = Some(0);
+            view.stale = false;
+        }
+        Ok(Observation::Deferred(reason)) => view.deferred = Some(reason),
+        Ok(Observation::Error(reason)) => view.problem = Some(reason),
         Err(e) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             view.problem = Some(format!(
@@ -384,15 +417,61 @@ fn probe(cfg: &FleetConfig) -> FleetView {
     view
 }
 
-/// 解析 `phonefarm fleet --json` 的回包。
-///
-/// 退出码**不作判据**: phonefarm 约定 1 = 一台设备都没有, 那时 JSON 照样是好的,
-/// 面板要显示"农场里一台机器都没有"而不是"读取失败"。能不能用只看 JSON 解不解得开。
-pub fn parse(stdout: &str) -> Result<Fleet, String> {
+enum Observation {
+    Sampled(Fleet),
+    Deferred(String),
+    Error(String),
+}
+
+fn parse_json(stdout: &str) -> Result<serde_json::Value, String> {
     // 从第一个 `{` 读到末尾, 而不是"找出那一行 JSON":
     // phonefarm 现在吐的是单行, 但换成 to_string_pretty 也不该让面板挂掉。
     let start = stdout.find('{').ok_or("输出里没有 JSON")?;
     serde_json::from_str(&stdout[start..]).map_err(|e| e.to_string())
+}
+
+fn parse_sample(value: serde_json::Value) -> Result<Fleet, String> {
+    if value["schema"] != "phonefarm/fleet@1" || !value["devices"].is_array() {
+        return Err("成功快照需要 phonefarm/fleet@1 schema 和 devices 数组".into());
+    }
+    if value.get("observation").is_some_and(|v| v != "sampled") {
+        return Err("这次尝试没有产生成功快照".into());
+    }
+    serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+/// 解析成功快照；允许旧版成功回包没有 observation，但必须保留 schema 和 devices。
+pub fn parse(stdout: &str) -> Result<Fleet, String> {
+    parse_sample(parse_json(stdout)?)
+}
+
+fn parse_response(stdout: &str, code: Option<i32>) -> Result<Observation, String> {
+    let value = parse_json(stdout)?;
+    if value["schema"] != "phonefarm/fleet@1" {
+        return Err("不支持的 fleet schema".into());
+    }
+    match code {
+        Some(0 | 1) => {
+            let fleet = parse_sample(value)?;
+            if (code == Some(1)) != fleet.devices.is_empty() {
+                return Err("fleet 退出码与设备数量不一致".into());
+            }
+            Ok(Observation::Sampled(fleet))
+        }
+        Some(3) if value.get("devices") == Some(&serde_json::Value::Null) => {
+            let reason = value["reason"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("暂缓/失败回包缺少 reason")?
+                .to_string();
+            match value["observation"].as_str() {
+                Some("deferred") => Ok(Observation::Deferred(reason)),
+                Some("error") => Ok(Observation::Error(reason)),
+                _ => Err("exit 3 必须说明 observation 为 deferred 或 error".into()),
+            }
+        }
+        _ => Err(format!("fleet 退出状态或回包无效: {code:?}")),
+    }
 }
 
 #[cfg(test)]
@@ -411,7 +490,11 @@ mod tests {
         assert_eq!(d.os.as_deref(), Some("Android 16 (SDK 36)"));
         assert!(d.online);
         assert_eq!(d.battery.level_pct, Some(100));
-        assert!(d.thermal.gpu_c.is_some_and(|c| c > 20.0 && c < 100.0), "GPU 温度要是个像样的读数: {:?}", d.thermal.gpu_c);
+        assert!(
+            d.thermal.gpu_c.is_some_and(|c| c > 20.0 && c < 100.0),
+            "GPU 温度要是个像样的读数: {:?}",
+            d.thermal.gpu_c
+        );
         assert_eq!(d.fan.enabled, Some(true));
         assert_eq!(d.fan.speed_level, Some(5));
 
@@ -431,11 +514,13 @@ mod tests {
     /// phonefarm 那侧加字段不该让面板打不开。
     #[test]
     fn unknown_fields_do_not_break_parsing() {
-        let json = r#"{"schema":"phonefarm/fleet@2","brand_new_field":42,
+        let json = r#"{"schema":"phonefarm/fleet@1","brand_new_field":42,
             "devices":[{"serial":"X","online":true,"something_new":{"a":1}}]}"#;
         let f = parse(json).expect("多出来的字段要能忽略");
         assert_eq!(f.devices.len(), 1);
         assert_eq!(f.devices[0].serial, "X");
+        assert!(parse(&json.replace("fleet@1", "fleet@2")).is_err());
+        assert!(parse(r#"{"schema":"phonefarm/fleet@1"}"#).is_err());
     }
 
     /// 一台设备都没有时 phonefarm 退出码是 1, 但 JSON 是好的 ——
@@ -450,7 +535,10 @@ mod tests {
 
     #[test]
     fn junk_before_the_json_is_skipped() {
-        let f = parse("[keepalive] 正在探测\n某个进度行\n{\"devices\":[]}\n").unwrap();
+        let f = parse(
+            "[keepalive] 正在探测\n某个进度行\n{\"schema\":\"phonefarm/fleet@1\",\"devices\":[]}\n",
+        )
+        .unwrap();
         assert!(f.devices.is_empty());
         assert!(parse("完全没有 JSON").is_err());
         assert!(parse("").is_err());
@@ -459,7 +547,7 @@ mod tests {
     /// 现在 phonefarm 吐的是单行, 但换成缩进过的 JSON 也不该让面板挂掉。
     #[test]
     fn pretty_printed_json_also_parses() {
-        let f = parse("{\n  \"devices\": [\n    {\"serial\": \"X\"}\n  ]\n}").unwrap();
+        let f = parse("{\n  \"schema\": \"phonefarm/fleet@1\",\n  \"devices\": [\n    {\"serial\": \"X\"}\n  ]\n}").unwrap();
         assert_eq!(f.devices[0].serial, "X");
     }
 
@@ -479,7 +567,10 @@ mod tests {
         assert_eq!(argv[1], "fleet");
         assert!(argv.contains(&"--json".to_string()));
         assert!(argv.contains(&"/private/tmp/claude-501".to_string()));
-        assert!(!argv.contains(&"--screenshot-dir".to_string()), "截图默认不开");
+        assert!(
+            !argv.contains(&"--screenshot-dir".to_string()),
+            "截图默认不开"
+        );
     }
 
     #[test]
@@ -531,5 +622,85 @@ mod tests {
             enabled: false,
         };
         assert!(get(&cfg).is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn deferred_and_error_preserve_success_age_and_empty_success_clears_devices() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("gol_fleet_observation_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("phonefarm");
+        std::fs::write(&bin, "#!/bin/sh\ncd \"$(dirname \"$0\")\"\necho call >> calls\ncat response.json\nexit \"$(cat exitcode)\"\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = FleetConfig {
+            bin,
+            cwd: dir.clone(),
+            ttl: Duration::ZERO,
+            timeout: Duration::from_secs(5),
+            lock_dir: None,
+            screenshot_dir: None,
+            screenshot_every_s: 300,
+            enabled: true,
+        };
+        let respond = |code: i32, value: serde_json::Value| {
+            std::fs::write(dir.join("response.json"), value.to_string()).unwrap();
+            std::fs::write(dir.join("exitcode"), code.to_string()).unwrap();
+        };
+        let busy = serde_json::json!({"schema":"phonefarm/fleet@1", "observation":"deferred",
+            "reason":"lease busy", "devices":null});
+        *cache().lock().unwrap() = None;
+        respond(3, busy.clone());
+        let first = get(&cfg).unwrap();
+        assert!(first.fleet.is_none() && first.probed_at.is_none() && first.age_s.is_none());
+        assert_eq!(first.deferred.as_deref(), Some("lease busy"));
+        respond(
+            0,
+            serde_json::json!({"schema":"phonefarm/fleet@1", "observation":"sampled",
+            "devices":[{"serial":"fixture-only", "thermal":{"soc_max_c":42}}]}),
+        );
+        let sampled = get(&cfg).unwrap();
+        cache().lock().unwrap().as_mut().unwrap().sampled_at =
+            Some(Instant::now() - Duration::from_secs(100));
+        respond(3, busy);
+        let deferred = get(&cfg).unwrap();
+        assert_eq!(deferred.probed_at, sampled.probed_at);
+        assert!(deferred.age_s.unwrap() >= 100 && deferred.stale && deferred.problem.is_none());
+        assert_eq!(
+            deferred.fleet.unwrap().devices[0].thermal.soc_max_c,
+            Some(42.0)
+        );
+        cfg.ttl = Duration::from_secs(60);
+        assert_eq!(get(&cfg).unwrap().deferred.as_deref(), Some("lease busy"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            3,
+            "attempt time throttles retries even when the successful sample is old"
+        );
+        cfg.ttl = Duration::ZERO;
+        respond(
+            3,
+            serde_json::json!({"schema":"phonefarm/fleet@1", "observation":"error",
+            "reason":"sampling timed out", "devices":null}),
+        );
+        let failed = get(&cfg).unwrap();
+        assert_eq!(failed.probed_at, sampled.probed_at);
+        assert!(failed.stale && failed.deferred.is_none());
+        assert_eq!(failed.problem.as_deref(), Some("sampling timed out"));
+        assert_eq!(failed.fleet.unwrap().devices.len(), 1);
+        respond(
+            1,
+            serde_json::json!({"schema":"phonefarm/fleet@1", "devices":[]}),
+        );
+        let empty = get(&cfg).unwrap();
+        assert!(empty.fleet.unwrap().devices.is_empty());
+        assert!(empty.problem.is_none() && empty.deferred.is_none() && !empty.stale);
+        assert_eq!(empty.age_s, Some(0));
+        *cache().lock().unwrap() = None;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
