@@ -619,38 +619,40 @@ function fleetSection() {
     return '<h2 class="section">手机</h2><div class="card">' +
       '<span class="unknown">这次启动关掉了手机状态读取 (--no-fleet)</span></div>';
   }
-  var head = '<h2 class="section">手机 · ' +
-    (f.fleet && f.fleet.devices ? f.fleet.devices.length + ' 台' : '读不到') +
-    '<span class="dim" style="font-weight:400;letter-spacing:0"> &nbsp; ' +
-    esc(shortTime(f.probed_at)) + ' 探的' + (f.age_s > 0 ? '（' + f.age_s + ' 秒前）' : '') +
-    ' · 用时 ' + f.took_ms + ' ms</span></h2>';
-
-  if (f.problem) {
-    return head + '<div class="card"><div class="err">' + esc(f.problem) + '</div>' +
-      '<div class="dim" style="margin-top:8px;font-size:12px">命令: ' + esc(f.command) + '</div></div>';
-  }
   var fl = f.fleet || {};
-  var devices = fl.devices || [];
+  var hasSample = Array.isArray(fl.devices);
+  var devices = hasSample ? fl.devices : [];
+  var stale = !hasSample || f.stale || (typeof f.age_s === 'number' && f.age_s > 90);
+  var state = !hasSample ? '未采集' : f.deferred ? '采样暂缓 · 缓存快照' : f.problem ? '尝试失败 · 缓存快照' : stale ? '旧快照' : '已有快照';
+  var age = typeof f.age_s === 'number' ? Math.floor(f.age_s) + ' 秒前' : '年龄未知';
+  var head = '<h2 class="section fleet-heading">手机 · ' + (hasSample ? devices.length + ' 条设备记录' : '尚无设备列表') +
+    '<span class="badge ' + (stale || f.problem || f.deferred ? 'invalid' : 'evidence') + '">' + esc(state) + '</span></h2>';
+  var meta = '<div class="fleet-read-times dim"><div>' + (f.probed_at ? '最后成功采样：' + esc(shortTime(f.probed_at)) + ' · ' + esc(age) : '尚无成功采样记录') + '</div>' +
+    '<div>最近尝试：' + (f.attempted_at ? esc(shortTime(f.attempted_at)) : '未记录') +
+    (typeof f.took_ms === 'number' ? ' · 尝试耗时 ' + esc(f.took_ms) + ' ms' : '') + '</div></div>';
+  var notices = [];
+  if (f.deferred) notices.push('<p>采样暂缓：' + esc(f.deferred) + '</p>');
+  if (f.problem) notices.push('<p class="err">最近尝试失败：' + esc(f.problem) + '</p>');
+  if (hasSample && (f.problem || f.deferred)) notices.push('<p>以下保留最后一次成功取得的设备快照；本次尝试没有更新设备数据。</p>');
+  if (hasSample && stale) notices.push('<p>设备快照已过期，请勿据此判断当前可用性。</p>');
+  if ((f.problem || f.deferred) && f.command) notices.push('<details><summary>尝试命令</summary><code>' + esc(f.command) + '</code></details>');
+  var notice = notices.length ? '<div class="card fleet-status-note">' + notices.join('') + '</div>' : '';
   var notes = (fl.notes || []).length
-    ? '<div class="card" style="margin-bottom:12px;padding:12px 18px"><ul class="notes" style="margin:0">' +
-      (fl.notes || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') +
-      '</ul></div>'
-    : '';
-
-  if (!devices.length) {
-    return head + notes + '<div class="card"><span class="unknown">农场里一台机器都没有</span></div>';
-  }
-  return head + notes + '<div class="grid2">' + devices.map(phoneCard).join('') + '</div>';
+    ? '<div class="card fleet-notes"><ul class="notes">' +
+      (fl.notes || []).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul></div>' : '';
+  if (!hasSample) return head + meta + notice + notes + '<div class="card"><span class="unknown">尚未取得设备列表；这不代表没有连接设备。</span></div>';
+  if (!devices.length) return head + meta + notice + notes + '<div class="card"><span class="unknown">上次成功采样未发现设备。</span></div>';
+  return head + meta + notice + notes + '<div class="grid2 fleet-device-grid">' + devices.map(phoneCard).join('') + '</div>';
 }
 
 function phoneCard(d) {
   var depth = d.probe_depth || 'none';
   var online = d.online
-    ? '<span class="badge qualified">在线</span>'
-    : '<span class="badge eliminated">' + esc(d.state || '离线') + '</span>';
-  /* 轻量档不是故障, 是"别人在用这台机器, 我们刻意少读了"。用黄色, 不用红色。 */
+    ? '<span class="badge qualified">在线 · 快照</span>'
+    : '<span class="badge eliminated">' + esc(d.state || '离线') + ' · 快照</span>';
+  /* 深度描述最后成功采样，不把缓存当成这次尝试的新数据。 */
   var depthBadge = depth === 'light'
-    ? '<span class="badge invalid" title="设备锁被别人持有, 这一轮只读了 sysfs">轻量档</span>'
+    ? '<span class="badge invalid" title="最后成功采样使用轻量档">轻量档</span>'
     : (depth === 'full' ? '<span class="badge evidence">完整档</span>' : '');
 
   var stats = [
@@ -769,12 +771,12 @@ function renderDevice() {
     ? d.holder.heartbeat_age_s + ' 秒前' : null;
 
   html += '<h2 class="section">谁在用手机 · 全场共用一把锁</h2><div class="card">' +
-    '<div class="holder ' + cls + '">' +
+    '<div class="holder fleet-holder ' + cls + '">' +
       '<div><div class="dim" style="font-size:13px">当前持有者</div><div class="who">' + esc(who) + '</div></div>' +
       '<div class="kv" style="grid-template-columns:110px 1fr">' +
         '<div class="k">取锁时间</div><div>' + val(d.holder ? d.holder.since : null) + '</div>' +
         '<div class="k">心跳</div><div>' + val(hb) + (d.holder && d.holder.stale
-          ? ' <span class="badge invalid">已超期, 可被接管</span>' : '') + '</div>' +
+          ? ' <span class="badge invalid">心跳已过期，需核查租约状态</span>' : '') + '</div>' +
         '<div class="k">排队</div><div>' + (d.queue.length ? d.queue.length + ' 个' : '无') + '</div>' +
       '</div></div>' +
     (d.queue.length ? '<div class="queue">' + d.queue.map(function (q, i) {
