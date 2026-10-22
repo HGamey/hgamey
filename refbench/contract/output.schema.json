@@ -215,6 +215,28 @@
           "description": "dispatch 用的工作组尺寸"
         }
       }
+    },
+    "capture_mode": {
+      "const": "quality_only",
+      "description": "Present only for optional native paired capture; HR/readback/IO changes load."
+    },
+    "performance_eligible": {
+      "const": false,
+      "description": "Capture output cannot be used as normal performance or power evidence."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "capture_mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "performance_eligible"
+        ]
+      }
+    }
+  ]
 }

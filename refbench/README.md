@@ -23,5 +23,6 @@ adb shell cat /storage/emulated/0/Android/data/io.github.hgamey.refbench/files/r
 ## 文档
 
 - 完整说明、场景与判据：[HGamey/docs · repos/refbench](https://github.com/HGamey/docs/tree/main/repos/refbench)
+- Native LR/HR 质量采集（`capture.native_pairs=on`，尚未真机验收）：[NATIVE_PAIRED_CAPTURE.md](https://github.com/HGamey/docs/blob/main/repos/refbench/NATIVE_PAIRED_CAPTURE.md)
 
 本仓库只放代码，规则见 [AGENTS.md](AGENTS.md)。
