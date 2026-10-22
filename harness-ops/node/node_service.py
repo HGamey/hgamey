@@ -30,6 +30,7 @@ import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess,
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from node_read import NodeRead
+from node_fleet import FleetState
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -377,9 +378,12 @@ class Jobs:
 
 # ═════════════ HTTP ═════════════
 
-def make_handler(mcp, jobs, token, board=None, node=None):
+def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
+    fleet = fleet or getattr(board, "monitor", None) or FleetState(
+        jobs.root, os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501"),
+        os.path.join(jobs.data_root, "_dash", "screens"))
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -423,9 +427,9 @@ def make_handler(mcp, jobs, token, board=None, node=None):
             parts = [p for p in u.path.split("/") if p]
             if parts == ["health"]:
                 return self._send(200, b"ok", "text/plain")
-            # Dashboard and token clients share the same host-only read contract.
-            # These routes deliberately do not wake the dashboard's phone sampler.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"]):
+            # Dashboard and token clients share contracts. Only explicit /fleet reads
+            # activate device metadata sampling; node/jobs reads stay host-only.
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"], ["fleet"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -443,6 +447,11 @@ def make_handler(mcp, jobs, token, board=None, node=None):
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["fleet"]:
+                    wait = float(q.get("wait", ["0"])[0])
+                    if not 0 <= wait <= 5:
+                        raise ValueError("wait must be between 0 and 5 seconds")
+                    return self._send(200, {**fleet.request(wait), "node_id": node.node_id})
                 if parts == ["jobs"]:
                     return self._send(200, node.list_jobs(q))
                 if parts == ["mcp"]:
@@ -604,15 +613,21 @@ def main():
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
     jobs = Jobs(root, bins, data_dir=a.data_dir)
+    fleet = FleetState(root, os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501"),
+                       os.path.join(jobs.data_root, "_dash", "screens"))
     board = None
     if dash:
         try:
-            board = dash.Dash(root, gol, jobs.dir, jobs=jobs)
+            board = dash.Dash(root, gol, jobs.dir, jobs=jobs, fleet=fleet)
         except Exception as e:  # noqa: BLE001
             log(f"dash 起不来，/dash 不可用: {e!r}")
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board))
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet))
     log(f"节点服务 127.0.0.1:{a.port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})  根目录 {root}")
-    srv.serve_forever()
+    try:
+        srv.serve_forever()
+    finally:
+        fleet.close()
+        srv.server_close()
 
 
 if __name__ == "__main__":

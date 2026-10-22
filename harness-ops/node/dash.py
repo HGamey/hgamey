@@ -30,10 +30,12 @@
   POST /dash/api/run/human|stop            改 human.md / 停止（掌舵密码）
   POST /dash/api/goal/draft|confirm        新目标起草 / 确认并开跑（掌舵密码）
 """
-import collections, glob, hashlib, hmac, json, os, re, subprocess, threading, time
+import collections, glob, hashlib, hmac, json, os, re, threading, time
 from urllib.parse import parse_qs
 
 import dash_goals
+from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
+                        FLEET_EVERY_HELD_S, FREE_GRACE_S, SHOT_EVERY_S)
 
 PASS_FILE = os.path.expanduser("~/.config/hgamey/dash.pass")     # 查看密码：只能看
 STEER_FILE = os.path.expanduser("~/.config/hgamey/steer.pass")   # 掌舵密码：改 human.md、起新目标、停止
@@ -44,11 +46,6 @@ STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
-VIEW_IDLE_S = 90          # 这么久没人看就停采样
-FLEET_EVERY_FREE_S = 30   # 锁空闲时多久采一次（节点 mini 负载紧，别再密）
-FLEET_EVERY_HELD_S = 60   # 锁被占时多久采一次（只读 sysfs）
-FREE_GRACE_S = 30         # 锁释放后这么久内不碰手机
-SHOT_EVERY_S = 60         # 截图最小间隔
 SCAN_EVERY_S = 30         # 实验证据多久扫一次（只在有人看时）
 JOBS_SHOWN = 30
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
@@ -84,46 +81,6 @@ def log_err(s):
 
 def _redact(s):
     return REDACT.sub(lambda m: (m.group(1) or m.group(2)) + "***", s)
-
-
-# ═════════════ 设备锁（只读它的三个文件，与 devlock / phonefarm fleet 同一套格式）═════════════
-
-def read_lock(d):
-    owner_p = os.path.join(d, "devlock.d", "owner")
-    out = {"held_by": None, "since": None, "heartbeat_age_s": None, "stale": False, "queue": [], "recent": [],
-           "free_for_s": None}
-    try:
-        txt = open(owner_p).read().strip()
-        label, _, since = txt.partition(" since ")
-        out.update(held_by=label.split()[0] if label else "?", since=since or None,
-                   heartbeat_age_s=int(_now() - _mtime(owner_p)))
-        out["stale"] = out["heartbeat_age_s"] > 600
-    except OSError:
-        pass
-    try:
-        out["queue"] = [l.strip() for l in open(os.path.join(d, "devlock.queue")) if l.strip()]
-    except OSError:
-        pass
-    try:
-        with open(os.path.join(d, "devlock.log"), "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - 4096))
-            lines = f.read().decode(errors="replace").splitlines()[1:]
-        ev = []
-        for l in lines:
-            p = l.split()
-            if len(p) >= 4 and p[2] in ("acquire", "release", "steal"):
-                lab = p[4] if p[2] == "steal" and p[3] == "by" and len(p) > 4 else p[3]
-                ev.append({"at": f"{p[0]} {p[1]}", "action": p[2], "label": lab})
-        out["recent"] = ev[::-1][:12]
-        if not out["held_by"]:
-            rel = next((e for e in out["recent"] if e["action"] == "release"), None)
-            if rel:
-                t = time.mktime(time.strptime(rel["at"], "%Y-%m-%d %H:%M:%S"))
-                out["free_for_s"] = max(0, int(_now() - t))
-    except (OSError, ValueError):
-        pass
-    return out
 
 
 # ═════════════ 实验证据解析 ═════════════
@@ -319,7 +276,7 @@ def signature(d):
 # ═════════════ 主体 ═════════════
 
 class Dash:
-    def __init__(self, phonefarm_root, gol_root, jobs_dir, jobs=None):
+    def __init__(self, phonefarm_root, gol_root, jobs_dir, jobs=None, fleet=None):
         self.pf_root, self.gol_root, self.jobs_dir = phonefarm_root, gol_root, jobs_dir
         node_dir = os.path.dirname(os.path.dirname(jobs_dir.rstrip("/")))  # ~/node
         self.goals = dash_goals.Goals(os.environ.get("HG_GOALS_DIR", os.path.join(node_dir, "goals")),
@@ -328,15 +285,13 @@ class Dash:
         self.lock_dir = os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501")
         self.shot_dir = os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "screens")
         self.last_view = 0.0
-        self.fleet, self.fleet_at, self.fleet_err, self.fleet_skip = None, 0.0, None, None
-        self.hist = collections.deque(maxlen=720)
+        self.monitor = fleet or FleetState(self.pf_root, self.lock_dir, self.shot_dir)
         self.meta_cache = {}
         self.walk_cache = {}
         self.exp_cache = {}
         self.exps, self.exps_ver = [], "0"
         self.fails = collections.defaultdict(list)
         self.wake = threading.Event()
-        threading.Thread(target=self._sampler, daemon=True, name="dash-fleet").start()
         threading.Thread(target=self._scanner, daemon=True, name="dash-scan").start()
 
     # ── 认证 ──
@@ -404,12 +359,15 @@ class Dash:
             if sub and sub[0] == "api":
                 return self._send(h, 401, {"error": "需要查看密码"}, extra={"WWW-Authenticate": 'Basic realm="HGamey dash"'})
             return self._redirect(h, "/dash/login")
-        if sub == ["jobs"]:
-            return self._static(h, "jobs.html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "app.css"):
+        if sub in (["jobs"], ["fleet"]):
+            return self._static(h, sub[0] + ".html")
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()
+        # Only existing observation endpoints enable screenshots; assets and run/log reads do not.
+        if sub in (["api", "home"], ["api", "state"], ["api", "shot"]):
+            self.monitor.request(observe=True)
         q = parse_qs(query)
         if not sub:
             return self._static(h, "home.html")
@@ -545,42 +503,6 @@ class Dash:
         if not shots:
             return self._send(h, 404, {"error": "还没有截图"})
         self._send(h, 200, open(shots[-1], "rb").read(), "image/jpeg")
-
-    # ── 手机：fleet 采样线程 ──
-    def _sampler(self):
-        while True:
-            if _now() - self.last_view > VIEW_IDLE_S:
-                self.wake.wait(30)
-                self.wake.clear()
-                continue
-            lock = read_lock(self.lock_dir)
-            held = bool(lock["held_by"]) and not lock["stale"]
-            fresh_free = not lock["held_by"] and lock["free_for_s"] is not None and lock["free_for_s"] < FREE_GRACE_S
-            if fresh_free:
-                self.fleet_skip = f"手机刚空出来 {lock['free_for_s']} 秒，等满 {FREE_GRACE_S} 秒再读，免得撞上别人开测"
-                time.sleep(5)
-                continue
-            self.fleet_skip = None
-            cmd = [os.path.join(self.pf_root, "phonefarm"), "fleet", "--json", "--lock-dir", self.lock_dir]
-            if not lock["held_by"]:
-                cmd += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
-            env = {k: v for k, v in os.environ.items() if k not in ("DEVLOCK_LABEL",)}  # 绝不冒充持锁方
-            try:
-                r = subprocess.run(cmd, cwd=self.pf_root, env=env, capture_output=True, timeout=40, stdin=subprocess.DEVNULL)
-                self.fleet = json.loads(r.stdout)
-                self.fleet_at, self.fleet_err = _now(), None
-                self._record(self.fleet)
-            except (subprocess.TimeoutExpired, ValueError, OSError) as e:
-                self.fleet_err = f"fleet 采样失败: {type(e).__name__} {str(e)[:200]}"
-            time.sleep(FLEET_EVERY_HELD_S if held else FLEET_EVERY_FREE_S)
-
-    def _record(self, fl):
-        dev = next((d for d in fl.get("devices") or [] if d.get("online")), None)
-        if not dev:
-            return
-        b, t = dev.get("battery") or {}, dev.get("thermal") or {}
-        self.hist.append({"t": int(_now()), "soc": t.get("soc_max_c"), "gpu": t.get("gpu_c"), "bat": b.get("level_pct"),
-                          "bat_c": b.get("temp_c"), "held": bool(((fl.get("lock") or {}).get("held_by")))})
 
     # ── 任务 ──
     def _job_meta(self, jid):
@@ -772,8 +694,9 @@ class Dash:
         """首页：手机槽位 + 目标运行列表。不含开发 agent 的任务、锁队列（那些在维护页）。"""
         runs = self.goals.list()
         running = [r for r in runs if r["status"] in ("running", "paused") and not r["demo"]]  # 示例不占真手机
-        lock = read_lock(self.lock_dir)
-        fl = self.fleet or {}
+        snapshot = self.monitor.snapshot()
+        lock = snapshot["lock"]
+        fl = snapshot
         slots = []
         for d in fl.get("devices") or []:
             serial = d.get("serial")
@@ -789,7 +712,7 @@ class Dash:
                           "model": " ".join(x for x in (d.get("brand"), d.get("model")) if x) or None, "os": d.get("os"),
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
-                          "busy": bool(lock.get("held_by")) and not lock.get("stale"), "light": d.get("probe_depth") == "light",
+                          "busy": lock["status"] != "free", "light": d.get("probe_depth") == "light",
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
                                             "demo": goal["demo"]},
@@ -798,22 +721,23 @@ class Dash:
                                                        "holder": lock.get("held_by")}})
         while len(slots) < SLOTS_MIN:
             slots.append(None)
-        return {"now": _now(), "slots": slots, "fleet_age_s": int(_now() - self.fleet_at) if self.fleet_at else None,
-                "fleet_err": self.fleet_err, "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
+        return {"now": _now(), "slots": slots, "fleet_age_s": snapshot["age_s"],
+                "fleet_err": snapshot["error"], "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
-                "busy": bool(lock.get("held_by")) and not lock.get("stale"),
+                "busy": lock["status"] != "free",
                 # 首页「现在」一行要用：谁在用手机、排队顺序（只给名字，不给日志）
                 "lock": {"held_by": lock.get("held_by"), "since": lock.get("since"), "stale": lock.get("stale"),
                          "queue": lock.get("queue") or []}}
 
     def state(self):
-        lock = read_lock(self.lock_dir)
-        fl = self.fleet or {}
+        snapshot = self.monitor.snapshot()
+        lock = snapshot["lock"]
+        fl = snapshot
         shots = sorted(glob.glob(os.path.join(self.shot_dir, "*.jpg")), key=_mtime)
         shot = {"age_s": int(_now() - _mtime(shots[-1])), "at": int(_mtime(shots[-1]))} if shots else None
         return {"now": _now(), "lock": lock, "devices": fl.get("devices") or [], "notes": fl.get("notes") or [],
-                "fleet_age_s": int(_now() - self.fleet_at) if self.fleet_at else None, "fleet_err": self.fleet_err,
-                "fleet_skip": self.fleet_skip, "shot": shot, "jobs": self.jobs(), "hist": list(self.hist),
+                "fleet_age_s": snapshot["age_s"], "fleet_err": snapshot["error"],
+                "fleet_skip": snapshot["deferred"], "shot": shot, "jobs": self.jobs(), "hist": self.monitor.history(),
                 "policy": {"shot_every_s": SHOT_EVERY_S, "free_grace_s": FREE_GRACE_S,
                            "fleet_every_free_s": FLEET_EVERY_FREE_S, "fleet_every_held_s": FLEET_EVERY_HELD_S}}
 

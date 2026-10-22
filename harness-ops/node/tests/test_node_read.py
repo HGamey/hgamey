@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlencode
 
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import dash
 from node_service import Jobs, make_handler, readonly_token
 from node_read import NodeRead
+from node_fleet import FleetState
 
 
 class NoMcp:
@@ -37,12 +39,14 @@ class NodeReadTests(unittest.TestCase):
         self.board._pass = lambda: self.pw
         self.board.last_view = 0
         self.board.wake = threading.Event()
+        self.board.monitor = FleetState(str(self.root), str(self.root / "locks"), str(self.root / "shots"))
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(
             NoMcp(), self.jobs, self.admin, self.board, self.node))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
     def tearDown(self):
+        self.board.monitor.close()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
@@ -158,6 +162,42 @@ class NodeReadTests(unittest.TestCase):
         self.request("/dash/static/jobs.js", headers=auth)
         self.assertEqual(self.board.last_view, 0)
         self.assertFalse(self.board.wake.is_set())
+
+    def test_fleet_readers_share_one_sampler_without_jobs_or_screenshots(self):
+        monitor = self.board.monitor
+        self.get_json("/node")
+        self.get_json("/jobs")
+        self.assertIsNone(monitor._thread)
+        self.assertEqual(self.request("/fleet", token="wrong")[0], 401)
+        self.assertIsNone(monitor._thread)
+        auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}
+        sample = {"devices": [{"serial": "fixture-only", "online": True,
+                               "thermal": {"soc_max_c": 42}}], "notes": []}
+        with patch("node_fleet.subprocess.run", return_value=subprocess.CompletedProcess(
+                [], 0, json.dumps(sample).encode(), b"")) as run:
+            first = self.get_json("/fleet?wait=2")
+            second = self.get_json("/dash/api/fleet?wait=2", headers=auth)
+            self.assertEqual(first["devices"], sample["devices"])
+            self.assertEqual(first["sampled_at"], second["sampled_at"])
+            self.assertEqual(first["node_id"], self.node.node_id)
+            self.assertFalse(first["stale"])
+            self.assertEqual(run.call_count, 1)
+            self.assertNotIn("--screenshot-dir", run.call_args.args[0])
+            self.assertNotIn("DEVLOCK_LABEL", run.call_args.kwargs["env"])
+            self.assertEqual(list(Path(self.jobs.dir).iterdir()), [])
+            # A failed refresh preserves last-good data and its original timestamp.
+            with monitor._condition:
+                monitor._sampled_at -= 100
+                previous_at = monitor._sampled_at
+                monitor._next_at = 0
+            run.side_effect = subprocess.CalledProcessError(1, "fixture-only")
+            failed = self.get_json("/fleet?wait=2")
+            self.assertEqual(failed["sampled_at"], previous_at)
+            self.assertEqual(failed["devices"], sample["devices"])
+            self.assertTrue(failed["stale"])
+            self.assertIn("CalledProcessError", failed["error"])
+        for wait in ("nan", "6", "-1"):
+            self.assertEqual(self.request("/fleet?wait=" + wait)[0], 400)
 
     def test_artifact_pagination_and_cross_directory_cursor_rejected(self):
         jid = self.fixture(1)
