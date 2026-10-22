@@ -134,24 +134,25 @@
     const hasSample = Array.isArray(devices);
     const age = snapshot?.age_s == null ? null : snapshot.age_s + Math.floor((Date.now() - receivedAt) / 1000);
     const stale = failed || snapshot?.stale || (age != null && age > (snapshot?.policy?.stale_after_s ?? 90));
-    badge($('sample-state'), !hasSample ? '未采集' : stale ? '旧快照' : snapshot.error ? '采样失败' : snapshot.refreshing ? '更新中' : '已有快照',
-      !hasSample || stale || snapshot?.error ? 'unknown' : '');
-    $('sample-time').textContent = snapshot?.sampled_at == null ? '尚无成功采样记录' : `采样于 ${time(snapshot.sampled_at)} · 页面读取于 ${time(receivedAt / 1000)}`;
+    badge($('sample-state'), !hasSample ? '未采集' : stale ? '旧快照' : snapshot.deferred ? '采样暂缓 · 缓存快照' : snapshot.error ? '尝试失败 · 缓存快照' : snapshot.refreshing ? '更新中' : '已有快照',
+      !hasSample || stale || snapshot?.error || snapshot?.deferred ? 'unknown' : '');
+    $('sample-time').textContent = snapshot?.sampled_at == null ? '尚无成功采样记录' : `最后成功采样：${time(snapshot.sampled_at)} · ${age == null ? '年龄未知' : duration(age) + '前'}`;
+    $('sample-attempt').textContent = snapshot?.attempted_at == null ? '尚无采样尝试记录' : `最近已知尝试：${time(snapshot.attempted_at)}${failed ? '（上次返回记录）' : ''}`;
     const notices = [];
     if (failed && hasSample) notices.push('连接失败，以下保留上次取得的设备快照，当前设备状态未确认。');
-    if (snapshot?.error) notices.push(`最近一次采样失败：${snapshot.error}`);
+    if (snapshot?.error) notices.push(`最近一次尝试失败：${snapshot.error}`);
     if (stale && hasSample && !failed) notices.push('设备快照已过期，请勿据此判断当前可用性。');
-    if (!failed && snapshot?.deferred) notices.push(`采样暂缓：${snapshot.deferred}`);
+    if (!failed && snapshot?.deferred) notices.push(`采样暂缓：${snapshot.deferred}${hasSample ? '。以下保留最后成功的设备快照，本次未更新设备数据。' : ''}`);
     if (!failed && snapshot?.refreshing) notices.push(hasSample ? '后台正在采样，当前展示上次成功取得的快照。' : '后台正在采样，尚未取得设备列表。');
     $('sample-message').textContent = notices.join('\n');
-    $('sample-message').className = `fleet-notice ${snapshot?.error || stale ? 'warning' : ''}`;
+    $('sample-message').className = `fleet-notice ${snapshot?.error || snapshot?.deferred || stale ? 'warning' : ''}`;
     $('sample-message').hidden = !notices.length;
     $('device-count').textContent = hasSample ? `${devices.length} 台设备记录` : '尚未取得设备列表';
     const expanded = new Set([...$('devices').querySelectorAll('details[open]')].map(node => node.dataset.device));
     $('devices').replaceChildren(...(hasSample ? devices.map(deviceCard) : []));
     for (const details of $('devices').querySelectorAll('details')) details.open = expanded.has(details.dataset.device);
     $('devices-empty').hidden = hasSample && devices.length > 0;
-    $('devices-empty').textContent = hasSample ? '这次采样未发现设备。' : '尚未取得设备列表；这不代表节点没有连接设备。';
+    $('devices-empty').textContent = hasSample ? '上次成功采样未发现设备。' : '尚未取得设备列表；这不代表节点没有连接设备。';
     const notes = Array.isArray(snapshot?.notes) ? snapshot.notes : [];
     $('notes-list').replaceChildren(...notes.map(note => el('li', note)));
     $('fleet-notes').hidden = !notes.length;

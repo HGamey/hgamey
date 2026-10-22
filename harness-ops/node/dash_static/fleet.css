@@ -72,3 +72,6 @@
   .device-card, .lock-panel { padding: 18px; }
   .lock-details summary, .device-details summary, .auto-control { min-height: 40px; padding: 8px 0; }
 }
+
+.sample-line { margin-bottom: 4px; }
+.sample-attempt.read-time { margin: 0 0 14px; overflow-wrap: anywhere; }
