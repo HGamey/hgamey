@@ -36,7 +36,7 @@ class JobOwnershipTests(unittest.TestCase):
             self.assertEqual(meta["argv"], argv)  # Preserve the submitted record.
             self.assertEqual(command, [self.bins[name][0], argv[0], "--lock-label", meta["lock_label"]])
         self.assertNotEqual(metas[0]["lock_label"], metas[1]["lock_label"])
-        for sub, option in (("gray-layer", "--actor-id"), ("gray-ab", "--serial")):
+        for sub, option in (("gray-layer", "--actor-id"), ("gray-layer", "--power-policy"), ("gray-ab", "--serial")):
             self.assertEqual(_job_lock_args([sub, option, "--lock-label", "--lock-label", "external"], "job-owner"),
                              [sub, option, "--lock-label", "--lock-label", "job-owner"])
 

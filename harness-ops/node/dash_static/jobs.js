@@ -353,7 +353,33 @@
     $('submit-refill').disabled = !allowed || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
     $('submit-retry').disabled = !allowed || submissionBusy;
+    renderSessionTemplate(allowed);
     renderControls();
+  }
+  function renderSessionTemplate(allowed) {
+    const unavailable = !allowed || !!pendingRequest || submissionBusy || !nodeInfo?.execution?.bins?.includes('phonefarm');
+    for (const id of ['template-serial', 'template-package', 'template-mode', 'template-seconds', 'template-power', 'template-so', 'template-apply']) $(id).disabled = unavailable;
+    message('template-power-help', $('template-power').value === 'battery' ? '首次采样准备电池条件，跨轮保持；会话停止或同上下文恢复时还原所绑定的充电控制。已实测放电时可能无需修改控制。' : '只观察当前供电状态，不请求修改充电控制。功耗是否可用仍以每轮观测和采样窗口为准。');
+    message('template-status', pendingRequest ? '存在未确认提交，先按原请求 ID 找回；模板不会覆盖该请求。' : unavailable ? '需解锁任务操作，且节点提供 phonefarm 命令，才能填入模板。' : '模板只填入参数；核对下方命令后，再点击“提交任务”。');
+  }
+  function applySessionTemplate() {
+    if ($('template-apply').disabled || pendingRequest || submissionBusy) return;
+    const serial = $('template-serial').value.trim(), pkg = $('template-package').value.trim();
+    const mode = $('template-mode').value, seconds = Number($('template-seconds').value), policy = $('template-power').value;
+    if (!serial || !pkg || !['frameaudit', 'frameaudit-ts', 'probe', 'target', 'passdump', 'loadop'].includes(mode) ||
+        !Number.isInteger(seconds) || seconds < 1 || seconds > 3600 || !['observe', 'battery'].includes(policy)) {
+      message('template-status', '请填写设备、包名、支持的模式、1–3600 秒预算及供电策略；尚未填入。', true); return;
+    }
+    const argv = ['gray-layer', 'session', '--serial', serial, '--package', pkg, '--mode', mode, '--out', '@out', '--max-seconds', String(seconds), '--power-policy', policy];
+    const so = $('template-so').value.trim();
+    if (so) argv.push('--so', so);
+    $('submit-bin').value = 'phonefarm';
+    $('submit-argv').value = JSON.stringify(argv, null, 2);
+    $('submit-device-access').value = recoverySupported() ? 'write' : '';
+    $('submit-recovery-for').value = '';
+    if (!$('submit-label').value.trim()) $('submit-label').value = `灰层会话 · ${pkg}`;
+    renderSubmission();
+    message('template-status', `已填入 ${policy} 策略的新会话参数，尚未提交。请核对下方 argv；运行中的会话不受影响。`);
   }
   function submissionMessage(value, error = false, id = '') {
     $('submission-receipt').hidden = false;
@@ -737,6 +763,11 @@
     const recovery = s.recovery || {};
     const recoveryState = ({not_reported: '尚未报告恢复', required: '需要继续恢复', reported_complete: '已报告限定范围恢复；仍需核查任务资源保留'})[recovery.status] || text(recovery.status);
     facts('session-recovery', [['恢复状态', recoveryState], ['上下文', recovery.session_path], ['报告', (recovery.reports || []).join('\n') || '尚无'], ['错误', recovery.error || '无']]);
+    const power = s.power || {};
+    const stage = ({not_started: '尚未准备', observed_no_mutation: '已观测放电 · 未修改控制', recorded: '已绑定原值', suspended: '充电控制已暂停', restoring: '充电控制恢复中', restored: '充电控制已恢复', unmodified: '未修改充电控制'})[power.stage] || '未知';
+    $('session-power-summary').textContent = `固定供电策略 · ${powerPolicy(power.policy)} · ${stage}`;
+    facts('session-power-info', [['固定策略', powerPolicy(power.policy)], ['准备 / 恢复阶段', stage], ['本会话修改控制', typeof power.control_modified_by_session === 'boolean' ? power.control_modified_by_session ? '是' : '否' : '未知'],
+      ['初始观测', powerObservation(power.initial)], ['最近观测', powerObservation(power.last_observation)]]);
     renderSampleResult(sessionSampleReceipt || {result: s.latest_sample}, !sessionSampleReceipt);
     const frame = s.latest_image;
     $('session-image-empty').hidden = !!frame;
@@ -785,6 +816,12 @@
     sessionSampleReceipt = receipt.result?.collection ? receipt : null;
     renderSampleResult(sessionSampleReceipt || {result: sessionState?.latest_sample}, !sessionSampleReceipt);
   }
+  function powerPolicy(policy) { return ({observe: 'observe · 仅观察', battery: 'battery · 电池条件化'})[policy] || '未知'; }
+  function powerObservation(value) {
+    if (!value) return '未知';
+    const battery = value.battery || value; // Initial battery facts are flat; later observations wrap them.
+    return `${value.on_battery === true ? '已观测电池放电' : value.on_battery === false ? '未观测为电池放电' : '放电状态未知'} · ${battery.status || '电池状态未知'} · 电流 ${battery.current_ua ?? '未知'} μA · 电量 ${battery.capacity_pct ?? '未知'}% · ${time(value.observed_at)}`;
+  }
   function renderSampleResult(receipt, fromCache = false) {
     const result = receipt.result;
     $('session-sample-result').hidden = !result?.collection;
@@ -796,11 +833,17 @@
     const metrics = result.metrics || {};
     facts('session-sample-info', [['请求 ID', receipt.request_id || result.request_id || '未知'], ['请求时长', Number.isInteger(result.requested_seconds) ? `${result.requested_seconds} 秒` : '未知'],
       ['GPU submit proxy', `${metric(metrics.gpu_submit_fps)}${Number.isFinite(metrics.gpu_submit_fps) ? ' /s' : ''}`],
-      ['平均功率', `${metric(metrics.power_w_mean)}${Number.isFinite(metrics.power_w_mean) ? ' W' : ''}`],
+      ['环境采样全窗平均功率', `${metric(metrics.power_w_mean)}${Number.isFinite(metrics.power_w_mean) ? ' W' : ''}`],
       ['来源', fromCache ? `最近采样缓存 · ${result.path || '报告路径未记录'}` : '当前查询的动作回执'],
       ...(result.input_kind ? [['输入方式', ({idle: '无输入', finite: '显式有限输入'})[result.input_kind] || '未知'],
         ['声明计划时长', Number.isFinite(result.planned_input_ms) ? `${result.planned_input_ms / 1000} 秒（非实测耗时）` : '未知'],
         ['输入参考原图', result.initial_frame ? `${text(result.initial_frame.request_id)} · ${text(result.initial_frame.width)} × ${text(result.initial_frame.height)} · 方向 ${text(result.initial_frame.rotation)}` : '无']] : [])]);
+    const power = result.power || {}, trace = result.metric_provenance?.trace_energy || {}, window = trace.window || {};
+    message('session-sample-power-status', trace.available === true ? 'trace 窗口估计可用：由电池采样积分得到，不是游戏每帧能耗。' : `trace 窗口估计${trace.available === false ? '不可用' : '资格未知'}：${trace.reason || '未提供可核验的窗口资格记录。'}`, trace.available === false);
+    const traceMetric = (value, unit) => trace.available === true && Number.isFinite(value) ? `${metric(value)} ${unit}（估计）` : '未知';
+    facts('session-sample-power', [['本轮策略', powerPolicy(power.policy)], ['采样前观测', powerObservation(power.before)], ['采样后观测', powerObservation(power.after)], ['供电条件错误', power.error || (result.power ? '无记录错误' : '未知')],
+      ['trace 窗口能量', traceMetric(metrics.trace_energy_j, 'J')], ['trace 窗口平均功率', traceMetric(metrics.trace_power_w_mean, 'W')],
+      ['估计方法 / rail', `${trace.method || '未知'} / ${trace.rail || '未知'}`], ['trace 时间窗', window.clock === 'uptime' && Number.isFinite(window.start) && Number.isFinite(window.end) ? `uptime ${window.start}–${window.end} 秒` : '未知']]);
     const limitations = Array.isArray(result.limitations) ? result.limitations.filter(v => typeof v === 'string') : [];
     $('session-sample-limitations').replaceChildren(...limitations.map(value => el('li', value)));
     $('session-sample-limitations').hidden = !limitations.length;
@@ -1198,6 +1241,8 @@
   $('force-form').addEventListener('submit', event => { event.preventDefault(); cancelJob(true); });
   $('refresh-queue').addEventListener('click', loadQueue);
   $('submit-job-form').addEventListener('submit', event => { event.preventDefault(); submitJob(); });
+  $('session-template-form').addEventListener('submit', event => { event.preventDefault(); applySessionTemplate(); });
+  $('template-power').addEventListener('change', () => renderSessionTemplate(!$('submit-bin').disabled));
   $('submit-retry').addEventListener('click', () => submitJob(true));
   $('submit-refill').addEventListener('click', () => {
     if ($('submit-refill').disabled || !pendingRequest || pendingRequest.body) return;

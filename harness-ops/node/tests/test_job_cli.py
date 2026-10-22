@@ -271,13 +271,16 @@ class JobCLI(unittest.TestCase):
         self.assertTrue(all(post == posts[0] for post in posts))
         mode[0] = "ok"
         posts.clear()
-        code, _, stderr = run("--detach", "phonefarm", "eval")
+        session_argv = ["gray-layer", "session", "--serial", "FIXTURE", "--package", "com.example.game",
+                        "--mode", "frameaudit", "--out", "@out", "--max-seconds", "900", "--power-policy", "battery"]
+        code, _, stderr = run("--detach", "phonefarm", *session_argv)
         self.assertEqual(code, 0, stderr)
         request_id, spec, body = posts[0]
         self.assertEqual(str(uuid.UUID(request_id)), request_id)
         self.assertNotIn("resources", json.loads(spec))
         self.assertNotIn("device_access", json.loads(spec))
         self.assertNotIn("recovery_for", json.loads(spec))
+        self.assertEqual(json.loads(spec)["argv"], session_argv)
         self.assertEqual(body, b"")
         self.assertIn("phase=preparing", stderr)
 

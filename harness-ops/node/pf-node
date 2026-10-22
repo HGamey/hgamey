@@ -12,6 +12,7 @@
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
   pf-node session-status <id> [--request-id ID] # 只读灰层会话或动作回执
   pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
+  pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
   pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
@@ -41,6 +42,10 @@
   frame_id 须引用最新且30秒内、方向已知的原图；不自动截图。声明计划至少 seconds+10 秒、最多600秒。
   输入自然完成、采集完成和设备恢复分别核对；结果未知仍用原请求 ID 查询，不自动重发。
   GPU submit proxy 不是显示 FPS；此批不计算每帧能耗。
+- gray-layer session --power-policy observe|battery 在创建时固定，默认 observe；observe 不请求改变充电控制。
+  battery 在首次 sample 准备，跨轮保持，最终 stop/recover 还原绑定原值；选择策略不代表已经放电或功耗合格。
+  whole-sampler 平均功率与 trace 窗口积分估计分别记录；后者可用性由同期电池样本与窗口资格决定，缺失为未知。
+  trace_energy_j/trace_power_w_mean 是采样积分估计，不是游戏每帧能耗；旧 producer 可能在设备操作前拒绝新参数。
 - 节点地址 PF_NODE_URL（缺省 https://mbp1.liyao.space，主力节点），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """
 import gzip, hashlib, http.client, io, json, math, os, re, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid

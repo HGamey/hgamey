@@ -160,7 +160,7 @@ def _pid_alive(pid):
 def _job_lock_args(argv, owner):
     """An explicit CLI label must not turn separate jobs into nested owners."""
     result, i = [], 0
-    values = ({"--serial", "--so", "--mode", "--package", "--out", "--max-seconds", "--actor-id",
+    values = ({"--serial", "--so", "--mode", "--package", "--out", "--max-seconds", "--actor-id", "--power-policy",
                "--evidence-origin", "--request-id", "--request", "--session"} if argv[:1] == ["gray-layer"] else
               {"--serial", "--out", "--pairs", "--mode", "--evidence-origin"} if argv[:1] == ["gray-ab"] else set())
     while i < len(argv):
