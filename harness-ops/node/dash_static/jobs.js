@@ -82,7 +82,13 @@
         error.status = response.status;
         throw error;
       }
-      if (!response.ok) { const error = new Error(`读取失败（HTTP ${response.status}），可刷新重试。`); error.status = response.status; throw error; }
+      if (!response.ok) {
+        const error = new Error(`读取失败（HTTP ${response.status}），可刷新重试。`); error.status = response.status;
+        if ((response.headers.get('content-type') || '').includes('application/json')) {
+          try { error.payload = await response.json(); } catch (_) { /* A malformed error body does not establish absence. */ }
+        }
+        throw error;
+      }
       return await consume(response);
     } finally { clearTimeout(timeout); }
   }
@@ -629,6 +635,7 @@
   }
   let sessionState = null, sessionFresh = false, sessionRevision = 0, sessionBusy = false, sessionActionBusy = false;
   let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0, sessionSampleReceipt = null, sessionQualityReceipt = null, sampleFrame = null;
+  let referenceRun = null;
   const pendingActions = new Map();
   const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 其他操作暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
   const ACTION_STATES = {accepted: '请求已记录，尚未执行完成。', started: '动作执行中。', completed: '此动作已完成；请核对结果与证据。', failed: '动作失败，请核对错误和恢复状态。', unknown: '执行结果未知，不要换 ID 重复输入。', not_executed: '请求未执行。'};
@@ -648,6 +655,10 @@
     try { if (pending.length) sessionStorage.setItem(sessionKey(id), JSON.stringify(pending)); else sessionStorage.removeItem(sessionKey(id)); } catch (_) { /* Request IDs remain visible in this page. */ }
   }
   function resetSession() {
+    stopReference('任务详情已切换或刷新。');
+    referenceRun = null;
+    $('reference-result').hidden = true;
+    message('reference-message', '按标签查询共享回执；本页不保存整组进度。');
     ++sessionRevision; ++receiptRevision;
     sessionState = null; sessionFresh = false; sessionBusy = sessionActionBusy = false;
     sessionSampleReceipt = sessionQualityReceipt = null;
@@ -675,7 +686,7 @@
     const actor = $('session-actor').value.trim();
     const pending = sessionPending();
     return !!(sessionFresh && !sessionBusy && !sessionActionBusy && sessionSupported() && access?.steer && !accessBusy &&
-      sessionState?.live_owner && sessionState.accepting && sessionState.allowed_actions?.includes(action) &&
+      (!referenceRun || action === 'stop') && sessionState?.live_owner && sessionState.accepting && sessionState.allowed_actions?.includes(action) &&
       (sessionState.phase !== 'measuring' || action === 'stop') &&
       (['take_control', 'stop'].includes(action) || controller?.actor_id === actor) &&
       (!pending.length || action === 'stop' && !pending.some(p => p.action === 'stop')) && /^[A-Za-z0-9_-]{1,64}$/.test(actor) && globalThis.crypto?.randomUUID);
@@ -741,6 +752,7 @@
       measuring ? '正在测量，显示的是先前采集的画面。其他截图、输入及灰层动作暂停；可请求停止，当前有界计划结束后收尾。' :
       '1–120 秒，默认 30 秒。线程筛选留空仍采原始数据，帧相关指标保持未知。提交只表示入队，请按原请求 ID 查询结果。');
     renderQualityControls();
+    renderReferenceControls();
     const pending = sessionPending();
     message('session-pending', pending.length ? `未决请求：${pending.map(v => v.request_id).join('、')}。先查询回执；不会自动重发输入。` : '回执读取不触发设备动作。accepted 仅表示入队，completed 才表示该动作结束。');
     message('session-action-help', !access?.steer ? '查看权限只能读状态和已有画面；采集或输入需先解锁任务操作。' :
@@ -934,6 +946,7 @@
   }
   async function sendSessionAction(action, params = {}) {
     if (!sessionAllowed(action)) return;
+    if (action === 'stop') stopReference('已请求停止会话，停止本页后续提交。');
     const id = selected, session = sessionState, revision = ++receiptRevision;
     const requestBody = {schema: 'phonefarm/gray-control-action@1', request_id: crypto.randomUUID(), session_id: session.session_id,
       actor_id: $('session-actor').value.trim(), control_epoch: session.controller.epoch, action, params};
@@ -954,6 +967,200 @@
       if (error.status === 401 || error.status === 403) await loadAccess();
     } finally {
       if (selected === id && revision === receiptRevision) { sessionActionBusy = false; renderSessionControls(); await loadSession(); }
+    }
+  }
+
+  // This view is disposable. Platform receipts, not browser storage, determine group progress.
+  function renderReferenceControls() {
+    const active = !!referenceRun;
+    const readable = !!currentJob && sessionSupported() && !active;
+    $('reference-query').disabled = !readable;
+    $('reference-query').setAttribute('aria-busy', String(active && !referenceRun.execute));
+    $('reference-label').disabled = active;
+    $('reference-fields').disabled = active;
+    $('reference-start').disabled = !readable || !access?.steer || accessBusy || sessionActionBusy || !!sessionPending().length;
+    $('reference-start').setAttribute('aria-busy', String(active && referenceRun.execute));
+    $('reference-start').textContent = active && referenceRun.execute ? '正在核对 / 采集…' : '采集本组参考数据';
+    $('reference-stop').hidden = !active;
+    $('reference-stop').disabled = !!referenceRun?.cancelled;
+    $('session-actor').disabled = active;
+  }
+  function stopReference(reason) {
+    if (!referenceRun) return;
+    referenceRun.cancelled = true;
+    message('reference-message', `${reason} 已发动作由 owner 收尾；请重新查询本组原回执，不会自动续跑。`, true);
+    renderReferenceControls();
+  }
+  function referenceCurrent(run) {
+    if (referenceRun !== run || selected !== run.job || run.cancelled || document.hidden) throw new Error('本页编排已停止，未发送后续动作。');
+  }
+  function referenceTime(value) {
+    return new Date(typeof value === 'number' ? value * 1000 : value).getTime();
+  }
+  function referenceOptions() {
+    const profile = {schema: 'phonefarm/gray-reference-profile@1', package: $('reference-package').value.trim(),
+      width: Number($('reference-width').value), height: Number($('reference-height').value), rotation: Number($('reference-rotation').value)};
+    const seconds = Number($('reference-seconds').value), policy = $('reference-power').value;
+    const actor = $('session-actor').value.trim(), renderComm = $('reference-render-comm').value.trim();
+    if (!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(profile.package) ||
+      !['width', 'height'].every(k => Number.isInteger(profile[k]) && profile[k] >= 1 && profile[k] <= 8192) ||
+      $('reference-rotation').value === '' || !Number.isInteger(profile.rotation) || profile.rotation < 0 || profile.rotation > 3) throw new Error('请明确填写包名、1–8192 的原图宽高及方向 0–3。');
+    if (!['observe', 'battery'].includes(policy) || !Number.isInteger(seconds) || seconds < 1 || seconds > 120 || !/^[A-Za-z0-9_-]{1,64}$/.test(actor)) throw new Error('请明确供电期望、1–120 秒和有效操作归属。');
+    if (renderComm && (new TextEncoder().encode(renderComm).length > 64 || /\p{Cc}/u.test(renderComm))) throw new Error('参考渲染线程最多 64 个 UTF-8 字节，不能含控制字符。');
+    let input;
+    try { input = JSON.parse($('reference-input').value); } catch (_) { throw new Error('参考有限输入必须是有效 JSON。'); }
+    if (!Array.isArray(input) && !(input && typeof input === 'object' && Object.keys(input).length === 1 && Array.isArray(input.steps))) throw new Error('参考有限输入须为数组或仅含 steps 数组的对象。');
+    return {profile, seconds, policy, actor, input, renderComm};
+  }
+  function referenceDescriptor(value, job) {
+    if (value?.schema !== 'phonefarm/gray-control@1' || value.producer !== 'phonefarm' || value.job_id !== job || typeof value.session_id !== 'string') throw new Error('会话身份不匹配，停止本组操作。');
+    return value;
+  }
+  function referenceReceipt(run, name, value) {
+    if (value?.schema !== 'phonefarm/gray-control-action-result@1' || value.session_id !== run.session || value.request_id !== run.ids[name]) throw new Error('参考动作回执身份不匹配，停止本组操作。');
+    return value;
+  }
+  async function readReferenceReceipt(run, name) {
+    referenceCurrent(run);
+    try {
+      const value = await json(`${API}/jobs/${run.job}/session/actions/${run.ids[name]}`);
+      referenceCurrent(run);
+      return referenceReceipt(run, name, value);
+    } catch (error) {
+      referenceCurrent(run);
+      if (error.status === 404 && error.payload?.schema === 'phonefarm/gray-control-error@1' && error.payload.code === 'not_found') return null;
+      throw error;
+    }
+  }
+  function referenceComplete(run) {
+    const r = run.receipts;
+    if (!['capture', 'sample', 'marker'].every(name => r[name]?.status === 'completed' && r[name]?.result && typeof r[name].result === 'object')) return false;
+    return r.capture.result.image?.request_id === run.ids.capture && r.sample.result.initial_frame?.request_id === run.ids.capture &&
+      r.sample.result.input_kind === 'finite' && r.sample.result.collection?.status === 'complete' &&
+      r.marker.result.kind === 'marker' && typeof r.marker.result.path === 'string';
+  }
+  async function referenceGuard(run, minimumSeconds = 0) {
+    const until = Date.now() + 2000;
+    while (true) {
+      referenceCurrent(run);
+      if (!access?.steer || accessBusy) throw new Error('操作权限已改变，停止后续提交。');
+      const d = referenceDescriptor(await json(`${API}/jobs/${run.job}/session`), run.job);
+      referenceCurrent(run);
+      const c = d.controller || {};
+      if (d.session_id !== run.session || d.package !== run.options.profile.package || d.mode !== 'passdump') throw new Error('会话 / 包名 / passdump 模式不符，停止后续提交。');
+      if (c.actor_id !== run.options.actor || c.epoch !== run.epoch || (c.expires_at != null && !(referenceTime(c.expires_at) > Date.now()))) throw new Error('控制者、epoch 或接管期限已变化；本组不会接纳新的控制权。');
+      if (d.live_owner !== true || d.accepting !== true || d.action_capabilities?.sample !== 2 || !['capture', 'sample', 'marker'].every(a => d.allowed_actions?.includes(a))) throw new Error('owner 不可用或缺少参考采集能力。');
+      if (d.power?.policy !== run.options.policy) throw new Error('会话固定供电策略不符合明确期望；未修改策略。');
+      if (!(referenceTime(d.deadline_at) > Date.now() + minimumSeconds * 1000)) throw new Error('会话预算不足以覆盖下一步。');
+      if (d.phase === 'ready') return d;
+      if (d.phase !== 'executing' || Date.now() >= until) throw new Error('owner 未就绪，停止后续提交。');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  function referenceImage(run, result) {
+    const image = result?.image, profile = run.options.profile;
+    if (!image || image.request_id !== run.ids.capture || !['width', 'height', 'rotation'].every(k => Number.isInteger(image[k]) && image[k] === profile[k])) throw new Error('本组原图与显式 profile 几何不符；未发送采样。');
+    const age = Date.now() - referenceTime(image.captured_at);
+    if (!(age >= 0 && age <= 30000)) throw new Error('本组原图已过期或时间无效；未发送采样。');
+    return image;
+  }
+  async function submitReference(run, name, params, minimumSeconds = 0) {
+    const d = await referenceGuard(run, minimumSeconds);
+    if (name === 'sample') {
+      referenceImage(run, run.receipts.capture?.result);
+      if (d.latest_image?.request_id !== run.ids.capture) throw new Error('本组原图已被另一张采集替换；未发送采样。');
+    }
+    referenceCurrent(run);
+    const requestBody = {schema: 'phonefarm/gray-control-action@1', request_id: run.ids[name], session_id: run.session,
+      actor_id: run.options.actor, control_epoch: run.epoch, action: name, params};
+    run.submitted = name;
+    message('reference-message', `正在投递 ${run.ids[name]}；固定本次身份，仅发送一次。`);
+    try {
+      const receipt = await post(`${API}/jobs/${run.job}/session/actions`, requestBody);
+      referenceCurrent(run);
+      run.receipts[name] = referenceReceipt(run, name, receipt);
+    } catch (error) {
+      referenceCurrent(run);
+      try { run.receipts[name] = await readReferenceReceipt(run, name); } catch (lookupError) { run.lookupError = lookupError.message; }
+      referenceCurrent(run);
+      renderReferenceResult(run);
+      throw new Error(`投递结果未确认（${run.ids[name]}）。仅查询了一次原 ID，停止后续步骤；${run.lookupError || error.message}`);
+    }
+    renderReferenceResult(run);
+    const until = Date.now() + (name === 'sample' ? 720 : 120) * 1000;
+    while (['accepted', 'started'].includes(run.receipts[name]?.status)) {
+      if (Date.now() >= until) throw new Error(`原请求 ${run.ids[name]} 仍未完成，停止等待，不会重发。`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      run.receipts[name] = await readReferenceReceipt(run, name);
+      referenceCurrent(run);
+      renderReferenceResult(run);
+      if (!run.receipts[name]) throw new Error('已接受的请求当前不可读取；结果未知，停止后续步骤。');
+    }
+    if (run.receipts[name]?.status !== 'completed') throw new Error(`${run.ids[name]} 未完成；请核对错误和原件，未发送后续步骤。`);
+    return run.receipts[name].result;
+  }
+  function renderReferenceResult(run) {
+    if (selected !== run.job) return;
+    $('reference-result').hidden = false;
+    const sample = run.receipts.sample?.result;
+    facts('reference-info', [['本组', run.label], ['会话', run.session || '正在核对'], ['固定 actor / epoch', run.options ? `${run.options.actor} / ${text(run.epoch)}` : '只读查询'],
+      ...(sample ? [['回执采样秒数', sample.requested_seconds], ['回执计划时长', Number.isFinite(sample.planned_input_ms) ? `${sample.planned_input_ms / 1000} 秒` : '未知'], ['回执供电策略', powerPolicy(sample.power?.policy)], ['回执渲染线程', sample.metric_provenance?.frame?.render_comm || '未选择 / 未记录；帧指标未知']] : [])]);
+    const stages = $('reference-stages'); stages.replaceChildren();
+    for (const [name, title] of [['capture', '原图'], ['sample', '有限输入采样'], ['marker', 'marker']]) {
+      const receipt = run.receipts[name], result = receipt?.result;
+      const card = el('div', null, 'session-quality-stage');
+      card.append(el('h5', `${title} · ${receipt === null ? '明确未找到' : receipt ? ({accepted: '已接受，待完成', started: '有 started 记录，待核实', completed: '动作已完成', failed: '失败', unknown: '结果未知', not_executed: '未执行'})[receipt.status] || '未知状态' : '未取得回执'}`));
+      card.append(el('p', run.ids[name], 'note'));
+      if (receipt?.error) card.append(el('p', typeof receipt.error === 'string' ? receipt.error : receipt.error.message || JSON.stringify(receipt.error), 'note task-error'));
+      const links = el('ul', null, 'session-sample-artifacts');
+      const receiptItem = el('li'), receiptLink = el('a', '原请求回执');
+      receiptLink.href = `${API}/jobs/${run.job}/session/actions/${run.ids[name]}`; receiptLink.download = ''; receiptItem.append(receiptLink); links.append(receiptItem);
+      const artifacts = name === 'capture' ? [{name: '原始 PNG', path: result?.image?.path}] : name === 'marker' ? [{name: 'marker 原件', path: result?.path}] : [{name: '采样报告 run.json', path: result?.path}, ...(Array.isArray(result?.artifacts) ? result.artifacts : [])];
+      const seen = new Set();
+      for (const artifact of artifacts) {
+        const path = artifact?.path;
+        if (typeof path !== 'string' || !path || path.startsWith('/') || /[\u0000-\u001f\u007f]/.test(path) || path.split('/').some(p => !p || p === '.' || p === '..') || seen.has(path)) continue;
+        seen.add(path);
+        const item = el('li'), link = el('a', artifact.name || path); link.href = `${API}/jobs/${run.job}/out?${new URLSearchParams({path})}`; link.download = ''; item.append(link); links.append(item);
+      }
+      card.append(links); stages.append(card);
+    }
+  }
+  async function runReference(execute) {
+    if (referenceRun || !selected || !sessionSupported() || (execute && $('reference-start').disabled)) return;
+    const label = $('reference-label').value.trim();
+    if (!/^[A-Za-z0-9_-]{1,48}$/.test(label)) { message('reference-message', '标签须为 1–48 位字母、数字、下划线或短横线。未发送动作。', true); return; }
+    let options;
+    try { if (execute) options = referenceOptions(); } catch (error) { message('reference-message', error.message, true); return; }
+    const run = {job: selected, label, execute, options, ids: {capture: `gr-${label}-00`, sample: `gr-${label}-01`, marker: `gr-${label}-02`}, receipts: {}, cancelled: false};
+    referenceRun = run;
+    renderSessionControls(); renderReferenceResult(run);
+    message('reference-message', '正在读取平台上的三份回执；尚未发送动作。');
+    try {
+      const initial = referenceDescriptor(await json(`${API}/jobs/${run.job}/session`), run.job); referenceCurrent(run);
+      run.session = initial.session_id; run.epoch = initial.controller?.epoch;
+      for (const name of ['capture', 'sample', 'marker']) { run.receipts[name] = await readReferenceReceipt(run, name); renderReferenceResult(run); }
+      if (Object.values(run.receipts).some(r => r !== null)) {
+        message('reference-message', referenceComplete(run) ? '本组三份证据已完整，显示原回执参数；没有重采，也未请求停止会话。' : '本组已有部分记录或未知结果。停止整组执行；请按原 ID 核查，不能自动接续或换 ID 重采。', !referenceComplete(run));
+        return;
+      }
+      if (!execute) { message('reference-message', '三份回执均明确不存在。填写并核对参数后，才能显式采集本组。'); return; }
+      if (!Number.isSafeInteger(run.epoch) || run.epoch < 0) throw new Error('控制 epoch 无效，未发送动作。');
+      const capture = await submitReference(run, 'capture', {}, options.seconds + 10);
+      const image = referenceImage(run, capture);
+      const params = {seconds: options.seconds, input: options.input, frame_id: image.request_id, ...(options.renderComm ? {render_comm: options.renderComm} : {})};
+      const sample = await submitReference(run, 'sample', params, options.seconds + 10);
+      if (sample?.collection?.status !== 'complete') throw new Error('采样失败或采集结果不完整；未请求 marker，原件保留。');
+      await submitReference(run, 'marker', {});
+      if (!referenceComplete(run)) throw new Error('动作回执未绑定本组所需证据；请核对原件。');
+      message('reference-message', '本组三份证据已完整，场景一致性与渲染精度仍需核查。未请求停止会话。');
+    } catch (error) {
+      if (referenceRun === run && selected === run.job) message('reference-message', `${error.message} 已有原件与请求 ID 保留；本流程未请求 stop。`, true);
+    } finally {
+      if (referenceRun === run) {
+        referenceRun = null;
+        if (selected === run.job) { renderReferenceResult(run); renderSessionControls(); }
+      }
     }
   }
 
@@ -1190,6 +1397,13 @@
   });
   $('session-refresh').addEventListener('click', loadSession);
   $('session-receipt-form').addEventListener('submit', event => { event.preventDefault(); querySessionReceipt(); });
+  $('reference-query').addEventListener('click', () => runReference(false));
+  $('reference-form').addEventListener('submit', event => { event.preventDefault(); runReference(true); });
+  $('reference-stop').addEventListener('click', () => stopReference('已停止本页后续提交。'));
+  $('reference-example').addEventListener('click', () => {
+    $('reference-input').value = JSON.stringify([{action: 'sleep', ms: 3000}, ...Array.from({length: 3}, () => ({action: 'exec', cmd: 'input swipe 900 400 2000 400 12000'})), {action: 'sleep', ms: 1000}], null, 2);
+  });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopReference('页面已隐藏。'); });
   $('session-quality-label').addEventListener('input', renderQualityControls);
   for (const op of ['begin', 'checkpoint', 'finish']) $('session-quality-' + op).addEventListener('click', () => {
     renderQualityControls();
@@ -1270,7 +1484,7 @@
       message('session-receipt-message', '起点坐标已填写，尚未发送输入。');
     }
   });
-  window.addEventListener('pagehide', () => { ++sessionRevision; ++receiptRevision; if (sessionImageURL) URL.revokeObjectURL(sessionImageURL); });
+  window.addEventListener('pagehide', () => { stopReference('页面已离开。'); ++sessionRevision; ++receiptRevision; if (sessionImageURL) URL.revokeObjectURL(sessionImageURL); });
 
   $('filters').addEventListener('submit', event => {
     event.preventDefault();

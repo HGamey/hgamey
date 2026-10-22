@@ -164,6 +164,27 @@
               <div class="session-actions"><button id="session-sample-submit" class="ghost" type="submit" disabled>开始采样</button></div>
               <p id="session-sample-help" class="note" role="status"></p>
             </form>
+            <details id="session-reference" class="session-reference">
+              <summary>参考臂采集 · 同组 capture → sample → marker</summary>
+              <p class="note">连接已有 passdump 会话。请先进入世界场景并设置预期渲染精度；本流程不会验证这些条件，也不会登录、导航或停止会话。</p>
+              <div class="session-fields"><label for="reference-label">参考组标签<input id="reference-label" maxlength="48" autocomplete="off" spellcheck="false" placeholder="如 ref-dusk-01"></label></div>
+              <button id="reference-query" class="ghost" type="button" disabled>查询本组记录</button>
+              <p class="note">按标签查询平台上的三份回执，关闭的会话仍可读取。已有部分记录或未知结果时，不自动接续。</p>
+              <form id="reference-form" aria-label="参考臂采集参数">
+                <fieldset id="reference-fields"><legend>显式场景 profile 与采样参数</legend>
+                  <div class="session-fields"><label for="reference-package">目标包名<input id="reference-package" autocomplete="off" spellcheck="false" placeholder="com.example.game" required></label><label for="reference-power">期待的固定供电策略<select id="reference-power" required><option value="">请选择</option><option value="observe">observe · 仅观察</option><option value="battery">battery · 电池条件化</option></select></label></div>
+                  <div class="session-fields"><label for="reference-width">原图宽度<input id="reference-width" type="number" min="1" max="8192" step="1" required></label><label for="reference-height">原图高度<input id="reference-height" type="number" min="1" max="8192" step="1" required></label><label for="reference-rotation">原图方向<select id="reference-rotation" required><option value="">请选择</option><option value="0">0</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label></div>
+                  <div class="session-fields"><label for="reference-seconds">参考采样秒数<input id="reference-seconds" type="number" min="1" max="120" step="1" value="30" required></label><label for="reference-render-comm">参考渲染线程（可选）<input id="reference-render-comm" maxlength="64" autocomplete="off" spellcheck="false" placeholder="留空，帧指标未知"></label></div>
+                  <div class="session-finite-fields"><label for="reference-input">参考有限输入（JSON）</label><textarea id="reference-input" rows="6" spellcheck="false" autocomplete="off" required></textarea></div>
+                  <button id="reference-example" class="ghost" type="button">填入旧 40 秒计划</button>
+                  <p class="note">旧计划：等待 3 秒、三次从 (900,400) 到 (2000,400) 的 12 秒滑动、等待 1 秒。请按原图核对坐标；不自动缩放、缩短或补等待。计划至少覆盖采样秒数 + 10，最多 600 秒，由 owner 校验。</p>
+                </fieldset>
+                <div class="session-actions"><button id="reference-start" class="ghost primary" type="submit" disabled>采集本组参考数据</button><button id="reference-stop" class="ghost" type="button" hidden>停止后续提交</button></div>
+              </form>
+              <p id="reference-message" class="note" role="status">只有三份回执都明确不存在时才发送新动作；结果未知不换 ID 重试。</p>
+              <div id="reference-result" hidden><dl id="reference-info" class="facts"></dl><div id="reference-stages" class="session-quality-stages"></div></div>
+              <p class="note">采集固定本次 actor / epoch。隐藏页面、切换任务或停止编排后不再提交后续动作，已发动作留给 owner 收尾。本流程不请求 stop；结束会话仍需明确使用“停止并恢复”。GPU submit proxy、场景一致性和游戏每帧能耗不能据此确认。</p>
+            </details>
             <section class="session-quality" aria-labelledby="session-quality-heading">
               <h4 id="session-quality-heading">画质检查点</h4>
               <p class="note">同一标签依次采集开始、中间和最终原图。请自行导航与等待；采集齐全不代表同场景、画质通过或设备已恢复。</p>
