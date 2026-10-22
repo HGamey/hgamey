@@ -27,7 +27,7 @@ enum Command {
     /// One deterministic system case through the receiver confirmation driver.
     Case {
         #[command(subcommand)]
-        action: game_opt_loop::system_case::Action,
+        action: game_opt_loop::system_case_blackbox::Action,
     },
     /// 离线注册独立确认规则或核对 heldout 配对报告；不调用设备或模型。
     Confirm {
@@ -513,7 +513,7 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Command::CandidatePrepare { action }) => return game_opt_loop::candidate_prepare::run(action),
         Some(Command::CandidateArtifact { action }) => return game_opt_loop::candidate_artifact::run(action),
-        Some(Command::Case { action }) => return game_opt_loop::system_case::run(action),
+        Some(Command::Case { action }) => return game_opt_loop::system_case_blackbox::run(action),
         Some(Command::Confirm { action }) => return game_opt_loop::confirmation::run(action),
         Some(Command::ModelPipeline { action }) => return game_opt_loop::model_pipeline::run(action),
         Some(Command::Optimize(args)) => return run_optimize(args),
