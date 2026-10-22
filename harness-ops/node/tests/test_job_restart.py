@@ -1,6 +1,7 @@
 """A real HTTP process crash must not lose the worker or its cancel channel."""
 import http.client
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -33,6 +34,13 @@ while True: time.sleep(0.1)
 
 
 class JobRestartTests(unittest.TestCase):
+    def test_service_entry_checks_configuration_before_starting_children(self):
+        run = subprocess.run([sys.executable, str(Path(NODE) / "node_service.py")],
+                             env={**os.environ, "PHONEFARM_NODE_TOKEN": ""}, capture_output=True, text=True, timeout=5)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("PHONEFARM_NODE_TOKEN", run.stderr)
+        self.assertNotIn("Traceback", run.stderr)
+
     def test_goal_confirmation_keeps_job_before_worker_publishes_pid(self):
         sys.path.insert(0, NODE)
         from dash_goals import Goals

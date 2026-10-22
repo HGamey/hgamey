@@ -27,7 +27,7 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 执行任务使用独立的锁 owner，label 只供展示；phonefarm/GOL/helper 保留内部锁路线，raw adb/fetch_apk 由 devlock run 包裹。
 显式 devlock 管理命令的 acquire/renew/release 等身份仍可跨请求，不改写其位置参数。
 """
-import argparse, hashlib, hmac, io, itertools, json, os, re, subprocess, sys, tarfile, threading, time, uuid
+import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from node_read import NodeRead
