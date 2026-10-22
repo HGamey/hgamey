@@ -10,6 +10,7 @@ import tempfile
 import threading
 import unittest
 import uuid
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
@@ -340,6 +341,33 @@ class JobCLI(unittest.TestCase):
         with mock.patch.dict(cli["session_command"].__globals__, call=call), contextlib.redirect_stdout(io.StringIO()):
             cli["session_command"](["session-status", JOB, "--request-id", "capture-1"])
         self.assertEqual(call.call_args.args, ("GET", f"/jobs/{JOB}/session/actions/capture-1"))
+        # Machine-readable reads retain server codes and never turn a network failure into missing.
+        errors = [
+            (404, {"schema": "phonefarm/gray-control-error@1", "code": "not_found", "error": "no receipt"}, "not_found", "no receipt"),
+            (409, {"error": {"code": "conflict", "message": "changed session"}}, "conflict", "changed session"),
+            (404, {"error": "no such job"}, "http_error", "no such job"),
+            (503, {"code": "io_error", "error": "helper unavailable"}, "io_error", "helper unavailable"),
+            (None, None, "network_error", "<urlopen error offline>"),
+        ]
+        for status, body, code, message in errors:
+            error = (urllib.error.HTTPError("http://fixture", status, "fixture", {}, io.BytesIO(json.dumps(body).encode()))
+                     if status else urllib.error.URLError("offline"))
+            stdout = io.StringIO()
+            with self.subTest(status=status, code=code), \
+                    mock.patch("urllib.request.urlopen", side_effect=error) as opened, \
+                    contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as failed:
+                cli["session_command"](["session-status", JOB, "--request-id", "capture-1", "--json"])
+            self.assertEqual(failed.exception.code, 1)
+            self.assertEqual(opened.call_count, 1)
+            self.assertEqual(opened.call_args.args[0].method, "GET")
+            self.assertEqual(json.loads(stdout.getvalue()), {"error": {"code": code, "message": message}, "http_status": status})
+        stdout = io.StringIO()
+        call = mock.Mock(return_value=json.dumps(response).encode())
+        with mock.patch.dict(cli["session_status_json"].__globals__, call=call), contextlib.redirect_stdout(stdout):
+            cli["session_command"](["session-status", JOB, "--json", "--request-id", "capture-1"])
+        self.assertEqual(json.loads(stdout.getvalue()), response)
+        self.assertEqual(call.call_args.args, ("GET", f"/jobs/{JOB}/session/actions/capture-1"))
+        self.assertEqual(call.call_args.kwargs["attempts"], 1)
 
     def test_terminal_unknown_exit_is_not_success_and_legacy_exit_is_preserved(self):
         cli = self.load_cli()

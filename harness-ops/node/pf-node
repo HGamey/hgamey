@@ -10,7 +10,7 @@
   pf-node request <request_id>               # 断网后找回同一次提交的任务
   pf-node queue                              # 只读持久队列快照
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
-  pf-node session-status <id> [--request-id ID] # 只读灰层会话或动作回执
+  pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
   pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
   pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
@@ -42,6 +42,8 @@
   frame_id 须引用最新且30秒内、方向已知的原图；不自动截图。声明计划至少 seconds+10 秒、最多600秒。
   输入自然完成、采集完成和设备恢复分别核对；结果未知仍用原请求 ID 查询，不自动重发。
   GPU submit proxy 不是显示 FPS；此批不计算每帧能耗。
+- session-status --json 成功仍输出原始 JSON；失败非0，stdout JSON 含 error.code、error.message 与 http_status（整数或null）。
+  只查询一次，保留服务端错误码；泛404不是 not_found，网络错误为 network_error，不代表请求未提交。
 - 画质检查点沿 session-action，需 action_capabilities.quality=1 与当前 controller/epoch：
   {"schema":"phonefarm/gray-control-action@1","request_id":"quality-begin-1","session_id":"SESSION",
    "actor_id":"agent","control_epoch":1,"action":"quality","params":{"op":"begin","label":"scene-dusk-01"}}
@@ -88,22 +90,24 @@ class ClientError(Exception):
         self.code, self.body = code, body
 
 
-def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False):
+def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False, raise_errors=False):
     h = {"Authorization": f"Bearer {TOKEN}", "User-Agent": "pf-node/1", **(headers or {})}
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(urllib.request.Request(URL + path, data=data, method=method, headers=h), timeout=timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
-            if e.code < 500:
+            if e.code < 500 or raise_errors:
                 with e:
                     body = e.read()
-                if raise_4xx:
+                if raise_4xx or raise_errors:
                     raise ClientError(e.code, body)
                 sys.exit(f"pf-node: {e.code} {body.decode(errors='replace')}")
             err = e
         # http.client.IncompleteRead 等（经 Cloudflare 读到一半断流）也重试
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
+            if raise_errors:
+                raise
             err = e
         if attempt + 1 < attempts:
             print(f"pf-node: {method} {path.split('?')[0]} 出错 {err!r}，{min(2 ** attempt, 30)}s 后重试", file=sys.stderr)
@@ -339,15 +343,57 @@ def control_request_id(value):
     return value
 
 
+def session_status_json(path):
+    """One read, preserving explicit server errors without guessing request existence."""
+    status = None
+    try:
+        body = call("GET", path, attempts=1, raise_errors=True).decode()
+        json.loads(body)
+        print(body)
+        return
+    except ClientError as error:
+        status = error.code
+        try:
+            payload = json.loads(error.body)
+        except (ValueError, UnicodeError):
+            payload = None
+        server_error = payload.get("error") if isinstance(payload, dict) else None
+        if (isinstance(server_error, dict) and isinstance(server_error.get("code"), str)
+                and isinstance(server_error.get("message"), str)):
+            code, message = server_error["code"], server_error["message"]
+        elif (isinstance(payload, dict) and isinstance(payload.get("code"), str)
+              and isinstance(server_error, str)):
+            code, message = payload["code"], server_error
+        else:
+            code, message = "http_error", server_error if isinstance(server_error, str) else error.body.decode(errors="replace")
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as error:
+        code, message = "network_error", str(error)
+    except (ValueError, UnicodeError) as error:
+        code, message = "invalid_response", str(error)
+    except Exception as error:
+        code, message = "client_error", str(error)
+    print(json.dumps({"error": {"code": code, "message": message}, "http_status": status}, ensure_ascii=False))
+    raise SystemExit(1)
+
+
 def session_command(args):
     if len(args) < 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
         sys.exit("用法: pf-node session-status <任务 id> [--request-id ID] 或 session-action <任务 id> --request FILE|-")
     path = f"/jobs/{args[1]}/session"
     if args[0] == "session-status":
-        if len(args) == 4 and args[2] == "--request-id":
-            path += "/actions/" + urllib.parse.quote(control_request_id(args[3]), safe="")
-        elif len(args) != 2:
-            sys.exit("用法: pf-node session-status <任务 id> [--request-id ID]")
+        options, request_id, json_output = args[2:], None, False
+        while options:
+            option, options = options[0], options[1:]
+            if option == "--json" and not json_output:
+                json_output = True
+            elif option == "--request-id" and options and request_id is None:
+                request_id, options = control_request_id(options[0]), options[1:]
+            else:
+                sys.exit("用法: pf-node session-status <任务 id> [--request-id ID] [--json]")
+        if request_id is not None:
+            path += "/actions/" + urllib.parse.quote(request_id, safe="")
+        if json_output:
+            return session_status_json(path)
         print(call("GET", path, attempts=1).decode())
         return
     if len(args) != 4 or args[2] != "--request":
