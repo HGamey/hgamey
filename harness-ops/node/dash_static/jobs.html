@@ -121,6 +121,12 @@
             <p id="session-image-empty" class="note">尚未采集画面。读取状态不会触发截图。</p>
             <div class="session-actions"><button class="ghost primary" data-session-action="capture" type="button">采集原图</button><button class="ghost danger" data-session-action="stop" type="button">停止并恢复</button></div>
             <p id="session-action-help" class="note"></p>
+            <form id="session-sample-form" class="session-sample-form" aria-labelledby="session-sample-heading">
+              <h4 id="session-sample-heading">当前场景采样</h4>
+              <p class="note">采集有限 trace 与环境数据；保持当前场景，不发送触控，不调整充电或频率。</p>
+              <div class="session-sample-input"><label for="session-sample-seconds">采样秒数<input id="session-sample-seconds" type="number" min="1" max="120" step="1" value="30" required></label><label for="session-render-comm" class="session-render-comm">渲染线程筛选（可选）<input id="session-render-comm" type="text" maxlength="64" spellcheck="false" autocomplete="off" placeholder="留空仍采集原始数据"></label><button id="session-sample-submit" class="ghost" type="submit" disabled>开始采样</button></div>
+              <p id="session-sample-help" class="note" role="status"></p>
+            </form>
             <details class="session-tools"><summary>接管与有限输入</summary>
               <p class="note">接管只改变此会话内的输入控制者，设备 lease 仍由原 owner 持有。到期后交回原控制者；不要求 Agent 等待人类。</p>
               <div class="session-fields"><label>操作归属<input id="session-actor" maxlength="64" spellcheck="false" autocomplete="off"></label><label>接管时长（秒）<input id="session-ttl" type="number" min="1" max="300" value="60"></label></div>
@@ -141,6 +147,11 @@
           </div>
           <form id="session-receipt-form" class="session-receipt-form"><label for="session-request-id">动作请求 ID</label><div class="lookup-input"><input id="session-request-id" autocomplete="off" spellcheck="false" placeholder="查询已提交动作"><button id="session-query" class="ghost" type="submit">查询回执</button></div></form>
           <p id="session-pending" class="note"></p><p id="session-receipt-message" class="note" role="status"></p>
+          <section id="session-sample-result" class="session-sample-result" aria-labelledby="session-sample-result-heading" hidden>
+            <h4 id="session-sample-result-heading">采样结果</h4><p id="session-sample-status" class="note" role="status"></p>
+            <dl id="session-sample-info" class="facts"></dl><ul id="session-sample-limitations" class="session-sample-limitations"></ul><ul id="session-sample-artifacts" class="session-sample-artifacts"></ul>
+            <p class="note">GPU submit proxy 反映 GPU 提交节奏，不能当作显示 FPS。功率缺失或窗口无法核验时保持未知；本批不计算每帧能耗，也不自动判定性能收益。</p>
+          </section>
           <details id="session-receipt-detail" class="session-tools" hidden><summary>完整动作回执</summary><pre id="session-receipt" class="command-box"></pre></details>
         </section>
         <section class="execution-panel" aria-labelledby="execution-heading">

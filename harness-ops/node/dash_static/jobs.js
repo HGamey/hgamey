@@ -602,7 +602,7 @@
     }
   }
   let sessionState = null, sessionFresh = false, sessionRevision = 0, sessionBusy = false, sessionActionBusy = false;
-  let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0;
+  let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0, sessionSampleReceipt = null;
   const pendingActions = new Map();
   const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 输入暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
   const ACTION_STATES = {accepted: '请求已记录，尚未执行完成。', started: '动作执行中。', completed: '此动作已完成；请核对结果与证据。', failed: '动作失败，请核对错误和恢复状态。', unknown: '执行结果未知，不要换 ID 重复输入。', not_executed: '请求未执行。'};
@@ -624,6 +624,7 @@
   function resetSession() {
     ++sessionRevision; ++receiptRevision;
     sessionState = null; sessionFresh = false; sessionBusy = sessionActionBusy = false;
+    sessionSampleReceipt = null;
     sessionImageKey = '';
     if (sessionImageURL) URL.revokeObjectURL(sessionImageURL);
     sessionImageURL = null;
@@ -631,6 +632,7 @@
     $('session-frame').hidden = true;
     $('session-content').hidden = true;
     $('session-receipt-detail').hidden = true;
+    $('session-sample-result').hidden = true;
     message('session-receipt-message', '');
     message('session-message', '只读取宿主记录，不会采集新画面。');
     $('session-request-id').value = sessionPending()[0]?.request_id || '';
@@ -643,6 +645,7 @@
     const pending = sessionPending();
     return !!(sessionFresh && !sessionBusy && !sessionActionBusy && sessionSupported() && access?.steer && !accessBusy &&
       sessionState?.live_owner && sessionState.accepting && sessionState.allowed_actions?.includes(action) &&
+      (sessionState.phase !== 'measuring' || action === 'stop') &&
       (['take_control', 'stop'].includes(action) || controller?.actor_id === actor) &&
       (!pending.length || action === 'stop' && !pending.some(p => p.action === 'stop')) && /^[A-Za-z0-9_-]{1,64}$/.test(actor) && globalThis.crypto?.randomUUID);
   }
@@ -661,6 +664,16 @@
     $('session-input-submit').textContent = kind === 'tap' ? '发送点击' : '发送滑动';
     $('session-swipe-fields').hidden = kind !== 'swipe';
     $('session-query').disabled = !currentJob || !sessionSupported() || sessionActionBusy;
+    const measuring = sessionState?.phase === 'measuring';
+    const samplePosting = sessionActionBusy && $('session-panel').dataset.pendingAction === 'sample';
+    $('session-sample-submit').disabled = !sessionAllowed('sample');
+    $('session-sample-submit').setAttribute('aria-busy', String(samplePosting));
+    $('session-sample-submit').textContent = samplePosting ? '投递中…' : measuring ? '采样进行中' : '开始采样';
+    $('session-sample-seconds').disabled = measuring || sessionActionBusy;
+    $('session-render-comm').disabled = measuring || sessionActionBusy;
+    message('session-sample-help', !sessionState?.allowed_actions?.includes('sample') && !measuring ? '当前会话未提供采样动作；旧节点或模式保持不可用。' :
+      measuring ? '正在测量，显示的是先前采集的画面。截图、输入及灰层动作暂停；可请求停止，当前有界采样结束后收尾。' :
+      '1–120 秒，默认 30 秒。线程筛选留空仍采原始数据，帧相关指标保持未知。提交只表示入队，请按原请求 ID 查询结果。');
     const pending = sessionPending();
     message('session-pending', pending.length ? `未决请求：${pending.map(v => v.request_id).join('、')}。先查询回执；不会自动重发输入。` : '回执读取不触发设备动作。accepted 仅表示入队，completed 才表示该动作结束。');
     message('session-action-help', !access?.steer ? '查看权限只能读状态和已有画面；采集或输入需先解锁任务操作。' :
@@ -668,6 +681,7 @@
       sessionState?.phase === 'closed' ? '会话已关闭。请核对限定范围恢复报告，刷新任务后从现有入口核查并解除资源保留。' :
       !sessionState?.live_owner ? '会话 owner 已不存活；不能继续输入，请核对恢复上下文。' :
       !sessionState.accepting ? '会话已停止接收新动作。请核对恢复记录；关闭后刷新任务以处理资源保留。' :
+      sessionState.phase === 'measuring' ? '测量中不执行截图、输入或其他设备动作。旧图与原采集时间保留；停止请求会在安全边界处理。' :
       pending.length ? '先核对未决请求。仍可请求停止并恢复；结果未知的输入不会自动重放。' :
       sessionState.controller?.actor_id !== $('session-actor').value.trim() ? '当前输入属于其他控制者。请先申请接管，再执行截图、输入或灰层动作。' :
       '所有动作由原会话 owner 串行执行；仅开放服务报告可用的动作。');
@@ -685,6 +699,7 @@
     const recovery = s.recovery || {};
     const recoveryState = ({not_reported: '尚未报告恢复', required: '需要继续恢复', reported_complete: '已报告限定范围恢复；仍需核查任务资源保留'})[recovery.status] || text(recovery.status);
     facts('session-recovery', [['恢复状态', recoveryState], ['上下文', recovery.session_path], ['报告', (recovery.reports || []).join('\n') || '尚无'], ['错误', recovery.error || '无']]);
+    renderSampleResult(sessionSampleReceipt || {result: s.latest_sample}, !sessionSampleReceipt);
     const frame = s.latest_image;
     $('session-image-empty').hidden = !!frame;
     if (frame) {
@@ -729,6 +744,37 @@
     $('session-receipt-detail').hidden = false;
     $('session-receipt').textContent = JSON.stringify(receipt, null, 2);
     message('session-receipt-message', `${receipt.request_id}：${ACTION_STATES[receipt.status] || '状态未知。'}${receipt.error ? ' ' + (typeof receipt.error === 'string' ? receipt.error : JSON.stringify(receipt.error)) : ''}`, ['failed', 'unknown'].includes(receipt.status));
+    sessionSampleReceipt = receipt.result?.collection ? receipt : null;
+    renderSampleResult(sessionSampleReceipt || {result: sessionState?.latest_sample}, !sessionSampleReceipt);
+  }
+  function renderSampleResult(receipt, fromCache = false) {
+    const result = receipt.result;
+    $('session-sample-result').hidden = !result?.collection;
+    if (!result?.collection) return;
+    const collection = result.collection;
+    const complete = collection.status === 'complete';
+    message('session-sample-status', `${complete ? '采集已完成，可核对原始数据。' : collection.status === 'failed' ? '采集失败，请核对原件引用与失败原因。' : '采集状态未知，请核对报告。'}${collection.error ? ` ${collection.error}` : ''}`, !complete);
+    const metric = value => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(3) : '未知';
+    const metrics = result.metrics || {};
+    facts('session-sample-info', [['请求 ID', receipt.request_id || result.request_id || '未知'], ['请求时长', Number.isInteger(result.requested_seconds) ? `${result.requested_seconds} 秒` : '未知'],
+      ['GPU submit proxy', `${metric(metrics.gpu_submit_fps)}${Number.isFinite(metrics.gpu_submit_fps) ? ' /s' : ''}`],
+      ['平均功率', `${metric(metrics.power_w_mean)}${Number.isFinite(metrics.power_w_mean) ? ' W' : ''}`],
+      ['来源', fromCache ? `最近采样缓存 · ${result.path || '报告路径未记录'}` : '当前查询的动作回执']]);
+    const limitations = Array.isArray(result.limitations) ? result.limitations.filter(v => typeof v === 'string') : [];
+    $('session-sample-limitations').replaceChildren(...limitations.map(value => el('li', value)));
+    $('session-sample-limitations').hidden = !limitations.length;
+    $('session-sample-artifacts').replaceChildren();
+    const artifacts = [{name: '采集报告 run.json', path: result.path}, ...(Array.isArray(result.artifacts) ? result.artifacts : [])];
+    const seen = new Set();
+    for (const artifact of artifacts) {
+      const path = artifact?.path;
+      if (typeof path !== 'string' || !path || path.startsWith('/') || /[\u0000-\u001f\u007f]/.test(path) || path.split('/').some(p => !p || p === '.' || p === '..') || seen.has(path)) continue;
+      seen.add(path);
+      const item = el('li'), link = el('a', artifact.name || path);
+      link.href = jobURL('/out', {path}); link.download = '';
+      item.append(link); $('session-sample-artifacts').append(item);
+    }
+    if (!seen.size) $('session-sample-artifacts').append(el('li', '尚无可读取的原件引用。'));
   }
   async function querySessionReceipt() {
     const id = selected, requestId = $('session-request-id').value.trim();
@@ -1005,6 +1051,18 @@
   $('session-refresh').addEventListener('click', loadSession);
   $('session-receipt-form').addEventListener('submit', event => { event.preventDefault(); querySessionReceipt(); });
   $('session-input-kind').addEventListener('change', renderSessionControls);
+  $('session-sample-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const seconds = Number($('session-sample-seconds').value);
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 120) {
+      message('session-sample-help', '采样秒数必须是 1–120 的整数；未发送请求。', true); return;
+    }
+    const renderComm = $('session-render-comm').value.trim();
+    if (renderComm && (new TextEncoder().encode(renderComm).length > 64 || /\p{Cc}/u.test(renderComm))) {
+      message('session-sample-help', '线程筛选最多 64 个 UTF-8 字节，不能含控制字符；未发送请求。', true); return;
+    }
+    sendSessionAction('sample', {seconds, ...(renderComm ? {render_comm: renderComm} : {})});
+  });
   document.querySelectorAll('[data-session-action]').forEach(button => button.addEventListener('click', () => {
     const action = button.dataset.sessionAction;
     let params = {};
