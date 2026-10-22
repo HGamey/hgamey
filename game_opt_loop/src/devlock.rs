@@ -121,14 +121,14 @@ pub fn parse_wait(s: &str) -> Result<Duration> {
     }
 }
 
-fn call(script: &Path, phonefarm: &Path, args: &[&str]) -> (bool, String) {
+fn call(script: &Path, phonefarm: &Path, args: &[&str]) -> (Option<i32>, String) {
     match Command::new(script)
         .env("PHONEFARM_BIN", phonefarm)
         .args(args)
         .output()
     {
         Ok(o) => (
-            o.status.success(),
+            o.status.code(),
             format!(
                 "{}{}",
                 String::from_utf8_lossy(&o.stdout),
@@ -137,7 +137,7 @@ fn call(script: &Path, phonefarm: &Path, args: &[&str]) -> (bool, String) {
             .trim()
             .to_string(),
         ),
-        Err(e) => (false, format!("调不起 {}: {e}", script.display())),
+        Err(e) => (None, format!("调不起 {}: {e}", script.display())),
     }
 }
 
@@ -178,7 +178,7 @@ impl Guard {
     ) -> Result<Self> {
         let phonefarm = std::path::absolute(phonefarm)?;
         // 1. 已在本 label 手里: 借用, 不心跳不释放
-        if call(&script, &phonefarm, &["renew", &label]).0 {
+        if call(&script, &phonefarm, &["renew", &label]).0 == Some(0) {
             println!("设备锁: 已在 {label} 手里 (外层持有), 原地执行");
             std::env::set_var("DEVLOCK_LABEL", &label);
             return Ok(Self {
@@ -193,10 +193,19 @@ impl Guard {
         // 2. 排队
         let t0 = Instant::now();
         loop {
-            let (ok, out) = call(&script, &phonefarm, &["acquire", &label]);
-            if ok {
-                println!("设备锁: 已拿到 ({label})");
-                break;
+            let (code, out) = call(&script, &phonefarm, &["acquire", &label]);
+            match code {
+                Some(0) => {
+                    println!("设备锁: 已拿到 ({label})");
+                    break;
+                }
+                Some(1) => {} // 明确锁忙才排队重试。
+                _ => {
+                    let status = code
+                        .map(|c| format!("exit {c}"))
+                        .unwrap_or_else(|| "启动失败或被信号终止".into());
+                    bail!("设备锁不可重试错误 ({status}): {out}；没碰设备就退出");
+                }
             }
             if t0.elapsed() + POLL > wait {
                 bail!(
@@ -237,8 +246,8 @@ impl Guard {
                         continue;
                     }
                     last = Instant::now();
-                    let (ok, out) = call(&script, &phonefarm, &["renew", &label]);
-                    if !ok && !warned {
+                    let (code, out) = call(&script, &phonefarm, &["renew", &label]);
+                    if code != Some(0) && !warned {
                         // 不杀主流程: 正在跑的评测半途停下会把设备留在半施加态
                         eprintln!("⚠ 设备锁续期失败 ({label}): {out}");
                         warned = true;
@@ -265,8 +274,8 @@ impl Drop for Guard {
         }
         if self.owned {
             if let Some(s) = &self.script {
-                let (ok, out) = call(s, &self.phonefarm, &["release", &self.label]);
-                if ok {
+                let (code, out) = call(s, &self.phonefarm, &["release", &self.label]);
+                if code == Some(0) {
                     println!("设备锁: 已释放 ({})", self.label);
                 } else {
                     eprintln!("设备锁释放失败 ({}): {out}", self.label);
@@ -399,7 +408,7 @@ mod tests {
             // 外层已持有: 借用
             let inner = Guard::acquire(
                 script.clone(),
-                phonefarm,
+                phonefarm.clone(),
                 "t".into(),
                 Duration::from_secs(60),
             )
@@ -411,6 +420,44 @@ mod tests {
         assert!(!held.exists(), "自己拿的锁 drop 时要释放");
         let l = std::fs::read_to_string(&log).unwrap();
         assert!(l.contains("acquire t") && l.contains("release t"), "{l}");
+
+        // 配置错误不能消耗排队预算；renew 失败后仅尝试 acquire 一次。
+        std::fs::write(&log, "").unwrap();
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho \"$1 $2\" >> {}\necho migration_required >&2\nexit 2\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let attempt = std::thread::spawn(move || {
+            tx.send(
+                Guard::acquire(
+                    script,
+                    phonefarm,
+                    "storage-error".into(),
+                    Duration::from_secs(7200),
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            )
+            .unwrap();
+        });
+        let error = rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("storage error must return without waiting for the busy retry interval")
+            .unwrap_err();
+        attempt.join().unwrap();
+        assert!(
+            error.contains("exit 2") && error.contains("migration_required"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "renew storage-error\nacquire storage-error\n"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
