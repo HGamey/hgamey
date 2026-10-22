@@ -301,6 +301,11 @@ pub fn probe_script(package: Option<&str>) -> String {
     s.push_str(
         "echo \"battery_current_now=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null)\";",
     );
+    // 不 root 的机器 (荣耀 AAP-AN00 实测) 上 power_supply 被 SELinux 拒读, 上面三行全空;
+    // dumpsys battery 普通 shell 就能读, 带回电量和状态码, 由 [`battery_from_dumpsys`] 补空。
+    s.push_str(
+        "dumpsys battery 2>/dev/null | sed -n 's/^ *level: */dumpsys_level=/p;s/^ *status: */dumpsys_status=/p';",
+    );
     // 停充节点要用 **root** 测存在性。`/sys/class/qcom-battery/` 这类目录对
     // shell uid 不可遍历, 于是 `[ -e ]` 会对一个真实存在的节点回 false ——
     // 2026-09-23 在 NX809J 上就是这样: 6 个候选全报"不存在", 而 phonefarm 早就
@@ -379,6 +384,28 @@ pub fn battery_from_oh(raw: &str, kv: &mut BTreeMap<String, Vec<String>>) {
     };
     if let Some(st) = status {
         put("battery_status", st.to_string());
+    }
+}
+
+/// sysfs 读不到时用 `dumpsys battery` 补电量和状态, 读到了就不动。
+///
+/// `status` 是 BatteryManager 的码: 1 UNKNOWN / 2 CHARGING / 3 DISCHARGING / 4 NOT_CHARGING / 5 FULL。
+pub fn battery_from_dumpsys(kv: &mut BTreeMap<String, Vec<String>>) {
+    let capacity = first(kv, "dumpsys_level").map(str::to_string);
+    let status = match first(kv, "dumpsys_status") {
+        Some("2") => Some("Charging"),
+        Some("3") => Some("Discharging"),
+        Some("4") => Some("Not charging"),
+        Some("5") => Some("Full"),
+        _ => None,
+    };
+    for (key, v) in [
+        ("battery_capacity", capacity),
+        ("battery_status", status.map(str::to_string)),
+    ] {
+        if let (None, Some(v)) = (first(kv, key), v) {
+            kv.insert(key.to_string(), vec![v]);
+        }
     }
 }
 
@@ -524,6 +551,8 @@ pub fn assemble(target: &Target, serial: &str, raw: &str) -> Caps {
     let platform = Platform::of(serial);
     if platform == Platform::Hdc {
         battery_from_oh(raw, &mut kv);
+    } else {
+        battery_from_dumpsys(&mut kv);
     }
 
     let root_uid = first(&kv, "root_uid");
@@ -1005,5 +1034,31 @@ temperature: 270 \npkg_path=bundle:com.miHoYo.Yuanshen\n";
         let caps = assemble(&blackbox_target(), "hdc:x", "model=EMA-AL00U\nroot_uid=2000\n");
         assert!(!caps.device.game_installed.is_true());
         assert!(format!("{:?}", caps.device.game_installed).contains("bm"));
+    }
+
+    #[test]
+    fn probe_script_falls_back_to_dumpsys_battery() {
+        assert!(probe_script(None).contains("dumpsys battery"));
+    }
+
+    #[test]
+    fn sysfs_denied_battery_comes_from_dumpsys() {
+        // 荣耀 AAP-AN00 不 root: power_supply 拒读, 三行全空。
+        let raw = "model=AAP-AN00\nroot_uid=NA\nbattery_status=\nbattery_capacity=\n\
+battery_current_now=\ndumpsys_status=2\ndumpsys_level=100\n";
+        let caps = assemble(&blackbox_target(), "AVXB6R5C19000481", raw);
+        let b = caps.device.battery;
+        assert_eq!(b.capacity_pct, Some(100));
+        assert_eq!(b.status.as_deref(), Some("Charging"));
+        assert_eq!(b.on_battery, Some(false));
+    }
+
+    #[test]
+    fn sysfs_battery_wins_over_dumpsys() {
+        let raw = format!("{UNROOTED}dumpsys_status=3\ndumpsys_level=12\n");
+        let caps = assemble(&blackbox_target(), "emulator-5554", &raw);
+        let b = caps.device.battery;
+        assert_eq!(b.capacity_pct, Some(91));
+        assert_eq!(b.status.as_deref(), Some("Charging"));
     }
 }
