@@ -78,6 +78,7 @@ class FleetState:
         self._attempt = 0
         self._fleet = None
         self._sampled_at = None
+        self._attempted_at = None
         self._error = self._deferred = None
         self._refreshing = False
         self._history = collections.deque(maxlen=720)
@@ -111,7 +112,7 @@ class FleetState:
         return dict(schema_version=1, now=now, lock=self._read_lock(),
                     devices=self._fleet["devices"] if self._fleet is not None else None,
                     notes=self._fleet.get("notes", []) if self._fleet is not None else [],
-                    sampled_at=self._sampled_at, age_s=age,
+                    sampled_at=self._sampled_at, attempted_at=self._attempted_at, age_s=age,
                     stale=age is None or age > STALE_AFTER_S, refreshing=self._refreshing,
                     error=self._error, deferred=self._deferred,
                     policy=dict(fleet_every_free_s=FLEET_EVERY_FREE_S,
@@ -153,6 +154,7 @@ class FleetState:
                     now = time.monotonic()
                 if self._closed:
                     return
+                self._attempted_at = time.time()
                 lock = self._read_lock()
                 free_for = lock["free_for_s"]
                 if lock["status"] != "free" or lock["stale"] or (lock["status"] == "free" and
@@ -160,6 +162,7 @@ class FleetState:
                     self._deferred = ("设备锁已占用，暂缓采样" if lock["status"] == "held" and not lock["stale"] else
                                       "设备锁状态未知或心跳过期，暂缓采样" if lock["status"] != "free" or lock["stale"] else
                                       f"设备锁释放不足 {FREE_GRACE_S} 秒，暂缓采样")
+                    self._error = None
                     self._next_at = now + 5
                     self._attempt += 1
                     self._condition.notify_all()
@@ -174,30 +177,47 @@ class FleetState:
             if screenshots:
                 command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
             env = {k: v for k, v in os.environ.items() if k != "DEVLOCK_LABEL"}
-            fleet, error = None, None
+            fleet, error, deferred = None, None, None
             try:
                 result = subprocess.run(command, cwd=cwd, env=env, capture_output=True,
-                                        timeout=40, stdin=subprocess.DEVNULL, check=True)
-                fleet = json.loads(result.stdout)
-                if not isinstance(fleet, dict) or not isinstance(fleet.get("devices"), list):
-                    raise ValueError("fleet response must contain a devices array")
-                for device in fleet["devices"]:
-                    if not isinstance(device, dict):
-                        raise ValueError("fleet devices must be objects")
-                    for field in ("battery", "thermal"):
-                        if device.get(field) is not None and not isinstance(device[field], dict):
-                            raise ValueError(f"fleet device {field} must be an object or null")
-                if fleet.get("lock") is not None and not isinstance(fleet["lock"], dict):
-                    raise ValueError("fleet lock must be an object or null")
+                                        timeout=40, stdin=subprocess.DEVNULL, check=False)
+                value = json.loads(result.stdout)
+                if not isinstance(value, dict) or value.get("schema") != "phonefarm/fleet@1":
+                    raise ValueError("incompatible fleet schema")
+                observation = value.get("observation", "sampled")
+                if result.returncode == 3 and observation in ("deferred", "error"):
+                    reason = value.get("reason")
+                    if value.get("devices", "missing") is not None or not isinstance(reason, str) or not reason.strip():
+                        raise ValueError("deferred/error fleet response requires a reason and null devices")
+                    if observation == "deferred":
+                        deferred = reason
+                    else:
+                        error = f"fleet 采样失败: {reason}"
+                else:
+                    if result.returncode not in (0, 1) or observation != "sampled":
+                        raise ValueError(f"unexpected fleet observation/exit: {observation}/{result.returncode}")
+                    if not isinstance(value.get("devices"), list):
+                        raise ValueError("fleet response must contain a devices array")
+                    if (result.returncode == 1) != (not value["devices"]):
+                        raise ValueError("fleet exit code does not match its device count")
+                    for device in value["devices"]:
+                        if not isinstance(device, dict):
+                            raise ValueError("fleet devices must be objects")
+                        for field in ("battery", "thermal"):
+                            if device.get(field) is not None and not isinstance(device[field], dict):
+                                raise ValueError(f"fleet device {field} must be an object or null")
+                    if value.get("lock") is not None and not isinstance(value["lock"], dict):
+                        raise ValueError("fleet lock must be an object or null")
+                    fleet = value
             except (subprocess.SubprocessError, OSError, ValueError) as e:
                 error = f"fleet 采样失败: {type(e).__name__} {str(e)[:200]}"
             with self._condition:
-                if error is None:
+                if fleet is not None:
                     self._fleet, self._sampled_at = fleet, time.time()
                     self._record(fleet)
-                self._error, self._refreshing = error, False
+                self._error, self._deferred, self._refreshing = error, deferred, False
                 interval = FLEET_EVERY_HELD_S if lock["status"] == "held" else FLEET_EVERY_FREE_S
-                self._next_at = time.monotonic() + interval
+                self._next_at = time.monotonic() + (5 if deferred else interval)
                 self._attempt += 1
                 self._condition.notify_all()
 

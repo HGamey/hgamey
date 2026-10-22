@@ -2,6 +2,7 @@ import os
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import sys
 import time
 import unittest
@@ -72,7 +73,8 @@ class FleetStateTests(unittest.TestCase):
                 leases.snapshot(refresh=True, force=True)
             state = FleetState(directory, None, str(root / "shots"), lease_state=leases)
             try:
-                with patch("node_fleet.subprocess.run", return_value=Mock(stdout='{"devices": []}')) as run:
+                with patch("node_fleet.subprocess.run", return_value=Mock(
+                        returncode=1, stdout='{"schema":"phonefarm/fleet@1","devices": []}')) as run:
                     result = state.request(wait=1)
                     self.assertEqual(result["lock"]["queue"], ["waiting"])
                     self.assertEqual(run.call_args.args[0], [str(root / "selected-phonefarm"), "fleet", "--json"])
@@ -88,6 +90,57 @@ class FleetStateTests(unittest.TestCase):
                     self.assertEqual(result["lock"]["status"], "held")
                     self.assertIn("占用", result["deferred"])
                     run.assert_not_called()
+            finally:
+                state.close()
+
+    def test_busy_and_error_keep_success_age_but_valid_empty_sample_replaces_devices(self):
+        def response(code, **fields):
+            return subprocess.CompletedProcess([], code, json.dumps({"schema": "phonefarm/fleet@1", **fields}), "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = FleetState(directory, directory, str(Path(directory) / "shots"))
+            busy = response(3, observation="deferred", reason="lease busy", devices=None)
+            device = {"serial": "fixture-only", "online": True, "thermal": {"soc_max_c": 42}}
+            try:
+                with patch("node_fleet.subprocess.run", side_effect=[
+                    busy, response(0, observation="sampled", devices=[device]), busy,
+                    response(3, observation="error", reason="sampling timed out", devices=None),
+                    response(1, devices=[]),  # Legacy successful empty response.
+                ]) as run:
+                    def attempt():
+                        with state._condition:
+                            state._next_at = 0
+                        return state.request(wait=1)
+
+                    first = attempt()
+                    self.assertIsNone(first["devices"])
+                    self.assertIsNone(first["sampled_at"])
+                    self.assertEqual(first["deferred"], "lease busy")
+                    sampled = attempt()
+                    self.assertEqual(sampled["devices"], [device])
+                    with state._condition:
+                        state._sampled_at -= 100
+                        sampled_at = state._sampled_at
+                    deferred = attempt()
+                    self.assertEqual(deferred["devices"], [device])
+                    self.assertEqual(deferred["sampled_at"], sampled_at)
+                    self.assertTrue(deferred["stale"])
+                    self.assertIsNone(deferred["error"])
+                    self.assertEqual(deferred["deferred"], "lease busy")
+                    failed = attempt()
+                    self.assertEqual(failed["sampled_at"], sampled_at)
+                    self.assertEqual(failed["devices"], [device])
+                    self.assertIn("sampling timed out", failed["error"])
+                    self.assertIsNone(failed["deferred"])
+                    empty = attempt()
+                    self.assertEqual(empty["devices"], [])
+                    self.assertGreater(empty["sampled_at"], sampled_at)
+                    self.assertFalse(empty["stale"])
+                    self.assertIsNone(empty["error"])
+                    self.assertIsNone(empty["deferred"])
+                    self.assertIsNotNone(empty["attempted_at"])
+                    self.assertEqual(len(state.history()), 1)
+                    self.assertEqual(run.call_count, 5)
             finally:
                 state.close()
 

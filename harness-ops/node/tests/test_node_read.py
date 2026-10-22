@@ -283,7 +283,7 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(self.request("/fleet", token="wrong")[0], 401)
         self.assertIsNone(monitor._thread)
         auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}
-        sample = {"devices": [{"serial": "fixture-only", "online": True,
+        sample = {"schema": "phonefarm/fleet@1", "devices": [{"serial": "fixture-only", "online": True,
                                "thermal": {"soc_max_c": 42}}], "notes": []}
         with patch("node_fleet.subprocess.run", return_value=subprocess.CompletedProcess(
                 [], 0, json.dumps(sample).encode(), b"")) as run:
@@ -312,7 +312,7 @@ class NodeReadTests(unittest.TestCase):
             with monitor._condition:
                 monitor._next_at = 0
             run.side_effect = None
-            run.return_value.stdout = b'{"devices":[{"online":true,"battery":"unavailable"}]}'
+            run.return_value.stdout = b'{"schema":"phonefarm/fleet@1","devices":[{"online":true,"battery":"unavailable"}]}'
             incompatible = self.get_json("/fleet?wait=2")
             self.assertIn("battery must be an object", incompatible["error"])
             self.assertFalse(incompatible["refreshing"])
