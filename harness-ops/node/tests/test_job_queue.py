@@ -85,6 +85,14 @@ class JobQueueTests(unittest.TestCase):
         self.queue.set_state(first, "done")
         self.assertEqual(self.queue.claim_next(2)["job_id"], same)
         self.assertEqual([row["job_id"] for row in self.queue.rows(["done"])], [first, other, free])
+        self.assertFalse(self.queue.cancel_pending(same))
+        pending = self.submit("cancel-queued", ["phone:c"])
+        self.assertTrue(self.queue.cancel_pending(pending))
+        self.assertFalse(self.queue.cancel_pending(pending))
+        preparing, _ = self.queue.reserve("cancel-preparing", "content", {}, [])
+        self.assertTrue(self.queue.cancel_pending(preparing["job_id"]))
+        self.assertEqual(self.queue.ready(preparing["job_id"])["state"], "done")
+        self.assertIsNone(self.queue.claim_next(2))
 
 
 if __name__ == "__main__":

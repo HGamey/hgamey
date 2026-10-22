@@ -83,6 +83,12 @@ class JobQueue:
             db.execute("UPDATE jobs SET state='queued' WHERE job_id=? AND state='preparing'", (jid,))
             return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
 
+    def cancel_pending(self, jid):
+        """Win cancellation only before a dispatcher has claimed the job."""
+        with self._transaction(write=True) as db:
+            result = db.execute("UPDATE jobs SET state='done' WHERE job_id=? AND state IN ('preparing', 'queued')", (jid,))
+            return result.rowcount == 1
+
     def claim_next(self, max_running):
         with self._transaction(write=True) as db:
             active = db.execute("SELECT resources FROM jobs WHERE state IN ('claimed', 'blocked')").fetchall()
