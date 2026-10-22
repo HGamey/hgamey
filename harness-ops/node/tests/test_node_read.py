@@ -144,7 +144,7 @@ class NodeReadTests(unittest.TestCase):
 
     def test_readonly_and_dash_password_cannot_mutate(self):
         jid = self.fixture(1)
-        for path in ("/jobs", f"/jobs/{jid}/kill", f"/jobs/{jid}/cancel", "/admin/restart"):
+        for path in ("/jobs", f"/jobs/{jid}/kill", f"/jobs/{jid}/cancel", f"/jobs/{jid}/queue-release", "/admin/restart"):
             self.assertEqual(self.request(path, method="POST", body=b"")[0], 401)
         self.assertEqual(self.request("/node", token="wrong")[0], 401)
         self.assertEqual(self.request("/jobs", method="DELETE")[0], 401)
@@ -178,6 +178,49 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(self.board.last_view, 0)
         self.assertFalse(self.board.wake.is_set())
 
+    def test_queue_submission_lookup_and_recovery_release_share_permissions(self):
+        self.jobs.bins["phonefarm"] = (sys.executable, str(self.root))
+        auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}
+        write = {**auth, "X-HG": "1", "Content-Type": "application/json", "X-Request-ID": "web:fixture"}
+        spec = b'{"bin":"phonefarm","argv":["-c","pass"]}'
+        self.assertEqual(self.request("/dash/api/jobs", method="POST", headers=write, body=spec)[0], 403)
+        write["Cookie"] += "; " + dash.STEER_COOKIE + "=" + self.board._cookie_val(
+            self.board._steer_pass(), b"hgamey-steer-v1")
+        # Exercise actual admission/auth without launching a fixture command.
+        with patch.object(self.jobs.dispatch, "start"):
+            self.assertEqual(self.request("/dash/api/jobs", method="POST", headers=write, body=b'{}')[0], 400)
+            job = self.get_json("/dash/api/jobs", method="POST", headers=write, body=spec)
+            jid = job["id"]
+            self.assertEqual(job["phase"], "queued")
+            self.assertEqual(self.get_json("/dash/api/jobs", method="POST", headers=write, body=spec)["id"], jid)
+            self.assertEqual(self.request("/dash/api/jobs", method="POST", headers=write,
+                body=b'{"bin":"phonefarm","argv":["-c","print(1)"]}')[0], 409)
+            for prefix, headers in (("", {}), ("/dash/api", auth)):
+                self.assertEqual(self.get_json(prefix + "/requests/web%3Afixture", headers=headers)["id"], jid)
+                self.assertEqual(self.get_json(prefix + "/queue", headers=headers)["queued_count"], 1)
+                self.assertEqual(self.request(prefix + "/requests/absent", headers=headers)[0], 404)
+            self.assertEqual(self.request("/queue", token="wrong")[0], 401)
+            self.assertEqual(self.request("/dash/api/queue")[0], 401)
+            meta = self.jobs._read_meta(jid)
+            meta.update(state="finished", phase="interrupted", outcome="interrupted", exit=-1,
+                        recovery={"status": "required", "reason": "fixture worker lost"})
+            self.jobs._write_meta(jid, meta)
+            self.jobs.dispatch.queue.set_state(jid, "blocked")
+            self.assertEqual(self.get_json("/queue")["blocked_count"], 1)
+            for path, headers in ((f"/jobs/{jid}/queue-release", {}),
+                                  (f"/dash/api/jobs/{jid}/queue-release", {**auth, "X-HG": "1", "Content-Type": "application/json"})):
+                self.assertIn(self.request(path, method="POST", headers=headers, body=b'{"note":"checked"}')[0], (401, 403))
+            self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{}')[0], 400)
+            receipt = self.get_json(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{"note":"checked fixture resource"}')
+            self.assertEqual(receipt["job"]["queue"]["state"], "done")
+            self.assertEqual(receipt["job"]["queue"]["release"]["note"], "checked fixture resource")
+            self.assertEqual(receipt["job"]["recovery"]["status"], "required")
+            self.assertEqual(self.get_json("/queue")["blocked_count"], 0)
+            self.assertEqual(self.request(f"/jobs/{jid}/queue-release", method="POST", token=self.admin,
+                body=b'{"note":"already released"}')[0], 409)
+        self.assertEqual(self.board.last_view, 0)
+        self.assertFalse(self.board.wake.is_set())
+
     def test_fleet_readers_share_one_sampler_without_jobs_or_screenshots(self):
         monitor = self.board.monitor
         self.get_json("/node")
@@ -199,7 +242,7 @@ class NodeReadTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             self.assertNotIn("--screenshot-dir", run.call_args.args[0])
             self.assertNotIn("DEVLOCK_LABEL", run.call_args.kwargs["env"])
-            self.assertEqual(list(Path(self.jobs.dir).iterdir()), [])
+            self.assertEqual([p for p in Path(self.jobs.dir).iterdir() if p.is_dir()], [])
             # A failed refresh preserves last-good data and its original timestamp.
             with monitor._condition:
                 monitor._sampled_at -= 100

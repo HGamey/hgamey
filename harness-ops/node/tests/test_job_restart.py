@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 from unittest.mock import Mock
+from concurrent.futures import ThreadPoolExecutor
 
 NODE = str(Path(__file__).resolve().parents[1])
 SERVER = '''
@@ -23,17 +24,35 @@ print(server.server_port, flush=True)
 server.serve_forever()
 '''
 CHILD = '''
-import signal, time
+import signal, time, os
 def stop(*args):
     print("cleanup marker", flush=True)
     raise SystemExit(0)
 signal.signal(signal.SIGINT, stop)
-print("ready marker", flush=True)
+print("ready marker", os.environ["DEVLOCK_LABEL"], flush=True)
 while True: time.sleep(0.1)
 '''
 
 
 class JobRestartTests(unittest.TestCase):
+    def test_preparation_cancel_remains_terminal_after_late_metadata_and_restart(self):
+        sys.path.insert(0, NODE)
+        from node_service import Jobs
+        with tempfile.TemporaryDirectory() as root:
+            jobs = Jobs(root, {"phonefarm": (sys.executable, root)})
+            jobs.dispatch.start = lambda: None
+            meta = jobs.start({"bin": "phonefarm", "argv": ["-c", "pass"]}, b"", request_id="cancel-race")
+            stale = jobs._read_meta(meta["id"])
+            self.assertTrue(jobs.cancel(meta["id"])["accepted"])
+            # Intake finishes its file write, then dies before reconciling the DB.
+            jobs._write_meta(meta["id"], stale)
+            restarted = Jobs(root, {})
+            result = restarted.status(meta["id"])
+            self.assertEqual((result["state"], result["phase"], result["outcome"]), ("finished", "finished", "cancelled"))
+            self.assertEqual(result["recovery"]["status"], "not_needed")
+            self.assertEqual(result["cancel"]["signals"], [])
+            self.assertEqual(result["queue"]["state"], "done")
+
     def test_service_entry_checks_configuration_before_starting_children(self):
         run = subprocess.run([sys.executable, str(Path(NODE) / "node_service.py")],
                              env={**os.environ, "PHONEFARM_NODE_TOKEN": ""}, capture_output=True, text=True, timeout=5)
@@ -75,14 +94,14 @@ class JobRestartTests(unittest.TestCase):
                 servers.append(p)
                 return int(p.stdout.readline().strip())
 
-            def request(path, method="GET", body=b"", headers=None):
+            def request(path, method="GET", body=b"", headers=None, expected=200):
                 conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
                 conn.request(method, path, body=body,
                              headers={"Authorization": "Bearer restart-test-only", **(headers or {})})
                 res = conn.getresponse()
                 content = res.read()
                 conn.close()
-                self.assertEqual(res.status, 200, content)
+                self.assertEqual(res.status, expected, content)
                 return json.loads(content)
 
             def until(predicate):
@@ -96,18 +115,37 @@ class JobRestartTests(unittest.TestCase):
 
             try:
                 port = start()
-                meta = request("/jobs", "POST", headers={"X-Job": json.dumps(
-                    {"bin": "phonefarm", "argv": ["-u", "-c", CHILD]})})
+                submission = {"X-Job": json.dumps({"bin": "phonefarm", "argv": ["-u", "-c", CHILD]}),
+                              "X-Request-ID": "restart:fixture"}
+                meta = request("/jobs", "POST", headers=submission)
                 jid = meta["id"]
                 log = Path(root) / "_jobs" / jid / "log"
                 until(lambda: log.exists() and "ready marker" in log.read_text())
                 before = request("/jobs/" + jid)
                 worker = before["pid"]
                 self.assertEqual(before["phase"], "running")
+                self.assertIn("job-" + jid, log.read_text())
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    repeats = list(pool.map(lambda _: request("/jobs", "POST", headers=submission), range(4)))
+                self.assertEqual({r["id"] for r in repeats}, {jid})
+                request("/jobs", "POST", headers={**submission, "X-Job": json.dumps(
+                    {"bin": "phonefarm", "argv": ["-c", "pass"]})}, expected=409)
+                next_job = request("/jobs", "POST", headers={"X-Request-ID": "next-job", "X-Job": json.dumps(
+                    {"bin": "phonefarm", "argv": ["-c", "from pathlib import Path; p=Path('execution-count'); p.write_text(p.read_text()+'x' if p.exists() else 'x')"]})})
+                self.assertEqual(next_job["phase"], "queued")
+                self.assertEqual(next_job["queue"]["waiting"]["blocking_jobs"], [jid])
+                cancelled = request("/jobs", "POST", headers={"X-Job": json.dumps(
+                    {"bin": "phonefarm", "argv": ["-c", "from pathlib import Path; Path('must-not-run').touch()"]})})
+                pending_cancel = request("/jobs/" + cancelled["id"] + "/cancel", "POST")
+                self.assertTrue(pending_cancel["accepted"])
+                self.assertEqual(pending_cancel["job"]["outcome"], "cancelled")
+                self.assertEqual(pending_cancel["job"]["recovery"]["status"], "not_needed")
                 servers[-1].kill()  # Actual service process crash, not a new Jobs object.
                 servers[-1].wait(timeout=5)
                 port = start()
                 after = request("/jobs/" + jid)
+                self.assertEqual(request("/requests/restart%3Afixture")["id"], jid)
+                self.assertEqual(request("/jobs/" + next_job["id"])["phase"], "queued")
                 self.assertEqual(after["pid"], worker)
                 self.assertTrue(after["execution"]["worker_alive"])
                 receipt = request("/jobs/" + jid + "/cancel", "POST", b'{"force":false}')
@@ -120,6 +158,9 @@ class JobRestartTests(unittest.TestCase):
                 self.assertIn("cleanup marker", log.read_text())
                 self.assertFalse(request("/jobs/" + jid + "/cancel", "POST")["accepted"])
                 until(lambda: not request("/jobs/" + jid)["execution"]["worker_alive"])
+                until(lambda: request("/jobs/" + next_job["id"])["state"] == "finished")
+                self.assertEqual((Path(root) / "execution-count").read_text(), "x")
+                self.assertFalse((Path(root) / "must-not-run").exists())
                 worker = None
             finally:
                 if worker:

@@ -73,16 +73,17 @@ class NodeRead:
                 "host": {"hostname": socket.gethostname(), "platform": platform.system()},
                 "service": self.service, "started_at": self.started,
                 "storage": {"jobs_root": os.path.abspath(self.jobs.dir), "data_root": self.data_root},
+                "execution": {"bins": sorted(self.jobs.bins), "max_running": self.jobs.dispatch.max_running},
                 "capabilities": ["fleet.read", "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
-                                 "jobs.cancel", "jobs.supervised-v1"],
+                                 "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1"],
                 "devices": {"status": "not_probed", "reason": "node identity does not probe phones"}}
 
     def list_jobs(self, query):
         limit = page_size(query)
         search = query.get("query", [""])[0].casefold()
         state = query.get("state", [""])[0]
-        if state not in ("", "running", "finished", "lost"):
-            raise ValueError("state must be running, finished or lost")
+        if state not in ("", "running", "finished", "lost", "preparing", "queued", "blocked"):
+            raise ValueError("state must be running, finished, lost, preparing, queued or blocked")
         after = None
         if query.get("cursor"):
             cursor = decode_cursor(query["cursor"][0])
@@ -107,6 +108,10 @@ class NodeRead:
                 if state == "lost" and not meta.get("lost"):
                     continue
                 if state in ("running", "finished") and meta["state"] != state:
+                    continue
+                if state in ("preparing", "queued") and meta.get("phase") != state:
+                    continue
+                if state == "blocked" and meta.get("queue", {}).get("state") != "blocked":
                     continue
                 haystack = json.dumps({k: meta.get(k) for k in ("id", "bin", "label", "argv")}, ensure_ascii=False).casefold()
                 if search and search not in haystack:

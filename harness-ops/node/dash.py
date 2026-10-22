@@ -34,6 +34,7 @@ import collections, glob, hashlib, hmac, json, os, re, threading, time
 from urllib.parse import parse_qs
 
 import dash_goals
+from job_queue import RequestConflict
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
                         FLEET_EVERY_HELD_S, FREE_GRACE_S, SHOT_EVERY_S)
 
@@ -454,6 +455,10 @@ class Dash:
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:
+            if sub == ["api", "jobs"]:
+                return self._send(h, 200, self.job_service.start(data, b"", request_id=h.headers.get("X-Request-ID")))
+            if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "queue-release":
+                return self._send(h, 200, self.job_service.release_queue(sub[2], data.get("note")))
             if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "cancel":
                 if not self.job_service:
                     return self._send(h, 503, {"error": "作业服务不可用"})
@@ -473,8 +478,10 @@ class Dash:
                 return self._send(h, 404, {"error": "not found"})
         except (KeyError, FileNotFoundError):
             return self._send(h, 404, {"error": "没有这个任务或目标运行"})
-        except ValueError as e:
+        except RequestConflict as e:
             return self._send(h, 409, {"error": str(e)})
+        except ValueError as e:
+            return self._send(h, 400 if sub[:2] == ["api", "jobs"] else 409, {"error": str(e)})
         log_err(f"dash 掌舵 {'/'.join(sub[1:])} 来自 {ip}: {json.dumps(r, ensure_ascii=False)[:200]}")
         return self._send(h, 200, r)
 

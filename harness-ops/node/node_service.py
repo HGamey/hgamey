@@ -29,10 +29,12 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 """
 import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from node_fleet import FleetState
 import job_runtime
+from job_dispatch import JobDispatch
+from job_queue import RequestConflict
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -173,13 +175,15 @@ def _job_lock_args(argv, owner):
 
 
 class Jobs:
-    def __init__(self, root, bins, data_dir=None):
+    def __init__(self, root, bins, data_dir=None, max_running=2):
         self.root, self.bins = root, bins
         self.data_root = os.path.abspath(data_dir or root)
         self.dir = os.path.join(self.data_root, "jobs" if data_dir else "_jobs")
         os.makedirs(self.dir, exist_ok=True)
         self._read_root = SafeRoot(self.dir)
-        self.procs = {}
+        if not isinstance(max_running, int) or not 1 <= max_running <= 64:
+            raise ValueError("max_running must be between 1 and 64")
+        self.dispatch = JobDispatch(self, max_running)
         self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
 
     def path(self, jid, *p):
@@ -200,7 +204,9 @@ class Jobs:
         self.path(jid)
         return self._read_root.read_json(jid + "/meta.json")
 
-    def start(self, spec, body):
+    def start(self, spec, body, request_id=None):
+        if not isinstance(spec, dict):
+            raise ValueError("job spec must be an object")
         binname, argv = spec.get("bin"), spec.get("argv") or []
         if binname not in self.bins:
             raise ValueError(f"bin 只能是 {sorted(self.bins)}")
@@ -211,13 +217,27 @@ class Jobs:
         external_lock = binname in {"adb", "fetch_apk"}
         if external_lock and spec.get("exe"):
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
-        jid = uuid.uuid4().hex[:12]
+        resources = spec.get("resources", ["legacy-device"] if binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"} else [])
+        if not isinstance(resources, list) or len(resources) > 32 or any(
+                not isinstance(r, str) or not r or len(r) > 160 or any(ord(c) < 32 for c in r) for r in resources):
+            raise ValueError("resources must be at most 32 nonempty resource names")
+        spec = {"bin": binname, "argv": argv, "label": spec.get("label"), "resources": sorted(set(resources)),
+                **({"exe": spec["exe"]} if spec.get("exe") else {})}
+        return self.dispatch.submit(spec, body, request_id)
+
+    def _prepare(self, row, body):
+        spec, jid = row["spec"], row["job_id"]
+        binname, argv = spec["bin"], spec["argv"]
+        external_lock = binname in {"adb", "fetch_apk"}
         owner = f"job-{jid}"
         # devlock management commands retain their explicit cross-request labels.
         effective_argv = _job_lock_args(argv, owner) if binname in {"phonefarm", "game_opt_loop"} else argv
         jin, jout = self.path(jid, "in"), self.path(jid, "out")
         os.makedirs(jin)
         os.makedirs(jout)
+        self._write_meta(jid, self.dispatch.base_meta(row))
+        with self._read_root.create_file(jid + "/log"):
+            pass
         if body:
             with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as t:
                 t.extractall(jin, filter="data")
@@ -235,37 +255,41 @@ class Jobs:
         command = [exe] + [sub(a) for a in effective_argv]
         if external_lock:
             command = [self.bins["devlock"][0], "run", owner, "--"] + command
-        env = dict(os.environ, DEVLOCK_LABEL=owner, PF_JOB_OUT=jout, PF_JOB_IN=jin,
-                   PF_JOB_EXITF=self.path(jid, "exitcode"))
-        started = time.time()
-        meta = {"id": jid, "bin": binname, "argv": argv, "label": spec.get("label"),
-                "lock_label": None if binname == "devlock" else owner,
-                "lock_mode": "management" if binname == "devlock" else ("devlock_run" if external_lock else "internal_or_helper"),
-                "started": started, "phase": "starting", "state": "running",
-                "execution": {"kind": "supervised-v1", "launch_deadline": started + 30},
-                "recovery": {"status": "not_reported", "reason": "execution has not reported recovery"}}
+        self._read_root.write_json(jid + "/prepared.json", {"command": command, "cwd": cwd})
+        meta = self._read_meta(jid)
+        meta["phase"] = "queued"
         self._write_meta(jid, meta)
-        try:
-            p = job_runtime.launch(self._read_root, jid, self.path(jid), command, cwd, env=env)
-        except OSError as e:
-            meta.update(state="finished", phase="finished", outcome="failed", exit=None,
-                        ended=time.time(), error=f"worker launch failed: {e}",
-                        recovery={"status": "not_needed", "reason": "command was not started"})
-            self._write_meta(jid, meta)
-            return meta
-        # The worker owns all later metadata and the real child handle. Reaping
-        # this process is housekeeping, never an alternative source of job state.
-        threading.Thread(target=p.wait, daemon=True).start()
-        log(f"job {jid} [{spec.get('label')}] {binname} {' '.join(argv)[:200]}")
-        return self.status(jid)
 
     def status(self, jid):
+        row = self.dispatch.queue.get(jid)
+        if row and row["state"] in {"preparing", "queued"}:
+            meta = self.dispatch.base_meta(row)
+            meta["phase"] = row["state"]
+            meta["controls"] = {"cancel_supported": True, "force_supported": False, "reason": None}
+        else:
+            raw = self._read_meta(jid) if row and row["state"] == "done" else None
+            if raw and raw.get("phase") in {"preparing", "queued"}:
+                # Cancellation won the DB transaction before launch. An intake
+                # crash may leave its last metadata write behind the done row.
+                meta = raw
+                meta.update(state="finished", phase="finished", outcome="cancelled", exit=None,
+                            recovery={"status": "not_needed", "reason": "cancelled before execution"})
+                meta["execution"]["worker_alive"] = False
+                request = job_runtime.read_cancel(self._read_root, jid)
+                if request:
+                    meta["cancel"] = {**request, "status": "not_applied", "signals": []}
+                meta["controls"] = {"cancel_supported": False, "force_supported": False, "reason": "job is terminal"}
+            else:
+                meta = self._execution_status(jid)
+        return self.dispatch.attach(meta, row)
+
+    def _execution_status(self, jid):
         meta = self._read_meta(jid)
         if not isinstance(meta, dict) or meta.get("id") != jid:
             raise ValueError("invalid job metadata")
         if (meta.get("execution") or {}).get("kind") == "supervised-v1":
             return self._supervised_status(jid, meta)
-        if "exit" not in meta and jid not in self.procs:
+        if "exit" not in meta:
             try:   # 重启前起的任务：从 exitcode 文件拿真实退出码
                 with self._read_root.open_file(jid + "/exitcode") as f:
                     rc = int(f.read(128).strip())
@@ -274,7 +298,7 @@ class Jobs:
                 self._write_meta(jid, meta)
             except (FileNotFoundError, ValueError):
                 pass
-        if "exit" not in meta and jid not in self.procs and not _pid_alive(meta.get("pid")):
+        if "exit" not in meta and not _pid_alive(meta.get("pid")):
             # 节点服务重启前起的任务：进程已经结束，但新进程不是它的父进程，拿不到真实退出码。
             # 记 -1 并标注，免得客户端（pf-node wait/follow）永远等 "running"。
             meta.update(exit=-1, ended=time.time(), lost=True,
@@ -291,7 +315,8 @@ class Jobs:
             # A worker may have finished after our first metadata read.
             meta = self._read_meta(jid)
         terminal = meta.get("phase") in {"finished", "interrupted"}
-        starting = meta.get("phase") == "starting" and time.time() < meta["execution"].get("launch_deadline", 0)
+        starting = (meta.get("phase") in {"preparing", "queued"} or
+                    meta.get("phase") == "starting" and time.time() < meta["execution"].get("launch_deadline", 0))
         if not terminal and not alive and not starting:
             meta.update(phase="interrupted", outcome="interrupted", exit=-1, lost=True,
                         note="worker ownership lost; child termination and device recovery are unknown",
@@ -386,12 +411,30 @@ class Jobs:
     def cancel(self, jid, force=False):
         if not isinstance(force, bool):
             raise ValueError("force must be a boolean")
+        row = self.dispatch.queue.get(jid)
+        if row and self.dispatch.queue.cancel_pending(jid):
+            self.dispatch.finish_unstarted(row, "cancelled", "cancelled before execution")
+            job_runtime.request_cancel(self._read_root, jid, force=False)
+            return {"accepted": True, "job": self.status(jid)}
         meta = self.status(jid)
         if not meta["controls"]["cancel_supported"]:
             return {"accepted": False, "job": meta, "reason": meta["controls"]["reason"],
                     "error": meta["controls"]["reason"]}
         job_runtime.request_cancel(self._read_root, jid, force=force)
         return {"accepted": True, "job": self.status(jid)}
+
+    def release_queue(self, jid, note):
+        if not isinstance(note, str) or not note.strip() or len(note) > 2000:
+            raise ValueError("release requires a nonempty review note (at most 2000 characters)")
+        row = self.dispatch.queue.get(jid)
+        if not row:
+            raise KeyError(jid)
+        if row["state"] != "blocked":
+            raise RequestConflict("only a blocked reservation can be released")
+        self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time()})
+        self.dispatch.queue.set_state(jid, "done")
+        self.dispatch.start()
+        return {"released": True, "job": self.status(jid)}
 
     def kill(self, jid):
         """Compatibility: true means escalation was requested, not completed."""
@@ -401,6 +444,7 @@ class Jobs:
 # ═════════════ HTTP ═════════════
 
 def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
+    jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
@@ -456,7 +500,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"], ["fleet"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"], ["fleet"], ["queue"], ["requests"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -474,6 +518,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["queue"]:
+                    return self._send(200, {**jobs.dispatch.snapshot(), "node_id": node.node_id})
+                if len(parts) == 2 and parts[0] == "requests":
+                    row = jobs.dispatch.queue.by_request(JobDispatch.request_key(unquote(parts[1])))
+                    if not row:
+                        raise KeyError(parts[1])
+                    return self._send(200, jobs.status(row["job_id"]))
                 if parts == ["fleet"]:
                     wait = float(q.get("wait", ["0"])[0])
                     if not 0 <= wait <= 5:
@@ -585,7 +636,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     return self._mcp(body)
                 if parts == ["jobs"]:
                     spec = json.loads(self.headers.get("X-Job", "{}"))
-                    return self._send(200, jobs.start(spec, body))
+                    return self._send(200, jobs.start(spec, body, request_id=self.headers.get("X-Request-ID")))
                 if parts == ["admin", "restart"]:  # 交给外层守护循环重新拉起（加载新代码）
                     self._send(200, {"restarting": True})
                     threading.Timer(0.5, lambda: os._exit(0)).start()
@@ -599,8 +650,15 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                         receipt["killed"] = receipt["accepted"]
                     code = 409 if not receipt["accepted"] and receipt["job"]["state"] == "running" else 200
                     return self._send(code, receipt)
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "queue-release":
+                    data = json.loads(body or b"{}")
+                    if not isinstance(data, dict):
+                        raise ValueError("release body must be an object")
+                    return self._send(200, jobs.release_queue(parts[1], data.get("note")))
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
+            except RequestConflict as e:
+                return self._send(409, {"error": str(e)})
             except (ValueError, tarfile.TarError) as e:
                 return self._send(400, {"error": str(e)})
             self._send(404, {"error": "not found"})
@@ -629,6 +687,7 @@ def main():
     ap.add_argument("--game-opt-loop", default=os.path.expanduser("~/node/game_opt_loop"), help="game_opt_loop 仓库目录（含 game_opt_loop 可执行），与 phonefarm 同级")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--data-dir", help="独立运行数据根；新任务写到其中jobs/，不自动搬迁旧_jobs")
+    ap.add_argument("--max-running", type=int, default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
     a = ap.parse_args()
     # run_node.sh 用 & 在后台起本进程：非交互 shell 会把后台命令的 SIGINT 设成「忽略」，并一路遗传给
     # 我们起的任务（忽略态跨 exec 保留）—— 结果 kill/停止发的 SIGINT 对 bash 脚本、排队等锁的 devlock 无效。
@@ -646,7 +705,7 @@ def main():
             "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root)),
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
-    jobs = Jobs(root, bins, data_dir=a.data_dir)
+    jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running)
     fleet = FleetState(root, os.environ.get("DEVLOCK_DIR", "/private/tmp/claude-501"),
                        os.path.join(jobs.data_root, "_dash", "screens"))
     board = None
