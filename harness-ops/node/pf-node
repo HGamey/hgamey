@@ -9,6 +9,7 @@
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
   pf-node node                            # 执行宿主、持久节点身份、数据位置、服务版本
+  pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
@@ -20,7 +21,7 @@
 - 日志实时回显；退出码等于节点上命令的退出码。Ctrl-C 会让节点向任务发 SIGINT（phonefarm 会走还原流程）。
 - 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """
-import hashlib, http.client, io, json, os, sys, tarfile, time, urllib.error, urllib.parse, urllib.request
+import hashlib, http.client, io, json, math, os, sys, tarfile, time, urllib.error, urllib.parse, urllib.request
 
 URL = os.environ.get("PF_NODE_URL", "https://phone.liyao.space").rstrip("/")
 def _token():
@@ -223,6 +224,26 @@ def main():
             sys.exit(f"pf-node: 未知选项 {a}")
     if not args:
         sys.exit(__doc__)
+    if args[0] == "fleet":
+        if len(args) == 1:
+            wait = 5.0
+        elif len(args) == 3 and args[1] == "--wait":
+            try:
+                wait = float(args[2])
+            except ValueError:
+                sys.exit("pf-node fleet: --wait 必须是非负秒数")
+        else:
+            sys.exit("用法: pf-node fleet [--wait N]")
+        if not math.isfinite(wait) or wait < 0:
+            sys.exit("pf-node fleet: --wait 必须是非负秒数")
+        try:
+            print(call("GET", f"/fleet?wait={wait:g}", timeout=max(10, wait + 5),
+                       attempts=1, raise_4xx=True).decode())
+        except ClientError as e:
+            if e.code == 404:
+                sys.exit("pf-node: 节点不支持 GET /fleet，请升级节点服务（HTTP 404）")
+            sys.exit(f"pf-node: {e}")
+        return
     if args[0] in ("node", "jobs", "artifacts"):
         cmd = args.pop(0)
         if cmd == "artifacts":
