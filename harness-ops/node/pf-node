@@ -8,6 +8,7 @@
   pf-node --detach phonefarm autoloop ...      # 只回任务 id
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
+  pf-node cancel <id> [--force]            # 默认请求 SIGINT；--force 允许 15s 后 TERM、再 15s 后 KILL
   pf-node node                            # 执行宿主、持久节点身份、数据位置、服务版本
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
@@ -18,7 +19,8 @@
 - @out 是本次任务在节点上的输出目录；任务结束后它的内容下载到 -o 指定的目录（缺省 ./pf-node-out/<id>）。
   下载分块进行（PF_NODE_CHUNK 字节一块，缺省 2MB），断了自动续，最后校验 sha256；中途中断的进度存在
   <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
-- 日志实时回显；退出码等于节点上命令的退出码。Ctrl-C 会让节点向任务发 SIGINT（phonefarm 会走还原流程）。
+- 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 只请求柔性 SIGINT 并停止本地跟随（130）；
+  独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
 - 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """
 import hashlib, http.client, io, json, math, os, sys, tarfile, time, urllib.error, urllib.parse, urllib.request
@@ -63,9 +65,11 @@ def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4x
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code < 500:
+                with e:
+                    body = e.read()
                 if raise_4xx:
-                    raise ClientError(e.code, e.read())
-                sys.exit(f"pf-node: {e.code} {e.read().decode(errors='replace')}")
+                    raise ClientError(e.code, body)
+                sys.exit(f"pf-node: {e.code} {body.decode(errors='replace')}")
             err = e
         # http.client.IncompleteRead 等（经 Cloudflare 读到一半断流）也重试
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
@@ -91,6 +95,38 @@ def pack(argv):
     return out, (buf.getvalue() if n else b"")
 
 
+def cancel_job(jid, force=False):
+    if force:
+        print("pf-node: 强制取消将请求 SIGINT，15 秒后可升级 TERM，再 15 秒后可升级 KILL；可能打断恢复。",
+              file=sys.stderr)
+    try:
+        result = json.loads(call("POST", f"/jobs/{jid}/cancel", json.dumps({"force": force}).encode(),
+                                 {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
+    except ClientError as e:
+        if e.code in (401, 403):
+            sys.exit("pf-node: 取消请求被拒绝；需要有效的管理 token（只读 token 不能取消任务）")
+        if e.code == 404:
+            sys.exit("pf-node: 取消请求被拒绝；任务不存在或节点不支持 /cancel，请核对任务并升级节点服务")
+        sys.exit(f"pf-node: 取消请求被拒绝：{e}")
+    if result.get("accepted") is True:
+        print(f"pf-node: 任务 {jid} 的取消请求已记录；请通过 status/wait 查看后续状态，设备恢复尚未据此确认。",
+              file=sys.stderr)
+    else:
+        print(f"pf-node: 任务 {jid} 的取消请求被拒绝：{result.get('reason') or '未说明原因'}", file=sys.stderr)
+    return result
+
+
+def terminal_exit(jid, status):
+    rc = status.get("exit")
+    phase = status.get("phase", status.get("state", "unknown"))
+    unknown = (not isinstance(rc, int) or isinstance(rc, bool) or rc == -1
+               or (phase == "interrupted" and rc == 0))
+    print(f"pf-node: 任务 {jid} 记录终态 phase={phase}，outcome={status.get('outcome', '未报告')}，"
+          f"recovery={status.get('recovery', '未报告')}；"
+          + ("没有可信退出码，CLI 返回 125" if unknown else f"exit={rc}"), file=sys.stderr)
+    return 125 if unknown else rc
+
+
 def follow(jid):
     off = 0
     try:
@@ -104,12 +140,17 @@ def follow(jid):
             if st["state"] == "finished":
                 chunk = call("GET", f"/jobs/{jid}/log?offset={off}")
                 sys.stdout.buffer.write(chunk)
-                return st["exit"]
+                return terminal_exit(jid, st)
             time.sleep(1 if chunk else 2)
     except KeyboardInterrupt:
-        call("POST", f"/jobs/{jid}/kill", b"")
-        print(f"\npf-node: 已让节点中断任务 {jid}（SIGINT）", file=sys.stderr)
-        return 130
+        try:
+            cancel_job(jid)
+        except SystemExit as e:
+            print(f"\npf-node: 未确认取消请求：{e}", file=sys.stderr)
+        print(f"pf-node: 已停止本地跟随（130）；收尾仍由节点上的独立 worker 负责。"
+              f"请用 pf-node status {jid} 或 wait {jid} 确认；这不是任务终态或设备恢复证明。", file=sys.stderr)
+        # Do not download a changing output directory as if this were a terminal result.
+        raise SystemExit(130)
 
 
 def _extract(data_or_path, dest):
@@ -224,6 +265,13 @@ def main():
             sys.exit(f"pf-node: 未知选项 {a}")
     if not args:
         sys.exit(__doc__)
+    if args[0] == "cancel":
+        if (len(args) not in (2, 3) or (len(args) == 3 and args[2] != "--force")
+                or not __import__("re").fullmatch(r"[0-9a-f]{12}", args[1])):
+            sys.exit("用法: pf-node cancel <12 位任务 id> [--force]")
+        result = cancel_job(args[1], force=len(args) == 3)
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get("accepted") is True else 1)
     if args[0] == "fleet":
         if len(args) == 1:
             wait = 5.0
