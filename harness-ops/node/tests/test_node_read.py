@@ -37,6 +37,8 @@ class NodeReadTests(unittest.TestCase):
         # Use actual dashboard authentication and routing, without starting samplers.
         self.board = dash.Dash.__new__(dash.Dash)
         self.board._pass = lambda: self.pw
+        self.board._steer_pass = lambda: "test-steer-password"
+        self.board.job_service = self.jobs
         self.board.last_view = 0
         self.board.wake = threading.Event()
         self.board.monitor = FleetState(str(self.root), str(self.root / "locks"), str(self.root / "shots"))
@@ -142,7 +144,7 @@ class NodeReadTests(unittest.TestCase):
 
     def test_readonly_and_dash_password_cannot_mutate(self):
         jid = self.fixture(1)
-        for path in ("/jobs", f"/jobs/{jid}/kill", "/admin/restart"):
+        for path in ("/jobs", f"/jobs/{jid}/kill", f"/jobs/{jid}/cancel", "/admin/restart"):
             self.assertEqual(self.request(path, method="POST", body=b"")[0], 401)
         self.assertEqual(self.request("/node", token="wrong")[0], 401)
         self.assertEqual(self.request("/jobs", method="DELETE")[0], 401)
@@ -157,6 +159,19 @@ class NodeReadTests(unittest.TestCase):
             self.assertEqual(self.get_json(path), self.get_json("/dash/api" + path, headers=auth))
         self.assertEqual(self.request(f"/dash/api/jobs/{jid}/out?path=image.bin", headers=auth)[2], bytes(range(256)))
         self.assertEqual(self.request("/dash/api/jobs")[0], 401)
+        access = self.get_json("/dash/api/access", headers=auth)
+        self.assertEqual(access, {"steer": False, "steer_configured": True})
+        write_headers = {**auth, "X-HG": "1", "Content-Type": "application/json"}
+        self.assertEqual(self.request(f"/dash/api/jobs/{jid}/cancel", method="POST",
+                                      headers=write_headers, body=b'{}')[0], 403)
+        write_headers["Cookie"] += "; " + dash.STEER_COOKIE + "=" + self.board._cookie_val(
+            self.board._steer_pass(), b"hgamey-steer-v1")
+        code, _, content = self.request(f"/dash/api/jobs/{jid}/cancel", method="POST",
+                                         headers=write_headers, body=b'{}')
+        self.assertEqual(code, 200)
+        self.assertFalse(json.loads(content)["accepted"])  # Terminal legacy job, never signal a saved PID.
+        self.assertEqual(self.request(f"/jobs/{jid}/cancel", token=self.admin, method="POST",
+                                      body=b'{"force":"yes"}')[0], 400)
         # Static files may be absent during development, but route must never wake samplers.
         self.request("/dash/jobs", headers=auth)
         self.request("/dash/static/jobs.js", headers=auth)

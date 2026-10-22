@@ -73,7 +73,8 @@ class NodeRead:
                 "host": {"hostname": socket.gethostname(), "platform": platform.system()},
                 "service": self.service, "started_at": self.started,
                 "storage": {"jobs_root": os.path.abspath(self.jobs.dir), "data_root": self.data_root},
-                "capabilities": ["fleet.read", "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range"],
+                "capabilities": ["fleet.read", "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
+                                 "jobs.cancel", "jobs.supervised-v1"],
                 "devices": {"status": "not_probed", "reason": "node identity does not probe phones"}}
 
     def list_jobs(self, query):

@@ -16,7 +16,8 @@
                  /out?offset=N&length=M&etag=E  分块下载（断了从 offset 续）；etag 对不上回 409（输出变了，重来）
                  /out?path=<相对路径>[&meta=1|&offset=..]  只下输出目录里的一个文件（目录则打成 tar.gz）
                  也认标准 Range: bytes=a-b（回 206），If-Range 对不上就回整份
-            POST /jobs/<id>/kill
+            POST /jobs/<id>/cancel  {"force": false} 持久化停止请求；force=true 显式升级
+            POST /jobs/<id>/kill    兼容旧升级语义；killed 表示请求已记录
           X-Job 可带 "exe": "@in/<路径>"，用上传的可执行代替缺省的（测未合并分支）。
   /admin/restart  退出进程，由 run_node.sh 的循环用新代码重新拉起。
   /health 无需 token，只回 ok（给隧道探活）。
@@ -26,11 +27,12 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 执行任务使用独立的锁 owner，label 只供展示；phonefarm/GOL/helper 保留内部锁路线，raw adb/fetch_apk 由 devlock run 包裹。
 显式 devlock 管理命令的 acquire/renew/release 等身份仍可跨请求，不改写其位置参数。
 """
-import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
+import argparse, hashlib, hmac, io, itertools, json, os, re, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from node_read import NodeRead
 from node_fleet import FleetState
+import job_runtime
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -230,40 +232,39 @@ class Jobs:
             if not exe.startswith(os.path.realpath(jin) + "/") or not os.path.isfile(exe):
                 raise ValueError("exe 只能是本任务上传的文件 @in/...")
             os.chmod(exe, 0o755)
-        # 外面包一层 sh：任务结束时把退出码写进 exitcode 文件。节点服务重启后不再是子进程的父进程，
-        # 也能从这个文件拿到真实退出码，重启不再丢任务状态。trap ":" 让 sh 自己不被 SIGINT/SIGTERM 打断
-        # （处理函数在 exec 时会复位，不影响子进程收到信号走还原）。
         command = [exe] + [sub(a) for a in effective_argv]
         if external_lock:
             command = [self.bins["devlock"][0], "run", owner, "--"] + command
-        cmd = ["/bin/sh", "-c", 'trap ":" INT TERM; "$@"; rc=$?; echo $rc > "$PF_JOB_EXITF"; exit $rc', "pfjob"] + command
         env = dict(os.environ, DEVLOCK_LABEL=owner, PF_JOB_OUT=jout, PF_JOB_IN=jin,
                    PF_JOB_EXITF=self.path(jid, "exitcode"))
-        logf = open(self.path(jid, "log"), "wb")
-        p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
-                             env=env, start_new_session=True)
+        started = time.time()
         meta = {"id": jid, "bin": binname, "argv": argv, "label": spec.get("label"),
                 "lock_label": None if binname == "devlock" else owner,
                 "lock_mode": "management" if binname == "devlock" else ("devlock_run" if external_lock else "internal_or_helper"),
-                "started": time.time(), "pid": p.pid}
+                "started": started, "phase": "starting", "state": "running",
+                "execution": {"kind": "supervised-v1", "launch_deadline": started + 30},
+                "recovery": {"status": "not_reported", "reason": "execution has not reported recovery"}}
         self._write_meta(jid, meta)
-        self.procs[jid] = p
-        threading.Thread(target=self._wait, args=(jid, p, logf), daemon=True).start()
+        try:
+            p = job_runtime.launch(self._read_root, jid, self.path(jid), command, cwd, env=env)
+        except OSError as e:
+            meta.update(state="finished", phase="finished", outcome="failed", exit=None,
+                        ended=time.time(), error=f"worker launch failed: {e}",
+                        recovery={"status": "not_needed", "reason": "command was not started"})
+            self._write_meta(jid, meta)
+            return meta
+        # The worker owns all later metadata and the real child handle. Reaping
+        # this process is housekeeping, never an alternative source of job state.
+        threading.Thread(target=p.wait, daemon=True).start()
         log(f"job {jid} [{spec.get('label')}] {binname} {' '.join(argv)[:200]}")
-        return meta
-
-    def _wait(self, jid, p, logf):
-        rc = p.wait()
-        logf.close()
-        meta = self._read_meta(jid)
-        meta.update(exit=rc, ended=time.time())
-        self._write_meta(jid, meta)
-        log(f"job {jid} exit {rc}")
+        return self.status(jid)
 
     def status(self, jid):
         meta = self._read_meta(jid)
         if not isinstance(meta, dict) or meta.get("id") != jid:
             raise ValueError("invalid job metadata")
+        if (meta.get("execution") or {}).get("kind") == "supervised-v1":
+            return self._supervised_status(jid, meta)
         if "exit" not in meta and jid not in self.procs:
             try:   # 重启前起的任务：从 exitcode 文件拿真实退出码
                 with self._read_root.open_file(jid + "/exitcode") as f:
@@ -280,6 +281,37 @@ class Jobs:
                         note="节点服务重启过，这个任务的真实退出码丢了；看日志和输出目录判断结果")
             self._write_meta(jid, meta)
         meta["state"] = "finished" if "exit" in meta else "running"
+        meta["controls"] = {"cancel_supported": False, "force_supported": False,
+                            "reason": "legacy job has no verifiable worker ownership"}
+        return meta
+
+    def _supervised_status(self, jid, meta):
+        alive = job_runtime.runner_alive(self._read_root, jid)
+        if not alive:
+            # A worker may have finished after our first metadata read.
+            meta = self._read_meta(jid)
+        terminal = meta.get("phase") in {"finished", "interrupted"}
+        starting = meta.get("phase") == "starting" and time.time() < meta["execution"].get("launch_deadline", 0)
+        if not terminal and not alive and not starting:
+            meta.update(phase="interrupted", outcome="interrupted", exit=-1, lost=True,
+                        note="worker ownership lost; child termination and device recovery are unknown",
+                        recovery={"status": "required", "reason": "worker disappeared without a terminal receipt"})
+            terminal = True
+        meta["state"] = "finished" if terminal else "running"
+        meta["execution"]["worker_alive"] = alive
+        request = job_runtime.read_cancel(self._read_root, jid)
+        if request:
+            receipt = meta.get("cancel") or {}
+            meta["cancel"] = {**request, **receipt, "mode": request["mode"],
+                              "requested_at": request["requested_at"]}
+            if not receipt.get("status"):
+                meta["cancel"]["status"] = "not_applied" if terminal else "requested"
+            meta["cancel"].setdefault("signals", [])
+            if not terminal:
+                meta["phase"] = "cancelling"
+        supported = not terminal and (alive or starting)
+        meta["controls"] = {"cancel_supported": supported, "force_supported": supported,
+                            "reason": None if supported else ("worker ownership lost" if meta.get("lost") else "job is terminal")}
         return meta
 
     def log_from(self, jid, offset, limit=4 << 20):
@@ -351,29 +383,19 @@ class Jobs:
         finally:
             os.close(fd)
 
+    def cancel(self, jid, force=False):
+        if not isinstance(force, bool):
+            raise ValueError("force must be a boolean")
+        meta = self.status(jid)
+        if not meta["controls"]["cancel_supported"]:
+            return {"accepted": False, "job": meta, "reason": meta["controls"]["reason"],
+                    "error": meta["controls"]["reason"]}
+        job_runtime.request_cancel(self._read_root, jid, force=force)
+        return {"accepted": True, "job": self.status(jid)}
+
     def kill(self, jid):
-        """先 SIGINT（让 phonefarm 走还原流程）；15 秒后还活着升 SIGTERM，再 15 秒升 SIGKILL（整个进程组）。
-        排队等锁的进程有的不理 SIGINT，只发一次会出现「kill 回 true 但永远 running」。"""
-        p = self.procs.get(jid)
-        if not p or p.poll() is not None:
-            return False
-
-        def escalate():
-            for sig, wait in ((signal.SIGINT, 15), (signal.SIGTERM, 15), (signal.SIGKILL, 0)):
-                if p.poll() is not None:
-                    return
-                try:
-                    os.killpg(p.pid, sig)
-                except ProcessLookupError:
-                    return
-                log(f"job {jid} 发 {sig.name}")
-                try:
-                    p.wait(wait)
-                except subprocess.TimeoutExpired:
-                    pass
-
-        threading.Thread(target=escalate, daemon=True).start()
-        return True
+        """Compatibility: true means escalation was requested, not completed."""
+        return self.cancel(jid, force=True)["accepted"]
 
 
 # ═════════════ HTTP ═════════════
@@ -427,6 +449,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             parts = [p for p in u.path.split("/") if p]
             if parts == ["health"]:
                 return self._send(200, b"ok", "text/plain")
+            if board and parts == ["dash", "api", "access"]:
+                if not board.authed(self):
+                    return self._send(401, {"error": "需要查看密码"})
+                return self._send(200, {"steer": board.steered(self),
+                                        "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
             if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"], ["fleet"]):
@@ -563,8 +590,15 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     self._send(200, {"restarting": True})
                     threading.Timer(0.5, lambda: os._exit(0)).start()
                     return
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "kill":
-                    return self._send(200, {"killed": jobs.kill(parts[1])})
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:
+                    data = json.loads(body or b"{}")
+                    if not isinstance(data, dict):
+                        raise ValueError("cancel body must be an object")
+                    receipt = jobs.cancel(parts[1], force=True if parts[2] == "kill" else data.get("force", False))
+                    if parts[2] == "kill":
+                        receipt["killed"] = receipt["accepted"]
+                    code = 409 if not receipt["accepted"] and receipt["job"]["state"] == "running" else 200
+                    return self._send(code, receipt)
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
             except (ValueError, tarfile.TarError) as e:

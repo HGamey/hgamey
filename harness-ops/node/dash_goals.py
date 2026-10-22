@@ -13,7 +13,7 @@ harness 的 `goal draft / goal run` 还没上线时：
   - 「确认并开始」只保存 goal.md，不起任务，明确回「harness 的 goal run 还没上线」。
 没有任何真实目标运行时，首页展示 dash_demo/ 下的示例运行（复制到 ~/node/_dash/demo-goals/，标「示例」）。
 """
-import json, os, re, shutil, signal, subprocess, threading, time
+import json, os, re, shutil, subprocess, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO_SRC = os.path.join(HERE, "dash_demo")
@@ -169,9 +169,11 @@ class Goals:
 
     def summary(self, rid, d, demo):
         st = _load(os.path.join(d, "state.json")) or {}
+        dm = self._dash_meta(d)
+        owner = dm.get("lock_label") or (f"job-{dm['run_job']}" if dm.get("run_job") else f"goal-{rid}")
         intent = (_read(os.path.join(d, "intent.txt"), 2000) or "").strip()
         upd = max(_mtime(os.path.join(d, "state.json")), _mtime(os.path.join(d, "events.jsonl")), _mtime(d))
-        return {"run_id": rid, "demo": demo, "state": st, "intent": intent, "updated": upd,
+        return {"run_id": rid, "demo": demo, "state": st, "intent": intent, "updated": upd, "lock_label": owner,
                 "status": st.get("status") or "drafting", "status_zh": STATUS_ZH.get(st.get("status"), st.get("status") or "起草中")}
 
     def list(self):
@@ -203,7 +205,7 @@ class Goals:
                  human_mtime=_mtime(os.path.join(d, "human.md")), human_history=hist, audit=audit[::-1],
                  events=read_events(os.path.join(d, "events.jsonl")), report_md=_read(os.path.join(d, "report.md")),
                  harness_ready=self.harness_support(), dash=self._dash_meta(d),
-                 frozen=os.path.exists(os.path.join(d, "goal.frozen.md")), run_alive=bool(self._run_pid(d)))
+                 frozen=os.path.exists(os.path.join(d, "goal.frozen.md")), run_alive=self._run_active(d))
         return s
 
     def history_text(self, run_id, name):
@@ -247,37 +249,35 @@ class Goals:
             self._audit(d, ip, action, bytes=len(text.encode()), history=name)
         return {"saved": True, "history": name, "mtime": _mtime(p)}
 
-    def _run_pid(self, d):
-        """这个目标运行的 goal run 进程（经本节点 /jobs 起的）还活着就回 pid。"""
+    def _run_active(self, d):
+        """Use the job receipt, including starting, without treating a PID as ownership."""
         m = self._dash_meta(d)
         jid = m.get("run_job")
         if not jid or not self.jobs:
-            return None
+            return False
         try:
             jm = self.jobs.status(jid)
         except (KeyError, OSError, ValueError):
-            return None
-        return jm.get("pid") if jm.get("state") == "running" else None
+            return False
+        return jm.get("state") == "running"
 
     def stop(self, run_id, ip):
         d, _ = self.find(run_id)
-        pid = self._run_pid(d)
-        if pid:
-            # v1.1：只给 goal run 本身发 SIGINT，它转给本进程组（phonefarm 走还原），不再出方案、不再上机。
-            # 不用 Jobs.kill：那个会逐级升到 SIGKILL，可能打断 phonefarm 的还原。
-            try:
-                os.kill(int(pid), signal.SIGINT)
-            except OSError as e:
-                raise ValueError(f"发停止信号失败：{e}")
-            self._audit(d, ip, "stop", via="SIGINT", pid=pid)
-            return {"saved": False, "signaled": True,
-                    "note": "已叫停：harness 马上停止出方案和上机，正在测的那一轮会先把手机还原，再写报告"}
+        jid = self._dash_meta(d).get("run_job")
+        reason = "没有可确认所有权的运行任务"
+        if jid and self.jobs:
+            receipt = self.jobs.cancel(jid, force=False)
+            if receipt["accepted"]:
+                self._audit(d, ip, "stop", via="job_cancel", job=jid)
+                return {"saved": False, **receipt,
+                        "note": "停止请求已记录，由作业 worker 发 SIGINT；请继续查看终态和还原证据"}
+            reason = receipt.get("reason") or reason
         cur = _read(os.path.join(d, "human.md")) or ""
         if re.search(r"(?im)^\s*(停止|stop)\s*$", cur):
             return {"saved": False, "note": "human.md 里已经写了「停止」，harness 下一代开始前读到就停"}
         text = cur.rstrip("\n") + ("\n\n" if cur.strip() else "") + "停止\n"
         r = self.save_human(run_id, text, ip, action="stop")
-        r["note"] = "没找到正在跑的 harness 进程，已在 human.md 末尾写上「停止」：harness 下一代开始前读到就停"
+        r["note"] = f"{reason}；已在 human.md 末尾写上「停止」，由 harness 下一次读取时处理，尚未确认停止"
         return r
 
     def _dash_meta(self, d, **upd):
@@ -336,6 +336,9 @@ class Goals:
         if not (self.harness_support() and self.jobs):
             return {"started": False, "note": "goal.md 已保存。harness 的 goal run 还没上线（core 在做），上线后再点「确认并开始」"}
         meta = self.jobs.start({"bin": "game_opt_loop", "label": f"goal-{run_id}", "argv": ["goal", "run", d]}, b"")
-        self._dash_meta(d, run_job=meta["id"], run_pid=meta["pid"])
-        return {"started": True, "job": meta["id"], "lock_label": f"goal-{run_id}",
-                "note": "已开跑：harness 会冻结 goal.md，去排队拿手机（锁名 goal-" + run_id + "）"}
+        self._dash_meta(d, run_job=meta["id"], run_pid=meta.get("pid"), lock_label=meta.get("lock_label"))
+        failed = meta.get("outcome") in {"failed", "interrupted"}
+        return {"started": not failed, "job": meta["id"], "lock_label": meta.get("lock_label"),
+                "phase": meta.get("phase"), "outcome": meta.get("outcome"),
+                "note": ("任务已报告执行失败，请查看任务日志：" + (meta.get("error") or "执行失败")) if failed else
+                        "任务已提交；请在任务详情核对启动、排队和执行状态，提交不代表已取得手机"}

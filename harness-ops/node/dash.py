@@ -278,6 +278,7 @@ def signature(d):
 class Dash:
     def __init__(self, phonefarm_root, gol_root, jobs_dir, jobs=None, fleet=None):
         self.pf_root, self.gol_root, self.jobs_dir = phonefarm_root, gol_root, jobs_dir
+        self.job_service = jobs
         node_dir = os.path.dirname(os.path.dirname(jobs_dir.rstrip("/")))  # ~/node
         self.goals = dash_goals.Goals(os.environ.get("HG_GOALS_DIR", os.path.join(node_dir, "goals")),
                                       os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "demo-goals"),
@@ -453,7 +454,14 @@ class Dash:
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:
-            if sub == ["api", "run", "human"]:
+            if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "cancel":
+                if not self.job_service:
+                    return self._send(h, 503, {"error": "作业服务不可用"})
+                r = self.job_service.cancel(sub[2], force=data.get("force", False))
+                code = 409 if not r["accepted"] and r["job"]["state"] == "running" else 200
+                log_err(f"dash job cancel {sub[2]} accepted={r['accepted']} 来自 {ip}")
+                return self._send(h, code, r)
+            elif sub == ["api", "run", "human"]:
                 r = self.goals.save_human(str(data.get("id", "")), data.get("text"), ip, base_mtime=data.get("base_mtime"))
             elif sub == ["api", "run", "stop"]:
                 r = self.goals.stop(str(data.get("id", "")), ip)
@@ -463,8 +471,8 @@ class Dash:
                 r = self.goals.confirm(str(data.get("id", "")), data.get("goal_md"), ip)
             else:
                 return self._send(h, 404, {"error": "not found"})
-        except KeyError:
-            return self._send(h, 404, {"error": "没有这个目标运行"})
+        except (KeyError, FileNotFoundError):
+            return self._send(h, 404, {"error": "没有这个任务或目标运行"})
         except ValueError as e:
             return self._send(h, 409, {"error": str(e)})
         log_err(f"dash 掌舵 {'/'.join(sub[1:])} 来自 {ip}: {json.dumps(r, ensure_ascii=False)[:200]}")
@@ -546,7 +554,13 @@ class Dash:
         metas.sort(key=lambda m: m.get("started", 0), reverse=True)
         out = []
         for m in metas[:limit * 3]:
-            if "exit" in m:
+            if self.job_service:
+                try:
+                    m = self.job_service.status(m["id"])
+                except (KeyError, OSError, ValueError):
+                    continue
+                state = "lost" if m.get("lost") else m["state"]
+            elif "exit" in m:
                 state = "finished"
             elif self._alive(m.get("pid")):
                 state = "running"
@@ -701,7 +715,7 @@ class Dash:
         for d in fl.get("devices") or []:
             serial = d.get("serial")
             goal = next((r for r in running if (r["state"].get("device") in (serial,)) or
-                         (lock.get("held_by") == f"goal-{r['run_id']}" and r["state"].get("device") in (None, "any"))), None)
+                         (lock.get("held_by") == r.get("lock_label") and r["state"].get("device") in (None, "any"))), None)
             # 目标在跑但手机此刻被别人占着（目标在排队）：也标出来，免得看着像「没有目标」
             waiting = None
             if not goal:
