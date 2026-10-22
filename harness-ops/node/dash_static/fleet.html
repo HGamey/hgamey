@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>本节点设备 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/jobs.css">
+<link rel="stylesheet" href="/dash/static/fleet.css">
+</head>
+<body class="jobs-view fleet-view">
+<a class="skip-link" href="#devices-heading">跳到设备快照</a>
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a>
+    <span class="brand-name">HGamey</span>
+    <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet" aria-current="page">本节点设备</a><a href="/dash/jobs">任务与结果</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right">
+    <button id="refresh-fleet" class="ghost" type="button">刷新快照</button>
+    <form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form>
+  </div>
+</header>
+<main class="jobs-page fleet-page">
+  <div class="page-heading">
+    <div><p class="eyebrow">研究工作台</p><h1>本节点设备</h1><p class="page-description">了解连接到当前节点的设备，以及共享锁的占用情况。</p></div>
+    <a class="workspace-link" href="/dash/jobs">查看任务与结果 <span aria-hidden="true">→</span></a>
+  </div>
+  <section class="node-card" aria-labelledby="node-heading">
+    <div class="node-context">
+      <div><h2 id="node-heading">当前节点</h2><p id="node-summary" class="node-summary">正在读取身份…</p></div>
+      <span id="node-updated" class="muted"></span>
+    </div>
+    <p id="node-message" class="note" role="status"></p>
+    <details id="node-details" class="node-details" hidden><summary>节点信息与数据位置</summary><dl id="node-info" class="facts"></dl></details>
+  </section>
+  <div class="refresh-bar">
+    <p id="refresh-note" class="note">可见时每 10 秒刷新页面快照。</p>
+    <label class="auto-control"><input id="auto-refresh" type="checkbox" checked> 自动刷新</label>
+  </div>
+  <div id="page-error" class="fleet-notice error" role="alert" hidden></div>
+  <a id="login-link" class="workspace-link login-link" href="/dash" hidden>重新登录</a>
+  <div class="fleet-layout">
+    <section class="devices-panel" aria-labelledby="devices-heading">
+      <div class="section-heading"><h2 id="devices-heading" tabindex="-1">设备快照</h2><span id="device-count" class="count-label">尚未取得设备列表</span></div>
+      <div class="sample-line"><span id="sample-state" class="task-state unknown">未采集</span><p id="sample-time" class="read-time">尚无成功采样记录</p></div>
+      <div id="sample-message" class="fleet-notice" role="status" hidden></div>
+      <div id="devices" class="device-grid"></div>
+      <p id="devices-empty" class="fleet-empty" role="status">正在读取节点设备快照…</p>
+      <details id="fleet-notes" class="fleet-notes" hidden><summary>采样说明</summary><ul id="notes-list"></ul></details>
+    </section>
+    <aside class="lock-panel" aria-labelledby="lock-heading">
+      <div class="section-heading"><h2 id="lock-heading">共享设备锁</h2><span id="lock-state" class="task-state unknown">未知</span></div>
+      <p id="lock-owner" class="lock-owner">尚未读取</p>
+      <p id="lock-message" class="lock-message">正在读取节点上的锁记录。</p>
+      <dl id="lock-info" class="facts lock-facts"></dl>
+      <details class="lock-details">
+        <summary id="queue-summary">队列与最近事件</summary>
+        <h3>排队记录</h3><ol id="lock-queue" class="lock-queue"></ol><p id="queue-empty" class="note">尚未读取</p>
+        <h3>最近事件</h3><ul id="lock-events" class="lock-events"></ul><p id="events-empty" class="note">尚未读取</p>
+      </details>
+      <p class="lock-scope">这里显示本节点的共享锁记录。心跳过期不会被视为已释放，锁空闲也不等于设备已完成恢复。</p>
+    </aside>
+  </div>
+  <p id="sampling-policy" class="sampling-policy">页面刷新读取共享快照；设备采样由节点按锁状态与采样间隔安排。</p>
+</main>
+<footer class="foot">本页只展示当前节点，不截图、不控制设备、不创建任务。能力声明与本次采样结果分开展示。</footer>
+<script src="/dash/static/fleet.js"></script>
+</body>
+</html>
