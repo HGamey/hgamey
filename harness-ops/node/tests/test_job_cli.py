@@ -6,8 +6,10 @@ from pathlib import Path
 import runpy
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
@@ -32,6 +34,8 @@ class JobCLI(unittest.TestCase):
                 value = {"accepted": allowed, "reason": None if allowed else "management token required",
                          "job": {"id": JOB, "state": "running", "phase": "cancelling",
                                  "outcome": None, "recovery": "unknown", "exit": None}}
+                if self.path.endswith("/queue-release"):
+                    value["released"] = allowed
                 data = json.dumps(value).encode()
                 self.send_response(200 if allowed else 403)
                 self.send_header("Content-Length", str(len(data)))
@@ -65,10 +69,163 @@ class JobCLI(unittest.TestCase):
         self.assertIn("管理 token", denied.stderr)
         legacy = run("kill", JOB)
         self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        released = run("release", JOB, "--note", "checked device state")
+        self.assertEqual(released.returncode, 0, released.stderr)
+        self.assertTrue(json.loads(released.stdout)["released"])
+        self.assertIn("不证明设备已恢复", released.stderr)
         self.assertEqual(requests, [(f"/jobs/{JOB}/cancel", {"force": False}),
                                     (f"/jobs/{JOB}/cancel", {"force": True}),
                                     (f"/jobs/{JOB}/cancel", {"force": False}),
-                                    (f"/jobs/{JOB}/kill", None)])
+                                    (f"/jobs/{JOB}/kill", None),
+                                    (f"/jobs/{JOB}/queue-release", {"note": "checked device state"})])
+
+    def test_submission_retries_same_request_and_recovers_without_another_job(self):
+        posts, gets = [], []
+        meta = {"id": JOB, "state": "running", "phase": "queued", "request_id": "study-001"}
+
+        class Handler(BaseHTTPRequestHandler):
+            def reply(self, value):
+                data = json.dumps(value).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                gets.append(self.path)
+                if self.path == "/node":
+                    self.reply({"capabilities": ["jobs.idempotency-v1", "jobs.queue-v1"]})
+                elif self.path == "/requests/study-001":
+                    self.reply(meta)
+                elif self.path == "/queue":
+                    self.reply({"items": [meta]})
+                else:
+                    self.send_error(404)
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                posts.append((self.path, self.headers.get("X-Request-ID"), self.headers.get("X-Job"), body))
+                if len(posts) == 1:
+                    self.close_connection = True  # Accepted on server; response lost in transit.
+                    return
+                self.reply(meta)
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        env = dict(os.environ, PF_NODE_URL=f"http://127.0.0.1:{server.server_port}", PF_NODE_TOKEN="fixture-admin")
+
+        def run(*args):
+            return subprocess.run([sys.executable, str(CLI), *args], env=env,
+                                  capture_output=True, text=True, timeout=10)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "input.json"
+            source.write_text('{"scene":"fixture"}')
+            cli = self.load_cli()
+            with mock.patch("time.time", return_value=100):
+                first_pack = cli["pack"]([str(source)])
+            with mock.patch("time.time", return_value=200):
+                self.assertEqual(cli["pack"]([str(source)]), first_pack)
+            submitted = run("--request-id", "study-001", "--resource", "device:fixture",
+                            "--resource", "capture:fixture", "--detach", "phonefarm", "eval", str(source))
+        self.assertEqual(submitted.returncode, 0, submitted.stderr)
+        self.assertEqual(submitted.stdout.strip(), JOB)
+        self.assertIn("phase=queued request_id=study-001", submitted.stderr)
+        self.assertNotIn("已在节点启动", submitted.stderr)
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0], posts[1])
+        self.assertEqual(posts[0][:2], ("/jobs", "study-001"))
+        self.assertEqual(json.loads(posts[0][2])["resources"], ["device:fixture", "capture:fixture"])
+        self.assertEqual(posts[0][3], first_pack[1])
+        recovered = run("request", "study-001")
+        queued = run("queue")
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(json.loads(recovered.stdout), meta)
+        self.assertEqual(queued.returncode, 0, queued.stderr)
+        self.assertEqual(json.loads(queued.stdout), {"items": [meta]})
+        self.assertEqual(gets, ["/node", "/requests/study-001", "/queue"])
+        self.assertEqual(len(posts), 2)
+
+    def test_submission_refuses_old_nodes_and_reports_conflict_or_unknown_result(self):
+        mode, posts = ["old"], []
+
+        class Handler(BaseHTTPRequestHandler):
+            def reply(self, status, value):
+                data = json.dumps(value).encode()
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                self.reply(404 if mode[0] == "404" else 200,
+                           {"capabilities": [] if mode[0] == "old" else ["jobs.idempotency-v1"]})
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                posts.append((self.headers.get("X-Request-ID"), self.headers.get("X-Job"), body))
+                if mode[0] == "unknown":
+                    self.close_connection = True
+                elif mode[0] == "conflict":
+                    self.reply(409, {"error": "request content differs"})
+                else:
+                    self.reply(200, {"id": JOB, "phase": "preparing", "state": "running"})
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        cli = self.load_cli()
+
+        def run(*args):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.dict(cli["main"].__globals__, URL=f"http://127.0.0.1:{server.server_port}"), \
+                    mock.patch.object(sys, "argv", ["pf-node", *args]), mock.patch("time.sleep"), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                try:
+                    cli["main"]()
+                    code = 0
+                except SystemExit as e:
+                    code = e.code
+            return code, stdout.getvalue(), stderr.getvalue()
+
+        for old in ("old", "404"):
+            mode[0] = old
+            code, _, _ = run("--detach", "phonefarm", "eval")
+            self.assertIn("升级", str(code))
+            self.assertEqual(posts, [])
+        code, _, _ = run("--request-id", "bad/id", "--detach", "phonefarm", "eval")
+        self.assertIn("request_id", str(code))
+        self.assertEqual(posts, [])
+        mode[0] = "conflict"
+        code, _, _ = run("--request-id", "same-id", "--detach", "phonefarm", "eval")
+        self.assertIn("冲突", str(code))
+        self.assertEqual(len(posts), 1)
+        mode[0] = "unknown"
+        posts.clear()
+        code, _, stderr = run("--request-id", "same-id", "--detach", "phonefarm", "eval")
+        self.assertEqual(code, 1)
+        self.assertIn("提交结果未知", stderr)
+        self.assertIn("pf-node request same-id", stderr)
+        self.assertEqual(len(posts), 5)
+        self.assertTrue(all(post == posts[0] for post in posts))
+        mode[0] = "ok"
+        posts.clear()
+        code, _, stderr = run("--detach", "phonefarm", "eval")
+        self.assertEqual(code, 0, stderr)
+        request_id, spec, body = posts[0]
+        self.assertEqual(str(uuid.UUID(request_id)), request_id)
+        self.assertNotIn("resources", json.loads(spec))
+        self.assertEqual(body, b"")
+        self.assertIn("phase=preparing", stderr)
 
     def test_ctrl_c_requests_soft_cancel_without_fetching_unfinished_output(self):
         cli = self.load_cli()

@@ -5,7 +5,11 @@
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
   pf-node adb -s 91253241019A shell 'su -c "cat /sys/class/kgsl/kgsl-3d0/max_pwrlevel"'
   pf-node devlock status
-  pf-node --detach phonefarm autoloop ...      # 只回任务 id
+  pf-node --detach phonefarm autoloop ...      # stdout 只回任务 id；stderr 显示提交阶段和 request_id
+  pf-node --request-id study-001 --resource device:oneplus phonefarm eval ...
+  pf-node request <request_id>               # 断网后找回同一次提交的任务
+  pf-node queue                              # 只读持久队列快照
+  pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
   pf-node cancel <id> [--force]            # 默认请求 SIGINT；--force 允许 15s 后 TERM、再 15s 后 KILL
@@ -21,9 +25,11 @@
   <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
 - 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 只请求柔性 SIGINT 并停止本地跟随（130）；
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
+- 每次提交生成 request_id；同一次重试保持请求内容和 id 不变。--request-id 可手动指定，--resource 可重复声明独占资源。
+  preparing/queued 只代表准备或排队；提交前需节点支持幂等请求，结果未知时用 request 查询，不要换 id 重投。
 - 节点地址 PF_NODE_URL（缺省 https://phone.liyao.space），token 依次找 PF_NODE_TOKEN、PF_NODE_TOKEN_FILE、<工作根目录>/.hgamey/node.token。
 """
-import hashlib, http.client, io, json, math, os, sys, tarfile, time, urllib.error, urllib.parse, urllib.request
+import gzip, hashlib, http.client, io, json, math, os, re, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
 
 URL = os.environ.get("PF_NODE_URL", "https://phone.liyao.space").rstrip("/")
 def _token():
@@ -83,7 +89,7 @@ def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4x
 def pack(argv):
     """把参数里的本地路径打进 tar，参数改写成 @in/<序号>/<basename>。"""
     buf, n, out = io.BytesIO(), 0, []
-    with tarfile.open(fileobj=buf, mode="w:gz") as t:
+    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz, tarfile.open(fileobj=gz, mode="w") as t:
         for a in argv:
             flag, sep, val = a.partition("=") if a.startswith("--") and "=" in a else ("", "", a)
             if val and not val.startswith("@") and os.path.exists(val):
@@ -93,6 +99,43 @@ def pack(argv):
                 val = f"@in/{arc}"
             out.append(f"{flag}{sep}{val}" if sep else val)
     return out, (buf.getvalue() if n else b"")
+
+
+def valid_request_id(value):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value):
+        sys.exit("pf-node: request_id 须为 1–128 位，以字母或数字开头，只含字母、数字、点、下划线、冒号和连字符")
+    return value
+
+
+def require_idempotent_jobs():
+    try:
+        node = json.loads(call("GET", "/node", attempts=1, raise_4xx=True))
+    except ClientError as e:
+        if e.code == 404:
+            sys.exit("pf-node: 节点不支持幂等任务提交，请升级节点服务；未发送 POST /jobs")
+        sys.exit(f"pf-node: 无法确认节点提交能力：{e}；未发送 POST /jobs")
+    if "jobs.idempotency-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 jobs.idempotency-v1，请升级节点服务；未发送 POST /jobs")
+
+
+def submit_job(spec, body, request_id):
+    print(f"pf-node: 提交 request_id={request_id}；结果未知时用 pf-node request {request_id} 找回任务。",
+          file=sys.stderr, flush=True)
+    headers = {"X-Job": json.dumps(spec, ensure_ascii=True), "X-Request-ID": request_id,
+               "Content-Type": "application/gzip"}
+    try:
+        meta = json.loads(call("POST", "/jobs", body, headers, timeout=600, raise_4xx=True))
+        meta["id"]  # A malformed response cannot confirm which job was accepted.
+        return meta
+    except ClientError as e:
+        if e.code == 409:
+            sys.exit(f"pf-node: request_id={request_id} 与已有提交内容冲突（HTTP 409）；"
+                     f"请先用 pf-node request {request_id} 核对原任务，不要把冲突当成重试成功。")
+        sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{e}")
+    except (SystemExit, ValueError, KeyError, KeyboardInterrupt) as e:
+        print(f"pf-node: 提交结果未知，request_id={request_id}：{e}；"
+              f"请用 pf-node request {request_id} 查询；不要换 request_id 重复提交。", file=sys.stderr)
+        raise SystemExit(130 if isinstance(e, KeyboardInterrupt) else 1)
 
 
 def cancel_job(jid, force=False):
@@ -113,6 +156,21 @@ def cancel_job(jid, force=False):
               file=sys.stderr)
     else:
         print(f"pf-node: 任务 {jid} 的取消请求被拒绝：{result.get('reason') or '未说明原因'}", file=sys.stderr)
+    return result
+
+
+def release_job(jid, note):
+    try:
+        result = json.loads(call("POST", f"/jobs/{jid}/queue-release", json.dumps({"note": note}).encode(),
+                                 {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
+    except ClientError as e:
+        if e.code in (401, 403):
+            sys.exit("pf-node: 释放请求被拒绝；需要有效的管理 token")
+        sys.exit(f"pf-node: 释放请求被拒绝：{e}")
+    if result.get("released") is True:
+        print(f"pf-node: 任务 {jid} 的核查记录已保存，已允许再次调度；这不证明设备已恢复。", file=sys.stderr)
+    else:
+        print(f"pf-node: 释放请求被拒绝：{result.get('reason') or '未说明原因'}", file=sys.stderr)
     return result
 
 
@@ -249,6 +307,7 @@ def fetch_out(jid, dest, rel=None):
 
 def main():
     args, outdir, detach, label, exe = sys.argv[1:], None, False, os.environ.get("DEVLOCK_LABEL"), None
+    request_id, resources = None, []
     while args and args[0].startswith("-"):
         a = args.pop(0)
         if a in ("-o", "--out-dir"):
@@ -259,12 +318,37 @@ def main():
             exe = args.pop(0)
         elif a == "--label":
             label = args.pop(0)
+        elif a == "--request-id":
+            if not args:
+                sys.exit("pf-node: --request-id 需要一个 ID")
+            request_id = valid_request_id(args.pop(0))
+        elif a == "--resource":
+            if not args or not args[0].strip():
+                sys.exit("pf-node: --resource 需要一个独占资源名称")
+            resources.append(args.pop(0))
         elif a in ("-h", "--help"):
             sys.exit(__doc__)
         else:
             sys.exit(f"pf-node: 未知选项 {a}")
     if not args:
         sys.exit(__doc__)
+    if args[0] == "request":
+        if len(args) != 2:
+            sys.exit("用法: pf-node request <request_id>")
+        print(call("GET", f"/requests/{valid_request_id(args[1])}").decode())
+        return
+    if args[0] == "queue":
+        if len(args) != 1:
+            sys.exit("用法: pf-node queue")
+        print(call("GET", "/queue").decode())
+        return
+    if args[0] == "release":
+        if (len(args) != 4 or not re.fullmatch(r"[0-9a-f]{12}", args[1])
+                or args[2] != "--note" or not args[3].strip()):
+            sys.exit("用法: pf-node release <12 位任务 id> --note TEXT（填写管理员核查结果）")
+        result = release_job(args[1], args[3])
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get("released") is True else 1)
     if args[0] == "cancel":
         if (len(args) not in (2, 3) or (len(args) == 3 and args[2] != "--force")
                 or not __import__("re").fullmatch(r"[0-9a-f]{12}", args[1])):
@@ -329,14 +413,18 @@ def main():
             sys.exit(rc)
         return
     binname, argv = args[0], args[1:]
+    require_idempotent_jobs()
+    request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
     if exe:
         spec["exe"] = argv[0]
-    meta = json.loads(call("POST", "/jobs", body, {"X-Job": json.dumps(spec, ensure_ascii=True),
-                                                   "Content-Type": "application/gzip"}, timeout=600))
+    if resources:
+        spec["resources"] = resources
+    meta = submit_job(spec, body, request_id)
     jid = meta["id"]
-    print(f"pf-node: 任务 {jid} 已在节点启动", file=sys.stderr)
+    print(f"pf-node: 提交已记录 job={jid} phase={meta.get('phase', 'unknown')} request_id={request_id}",
+          file=sys.stderr)
     if detach:
         print(jid)
         return
