@@ -628,7 +628,7 @@
     }
   }
   let sessionState = null, sessionFresh = false, sessionRevision = 0, sessionBusy = false, sessionActionBusy = false;
-  let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0, sessionSampleReceipt = null, sampleFrame = null;
+  let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0, sessionSampleReceipt = null, sessionQualityReceipt = null, sampleFrame = null;
   const pendingActions = new Map();
   const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 其他操作暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
   const ACTION_STATES = {accepted: '请求已记录，尚未执行完成。', started: '动作执行中。', completed: '此动作已完成；请核对结果与证据。', failed: '动作失败，请核对错误和恢复状态。', unknown: '执行结果未知，不要换 ID 重复输入。', not_executed: '请求未执行。'};
@@ -650,7 +650,9 @@
   function resetSession() {
     ++sessionRevision; ++receiptRevision;
     sessionState = null; sessionFresh = false; sessionBusy = sessionActionBusy = false;
-    sessionSampleReceipt = null;
+    sessionSampleReceipt = sessionQualityReceipt = null;
+    $('session-quality-label').value = '';
+    $('session-quality-result').hidden = true;
     sampleFrame = null;
     $('session-sample-finite').checked = false;
     $('session-sample-steps').value = '';
@@ -738,6 +740,7 @@
     message('session-sample-help', !sessionState?.allowed_actions?.includes('sample') && !measuring ? '当前会话未提供采样动作；旧节点或模式保持不可用。' :
       measuring ? '正在测量，显示的是先前采集的画面。其他截图、输入及灰层动作暂停；可请求停止，当前有界计划结束后收尾。' :
       '1–120 秒，默认 30 秒。线程筛选留空仍采原始数据，帧相关指标保持未知。提交只表示入队，请按原请求 ID 查询结果。');
+    renderQualityControls();
     const pending = sessionPending();
     message('session-pending', pending.length ? `未决请求：${pending.map(v => v.request_id).join('、')}。先查询回执；不会自动重发输入。` : '回执读取不触发设备动作。accepted 仅表示入队，completed 才表示该动作结束。');
     message('session-action-help', !access?.steer ? '查看权限只能读状态和已有画面；采集或输入需先解锁任务操作。' :
@@ -769,6 +772,8 @@
     facts('session-power-info', [['固定策略', powerPolicy(power.policy)], ['准备 / 恢复阶段', stage], ['本会话修改控制', typeof power.control_modified_by_session === 'boolean' ? power.control_modified_by_session ? '是' : '否' : '未知'],
       ['初始观测', powerObservation(power.initial)], ['最近观测', powerObservation(power.last_observation)]]);
     renderSampleResult(sessionSampleReceipt || {result: s.latest_sample}, !sessionSampleReceipt);
+    if (!$('session-quality-label').value && s.latest_quality?.label) $('session-quality-label').value = s.latest_quality.label;
+    renderQualityResult(sessionQualityReceipt?.result?.quality || s.latest_quality, !sessionQualityReceipt);
     const frame = s.latest_image;
     $('session-image-empty').hidden = !!frame;
     if (frame) {
@@ -813,8 +818,59 @@
     $('session-receipt-detail').hidden = false;
     $('session-receipt').textContent = JSON.stringify(receipt, null, 2);
     message('session-receipt-message', `${receipt.request_id}：${ACTION_STATES[receipt.status] || '状态未知。'}${receipt.error ? ' ' + (typeof receipt.error === 'string' ? receipt.error : JSON.stringify(receipt.error)) : ''}`, ['failed', 'unknown'].includes(receipt.status));
-    sessionSampleReceipt = receipt.result?.collection ? receipt : null;
+    sessionSampleReceipt = receipt.result?.collection && !receipt.result?.quality ? receipt : null;
+    sessionQualityReceipt = receipt.result?.quality ? receipt : null;
+    renderQualityResult(sessionQualityReceipt?.result?.quality || sessionState?.latest_quality, !sessionQualityReceipt);
     renderSampleResult(sessionSampleReceipt || {result: sessionState?.latest_sample}, !sessionSampleReceipt);
+  }
+  function renderQualityControls() {
+    const label = $('session-quality-label').value.trim(), capable = sessionState?.action_capabilities?.quality === 1;
+    const valid = /^[A-Za-z0-9_-]{1,64}$/.test(label), latest = sessionState?.latest_quality;
+    const known = latest?.label === label, phase = known ? latest.phase : undefined;
+    const posting = sessionActionBusy && $('session-panel').dataset.pendingAction === 'quality';
+    $('session-quality-label').disabled = sessionActionBusy;
+    for (const [op, predecessor] of [['begin', null], ['checkpoint', 'begun'], ['finish', 'checkpointed']]) {
+      const button = $(`session-quality-${op}`);
+      button.disabled = !capable || !valid || !sessionAllowed('quality') || !!latest?.active_attempt || (known && phase !== predecessor);
+      button.setAttribute('aria-busy', String(posting && $('session-panel').dataset.qualityOp === op));
+    }
+    message('session-quality-help', !capable ? '当前会话未提供画质检查点能力；旧 owner 保持不可用。' :
+      !valid ? '填写 1–64 位字母、数字、下划线或短横线标签。' :
+      latest?.active_attempt ? '当前检查点存在未决采集尝试。请查询原请求回执，不换 ID 重复采集。' :
+      known && phase === 'collected' ? '此标签三个阶段已采集齐全；已有阶段不可覆盖。新一组采集需使用新标签。' :
+      known ? '按成功阶段继续。失败且回执已明确后，可用相应按钮提交新的采集请求；旧失败原件保留。' :
+      '此标签的历史阶段未在当前摘要中提供，由 owner 核验顺序；已有标签不能再次开始。', false);
+  }
+  function renderQualityResult(quality, fromCache = false) {
+    $('session-quality-result').hidden = !quality;
+    if (!quality) return;
+    const phase = ({begun: '开始图已采集', checkpointed: '中间图已采集', collected: '三个阶段已采集齐全'})[quality.phase] || '尚无成功阶段';
+    const last = quality.last_attempt, active = quality.active_attempt;
+    const error = value => typeof value === 'string' ? value : value?.message || value?.code || '';
+    message('session-quality-status', `${quality.label} · ${phase}${active ? ' · 存在未决采集尝试' : ''}${last?.status === 'failed' ? ` · 最近尝试失败：${error(last.error) || '原因未提供'}` : ''}。`, last?.status === 'failed');
+    facts('session-quality-info', [['来源', fromCache ? '会话共享记录 · 最近标签' : '当前查询的动作回执'], ['记录更新', time(quality.updated_at)], ['未决采集请求', active?.request_id || '无'], ['最近请求', last?.request_id || '尚无']]);
+    const addLink = (list, name, path) => {
+      if (typeof path !== 'string' || !path || path.startsWith('/') || /[\u0000-\u001f\u007f]/.test(path) || path.split('/').some(p => !p || p === '.' || p === '..')) return;
+      const item = el('li'), link = el('a', name); link.href = jobURL('/out', {path}); link.download = ''; item.append(link); list.append(item);
+    };
+    const artifacts = $('session-quality-artifacts'); artifacts.replaceChildren();
+    addLink(artifacts, '共享清单 quality.json', quality.path);
+    const stages = $('session-quality-stages'); stages.replaceChildren();
+    const records = [['begin', '1 · 开始图'], ['checkpoint', '2 · 中间图'], ['finish', '3 · 最终图']].map(([op, title]) => ({title, attempt: quality.stages?.[op]}));
+    if (last?.status === 'failed') records.push({title: '最近失败尝试 · 原件保留', attempt: last});
+    for (const {title, attempt} of records) {
+      const card = el('div', null, 'session-quality-stage'); card.append(el('h5', title));
+      if (!attempt) { card.append(el('p', '尚未采集成功。', 'note')); stages.append(card); continue; }
+      card.append(el('p', `${text(attempt.actor_id)} · epoch ${text(attempt.control_epoch)} · 请求 ${text(attempt.request_id)} · ${time(attempt.finished_at || attempt.started_at)}`, 'note'));
+      if (attempt.error) card.append(el('p', error(attempt.error), 'note error'));
+      const image = attempt.image, preview = attempt.preview, marker = attempt.marker;
+      if (image) card.append(el('p', `原图 ${image.width} × ${image.height} · 方向 ${text(image.rotation)} · 采集于 ${time(image.captured_at)}`, 'note'));
+      if (preview) card.append(el('p', `半尺寸预览 ${preview.width} × ${preview.height} · 派生图 · ${preview.method === 'stride2_rgb_even_coordinates' ? '取原图偶数坐标 RGB，非原图' : text(preview.method)}`, 'note'));
+      if (marker) card.append(el('p', `marker 观测于 ${time(marker.observed_at)}；与截图分开记录，不保证原子同帧。`, 'note'));
+      const links = el('ul', null, 'session-sample-artifacts');
+      addLink(links, '原始 PNG', image?.path); addLink(links, '半尺寸预览 PNG', preview?.path); addLink(links, 'marker 原件', marker?.path); addLink(links, '本次尝试记录', attempt.path);
+      card.append(links); stages.append(card);
+    }
   }
   function powerPolicy(policy) { return ({observe: 'observe · 仅观察', battery: 'battery · 电池条件化'})[policy] || '未知'; }
   function powerObservation(value) {
@@ -1134,6 +1190,13 @@
   });
   $('session-refresh').addEventListener('click', loadSession);
   $('session-receipt-form').addEventListener('submit', event => { event.preventDefault(); querySessionReceipt(); });
+  $('session-quality-label').addEventListener('input', renderQualityControls);
+  for (const op of ['begin', 'checkpoint', 'finish']) $('session-quality-' + op).addEventListener('click', () => {
+    renderQualityControls();
+    if ($('session-quality-' + op).disabled) return;
+    $('session-panel').dataset.qualityOp = op;
+    sendSessionAction('quality', {op, label: $('session-quality-label').value.trim()});
+  });
   $('session-input-kind').addEventListener('change', renderSessionControls);
   $('session-sample-finite').addEventListener('change', () => {
     if ($('session-sample-finite').checked && !sampleFrame) bindSampleFrame();
@@ -1191,8 +1254,8 @@
     const x1 = Number($('session-x1').value), y1 = Number($('session-y1').value);
     const x2 = Number($('session-x2').value), y2 = Number($('session-y2').value), duration = Number($('session-duration').value);
     const point = (x, y) => Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < frame.width && y < frame.height;
-    if (!point(x1, y1) || kind === 'swipe' && (!point(x2, y2) || !Number.isInteger(duration) || duration < 1 || duration > 2000)) {
-      message('session-receipt-message', '请按当前原图填写有效像素坐标；滑动时长须为 1–2000 毫秒。', true); return;
+    if (!point(x1, y1) || kind === 'swipe' && (!point(x2, y2) || !Number.isInteger(duration) || duration < 1 || duration > 10000)) {
+      message('session-receipt-message', '请按当前原图填写有效像素坐标；滑动时长须为 1–10000 毫秒。', true); return;
     }
     sendSessionAction(kind, kind === 'tap' ? {x: x1, y: y1, frame_id: frame.request_id} : {x1, y1, x2, y2, duration_ms: duration, frame_id: frame.request_id});
   });

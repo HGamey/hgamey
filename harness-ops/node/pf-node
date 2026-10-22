@@ -42,6 +42,12 @@
   frame_id 须引用最新且30秒内、方向已知的原图；不自动截图。声明计划至少 seconds+10 秒、最多600秒。
   输入自然完成、采集完成和设备恢复分别核对；结果未知仍用原请求 ID 查询，不自动重发。
   GPU submit proxy 不是显示 FPS；此批不计算每帧能耗。
+- 画质检查点沿 session-action，需 action_capabilities.quality=1 与当前 controller/epoch：
+  {"schema":"phonefarm/gray-control-action@1","request_id":"quality-begin-1","session_id":"SESSION",
+   "actor_id":"agent","control_epoch":1,"action":"quality","params":{"op":"begin","label":"scene-dusk-01"}}
+  同标签依次 begin/checkpoint/finish；每次明确操作使用独立请求 ID，未知结果仍查询原 ID，不自动重发。
+  label 为1–64位ASCII字母、数字、下划线或短横线；不自动导航。latest_quality 可跨客户端读取共享阶段和原件。
+  collected 只表示证据齐全，不代表同场景/画质通过/设备恢复；原图和派生半尺寸预览分别保留。
 - gray-layer session --power-policy observe|battery 在创建时固定，默认 observe；observe 不请求改变充电控制。
   battery 在首次 sample 准备，跨轮保持，最终 stop/recover 还原绑定原值；选择策略不代表已经放电或功耗合格。
   whole-sampler 平均功率与 trace 窗口积分估计分别记录；后者可用性由同期电池样本与窗口资格决定，缺失为未知。

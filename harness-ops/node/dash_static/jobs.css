@@ -150,7 +150,7 @@
 .session-panel button[aria-busy="true"] { cursor: wait; }
 #session-pending, #session-receipt-message { overflow-wrap: anywhere; }
 #session-receipt { max-height: 300px; overflow-y: auto; }
-.session-sample-form, .session-sample-result { margin-top: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.session-sample-form, .session-sample-result, .session-quality { margin-top: 20px; padding: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
 .session-panel h4 { margin: 0; font-size: 13px; font-weight: 600; }
 .session-template { margin: 16px 0 20px; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); font-size: 13px; }
 .session-template > summary { cursor: pointer; color: var(--ink2); font-weight: 500; }
@@ -314,3 +314,10 @@
 .lease-storage .facts dd { font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .lease-storage .note { margin: 4px 0; }
 @media (max-width: 480px) { .lease-storage summary { padding: 8px 0; } }
+
+.session-quality .facts { margin-top: 14px; }
+.session-quality-stages { display: grid; gap: 12px; margin-top: 14px; }
+.session-quality-stage { padding: 12px; border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+.session-quality-stage h5 { margin: 0 0 8px; font-size: 13px; color: var(--ink); }
+.session-quality-stage .session-sample-artifacts { margin-bottom: 0; }
+.session-quality-stage p { overflow-wrap: anywhere; }

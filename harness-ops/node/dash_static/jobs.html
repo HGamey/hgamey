@@ -164,13 +164,21 @@
               <div class="session-actions"><button id="session-sample-submit" class="ghost" type="submit" disabled>开始采样</button></div>
               <p id="session-sample-help" class="note" role="status"></p>
             </form>
+            <section class="session-quality" aria-labelledby="session-quality-heading">
+              <h4 id="session-quality-heading">画质检查点</h4>
+              <p class="note">同一标签依次采集开始、中间和最终原图。请自行导航与等待；采集齐全不代表同场景、画质通过或设备已恢复。</p>
+              <div class="session-fields"><label for="session-quality-label">采集标签<input id="session-quality-label" maxlength="64" autocomplete="off" spellcheck="false" placeholder="如 scene-dusk-01"></label></div>
+              <div class="session-actions"><button id="session-quality-begin" class="ghost" type="button" disabled>1 · 开始采集</button><button id="session-quality-checkpoint" class="ghost" type="button" disabled>2 · 记录中间图</button><button id="session-quality-finish" class="ghost" type="button" disabled>3 · 采集最终图</button></div>
+              <p id="session-quality-help" class="note" role="status"></p>
+              <div id="session-quality-result" hidden><p id="session-quality-status" class="note" role="status"></p><dl id="session-quality-info" class="facts"></dl><ul id="session-quality-artifacts" class="session-sample-artifacts"></ul><div id="session-quality-stages" class="session-quality-stages"></div></div>
+            </section>
             <details class="session-tools"><summary>接管与有限输入</summary>
               <p class="note">接管只改变此会话内的输入控制者，设备 lease 仍由原 owner 持有。到期后交回原控制者；不要求 Agent 等待人类。</p>
               <div class="session-fields"><label>操作归属<input id="session-actor" maxlength="64" spellcheck="false" autocomplete="off"></label><label>接管时长（秒）<input id="session-ttl" type="number" min="1" max="300" value="60"></label></div>
               <div class="session-actions"><button class="ghost" data-session-action="take_control" type="button">接管 / 续期</button><button class="ghost" data-session-action="release_control" type="button">交回控制</button></div>
               <form id="session-input-form">
                 <div class="session-fields"><label>输入方式<select id="session-input-kind"><option value="tap">点击</option><option value="swipe">滑动</option></select></label><label>起点 X<input id="session-x1" type="number" min="0" step="1" required></label><label>起点 Y<input id="session-y1" type="number" min="0" step="1" required></label></div>
-                <div id="session-swipe-fields" class="session-fields" hidden><label>终点 X<input id="session-x2" type="number" min="0" step="1"></label><label>终点 Y<input id="session-y2" type="number" min="0" step="1"></label><label>时长（毫秒）<input id="session-duration" type="number" min="1" max="2000" value="300"></label></div>
+                <div id="session-swipe-fields" class="session-fields" hidden><label>终点 X<input id="session-x2" type="number" min="0" step="1"></label><label>终点 Y<input id="session-y2" type="number" min="0" step="1"></label><label>时长（毫秒）<input id="session-duration" type="number" min="1" max="10000" value="300"></label></div>
                 <p class="note">坐标对应上方原图的实际像素，点击图片可填起点；仅填写不会发送输入。会话会核验图片时间、方向与坐标。</p>
                 <button id="session-input-submit" class="ghost" type="submit">发送点击</button>
               </form>
