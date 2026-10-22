@@ -11,7 +11,7 @@ import time
 import uuid
 
 from job_queue import JobQueue, RequestConflict, recovery_reservations
-from node_lease import device_access
+from node_lease import device_access, prepare_receipt_directory
 import job_runtime
 
 
@@ -158,6 +158,7 @@ class JobDispatch:
             prepared = self.jobs._read_root.read_json(jid + "/prepared.json")
             if not isinstance(prepared.get("command"), list) or not prepared["command"] or not isinstance(prepared.get("cwd"), str):
                 raise ValueError("invalid prepared command")
+            prepare_receipt_directory(self.jobs._read_root, jid)
         except (OSError, ValueError, AttributeError) as error:
             self.finish_unstarted(row, "failed", f"prepared input is unavailable: {error}")
             return
@@ -166,7 +167,8 @@ class JobDispatch:
         meta["execution"].update(launch_deadline=time.time() + 30)
         self.jobs._write_meta(jid, meta)
         env = dict(os.environ, DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
-                   PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"))
+                   PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
+                   PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
         try:
             proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"], env=env)
         except OSError as error:

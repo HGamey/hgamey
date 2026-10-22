@@ -142,6 +142,39 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(self.request(f"/jobs/{jid}/out?path=image.bin", headers={"Range": "bytes=20-10"})[0], 416)
         self.assertEqual(self.request(f"/jobs/{jid}/out?path=image.bin&etag=old")[0], 409)
 
+    def test_job_lease_receipts_keep_scoped_evidence_separate_from_recovery(self):
+        jid = self.fixture(1, recovery={"status": "required", "reason": "fixture needs review"})
+        self.assertIn("jobs.leases-v1", self.get_json("/node")["capabilities"])
+        self.assertEqual(self.get_json(f"/jobs/{jid}/leases")["status"], "not_reported")
+        directory = Path(self.jobs.path(jid, "out", "lease-receipts"))
+        directory.mkdir()
+        receipt = {"schema": "phonefarm/job-lease@1", "job_id": jid, "lease_id": "fixture-1",
+                   "serial": "fake-device", "label": "helper-only", "state": "released",
+                   "updated_at": "2026-10-22T13:00:00Z", "recovery_of": None,
+                   "recovery": {"status": "reported_complete", "scope": "helper_retirement",
+                                "evidence_origin": "synthetic", "evidence": ["/not-a-readable-node-path/evidence.json"]}}
+        (directory / "fixture-1.json").write_text(json.dumps({**receipt, "token": "must-not-be-indexed"}))
+        (directory / "wrong-job.json").write_text(json.dumps({**receipt, "job_id": "a" * 12, "lease_id": "wrong-job"}))
+        (directory / "broken.json").write_text("{")
+        (directory / "link.json").symlink_to(directory / "fixture-1.json")
+        auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}
+        response = self.get_json(f"/jobs/{jid}/leases")
+        self.assertEqual(response, self.get_json(f"/dash/api/jobs/{jid}/leases", headers=auth))
+        self.assertEqual(response["status"], "partial")
+        self.assertEqual(len(response["errors"]), 3)
+        self.assertEqual(len(response["entries"]), 1)
+        entry = response["entries"][0]
+        self.assertNotIn("token", entry)
+        self.assertEqual(entry["recovery"], {**receipt["recovery"], "reason": None, "context": None})
+        self.assertEqual(entry["artifact_path"], "lease-receipts/fixture-1.json")
+        raw = self.request(f"/jobs/{jid}/out?" + urlencode({"path": entry["artifact_path"]}))[2]
+        self.assertEqual(json.loads(raw)["lease_id"], "fixture-1")
+        self.assertEqual(self.get_json(f"/jobs/{jid}")["recovery"]["status"], "required")
+        self.assertEqual(self.request(f"/dash/api/jobs/{jid}/leases")[0], 401)
+        self.assertEqual(self.request(f"/jobs/{jid}/leases", token="wrong")[0], 401)
+        self.assertEqual(self.request("/jobs/ffffffffffff/leases")[0], 404)
+        self.assertFalse(self.board.wake.is_set())
+
     def test_readonly_and_dash_password_cannot_mutate(self):
         jid = self.fixture(1)
         for path in ("/jobs", f"/jobs/{jid}/kill", f"/jobs/{jid}/cancel", f"/jobs/{jid}/queue-release", "/admin/restart"):

@@ -35,7 +35,7 @@ from node_fleet import FleetState
 import job_runtime
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
-from node_lease import LeaseState, device_access
+from node_lease import LeaseState, device_access, job_lease_receipts
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -568,6 +568,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     return self._send(200, jobs.log_from(parts[1], off, limit), "application/octet-stream")
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "artifacts":
                     return self._send(200, node.artifacts(parts[1], q))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "leases":
+                    jobs._read_meta(parts[1])
+                    return self._send(200, job_lease_receipts(jobs._read_root, parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
             except (KeyError, FileNotFoundError):

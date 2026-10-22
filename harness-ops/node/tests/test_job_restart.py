@@ -25,10 +25,13 @@ server.serve_forever()
 '''
 CHILD = '''
 import signal, time, os
+from pathlib import Path
 def stop(*args):
     print("cleanup marker", flush=True)
     raise SystemExit(0)
 signal.signal(signal.SIGINT, stop)
+assert os.environ["PF_JOB_ID"] == os.environ["DEVLOCK_LABEL"].removeprefix("job-")
+assert Path(os.environ["PF_JOB_LEASE_DIR"]).is_dir()
 print("ready marker", os.environ["DEVLOCK_LABEL"], flush=True)
 while True: time.sleep(0.1)
 '''
