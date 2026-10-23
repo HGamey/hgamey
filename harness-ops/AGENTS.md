@@ -22,6 +22,8 @@
 
 独立worker在直接命令退出后有界核查原进程组；仍存在或核查未知时保留真实命令退出码，但作业为interrupted/recovery.required，调度保留声明资源。Web与CLI展示同一owned_process_group记录，不能将absent解释为setsid脱组后代或设备恢复。合同与验收范围见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-GROUP-COMPLETION.md 。
 
+请求可显式声明execution_policy；当前仅process_group可用，contained在上传/准备/启动前拒绝，不按OS推断支持。旧请求省略字段保持原幂等内容；请求策略与worker实际process_management分别记录，缺证据不回填。Web/CLI/API必须同步准入与范围。内核containment仍待实现和真实验收，见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-CONTAINMENT.md 。
+
 ## 作业保存边界
 
 关键结束记录在worker释放flock、文件和目录同步后才提交SQLite终态。保存失败只保留该job资源并公开storage_blocked；retry-finalize仅重新保存，不重放命令，普通release不得绕过。准备失败/取消的未执行依据由SQL记录，查询不得通过缺文件猜执行结果。范围不含任意producer输出的断电持久性；合同见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-DURABILITY.md 。

@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from node_service import Jobs, _job_lock_args
+from job_policy import PolicyUnavailable
+from job_queue import RequestConflict
 
 
 class JobOwnershipTests(unittest.TestCase):
@@ -39,6 +41,26 @@ class JobOwnershipTests(unittest.TestCase):
         for sub, option in (("gray-layer", "--actor-id"), ("gray-layer", "--power-policy"), ("gray-ab", "--serial")):
             self.assertEqual(_job_lock_args([sub, option, "--lock-label", "--lock-label", "external"], "job-owner"),
                              [sub, option, "--lock-label", "--lock-label", "job-owner"])
+
+    def test_execution_policy_refuses_before_preparation_and_is_part_of_request_identity(self):
+        spec = {"bin": "devlock", "argv": [], "device_access": "none"}
+        with patch.object(self.jobs, "_prepare") as prepare:
+            with self.assertRaises(PolicyUnavailable):
+                self.jobs.start({**spec, "execution_policy": "contained"}, b"not an archive", "strict")
+            for invalid in (None, [], "unknown"):
+                with self.subTest(policy=invalid), self.assertRaises(ValueError):
+                    self.jobs.start({**spec, "execution_policy": invalid}, b"", "invalid")
+            prepare.assert_not_called()
+            self.assertEqual(self.jobs.dispatch.queue.rows(), [])
+        legacy = self.jobs.start(spec, b"", "legacy")
+        explicit = self.jobs.start({**spec, "execution_policy": "process_group"}, b"", "explicit")
+        self.assertEqual((legacy["execution_policy"], legacy["execution_policy_source"]),
+                         ("process_group", "legacy_default"))
+        self.assertEqual(explicit["execution_policy_source"], "explicit")
+        self.assertNotIn("process_management", explicit["execution"])
+        self.assertEqual(self.jobs.start(spec, b"", "legacy")["id"], legacy["id"])
+        with self.assertRaises(RequestConflict):
+            self.jobs.start({**spec, "execution_policy": "process_group"}, b"", "legacy")
 
     def test_raw_commands_use_devlock_and_lease_helper_stays_unwrapped(self):
         for name in ("adb", "fetch_apk"):

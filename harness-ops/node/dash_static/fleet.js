@@ -49,6 +49,14 @@
     if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('节点未返回 JSON，请检查登录或连接。');
     return response.json();
   }
+  function processPolicyFacts(node) {
+    if (!node?.capabilities?.includes('jobs.execution-policy-v1')) return [['进程执行策略能力', '未提供，执行范围未知']];
+    return [['进程执行策略协议', 'jobs.execution-policy-v1'], ...[['process_group', '原进程组策略'], ['contained', '约束域策略']].map(([key, label]) => {
+      const policy = node.execution?.process_policies?.[key];
+      const description = !policy ? '未提供' : policy.available === true ? `可选择 · 后端：${text(policy.backend)} · 完成范围：${text(policy.completion_scope)}` : '不可用';
+      return [`${label}（${key}）`, `${description}${policy?.reason ? `。${policy.reason}` : ''}`];
+    })];
+  }
   function renderNode(node) {
     nodeLoaded = true;
     $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`;
@@ -58,7 +66,7 @@
     $('node-details').hidden = false;
     facts($('node-info'), [['节点 ID', node.node_id], ['访问入口', location.origin], ['宿主系统', node.host?.platform],
       ['服务版本', `${text(node.service?.revision)}${node.service?.dirty === true ? '（有本地修改）' : ''}`],
-      ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root]]);
+      ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root], ...processPolicyFacts(node)]);
   }
   function hostProcessFacts(entry) {
     if (entry.role !== 'device_lease') return [];

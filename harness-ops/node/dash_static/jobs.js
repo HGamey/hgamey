@@ -254,7 +254,13 @@
       ['进程组核查错误', group.error || '未报告错误'],
       ['核查边界', '只核查原进程组；不涵盖通过 setsid 脱组的后代，也不证明设备已恢复。']
     ] : [['原进程组核查', '旧记录未提供，不能据此确认进程组已结束。']];
+    const management = job.execution?.process_management;
     facts('execution-info', [['执行阶段', PHASES[job.phase] || '旧版记录未提供'],
+      ['请求的进程策略', job.execution_policy || '旧记录未提供'],
+      ['策略来源', ({explicit: '显式选择', legacy_default: '兼容默认'})[job.execution_policy_source] || '旧记录未提供'],
+      ['实际执行策略（worker）', management?.policy || '未提供，不能由请求策略推断'], ['实际进程后端（worker）', management?.backend || '未提供'],
+      ['实际完成范围（worker）', management?.completion_scope === 'original_process_group' ? '原进程组（original_process_group）' : management?.completion_scope || '未提供'],
+      ['脱组后代', management?.detached_descendants === 'unverified' ? '未验证；不能据原进程组结束判断整棵进程树已结束。' : management?.detached_descendants || '未提供'],
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
       ['命令退出码', job.exit], ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
@@ -386,6 +392,20 @@
     try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, pendingRequest.id); else sessionStorage.removeItem(REQUEST_STORAGE); }
     catch (_) { /* The visible request ID remains available if browser storage is unavailable. */ }
   }
+  function processPolicyFacts(node) {
+    if (!node?.capabilities?.includes('jobs.execution-policy-v1')) return [['进程执行策略能力', '未提供，执行范围未知']];
+    return [['进程执行策略协议', 'jobs.execution-policy-v1'], ...[['process_group', '原进程组策略'], ['contained', '约束域策略']].map(([key, label]) => {
+      const policy = node.execution?.process_policies?.[key];
+      const description = !policy ? '未提供' : policy.available === true ? `可选择 · 后端：${text(policy.backend)} · 完成范围：${text(policy.completion_scope)}` : '不可用';
+      return [`${label}（${key}）`, `${description}${policy?.reason ? `。${policy.reason}` : ''}`];
+    })];
+  }
+  function executionPolicyProblem(policy) {
+    if (!policy) return '';
+    if (!nodeInfo?.capabilities?.includes('jobs.execution-policy-v1')) return '此节点未提供执行策略协议，不能发送显式策略；可选择兼容默认，实际范围未知。';
+    const capability = nodeInfo.execution?.process_policies?.[policy];
+    return capability?.available === true ? '' : `${policy} 不可用：${capability?.reason || '节点未提供可用声明。'} 不会降级提交。`;
+  }
   function renderSubmission() {
     const supported = nodeInfo?.capabilities?.includes('jobs.idempotency-v1') && nodeInfo?.execution?.bins?.length;
     const allowed = supported && access?.steer && !accessBusy;
@@ -393,7 +413,11 @@
     const locked = (!!pendingRequest && !refilling) || submissionBusy;
     const mode = $('submit-device-access').value;
     const recovery = mode === 'recovery';
+    const policy = pendingRequest?.body ? pendingRequest.body.execution_policy || '' : $('submit-execution-policy').value;
+    const policyProblem = executionPolicyProblem(policy);
     for (const id of ['submit-bin', 'submit-label', 'submit-argv']) $(id).disabled = !allowed || locked;
+    $('submit-execution-policy').disabled = !allowed || locked;
+    message('execution-policy-help', `${pendingRequest?.body ? '重试保留原请求策略。' : ''}${policyProblem || (!nodeInfo ? '正在核对执行策略能力…' : !nodeInfo.capabilities?.includes('jobs.execution-policy-v1') ? '此节点未提供策略能力。兼容默认不发送新字段，实际执行范围未知。' : policy ? `${policy}：${nodeInfo.execution?.process_policies?.[policy]?.reason || '以任务中 worker 的实际执行记录为准。'}` : '兼容默认不发送策略字段，沿节点原有行为；当前原进程组策略不涵盖 setsid 脱组后代。')} 设备恢复另行核查。`, !!policyProblem);
     $('submit-device-access').disabled = !allowed || locked || !recoverySupported();
     $('submit-resources').disabled = !allowed || locked || recovery;
     $('submit-recovery-for').disabled = !allowed || locked || !recoverySupported();
@@ -401,7 +425,7 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || locked || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || locked || !!policyProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。');
@@ -413,7 +437,7 @@
     $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
     $('submit-refill').disabled = !allowed || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
-    $('submit-retry').disabled = !allowed || submissionBusy;
+    $('submit-retry').disabled = !allowed || submissionBusy || !!policyProblem;
     renderSessionTemplate(allowed);
     renderRefbenchTemplate(allowed);
     renderControls();
@@ -489,6 +513,10 @@
         const argv = JSON.parse($('submit-argv').value);
         if (!Array.isArray(argv) || !argv.every(value => typeof value === 'string')) throw new Error('参数必须是 JSON 字符串数组，例如 ["--help"]。');
         const body = {bin: $('submit-bin').value, argv, label: $('submit-label').value.trim()};
+        const policy = $('submit-execution-policy').value;
+        const policyProblem = executionPolicyProblem(policy);
+        if (policyProblem) throw new Error(policyProblem);
+        if (policy) body.execution_policy = policy;
         const mode = $('submit-device-access').value;
         if (mode) body.device_access = mode;
         if (mode === 'recovery') {
@@ -575,7 +603,7 @@
         ['宿主', `${text(node.host?.hostname)} · ${text(node.host?.platform)}`],
         ['服务版本', `${text(node.service?.revision)}${node.service?.dirty === true ? '（有本地修改）' : ''}`],
         ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root],
-        ['服务启动', time(node.started_at)]
+        ['服务启动', time(node.started_at)], ...processPolicyFacts(node)
       ]);
       $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`;
       $('node-summary').hidden = false;
@@ -1614,6 +1642,7 @@
   $('request-lookup-form').addEventListener('submit', event => { event.preventDefault(); lookupRequest(); });
   $('submit-open-job').addEventListener('click', () => { if (submittedJob) { selectJob(submittedJob); $('detail-heading').focus(); } });
   $('submit-device-access').addEventListener('change', renderSubmission);
+  $('submit-execution-policy').addEventListener('change', renderSubmission);
   $('prepare-recovery').addEventListener('click', () => {
     if ($('prepare-recovery').disabled || !currentJob) return;
     $('submit-device-access').value = 'recovery';

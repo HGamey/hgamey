@@ -11,6 +11,7 @@ import time
 import traceback
 
 from artifact_io import SafeRoot
+from job_policy import require_policy
 
 
 def _open_file(store, rel, flags):
@@ -30,7 +31,7 @@ def _worker_command(job_dir, lock_fd):
             "--lock-fd", str(lock_fd)]
 
 
-def launch(store, jid, job_dir, command, cwd, env):
+def launch(store, jid, job_dir, command, cwd, env, execution_policy=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
     job_dir = os.path.abspath(job_dir)
     if os.path.basename(job_dir) != jid:
@@ -41,7 +42,10 @@ def launch(store, jid, job_dir, command, cwd, env):
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("job already has a live worker") from None
-        if not store.publish_json_once(jid + "/launch.json", {"command": command, "cwd": os.fspath(cwd)}):
+        launch_spec = {"command": command, "cwd": os.fspath(cwd)}
+        if execution_policy is not None:
+            launch_spec["execution_policy"] = execution_policy
+        if not store.publish_json_once(jid + "/launch.json", launch_spec):
             raise ValueError("job was already launched; create a new job instead of replaying it")
         log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         os.close(log_fd)  # Make the raw log readable before the worker starts.
@@ -173,6 +177,12 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0)):
             _finish(store, jid, meta, "cancelled", {"status": "not_needed", "reason": "cancelled before command started"})
             return 0
         spec = store.read_json(jid + "/launch.json")
+        try:
+            policy = require_policy(spec)
+        except ValueError as error:
+            _finish(store, jid, meta, "failed", {"status": "not_needed", "reason": "command did not start"},
+                    error=f"execution policy unavailable: {error}")
+            return 1
         log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_APPEND)
         try:
             try:
@@ -188,6 +198,10 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0)):
             os.close(log_fd)
         meta["phase"] = "running"
         meta["execution"]["child_pid"] = child.pid
+        # Record the backend actually used by this successful Popen call, not the requested capability.
+        meta["execution"]["process_management"] = {
+            "policy": policy, "backend": "posix_process_group", "completion_scope": "original_process_group",
+            "detached_descendants": "unverified"}
         meta["execution"]["owned_process_group"].update(status="pending", pgid=child.pid)
         store.write_json(jid + "/meta.json", meta)
         last_signal_at = None

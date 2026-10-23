@@ -36,6 +36,7 @@ from node_fleet import FleetState
 import job_runtime
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
+from job_policy import PolicyUnavailable, require_policy
 from node_lease import LeaseState, device_access, job_lease_receipts
 from node_session import session_call, SessionError, MAX_REQUEST
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
@@ -219,6 +220,7 @@ class Jobs:
     def start(self, spec, body, request_id=None):
         if not isinstance(spec, dict):
             raise ValueError("job spec must be an object")
+        policy = require_policy(spec)
         binname, argv = spec.get("bin"), spec.get("argv") or []
         if binname not in self.bins:
             raise ValueError(f"bin 只能是 {sorted(self.bins)}")
@@ -246,6 +248,7 @@ class Jobs:
                 not isinstance(r, str) or not r or len(r) > 160 or any(ord(c) < 32 for c in r) for r in resources):
             raise ValueError("resources must be at most 32 nonempty resource names")
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"), "resources": sorted(set(resources)),
+                **({"execution_policy": policy} if "execution_policy" in spec else {}),
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
                 **({"exe": spec["exe"]} if spec.get("exe") else {})}
@@ -737,11 +740,18 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     if not isinstance(action, dict):
                         raise ValueError("session action must be a JSON object")
                     return self._send(200, jobs.session(parts[1], action=action))
+                if parts == ["jobs"]:
+                    # Refuse an unavailable guarantee before reading a potentially large upload.
+                    try:
+                        spec = json.loads(self.headers.get("X-Job", "{}"))
+                        require_policy(spec)
+                    except ValueError:
+                        self.close_connection = True
+                        raise
                 body = self._body()
                 if parts == ["mcp"]:
                     return self._mcp(body)
                 if parts == ["jobs"]:
-                    spec = json.loads(self.headers.get("X-Job", "{}"))
                     return self._send(200, jobs.start(spec, body, request_id=self.headers.get("X-Request-ID")))
                 if parts == ["admin", "restart"]:  # 交给外层守护循环重新拉起（加载新代码）
                     self._send(200, {"restarting": True})
@@ -775,6 +785,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                 return self._send(404, {"error": "no such job"})
             except RequestConflict as e:
                 return self._send(409, {"error": str(e)})
+            except PolicyUnavailable as e:
+                return self._send(422, e.payload)
             except (ValueError, tarfile.TarError) as e:
                 return self._send(400, {"error": str(e)})
             self._send(404, {"error": "not found"})

@@ -93,6 +93,9 @@ class JobRuntimeTests(unittest.TestCase):
         self.until(lambda: not runtime.runner_alive(self.store, jid))
         self.assertEqual((meta["outcome"], meta["recovery"]["status"], meta["exit"]), ("cancelled", "not_reported", 0))
         self.assertEqual(meta["execution"]["owned_process_group"]["status"], "absent")
+        self.assertEqual(meta["execution"]["process_management"], {
+            "policy": "process_group", "backend": "posix_process_group",
+            "completion_scope": "original_process_group", "detached_descendants": "unverified"})
         self.assertEqual([s["name"] for s in meta["cancel"]["signals"]], ["SIGINT"])
         self.assertIn(b"restoring", self.store.read_bytes(jid + "/log", 4096))
         self.assertEqual(self.store.read_json(jid + "/launch.json").keys(), {"command", "cwd"})
@@ -137,6 +140,16 @@ class JobRuntimeTests(unittest.TestCase):
         self.assertIn("FileNotFoundError", meta["error"])
         self.assertFalse((self.root / jid / "exitcode").exists())
         self.assertEqual(self.store.read_bytes(jid + "/log", 128), b"")
+        jid = self.job()
+        unexpected = self.root / "must-not-start"
+        worker = runtime.launch(self.store, jid, str(self.root / jid),
+                                [sys.executable, "-c", f"from pathlib import Path;Path({str(unexpected)!r}).touch()"],
+                                str(self.root), dict(os.environ), execution_policy="contained")
+        meta = self.finished(jid, worker)
+        self.assertEqual((meta["outcome"], meta["recovery"]["status"], meta["exit"]), ("failed", "not_needed", None))
+        self.assertIn("execution policy unavailable", meta["error"])
+        self.assertNotIn("process_management", meta["execution"])
+        self.assertFalse(unexpected.exists())
 
     def test_duplicate_launch_blocked_and_child_does_not_keep_dead_worker_lock(self):
         jid = self.job()

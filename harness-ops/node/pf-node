@@ -7,6 +7,7 @@
   pf-node devlock status
   pf-node --detach phonefarm autoloop ...      # stdout 只回任务 id；stderr 显示提交阶段和 request_id
   pf-node --request-id study-001 --resource device:oneplus phonefarm eval ...
+  pf-node --execution-policy process_group --detach phonefarm ...
   pf-node request <request_id>               # 断网后找回同一次提交的任务
   pf-node queue                              # 只读持久队列快照
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
@@ -34,6 +35,8 @@
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
 - 每次提交生成 request_id；同一次重试保持请求内容和 id 不变。--request-id 可手动指定，--resource 可重复声明独占资源。
   preparing/queued 只代表准备或排队；提交前需节点支持幂等请求，结果未知时用 request 查询，不要换 id 重投。
+- --execution-policy process_group|contained 显式要求进程管理范围；先核节点能力，不支持时不打包/提交。
+  process_group 只管理原进程组；contained 当前未提供。省略保留兼容默认，不替旧任务补全树结束证明。
 - finalizing 表示结束记录尚在保存；storage_blocked 表示保存失败，wait/跟随以125退出并保留命令诊断。
   修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
 - --device-access none|write|recovery 显式声明设备访问；recovery 必须配 --recovery-for 原资源保留任务 ID，
@@ -140,7 +143,7 @@ def valid_request_id(value):
     return value
 
 
-def require_idempotent_jobs(require_recovery=False):
+def require_idempotent_jobs(require_recovery=False, execution_policy=None):
     try:
         node = json.loads(call("GET", "/node", attempts=1, raise_4xx=True))
     except ClientError as e:
@@ -151,6 +154,12 @@ def require_idempotent_jobs(require_recovery=False):
         sys.exit("pf-node: 节点缺少 jobs.idempotency-v1，请升级节点服务；未发送 POST /jobs")
     if require_recovery and "jobs.recovery-v1" not in node.get("capabilities", []):
         sys.exit("pf-node: 节点缺少 jobs.recovery-v1，不能显式指定设备访问或恢复任务；请升级节点服务；未发送 POST /jobs")
+    if execution_policy is not None:
+        if "jobs.execution-policy-v1" not in node.get("capabilities", []):
+            sys.exit("pf-node: 节点未提供 jobs.execution-policy-v1，无法确认执行策略；未打包或提交")
+        capability = node.get("execution", {}).get("process_policies", {}).get(execution_policy, {})
+        if capability.get("available") is not True:
+            sys.exit(f"pf-node: 执行策略 {execution_policy} 不可用：{capability.get('reason') or '节点未提供能力证据'}；未打包或提交")
 
 
 def submit_job(spec, body, request_id):
@@ -213,6 +222,12 @@ def release_job(jid, note):
 def terminal_exit(jid, status):
     rc = status.get("exit")
     phase = status.get("phase", status.get("state", "unknown"))
+    management = (status.get("execution") or {}).get("process_management")
+    if management:
+        print(f"pf-node: 执行后端={management.get('backend')}，结束核查范围={management.get('completion_scope')}，"
+              f"脱组后代={management.get('detached_descendants', '未提供')}；设备恢复另看 recovery。", file=sys.stderr)
+    else:
+        print("pf-node: 此记录未提供执行范围证据，不能据退出码推断全部后代已结束。", file=sys.stderr)
     group = (status.get("execution") or {}).get("owned_process_group") or {}
     if rc == 0 and group.get("status") in ("present", "unknown"):
         print(f"pf-node: 任务 {jid} 直接命令 exit=0，但原进程组结束未确认"
@@ -482,7 +497,7 @@ def session_command(args):
 def main():
     args, outdir, detach, label, exe = sys.argv[1:], None, False, os.environ.get("DEVLOCK_LABEL"), None
     request_id, resources = None, []
-    device_access, recovery_for = None, None
+    device_access, recovery_for, execution_policy = None, None, None
     while args and args[0].startswith("-"):
         a = args.pop(0)
         if a in ("-o", "--out-dir"):
@@ -508,6 +523,13 @@ def main():
             if device_access is not None and device_access != value:
                 sys.exit("pf-node: --device-access 不能声明互相矛盾的模式")
             device_access = value
+        elif a == "--execution-policy":
+            if not args or args[0] not in ("process_group", "contained"):
+                sys.exit("pf-node: --execution-policy 必须为 process_group 或 contained")
+            value = args.pop(0)
+            if execution_policy is not None and execution_policy != value:
+                sys.exit("pf-node: --execution-policy 不能声明互相矛盾的策略")
+            execution_policy = value
         elif a == "--recovery-for":
             if not args or not re.fullmatch(r"[0-9a-f]{12}", args[0]):
                 sys.exit("pf-node: --recovery-for 需要原资源保留任务的 12 位 ID")
@@ -631,7 +653,7 @@ def main():
             sys.exit(rc)
         return
     binname, argv = args[0], args[1:]
-    require_idempotent_jobs(require_recovery=device_access is not None)
+    require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy)
     request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
@@ -639,6 +661,8 @@ def main():
         spec["exe"] = argv[0]
     if resources:
         spec["resources"] = resources
+    if execution_policy is not None:
+        spec["execution_policy"] = execution_policy
     if device_access is not None:
         spec["device_access"] = device_access
     if recovery_for is not None:

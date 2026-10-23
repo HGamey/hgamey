@@ -95,7 +95,8 @@ class JobCLI(unittest.TestCase):
             def do_GET(self):
                 gets.append(self.path)
                 if self.path == "/node":
-                    self.reply({"capabilities": ["jobs.idempotency-v1", "jobs.queue-v1"]})
+                    self.reply({"capabilities": ["jobs.idempotency-v1", "jobs.queue-v1", "jobs.execution-policy-v1"],
+                                "execution": {"process_policies": {"process_group": {"available": True}}}})
                 elif self.path == "/requests/study-001":
                     self.reply(meta)
                 elif self.path == "/queue":
@@ -137,7 +138,8 @@ class JobCLI(unittest.TestCase):
             with mock.patch("time.time", return_value=200):
                 self.assertEqual(cli["pack"]([str(source)]), first_pack)
             submitted = run("--request-id", "study-001", "--resource", "device:fixture",
-                            "--resource", "capture:fixture", "--detach", "phonefarm", "eval", str(source))
+                            "--resource", "capture:fixture", "--execution-policy", "process_group",
+                            "--detach", "phonefarm", "eval", str(source))
         self.assertEqual(submitted.returncode, 0, submitted.stderr)
         self.assertEqual(submitted.stdout.strip(), JOB)
         self.assertIn("phase=queued request_id=study-001", submitted.stderr)
@@ -146,6 +148,7 @@ class JobCLI(unittest.TestCase):
         self.assertEqual(posts[0], posts[1])
         self.assertEqual(posts[0][:2], ("/jobs", "study-001"))
         self.assertEqual(json.loads(posts[0][2])["resources"], ["device:fixture", "capture:fixture"])
+        self.assertEqual(json.loads(posts[0][2])["execution_policy"], "process_group")
         self.assertEqual(posts[0][3], first_pack[1])
         recovered = run("request", "study-001")
         queued = run("queue")
@@ -166,6 +169,23 @@ class JobCLI(unittest.TestCase):
         self.assertNotEqual(bad_leases.returncode, 0)
         self.assertEqual(gets, ["/node", "/requests/study-001", "/queue", "/leases", f"/jobs/{JOB}/leases", "/jobs/ffffffffffff/leases"])
         self.assertEqual(len(posts), 2)
+
+    def test_execution_policy_refusal_precedes_packing_or_post(self):
+        main = self.load_cli()["main"]
+        for policy_capability in (False, True):
+            node = {"capabilities": ["jobs.idempotency-v1"]}
+            if policy_capability:
+                node["capabilities"].append("jobs.execution-policy-v1")
+                node["execution"] = {"process_policies": {"contained": {"available": False, "reason": "no contained backend"}}}
+            call = mock.Mock(return_value=json.dumps(node).encode())
+            pack = mock.Mock(side_effect=AssertionError("must not pack an unsupported job"))
+            with mock.patch.dict(main.__globals__, call=call, pack=pack), \
+                    mock.patch.object(sys, "argv", [str(CLI), "--execution-policy", "contained", "--detach", "phonefarm"]), \
+                    self.assertRaises(SystemExit) as error:
+                main()
+            self.assertIn("未打包或提交", str(error.exception))
+            call.assert_called_once_with("GET", "/node", attempts=1, raise_4xx=True)
+            pack.assert_not_called()
 
     def test_submission_refuses_old_nodes_and_reports_conflict_or_unknown_result(self):
         mode, posts = ["old"], []

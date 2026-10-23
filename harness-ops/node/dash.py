@@ -36,6 +36,7 @@ from urllib.parse import parse_qs
 import dash_goals
 import sqlite3
 from job_queue import RequestConflict
+from job_policy import PolicyUnavailable
 from node_session import SessionError, MAX_REQUEST
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
                         FLEET_EVERY_HELD_S, FREE_GRACE_S, SHOT_EVERY_S)
@@ -493,6 +494,8 @@ class Dash:
             return self._send(h, 404, {"error": "没有这个任务或目标运行"})
         except RequestConflict as e:
             return self._send(h, 409, {"error": str(e)})
+        except PolicyUnavailable as e:
+            return self._send(h, 422, e.payload)
         except ValueError as e:
             return self._send(h, 400 if sub[:2] == ["api", "jobs"] else 409, {"error": str(e)})
         log_err(f"dash 掌舵 {'/'.join(sub[1:])} 来自 {ip}: {json.dumps(r, ensure_ascii=False)[:200]}")

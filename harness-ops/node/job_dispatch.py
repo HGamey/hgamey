@@ -11,6 +11,7 @@ import time
 import uuid
 
 from job_queue import JobQueue, RequestConflict, recovery_reservations
+from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
 import job_runtime
 
@@ -50,6 +51,7 @@ class JobDispatch:
         spec, jid = row["spec"], row["job_id"]
         name = spec["bin"]
         return {"id": jid, "bin": name, "argv": spec.get("argv", []), "label": spec.get("label"),
+                **request_facts(spec),
                 "request_id": row["request_id"], "started": row["submitted_at"],
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
                 "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1"},
@@ -228,6 +230,11 @@ class JobDispatch:
 
     def _launch(self, row):
         jid = row["job_id"]
+        try:
+            policy = require_policy(row["spec"])
+        except ValueError as error:
+            self.finish_unstarted(row, "failed", f"execution policy unavailable: {error}")
+            return
         if device_access(row["spec"]) == "write" and self.jobs.leases.snapshot(refresh=True)["status"] != "clear":
             self.queue.set_state(jid, "queued")
             return False
@@ -253,7 +260,8 @@ class JobDispatch:
         if "phonefarm" in self.jobs.bins:
             env["PHONEFARM_BIN"] = self.jobs.bins["phonefarm"][0]
         try:
-            proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"], env=env)
+            proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"],
+                                      env=env, execution_policy=policy)
         except OSError as error:
             self.finish_unstarted(row, "failed", f"worker could not start: {error}")
             return

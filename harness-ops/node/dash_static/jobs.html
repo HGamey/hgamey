@@ -107,6 +107,7 @@
         <label>命令<select id="submit-bin" required disabled><option value="">正在读取可用命令…</option></select></label>
         <label>标签 <span class="field-optional">可选</span><input id="submit-label" type="text" placeholder="便于识别这次执行"></label>
         <label class="wide-field">参数 <span class="field-optional">JSON 字符串数组</span><textarea id="submit-argv" rows="3" spellcheck="false" required aria-describedby="argv-help">[]</textarea><span id="argv-help" class="field-help">例如 ["--help"]；每个参数写成一个字符串。</span></label>
+        <label class="wide-field">进程执行策略<select id="submit-execution-policy" disabled aria-describedby="execution-policy-help"><option value="">兼容默认 · 不显式指定</option><option value="process_group">process_group · 原进程组</option><option value="contained">contained · 约束域</option></select><span id="execution-policy-help" class="field-help"></span></label>
         <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主任务 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复任务</option></select></label>
         <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留任务的 12 位 ID" autocomplete="off" spellcheck="false"></label>
         <p id="device-access-help" class="field-help wide-field"></p>
