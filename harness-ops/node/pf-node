@@ -13,6 +13,7 @@
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
   pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
   pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
+  pf-node session-recover <id> [--request-id ID] # 根据原任务绑定创建异步恢复任务，不等待完成
   pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
   pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
@@ -51,6 +52,8 @@
   GPU submit proxy 不是显示 FPS；此批不计算每帧能耗。
 - session-status --json 成功仍输出原始 JSON；失败非0，stdout JSON 含 error.code、error.message 与 http_status（整数或null）。
   只查询一次，保留服务端错误码；泛404不是 not_found，网络错误为 network_error，不代表请求未提交。
+- session-recover 由节点绑定原会话与设备，不接收路径。提交前打印 request_id；超时后用 request 查询，
+  或 session-recover 原任务 --request-id 原ID 重试，不换 ID 重复创建。新任务仍需核查恢复结果与原资源保留。
 - 画质检查点沿 session-action，需 action_capabilities.quality=1 与当前 controller/epoch：
   {"schema":"phonefarm/gray-control-action@1","request_id":"quality-begin-1","session_id":"SESSION",
    "actor_id":"agent","control_epoch":1,"action":"quality","params":{"op":"begin","label":"scene-dusk-01"}}
@@ -439,6 +442,41 @@ def session_status_json(path):
     raise SystemExit(1)
 
 
+def session_recover_command(args, request_id=None):
+    if (len(args) not in (2, 4) or not re.fullmatch(r"[0-9a-f]{12}", args[1])
+            or (len(args) == 4 and args[2] != "--request-id")):
+        sys.exit("用法: pf-node session-recover <任务 id> [--request-id ID]")
+    if len(args) == 4:
+        supplied = valid_request_id(args[3])
+        if request_id is not None and request_id != supplied:
+            sys.exit("pf-node: 前后 --request-id 不一致；未提交恢复任务")
+        request_id = supplied
+    try:
+        node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
+    except (ClientError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as error:
+        sys.exit(f"pf-node: 无法确认异步会话恢复能力：{error}；未提交恢复任务")
+    if "jobs.session-recovery-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 jobs.session-recovery-v1；未提交恢复任务")
+    request_id = request_id or str(uuid.uuid4())
+    lookup = f"pf-node request {request_id}"
+    retry = f"pf-node session-recover {args[1]} --request-id {request_id}"
+    print(f"pf-node: 恢复 request_id={request_id}；结果不确定时先用 {lookup} 查询，"
+          f"重试须复用同一 ID：{retry}。仅提交一次，不等待恢复完成。", file=sys.stderr, flush=True)
+    try:
+        job = json.loads(call("POST", f"/jobs/{args[1]}/session/recover", b"{}",
+                              {"Content-Type": "application/json", "X-Request-ID": request_id},
+                              attempts=1, raise_errors=True))
+        if not re.fullmatch(r"[0-9a-f]{12}", str(job.get("id", ""))) or job.get("recovery_for") != args[1]:
+            raise ValueError("恢复任务回包未匹配原任务")
+    except (ClientError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError,
+            ValueError, AttributeError, KeyboardInterrupt) as error:
+        print(f"pf-node: 恢复提交未确认：{error}；用 {lookup} 核对，重试仍用 {retry}；不换 ID 盲目重投。", file=sys.stderr)
+        raise SystemExit(130 if isinstance(error, KeyboardInterrupt) else 1)
+    print(json.dumps(job, ensure_ascii=False))
+    print(f"pf-node: 恢复任务 {job['id']} 已记录，phase={job.get('phase', '未报告')}；"
+          "不等待执行结束，不代表设备恢复或原资源已释放。", file=sys.stderr)
+
+
 def session_command(args):
     if len(args) < 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
         sys.exit("用法: pf-node session-status <任务 id> [--request-id ID] 或 session-action <任务 id> --request FILE|-")
@@ -550,6 +588,8 @@ def main():
             sys.exit("pf-node: 恢复任务继承父任务资源，不能同时使用 --resource")
     elif recovery_for is not None:
         sys.exit("pf-node: --recovery-for 必须与 --device-access recovery 一起使用")
+    if args[0] == "session-recover":
+        return session_recover_command(args, request_id)
     if args[0] in ("session-status", "session-action"):
         return session_command(args)
     if args[0] == "request":

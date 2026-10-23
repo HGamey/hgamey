@@ -746,6 +746,7 @@
   let sessionImageURL = null, sessionImageKey = '', receiptRevision = 0, sessionSampleReceipt = null, sessionQualityReceipt = null, sampleFrame = null;
   let referenceRun = null;
   const pendingActions = new Map();
+  const sessionRecoveries = new Map(), sessionRecovering = new Set();
   const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 其他操作暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
   const ACTION_STATES = {accepted: '请求已记录，尚未执行完成。', started: '动作执行中。', completed: '此动作已完成；请核对结果与证据。', failed: '动作失败，请核对错误和恢复状态。', unknown: '执行结果未知，不要换 ID 重复输入。', not_executed: '请求未执行。'};
   function sessionKey(id = selected) { return `hgamey.session-actions.${id}`; }
@@ -790,6 +791,73 @@
     renderSessionControls();
   }
   function sessionSupported() { return !!nodeInfo?.capabilities?.includes('jobs.session-control-v1'); }
+  function sessionRecoveryRequest(id = selected) {
+    if (!sessionRecoveries.has(id)) {
+      let saved = null;
+      try { saved = JSON.parse(sessionStorage.getItem(`hgamey.session-recovery.${id}`) || 'null'); } catch (_) { /* The displayed ID can still be queried manually. */ }
+      sessionRecoveries.set(id, saved && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(saved.request_id) ? {
+        request_id: saved.request_id, job_id: /^[0-9a-f]{12}$/.test(saved.job_id) ? saved.job_id : null
+      } : null);
+    }
+    return sessionRecoveries.get(id);
+  }
+  function keepSessionRecovery(id, record) {
+    sessionRecoveries.set(id, record);
+    try { sessionStorage.setItem(`hgamey.session-recovery.${id}`, JSON.stringify({request_id: record.request_id, job_id: record.job_id || null})); }
+    catch (_) { /* Keep the same request ID visible even if browser storage is unavailable. */ }
+  }
+  function sessionRecoveryProblem() {
+    if (!currentJob || currentJob.id !== selected) return '请先读取原任务状态。';
+    if (storageFailed(currentJob) || currentJob.phase === 'finalizing') return '原任务结束记录尚未确认保存，请先处理结果保存。';
+    if (currentJob.state !== 'finished' || currentJob.queue?.state !== 'blocked') return '原任务须已结束并保留资源；请先刷新任务核对状态。';
+    if (!sessionFresh || sessionBusy || !sessionState) return '请先成功读取最新会话状态。';
+    if (sessionState.phase !== 'recovery_required') return '当前会话没有报告需要继续恢复。';
+    if (sessionState.live_owner !== false) return '原会话 owner 尚未确认退出，不能另建恢复任务。';
+    return '';
+  }
+  function renderSessionRecovery() {
+    const record = currentJob && sessionRecoveryRequest(), pending = sessionRecovering.has(selected);
+    const supported = nodeInfo?.capabilities?.includes('jobs.session-recovery-v1');
+    $('session-recover-panel').hidden = !currentJob || (!record && sessionState?.phase !== 'recovery_required');
+    $('session-recover-submit').hidden = !supported || !!record?.job_id;
+    $('session-recover-submit').disabled = !supported || !access?.steer || accessBusy || pending || !!record?.job_id || (!record && (!!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID));
+    $('session-recover-submit').textContent = pending ? '正在核对恢复请求…' : record ? '使用原请求 ID 重试' : '提交恢复任务';
+    $('session-recover-submit').setAttribute('aria-busy', String(pending));
+    $('session-recover-query').hidden = !record;
+    $('session-recover-query').disabled = pending;
+    $('session-recover-query').setAttribute('aria-busy', String(pending));
+    $('session-recover-job').hidden = !record?.job_id;
+    if (record?.job_id) $('session-recover-job').href = `/dash/jobs#job=${encodeURIComponent(record.job_id)}`;
+    $('session-recover-request').textContent = record ? `恢复请求 ID：${record.request_id}` : '';
+    message('session-recover-help', !supported ? '此节点未提供异步会话恢复能力；仍可查看已有恢复记录。' : record?.job_id ? '恢复任务已记录，请打开任务核查执行与证据。创建成功不代表恢复完成，原资源不会自动释放。' : record ? '本次请求 ID 已保留。结果不确定时先查询；重试仍使用同一 ID，不会改用新 ID 创建任务。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : sessionRecoveryProblem() || (!globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '节点根据原任务绑定的会话与设备创建恢复任务，无需填写路径；提交后异步执行，原资源继续保留。'));
+    message('session-recover-result', record?.message || (record ? '可按原请求 ID 查询节点中的最新任务记录。' : ''), !!record?.error);
+  }
+  function acceptSessionRecovery(id, record, job) {
+    if (!/^[0-9a-f]{12}$/.test(job?.id) || job.recovery_for !== id) throw new Error('恢复任务回包未匹配原任务，结果尚未确认。');
+    keepSessionRecovery(id, {...record, job_id: job.id, message: `恢复任务 ${job.id} · ${status(job)[0]}。提交不代表恢复完成，请核对任务记录。`, error: false});
+  }
+  async function submitSessionRecovery() {
+    if (!currentJob || $('session-recover-submit').disabled) return;
+    const id = selected, record = sessionRecoveryRequest(id) || {request_id: crypto.randomUUID()};
+    keepSessionRecovery(id, {...record, message: '正在提交恢复任务；请求 ID 已固定。', error: false});
+    sessionRecovering.add(id); renderSessionRecovery();
+    try {
+      acceptSessionRecovery(id, record, await post(`${API}/jobs/${id}/session/recover`, {}, {'X-Request-ID': record.request_id}));
+    } catch (error) {
+      keepSessionRecovery(id, {...record, message: `${errorText(error)} 请先查询此恢复请求；重试仍使用原 ID，不会自动重发。`, error: true});
+      if (error.status === 401 || error.status === 403) await loadAccess();
+    } finally { sessionRecovering.delete(id); if (selected === id) renderSessionRecovery(); }
+  }
+  async function querySessionRecovery() {
+    const id = selected, record = sessionRecoveryRequest(id);
+    if (!record || sessionRecovering.has(id)) return;
+    sessionRecovering.add(id); renderSessionRecovery();
+    try {
+      acceptSessionRecovery(id, record, await json(`${API}/requests/${encodeURIComponent(record.request_id)}`));
+    } catch (error) {
+      keepSessionRecovery(id, {...record, message: error.status === 404 ? '暂未找到此恢复请求。保留原 ID，可稍后查询或使用原 ID 重试；不会自动新建请求。' : `${errorText(error)} 保留原恢复请求 ID，请核对后再继续。`, error: true});
+    } finally { sessionRecovering.delete(id); if (selected === id) renderSessionRecovery(); }
+  }
   function sessionAllowed(action) {
     const controller = sessionState?.controller;
     const actor = $('session-actor').value.trim();
@@ -835,6 +903,7 @@
     return !issue;
   }
   function renderSessionControls() {
+    renderSessionRecovery();
     $('session-panel').hidden = !currentJob || currentJob.bin !== 'phonefarm';
     $('session-refresh').disabled = !currentJob || !sessionSupported() || sessionBusy;
     $('session-refresh').setAttribute('aria-busy', String(sessionBusy));
@@ -1505,6 +1574,12 @@
     renderSessionControls();
   });
   $('session-refresh').addEventListener('click', loadSession);
+  $('session-recover-submit').addEventListener('click', submitSessionRecovery);
+  $('session-recover-query').addEventListener('click', querySessionRecovery);
+  $('session-recover-job').addEventListener('click', event => {
+    const job = sessionRecoveryRequest()?.job_id;
+    if (job) { event.preventDefault(); selectJob(job); }
+  });
   $('session-receipt-form').addEventListener('submit', event => { event.preventDefault(); querySessionReceipt(); });
   $('reference-query').addEventListener('click', () => runReference(false));
   $('reference-form').addEventListener('submit', event => { event.preventDefault(); runReference(true); });

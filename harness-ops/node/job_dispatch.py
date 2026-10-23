@@ -261,6 +261,9 @@ class JobDispatch:
                    DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
+        env.pop("PF_RECOVERY_OUT", None)
+        if row["spec"].get("recovery_for"):
+            env["PF_RECOVERY_OUT"] = self.jobs.path(row["spec"]["recovery_for"], "out")
         if "phonefarm" in self.jobs.bins:
             env["PHONEFARM_BIN"] = self.jobs.bins["phonefarm"][0]
         try:

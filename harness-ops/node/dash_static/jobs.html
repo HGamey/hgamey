@@ -228,6 +228,12 @@
             </details>
             <details class="session-tools"><summary>会话恢复记录</summary><dl id="session-recovery" class="facts"></dl><p class="note">会话关闭与整个任务的资源释放分别记录。关闭后刷新任务，核查现有 lease 证据，再从“解除资源保留”填写说明放行。</p></details>
           </div>
+          <section id="session-recover-panel" class="session-tools" aria-labelledby="session-recover-heading" hidden>
+            <h4 id="session-recover-heading">异步会话恢复</h4>
+            <p id="session-recover-help" class="note"></p>
+            <div class="session-actions"><button id="session-recover-submit" class="ghost" type="button" disabled>提交恢复任务</button><button id="session-recover-query" class="ghost" type="button" hidden>查询恢复请求</button><a id="session-recover-job" class="ghost" hidden>查看恢复任务</a></div>
+            <p id="session-recover-request" class="request-id"></p><p id="session-recover-result" class="note" role="status"></p>
+          </section>
           <form id="session-receipt-form" class="session-receipt-form"><label for="session-request-id">动作请求 ID</label><div class="lookup-input"><input id="session-request-id" autocomplete="off" spellcheck="false" placeholder="查询已提交动作"><button id="session-query" class="ghost" type="submit">查询回执</button></div></form>
           <p id="session-pending" class="note"></p><p id="session-receipt-message" class="note" role="status"></p>
           <section id="session-sample-result" class="session-sample-result" aria-labelledby="session-sample-result-heading" hidden>

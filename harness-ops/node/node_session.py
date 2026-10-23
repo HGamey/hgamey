@@ -5,6 +5,7 @@ import re
 import subprocess
 
 from artifact_io import relative_path
+from job_queue import RequestConflict
 
 MAX_REQUEST = 64 << 10
 HELPER_TIMEOUT = 5
@@ -55,6 +56,49 @@ def descriptor(value, jid):
             raise ValueError("invalid session image")
         output_path(image.get("path"))
     return value
+
+
+def recover_session(jobs, jid, request_id):
+    """Queue one recovery of the recorded context; never run device IO in HTTP."""
+    key = jobs.dispatch.request_key(request_id)
+    raw = jobs._read_meta(jid)
+    if raw.get("bin") != "phonefarm":
+        raise SessionError(404, "not_found", "this job has no phonefarm control session")
+    bound = descriptor(jobs._read_root.read_json(jid + "/out/session-control.json", maximum=MAX_REQUEST), jid)
+    spec = {"bin": "phonefarm", "argv": ["gray-layer", "session-recover", "--session",
+            jobs.path(jid, "out", bound["session_path"]), "--serial", bound["serial"], "--json"],
+            "label": "Recover session for " + jid, "execution_policy": "process_group",
+            "device_access": "recovery", "recovery_for": jid}
+    # Reuse the frozen request even when its recovery has since closed the source.
+    # start() still verifies the full normalized request fingerprint.
+    if jobs.dispatch.queue.by_request(key):
+        return jobs.start(spec, b"", request_id=key)
+    status = jobs.status(jid)
+    row = jobs.dispatch.queue.get(jid)
+    if status.get("phase") in {"finalizing", "storage_blocked"}:
+        raise RequestConflict("commit the source result first; use retry-finalize if storage is blocked")
+    if not row or row["state"] != "blocked" or status.get("state") != "finished":
+        raise RequestConflict("session recovery requires a finished job with a blocked reservation")
+    execution = status.get("execution") or {}
+    if (raw.get("phase") != "finished" or raw.get("lost")
+            or execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False):
+        raise RequestConflict("source worker completion is unconfirmed; reconcile its execution domain first")
+    contained = (execution.get("process_management") or {}).get("policy") == "contained"
+    scope = "owned_cgroup" if contained else "owned_process_group"
+    if (execution.get(scope) or {}).get("status") != "absent":
+        raise RequestConflict("source " + scope + " must be confirmed absent before session recovery")
+    if contained:
+        fd = jobs._read_root.open_fd(jid + "/out", directory=True)
+        try:
+            st = os.fstat(fd)
+            if st.st_uid != os.geteuid() or st.st_mode & 0o7777 != 0o700:
+                raise RequestConflict("source output handback to the node's private identity is unconfirmed")
+        finally:
+            os.close(fd)
+    current = session_call(jobs, jid)
+    if current.get("phase") != "recovery_required" or current.get("live_owner") is not False:
+        raise RequestConflict("session must require recovery and have no live owner")
+    return jobs.start(spec, b"", request_id=key)
 
 
 def session_call(jobs, jid, *, request_id=None, action=None):

@@ -38,7 +38,7 @@ from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable, require_policy
 from node_lease import LeaseState, device_access, job_lease_receipts
-from node_session import session_call, SessionError, MAX_REQUEST
+from node_session import session_call, recover_session, SessionError, MAX_REQUEST
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -486,6 +486,9 @@ class Jobs:
     def session(self, jid, *, request_id=None, action=None):
         return session_call(self, jid, request_id=request_id, action=action)
 
+    def recover_session(self, jid, request_id):
+        return recover_session(self, jid, request_id)
+
     def retry_finalize(self, jid):
         self.path(jid)
         with file_lock(self.dispatch.intake_path):
@@ -736,7 +739,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
-                if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["session", "actions"]:
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "session" and parts[3] in {"actions", "recover"}:
                     if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
                         self.close_connection = True
                         return self._send(413, {"error": "session action exceeds 64 KiB"})
@@ -745,6 +748,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     action = json.loads(self._body())
                     if not isinstance(action, dict):
                         raise ValueError("session action must be a JSON object")
+                    if parts[3] == "recover":
+                        if action:
+                            raise ValueError("session recovery body must be an empty object; source paths and serial are derived by the node")
+                        return self._send(200, jobs.recover_session(parts[1], self.headers.get("X-Request-ID")))
                     return self._send(200, jobs.session(parts[1], action=action))
                 if parts == ["jobs"]:
                     # Refuse an unavailable guarantee before reading a potentially large upload.

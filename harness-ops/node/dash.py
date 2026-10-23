@@ -458,6 +458,10 @@ class Dash:
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:
+            if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["session", "recover"]:
+                if data:
+                    raise ValueError("session recovery body must be an empty object; source paths and serial are derived by the node")
+                return self._send(h, 200, self.job_service.recover_session(sub[2], h.headers.get("X-Request-ID")))
             if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["session", "actions"]:
                 if len(body) > MAX_REQUEST:
                     return self._send(h, 413, {"error": "session action exceeds 64 KiB"})

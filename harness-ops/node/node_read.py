@@ -79,7 +79,8 @@ class NodeRead:
                 "capabilities": ["fleet.read", "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1",
-                                 "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1"],
+                                 "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
+                                 "jobs.session-recovery-v1"],
                 "devices": {"status": "not_probed", "reason": "node identity does not probe phones"}}
 
     def list_jobs(self, query):

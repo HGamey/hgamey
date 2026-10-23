@@ -330,6 +330,63 @@ class JobCLI(unittest.TestCase):
         self.assertIn("独立 worker", stderr.getvalue())
         self.assertIn("不是任务终态", stderr.getvalue())
 
+    def test_session_recover_submits_once_with_visible_id_and_bound_parent(self):
+        cli = self.load_cli()
+        recovery = {"id": "abcdef123456", "recovery_for": JOB, "state": "running", "phase": "queued"}
+        for mode in ("success", "missing-capability", "timeout", "wrong-parent"):
+            with self.subTest(mode=mode):
+                requests, stdout, stderr = [], io.StringIO(), io.StringIO()
+
+                def call(method, path, data=None, headers=None, **kwargs):
+                    requests.append((method, path, headers))
+                    self.assertEqual(kwargs["attempts"], 1)
+                    self.assertTrue(kwargs["raise_errors"])
+                    if method == "GET":
+                        self.assertEqual(path, "/node")
+                        return json.dumps({"capabilities": [] if mode == "missing-capability" else ["jobs.session-recovery-v1"]}).encode()
+                    self.assertEqual((method, path, data), ("POST", f"/jobs/{JOB}/session/recover", b"{}"))
+                    self.assertEqual(headers["Content-Type"], "application/json")
+                    request_id = headers["X-Request-ID"]
+                    self.assertIn(f"request_id={request_id}", stderr.getvalue(), "ID must be printed before POST")
+                    self.assertEqual(stdout.getvalue(), "")
+                    if mode == "success":
+                        self.assertEqual(str(uuid.UUID(request_id)), request_id)
+                    else:
+                        self.assertEqual(request_id, "recover-fixture-1")
+                    if mode == "timeout":
+                        raise TimeoutError("fixture timeout")
+                    return json.dumps({**recovery, "recovery_for": "bbbbbbbbbbbb"} if mode == "wrong-parent" else recovery).encode()
+
+                args = [str(CLI), "session-recover", JOB]
+                if mode != "success":
+                    args += ["--request-id", "recover-fixture-1"]
+                follow, fetch = mock.Mock(), mock.Mock()
+                code = 0
+                with mock.patch.dict(cli["main"].__globals__, call=call, follow=follow, fetch_out=fetch), \
+                        mock.patch.object(sys, "argv", args), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    try:
+                        cli["main"]()
+                    except SystemExit as error:
+                        code = error.code
+                follow.assert_not_called()
+                fetch.assert_not_called()
+                self.assertEqual(sum(method == "POST" for method, _, _ in requests), 0 if mode == "missing-capability" else 1)
+                self.assertEqual(len(requests), 1 if mode == "missing-capability" else 2)
+                if mode == "success":
+                    self.assertEqual(code, 0)
+                    self.assertEqual(json.loads(stdout.getvalue()), recovery)
+                    self.assertIn("不代表设备恢复", stderr.getvalue())
+                else:
+                    self.assertNotEqual(code, 0)
+                    self.assertEqual(stdout.getvalue(), "")
+                if mode == "missing-capability":
+                    self.assertIn("jobs.session-recovery-v1", str(code))
+                if mode == "timeout":
+                    self.assertIn("pf-node request recover-fixture-1", stderr.getvalue())
+                    self.assertIn(f"pf-node session-recover {JOB} --request-id recover-fixture-1", stderr.getvalue())
+                if mode == "wrong-parent":
+                    self.assertIn("恢复任务回包未匹配原任务", stderr.getvalue())
+
     def test_session_actions_use_original_json_once_and_status_only_reads(self):
         cli = self.load_cli()
         action = {"schema": "phonefarm/gray-control-action@1", "request_id": "capture-1", "session_id": "session-1",

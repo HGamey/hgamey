@@ -16,8 +16,8 @@ class JobSessionTests(TestCase):
     request = read_fixture.NodeReadTests.request
     get_json = read_fixture.NodeReadTests.get_json
 
-    def prepare(self):
-        jid = self.fixture(1, bin="phonefarm", argv=["gray-layer", "session", "--serial", "fake-device"])
+    def prepare(self, number=1):
+        jid = self.fixture(number, bin="phonefarm", argv=["gray-layer", "session", "--serial", "fake-device"])
         out = Path(self.jobs.path(jid, "out"))
         (out / "gray-control").mkdir()
         (out / "gray-session-fixture").mkdir()
@@ -42,7 +42,7 @@ if args[1] == 'session-action':
     rid = request['request_id']
 elif '--request-id' in args: rid = args[args.index('--request-id') + 1]
 else:
-    print(json.dumps(dict(d, live_owner=True)))
+    print(json.dumps(dict(d, live_owner=d.get('live_owner', True))))
     sys.exit(0)
 print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id':d['session_id'],'request_id':rid,'status':'accepted','sequence':1}))
 ''')
@@ -51,6 +51,69 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
         action = {"schema": "phonefarm/gray-control-action@1", "request_id": "capture-1", "session_id": "fixture",
                   "actor_id": "agent", "control_epoch": 1, "action": "capture", "params": {}}
         return jid, out, action
+
+    def test_session_recovery_derives_source_and_reuses_request_after_close(self):
+        self.jobs.dispatch.start = lambda: None
+        row, _ = self.jobs.dispatch.queue.reserve("source", "fixture", {"bin": "phonefarm"}, ["phone:fake-device"])
+        jid, out, _ = self.prepare(int(row["job_id"], 16))
+        self.jobs.dispatch.queue.set_state(jid, "blocked")
+        meta = self.jobs._read_meta(jid)
+        meta.update(state="finished", phase="finished", outcome="failed", exit=2,
+                    execution={"kind": "supervised-v1", "process_management": {"policy": "contained"},
+                               "owned_cgroup": {"status": "absent"}})
+        self.jobs._write_meta(jid, meta)
+        out.chmod(0o700)
+        self.value.update(phase="recovery_required", live_owner=False)
+        (out / "session-control.json").write_text(json.dumps(self.value))
+        path = f"/jobs/{jid}/session/recover"
+        post = dict(method="POST", body=b"{}", headers={"Content-Type": "application/json", "X-Request-ID": "recover-1"})
+        self.assertIn("jobs.session-recovery-v1", self.get_json("/node")["capabilities"])
+        self.assertEqual(self.request(path, **post)[0], 401)
+        auth = {"Cookie": f"{read_fixture.dash.COOKIE}={self.board._cookie_val(self.pw)}", "X-HG": "1", **post["headers"]}
+        self.assertEqual(self.request("/dash/api" + path, **{**post, "headers": auth})[0], 403)
+        self.assertEqual(self.request(path, token=self.admin, **{**post, "headers": {"Content-Type": "application/json"}})[0], 400)
+        self.assertEqual(self.request(path, token=self.admin, **{**post, "body": b'{"serial":"other"}'})[0], 400)
+        for change in ("domain", "handback", "owner", "storage", "lost"):
+            with self.subTest(change=change):
+                if change == "domain":
+                    meta["execution"]["owned_cgroup"]["status"] = "unknown"
+                elif change == "handback":
+                    out.chmod(0o2770)
+                elif change == "owner":
+                    self.value["live_owner"] = True
+                elif change == "storage":
+                    self.jobs.dispatch.queue.set_state(jid, "blocked", {"kind": "durability"})
+                else:
+                    meta["phase"] = "starting"
+                    meta["execution"]["launch_deadline"] = 0
+                self.jobs._write_meta(jid, meta)
+                (out / "session-control.json").write_text(json.dumps(self.value))
+                self.assertEqual(self.request(path, token=self.admin, **post)[0], 409)
+                meta["execution"]["owned_cgroup"]["status"] = "absent"
+                meta["phase"] = "finished"
+                out.chmod(0o700)
+                self.value["live_owner"] = False
+                self.jobs.dispatch.queue.set_state(jid, "blocked")
+        self.jobs._write_meta(jid, meta)
+        (out / "session-control.json").write_text(json.dumps(self.value))
+        status, _, raw = self.request(path, token=self.admin, **post)
+        self.assertEqual(status, 200, raw)
+        recovery = json.loads(raw)
+        self.assertEqual(recovery["recovery_for"], jid)
+        self.assertEqual(recovery["phase"], "queued")
+        spec = self.jobs.dispatch.queue.get(recovery["id"])["spec"]
+        self.assertEqual(spec["resources"], ["phone:fake-device"])
+        self.assertEqual(spec["execution_policy"], "process_group")
+        self.assertEqual(spec["argv"], ["gray-layer", "session-recover", "--session", str(out / "gray-session-fixture"),
+                                        "--serial", "fake-device", "--json"])
+        self.value["phase"] = "closed"
+        (out / "session-control.json").write_text(json.dumps(self.value))
+        auth["Cookie"] += "; " + read_fixture.dash.STEER_COOKIE + "=" + self.board._cookie_val("test-steer-password", b"hgamey-steer-v1")
+        status, _, raw = self.request("/dash/api" + path, **{**post, "headers": auth})
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)["id"], recovery["id"])
+        self.assertEqual(self.get_json("/requests/recover-1")["id"], recovery["id"])
+        self.assertEqual(self.jobs.dispatch.queue.get(jid)["state"], "blocked")
 
     def test_http_auth_fixed_helper_and_readonly_receipts(self):
         jid, out, action = self.prepare()
