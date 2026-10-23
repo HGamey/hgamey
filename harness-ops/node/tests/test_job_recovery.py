@@ -1,7 +1,11 @@
 """Host fixtures for upgrade compatibility and interrupted recovery ownership."""
+import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -82,6 +86,149 @@ class JobRecoveryTests(unittest.TestCase):
             self.jobs.release_queue(parent, "reviewed original job")
         self.assertEqual(self.queue.get(parent)["state"], "done")
         self.assertEqual(self.jobs.status(child)["recovery"]["status"], "required")
+
+    def test_direct_exit_with_live_group_blocks_host_and_recovery_resources(self):
+        root = Path(self.jobs.root) / "group-completion"
+        root.mkdir()
+        # Explicit host-only bin: no PF, ADB, actual lease reader or transport.
+        jobs = Jobs(str(root), {"host": (sys.executable, str(root))}, max_running=1)
+        jobs.dispatch.start = lambda: None
+        queue = jobs.dispatch.queue
+        jobs_with_descendants, known_pids = [], set()
+        checked_jobs = []
+        failed = False
+        descendant = """
+import json, os, pathlib, sys, time
+out = pathlib.Path(sys.argv[1])
+ready = out / 'descendant-ready.json'
+temporary = out / 'descendant-ready.tmp'
+temporary.write_text(json.dumps({'pid':os.getpid(), 'pgid':os.getpgrp()}))
+temporary.replace(ready)
+deadline = time.monotonic() + 20
+while not (out / 'release').exists() and time.monotonic() < deadline:
+    time.sleep(.02)
+released = (out / 'release').exists()
+(out / 'descendant-done.json').write_text(json.dumps({'released':released}))
+sys.exit(0 if released else 1)
+"""
+        leader = ("import pathlib,subprocess,sys,time;out=pathlib.Path(sys.argv[1]);"
+                  f"child=subprocess.Popen([sys.executable,'-c',{descendant!r},str(out)],close_fds=True);"
+                  "deadline=time.monotonic()+5\n"
+                  "while not (out/'descendant-ready.json').exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+                  "assert (out/'descendant-ready.json').exists(), 'descendant startup timed out'\n")
+
+        def submit(program, **spec):
+            return jobs.start({"bin": "host", "argv": ["-c", program, "@out"],
+                               "device_access": "none", **spec}, b"")["id"]
+
+        def until(predicate, timeout=6):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                value = predicate()
+                if value:
+                    return value
+                time.sleep(.02)
+            self.fail("bounded host group fixture did not reach the expected state")
+
+        def terminal(jid):
+            jobs.dispatch.tick()
+            row = queue.get(jid)
+            return jobs.status(jid) if row["state"] in {"done", "blocked"} else None
+
+        def check_group_failure(jid):
+            meta = until(lambda: terminal(jid))
+            ready = json.loads(Path(jobs.path(jid, "out", "descendant-ready.json")).read_text())
+            known_pids.update((ready["pid"], meta["pid"], meta["execution"]["child_pid"]))
+            self.assertEqual(ready["pgid"], meta["execution"]["child_pid"])
+            os.kill(ready["pid"], 0)  # The same-group descendant really is still live.
+            self.assertEqual((meta["exit"], meta["execution"]["returncode"]), (0, 0))
+            self.assertEqual((meta["phase"], meta["outcome"], meta["recovery"]["status"]),
+                             ("interrupted", "interrupted", "required"))
+            group = meta["execution"]["owned_process_group"]
+            self.assertEqual((group["scope"], group["status"], group["pgid"]),
+                             ("original_process_group", "present", ready["pgid"]))
+            self.assertIsInstance(group["checked_at"], (int, float))
+            self.assertEqual(meta["queue"]["state"], "blocked")
+            checked_jobs.append({"id": jid, "device_access": meta["device_access"], "exit": meta["exit"],
+                                 "phase": meta["phase"], "outcome": meta["outcome"],
+                                 "queue_state": meta["queue"]["state"], "recovery": meta["recovery"],
+                                 "owned_process_group": group, "descendant": ready})
+
+        def gone(pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        clear = {"schema_version": 1, "status": "clear", "entries": [], "error": None}
+        try:
+            with patch.object(jobs.leases, "snapshot", return_value=clear):
+                parent = submit(leader, resources=["host:exclusive"])
+                jobs_with_descendants.append(parent)
+                check_group_failure(parent)
+                waiting = submit("raise RuntimeError('shared resource must stay reserved')",
+                                 resources=["host:exclusive"])
+                other = submit("import pathlib,sys;pathlib.Path(sys.argv[1],'completed').touch()",
+                               resources=["host:other"])
+                other_meta = until(lambda: terminal(other))
+                known_pids.update((other_meta["pid"], other_meta["execution"]["child_pid"]))
+                self.assertEqual((other_meta["exit"], other_meta["queue"]["state"]), (0, "done"))
+                self.assertTrue(Path(jobs.path(other, "out", "completed")).is_file())
+                self.assertEqual(queue.get(waiting)["state"], "queued")
+                self.assertFalse(Path(jobs.path(waiting, "launch.json")).exists())
+
+                # A targeted recovery may borrow the parent's reservation, but
+                # its own unfinished group must not become an ordinary done row.
+                recovery = submit(leader, device_access="recovery", recovery_for=parent)
+                jobs_with_descendants.append(recovery)
+                check_group_failure(recovery)
+                sibling = submit("raise RuntimeError('recovery sibling must wait')",
+                                 device_access="recovery", recovery_for=parent)
+                jobs.dispatch.tick()
+                self.assertEqual(queue.get(sibling)["state"], "queued")
+                self.assertEqual(queue.get(waiting)["state"], "queued")
+                self.assertFalse(Path(jobs.path(sibling, "launch.json")).exists())
+                self.assertTrue(jobs.cancel(waiting)["accepted"])
+                self.assertTrue(jobs.cancel(sibling)["accepted"])
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                for jid in jobs_with_descendants:
+                    out = Path(jobs.path(jid, "out"))
+                    (out / "release").touch()
+                    ready = out / "descendant-ready.json"
+                    if ready.exists():
+                        known_pids.add(json.loads(ready.read_text())["pid"])
+                        until(lambda: (out / "descendant-done.json").exists())
+                        self.assertTrue(json.loads((out / "descendant-done.json").read_text())["released"])
+                    meta = jobs._read_meta(jid)
+                    known_pids.update(p for p in (meta.get("pid"), (meta.get("execution") or {}).get("child_pid"))
+                                      if isinstance(p, int))
+                until(lambda: all(gone(pid) for pid in known_pids))
+            except BaseException:
+                failed = True
+                raise
+            finally:
+                jobs._read_root.close()
+                # Local acceptance keeps failure originals outside TemporaryDirectory.
+                # Standalone CI still reports the exact job metadata in the test failure.
+                qa = Path(__file__).resolve().parents[3] / "qa"
+                if qa.is_dir():
+                    name = f"job-group-host-{os.getpid()}-{time.time_ns()}"
+                    summary = {"passed": not failed, "scope": "actual host Jobs/worker and original process groups only",
+                               "jobs": checked_jobs, "known_pids": sorted(known_pids),
+                               "remaining_known_pids": [pid for pid in sorted(known_pids) if not gone(pid)],
+                               "device_transport_calls": 0}
+                    if failed:
+                        evidence = qa / (name + "-failure")
+                        shutil.copytree(root, evidence)
+                        summary["failure_evidence"] = str(evidence)
+                    path = qa / (name + ".json")
+                    path.write_text(json.dumps(summary, indent=2) + "\n")
+                    print(f"job group host result: {path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

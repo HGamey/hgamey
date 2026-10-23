@@ -92,6 +92,7 @@ class JobRuntimeTests(unittest.TestCase):
         meta = self.until(lambda: (m if (m := self.read(jid)).get("state") == "finished" else None))
         self.until(lambda: not runtime.runner_alive(self.store, jid))
         self.assertEqual((meta["outcome"], meta["recovery"]["status"], meta["exit"]), ("cancelled", "not_reported", 0))
+        self.assertEqual(meta["execution"]["owned_process_group"]["status"], "absent")
         self.assertEqual([s["name"] for s in meta["cancel"]["signals"]], ["SIGINT"])
         self.assertIn(b"restoring", self.store.read_bytes(jid + "/log", 4096))
         self.assertEqual(self.store.read_json(jid + "/launch.json").keys(), {"command", "cwd"})
@@ -125,6 +126,7 @@ class JobRuntimeTests(unittest.TestCase):
         self.assertEqual((meta["outcome"], meta["recovery"]["status"]), ("cancelled", "not_needed"))
         self.assertEqual(meta["cancel"]["status"], "not_applied")
         self.assertIsNone(meta["execution"]["child_pid"])
+        self.assertEqual(meta["execution"]["owned_process_group"]["status"], "not_started")
         self.assertFalse((self.root / jid / "exitcode").exists())
         jid = self.job()
         worker = runtime.launch(self.store, jid, str(self.root / jid), [str(self.root / "missing-command")],

@@ -375,6 +375,11 @@ class JobCLI(unittest.TestCase):
                    "outcome": "interrupted", "recovery": "unknown"}, 125),
                  ({"state": "finished", "exit": None}, 125),
                  ({"state": "finished", "exit": 0}, 0)]
+        for group in ("present", "unknown"):
+            for rc, expected in ((0, 125), (7, 7)):
+                cases.append(({"state": "finished", "phase": "interrupted", "outcome": "interrupted",
+                               "exit": rc, "recovery": {"status": "required"},
+                               "execution": {"owned_process_group": {"status": group}}}, expected))
         for status, expected in cases:
             with self.subTest(status=status):
                 stderr = io.StringIO()
@@ -383,9 +388,13 @@ class JobCLI(unittest.TestCase):
                 with mock.patch.dict(cli["follow"].__globals__, call=call), \
                         mock.patch.object(sys, "stdout", stdout), contextlib.redirect_stderr(stderr):
                     self.assertEqual(cli["follow"](JOB), expected)
-                if expected == 125:
+                if status.get("execution") and status["exit"] == 0:
+                    self.assertIn("直接命令 exit=0，但原进程组结束未确认", stderr.getvalue())
+                    self.assertNotIn("没有可信退出码", stderr.getvalue())
+                elif expected == 125:
                     self.assertIn("没有可信退出码", stderr.getvalue())
-                self.assertIn("recovery=", stderr.getvalue())
+                if not status.get("execution") or status["exit"] != 0:
+                    self.assertIn("recovery=", stderr.getvalue())
 
 
 if __name__ == "__main__":

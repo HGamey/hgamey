@@ -144,8 +144,9 @@
     }
     const row = (j) => {
       const now = st.now, el = j.state === "running" ? now - j.started : (j.ended || now) - j.started;
-      const stc = j.state === "running" ? "running" : j.state === "lost" ? "lost" : j.exit === 0 ? "ok" : "fail";
-      const stt = j.state === "running" ? "在跑" : j.state === "lost" ? "失联" : j.exit === 0 ? "完成" : `退出 ${j.exit}`;
+      const review = j.phase === "interrupted" || j.outcome === "interrupted" || j.recovery?.status === "required";
+      const stc = review ? "lost" : j.state === "running" ? "running" : j.state === "lost" ? "lost" : j.exit === 0 ? "ok" : "fail";
+      const stt = review ? "待核查" : j.state === "running" ? "在跑" : j.state === "lost" ? "失联" : Number.isInteger(j.exit) ? `命令已退出 · ${j.exit}` : "退出码未知";
       const lockTag = associated.has(j.id) ? `<span class="st lockholder" title="lease 记录明确关联此任务；不代表正在测量或恢复完成">关联租约记录</span>` : "";
       return `<li class="job ${j.id === S.selJob ? "sel" : ""}" data-id="${esc(j.id)}" tabindex="0">
         <div class="row1"><span class="lbl">${esc(j.label || "—")}</span><span class="st ${stc}">${stt}</span>${lockTag}

@@ -17,3 +17,7 @@
 - main 保留必需的 `code-only` 检查。先推同一提交到 `verify/<批次>` 等 CI 通过，再直接推 main；若 rebase 改变提交需重验。不关闭必需检查或强推保护。
 - 修改节点协议后运行 `python3 -m unittest discover -s node/tests -v`。模拟节点通过不能写成真机验证通过。
 - 测试聚焦关键合同和已发生故障，避免镜像实现或重复覆盖。优先简化状态与资源所有权；哈希用于传输完整性/内容标识，不对每层对象重复计算。
+
+## 作业结束范围
+
+独立worker在直接命令退出后有界核查原进程组；仍存在或核查未知时保留真实命令退出码，但作业为interrupted/recovery.required，调度保留声明资源。Web与CLI展示同一owned_process_group记录，不能将absent解释为setsid脱组后代或设备恢复。合同与验收范围见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-GROUP-COMPLETION.md 。

@@ -210,6 +210,11 @@ def release_job(jid, note):
 def terminal_exit(jid, status):
     rc = status.get("exit")
     phase = status.get("phase", status.get("state", "unknown"))
+    group = (status.get("execution") or {}).get("owned_process_group") or {}
+    if rc == 0 and group.get("status") in ("present", "unknown"):
+        print(f"pf-node: 任务 {jid} 直接命令 exit=0，但原进程组结束未确认"
+              f"（{group['status']}），CLI 返回 125；请核查任务和资源保留记录。", file=sys.stderr)
+        return 125
     unknown = (not isinstance(rc, int) or isinstance(rc, bool) or rc == -1
                or (phase == "interrupted" and rc == 0))
     print(f"pf-node: 任务 {jid} 记录终态 phase={phase}，outcome={status.get('outcome', '未报告')}，"

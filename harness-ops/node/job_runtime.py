@@ -102,8 +102,26 @@ def request_cancel(store, jid, force=False):
     return _cancellation(read_cancel(store, jid), meta)
 
 
+def _group_completion(pgid):
+    """Observe only the original group after reaping our child; never signal old PIDs."""
+    deadline = time.monotonic() + 0.5
+    while True:
+        status, error = "present", None
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            status = "absent"
+        except OSError as exc:
+            status, error = "unknown", f"{type(exc).__name__}: {exc}"
+        if status != "present" or time.monotonic() >= deadline:
+            return {"scope": "original_process_group", "status": status, "pgid": pgid,
+                    "checked_at": time.time(), "error": error}
+        time.sleep(0.025)
+
+
 def _finish(store, jid, meta, outcome, recovery, returncode=None, error=None):
-    meta.update(state="finished", phase="finished", outcome=outcome, recovery=recovery, ended=time.time(),
+    meta.update(state="finished", phase="interrupted" if outcome == "interrupted" else "finished",
+                outcome=outcome, recovery=recovery, ended=time.time(),
                 exit=None if returncode is None else returncode if returncode >= 0 else 128 - returncode)
     meta["execution"]["returncode"] = returncode
     if error:
@@ -129,6 +147,9 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0)):
         meta = store.read_json(jid + "/meta.json")
         meta.update(pid=os.getpid(), state="running", phase="starting")
         meta["execution"].update(child_pid=None, returncode=None)
+        meta["execution"]["owned_process_group"] = {
+            "scope": "original_process_group", "status": "not_started", "pgid": None,
+            "checked_at": None, "error": None}
         store.write_json(jid + "/meta.json", meta)
         request = read_cancel(store, jid)
         if request:
@@ -151,6 +172,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0)):
             os.close(log_fd)
         meta["phase"] = "running"
         meta["execution"]["child_pid"] = child.pid
+        meta["execution"]["owned_process_group"].update(status="pending", pgid=child.pid)
         store.write_json(jid + "/meta.json", meta)
         last_signal_at = None
         while True:
@@ -168,6 +190,12 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0)):
                 escalated = any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)
                 recovery = {"status": "required" if escalated else "not_reported",
                             "reason": "command received TERM/KILL" if escalated else "command did not report device recovery"}
+                group = _group_completion(child.pid)
+                meta["execution"]["owned_process_group"] = group
+                if group["status"] != "absent":
+                    outcome = "interrupted"
+                    recovery = {"status": "required", "reason":
+                                "direct command exited; original process group is " + group["status"]}
                 _finish(store, jid, meta, outcome, recovery, returncode)
                 return 0
             if request:

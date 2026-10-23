@@ -209,10 +209,18 @@
   }
   function renderExecution(job) {
     const cancellation = job.cancel;
+    const group = job.execution?.owned_process_group;
+    const groupFacts = group ? [
+      ['进程组核查范围', group.scope === 'original_process_group' ? '原进程组（original_process_group）' : text(group.scope)],
+      ['原进程组状态', ({not_started: '未启动', pending: '等待收尾核查', absent: '核查时未发现原进程组', present: '原进程组仍存在', unknown: '无法确认原进程组是否结束'})[group.status] || '未识别的状态'],
+      ['原进程组 PGID（诊断）', group.pgid], ['进程组核查时间', time(group.checked_at)],
+      ['进程组核查错误', group.error || '未报告错误'],
+      ['核查边界', '只核查原进程组；不涵盖通过 setsid 脱组的后代，也不证明设备已恢复。']
+    ] : [['原进程组核查', '旧记录未提供，不能据此确认进程组已结束。']];
     facts('execution-info', [['执行阶段', PHASES[job.phase] || '旧版记录未提供'],
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
-      ['退出码', job.exit], ['请求时间', time(cancellation?.requested_at)],
+      ['命令退出码', job.exit], ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
       ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
       ['请求处理', ({requested: '已记录，等待处理', signaled: '已发送信号', not_applied: '未应用'})[cancellation?.status] || '未记录'],
       ['恢复状态', ({not_reported: '尚未上报', required: '需要核查与恢复', not_needed: '任务报告无需恢复'})[job.recovery?.status] || '尚未上报'],
