@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import shutil
 import signal
 import stat
 import struct
@@ -565,6 +566,20 @@ class SharedFixture(PrivilegedFixture):
         for path in roots.values():
             path.mkdir(mode=0o770); os.chown(path,0,self.gid); path.chmod(0o2770)
         self.install_root=Path(tempfile.mkdtemp(prefix='phonefarm-shared-install-',dir='/')); self.install_root.chmod(0o755)
+        # GitHub's checkout can sit below runner-private ancestors. Copy only
+        # the real modules/tools used by this chain into our new trusted tree;
+        # never chmod the checkout or make its parent directories traversable.
+        node_source=self.install_root/'node-source'; node_source.mkdir(mode=0o755)
+        for source in sorted(NODE.glob('*.py')):
+            target=node_source/source.name
+            shutil.copyfile(source,target); target.chmod(0o644)
+        tools=self.install_root/'bin'; tools.mkdir(mode=0o755)
+        phonefarm=tools/'phonefarm'; devlock=tools/'devlock'
+        shutil.copyfile(self.phonefarm,phonefarm); phonefarm.chmod(0o755)
+        shutil.copyfile(self.devlock,devlock); devlock.chmod(0o755)
+        self.report['fixture_copies']={'node_source':str(node_source),'node_original':str(NODE),
+            'phonefarm':str(phonefarm),'phonefarm_original':str(self.phonefarm),
+            'devlock':str(devlock),'devlock_original':str(self.devlock)}
         device=self.device()
         fake=self.install_root/'fake-adb'
         fixture_env={'QA_GRAY_CAPTURE_DEVICE':str(device),'QA_GRAY_CAPTURE_LOG':str(self.transport_log),
@@ -574,11 +589,11 @@ class SharedFixture(PrivilegedFixture):
                         +'os.environ.update('+repr(fixture_env)+')\n'+FAKE_ADB)
         fake.chmod(0o755)
         prefix=self.install_root/'worker'
-        self.command(['/usr/bin/python3',str(NODE/'install_worker.py'),'--prefix',str(prefix),
+        self.command(['/usr/bin/python3',str(node_source/'install_worker.py'),'--prefix',str(prefix),
             '--jobs-root',str(jobs_root),'--cgroup-root',str(self.cgroup_root),
             '--node-uid',str(self.node_uid),'--node-gid',str(self.node_gid),'--job-uid',str(self.uid),'--job-gid',str(self.gid),
             '--phonefarm-state-dir',str(roots['state']),'--devlock-dir',str(roots['locks']),
-            '--phonefarm-lease-dir',str(roots['device-leases']),'--adb-bin',str(fake),'--devlock-bin',str(self.devlock)])
+            '--phonefarm-lease-dir',str(roots['device-leases']),'--adb-bin',str(fake),'--devlock-bin',str(devlock)])
         installed=json.loads(self.report['commands'][-1]['stdout']); save(self.artifacts/'installation.json',installed)
         config=(prefix/'worker.json').stat()
         assert config.st_uid==0 and config.st_gid==self.node_gid and stat.S_IMODE(config.st_mode)==0o640
@@ -589,8 +604,8 @@ class SharedFixture(PrivilegedFixture):
         self.jid=self.nonce[:12]; self.job=jobs_root/self.jid; self.store=SafeRoot(jobs_root)
         (self.scratch/'node-helper.py').write_text(NODE_HELPER); (self.scratch/'node-helper.py').chmod(0o644)
         plan={'prefix':str(prefix),'entry':installed['entry'],'jobs_root':str(jobs_root),'node_root':str(node_root),
-            'node_source':str(NODE),'jid':self.jid,'node_uid':self.node_uid,'node_gid':self.node_gid,
-            'job_uid':self.uid,'job_gid':self.gid,'phonefarm':str(self.phonefarm),'devlock':str(self.devlock),
+            'node_source':str(node_source),'jid':self.jid,'node_uid':self.node_uid,'node_gid':self.node_gid,
+            'job_uid':self.uid,'job_gid':self.gid,'phonefarm':str(phonefarm),'devlock':str(devlock),
             'control':str(control),'package':PKG,'serial':fixture_env['QA_GRAY_CAPTURE_SERIAL'],
             'fake_adb':str(fake),'state_root':str(roots['state']),'lock_root':str(roots['locks']),
             'device_lease_root':str(roots['device-leases'])}
