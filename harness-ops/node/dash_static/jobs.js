@@ -309,6 +309,13 @@
     $('lease-storage-details').hidden = !storage;
     facts('lease-storage-paths', storage ? [['状态根', storage.state_dir], ['兼容锁目录', storage.devlock_dir], ['设备 lease 根', storage.device_lease_dir]] : []);
   }
+  function hostProcessFacts(entry) {
+    if (entry.role !== 'device_lease') return [];
+    const host = entry.host_process;
+    const status = !host ? '未提供' : ({alive: '同一宿主实例存活', previous_boot: '来自先前宿主启动', exited: '宿主 owner 已退出', zombie: '宿主 owner 已退出（僵尸态）', pid_reused: '宿主 PID 已被复用', legacy: '旧记录未记录宿主实例', unknown: '宿主实例无法确认'})[host.status] || '宿主实例无法确认';
+    return [['宿主 owner 实例', status], ...(host ? [['宿主 PID', host.pid], ['宿主进程启动身份', host.start], ['宿主 boot ID', host.host_boot_id], ['宿主身份原因', host.reason]] : []),
+      ['身份核查范围', '仅宿主 owner 实例；不证明原进程组已结束或设备已恢复。']];
+  }
   function renderLease(lease, error = '') {
     leaseSnapshot = lease || null;
     const storageBlocked = leaseStorageBlocked(lease);
@@ -325,7 +332,7 @@
       details.append(el('summary', `${role}${entry.serial ? ` · ${entry.serial}` : ''} · ${label}`));
       const info = el('dl', null, 'facts');
       const holder = entry.holder_verified === true ? '已核验' : entry.holder_verified === false ? '核验未通过' : entry.role === 'device_lease' ? '不适用（设备租约）' : '未知';
-      for (const [name, value] of [['标签（仅展示）', entry.label], ['实例 ID', entry.instance_id], ['关联外层实例', entry.outer_instance_id], ['外层持有者核验', holder], ['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
+      for (const [name, value] of [['标签（仅展示）', entry.label], ['实例 ID', entry.instance_id], ['关联外层实例', entry.outer_instance_id], ['外层持有者核验', holder], ...hostProcessFacts(entry), ['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
       details.append(info);
       if (entry.job_id) details.append(openJobButton(entry.job_id, `关联任务 ${entry.job_id}`));
       if (entry.recovery_context != null) details.append(el('pre', typeof entry.recovery_context === 'string' ? entry.recovery_context : JSON.stringify(entry.recovery_context, null, 2), 'lease-context'));
