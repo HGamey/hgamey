@@ -14,6 +14,7 @@
   pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
   pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
   pf-node session-recover <id> [--request-id ID] # 根据原任务绑定创建异步恢复任务，不等待完成
+  pf-node execution-reconcile <id> [--force]   # 异步核查原任务绑定域；force会结束域内残留进程
   pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
   pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
@@ -54,6 +55,9 @@
   只查询一次，保留服务端错误码；泛404不是 not_found，网络错误为 network_error，不代表请求未提交。
 - session-recover 由节点绑定原会话与设备，不接收路径。提交前打印 request_id；超时后用 request 查询，
   或 session-recover 原任务 --request-id 原ID 重试，不换 ID 重复创建。新任务仍需核查恢复结果与原资源保留。
+- execution-reconcile 只核查原任务绑定域，不重放命令、不新建实验任务；普通核查不杀进程。
+  --force 明确允许结束域内残留进程，再核查域空与输出交还。只POST一次，超时仅用 status 原任务核对，
+  不自动重发或等待。complete仅为宿主收尾，不代表设备恢复、队列释放，原失联/失败事实保留。
 - 画质检查点沿 session-action，需 action_capabilities.quality=1 与当前 controller/epoch：
   {"schema":"phonefarm/gray-control-action@1","request_id":"quality-begin-1","session_id":"SESSION",
    "actor_id":"agent","control_epoch":1,"action":"quality","params":{"op":"begin","label":"scene-dusk-01"}}
@@ -442,6 +446,34 @@ def session_status_json(path):
     raise SystemExit(1)
 
 
+def execution_reconcile_command(args):
+    if (len(args) not in (2, 3) or not re.fullmatch(r"[0-9a-f]{12}", args[1])
+            or (len(args) == 3 and args[2] != "--force")):
+        sys.exit("用法: pf-node execution-reconcile <任务 id> [--force]")
+    try:
+        node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
+    except (ClientError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as error:
+        sys.exit(f"pf-node: 无法核对执行域核查能力：{error}；未发送核查")
+    if "jobs.execution-reconcile-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点未提供 jobs.execution-reconcile-v1；未发送核查")
+    force = len(args) == 3
+    lookup = f"pf-node status {args[1]}"
+    print(f"pf-node: {'强制操作会结束绑定域内残留进程，再核查并交还输出' if force else '普通核查不杀进程'}；"
+          f"仅提交一次，不重放命令。用 {lookup} 查询原任务，不等待核查结束。", file=sys.stderr, flush=True)
+    try:
+        result = json.loads(call("POST", f"/jobs/{args[1]}/execution/reconcile", json.dumps({"force": force}).encode(),
+                                 {"Content-Type": "application/json"}, attempts=1, raise_errors=True))
+        if result.get("accepted") is not True or (result.get("job") or {}).get("id") != args[1]:
+            raise ValueError("核查回包未确认原任务")
+    except (ClientError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError,
+            ValueError, AttributeError, KeyboardInterrupt) as error:
+        print(f"pf-node: 核查提交未确认：{error}；请先用 {lookup} 核对，不自动重发 POST。", file=sys.stderr)
+        raise SystemExit(130 if isinstance(error, KeyboardInterrupt) else 1)
+    print(json.dumps(result, ensure_ascii=False))
+    print(f"pf-node: 已接受原任务核查；用 {lookup} 读取 reconciliation 与 handoff。"
+          "complete 只表示宿主域空与输出交还，不代表设备恢复或队列资源释放，原失联/失败记录保留。", file=sys.stderr)
+
+
 def session_recover_command(args, request_id=None):
     if (len(args) not in (2, 4) or not re.fullmatch(r"[0-9a-f]{12}", args[1])
             or (len(args) == 4 and args[2] != "--request-id")):
@@ -588,6 +620,8 @@ def main():
             sys.exit("pf-node: 恢复任务继承父任务资源，不能同时使用 --resource")
     elif recovery_for is not None:
         sys.exit("pf-node: --recovery-for 必须与 --device-access recovery 一起使用")
+    if args[0] == "execution-reconcile":
+        return execution_reconcile_command(args)
     if args[0] == "session-recover":
         return session_recover_command(args, request_id)
     if args[0] in ("session-status", "session-action"):

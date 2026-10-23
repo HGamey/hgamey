@@ -69,16 +69,20 @@ def phonefarm_environment(config):
     return {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", **value}
 
 
-def node_environment(prefix, jobs_root=None):
+def node_configuration(prefix, jobs_root=None):
     """Read the same immutable, non-secret configuration as the fixed worker."""
     config = configuration(Path(prefix))
     if os.geteuid() != config["node_uid"] or os.getegid() != config["node_gid"]:
         raise ValueError("node identity does not match installed worker configuration")
-    if config["gid"] not in {*os.getgroups(), os.getegid()}:
+    if config.get("pf_env") and config["gid"] not in {*os.getgroups(), os.getegid()}:
         raise ValueError("node process must already belong to the dedicated PF sharing group")
     if jobs_root is not None and os.path.realpath(jobs_root) != os.path.realpath(config["jobs_root"]):
         raise ValueError("node jobs root does not match installed worker configuration")
-    env = phonefarm_environment(config)
+    return config
+
+
+def node_environment(prefix, jobs_root=None):
+    env = phonefarm_environment(node_configuration(prefix, jobs_root))
     if env is None:
         raise ValueError("installed worker has no shared PF profile")
     return env

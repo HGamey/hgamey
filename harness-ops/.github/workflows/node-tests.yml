@@ -44,6 +44,13 @@ jobs:
             timeout --signal=TERM --kill-after=10s 90s /usr/bin/python3 \
             node/tests/integration_job_privileged.py \
             --artifact-dir "$RUNNER_TEMP/job-privileged-worker"
+      - name: Lost worker domain reconciliation and output handback
+        id: reconcile
+        run: |
+          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            timeout --signal=TERM --kill-after=10s 120s /usr/bin/python3 \
+            node/tests/integration_job_reconcile.py \
+            --artifact-dir "$RUNNER_TEMP/job-execution-reconcile"
       - name: Preserve kernel observations and raw worker files
         if: always()
         uses: actions/upload-artifact@v4
@@ -58,6 +65,14 @@ jobs:
         with:
           name: job-privileged-worker-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/job-privileged-worker
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve lost worker and reconciliation observations
+        if: always() && steps.reconcile.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-execution-reconcile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/job-execution-reconcile
           if-no-files-found: error
           retention-days: 14
   pf-shared-kernel:

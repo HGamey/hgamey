@@ -254,6 +254,19 @@
           </form>
           <details id="execution-details" class="execution-details"><summary>停止请求、信号与恢复记录</summary><dl id="execution-info" class="facts"></dl><ul id="cancel-signals" class="cancel-signals"></ul></details>
         </section>
+        <section id="execution-reconcile-panel" class="execution-panel" aria-labelledby="execution-reconcile-heading" hidden>
+          <div class="section-heading"><h3 id="execution-reconcile-heading">宿主执行域核查</h3><button id="execution-reconcile-refresh" class="ghost" type="button">读取原任务状态</button></div>
+          <p id="execution-reconcile-help" class="note"></p>
+          <div class="execution-actions"><button id="execution-reconcile-check" class="ghost" type="button" disabled>核查执行域</button><button id="execution-reconcile-force-open" class="ghost danger" type="button" disabled>强制结束并交还…</button></div>
+          <form id="execution-reconcile-force-form" class="force-form" hidden>
+            <p>强制操作会结束原任务绑定域内的残留进程，再核查域空并交还输出；可能中断未完成的设备还原。普通核查不会杀进程。</p>
+            <label><input id="execution-reconcile-force-confirm" type="checkbox" required> 我已核查，并确认结束绑定域内的残留进程。</label>
+            <div class="execution-actions"><button id="execution-reconcile-force-submit" class="ghost danger" type="submit" disabled>强制结束并交还</button><button id="execution-reconcile-force-dismiss" class="ghost" type="button">返回</button></div>
+          </form>
+          <dl id="execution-reconcile-info" class="facts"></dl>
+          <p class="note">只核查宿主绑定域和输出交还，不重放原命令。complete 不代表设备已恢复或队列资源已释放，原任务的失联、失败与退出记录继续保留。</p>
+          <p id="execution-reconcile-result" class="cancel-result" role="status" hidden></p>
+        </section>
         <section id="finalize-panel" class="execution-panel" aria-labelledby="finalize-heading" hidden>
           <div class="section-heading"><h3 id="finalize-heading">结果保存</h3><button id="retry-finalize" class="ghost" type="button" disabled>重试保存结果</button></div>
           <p id="finalize-help" class="note"></p>

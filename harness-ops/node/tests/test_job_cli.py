@@ -330,6 +330,43 @@ class JobCLI(unittest.TestCase):
         self.assertIn("独立 worker", stderr.getvalue())
         self.assertIn("不是任务终态", stderr.getvalue())
 
+    def test_execution_reconcile_is_explicit_single_post_without_follow(self):
+        cli = self.load_cli()
+        node = b'{"capabilities":["jobs.execution-reconcile-v1"]}'
+        for force in (False, True):
+            result = {"accepted": True, "job": {"id": JOB, "state": "finished", "phase": "interrupted",
+                      "outcome": "interrupted", "lost": True, "queue": {"state": "blocked"},
+                      "execution": {"reconciliation": {"state": "requested", "force": force},
+                                    "containment": {"handoff": {"status": "pending"}}}}}
+            call = mock.Mock(side_effect=[node, json.dumps(result).encode()])
+            stdout, stderr, follow = io.StringIO(), io.StringIO(), mock.Mock()
+            with mock.patch.dict(cli["main"].__globals__, call=call, follow=follow), \
+                    mock.patch.object(sys, "argv", [str(CLI), "execution-reconcile", JOB] + (["--force"] if force else [])), \
+                    contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                cli["main"]()
+            self.assertEqual(json.loads(stdout.getvalue()), result)
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_args_list[0].args, ("GET", "/node"))
+            self.assertEqual(call.call_args.args[:2], ("POST", f"/jobs/{JOB}/execution/reconcile"))
+            self.assertEqual(json.loads(call.call_args.args[2]), {"force": force})
+            self.assertNotIn("X-Request-ID", call.call_args.args[3])
+            self.assertTrue(all(request.kwargs["attempts"] == 1 for request in call.call_args_list))
+            self.assertIn("结束绑定域内残留进程" if force else "普通核查不杀进程", stderr.getvalue())
+            self.assertIn("不代表设备恢复或队列资源释放", stderr.getvalue())
+            follow.assert_not_called()
+        for replies, expected_calls in (([b'{"capabilities":[]}'], 1), ([node, TimeoutError("fixture timeout")], 2)):
+            call, stderr = mock.Mock(side_effect=replies), io.StringIO()
+            with mock.patch.dict(cli["execution_reconcile_command"].__globals__, call=call), \
+                    contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as failed:
+                cli["execution_reconcile_command"](["execution-reconcile", JOB])
+            self.assertNotEqual(failed.exception.code, 0)
+            self.assertEqual(call.call_count, expected_calls)
+            if expected_calls == 2:
+                self.assertIn(f"pf-node status {JOB}", stderr.getvalue())
+                self.assertIn("不自动重发 POST", stderr.getvalue())
+            else:
+                self.assertIn("jobs.execution-reconcile-v1", str(failed.exception.code))
+
     def test_session_recover_submits_once_with_visible_id_and_bound_parent(self):
         cli = self.load_cli()
         recovery = {"id": "abcdef123456", "recovery_for": JOB, "state": "running", "phase": "queued"}

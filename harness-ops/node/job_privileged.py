@@ -3,16 +3,18 @@ import os
 import sys
 
 
-def worker_command(entry, jid, lock_fd):
+def worker_command(entry, jid, lock_fd, operation="run"):
     if not os.path.isabs(entry):
         raise ValueError("installed worker entry must be an absolute path")
-    return [sys.executable, os.path.abspath(__file__), entry, jid, str(lock_fd)]
+    if operation not in {"run", "reconcile", "reconcile-force"}:
+        raise ValueError("unknown fixed worker operation")
+    return [sys.executable, os.path.abspath(__file__), entry, jid, str(lock_fd), operation]
 
 
 def main():
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 5:
         raise ValueError("expected installed entry, job ID and inherited lock FD")
-    entry, jid, raw_fd = sys.argv[1:]
+    entry, jid, raw_fd, operation = sys.argv[1:]
     fd = int(raw_fd)
     if fd < 3 or not os.path.isabs(entry):
         raise ValueError("invalid worker handoff")
@@ -22,7 +24,10 @@ def main():
         os.close(fd)
     else:
         os.set_inheritable(3, True)
-    os.execve("/usr/bin/sudo", ["sudo", "-n", "-C", "4", "--", entry, jid],
+    if operation not in {"run", "reconcile", "reconcile-force"}:
+        raise ValueError("unknown fixed worker operation")
+    args = [jid] if operation == "run" else [jid, "--reconcile", *(["--force"] if operation == "reconcile-force" else [])]
+    os.execve("/usr/bin/sudo", ["sudo", "-n", "-C", "4", "--", entry, *args],
               {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
 
 

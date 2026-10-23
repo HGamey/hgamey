@@ -26,7 +26,7 @@
 
 job_cgroup提供仅供管理员隔离调用的Linux特权worker后端，公共node能力仍不可用；不得给HTTP服务提权代替生产启动边界。配置使用空的专用cgroup根与专用非root身份；作业只在入域确认后放行，域空后封存job根再完成。未确认的启动门/遗留域阻断身份复用，worker丢失不宣称自动回收。真实内核验收由独立cgroup-kernel CI承担，普通协议测试不改系统cgroup。
 
-install_worker仅由管理员显式安装到新的root-owned固定目录，输出sudo策略但不启用；不得提权执行node自更新树。固定入口只收job ID及runner锁FD，拒绝非contained与旧job重放；管理JSON归node，输出在域空封存后交还。跨UID PF实时会话、失联恢复与实际部署尚未验收，public contained保持不可用。
+install_worker仅由管理员显式安装到新的root-owned固定目录，输出sudo策略但不启用；不得提权执行node自更新树。固定入口只收job ID、有限reconcile/force选择及runner锁FD，拒绝非contained执行与旧job重放；管理JSON归node，输出在域空封存后交还。跨UID PF实时会话、失联恢复与实际部署尚未验收，public contained保持不可用。
 
 ## 作业保存边界
 
@@ -35,3 +35,5 @@ install_worker仅由管理员显式安装到新的root-owned固定目录，输�
 显式--worker-prefix让node lease/session reader共用可信安装中的PF路径与共享组配置，不开启contained准入。contained的lease-receipts由worker核空out后创建；普通process_group保留原准备流程。finished后的session查询按封存后的私有输出权限读取；配置不含服务凭据。
 
 显式PF共享profile也用于process_group的新out和lease-receipts，创建时设置同组2770；旧queued私有输出在启动前拒绝，不在线改权。未配置profile时仍使用原私有目录。
+
+显式execution reconcile仅由声明能力的固定安装提供，普通核查不杀进程；force只作用于核实boot/inode的绑定cgroup。保存handoff义务后才能改输出身份，下一次复用UID先核持久记录。宿主核查完成保留原lost/outcome与设备恢复义务；queue-release/session-recover共用宿主资格，不能以lease clear代替域空和私有输出交还。跨boot判断模型不等于真实主机重启验收。

@@ -458,6 +458,12 @@ class Dash:
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:
+            if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["execution", "reconcile"]:
+                if len(body) > MAX_REQUEST:
+                    return self._send(h, 413, {"error": "execution reconciliation exceeds 64 KiB"})
+                if set(data) - {"force"}:
+                    raise ValueError("execution reconciliation accepts only a force boolean")
+                return self._send(h, 200, self.job_service.reconcile_execution(sub[2], force=data.get("force", False)))
             if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["session", "recover"]:
                 if data:
                     raise ValueError("session recovery body must be an empty object; source paths and serial are derived by the node")

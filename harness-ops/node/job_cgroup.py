@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
@@ -19,6 +20,74 @@ from artifact_io import SafeRoot, open_child
 
 CGROUP2_SUPER_MAGIC = 0x63677270
 GATE = 'IFS= read -r gate && [ "$gate" = GO ] || exit 125; unset PWD OLDPWD SHLVL _; exec "$@" </dev/null'
+CONTAINMENT_SCHEMA = "phonefarm/job-containment@1"
+
+
+def _boot_id():
+    value = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value):
+        raise ValueError("host boot identity is unavailable")
+    return value
+
+
+def _binding(value):
+    if not isinstance(value, dict) or value.get("schema") != CONTAINMENT_SCHEMA:
+        raise ValueError("contained job has no supported persistent domain identity")
+    if (not isinstance(value.get("host_boot_id"), str)
+            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["host_boot_id"])):
+        raise ValueError("contained job has no valid host boot identity")
+    for key in ("uid", "gid", "node_uid", "node_gid", "inode", "dev"):
+        if type(value.get(key)) is not int or value[key] < (0 if key in ("node_uid", "node_gid", "dev") else 1):
+            raise ValueError("invalid contained identity: " + key)
+    if (not isinstance(value.get("cgroup_root"), str) or not os.path.isabs(value["cgroup_root"])
+            or not isinstance(value.get("name"), str) or not re.fullmatch(r"job-[0-9a-f]{12}", value["name"])):
+        raise ValueError("invalid contained domain location")
+    handoff = value.get("handoff")
+    if (not isinstance(handoff, dict) or handoff.get("status") not in ("pending", "returned")
+            or type(handoff.get("at")) not in (int, float)):
+        raise ValueError("invalid contained output handoff")
+    return value
+
+
+def completion_problem(meta):
+    """Local execution/handback evidence only; never certifies device recovery."""
+    execution = meta.get("execution") or {}
+    if not isinstance(execution, dict):
+        return "invalid contained execution record"
+    group = execution.get("owned_cgroup") or {}
+    if not isinstance(group, dict):
+        return "invalid owned cgroup observation"
+    value = execution.get("containment")
+    if value is None:
+        reconciliation = execution.get("reconciliation") or {}
+        if (not group and not execution.get("process_management")
+                and isinstance(reconciliation, dict) and reconciliation.get("state") == "complete"
+                and reconciliation.get("basis") == "unstarted_empty_domain"):
+            return None
+        # A refused admission or pre-start cancellation never handed out the UID.
+        if (not group and (execution.get("process_management") or {}).get("policy") != "contained"
+                and meta.get("phase") == "finished" and not meta.get("lost")
+                and (meta.get("recovery") or {}).get("status") == "not_needed"):
+            return None
+        if meta.get("phase") == "finished" and not meta.get("lost") and group.get("status") == "absent":
+            return None  # Pre-02B3 normal completion; caller also checks private output.
+        return "contained execution lacks confirmed domain completion"
+    try:
+        value = _binding(value)
+    except ValueError as error:
+        return str(error)
+    if (group.get("status") != "absent" or group.get("scope") != "owned_cgroup"
+            or group.get("path") != os.path.join(value["cgroup_root"], value["name"])):
+        return "owned cgroup has not been confirmed absent"
+    if value["handoff"]["status"] != "returned":
+        return "contained output handoff has not completed"
+    reconciliation = execution.get("reconciliation")
+    if (meta.get("lost") or meta.get("phase") == "interrupted") and (
+            not isinstance(reconciliation, dict) or reconciliation.get("state") != "complete"):
+        return "interrupted contained job requires execution reconciliation"
+    if reconciliation and (not isinstance(reconciliation, dict) or reconciliation.get("state") != "complete"):
+        return "contained domain reconciliation has not completed"
+    return None
 
 
 def _libc():
@@ -51,16 +120,22 @@ def _populated(fd):
 
 
 class Domain:
-    def __init__(self, config_path, jid):
+    def __init__(self, config_path, jid, existing=None, unstarted=False):
         self.root = self.group = None
         self.job_fd = self.output_fd = None
+        self.store = self.meta = self.binding = None
+        self.jid = jid
         self.output_pending = False
         self.events = self.procs = self.kill_fd = None
+        self.absence_basis = None
         self.name = "job-" + jid
         self.created = False
         self.unconfirmed_gate = False
         if sys.platform != "linux" or os.geteuid() != 0:
             raise ValueError("contained worker requires Linux and a privileged worker identity")
+        if not re.fullmatch(r"[0-9a-f]{12}", jid):
+            raise ValueError("contained job ID must be 12 lowercase hex characters")
+        self.host_boot_id = _boot_id()
         self.libc = _libc()  # Load before the single-threaded worker forks.
         if isinstance(config_path, dict):
             # Only the fixed privileged entry passes an already validated config.
@@ -93,18 +168,46 @@ class Domain:
             fcntl.flock(self.root.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if self.root.read_bytes("cgroup.type", 64).strip() != b"domain":
                 raise ValueError("contained root must be a domain cgroup")
-            with self.root.open_file("cgroup.events") as f:
-                if _populated(f.fileno()):
-                    raise ValueError("contained root still has members; recovery is required")
-            if any(stat.S_ISDIR(os.stat(name, dir_fd=self.root.fd, follow_symlinks=False).st_mode)
-                   for name in os.listdir(self.root.fd)):
-                raise ValueError("prior contained domain remains; reconcile its records before identity reuse")
-            os.mkdir(self.name, mode=0o755, dir_fd=self.root.fd)
-            self.created = True
-            self.group = self.root.open_fd(self.name, directory=True)
-            self.events = open_child(self.group, "cgroup.events", directory=False)
-            self.procs = os.open("cgroup.procs", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.group)
-            self.kill_fd = os.open("cgroup.kill", os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.group)
+            children = [name for name in os.listdir(self.root.fd)
+                        if stat.S_ISDIR(os.stat(name, dir_fd=self.root.fd, follow_symlinks=False).st_mode)]
+            if existing is None and not unstarted:
+                with self.root.open_file("cgroup.events") as f:
+                    if _populated(f.fileno()):
+                        raise ValueError("contained root still has members; recovery is required")
+                if children:
+                    raise ValueError("prior contained domain remains; reconcile its records before identity reuse")
+                os.mkdir(self.name, mode=0o755, dir_fd=self.root.fd)
+                self.created = True
+                self._open_group()
+            elif unstarted:
+                if children != [self.name] or self.root.read_bytes("cgroup.procs", 1 << 16).strip():
+                    raise ValueError("unstarted cleanup requires only the named empty domain")
+                self.output_pending = True  # No cleanup until private paths are proven.
+                self._open_group()
+                if self.observe()["status"] != "absent":
+                    raise ValueError("unstarted domain is not confirmed empty")
+            else:
+                self.binding = _binding(existing)
+                expected = {"uid": self.uid, "gid": self.gid, "node_uid": self.node_uid,
+                            "node_gid": self.node_gid, "cgroup_root": str(self.root_path), "name": self.name}
+                if any(existing[key] != value for key, value in expected.items()):
+                    raise ValueError("saved domain identity differs from the fixed worker configuration")
+                if any(name != self.name for name in children) or self.root.read_bytes("cgroup.procs", 1 << 16).strip():
+                    raise ValueError("another contained domain or root member prevents reconciliation")
+                self.output_pending = True
+                if self.name in children:
+                    info = os.stat(self.name, dir_fd=self.root.fd, follow_symlinks=False)
+                    if (existing["host_boot_id"] != self.host_boot_id
+                            or (existing["dev"], existing["inode"]) != (info.st_dev, info.st_ino)):
+                        raise ValueError("current cgroup does not match the saved boot/inode identity")
+                    self._open_group()
+                    self.created = True  # Only this verified domain may be retired.
+                elif existing["host_boot_id"] != self.host_boot_id:
+                    self.absence_basis = "previous_boot"
+                elif existing["handoff"]["status"] == "returned":
+                    self.absence_basis = "previously_returned"
+                else:
+                    raise ValueError("saved cgroup is missing in the same boot; ownership is unknown")
             # Check access using the *dropped* identity in preexec, including ACLs.
             # Ancestor migration entrypoints must be inaccessible to that identity.
             self.protected = []
@@ -115,6 +218,99 @@ class Domain:
         except BaseException:
             self.close()
             raise
+
+    def _open_group(self):
+        self.group = self.root.open_fd(self.name, directory=True)
+        _root_owned(self.group, "contained domain")
+        if self.root.read_bytes(self.name + "/cgroup.type", 64).strip() != b"domain":
+            raise ValueError("owned cgroup is not a domain")
+        self.events = open_child(self.group, "cgroup.events", directory=False)
+        self.procs = os.open("cgroup.procs", os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.group)
+        self.kill_fd = os.open("cgroup.kill", os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.group)
+
+    def retire_unstarted(self, store):
+        for rel in (self.jid, self.jid + "/out"):
+            fd = store.open_fd(rel, directory=True)
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != self.node_uid or stat.S_IMODE(info.st_mode) != 0o700:
+                    raise ValueError("unstarted cleanup requires private node-owned job and output")
+            finally:
+                os.close(fd)
+        if self.observe()["status"] != "absent":
+            raise ValueError("unstarted domain is not confirmed empty")
+        # No output was handed out, and GO could not precede the absent actual
+        # membership record. Only retire this empty directory, not producer data.
+        self.created, self.output_pending = True, False
+        self.retire()
+
+    def check_reuse(self, store):
+        """The cgroup root flock also serializes the persistent UID reuse check."""
+        for jid in os.listdir(store.fd):
+            if jid == self.jid or not re.fullmatch(r"[0-9a-f]{12}", jid):
+                continue
+            job = store.open_fd(jid, directory=True)
+            try:
+                info = os.fstat(job)
+                private = info.st_uid == self.node_uid and stat.S_IMODE(info.st_mode) == 0o700
+                job_owned_output = False
+                try:
+                    out = open_child(job, "out", directory=True)
+                except FileNotFoundError:
+                    output_private = private
+                else:
+                    try:
+                        info = os.fstat(out)
+                        job_owned_output = info.st_uid == self.uid
+                        output_private = info.st_uid == self.node_uid and stat.S_IMODE(info.st_mode) == 0o700
+                    finally:
+                        os.close(out)
+            finally:
+                os.close(job)
+            try:
+                meta = store.read_json(jid + "/meta.json")
+            except FileNotFoundError:
+                if private and output_private:
+                    continue  # Input preparation never handed this directory out.
+                raise ValueError("unclassified unsealed job prevents identity reuse: " + jid)
+            execution = meta.get("execution") or {}
+            if not isinstance(execution, dict):
+                raise ValueError("invalid execution record prevents identity reuse: " + jid)
+            record = execution.get("containment")
+            managed = (execution.get("process_management") or {}).get("policy") == "contained"
+            if record is not None:
+                _binding(record)
+                if (record["uid"], record["gid"], record["node_uid"], record["node_gid"]) != (
+                        self.uid, self.gid, self.node_uid, self.node_gid) or record["name"] != "job-" + jid or record["cgroup_root"] != str(self.root_path):
+                    raise ValueError("prior contained identity differs from configured identities: " + jid)
+                problem = completion_problem(meta)
+                if problem or not private or not output_private:
+                    raise ValueError("prior contained job requires reconciliation: " + jid + ": " + (problem or "output is not private"))
+            elif managed or execution.get("owned_cgroup") is not None:
+                if completion_problem(meta) or not private or not output_private:
+                    raise ValueError("legacy contained job has no confirmed private completion: " + jid)
+            elif not private or job_owned_output or meta.get("execution_policy") == "contained" and not output_private:
+                raise ValueError("unsealed contained job lacks persistent identity: " + jid)
+
+    def bind_files(self, store, jid, meta, new=False):
+        """Pin output and publish the obligation before any identity/permission change."""
+        self.job_fd = store.open_fd(jid, directory=True)
+        info = os.fstat(self.job_fd)
+        if info.st_uid != self.node_uid or info.st_mode & 0o022:
+            raise ValueError("job directory does not belong to the configured node")
+        self.output_fd = open_child(self.job_fd, "out", directory=True)
+        if os.fstat(self.output_fd).st_uid not in (self.uid, self.node_uid):
+            raise ValueError("contained output belongs to an unrelated identity")
+        self.store, self.meta = store, meta
+        if new:
+            info = os.fstat(self.group)
+            self.binding = {"schema": CONTAINMENT_SCHEMA, "host_boot_id": self.host_boot_id,
+                            "uid": self.uid, "gid": self.gid, "node_uid": self.node_uid, "node_gid": self.node_gid,
+                            "cgroup_root": str(self.root_path), "name": self.name, "inode": info.st_ino, "dev": info.st_dev,
+                            "handoff": {"status": "pending", "at": time.time()}}
+        self.output_pending = True
+        meta["execution"]["containment"] = self.binding
+        store.write_json(jid + "/meta.json", meta)
 
     def prepare_files(self, store, jid, job_dir):
         def node_owned(fd, label):
@@ -138,10 +334,9 @@ class Domain:
                     raise ValueError("contained input cannot be a hard link")
                 os.fchmod(fd, 0o555 if st.st_mode & 0o111 else 0o444)
 
-        fd = store.open_fd(jid, directory=True)
+        fd = os.dup(self.job_fd)
         try:
             node_owned(fd, "job directory")
-            self.job_fd = os.dup(fd)
             for name in os.listdir(fd):
                 if name in ("in", "out"):
                     continue
@@ -159,7 +354,7 @@ class Domain:
                 readonly(inp)
             finally:
                 os.close(inp)
-            out = open_child(fd, "out", directory=True)
+            out = os.dup(self.output_fd)
             try:
                 node_owned(out, "initial job output")
                 if os.listdir(out):
@@ -174,7 +369,6 @@ class Domain:
                                 raise ValueError(key + " must be an existing dedicated group directory with mode 02770")
                         finally:
                             root.close()
-                self.output_fd = os.dup(out)
                 self.output_pending = True
                 os.fchown(out, self.uid, self.gid)
                 os.fchmod(out, 0o2770 if self.pf_env is not None else 0o700)
@@ -246,6 +440,9 @@ class Domain:
             raise
 
     def observe(self):
+        if self.absence_basis is not None:
+            return {"scope": "owned_cgroup", "status": "absent", "path": str(self.path),
+                    "checked_at": time.time(), "error": None, "basis": self.absence_basis}
         try:
             status, error = ("present" if _populated(self.events) else "absent"), None
         except (OSError, ValueError) as exc:
@@ -297,32 +494,100 @@ class Domain:
             hand_back(self.output_fd)
         if self.job_fd is not None:
             os.fsync(self.job_fd)
+        if self.binding is not None and self.store is not None:
+            self.binding["handoff"] = {"status": "returned", "at": time.time()}
+            self.meta["execution"]["containment"] = self.binding
+            self.meta["execution"]["owned_cgroup"] = self.observe()
+            self.store.write_json(self.jid + "/meta.json", self.meta)
         # Keep this pending after any failure, including a visible but unsynced
         # ownership change. close() must preserve the domain for reconciliation.
         self.output_pending = False
 
+    def retire(self):
+        empty = not self.unconfirmed_gate and self.events is not None and self.observe()["status"] == "absent"
+        if self.root is not None and self.created and empty and not self.output_pending:
+            current, opened = os.stat(self.name, dir_fd=self.root.fd, follow_symlinks=False), os.fstat(self.group)
+            if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise ValueError("owned cgroup changed before retirement")
+            os.rmdir(self.name, dir_fd=self.root.fd)
+            self.created = False
+
     def close(self):
         empty = not self.unconfirmed_gate and self.events is not None and self.observe()["status"] == "absent"
-        if empty:
-            self.seal_files()
-        for name in ("events", "procs", "kill_fd", "group"):
-            fd = getattr(self, name, None)
-            if fd is not None:
-                os.close(fd)
-                setattr(self, name, None)
-        if self.root is not None:
-            try:
-                if self.created and empty and not self.output_pending:
-                    os.rmdir(self.name, dir_fd=self.root.fd)
-            finally:
+        try:
+            if empty:
+                self.seal_files()
+            self.retire()
+        finally:
+            for name in ("events", "procs", "kill_fd", "group", "job_fd", "output_fd"):
+                fd = getattr(self, name, None)
+                if fd is not None:
+                    os.close(fd)
+                    setattr(self, name, None)
+            if self.root is not None:
                 self.root.close()
                 self.root = None
-        if self.job_fd is not None:
-            os.close(self.job_fd)
-            self.job_fd = None
-        if self.output_fd is not None:
-            os.close(self.output_fd)
-            self.output_fd = None
+
+
+def reconcile(store, jid, job_dir, config, force=False):
+    """Caller holds the real runner lock. Never execute the saved command."""
+    if type(force) is not bool or os.path.basename(os.path.abspath(job_dir)) != jid:
+        raise ValueError("invalid domain reconciliation request")
+    meta = store.read_json(jid + "/meta.json")
+    execution = meta.setdefault("execution", {})
+    request = execution.get("reconciliation") or {}
+    execution["reconciliation"] = {"state": "running", "force": force,
+                                   "requested_at": request.get("requested_at", time.time()),
+                                   "finished_at": None, "error": None}
+    store.write_json(jid + "/meta.json", meta)
+    domain = None
+
+    def result(state, error=None):
+        execution["reconciliation"].update(state=state, error=error, finished_at=time.time())
+        store.write_json(jid + "/meta.json", meta)
+        return 0 if state == "complete" else 1
+
+    try:
+        if execution.get("containment") is None:
+            if (execution.get("process_management") is not None or execution.get("owned_cgroup") is not None
+                    or store.read_json(jid + "/launch.json").get("execution_policy") != "contained"):
+                raise ValueError("missing domain binding cannot be inferred from an executed job")
+            domain = Domain(config, jid, unstarted=True)
+            domain.retire_unstarted(store)
+            execution["reconciliation"]["basis"] = "unstarted_empty_domain"
+            return result("complete")
+        domain = Domain(config, jid, existing=_binding(execution.get("containment")))
+        previous = execution.get("owned_cgroup") or {}
+        if domain.absence_basis == "previously_returned" and (
+                previous.get("status") != "absent" or previous.get("scope") != "owned_cgroup"
+                or previous.get("path") != str(domain.path)):
+            raise ValueError("missing same-boot domain has no matching completed observation")
+        domain.bind_files(store, jid, meta)
+        observed = domain.observe()
+        execution["owned_cgroup"] = observed
+        if observed["status"] == "unknown":
+            return result("blocked", observed["error"])
+        if observed["status"] == "present":
+            if not force:
+                return result("blocked", "owned cgroup still has members; explicit force is required")
+            domain.kill()
+            deadline = time.monotonic() + 15
+            while True:
+                observed = domain.observe()
+                execution["owned_cgroup"] = observed
+                if observed["status"] != "present" or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            if observed["status"] != "absent":
+                return result("blocked", observed["error"] or "owned cgroup did not become empty before the deadline")
+        domain.return_outputs()
+        domain.retire()
+        return result("complete")
+    except (OSError, ValueError, KeyError) as error:
+        return result("failed", f"{type(error).__name__}: {error}")
+    finally:
+        if domain is not None:
+            domain.close()
 
 
 def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
@@ -332,6 +597,8 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
     try:
         try:
             domain = Domain(config_path, jid)
+            domain.check_reuse(store)
+            domain.bind_files(store, jid, meta, new=True)
             domain.prepare_files(store, jid, job_dir)
             log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_APPEND)
             try:

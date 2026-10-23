@@ -76,6 +76,44 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
         os.close(lock_fd)
 
 
+def launch_reconcile(store, jid, privileged_entry, force=False):
+    """Hand the original job lock to a fixed helper, without replaying launch.json."""
+    from job_privileged import worker_command
+    lock_fd = _open_file(store, jid + "/runner.lock", os.O_RDWR | os.O_CREAT)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("job already has a live worker") from None
+        meta = store.read_json(jid + "/meta.json")
+        if meta.get("phase") not in {"finished", "interrupted"}:
+            meta.update(state="finished", phase="interrupted", outcome="interrupted", exit=-1, lost=True,
+                        note="worker ownership lost; child termination and device recovery are unknown",
+                        recovery={"status": "required", "reason": "worker disappeared without a terminal receipt"})
+        execution = meta["execution"]
+        if execution.get("reconciliation"):
+            execution.setdefault("reconciliation_history", []).append(execution["reconciliation"])
+        operation = {"state": "requested", "force": force, "requested_at": time.time(), "error": None}
+        execution["reconciliation"] = operation
+        store.write_json(jid + "/meta.json", meta)
+        try:
+            diag_fd = _open_file(store, jid + "/runner.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+            try:
+                return subprocess.Popen(
+                    worker_command(privileged_entry, jid, lock_fd, "reconcile-force" if force else "reconcile"),
+                    env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, stdin=subprocess.DEVNULL,
+                    stdout=diag_fd, stderr=subprocess.STDOUT, pass_fds=(lock_fd,), start_new_session=True)
+            finally:
+                os.close(diag_fd)
+        except (OSError, ValueError) as error:
+            operation.update(state="failed", finished_at=time.time(), error=f"{type(error).__name__}: {error}")
+            store.write_json(jid + "/meta.json", meta)
+            raise
+    finally:
+        # The fixed helper inherits this open description, including its flock.
+        os.close(lock_fd)
+
+
 @contextmanager
 def runner_lock(store, jid):
     """Exclude a worker while committing its stable result; never wait for it."""

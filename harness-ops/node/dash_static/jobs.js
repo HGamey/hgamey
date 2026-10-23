@@ -13,6 +13,7 @@
   let currentJob = null, access = null, accessRevision = 0, accessBusy = false, accessError = '';
   const cancelling = new Set(), cancelReceipts = new Map(), releasing = new Set(), releaseReceipts = new Map();
   const finalizing = new Set(), finalizeReceipts = new Map();
+  const reconciling = new Set(), reconcileReceipts = new Map();
   let nodeInfo = null, leaseSnapshot = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
   const REQUEST_STORAGE = 'hgamey.pending-job-request';
   const PHASES = {preparing: '准备中', queued: '排队中', blocked: '资源保留 · 待核查', starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finalizing: '正在保存结束记录', storage_blocked: '结果保存失败 · 资源保留', finished: '已结束', interrupted: '执行中断'};
@@ -199,20 +200,93 @@
     $('queue-release-panel').hidden = !blocked;
     const releaseBusy = releasing.has(currentJob.id);
     const leaseBlocked = ['write', 'recovery'].includes(currentJob.device_access) && (leaseSnapshot?.status !== 'clear' || leaseStorageBlocked(leaseSnapshot));
+    const hostProblem = hostCompletionProblem(currentJob);
     $('recovery-prepare-panel').hidden = !blocked;
     $('prepare-recovery').disabled = !blocked || saving || !access?.steer || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
     message('recovery-prepare-help', saving ? '结束记录尚未提交，暂不能以此任务创建恢复任务。请先处理存储问题并重试保存结果。' : !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : '只预填恢复目标和模式；请由人或 Agent 填写实际恢复命令，执行后仍需核查并解除资源保留。');
     $('queue-release-note').disabled = releaseBusy;
-    $('queue-release-submit').disabled = !blocked || !access?.steer || accessBusy || releaseBusy || saving || leaseBlocked || !$('queue-release-note').value.trim();
+    $('queue-release-submit').disabled = !blocked || !access?.steer || accessBusy || releaseBusy || saving || !!hostProblem || leaseBlocked || !$('queue-release-note').value.trim();
     $('queue-release-submit').setAttribute('aria-busy', String(releaseBusy));
     $('queue-release-submit').textContent = releaseBusy ? '提交中…' : '确认解除资源保留';
-    message('queue-release-help', saving ? '结束记录尚未保存，不能通过解除资源保留绕过。请先处理存储问题并重试保存结果。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : leaseBlocked ? '设备写入或恢复任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。请核查屏障与存储状态后刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。');
+    message('queue-release-help', saving ? '结束记录尚未保存，不能通过解除资源保留绕过。请先处理存储问题并重试保存结果。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : hostProblem || (leaseBlocked ? '设备写入或恢复任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。请核查屏障与存储状态后刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。'));
     const released = releaseReceipts.get(currentJob.id);
     $('queue-release-result').hidden = !released;
     if (released) message('queue-release-result', released.message, released.error);
     renderFinalization(currentJob);
+    renderReconciliation(currentJob);
   }
   function storageFailed(job) { return job.phase === 'storage_blocked' || job.queue?.state_reason?.kind === 'durability'; }
+  function hostCompletionProblem(job, forSessionRecovery = false) {
+    const execution = job.execution || {};
+    const contained = job.execution_policy === 'contained' || execution.process_management?.policy === 'contained';
+    if (!contained && !forSessionRecovery) return '';
+    if ((forSessionRecovery && execution.kind !== 'supervised-v1') || execution.worker_alive !== false) return '原 worker 尚未确认结束，请先核查执行域；不能据此恢复会话或解除资源保留。';
+    if (!contained) return job.phase === 'finished' && !job.lost && execution.owned_process_group?.status === 'absent' ? '' : '原进程组结束尚未确认，不能提交会话恢复任务。';
+    const group = execution.owned_cgroup, reconciliation = execution.reconciliation;
+    if (!execution.containment) {
+      const noGroup = !group || Object.keys(group).length === 0;
+      if (noGroup && !execution.process_management && reconciliation?.state === 'complete' && reconciliation.basis === 'unstarted_empty_domain') return '';
+      if (job.phase === 'finished' && !job.lost && (group?.status === 'absent' || (noGroup && execution.process_management?.policy !== 'contained' && job.recovery?.status === 'not_needed'))) return '';
+      return '执行域结束与输出交还尚未确认，请先核查执行域。';
+    }
+    if (group?.status !== 'absent') return '执行域尚未确认为空，请先核查执行域。';
+    if (execution.containment.handoff?.status !== 'returned') return '执行域输出尚未确认交还，请先核查执行域。';
+    if ((reconciliation || job.lost || job.phase === 'interrupted') && reconciliation?.state !== 'complete') return '执行域核查尚未完成，请先读取核查状态。';
+    return '';
+  }
+  function reconciliationProblem(job) {
+    if (!nodeInfo?.capabilities?.includes('jobs.execution-reconcile-v1')) return '此节点未提供 jobs.execution-reconcile-v1，执行域核查入口不可用。';
+    if (storageFailed(job) || job.phase === 'finalizing') return '原任务结束记录尚未确认保存，请先处理结果保存。';
+    if (['requested', 'running'].includes(job.execution?.reconciliation?.state)) return '核查请求仍在处理中，请读取原任务状态；不会重复提交。';
+    if (job.state !== 'finished' || job.queue?.state !== 'blocked') return '原任务须已结束并保留队列资源，才能核查执行域。';
+    if (job.execution_policy !== 'contained' && job.execution?.process_management?.policy !== 'contained') return '此任务未声明或实际使用 contained，不能按约束域核查。';
+    if (job.execution?.worker_alive !== false) return '原 worker 尚未确认退出，不能接管核查执行域。';
+    return '';
+  }
+  function renderReconciliation(job) {
+    const record = job.execution?.reconciliation, handoff = job.execution?.containment?.handoff;
+    const receipt = reconcileReceipts.get(job.id), pending = reconciling.has(job.id);
+    const supported = nodeInfo?.capabilities?.includes('jobs.execution-reconcile-v1'), problem = reconciliationProblem(job);
+    $('execution-reconcile-panel').hidden = !supported && !record && !handoff && !receipt;
+    const disabled = !!problem || !access?.steer || accessBusy || pending || !!receipt?.unconfirmed;
+    $('execution-reconcile-check').disabled = disabled;
+    $('execution-reconcile-force-open').disabled = disabled;
+    $('execution-reconcile-force-submit').disabled = disabled || !$('execution-reconcile-force-confirm').checked;
+    for (const id of ['execution-reconcile-check', 'execution-reconcile-force-submit']) $(id).setAttribute('aria-busy', String(pending));
+    $('execution-reconcile-check').textContent = pending ? '正在提交核查…' : '核查执行域';
+    $('execution-reconcile-refresh').disabled = pending;
+    message('execution-reconcile-help', pending ? '只提交一次，接受请求不代表宿主收尾完成。' : receipt?.unconfirmed ? '上次请求结果未确认。请先读取原任务状态；不会自动重发核查或强制操作。' : problem || (!access?.steer || accessBusy ? '请先解锁任务操作权限。' : '普通核查不杀进程；仅检查当前绑定域，域空后交还输出。强制操作需单独确认。'));
+    facts('execution-reconcile-info', [['宿主核查状态', ({requested: '已请求，尚未完成', running: '核查中', blocked: '仍被阻断', complete: '宿主核查已完成', failed: '核查失败', unknown: '核查结果未知'})[record?.state] || '未提供'],
+      ['强制结束选择', typeof record?.force === 'boolean' ? record.force ? '是 · 可结束域内残留进程' : '否 · 不杀进程' : '未提供'],
+      ['请求时间', time(record?.requested_at)], ['结束时间', time(record?.finished_at)], ['核查错误', record?.error || '未报告'],
+      ['输出交还', ({pending: '待交还', returned: '已交还'})[handoff?.status] || '未提供'], ['交还记录时间', time(handoff?.at)]]);
+    $('execution-reconcile-result').hidden = !receipt;
+    if (receipt) message('execution-reconcile-result', receipt.message, receipt.error);
+  }
+  async function reconcileExecution(force) {
+    if (!currentJob || $(force ? 'execution-reconcile-force-submit' : 'execution-reconcile-check').disabled) return;
+    const id = currentJob.id, revision = detailRevision;
+    reconciling.add(id);
+    $('execution-reconcile-force-form').hidden = true;
+    $('execution-reconcile-force-confirm').checked = false;
+    renderControls();
+    try {
+      const result = await post(`${API}/jobs/${id}/execution/reconcile`, {force});
+      if (result.accepted !== true || result.job?.id !== id) throw new Error('核查回包未确认原任务，结果未知。');
+      reconcileReceipts.set(id, {message: `${force ? '强制结束并交还' : '执行域核查'}请求已接受，请读取原任务确认进度。宿主核查不代表设备恢复或资源释放。`, error: false});
+      if (selected === id && detailRevision === revision) {
+        currentJob = result.job;
+        const [label, kind] = status(currentJob);
+        $('job-state').textContent = label; $('job-state').className = `task-state ${kind}`;
+        $('detail-updated').textContent = readTime();
+        renderExecution(currentJob);
+      }
+    } catch (error) {
+      const uncertain = !error.status || error.status >= 500;
+      reconcileReceipts.set(id, {message: `${errorText(error)} ${uncertain ? '结果未确认，只能先读取原任务状态核对；不会自动重发。' : '请求未被接受，请核对原任务与节点条件。'}`, error: true, unconfirmed: uncertain});
+      if (error.status === 401 || error.status === 403) await loadAccess();
+    } finally { reconciling.delete(id); if (selected === id && currentJob?.id === id) renderControls(); }
+  }
   function renderFinalization(job) {
     const failed = storageFailed(job), saving = job.phase === 'finalizing';
     const receipt = finalizeReceipts.get(job.id), pending = finalizing.has(job.id);
@@ -695,6 +769,8 @@
     $('detail-content').hidden = true;
     $('force-form').hidden = true;
     $('force-confirm').checked = false;
+    $('execution-reconcile-force-form').hidden = true;
+    $('execution-reconcile-force-confirm').checked = false;
     $('queue-release-panel').open = false;
     $('queue-release-note').value = '';
     $('detail-placeholder').hidden = false;
@@ -709,6 +785,7 @@
       const job = await json(jobURL());
       if (revision !== detailRevision) return;
       currentJob = job;
+      if (reconcileReceipts.get(id)?.unconfirmed) reconcileReceipts.set(id, {message: '已重新读取原任务状态。请核对宿主核查与输出交还记录，再决定是否操作。', error: false});
       updateJobLeaseAccess();
       renderSessionControls();
       const [label, kind] = status(job);
@@ -811,6 +888,8 @@
     if (!currentJob || currentJob.id !== selected) return '请先读取原任务状态。';
     if (storageFailed(currentJob) || currentJob.phase === 'finalizing') return '原任务结束记录尚未确认保存，请先处理结果保存。';
     if (currentJob.state !== 'finished' || currentJob.queue?.state !== 'blocked') return '原任务须已结束并保留资源；请先刷新任务核对状态。';
+    const hostProblem = hostCompletionProblem(currentJob, true);
+    if (hostProblem) return hostProblem;
     if (!sessionFresh || sessionBusy || !sessionState) return '请先成功读取最新会话状态。';
     if (sessionState.phase !== 'recovery_required') return '当前会话没有报告需要继续恢复。';
     if (sessionState.live_owner !== false) return '原会话 owner 尚未确认退出，不能另建恢复任务。';
@@ -1726,6 +1805,18 @@
   $('unlock-dismiss').addEventListener('click', closeUnlock);
   $('cancel-job').addEventListener('click', () => cancelJob(false));
   $('retry-finalize').addEventListener('click', retryFinalize);
+  $('execution-reconcile-check').addEventListener('click', () => reconcileExecution(false));
+  $('execution-reconcile-refresh').addEventListener('click', () => { if (selected && !$('execution-reconcile-refresh').disabled) selectJob(selected, true); });
+  $('execution-reconcile-force-open').addEventListener('click', () => {
+    if ($('execution-reconcile-force-open').disabled) return;
+    $('execution-reconcile-force-form').hidden = false;
+    $('execution-reconcile-force-confirm').checked = false;
+    renderControls();
+    $('execution-reconcile-force-confirm').focus();
+  });
+  $('execution-reconcile-force-confirm').addEventListener('change', renderControls);
+  $('execution-reconcile-force-form').addEventListener('submit', event => { event.preventDefault(); reconcileExecution(true); });
+  $('execution-reconcile-force-dismiss').addEventListener('click', () => { $('execution-reconcile-force-form').hidden = true; $('execution-reconcile-force-confirm').checked = false; renderControls(); });
   $('force-open').addEventListener('click', () => { $('force-form').hidden = false; $('force-confirm').focus(); });
   $('force-confirm').addEventListener('change', renderControls);
   $('force-dismiss').addEventListener('click', () => { $('force-form').hidden = true; $('force-confirm').checked = false; renderControls(); });

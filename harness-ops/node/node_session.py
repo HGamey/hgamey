@@ -80,21 +80,17 @@ def recover_session(jobs, jid, request_id):
     if not row or row["state"] != "blocked" or status.get("state") != "finished":
         raise RequestConflict("session recovery requires a finished job with a blocked reservation")
     execution = status.get("execution") or {}
-    if (raw.get("phase") != "finished" or raw.get("lost")
-            or execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False):
+    if execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False:
         raise RequestConflict("source worker completion is unconfirmed; reconcile its execution domain first")
-    contained = (execution.get("process_management") or {}).get("policy") == "contained"
-    scope = "owned_cgroup" if contained else "owned_process_group"
-    if (execution.get(scope) or {}).get("status") != "absent":
-        raise RequestConflict("source " + scope + " must be confirmed absent before session recovery")
+    contained = (row["spec"].get("execution_policy") == "contained"
+                 or (execution.get("process_management") or {}).get("policy") == "contained")
     if contained:
-        fd = jobs._read_root.open_fd(jid + "/out", directory=True)
-        try:
-            st = os.fstat(fd)
-            if st.st_uid != os.geteuid() or st.st_mode & 0o7777 != 0o700:
-                raise RequestConflict("source output handback to the node's private identity is unconfirmed")
-        finally:
-            os.close(fd)
+        problem = jobs.host_completion_problem(jid, status)
+        if problem:
+            raise RequestConflict(problem + "; reconcile its execution domain before session recovery")
+    elif (raw.get("phase") != "finished" or raw.get("lost")
+          or (execution.get("owned_process_group") or {}).get("status") != "absent"):
+        raise RequestConflict("source original process group completion is unconfirmed")
     current = session_call(jobs, jid)
     if current.get("phase") != "recovery_required" or current.get("live_owner") is not False:
         raise RequestConflict("session must require recovery and have no live owner")

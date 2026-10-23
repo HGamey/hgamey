@@ -14,7 +14,7 @@ import job_runtime
 from worker_config import configuration
 
 
-def run(prefix, jid):
+def run(prefix, jid, *, reconcile=False, force=False):
     if sys.platform != "linux" or os.geteuid() != 0:
         raise ValueError("installed worker requires its configured privileged launcher")
     if not re.fullmatch(r"[0-9a-f]{12}", jid):
@@ -51,6 +51,10 @@ def run(prefix, jid):
         # This succeeds on the same inherited open description, or claims a
         # currently free lock. Another active worker's description blocks it.
         fcntl.flock(3, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.set_inheritable(3, False)
+        if reconcile:
+            from job_cgroup import reconcile as reconcile_domain
+            return reconcile_domain(store, jid, os.path.join(config["jobs_root"], jid), config, force=force)
         meta = store.read_json(jid + "/meta.json")
         execution = meta.get("execution") or {}
         if (meta.get("state") != "running" or meta.get("phase") not in ("preparing", "starting")
@@ -68,9 +72,10 @@ def run(prefix, jid):
 
 def main():
     try:
-        if len(sys.argv) != 2:
-            raise ValueError("installed worker accepts only a job ID; configuration paths are fixed")
-        return run(Path(__file__).parent, sys.argv[1])
+        args = sys.argv[1:]
+        if not args or args[1:] not in ([], ["--reconcile"], ["--reconcile", "--force"]):
+            raise ValueError("expected job ID with optional --reconcile [--force]; configuration paths are fixed")
+        return run(Path(__file__).parent, args[0], reconcile="--reconcile" in args, force="--force" in args)
     except BaseException:
         traceback.print_exc()
         return 1

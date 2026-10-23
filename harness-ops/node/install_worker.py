@@ -50,7 +50,8 @@ def main():
     trusted_path(prefix.parent, directory=True)
     config = {"schema": "phonefarm/worker-install@1", "jobs_root": str(args.jobs_root),
               "cgroup_root": str(args.cgroup_root), "node_uid": args.node_uid, "node_gid": args.node_gid,
-              "uid": args.job_uid, "gid": args.job_gid}
+              "uid": args.job_uid, "gid": args.job_gid,
+              "capabilities": ["jobs.execution-reconcile-v1"]}
     roots = (args.phonefarm_state_dir, args.devlock_dir, args.phonefarm_lease_dir)
     if any(roots):
         if not all(roots):
@@ -84,12 +85,10 @@ def main():
         entry.chmod(0o755)
         target = prefix / CONFIG_NAME
         target.write_text(json.dumps(config, indent=2) + "\n")
-        if "pf_env" in config:
-            # Contains only fixed paths and identities, never service credentials.
-            os.chown(target, 0, args.node_gid)
-            target.chmod(0o640)
-        else:
-            target.chmod(0o600)
+        # The node also needs the fixed entry for host-only reconciliation.
+        # This configuration contains paths and identities, never credentials.
+        os.chown(target, 0, args.node_gid)
+        target.chmod(0o640)
         configuration(prefix)
         sudoers = (f"Defaults!{entry} closefrom_override\n"
                    f"{account.pw_name} ALL=(root) NOPASSWD: {entry} *\n")

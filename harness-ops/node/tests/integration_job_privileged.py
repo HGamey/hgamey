@@ -196,7 +196,8 @@ class PrivilegedFixture(KernelFixture):
         assert installed['config'] == str(prefix/'worker.json')
         assert (prefix/'job_runtime.py').is_file() and (prefix/'job_privileged.py').is_file()
         assert all((prefix/name).stat().st_uid == 0 for name in ('phonefarm-worker','worker.json','job_runtime.py'))
-        assert stat.S_IMODE((prefix/'worker.json').stat().st_mode) == 0o600
+        assert stat.S_IMODE((prefix/'worker.json').stat().st_mode) == 0o640
+        assert (prefix/'worker.json').stat().st_gid == self.node_gid
         save(self.artifacts/'installation.json',installed)
         self.sudoers_path = Path('/etc/sudoers.d')/('phonefarm-integration-'+self.nonce)
         fd = os.open(self.sudoers_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o440)

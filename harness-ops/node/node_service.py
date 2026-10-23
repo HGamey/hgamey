@@ -195,10 +195,13 @@ class Jobs:
         self._read_root = SafeRoot(self.dir)
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
-        self.pf_env = None
+        self.pf_env, self.worker_entry = None, None
         if worker_prefix is not None:
-            from worker_config import node_environment
-            self.pf_env = node_environment(worker_prefix, self.dir)
+            from worker_config import node_configuration, phonefarm_environment
+            config = node_configuration(worker_prefix, self.dir)
+            self.pf_env = phonefarm_environment(config)
+            if "jobs.execution-reconcile-v1" in config.get("capabilities", []):
+                self.worker_entry = os.path.join(worker_prefix, "phonefarm-worker")
         self.leases = LeaseState(bins, env=self.pf_env)
         self.dispatch = JobDispatch(self, max_running)
         self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
@@ -385,6 +388,10 @@ class Jobs:
             terminal = True
         meta["state"] = "finished" if terminal else "running"
         meta["execution"]["worker_alive"] = alive
+        reconciliation = meta["execution"].get("reconciliation")
+        if not alive and reconciliation and reconciliation.get("state") in {"requested", "running"}:
+            meta["execution"]["reconciliation"] = {
+                **reconciliation, "state": "unknown", "error": "reconciliation helper exited without a terminal receipt"}
         request = job_runtime.read_cancel(self._read_root, jid)
         if request:
             receipt = meta.get("cancel") or {}
@@ -508,6 +515,62 @@ class Jobs:
         if children:
             raise RequestConflict("recovery jobs must finish and release any blocked reservations first: " + ", ".join(children))
 
+    def host_completion_problem(self, jid, meta):
+        """Qualify contained handback for queue release and session recovery."""
+        import stat
+        from job_cgroup import completion_problem
+        execution = meta.get("execution") or {}
+        if execution.get("worker_alive") is not False:
+            return "worker completion is unconfirmed"
+        problem = completion_problem(meta)
+        if problem:
+            return problem
+        try:
+            fd = self._read_root.open_fd(jid + "/out", directory=True)
+            try:
+                st = os.fstat(fd)
+                if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) != 0o700:
+                    return "output handback to the node's private identity is unconfirmed"
+            finally:
+                os.close(fd)
+        except (OSError, ValueError) as error:
+            return "output handback cannot be verified: " + str(error)
+        return None
+
+    def reconcile_execution(self, jid, force=False):
+        if type(force) is not bool:
+            raise ValueError("force must be a boolean")
+        if self.worker_entry is None:
+            raise RequestConflict("fixed worker reconciliation is not configured on this node")
+        self.path(jid)
+        with file_lock(self.dispatch.intake_path):
+            row = self.dispatch.queue.get(jid)
+            status = self.status(jid)
+            if not row or row["state"] != "blocked" or status["state"] != "finished":
+                raise RequestConflict("execution reconciliation requires a finished job with a blocked reservation")
+            if status.get("phase") in {"finalizing", "storage_blocked"}:
+                raise RequestConflict("commit the source result before execution reconciliation")
+            execution = status.get("execution") or {}
+            if (execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False
+                    or row["spec"].get("execution_policy") != "contained"
+                    and (execution.get("process_management") or {}).get("policy") != "contained"):
+                raise RequestConflict("only a contained job without a live worker can be reconciled")
+            self._check_recovery_children(jid)
+            try:
+                proc = job_runtime.launch_reconcile(self._read_root, jid, self.worker_entry, force)
+            except ValueError as error:
+                raise RequestConflict(str(error)) from None
+        def finish():
+            proc.wait()
+            try:
+                with file_lock(self.dispatch.intake_path):
+                    self.dispatch.finalize(self.dispatch.queue.get(jid))
+                self.dispatch.start()
+            except (OSError, ValueError, sqlite3.Error) as error:
+                self.dispatch.last_error = f"{type(error).__name__}: {error}"
+        threading.Thread(target=finish, daemon=True).start()
+        return {"accepted": True, "job": self.status(jid)}
+
     def release_queue(self, jid, note):
         if not isinstance(note, str) or not note.strip() or len(note) > 2000:
             raise ValueError("release requires a nonempty review note (at most 2000 characters)")
@@ -520,6 +583,13 @@ class Jobs:
             if (row.get("state_reason") or {}).get("kind") == "durability":
                 raise RequestConflict("retry-finalize must commit the result before releasing resources")
             self._check_recovery_children(jid)
+            status = self.status(jid)
+            execution = status.get("execution") or {}
+            if (row["spec"].get("execution_policy") == "contained"
+                    or (execution.get("process_management") or {}).get("policy") == "contained"):
+                problem = self.host_completion_problem(jid, status)
+                if problem:
+                    raise RequestConflict(problem + "; reconcile the execution domain before releasing resources")
             lease = self.leases.snapshot(refresh=True, force=True) if device_access(row["spec"]) != "none" else None
             if lease and lease["status"] != "clear":
                 raise RequestConflict("device lease is " + lease["status"] + "; reconcile the actual lease before releasing the queue reservation")
@@ -739,6 +809,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["execution", "reconcile"]:
+                    if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
+                        self.close_connection = True
+                        return self._send(413, {"error": "execution reconciliation exceeds 64 KiB"})
+                    if "application/json" not in self.headers.get("Content-Type", ""):
+                        return self._send(400, {"error": "execution reconciliation requires application/json"})
+                    data = json.loads(self._body() or b"{}")
+                    if not isinstance(data, dict) or set(data) - {"force"}:
+                        raise ValueError("execution reconciliation accepts only a force boolean")
+                    return self._send(200, jobs.reconcile_execution(parts[1], force=data.get("force", False)))
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "session" and parts[3] in {"actions", "recover"}:
                     if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
                         self.close_connection = True
