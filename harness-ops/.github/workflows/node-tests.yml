@@ -60,3 +60,52 @@ jobs:
           path: ${{ runner.temp }}/job-privileged-worker
           if-no-files-found: error
           retention-days: 14
+  pf-shared-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: HGamey/phonefarm
+          ref: 563b73edbf95231847574ae17fc701fe281f6f0d
+          path: pf-runtime
+          sparse-checkout: |
+            src
+            tools
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pf-runtime/src
+          key: pf-shared-control
+      - name: Build the actual PF used by both identities
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: |
+          if [ ! -x /bin/zsh ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y zsh
+          fi
+          cargo build --locked --manifest-path pf-runtime/src/Cargo.toml --bin phonefarm
+      - name: PF shared session through fixed privileged worker
+        id: shared
+        run: |
+          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            timeout --signal=TERM --kill-after=10s 150s /usr/bin/python3 \
+            node/tests/integration_pf_shared.py \
+            --phonefarm "$PWD/pf-runtime/src/target/debug/phonefarm" \
+            --devlock-bin "$PWD/pf-runtime/tools/devlock" \
+            --artifact-dir "$RUNNER_TEMP/pf-shared-control"
+      - name: Preserve actual PF session and transport observations
+        if: always() && steps.shared.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pf-shared-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pf-shared-control
+          if-no-files-found: error
+          retention-days: 14

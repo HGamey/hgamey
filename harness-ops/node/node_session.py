@@ -87,7 +87,13 @@ def session_call(jobs, jid, *, request_id=None, action=None):
         command += ["--request", "-"]
     elif request_id is not None:
         command += ["--request-id", request_id]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("PF_JOB_") and k != "DEVLOCK_LABEL"}
+    fixed_env = getattr(jobs, "pf_env", None)
+    env = dict(fixed_env) if fixed_env is not None else {
+        k: v for k, v in os.environ.items() if not k.startswith("PF_JOB_") and k != "DEVLOCK_LABEL"}
+    if meta.get("state") == "finished":
+        # The worker has sealed and returned final output to the node's private
+        # identity before publishing this state. Keep historical queries usable.
+        env.pop("PHONEFARM_SHARED_GID", None)
     try:
         result = subprocess.run(command, cwd=cwd, env=env, input=payload, capture_output=True,
                                 timeout=HELPER_TIMEOUT, check=False)

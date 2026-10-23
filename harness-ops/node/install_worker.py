@@ -12,7 +12,7 @@ import pwd
 import shutil
 import sys
 
-from worker_entry import CONFIG_NAME, MODULES, configuration, trusted_path
+from worker_config import CONFIG_NAME, MODULES, configuration, trusted_path, PF_ROOTS, PF_TOOLS
 
 
 BOOTSTRAP = '''#!/usr/bin/python3 -I
@@ -36,6 +36,11 @@ def main():
     parser.add_argument("--cgroup-root", type=Path, required=True)
     for key in ("node-uid", "node-gid", "job-uid", "job-gid"):
         parser.add_argument("--" + key, type=int, required=True)
+    parser.add_argument("--phonefarm-state-dir", type=Path)
+    parser.add_argument("--devlock-dir", type=Path)
+    parser.add_argument("--phonefarm-lease-dir", type=Path)
+    parser.add_argument("--adb-bin", type=Path)
+    parser.add_argument("--devlock-bin", type=Path)
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() != 0:
         parser.error("installation requires an explicit root administrator on Linux")
@@ -46,6 +51,17 @@ def main():
     config = {"schema": "phonefarm/worker-install@1", "jobs_root": str(args.jobs_root),
               "cgroup_root": str(args.cgroup_root), "node_uid": args.node_uid, "node_gid": args.node_gid,
               "uid": args.job_uid, "gid": args.job_gid}
+    roots = (args.phonefarm_state_dir, args.devlock_dir, args.phonefarm_lease_dir)
+    if any(roots):
+        if not all(roots):
+            parser.error("all three persistent PF roots must be configured together")
+        config["pf_env"] = {key: str(path) for key, path in zip(PF_ROOTS, roots)}
+        config["pf_env"]["PHONEFARM_SHARED_GID"] = str(args.job_gid)
+        for key, path in zip(PF_TOOLS, (args.adb_bin, args.devlock_bin)):
+            if path is not None:
+                config["pf_env"][key] = str(path)
+    elif args.adb_bin or args.devlock_bin:
+        parser.error("fixed PF tools require the shared PF profile")
     # Account selection is an administrator operation; do not create or modify
     # accounts, cgroups, data roots, sudoers or an existing installation here.
     account = pwd.getpwuid(args.node_uid)
@@ -68,7 +84,12 @@ def main():
         entry.chmod(0o755)
         target = prefix / CONFIG_NAME
         target.write_text(json.dumps(config, indent=2) + "\n")
-        target.chmod(0o600)
+        if "pf_env" in config:
+            # Contains only fixed paths and identities, never service credentials.
+            os.chown(target, 0, args.node_gid)
+            target.chmod(0o640)
+        else:
+            target.chmod(0o600)
         configuration(prefix)
         sudoers = (f"Defaults!{entry} closefrom_override\n"
                    f"{account.pw_name} ALL=(root) NOPASSWD: {entry} *\n")

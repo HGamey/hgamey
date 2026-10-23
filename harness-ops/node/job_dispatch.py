@@ -242,7 +242,8 @@ class JobDispatch:
             prepared = self.jobs._read_root.read_json(jid + "/prepared.json")
             if not isinstance(prepared.get("command"), list) or not prepared["command"] or not isinstance(prepared.get("cwd"), str):
                 raise ValueError("invalid prepared command")
-            prepare_receipt_directory(self.jobs._read_root, jid)
+            if policy == "process_group":
+                prepare_receipt_directory(self.jobs._read_root, jid)
         except (OSError, ValueError, AttributeError) as error:
             self.finish_unstarted(row, "failed", f"prepared input is unavailable: {error}")
             return
@@ -254,7 +255,8 @@ class JobDispatch:
         except (OSError, ValueError) as error:
             self.finish_unstarted(row, "failed", f"launch preparation failed: {error}")
             return
-        env = dict(os.environ, DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
+        env = dict(self.jobs.pf_env if self.jobs.pf_env is not None else os.environ,
+                   DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
         if "phonefarm" in self.jobs.bins:

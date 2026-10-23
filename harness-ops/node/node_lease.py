@@ -101,8 +101,9 @@ def storage_root(value):
 
 
 class LeaseState:
-    def __init__(self, bins):
+    def __init__(self, bins, env=None):
         self.bins = bins
+        self.env = env
         self._lock = threading.Lock()
         self._next = 0
         self._snapshot = {"schema_version": 1, "status": "unknown", "bridge_held": None,
@@ -118,7 +119,8 @@ class LeaseState:
                     raise ValueError("phonefarm lease reader is not configured")
                 executable, cwd = self.bins["phonefarm"]
                 result = subprocess.run([executable, "lease", "status", "--json"], cwd=cwd,
-                                        capture_output=True, timeout=3, stdin=subprocess.DEVNULL, check=True)
+                                        capture_output=True, timeout=3, stdin=subprocess.DEVNULL, check=True,
+                                        env=self.env)
                 value = json.loads(result.stdout)
                 if (not isinstance(value, dict) or value.get("schema_version") != 1
                         or value.get("status") not in {"clear", "held", "blocked", "unknown"}

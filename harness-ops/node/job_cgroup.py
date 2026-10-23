@@ -77,6 +77,8 @@ class Domain:
             raise ValueError("contained node UID/GID must be nonnegative integers")
         if self.uid == self.node_uid or self.gid == self.node_gid:
             raise ValueError("contained job and node identities must differ")
+        from worker_config import phonefarm_environment
+        self.pf_env = phonefarm_environment(config)
         root_path = Path(config["cgroup_root"])
         if not root_path.is_absolute():
             raise ValueError("cgroup_root must be absolute")
@@ -162,10 +164,27 @@ class Domain:
                 node_owned(out, "initial job output")
                 if os.listdir(out):
                     raise ValueError("contained worker requires a new, empty output directory")
+                if self.pf_env is not None:
+                    from worker_config import PF_ROOTS
+                    for key in PF_ROOTS:
+                        with SafeRoot(self.pf_env[key]) as root:
+                            st = os.fstat(root.fd)
+                            if st.st_gid != self.gid or st.st_mode & 0o2777 != 0o2770:
+                                raise ValueError(key + " must be an existing dedicated group directory with mode 02770")
                 self.output_fd = os.dup(out)
                 self.output_pending = True
                 os.fchown(out, self.uid, self.gid)
-                os.fchmod(out, 0o700)
+                os.fchmod(out, 0o2770 if self.pf_env is not None else 0o700)
+                if self.pf_env is not None:
+                    os.mkdir("lease-receipts", mode=0o700, dir_fd=out)
+                    receipts = open_child(out, "lease-receipts", directory=True)
+                    try:
+                        os.fchown(receipts, self.uid, self.gid)
+                        os.fchmod(receipts, 0o2770)
+                        os.fsync(receipts)
+                    finally:
+                        os.close(receipts)
+                    os.fsync(out)
             finally:
                 os.close(out)
             os.fchmod(fd, 0o711)
@@ -198,6 +217,10 @@ class Domain:
         env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": os.path.join(job_dir, "out"),
                "TMPDIR": os.path.join(job_dir, "out"), "PF_JOB_ID": jid,
                "PF_JOB_IN": os.path.join(job_dir, "in"), "PF_JOB_OUT": os.path.join(job_dir, "out")}
+        if self.pf_env is not None:
+            env.update(self.pf_env)
+            env.update(PF_JOB_LEASE_DIR=os.path.join(job_dir, "out", "lease-receipts"),
+                       DEVLOCK_LABEL="job-" + jid)
         child = subprocess.Popen(["/bin/sh", "-c", GATE, "phonefarm-gate", *command],
                                  cwd=cwd, env=env, stdin=subprocess.PIPE, bufsize=0,
                                  stdout=log_fd, stderr=subprocess.STDOUT, close_fds=True,

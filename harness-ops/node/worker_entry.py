@@ -1,6 +1,5 @@
 """Installed privileged entry; requests name a job, never root paths or programs."""
 import fcntl
-import json
 import os
 from pathlib import Path
 import re
@@ -12,42 +11,7 @@ from artifact_io import SafeRoot
 import job_runtime
 
 
-MODULES = ("artifact_io.py", "job_policy.py", "job_runtime.py", "job_cgroup.py",
-           "job_privileged.py", "worker_entry.py")
-CONFIG_NAME = "worker.json"
-
-
-def trusted_path(path, directory=False):
-    """Installation ancestors and files cannot be replaced by the node account."""
-    path = Path(path)
-    if not path.is_absolute() or path.is_symlink():
-        raise ValueError("trusted worker paths must be absolute and not symbolic links")
-    for item in (path, *path.parents):
-        st = item.lstat()
-        if st.st_uid != 0 or st.st_mode & 0o022 or stat.S_ISLNK(st.st_mode):
-            raise ValueError("worker installation is not root-owned and immutable to other users: " + str(item))
-    mode = path.stat().st_mode
-    if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
-        raise ValueError("unexpected trusted worker path type")
-
-
-def configuration(prefix):
-    trusted_path(prefix, directory=True)
-    for name in (*MODULES, "phonefarm-worker", CONFIG_NAME):
-        trusted_path(prefix / name)
-    with (prefix / CONFIG_NAME).open() as f:
-        config = json.load(f)
-    if config.get("schema") != "phonefarm/worker-install@1":
-        raise ValueError("unsupported installed worker configuration")
-    for key in ("node_uid", "node_gid", "uid", "gid"):
-        if type(config.get(key)) is not int or config[key] <= 0:
-            raise ValueError("installed node/job identities must be non-root integers")
-    if config["node_uid"] == config["uid"] or config["node_gid"] == config["gid"]:
-        raise ValueError("node and job identities must be distinct")
-    for key in ("jobs_root", "cgroup_root"):
-        if not isinstance(config.get(key), str) or not os.path.isabs(config[key]):
-            raise ValueError(key + " must be an absolute administrator-configured path")
-    return config
+from worker_config import configuration
 
 
 def run(prefix, jid):

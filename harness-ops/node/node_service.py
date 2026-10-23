@@ -187,7 +187,7 @@ def _job_lock_args(argv, owner):
 
 
 class Jobs:
-    def __init__(self, root, bins, data_dir=None, max_running=2):
+    def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None):
         self.root, self.bins = root, bins
         self.data_root = os.path.abspath(data_dir or root)
         self.dir = os.path.join(self.data_root, "jobs" if data_dir else "_jobs")
@@ -195,7 +195,11 @@ class Jobs:
         self._read_root = SafeRoot(self.dir)
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
-        self.leases = LeaseState(bins)
+        self.pf_env = None
+        if worker_prefix is not None:
+            from worker_config import node_environment
+            self.pf_env = node_environment(worker_prefix, self.dir)
+        self.leases = LeaseState(bins, env=self.pf_env)
         self.dispatch = JobDispatch(self, max_running)
         self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
 
@@ -816,6 +820,7 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--data-dir", help="独立运行数据根；新任务写到其中jobs/，不自动搬迁旧_jobs")
     ap.add_argument("--max-running", type=int, default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
+    ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
     a = ap.parse_args()
     # run_node.sh 用 & 在后台起本进程：非交互 shell 会把后台命令的 SIGINT 设成「忽略」，并一路遗传给
     # 我们起的任务（忽略态跨 exec 保留）—— 结果 kill/停止发的 SIGINT 对 bash 脚本、排队等锁的 devlock 无效。
@@ -833,7 +838,7 @@ def main():
             "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root)),
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
-    jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running)
+    jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:
