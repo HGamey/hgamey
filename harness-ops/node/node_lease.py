@@ -14,9 +14,11 @@ def device_access(spec):
     return spec.get("device_access", "write" if spec.get("bin") in DEVICE_BINS else "none")
 
 
-def prepare_receipt_directory(store, jid):
+def prepare_receipt_directory(store, jid, shared_gid=None):
     """Also covers queued jobs prepared by an older node before the upgrade."""
-    store.mkdir(jid + "/out/lease-receipts")
+    if shared_gid is not None:
+        store.mkdir(jid + "/out", shared_gid=shared_gid)
+    store.mkdir(jid + "/out/lease-receipts", shared_gid=shared_gid)
 
 
 def job_lease_receipts(store, jid):

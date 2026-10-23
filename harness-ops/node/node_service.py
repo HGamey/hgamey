@@ -268,7 +268,9 @@ class Jobs:
         jin, jout = self.path(jid, "in"), self.path(jid, "out")
         self._read_root.mkdir(jid)
         self._read_root.mkdir(jid + "/in")
-        self._read_root.mkdir(jid + "/out")
+        shared_gid = (int(self.pf_env["PHONEFARM_SHARED_GID"]) if self.pf_env is not None
+                      and spec.get("execution_policy", "process_group") == "process_group" else None)
+        self._read_root.mkdir(jid + "/out", shared_gid=shared_gid)
         self._write_meta(jid, self.dispatch.base_meta(row))
         with self._read_root.create_file(jid + "/log"):
             pass

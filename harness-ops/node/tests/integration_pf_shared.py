@@ -373,6 +373,8 @@ def ready():
     meta=jobs._read_meta(plan['jid'])
     if meta.get('state')=='finished':
         raise AssertionError('PF exited before control became ready: '+json.dumps(meta))
+    if meta.get('pid') and not runtime.runner_alive(store,plan['jid']):
+        raise AssertionError('worker exited before PF became ready: '+json.dumps(meta))
     try: value=status()
     except FileNotFoundError: return None
     except SessionError as error:

@@ -176,16 +176,26 @@ class SafeRoot:
             os.close(target)
             os.close(parent)
 
-    def mkdir(self, rel):
+    def mkdir(self, rel, shared_gid=None):
         """Create one directory, or verify an existing real directory, durably."""
         parent, name = self._parent(rel)
         try:
+            created = False
             try:
                 os.mkdir(name, mode=0o700, dir_fd=parent)
+                created = True
             except FileExistsError:
                 pass
             target = open_child(parent, name, directory=True)
             try:
+                if shared_gid is not None:
+                    if created:
+                        os.fchown(target, -1, shared_gid)
+                        os.fchmod(target, 0o2770)
+                    else:
+                        info = os.fstat(target)
+                        if info.st_gid != shared_gid or stat.S_IMODE(info.st_mode) != 0o2770:
+                            raise ValueError("existing shared output directory has incompatible permissions")
                 os.fsync(target)
                 os.fsync(parent)
             finally:

@@ -243,7 +243,9 @@ class JobDispatch:
             if not isinstance(prepared.get("command"), list) or not prepared["command"] or not isinstance(prepared.get("cwd"), str):
                 raise ValueError("invalid prepared command")
             if policy == "process_group":
-                prepare_receipt_directory(self.jobs._read_root, jid)
+                shared_gid = (int(self.jobs.pf_env["PHONEFARM_SHARED_GID"])
+                              if self.jobs.pf_env is not None else None)
+                prepare_receipt_directory(self.jobs._read_root, jid, shared_gid=shared_gid)
         except (OSError, ValueError, AttributeError) as error:
             self.finish_unstarted(row, "failed", f"prepared input is unavailable: {error}")
             return

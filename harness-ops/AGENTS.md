@@ -33,3 +33,5 @@ install_worker仅由管理员显式安装到新的root-owned固定目录，输�
 关键结束记录在worker释放flock、文件和目录同步后才提交SQLite终态。保存失败只保留该job资源并公开storage_blocked；retry-finalize仅重新保存，不重放命令，普通release不得绕过。准备失败/取消的未执行依据由SQL记录，查询不得通过缺文件猜执行结果。范围不含任意producer输出的断电持久性；合同见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-DURABILITY.md 。
 
 显式--worker-prefix让node lease/session reader共用可信安装中的PF路径与共享组配置，不开启contained准入。contained的lease-receipts由worker核空out后创建；普通process_group保留原准备流程。finished后的session查询按封存后的私有输出权限读取；配置不含服务凭据。
+
+显式PF共享profile也用于process_group的新out和lease-receipts，创建时设置同组2770；旧queued私有输出在启动前拒绝，不在线改权。未配置profile时仍使用原私有目录。

@@ -167,10 +167,13 @@ class Domain:
                 if self.pf_env is not None:
                     from worker_config import PF_ROOTS
                     for key in PF_ROOTS:
-                        with SafeRoot(self.pf_env[key]) as root:
+                        root = SafeRoot(self.pf_env[key])
+                        try:
                             st = os.fstat(root.fd)
                             if st.st_gid != self.gid or st.st_mode & 0o2777 != 0o2770:
                                 raise ValueError(key + " must be an existing dedicated group directory with mode 02770")
+                        finally:
+                            root.close()
                 self.output_fd = os.dup(out)
                 self.output_pending = True
                 os.fchown(out, self.uid, self.gid)
