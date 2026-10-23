@@ -343,7 +343,11 @@ class RecoveryFixture(SharedFixture):
         for name in ('state.json','initial-state.json'):
             path=device/name; state=json.loads(path.read_text())
             state['files'][CHARGE_NODE]='0\n'
-            state['dirs']=sorted(set(state['dirs'])|{str(p) for p in Path(CHARGE_NODE).parents})
+            # Same sampling roots as gray-control-sampling-host-cli: presence
+            # is proved by ancestor listings, not just the created leaf entry.
+            state['files']['/sys/kernel/tracing/tracing_on']='1\n'
+            state['dirs']=sorted(set(state['dirs'])|{str(p) for p in Path(CHARGE_NODE).parents}
+                                |{'/sys','/sys/kernel','/sys/kernel/tracing','/sys/kernel/tracing/instances'})
             state['initially_discharging']=False
             save(path,state); os.chown(path,0,self.gid); path.chmod(0o660 if name=='state.json' else 0o640)
         os.chown(device/'synthetic.png',0,self.gid); (device/'synthetic.png').chmod(0o640)

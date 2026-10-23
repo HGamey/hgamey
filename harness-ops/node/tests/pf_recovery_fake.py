@@ -135,6 +135,7 @@ if len(args) == 2 and args[0] == 'shell':
     if words == ['id', '-u']:
         reply('sampling-root-capability', '0\n')
     if shell.startswith('if [ -r /sys/kernel/tracing/events/kgsl/'):
+        assert '/sys/kernel/tracing/instances' in state['dirs'], 'sampling fixture roots were not initialized'
         reply('sampling-trace-capability', 'AVAILABLE\n')
     if shell.startswith('set -eu; command -v setsid;'):
         parent_pending()
@@ -192,7 +193,10 @@ if len(args) == 2 and args[0] == 'shell':
             entry.update(run=run, seconds=seconds, simulated_child_groups=3, natural_complete=True)
             reply('control-sample', 'GRAY_SCRIPT_SAMPLE_COMPLETE\n', True)
         if mode == 'verify_gray_idle':
-            assert not state['sampling_closed'] and state.get('sampling_rounds')
+            # Deployment/known admission failure can precede any input permit.
+            # Like the real worker, an empty ledger can already be quiescent.
+            assert not state['sampling_closed']
+            assert all(item['natural_complete'] and item['groups_absent'] for item in state.get('sampling_rounds', []))
             assert parent['pending'] is None
             reply('sampling-idle-verify', 'GRAY_IDLE_QUIESCENT\n')
         if mode == 'verify_gray_groups':
@@ -217,6 +221,7 @@ if len(args) == 2 and args[0] == 'shell':
             parent_pending()
             trace = shlex.split(shell.rsplit(' && mkdir ', 1)[1])[0]
             assert trace == parent['trace'] and trace not in state['dirs']
+            assert str(PurePosixPath(trace).parent) in state['dirs']
             state['dirs'].append(trace)
             state['files'][trace + '/tracing_on'] = '0\n'
             reply('sampling-trace-create', mutates=True)
