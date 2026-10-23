@@ -174,6 +174,7 @@ class Goals:
         intent = (_read(os.path.join(d, "intent.txt"), 2000) or "").strip()
         upd = max(_mtime(os.path.join(d, "state.json")), _mtime(os.path.join(d, "events.jsonl")), _mtime(d))
         return {"run_id": rid, "demo": demo, "state": st, "intent": intent, "updated": upd, "lock_label": owner,
+                "job_id": dm.get("run_job"),
                 "status": st.get("status") or "drafting", "status_zh": STATUS_ZH.get(st.get("status"), st.get("status") or "起草中")}
 
     def list(self):

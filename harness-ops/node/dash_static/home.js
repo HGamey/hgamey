@@ -35,9 +35,6 @@
   }
   const LAYER = { sysparam: "改系统设置", gray: "精简画面步骤", upop: "改画面算法", shader: "改画面算法" };
   const STOP = { target_reached: "达到目标了", budget_exhausted: "预算用完了", no_gain: "连续几代都没有收益，这条路走不通", human_stop: "你叫停的", error: "出错停下了" };
-  const WHO = { judge: "判官测试", onboard: "接入新游戏", core: "核心开发", frame: "画面分析", speed: "提速", open: "开放接口", pair: "结对调试", deploy: "部署" };
-  const who = (label) => !label ? "别人" : label.startsWith("goal-") ? "另一个目标" : (WHO[label] ? `${WHO[label]}（${label}）` : label);
-
   const S = { home: null, runId: null, userPicked: false, run: null, humanDirty: false, humanBase: null, histOpen: null, draftId: null };
 
   async function api(url, body) {
@@ -144,12 +141,12 @@
     const on = h.slots.filter(Boolean), free = h.slots.length - on.length;
     $("phones").innerHTML = on.map((s) => {
       const cls = !s.online ? "off" : s.busy ? "busy" : "on";
-      const st = !s.online ? (s.state || "离线") : s.busy ? "在线 · 正在测量" : "在线 · 空闲";
+      const st = !s.online ? (s.state || "离线") : s.busy ? "在线 · 占用或待核查" : "在线 · 锁记录空闲";
       const thumb = s.shot_at ? `<img alt="${esc(s.model || s.serial)} 的画面" src="/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}">`
-        : `<div class="ph">${s.busy ? "测量中不截图" : "暂无画面"}</div>`;
-      const doing = s.goal ? `<div class="doing on">▶ 正在跑：${esc(s.goal.summary)}</div>`
-        : s.waiting_goal ? `<div class="doing">⏳ 目标在排队，${esc(who(s.waiting_goal.holder))}正在用这台手机</div>`
-        : `<div class="doing">${s.busy ? `${esc(who(h.lock && h.lock.held_by))}正在用这台手机` : "空着，可以跑新目标"}</div>`;
+        : `<div class="ph">${s.busy ? "占用或待核查，暂缓截图" : "暂无画面"}</div>`;
+      const doing = s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
+        : s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`
+        : `<div class="doing">${s.busy ? "占用或状态待核查；不代表正在测量" : "未记录占用；运行前仍需调度与租约核验"}</div>`;
       return `<div class="phone-card"><div class="thumb">${thumb}</div><div class="meta">
         <div class="name" title="${esc(s.serial)}">${esc(s.model || "未知型号")}</div>
         <span class="status ${cls}"><i></i>${esc(st)}</span>
@@ -192,21 +189,24 @@
     let now = "没有目标在跑。", next = "点右上角「＋ 新目标」，用一句话告诉 harness 你想要什么。";
     if (h && r && r.run_id === S.runId) {
       const I = runInfo(r), st = I.st, name = `${I.short}目标`;
-      const lock = h.lock || {}, mine = `goal-${r.run_id}`;
+      const lock = h.lock || {};
+      const associated = r.job_id && (lock.lease?.entries || []).some(entry => entry.job_id === r.job_id && entry.state === "active");
       const cands = candidates(r.events);
       const gen = st.generation || 0, maxGen = st.max_generations || I.g.maxGen;
       if (r.demo) { now = `（示例）${name}，第 ${gen} 代正在测「${esc(shortWhy(cands.find((c) => c.measuring) || cands[cands.length - 1]))}」。`; next = "这是示例数据，等真正的目标跑起来后这里会换成实时情况。"; }
       else if (r.status === "drafting") { now = `正在起草「${esc(I.gname)}」的目标。`; next = "草稿出来后点「查看草稿并开跑」，看一眼、改一改、确认。"; }
       else if (r.status === "awaiting_confirm") { now = `${esc(name)}的草稿等你确认。`; next = "点目标卡上的「查看草稿并开跑」，确认后 harness 去排队拿手机。"; }
-      else if (r.status === "paused") { now = `${esc(name)}已暂停，手机已经让出来了。`; next = "在「人工干预」里改一句指令（比如删掉「暂停」）就会继续。"; }
+      else if (r.status === "paused") { now = `${esc(name)}已暂停；设备释放与恢复情况请查看租约记录。`; next = "在「人工干预」里改一句指令（比如删掉「暂停」）就会继续。"; }
       else if (r.status === "done" || r.status === "failed") {
         now = `没有目标在跑。上一个${esc(name)}${r.status === "failed" ? "出错停了" : "已经结束"}：${esc(STOP[st.stop_reason] || st.stop_reason || "")}。`;
         next = r.report_md ? "总报告在页面下方「总报告」里；也可以点「＋ 新目标」再来一个。" : "可以点「＋ 新目标」再来一个。";
       } else if (r.status === "running") {
-        if (lock.held_by !== mine) {
-          const pos = (lock.queue || []).indexOf(mine);
-          now = `${esc(name)}在排队，等${esc(who(lock.held_by))}用完手机${pos > 0 ? `（前面还有 ${pos} 个）` : ""}。`;
-          next = lock.held_by ? `拿到手机后开始第 ${Math.max(1, gen)} 代。` : "手机快空出来了，马上开始。";
+        if (lock.lease?.status === "blocked") {
+          now = `${esc(name)}运行记录仍在；节点存在待恢复屏障。`;
+          next = "核对任务与恢复原件；持有者退出不代表设备恢复完成。";
+        } else if (!associated || lock.lease?.status !== "held") {
+          now = `${esc(name)}运行中，设备归属尚未确认。`;
+          next = "查看任务队列和租约记录；标签相同不代表持有设备。";
         } else {
           const cur = cands.filter((c) => c.measuring).pop();
           const pending = cands.filter((c) => c.gen === gen && !c.verdict && !c.dropped && c !== cur).length;

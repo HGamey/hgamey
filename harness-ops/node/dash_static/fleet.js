@@ -61,16 +61,43 @@
       ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root]]);
   }
   function renderLock(lock) {
-    const known = lock?.status === 'free' || lock?.status === 'held';
-    const held = lock?.status === 'held';
-    badge($('lock-state'), known ? (held ? '占用中' : '空闲') : '未知', !known || held ? 'unknown' : '');
-    $('lock-owner').textContent = held ? text(lock.held_by) : known ? '未记录持锁者' : '无法确认占用情况';
-    $('lock-message').textContent = lock?.error ? `锁记录读取失败：${lock.error}` : held && lock.stale ?
-      '持锁心跳已过期，仍按占用显示；需要核查持锁进程与恢复状态。' : held ? '持锁者可能正在执行任务，请结合任务记录核对。' :
-      known ? '当前锁记录为空；设备可用性还需结合采样与恢复状态。' : '尚未取得可信的锁状态。';
-    $('lock-message').className = `lock-message ${lock?.error ? 'error' : held && lock.stale ? 'warning' : ''}`;
+    const lease = lock?.lease, entries = Array.isArray(lease?.entries) ? lease.entries : [];
+    const blocked = lease?.status === 'blocked';
+    const unknown = lease?.status === 'unknown' || (lock?.status !== 'free' && lock?.status !== 'held');
+    const known = !blocked && !unknown;
+    const held = lease?.status === 'held' || lock?.status === 'held';
+    const state = blocked ? '需要恢复' : unknown ? '身份或状态未知' : held ? (entries.some(e => e.role === 'device_lease') ? '设备租约占用' : entries.some(e => e.role === 'outer_queue') ? '外层队列占用' : '占用中 · 身份未确认') : '锁记录空闲';
+    badge($('lock-state'), state, blocked || unknown || held ? 'unknown' : '');
+    $('lock-owner').textContent = lock?.held_by ? `标签：${lock.held_by}` : held || blocked || unknown ? '未记录展示标签' : '没有占用标签';
+    const reason = lease?.error || lock?.error;
+    $('lock-message').textContent = blocked ? `恢复屏障保留；持有者退出或心跳过期不代表恢复完成。${reason ? ` ${reason}` : ''}` :
+      unknown ? `身份或状态尚未确认，保持阻断。${reason ? ` ${reason}` : ''}` : reason ? `锁记录读取失败：${reason}` : held && lock.stale ?
+      '心跳已过期，需核查租约状态；仍按占用显示。' : held ? '占用记录不代表正在测量；请结合租约与任务原件核对。' :
+      '当前锁记录为空；设备可用性还需结合采样与恢复状态。';
+    $('lock-message').className = `lock-message ${reason ? 'error' : blocked || unknown || held && lock.stale ? 'warning' : ''}`;
     facts($('lock-info'), known ? [['记录开始', lock.since], ['心跳距今', duration(lock.heartbeat_age_s)],
       ...(!held ? [['空闲时长', duration(lock.free_for_s)]] : [])] : []);
+    const expanded = new Set([...$('lock-leases').querySelectorAll('details[open]')].map(node => node.dataset.lease));
+    $('lock-leases').replaceChildren(...entries.map(entry => {
+      const item = el('li'), details = el('details');
+      details.dataset.lease = `${entry.directory || ''}:${entry.instance_id || ''}`;
+      details.open = expanded.has(details.dataset.lease);
+      const role = ({outer_queue: '外层队列锁', device_lease: '设备租约'})[entry.role] || '角色未报告';
+      const state = ({active: '活动记录', command_pending: '命令待处理', recovery_required: '需要恢复', abandoned: '已遗留', unknown: '状态未知'})[entry.state] || text(entry.state);
+      details.append(el('summary', `${role} · ${state}${entry.serial ? ` · ${entry.serial}` : ''}`));
+      const holder = entry.holder_verified === true ? '已核验' : entry.holder_verified === false ? '核验未通过' : entry.role === 'device_lease' ? '不适用（设备租约）' : '未知';
+      const info = el('dl', null, 'facts');
+      facts(info, [['标签（仅展示）', entry.label], ['实例 ID', entry.instance_id], ['关联外层实例', entry.outer_instance_id], ['外层持有者核验', holder], ['原因', entry.reason], ['记录位置', entry.directory]]);
+      details.append(info);
+      if (entry.job_id) {
+        const link = el('a', `关联任务 ${entry.job_id}`);
+        link.href = `/dash/jobs#job=${encodeURIComponent(entry.job_id)}`;
+        details.append(link);
+      }
+      item.append(details); return item;
+    }));
+    $('lock-identities-empty').hidden = entries.length > 0;
+    $('lock-identities-empty').textContent = lease?.status === 'clear' ? '没有租约记录。' : '未取得实例记录；不据标签认定持有者。';
     const queue = Array.isArray(lock?.queue) ? lock.queue : [];
     $('lock-queue').replaceChildren(...queue.map(label => el('li', label)));
     $('queue-summary').textContent = known ? `队列与最近事件 · ${queue.length} 条排队记录` : '队列与最近事件';

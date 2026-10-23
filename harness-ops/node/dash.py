@@ -724,13 +724,14 @@ class Dash:
         running = [r for r in runs if r["status"] in ("running", "paused") and not r["demo"]]  # 示例不占真手机
         snapshot = self.monitor.snapshot()
         lock = snapshot["lock"]
+        lease_entries = (lock.get("lease") or {}).get("entries", [])
         fl = snapshot
         slots = []
         for d in fl.get("devices") or []:
             serial = d.get("serial")
-            goal = next((r for r in running if (r["state"].get("device") in (serial,)) or
-                         (lock.get("held_by") == r.get("lock_label") and r["state"].get("device") in (None, "any"))), None)
-            # 目标在跑但手机此刻被别人占着（目标在排队）：也标出来，免得看着像「没有目标」
+            goal = next((r for r in running if r.get("job_id") and any(
+                e.get("job_id") == r["job_id"] and e.get("serial") == serial for e in lease_entries)), None)
+            # 设备意向仅作提示；未取得明确 job/lease 关联时，不声称已经持锁或正在排队。
             waiting = None
             if not goal:
                 waiting = next((r for r in running if r["state"].get("device") in (serial, None, "any")), None)
@@ -753,8 +754,9 @@ class Dash:
                 "fleet_err": snapshot["error"], "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
                 "busy": lock["status"] != "free",
-                # 首页「现在」一行要用：谁在用手机、排队顺序（只给名字，不给日志）
-                "lock": {"held_by": lock.get("held_by"), "since": lock.get("since"), "stale": lock.get("stale"),
+                # 沿 phonefarm 事实展示；标签不作为任务或目标的身份。
+                "lock": {"status": lock.get("status"), "lease": lock.get("lease"),
+                         "held_by": lock.get("held_by"), "since": lock.get("since"), "stale": lock.get("stale"),
                          "queue": lock.get("queue") or []}}
 
     def state(self):

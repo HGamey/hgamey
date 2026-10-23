@@ -57,12 +57,13 @@
       <p id="lock-owner" class="lock-owner">尚未读取</p>
       <p id="lock-message" class="lock-message">正在读取节点上的锁记录。</p>
       <dl id="lock-info" class="facts lock-facts"></dl>
+      <div class="lock-identities"><h3>实例与设备租约</h3><p id="lock-identities-empty" class="note">尚未取得实例记录。</p><ul id="lock-leases"></ul></div>
       <details class="lock-details">
         <summary id="queue-summary">队列与最近事件</summary>
         <h3>排队记录</h3><ol id="lock-queue" class="lock-queue"></ol><p id="queue-empty" class="note">尚未读取</p>
         <h3>最近事件</h3><ul id="lock-events" class="lock-events"></ul><p id="events-empty" class="note">尚未读取</p>
       </details>
-      <p class="lock-scope">这里显示本节点的共享锁记录。心跳过期不会被视为已释放，锁空闲也不等于设备已完成恢复。</p>
+      <p class="lock-scope">身份核验由 phonefarm 报告，标签仅供展示。心跳过期不会被视为已释放，持有者退出或锁空闲也不等于设备已完成恢复。</p>
     </aside>
   </div>
   <p id="sampling-policy" class="sampling-policy">页面刷新读取共享快照；设备采样由节点按锁状态与采样间隔安排。</p>

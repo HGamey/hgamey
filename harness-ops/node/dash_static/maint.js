@@ -37,12 +37,13 @@
 
   function renderState(st) {
     const L = st.lock || {}, d = mainDevice(st);
-    const held = L.status === "held" || !!L.held_by;
-    const free = L.status === "free";
+    const blocked = L.lease?.status === "blocked", unknown = L.status === "unknown" || L.lease?.status === "unknown";
+    const held = L.status === "held" && !blocked && !unknown;
+    const free = L.status === "free" && !blocked && !unknown;
     // 顶栏锁状态
     const pill = $("lock-pill");
     pill.className = "pill " + (free ? "free" : "held");
-    pill.textContent = held ? (L.stale ? `${L.held_by} 持锁心跳已过期，待核查` : `● ${L.held_by} 正在用手机`) : free ? "手机空闲" : "设备锁状态未知";
+    pill.textContent = blocked ? "设备租约需要恢复" : held ? (L.stale ? "心跳已过期，需核查租约状态" : "设备锁占用") : free ? "锁记录空闲" : "设备锁身份或状态未知";
     $("dev-name").textContent = d ? `${d.brand || ""} ${d.model || d.serial}`.trim() : "没有设备";
 
     // 手机
@@ -58,10 +59,10 @@
       $("t-gpu").textContent = `${t.gpu_c == null ? "—" : num(t.gpu_c) + "°"} / ${b.temp_c == null ? (t.battery_c == null ? "—" : num(t.battery_c) + "°") : num(b.temp_c) + "°"}`;
       const f = d.fan || {};
       $("t-fan").textContent = f.supported ? `风扇 ${f.enabled ? "开" : "关"}${f.speed_level != null ? " · 档 " + f.speed_level : ""}` : "";
-      $("t-fg").textContent = d.foreground || (d.probe_depth === "light" ? "（测量中不读，免得打扰）" : "桌面 / 未知");
+      $("t-fg").textContent = d.foreground || (d.probe_depth === "light" ? "（本次快照未读取）" : "桌面 / 未知");
       const pc = $("probe");
       pc.textContent = d.probe_depth === "light" ? "轻量读取" : d.probe_depth === "full" ? "完整读取" : "离线";
-      pc.title = d.probe_depth === "light" ? "有人在用手机：只读 sysfs 文件，不跑 dumpsys" : "手机空闲：getprop + dumpsys 完整读取";
+      pc.title = d.probe_depth === "light" ? "本次为轻量快照，不代表当前设备空闲或正在测量" : "本次快照的采样方式，不代表当前设备可用性";
     } else {
       $("t-online").innerHTML = `<span class="dot off"></span>没看到手机`;
     }
@@ -74,17 +75,18 @@
     renderSpark(st.hist || []);
 
     // 设备锁
-    if (L.held_by) {
+    if (blocked || unknown || !held && !free) {
+      $("lock-holder").innerHTML = `${blocked ? "需要恢复" : "身份或状态未知"}<span class="s">${esc(L.lease?.error || L.error || "保持阻断；标签不授予持锁资格")}${L.held_by ? ` · 标签：${esc(L.held_by)}` : ""}</span>`;
+    } else if (L.held_by) {
       const since = L.since ? `从 ${L.since.slice(11) || L.since} 起` : "";
-      $("lock-holder").innerHTML = `${esc(L.held_by)}<span class="s" title="设备锁心跳 ${L.heartbeat_age_s ?? "?"}s 前">${esc(since)} · ${L.heartbeat_age_s ?? "?"} 秒前还在用${L.stale ? " · 心跳已过期，仍按占用，需核查恢复状态" : ""}</span>`;
+      $("lock-holder").innerHTML = `标签：${esc(L.held_by)}<span class="s">${esc(since)} · 心跳距今 ${L.heartbeat_age_s ?? "?"} 秒；标签仅展示${L.stale ? " · 心跳已过期，需核查租约状态" : ""}</span>`;
     } else if (free) {
       $("lock-holder").innerHTML = `空闲<span class="s">${L.free_for_s != null ? "已空闲 " + dur(L.free_for_s) : ""}</span>`;
-    }
-    if (!held && !free) $("lock-holder").innerHTML = `未知<span class="s">${esc(L.error || "暂时无法读取可信的设备锁状态")}</span>`;
+    } else $("lock-holder").textContent = "设备锁占用，未记录展示标签";
     $("lock-age").textContent = "";
     $("queue").innerHTML = (L.queue || []).length ? L.queue.map((q) => `<li>${esc(q)}</li>`).join("") : `<li class="empty">没人排队</li>`;
     $("lock-events").innerHTML = (L.recent || []).map((e) =>
-      `<li><span class="t">${esc(e.at.slice(11))}</span><span class="a-${esc(e.action)}">${{ acquire: "开始用", release: "用完", steal: "接手" }[e.action] || esc(e.action)}</span><b>${esc(e.label)}</b></li>`).join("");
+      `<li><span class="t">${esc(e.at.slice(11))}</span><span class="a-${esc(e.action)}">${{ acquire: "获取锁", release: "释放锁", steal: "接管记录" }[e.action] || esc(e.action)}</span><b>${esc(e.label)}</b></li>`).join("");
 
     // 画面
     const box = document.querySelector(".shot-box");
@@ -96,7 +98,7 @@
     $("shot-veil").hidden = free;
     box.classList.toggle("stale", !free);
     const P = st.policy || {};
-    $("shot-rule").textContent = `手机空闲满 ${P.free_grace_s} 秒才截，最多每 ${P.shot_every_s} 秒一张；有人在用手机时一张不截。`;
+    $("shot-rule").textContent = `锁空闲满 ${P.free_grace_s} 秒才允许截图，最多每 ${P.shot_every_s} 秒一张；占用、排队或待核查时暂缓。`;
 
     renderJobs(st);
   }
@@ -133,17 +135,18 @@
   // ───────── 任务 ─────────
   function renderJobs(st) {
     const jobs = st.jobs || [], L = st.lock || {};
+    const associated = new Set((L.lease?.entries || []).map(entry => entry.job_id).filter(Boolean));
     const running = jobs.filter((j) => j.state === "running"), done = jobs.filter((j) => j.state !== "running").slice(0, 12);
     $("jobs-count").textContent = `${running.length} 个在跑`;
     if (!S.userPickedJob || !jobs.find((j) => j.id === S.selJob)) {
-      const pick = running.find((j) => j.label === L.held_by) || running[0] || done[0];
+      const pick = running.find((j) => associated.has(j.id)) || running[0] || done[0];
       S.selJob = pick ? pick.id : null;
     }
     const row = (j) => {
       const now = st.now, el = j.state === "running" ? now - j.started : (j.ended || now) - j.started;
       const stc = j.state === "running" ? "running" : j.state === "lost" ? "lost" : j.exit === 0 ? "ok" : "fail";
       const stt = j.state === "running" ? "在跑" : j.state === "lost" ? "失联" : j.exit === 0 ? "完成" : `退出 ${j.exit}`;
-      const lockTag = j.state === "running" && L.held_by && j.label === L.held_by ? `<span class="st lockholder" title="持有设备锁">正在用手机</span>` : "";
+      const lockTag = associated.has(j.id) ? `<span class="st lockholder" title="lease 记录明确关联此任务；不代表正在测量或恢复完成">关联租约记录</span>` : "";
       return `<li class="job ${j.id === S.selJob ? "sel" : ""}" data-id="${esc(j.id)}" tabindex="0">
         <div class="row1"><span class="lbl">${esc(j.label || "—")}</span><span class="st ${stc}">${stt}</span>${lockTag}
         <span class="when">${j.state === "running" ? "已跑 " + dur(el) : hm(j.ended || j.started) + " · " + dur(el)}</span></div>

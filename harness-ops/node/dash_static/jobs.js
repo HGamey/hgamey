@@ -275,10 +275,12 @@
     $('lease-sampled').textContent = lease ? `采样于 ${time(lease.sampled_at)}` : '';
     $('lease-list').replaceChildren(...(lease?.entries || []).map(entry => {
       const item = el('li'), details = el('details');
-      const label = ({active: '使用中', command_pending: '命令待处理', recovery_required: '需要恢复', abandoned: '已遗留', unknown: '状态未知'})[entry.state] || text(entry.state);
-      details.append(el('summary', `${entry.serial || '设备未记录'} · ${label}${entry.label ? ` · ${entry.label}` : ''}`));
+      const role = ({outer_queue: '外层队列锁', device_lease: '设备租约'})[entry.role] || '角色未报告';
+      const label = ({active: '活动记录', command_pending: '命令待处理', recovery_required: '需要恢复', abandoned: '已遗留', unknown: '状态未知'})[entry.state] || text(entry.state);
+      details.append(el('summary', `${role}${entry.serial ? ` · ${entry.serial}` : ''} · ${label}`));
       const info = el('dl', null, 'facts');
-      for (const [name, value] of [['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
+      const holder = entry.holder_verified === true ? '已核验' : entry.holder_verified === false ? '核验未通过' : entry.role === 'device_lease' ? '不适用（设备租约）' : '未知';
+      for (const [name, value] of [['标签（仅展示）', entry.label], ['实例 ID', entry.instance_id], ['关联外层实例', entry.outer_instance_id], ['外层持有者核验', holder], ['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
       details.append(info);
       if (entry.job_id) details.append(openJobButton(entry.job_id, `关联任务 ${entry.job_id}`));
       if (entry.recovery_context != null) details.append(el('pre', typeof entry.recovery_context === 'string' ? entry.recovery_context : JSON.stringify(entry.recovery_context, null, 2), 'lease-context'));

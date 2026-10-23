@@ -42,6 +42,13 @@
 .lock-message.warning { color: var(--amber-ink); }
 .lock-message.error { color: var(--bad-ink); }
 .lock-facts { grid-template-columns: 64px minmax(0,1fr); font-size: 12px; }
+.lock-identities { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 12px; }
+.lock-identities h3 { font-size: 12px; font-weight: 600; margin: 0 0 10px; }
+.lock-identities ul { list-style: none; margin: 0; padding: 0; }
+.lock-identities li + li { margin-top: 12px; }
+.lock-identities summary { padding: 5px 0; cursor: pointer; overflow-wrap: anywhere; }
+.lock-identities .facts { grid-template-columns: 76px minmax(0,1fr); font-size: 12px; }
+.lock-identities dd { overflow-wrap: anywhere; }
 .lock-details { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 12px; font-size: 12px; }
 .lock-details summary { cursor: pointer; padding: 4px 0; color: var(--ink2); }
 .lock-details h3 { font-size: 12px; font-weight: 600; margin-top: 16px; }
