@@ -22,7 +22,9 @@
 
 独立worker在直接命令退出后有界核查原进程组；仍存在或核查未知时保留真实命令退出码，但作业为interrupted/recovery.required，调度保留声明资源。Web与CLI展示同一owned_process_group记录，不能将absent解释为setsid脱组后代或设备恢复。合同与验收范围见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-GROUP-COMPLETION.md 。
 
-请求可显式声明execution_policy；当前仅process_group可用，contained在上传/准备/启动前拒绝，不按OS推断支持。旧请求省略字段保持原幂等内容；请求策略与worker实际process_management分别记录，缺证据不回填。Web/CLI/API必须同步准入与范围。内核containment仍待实现和真实验收，见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-CONTAINMENT.md 。
+请求可显式声明execution_policy；当前仅process_group可用，contained在上传/准备/启动前拒绝，不按OS推断支持。旧请求省略字段保持原幂等内容；请求策略与worker实际process_management分别记录，缺证据不回填。Web/CLI/API必须同步准入与范围。节点启用containment仍待生产权限与恢复边界验收，见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-CONTAINMENT.md 。
+
+job_cgroup提供仅供管理员隔离调用的Linux特权worker后端，公共node能力仍不可用；不得给HTTP服务提权代替生产启动边界。配置使用空的专用cgroup根与专用非root身份；作业只在入域确认后放行，域空后封存job根再完成。未确认的启动门/遗留域阻断身份复用，worker丢失不宣称自动回收。真实内核验收由独立cgroup-kernel CI承担，普通协议测试不改系统cgroup。
 
 ## 作业保存边界
 

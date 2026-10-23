@@ -22,3 +22,26 @@ jobs:
           node --check node/dash_static/jobs.js
           node --check node/dash_static/fleet.js
           node --check node/dash_static/maint.js
+  cgroup-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Real cgroup v2 privilege and lifecycle contract
+        run: |
+          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            timeout --signal=TERM --kill-after=10s 90s /usr/bin/python3 \
+            node/tests/integration_job_cgroup.py \
+            --artifact-dir "$RUNNER_TEMP/job-cgroup-kernel"
+      - name: Preserve kernel observations and raw worker files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-cgroup-kernel-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/job-cgroup-kernel
+          if-no-files-found: error
+          retention-days: 14

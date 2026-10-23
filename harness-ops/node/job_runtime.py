@@ -11,7 +11,7 @@ import time
 import traceback
 
 from artifact_io import SafeRoot
-from job_policy import require_policy
+from job_policy import require_policy, requested_policy
 
 
 def _open_file(store, rel, flags):
@@ -31,7 +31,7 @@ def _worker_command(job_dir, lock_fd):
             "--lock-fd", str(lock_fd)]
 
 
-def launch(store, jid, job_dir, command, cwd, env, execution_policy=None):
+def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
     job_dir = os.path.abspath(job_dir)
     if os.path.basename(job_dir) != jid:
@@ -51,7 +51,10 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None):
         os.close(log_fd)  # Make the raw log readable before the worker starts.
         diag_fd = _open_file(store, jid + "/runner.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         try:
-            return subprocess.Popen(_worker_command(job_dir, lock_fd), env=env,
+            worker_command = _worker_command(job_dir, lock_fd)
+            if contained_config is not None:
+                worker_command += ["--contained-config", os.path.abspath(contained_config)]
+            return subprocess.Popen(worker_command, env=env,
                                     stdin=subprocess.DEVNULL, stdout=diag_fd, stderr=subprocess.STDOUT,
                                     pass_fds=(lock_fd,), start_new_session=True)
         finally:
@@ -154,7 +157,7 @@ def _finish(store, jid, meta, outcome, recovery, returncode=None, error=None):
     store.write_json(jid + "/meta.json", meta)
 
 
-def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0)):
+def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=None):
     """Delay injection is for direct unit calls, never exposed in CLI or environment."""
     os.set_inheritable(lock_fd, False)
     fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -177,6 +180,11 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0)):
             _finish(store, jid, meta, "cancelled", {"status": "not_needed", "reason": "cancelled before command started"})
             return 0
         spec = store.read_json(jid + "/launch.json")
+        if contained_config is not None and requested_policy(spec) == "contained":
+            # Administrator-only worker entry. Public admission remains unavailable
+            # until a production privilege and cross-UID artifact boundary exists.
+            from job_cgroup import run
+            return run(store, jid, job_dir, meta, spec, contained_config, escalation_delays)
         try:
             policy = require_policy(spec)
         except ValueError as error:
@@ -257,9 +265,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-dir", required=True)
     parser.add_argument("--lock-fd", required=True, type=int)
+    parser.add_argument("--contained-config", help="administrator-owned Linux worker configuration; not a node option")
     args = parser.parse_args()
     try:
-        return _worker(args.job_dir, args.lock_fd)
+        return _worker(args.job_dir, args.lock_fd, contained_config=args.contained_config)
     except BaseException:
         # No fabricated result or replay: the service detects a lost flock and
         # reports interrupted/recovery required. Diagnostics never enter child log.
