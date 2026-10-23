@@ -6,14 +6,14 @@
 //!
 //! 流程:
 //!
-//! 1. `devlock renew <label>` 成功 = 锁已经在本 label 手里 (外层 `devlock run <label>`
+//! 1. `devlock renew <label>` 成功 = 继承实例与活的holder进程树已经核验 (外层 `devlock run <label>`
 //!    包着我们)。原地跑, 心跳与释放归外层, 不然就是自己等自己。
-//! 2. 否则 `devlock acquire <label>` 排队 (45 秒重试, 重试不丢队位); 等满
+//! 2. 无继承实例时 `devlock acquire <label>` 排队 (45 秒重试, 重试不丢队位); 等满
 //!    `--lock-wait` 还没轮到就报错退出, **一个字节都不碰设备**。
 //! 3. 拿到后后台每 60 秒续一次心跳; 守卫 drop (正常返回、`?` 提前返回、panic 展开)
 //!    时停心跳并释放。
 //!
-//! 持锁期间把 `DEVLOCK_LABEL=<label>` 放进环境: 我们调起的 `phonefarm probe/eval`
+//! 持锁期间把 `DEVLOCK_LABEL` 和 `DEVLOCK_INSTANCE_ID` 放进环境: 我们调起的 `phonefarm probe/eval`
 //! 走它自己入口的第 1 步, 认出锁是这一侧的, 原地执行而不是再排一次队。
 
 use anyhow::{bail, Context, Result};
@@ -121,21 +121,16 @@ pub fn parse_wait(s: &str) -> Result<Duration> {
     }
 }
 
-fn call(script: &Path, phonefarm: &Path, args: &[&str]) -> (Option<i32>, String) {
-    match Command::new(script)
-        .env("PHONEFARM_BIN", phonefarm)
-        .args(args)
-        .output()
-    {
+fn call(script: &Path, phonefarm: &Path, args: &[&str], instance: Option<&str>) -> (Option<i32>, String) {
+    let mut command = Command::new(script);
+    command.env("PHONEFARM_BIN", phonefarm).args(args).env_remove("DEVLOCK_INSTANCE_ID");
+    if let Some(instance) = instance { command.env("DEVLOCK_INSTANCE_ID", instance); }
+    match command.output() {
         Ok(o) => (
             o.status.code(),
-            format!(
-                "{}{}",
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)
-            )
-            .trim()
-            .to_string(),
+            if o.status.success() { String::from_utf8_lossy(&o.stdout).trim().to_string() } else {
+                format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string()
+            },
         ),
         Err(e) => (None, format!("调不起 {}: {e}", script.display())),
     }
@@ -147,6 +142,8 @@ pub struct Guard {
     phonefarm: PathBuf,
     label: String,
     owned: bool,
+    instance: Option<String>,
+    previous_label: Option<std::ffi::OsString>,
     stop: Arc<AtomicBool>,
     hb: Option<JoinHandle<()>>,
 }
@@ -160,6 +157,8 @@ impl Guard {
             phonefarm: PathBuf::new(),
             label: String::new(),
             owned: false,
+            instance: None,
+            previous_label: None,
             stop: Arc::new(AtomicBool::new(true)),
             hb: None,
         }
@@ -177,27 +176,33 @@ impl Guard {
         wait: Duration,
     ) -> Result<Self> {
         let phonefarm = std::path::absolute(phonefarm)?;
-        // 1. 已在本 label 手里: 借用, 不心跳不释放
-        if call(&script, &phonefarm, &["renew", &label]).0 == Some(0) {
-            println!("设备锁: 已在 {label} 手里 (外层持有), 原地执行");
+        let previous_label = std::env::var_os("DEVLOCK_LABEL");
+        if let Ok(instance) = std::env::var("DEVLOCK_INSTANCE_ID") {
+            let (code, out) = call(&script, &phonefarm, &["renew", &label], Some(&instance));
+            if code != Some(0) { bail!("inherited device lock identity rejected: {out}"); }
+            println!("设备锁: 已核验继承实例 ({label})，原地执行");
             std::env::set_var("DEVLOCK_LABEL", &label);
             return Ok(Self {
-                script: Some(script),
-                phonefarm,
-                label,
-                owned: false,
-                stop: Arc::new(AtomicBool::new(true)),
-                hb: None,
+                script: Some(script), phonefarm, label, owned: false,
+                instance: Some(instance), previous_label,
+                stop: Arc::new(AtomicBool::new(true)), hb: None,
             });
         }
-        // 2. 排队
         let t0 = Instant::now();
-        loop {
-            let (code, out) = call(&script, &phonefarm, &["acquire", &label]);
+        let instance = loop {
+            let (code, out) = call(&script, &phonefarm, &["acquire", &label], None);
             match code {
                 Some(0) => {
+                    let value: serde_json::Value = serde_json::from_str(&out)
+                        .context("devlock returned no typed instance; upgrade phonefarm/devlock together")?;
+                    let instance = value["instance_id"].as_str().filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+                        .context("invalid queue instance ID")?;
+                    if value["schema"] != "phonefarm/devlock-owner@1" || value["label"] != label
+                        || value["holder_pid"].as_u64() != Some(std::process::id() as u64) {
+                        bail!("devlock acquisition identity does not match this holder");
+                    }
                     println!("设备锁: 已拿到 ({label})");
-                    break;
+                    break instance.to_string();
                 }
                 Some(1) => {} // 明确锁忙才排队重试。
                 _ => {
@@ -226,16 +231,14 @@ impl Guard {
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
-        }
+        };
         std::env::set_var("DEVLOCK_LABEL", &label);
+        std::env::set_var("DEVLOCK_INSTANCE_ID", &instance);
         // 3. 心跳
         let stop = Arc::new(AtomicBool::new(false));
         let hb = {
-            let (script, phonefarm, label, stop) = (
-                script.clone(),
-                phonefarm.clone(),
-                label.clone(),
-                stop.clone(),
+            let (script, phonefarm, label, instance, stop) = (
+                script.clone(), phonefarm.clone(), label.clone(), instance.clone(), stop.clone(),
             );
             std::thread::spawn(move || {
                 let mut warned = false;
@@ -246,7 +249,7 @@ impl Guard {
                         continue;
                     }
                     last = Instant::now();
-                    let (code, out) = call(&script, &phonefarm, &["renew", &label]);
+                    let (code, out) = call(&script, &phonefarm, &["renew", &label], Some(&instance));
                     if code != Some(0) && !warned {
                         // 不杀主流程: 正在跑的评测半途停下会把设备留在半施加态
                         eprintln!("⚠ 设备锁续期失败 ({label}): {out}");
@@ -260,6 +263,8 @@ impl Guard {
             phonefarm,
             label,
             owned: true,
+            instance: Some(instance),
+            previous_label,
             stop,
             hb: Some(hb),
         })
@@ -274,11 +279,18 @@ impl Drop for Guard {
         }
         if self.owned {
             if let Some(s) = &self.script {
-                let (code, out) = call(s, &self.phonefarm, &["release", &self.label]);
+                let (code, out) = call(s, &self.phonefarm, &["release", &self.label], self.instance.as_deref());
                 if code == Some(0) {
                     println!("设备锁: 已释放 ({})", self.label);
                 } else {
                     eprintln!("设备锁释放失败 ({}): {out}", self.label);
+                }
+            }
+            if std::env::var("DEVLOCK_INSTANCE_ID").ok().as_deref() == self.instance.as_deref() {
+                std::env::remove_var("DEVLOCK_INSTANCE_ID");
+                match &self.previous_label {
+                    Some(label) => std::env::set_var("DEVLOCK_LABEL", label),
+                    None => std::env::remove_var("DEVLOCK_LABEL"),
                 }
             }
         }
@@ -381,9 +393,9 @@ mod tests {
             &script,
             format!(
                 "#!/bin/sh\n[ \"$PHONEFARM_BIN\" = '{phonefarm}' ] || exit 9\necho \"$1 $2\" >> {log}\ncase $1 in\n\
-                 renew) [ -f {held} ];;\n\
-                 acquire) touch {held};;\n\
-                 release) rm -f {held};;\nesac\n",
+                 renew) [ -f {held} ] && [ \"$DEVLOCK_INSTANCE_ID\" = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ];;\n\
+                 acquire) touch {held}; printf '{{\"schema\":\"phonefarm/devlock-owner@1\",\"instance_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"label\":\"t\",\"holder_pid\":%s}}\\n' \"$PPID\";;\n\
+                 release) [ \"$DEVLOCK_INSTANCE_ID\" = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ] && rm -f {held};;\nesac\n",
                 log = log.display(),
                 held = held.display(),
                 phonefarm = phonefarm.display()
@@ -405,6 +417,12 @@ mod tests {
             .unwrap();
             assert!(g.owned);
             assert!(held.exists());
+            std::env::set_var("DEVLOCK_INSTANCE_ID", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            let previous = std::fs::read_to_string(&log).unwrap();
+            assert!(Guard::acquire(script.clone(), phonefarm.clone(), "t".into(), Duration::ZERO).is_err());
+            assert_eq!(std::fs::read_to_string(&log).unwrap(), format!("{previous}renew t\n"));
+            assert!(held.exists(), "a stale inherited identity must not replace or release the holder");
+            std::env::set_var("DEVLOCK_INSTANCE_ID", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
             // 外层已持有: 借用
             let inner = Guard::acquire(
                 script.clone(),
@@ -421,7 +439,7 @@ mod tests {
         let l = std::fs::read_to_string(&log).unwrap();
         assert!(l.contains("acquire t") && l.contains("release t"), "{l}");
 
-        // 配置错误不能消耗排队预算；renew 失败后仅尝试 acquire 一次。
+        // 配置错误不能消耗排队预算；无继承实例仅尝试 acquire 一次。
         std::fs::write(&log, "").unwrap();
         std::fs::write(
             &script,
@@ -456,7 +474,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(&log).unwrap(),
-            "renew storage-error\nacquire storage-error\n"
+            "acquire storage-error\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

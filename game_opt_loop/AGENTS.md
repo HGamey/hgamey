@@ -24,3 +24,7 @@ GOL 提供可选的优化编排、候选与判定工具；不要求使用者把�
 - 有远端并发变更先 pull --rebase 并重验；不关闭必需检查、禁止强推或删除规则。
 - 主 Agent 聚焦系统结构、协议与整合；前端等独立模块可交具体 subagent，划分文件所有权。
 - 每批记录已做、未做、测试层级和恢复义务；部署与代码提交分开。
+
+## 外层队列身份（源码与隔离宿主已验，未部署）
+
+PF/devlock需与本客户端同版升级。队列借用、续期和释放依 DEVLOCK_INSTANCE_ID 与宿主进程身份，label只显示与排队。继承实例失效即拒绝，不换ID重试。源码/宿主验证状态及恢复限制见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/LEASE-IDENTITY.md 。
