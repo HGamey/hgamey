@@ -74,9 +74,15 @@ jobs:
           repository: HGamey/phonefarm
           ref: 563b73edbf95231847574ae17fc701fe281f6f0d
           path: pf-runtime
+          sparse-checkout-cone-mode: false
           sparse-checkout: |
-            src
-            tools
+            /src/
+            /tools/
+            /loop_v1/tools/
+            /loop_v1/auto/sample_env.sh
+            /loop_v1/carriers/vulkan-samples/rules.json
+            /loop_v1/refbench/rules.json
+            /knobs/gray/build/layer_build.json
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
