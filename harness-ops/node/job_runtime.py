@@ -1,4 +1,5 @@
 """Persistent job worker. Only this process signals the child it actually spawned."""
+from contextlib import contextmanager
 import argparse
 import fcntl
 import os
@@ -55,6 +56,21 @@ def launch(store, jid, job_dir, command, cwd, env):
         # flock belongs to the shared open file description passed to the worker.
         # LOCK_UN here would release the worker's lock as well.
         os.close(lock_fd)
+
+
+@contextmanager
+def runner_lock(store, jid):
+    """Exclude a worker while committing its stable result; never wait for it."""
+    fd = _open_file(store, jid + "/runner.lock", os.O_RDWR | os.O_CREAT)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            yield True
+    finally:
+        os.close(fd)
 
 
 def runner_alive(store, jid):

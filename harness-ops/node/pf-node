@@ -16,6 +16,7 @@
   pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
   pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
+  pf-node retry-finalize <id>                # 重试保存原有结束记录，不重新执行命令
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
   pf-node cancel <id> [--force]            # 默认请求 SIGINT；--force 允许 15s 后 TERM、再 15s 后 KILL
@@ -33,6 +34,8 @@
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
 - 每次提交生成 request_id；同一次重试保持请求内容和 id 不变。--request-id 可手动指定，--resource 可重复声明独占资源。
   preparing/queued 只代表准备或排队；提交前需节点支持幂等请求，结果未知时用 request 查询，不要换 id 重投。
+- finalizing 表示结束记录尚在保存；storage_blocked 表示保存失败，wait/跟随以125退出并保留命令诊断。
+  修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
 - --device-access none|write|recovery 显式声明设备访问；recovery 必须配 --recovery-for 原资源保留任务 ID，
   资源由父任务继承，不能同时传 --resource。恢复任务不自动解除原屏障；核查后另行 release。
 - 当前场景采样沿 session-action：动作 JSON 的 action="sample"、params={"seconds":30}（整数1–120）；
@@ -223,16 +226,55 @@ def terminal_exit(jid, status):
     return 125 if unknown else rc
 
 
+def retry_finalize(jid):
+    try:
+        node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
+    except ClientError as e:
+        sys.exit(f"pf-node: 无法核对 jobs.durability-v1，请核对访问权限或升级节点：{e}")
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
+        sys.exit(f"pf-node: 无法读取节点保存能力：{e}")
+    if "jobs.durability-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点未提供 jobs.durability-v1，请升级；尚未发送保存重试")
+    try:
+        result = json.loads(call("POST", f"/jobs/{jid}/retry-finalize", b"{}",
+                                 {"Content-Type": "application/json"}, attempts=1, raise_errors=True))
+    except ClientError as e:
+        if e.code in (401, 403):
+            sys.exit("pf-node: 保存重试被拒绝；需要有效的管理 token")
+        sys.exit(f"pf-node: 保存重试未确认：{e}；请先用 pf-node status {jid} 核对，不会自动重试")
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
+        sys.exit(f"pf-node: 保存结果未确认：{e}；请先用 pf-node status {jid} 核对，不会自动重试")
+    if result.get("storage_committed") is True:
+        print(f"pf-node: 任务 {jid} 的结束记录已提交存储；不代表设备恢复或资源已释放。", file=sys.stderr)
+    else:
+        reason = ((result.get("job") or {}).get("queue") or {}).get("state_reason")
+        print(f"pf-node: 任务 {jid} 结束记录仍未保存，资源保留；原因={json.dumps(reason, ensure_ascii=False)}", file=sys.stderr)
+    return result
+
+
 def follow(jid):
     off = 0
     try:
         while True:
+            st = json.loads(call("GET", f"/jobs/{jid}"))
+            if st.get("phase") == "storage_blocked":
+                print(f"pf-node: 任务 {jid} 结果保存失败（storage_blocked），停止本地跟随并返回125；"
+                      f"命令 exit={st.get('exit')}，execution.returncode={(st.get('execution') or {}).get('returncode')}，"
+                      f"state_reason={json.dumps((st.get('queue') or {}).get('state_reason'), ensure_ascii=False)}，"
+                      f"recovery={json.dumps(st.get('recovery'), ensure_ascii=False)}。"
+                      f"原命令不会重跑；核查存储后用 pf-node retry-finalize {jid}，不自动下载未提交结果。", file=sys.stderr)
+                raise SystemExit(125)
+            group = (st.get("execution") or {}).get("owned_process_group") or {}
+            reason = (st.get("queue") or {}).get("state_reason") or {}
+            if (st.get("state") == "finished" and st.get("exit") is None
+                    and (group.get("status") == "not_started" or reason.get("kind") == "cancelled_before_launch")):
+                # SQL may confirm no execution even when preparation never created log/out.
+                raise SystemExit(terminal_exit(jid, st))
             chunk = call("GET", f"/jobs/{jid}/log?offset={off}")
             if chunk:
                 sys.stdout.buffer.write(chunk)
                 sys.stdout.flush()
                 off += len(chunk)
-            st = json.loads(call("GET", f"/jobs/{jid}"))
             if st["state"] == "finished":
                 chunk = call("GET", f"/jobs/{jid}/log?offset={off}")
                 sys.stdout.buffer.write(chunk)
@@ -519,6 +561,12 @@ def main():
         result = release_job(args[1], args[3])
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("released") is True else 1)
+    if args[0] == "retry-finalize":
+        if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
+            sys.exit("用法: pf-node retry-finalize <12 位任务 id>")
+        result = retry_finalize(args[1])
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get("storage_committed") is True else 1)
     if args[0] == "cancel":
         if (len(args) not in (2, 3) or (len(args) == 3 and args[2] != "--force")
                 or not __import__("re").fullmatch(r"[0-9a-f]{12}", args[1])):

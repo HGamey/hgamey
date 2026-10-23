@@ -27,6 +27,7 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 执行任务使用独立的锁 owner，label 只供展示；phonefarm/GOL/helper 保留内部锁路线，raw adb/fetch_apk 由 devlock run 包裹。
 显式 devlock 管理命令的 acquire/renew/release 等身份仍可跨请求，不改写其位置参数。
 """
+import sqlite3
 import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
@@ -258,8 +259,9 @@ class Jobs:
         # devlock management commands retain their explicit cross-request labels.
         effective_argv = _job_lock_args(argv, owner) if binname in {"phonefarm", "game_opt_loop"} else argv
         jin, jout = self.path(jid, "in"), self.path(jid, "out")
-        os.makedirs(jin)
-        os.makedirs(jout)
+        self._read_root.mkdir(jid)
+        self._read_root.mkdir(jid + "/in")
+        self._read_root.mkdir(jid + "/out")
         self._write_meta(jid, self.dispatch.base_meta(row))
         with self._read_root.create_file(jid + "/log"):
             pass
@@ -284,10 +286,31 @@ class Jobs:
         meta = self._read_meta(jid)
         meta["phase"] = "queued"
         self._write_meta(jid, meta)
+        self._read_root.sync_tree(jid + "/in")
+        self._read_root.sync(jid + "/log", directory=False)
+        self._read_root.sync(jid + "/out", directory=True)
+        self._read_root.sync(jid, directory=True)
+        self._read_root.sync("", directory=True)
 
     def status(self, jid):
         row = self.dispatch.queue.get(jid)
-        if row and row["state"] in {"preparing", "queued"}:
+        reason = (row or {}).get("state_reason") or {}
+        if reason.get("kind") == "cancelled_before_launch":
+            meta = self.dispatch.unstarted_meta(row, {"outcome": "cancelled", "at": reason["at"],
+                                                     "note": "cancelled before execution"})
+        elif reason.get("kind") == "durability":
+            if reason.get("unstarted"):
+                meta = self.dispatch.unstarted_meta(row, reason["unstarted"])
+            else:
+                try:
+                    meta = self._execution_status(jid)
+                except (OSError, ValueError):
+                    meta = self.dispatch.base_meta(row)
+                    meta["recovery"] = {"status": "required", "reason": "execution record is unavailable"}
+            meta.update(state="running", phase="storage_blocked")
+            meta["controls"] = {"cancel_supported": False, "force_supported": False,
+                                "reason": "retry-finalize to commit the job record; command is not replayed"}
+        elif row and row["state"] in {"preparing", "queued"}:
             meta = self.dispatch.base_meta(row)
             meta["phase"] = row["state"]
             meta["controls"] = {"cancel_supported": True, "force_supported": False, "reason": None}
@@ -306,14 +329,18 @@ class Jobs:
                 meta["controls"] = {"cancel_supported": False, "force_supported": False, "reason": "job is terminal"}
             else:
                 meta = self._execution_status(jid)
+        if row and row["state"] == "claimed" and meta.get("state") == "finished":
+            meta.update(state="running", phase="finalizing")
+            meta["controls"] = {"cancel_supported": False, "force_supported": False,
+                                "reason": "waiting for worker release and result storage commit"}
         return self.dispatch.attach(meta, row)
 
-    def _execution_status(self, jid):
+    def _execution_status(self, jid, worker_alive=None):
         meta = self._read_meta(jid)
         if not isinstance(meta, dict) or meta.get("id") != jid:
             raise ValueError("invalid job metadata")
         if (meta.get("execution") or {}).get("kind") == "supervised-v1":
-            return self._supervised_status(jid, meta)
+            return self._supervised_status(jid, meta, worker_alive=worker_alive)
         if "exit" not in meta:
             try:   # 重启前起的任务：从 exitcode 文件拿真实退出码
                 with self._read_root.open_file(jid + "/exitcode") as f:
@@ -334,8 +361,8 @@ class Jobs:
                             "reason": "legacy job has no verifiable worker ownership"}
         return meta
 
-    def _supervised_status(self, jid, meta):
-        alive = job_runtime.runner_alive(self._read_root, jid)
+    def _supervised_status(self, jid, meta, worker_alive=None):
+        alive = job_runtime.runner_alive(self._read_root, jid) if worker_alive is None else worker_alive
         if not alive:
             # A worker may have finished after our first metadata read.
             meta = self._read_meta(jid)
@@ -439,7 +466,6 @@ class Jobs:
         row = self.dispatch.queue.get(jid)
         if row and self.dispatch.queue.cancel_pending(jid):
             self.dispatch.finish_unstarted(row, "cancelled", "cancelled before execution")
-            job_runtime.request_cancel(self._read_root, jid, force=False)
             return {"accepted": True, "job": self.status(jid)}
         meta = self.status(jid)
         if not meta["controls"]["cancel_supported"]:
@@ -451,6 +477,25 @@ class Jobs:
     def session(self, jid, *, request_id=None, action=None):
         return session_call(self, jid, request_id=request_id, action=action)
 
+    def retry_finalize(self, jid):
+        self.path(jid)
+        with file_lock(self.dispatch.intake_path):
+            row = self.dispatch.queue.get(jid)
+            if not row:
+                raise KeyError(jid)
+            if row["state"] != "blocked" or (row.get("state_reason") or {}).get("kind") != "durability":
+                raise RequestConflict("only a job blocked on result storage can retry-finalize")
+            self._check_recovery_children(jid)
+            committed = self.dispatch.finalize(row)
+        self.dispatch.start()
+        return {"storage_committed": committed, "job": self.status(jid)}
+
+    def _check_recovery_children(self, jid):
+        children = [r["job_id"] for r in self.dispatch.queue.rows(("preparing", "queued", "claimed", "blocked"))
+                    if r["spec"].get("recovery_for") == jid]
+        if children:
+            raise RequestConflict("recovery jobs must finish and release any blocked reservations first: " + ", ".join(children))
+
     def release_queue(self, jid, note):
         if not isinstance(note, str) or not note.strip() or len(note) > 2000:
             raise ValueError("release requires a nonempty review note (at most 2000 characters)")
@@ -460,14 +505,19 @@ class Jobs:
                 raise KeyError(jid)
             if row["state"] != "blocked":
                 raise RequestConflict("only a blocked reservation can be released")
-            children = [r["job_id"] for r in self.dispatch.queue.rows(("preparing", "queued", "claimed", "blocked"))
-                        if r["spec"].get("recovery_for") == jid]
-            if children:
-                raise RequestConflict("recovery jobs must finish and release any blocked reservations first: " + ", ".join(children))
+            if (row.get("state_reason") or {}).get("kind") == "durability":
+                raise RequestConflict("retry-finalize must commit the result before releasing resources")
+            self._check_recovery_children(jid)
             lease = self.leases.snapshot(refresh=True, force=True) if device_access(row["spec"]) != "none" else None
             if lease and lease["status"] != "clear":
                 raise RequestConflict("device lease is " + lease["status"] + "; reconcile the actual lease before releasing the queue reservation")
-            self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease})
+            try:
+                self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease})
+                self._read_root.sync(jid, directory=True)
+                self._read_root.sync("", directory=True)
+            except (OSError, ValueError) as error:
+                self.dispatch.block_storage(row, "queue-release", error)
+                return {"released": False, "job": self.status(jid)}
             self.dispatch.queue.set_state(jid, "done")
         self.dispatch.start()
         return {"released": True, "job": self.status(jid)}
@@ -706,11 +756,19 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                         receipt["killed"] = receipt["accepted"]
                     code = 409 if not receipt["accepted"] and receipt["job"]["state"] == "running" else 200
                     return self._send(code, receipt)
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "retry-finalize":
+                    data = json.loads(body or b"{}")
+                    if not isinstance(data, dict):
+                        raise ValueError("retry-finalize body must be an object")
+                    return self._send(200, jobs.retry_finalize(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "queue-release":
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):
                         raise ValueError("release body must be an object")
                     return self._send(200, jobs.release_queue(parts[1], data.get("note")))
+            except sqlite3.Error as e:
+                jobs.dispatch.last_error = f"{type(e).__name__}: {e}"
+                return self._send(503, {"error": "job storage commit could not be confirmed; query job and queue before retrying"})
             except SessionError as e:
                 return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):

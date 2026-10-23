@@ -247,6 +247,12 @@
           </form>
           <details id="execution-details" class="execution-details"><summary>停止请求、信号与恢复记录</summary><dl id="execution-info" class="facts"></dl><ul id="cancel-signals" class="cancel-signals"></ul></details>
         </section>
+        <section id="finalize-panel" class="execution-panel" aria-labelledby="finalize-heading" hidden>
+          <div class="section-heading"><h3 id="finalize-heading">结果保存</h3><button id="retry-finalize" class="ghost" type="button" disabled>重试保存结果</button></div>
+          <p id="finalize-help" class="note"></p>
+          <dl id="finalize-info" class="facts"></dl>
+          <p id="finalize-result" class="cancel-result" role="status" hidden></p>
+        </section>
         <section id="recovery-prepare-panel" class="recovery-prepare-panel" hidden>
           <div class="section-heading"><h3>恢复任务</h3><button id="prepare-recovery" class="ghost" type="button" disabled>准备恢复任务</button></div>
           <p id="recovery-prepare-help" class="note"></p>

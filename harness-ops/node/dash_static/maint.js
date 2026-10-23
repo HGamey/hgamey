@@ -137,7 +137,7 @@
     const jobs = st.jobs || [], L = st.lock || {};
     const associated = new Set((L.lease?.entries || []).map(entry => entry.job_id).filter(Boolean));
     const running = jobs.filter((j) => j.state === "running"), done = jobs.filter((j) => j.state !== "running").slice(0, 12);
-    $("jobs-count").textContent = `${running.length} 个在跑`;
+    $("jobs-count").textContent = `${running.length} 个未结束`;
     if (!S.userPickedJob || !jobs.find((j) => j.id === S.selJob)) {
       const pick = running.find((j) => associated.has(j.id)) || running[0] || done[0];
       S.selJob = pick ? pick.id : null;
@@ -145,8 +145,9 @@
     const row = (j) => {
       const now = st.now, el = j.state === "running" ? now - j.started : (j.ended || now) - j.started;
       const review = j.phase === "interrupted" || j.outcome === "interrupted" || j.recovery?.status === "required";
-      const stc = review ? "lost" : j.state === "running" ? "running" : j.state === "lost" ? "lost" : j.exit === 0 ? "ok" : "fail";
-      const stt = review ? "待核查" : j.state === "running" ? "在跑" : j.state === "lost" ? "失联" : Number.isInteger(j.exit) ? `命令已退出 · ${j.exit}` : "退出码未知";
+      const saving = ["finalizing", "storage_blocked"].includes(j.phase);
+      const stc = saving || review ? "lost" : j.state === "running" ? "running" : j.state === "lost" ? "lost" : j.exit === 0 ? "ok" : "fail";
+      const stt = j.phase === "storage_blocked" ? "结果保存失败 · 资源保留" : j.phase === "finalizing" ? "正在保存结束记录" : review ? "待核查" : j.state === "running" ? "在跑" : j.state === "lost" ? "失联" : Number.isInteger(j.exit) ? `命令已退出 · ${j.exit}` : "退出码未知";
       const lockTag = associated.has(j.id) ? `<span class="st lockholder" title="lease 记录明确关联此任务；不代表正在测量或恢复完成">关联租约记录</span>` : "";
       return `<li class="job ${j.id === S.selJob ? "sel" : ""}" data-id="${esc(j.id)}" tabindex="0">
         <div class="row1"><span class="lbl">${esc(j.label || "—")}</span><span class="st ${stc}">${stt}</span>${lockTag}

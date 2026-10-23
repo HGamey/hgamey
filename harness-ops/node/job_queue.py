@@ -40,6 +40,9 @@ class JobQueue:
                 state TEXT NOT NULL CHECK (state IN
                     ('preparing', 'queued', 'claimed', 'blocked', 'done'))
             )""")
+            columns = {r["name"] for r in db.execute("PRAGMA table_info(jobs)")}
+            if "state_reason" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN state_reason TEXT")
 
     @contextmanager
     def _transaction(self, write=False):
@@ -65,6 +68,7 @@ class JobQueue:
         value.pop("sequence")
         value["spec"] = json.loads(value["spec"])
         value["resources"] = json.loads(value["resources"])
+        value["state_reason"] = json.loads(value["state_reason"]) if value["state_reason"] else None
         return value
 
     def reserve(self, request_id, fingerprint, spec, resources):
@@ -96,7 +100,8 @@ class JobQueue:
     def cancel_pending(self, jid):
         """Win cancellation only before a dispatcher has claimed the job."""
         with self._transaction(write=True) as db:
-            result = db.execute("UPDATE jobs SET state='done' WHERE job_id=? AND state IN ('preparing', 'queued')", (jid,))
+            reason = json.dumps({"kind": "cancelled_before_launch", "at": time.time()})
+            result = db.execute("UPDATE jobs SET state='done', state_reason=? WHERE job_id=? AND state IN ('preparing', 'queued')", (reason, jid))
             return result.rowcount == 1
 
     def claim_next(self, max_running, admit=None):
@@ -119,11 +124,21 @@ class JobQueue:
                     return value
             return None
 
-    def set_state(self, jid, state):
+    def set_state(self, jid, state, reason=None):
         if state not in STATES:
             raise ValueError("unknown job queue state")
         with self._transaction(write=True) as db:
-            db.execute("UPDATE jobs SET state=? WHERE job_id=?", (state, jid))
+            db.execute("UPDATE jobs SET state=?, state_reason=? WHERE job_id=?", (state, json.dumps(reason) if reason else None, jid))
+            return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+
+    def record_unstarted(self, jid, outcome, note):
+        """Persist caller-confirmed no-launch intent without overriding cancellation."""
+        now = time.time()
+        reason = {"kind": "durability", "stage": "unstarted", "message": note, "at": now,
+                  "unstarted": {"outcome": outcome, "note": note, "at": now}}
+        with self._transaction(write=True) as db:
+            db.execute("UPDATE jobs SET state='blocked', state_reason=? WHERE job_id=? AND state!='done'",
+                       (json.dumps(reason), jid))
             return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
 
     def get(self, jid):

@@ -67,6 +67,8 @@ class JobDispatch:
                 parent = self.queue.get(spec["recovery_for"])
                 if not parent or parent["state"] != "blocked":
                     raise RequestConflict("recovery_for must name a blocked reservation")
+                if (parent.get("state_reason") or {}).get("kind") == "durability":
+                    raise RequestConflict("retry-finalize the target before submitting a recovery job")
             row, created = self.queue.reserve(key, digest.hexdigest(), spec, spec["resources"])
             if created:
                 jid = row["job_id"]
@@ -81,15 +83,85 @@ class JobDispatch:
         self.start()
         return self.jobs.status(jid)
 
-    def finish_unstarted(self, row, outcome, reason):
-        jid = row["job_id"]
-        os.makedirs(self.jobs.path(jid), exist_ok=True)
-        meta = self.base_meta(row)
-        meta.update(state="finished", phase="finished", outcome=outcome, exit=None,
-                    ended=time.time(), note=reason,
+    @staticmethod
+    def unstarted_meta(row, fact):
+        meta = JobDispatch.base_meta(row)
+        meta.update(state="finished", phase="finished", outcome=fact["outcome"], exit=None,
+                    ended=fact["at"], note=fact["note"],
                     recovery={"status": "not_needed", "reason": "command was not started"})
-        self.jobs._write_meta(jid, meta)
-        self.queue.set_state(jid, "done")
+        meta["execution"].update(worker_alive=False, child_pid=None, returncode=None,
+                                 owned_process_group={"scope": "original_process_group", "status": "not_started",
+                                                      "pgid": None, "checked_at": None, "error": None})
+        meta["controls"] = {"cancel_supported": False, "force_supported": False, "reason": "job is terminal"}
+        if fact["outcome"] == "cancelled":
+            meta["cancel"] = {"mode": "graceful", "requested_at": fact["at"], "status": "not_applied", "signals": []}
+        return meta
+
+    def finish_unstarted(self, row, outcome, reason):
+        row = self.queue.record_unstarted(row["job_id"], outcome, reason)
+        if row["state"] == "done":
+            # Cancellation is already authoritative in SQLite; output is optional.
+            try:
+                self.jobs._read_root.mkdir(row["job_id"])
+                self.jobs._write_meta(row["job_id"], self.unstarted_meta(row, {
+                    "outcome": "cancelled", "note": "cancelled before execution",
+                    "at": (row.get("state_reason") or {}).get("at", time.time())}))
+            except (OSError, ValueError):
+                pass
+            return
+        self.finalize(row)
+
+    def block_storage(self, row, stage, error):
+        current = self.queue.get(row["job_id"])
+        if current["state"] == "done":
+            return
+        reason = {"kind": "durability", "stage": stage,
+                  "message": f"{type(error).__name__}: {error}", "at": time.time()}
+        unstarted = (current.get("state_reason") or {}).get("unstarted")
+        if unstarted:
+            reason["unstarted"] = unstarted
+        # If SQLite itself fails, this raises and retains the previous reservation.
+        self.queue.set_state(row["job_id"], "blocked", reason)
+
+    def finalize(self, row):
+        """Caller holds intake; commit a stable candidate, never launch/replay it."""
+        jid, store = row["job_id"], self.jobs._read_root
+        stage = "candidate"
+        try:
+            fact = (row.get("state_reason") or {}).get("unstarted")
+            if fact:
+                stage = "unstarted"
+                store.mkdir(jid)
+            with job_runtime.runner_lock(store, jid) as acquired:
+                if not acquired:
+                    return False
+                if fact:
+                    self.jobs._write_meta(jid, self.unstarted_meta(row, fact))
+                candidate = self.jobs._execution_status(jid, worker_alive=False)
+                if candidate["state"] != "finished":
+                    return False
+                if candidate.get("lost"):
+                    self.jobs._write_meta(jid, candidate)
+                stage = "records"
+                store.sync(jid + "/meta.json", directory=False)
+                if candidate.get("exit") is not None and not candidate.get("lost"):
+                    store.sync(jid + "/exitcode", directory=False)
+                for name in ("prepared.json", "launch.json", "cancel.json", "cancel.force.json", "queue-release.json"):
+                    try:
+                        store.sync(jid + "/" + name, directory=False)
+                    except FileNotFoundError:
+                        pass
+                stage = "directories"
+                store.sync(jid, directory=True)
+                store.sync("", directory=True)
+                recovery = candidate.get("recovery", {}).get("status")
+                blocked = (candidate.get("lost") or recovery == "required" or
+                           device_access(row["spec"]) == "write" and recovery == "not_reported")
+                self.queue.set_state(jid, "blocked" if blocked else "done")
+                return True
+        except (OSError, ValueError) as error:
+            self.block_storage(row, stage, error)
+            return False
 
     def start(self):
         with self.guard:
@@ -126,19 +198,20 @@ class JobDispatch:
                     self.finish_unstarted(row, "failed", "input preparation was interrupted; submit a new request")
         for row in self.queue.rows(("claimed",)):
             jid = row["job_id"]
-            try:
-                with self.jobs._read_root.open_file(jid + "/launch.json"):
-                    launched = True
-            except FileNotFoundError:
-                launched = False
-            if not launched and self.launch(row) is False:
-                continue
-            status = self.jobs.status(jid)
-            if status["state"] == "finished":
-                recovery = status.get("recovery", {}).get("status")
-                blocked = (status.get("lost") or recovery == "required" or
-                           device_access(row["spec"]) == "write" and recovery == "not_reported")
-                self.queue.set_state(jid, "blocked" if blocked else "done")
+            with file_lock(self.intake_path):
+                try:
+                    with self.jobs._read_root.open_file(jid + "/launch.json"):
+                        launched = True
+                except FileNotFoundError:
+                    launched = False
+                except (OSError, ValueError) as error:
+                    self.block_storage(row, "launch-record", error)
+                    continue
+                if not launched:
+                    self._launch(row)
+                current = self.queue.get(jid)
+                if current["state"] == "claimed":
+                    self.finalize(current)
         lease = self.jobs.leases.snapshot(refresh=True) if any(
             device_access(r["spec"]) == "write" for r in self.queue.rows(("queued",))) else None
         while True:
@@ -150,6 +223,10 @@ class JobDispatch:
                 break
 
     def launch(self, row):
+        with file_lock(self.intake_path):
+            return self._launch(row)
+
+    def _launch(self, row):
         jid = row["job_id"]
         if device_access(row["spec"]) == "write" and self.jobs.leases.snapshot(refresh=True)["status"] != "clear":
             self.queue.set_state(jid, "queued")
@@ -162,10 +239,14 @@ class JobDispatch:
         except (OSError, ValueError, AttributeError) as error:
             self.finish_unstarted(row, "failed", f"prepared input is unavailable: {error}")
             return
-        meta = self.jobs._read_meta(jid)
-        meta.update(phase="starting", state="running", recovery={"status": "not_reported", "reason": "execution has not reported recovery"})
-        meta["execution"].update(launch_deadline=time.time() + 30)
-        self.jobs._write_meta(jid, meta)
+        try:
+            meta = self.jobs._read_meta(jid)
+            meta.update(phase="starting", state="running", recovery={"status": "not_reported", "reason": "execution has not reported recovery"})
+            meta["execution"].update(launch_deadline=time.time() + 30)
+            self.jobs._write_meta(jid, meta)
+        except (OSError, ValueError) as error:
+            self.finish_unstarted(row, "failed", f"launch preparation failed: {error}")
+            return
         env = dict(os.environ, DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
@@ -182,7 +263,8 @@ class JobDispatch:
         rows = rows if rows is not None else self.queue.rows(("preparing", "queued", "claimed", "blocked"))
         state = row["state"]
         if state in ("preparing", "blocked"):
-            return {"kind": "preparing" if state == "preparing" else "recovery", "blocking_jobs": []}
+            return {"kind": "preparing" if state == "preparing" else "durability" if
+                    (row.get("state_reason") or {}).get("kind") == "durability" else "recovery", "blocking_jobs": []}
         if state != "queued":
             return {"kind": None, "blocking_jobs": []}
         borrowed = recovery_reservations(row, rows)
@@ -206,11 +288,13 @@ class JobDispatch:
             meta["recovery_for"] = row["spec"].get("recovery_for")
             meta["queue"] = {"state": row["state"], "submitted_at": row["submitted_at"],
                              "resources": row["resources"], "waiting": self.waiting(row),
+                             "state_reason": row.get("state_reason"),
                              "recovery_for": row["spec"].get("recovery_for")}
-            try:
-                meta["queue"]["release"] = self.jobs._read_root.read_json(row["job_id"] + "/queue-release.json")
-            except FileNotFoundError:
-                pass
+            if row["state"] == "done":
+                try:
+                    meta["queue"]["release"] = self.jobs._read_root.read_json(row["job_id"] + "/queue-release.json")
+                except (OSError, ValueError):
+                    pass
         return meta
 
     def snapshot(self):
@@ -223,7 +307,7 @@ class JobDispatch:
             items.append({"job_id": row["job_id"], "request_id": row["request_id"], "phase": phase,
                           "recovery_for": row["spec"].get("recovery_for"),
                           "submitted_at": row["submitted_at"], "resources": row["resources"],
-                          "waiting": self.waiting(row, rows)})
+                          "waiting": self.waiting(row, rows), "state_reason": row.get("state_reason")})
         return {"schema_version": 1, "max_running": self.max_running, "lease": lease,
                 "active_count": sum(r["state"] == "claimed" for r in rows),
                 "blocked_count": sum(r["state"] == "blocked" for r in rows),

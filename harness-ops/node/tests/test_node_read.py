@@ -272,6 +272,33 @@ class NodeReadTests(unittest.TestCase):
                 headers={"X-Job": json.dumps(recovery), "X-Request-ID": "recovery:fixture"})["id"], child["id"])
             self.assertEqual(self.request(f"/jobs/{jid}/queue-release", method="POST", token=self.admin,
                 body=b'{"note":"already released"}')[0], 409)
+            # SQLite-only failed preparation remains visible and can only be finalized by writers.
+            self.board.jobs_dir = self.jobs.dir
+            self.assertIn("jobs.durability-v1", self.get_json("/node")["capabilities"])
+            host = {"bin": "host", "argv": [], "device_access": "none"}
+            for n, prefix in enumerate(("", "/dash/api")):
+                row, _ = self.jobs.dispatch.queue.reserve(f"durability:{n}", f"fixture:{n}", host, [f"host:{n}"])
+                fid = row["job_id"]
+                self.jobs.dispatch.queue.record_unstarted(fid, "failed", "fixture preparation failed")
+                self.assertFalse(Path(self.jobs.path(fid)).exists())
+                listed = next(m for m in self.get_json("/jobs")["items"] if m["id"] == fid)
+                mirrored = next(m for m in self.get_json("/dash/api/jobs", headers=auth)["items"] if m["id"] == fid)
+                maintained = next(m for m in self.board.jobs() if m["id"] == fid)
+                self.assertEqual(listed["queue"]["state_reason"]["kind"], "durability")
+                for view in (listed, mirrored, maintained):
+                    self.assertEqual((view["phase"], view["state"]), ("storage_blocked", "running"))
+                    self.assertEqual(view["recovery"], maintained["recovery"])
+                suffix = f"/jobs/{fid}/retry-finalize"
+                self.assertEqual(self.request(suffix, method="POST", body=b'{}')[0], 401)
+                self.assertEqual(self.request("/dash/api" + suffix, method="POST",
+                    headers={**auth, "X-HG": "1", "Content-Type": "application/json"}, body=b'{}')[0], 403)
+                credentials = {"token": self.admin} if not prefix else {"headers": write}
+                finalized = self.get_json(prefix + suffix, method="POST", body=b'{}', **credentials)
+                self.assertTrue(finalized["storage_committed"])
+                self.assertEqual(finalized["job"]["outcome"], "failed")
+                self.assertEqual(finalized["job"]["recovery"]["status"], "not_needed")
+                self.assertEqual(finalized["job"]["queue"]["state"], "done")
+                self.assertFalse((Path(self.jobs.path(fid)) / "launch.json").exists())
         self.assertEqual(self.board.last_view, 0)
         self.assertFalse(self.board.wake.is_set())
 

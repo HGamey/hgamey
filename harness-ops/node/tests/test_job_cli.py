@@ -384,7 +384,7 @@ class JobCLI(unittest.TestCase):
             with self.subTest(status=status):
                 stderr = io.StringIO()
                 stdout = mock.Mock(buffer=io.BytesIO())
-                call = mock.Mock(side_effect=[b"", json.dumps(status).encode(), b""])
+                call = mock.Mock(side_effect=[json.dumps(status).encode(), b"", b""])
                 with mock.patch.dict(cli["follow"].__globals__, call=call), \
                         mock.patch.object(sys, "stdout", stdout), contextlib.redirect_stderr(stderr):
                     self.assertEqual(cli["follow"](JOB), expected)
@@ -395,6 +395,83 @@ class JobCLI(unittest.TestCase):
                     self.assertIn("没有可信退出码", stderr.getvalue())
                 if not status.get("execution") or status["exit"] != 0:
                     self.assertIn("recovery=", stderr.getvalue())
+
+    def test_retry_finalize_checks_capability_and_posts_once_without_claiming_recovery(self):
+        cli = self.load_cli()
+        blocked = {"id": JOB, "state": "running", "phase": "storage_blocked", "exit": 0,
+                   "queue": {"state": "blocked", "state_reason": {"kind": "durability", "message": "fsync failed"}}}
+        still_recovery = {"id": JOB, "state": "finished", "exit": 0, "queue": {"state": "blocked"},
+                          "recovery": {"status": "required"}}
+        scenarios = [([], None, "未提供 jobs.durability-v1"),
+                     (["jobs.durability-v1"], {"storage_committed": False, "job": blocked}, "fsync failed"),
+                     (["jobs.durability-v1"], {"storage_committed": True, "job": still_recovery}, "不代表设备恢复"),
+                     (["jobs.durability-v1"], cli["ClientError"](503, b"storage unavailable"), "不会自动重试"),
+                     (["jobs.durability-v1"], urllib.error.URLError("offline"), "不会自动重试")]
+        for caps, result, diagnostic in scenarios:
+            with self.subTest(result=result):
+                replies = [json.dumps({"capabilities": caps}).encode()]
+                if result is not None:
+                    replies.append(result if isinstance(result, Exception) else json.dumps(result).encode())
+                call, stdout, stderr = mock.Mock(side_effect=replies), io.StringIO(), io.StringIO()
+                with mock.patch.dict(cli["main"].__globals__, call=call), \
+                        mock.patch.object(sys, "argv", [str(CLI), "retry-finalize", JOB]), \
+                        contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
+                        self.assertRaises(SystemExit) as stopped:
+                    cli["main"]()
+                self.assertEqual(call.call_args_list[0].args, ("GET", "/node"))
+                for request in call.call_args_list:
+                    self.assertEqual(request.kwargs["attempts"], 1)
+                    self.assertTrue(request.kwargs["raise_errors"])
+                if result is None:
+                    self.assertEqual(call.call_count, 1)
+                else:
+                    self.assertEqual(call.call_count, 2)
+                    self.assertEqual(call.call_args.args, ("POST", f"/jobs/{JOB}/retry-finalize", b"{}",
+                                                         {"Content-Type": "application/json"}))
+                if isinstance(result, dict):
+                    self.assertEqual(json.loads(stdout.getvalue()), result)
+                    self.assertEqual(stopped.exception.code, 0 if result["storage_committed"] else 1)
+                else:
+                    self.assertNotEqual(stopped.exception.code, 0)
+                self.assertIn(diagnostic, stderr.getvalue() + str(stopped.exception.code))
+
+    def test_wait_storage_failure_and_explicit_unstarted_terminal_need_no_log_or_output(self):
+        cli = self.load_cli()
+        blocked = {"state": "running", "phase": "storage_blocked", "exit": 7,
+                   "execution": {"returncode": 7}, "recovery": {"status": "required"},
+                   "queue": {"state": "blocked", "state_reason": {"kind": "durability", "message": "directory fsync failed"}}}
+        unstarted = {"state": "finished", "phase": "finished", "outcome": "failed", "exit": None,
+                     "execution": {"owned_process_group": {"status": "not_started"}}, "recovery": {"status": "not_needed"}}
+        cancelled = {"state": "finished", "phase": "finished", "outcome": "cancelled", "exit": None,
+                     "queue": {"state_reason": {"kind": "cancelled_before_launch"}}, "recovery": {"status": "not_needed"}}
+        for states in ([blocked], [{**blocked, "phase": "finalizing", "queue": {"state": "claimed"}}, blocked],
+                       [unstarted], [cancelled]):
+            with self.subTest(states=states):
+                pending, reads = list(states), []
+
+                def call(method, path, *_args, **_kwargs):
+                    reads.append((method, path))
+                    if path == f"/jobs/{JOB}":
+                        return json.dumps(pending.pop(0)).encode()
+                    if len(states) == 2 and len(pending) == 1 and path.endswith("/log?offset=0"):
+                        return b"partial log"
+                    raise AssertionError("must not require absent log/output or perform a mutation")
+
+                stderr, stdout, fetch = io.StringIO(), mock.Mock(buffer=io.BytesIO()), mock.Mock()
+                with mock.patch.dict(cli["main"].__globals__, call=call, fetch_out=fetch), \
+                        mock.patch.object(sys, "argv", [str(CLI), "wait", JOB]), \
+                        mock.patch.object(sys, "stdout", stdout), contextlib.redirect_stderr(stderr), \
+                        mock.patch.object(cli["time"], "sleep"), self.assertRaises(SystemExit) as stopped:
+                    cli["main"]()
+                self.assertEqual(stopped.exception.code, 125)
+                fetch.assert_not_called()
+                self.assertEqual(reads[0], ("GET", f"/jobs/{JOB}"))
+                self.assertEqual(len(reads), 3 if len(states) == 2 else 1)
+                if states[-1] is blocked:
+                    for text in ("storage_blocked", "exit=7", "execution.returncode=7", "directory fsync failed", "retry-finalize"):
+                        self.assertIn(text, stderr.getvalue())
+                else:
+                    self.assertIn(f"outcome={states[-1]['outcome']}", stderr.getvalue())
 
 
 if __name__ == "__main__":

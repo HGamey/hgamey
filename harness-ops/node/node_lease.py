@@ -16,15 +16,7 @@ def device_access(spec):
 
 def prepare_receipt_directory(store, jid):
     """Also covers queued jobs prepared by an older node before the upgrade."""
-    fd = store.open_fd(jid + "/out", directory=True)
-    try:
-        try:
-            os.mkdir("lease-receipts", mode=0o700, dir_fd=fd)
-        except FileExistsError:
-            pass
-    finally:
-        os.close(fd)
-    os.close(store.open_fd(jid + "/out/lease-receipts", directory=True))
+    store.mkdir(jid + "/out/lease-receipts")
 
 
 def job_lease_receipts(store, jid):

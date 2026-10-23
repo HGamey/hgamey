@@ -1,8 +1,10 @@
 """Deterministic open-time races against local fixtures; never use devices."""
+import errno
 import hashlib
 import http.client
 import io
 import os
+import stat
 from pathlib import Path
 import sys
 import tarfile
@@ -191,6 +193,109 @@ class ArtifactIOTests(unittest.TestCase):
         with self.file.open("rb") as source:
             with self.assertRaises(ArtifactChanged):
                 describe_file(ChangingReader(source))
+
+
+class ArtifactDurabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="artifact-durability-")
+        self.base = Path(self.tmp.name)
+        self.store = artifact_io.SafeRoot(self.base)
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.store.close)
+
+    def test_json_failure_before_and_after_rename_preserves_error_boundary(self):
+        self.store.write_json("result.json", {"old": True})
+        original = (self.base / "result.json").read_bytes()
+        real_sync = os.fsync
+        events = []
+
+        def fail_file(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(errno.EIO, "fixture file sync failure")
+            real_sync(fd)
+
+        with patch.object(artifact_io.os, "fsync", fail_file):
+            with self.assertRaisesRegex(OSError, "file sync failure"):
+                self.store.write_json("result.json", {"new": True})
+        self.assertEqual((self.base / "result.json").read_bytes(), original)
+
+        def fail_parent(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                events.append("directory")
+                # The data is visible, but the operation must still raise.
+                self.assertEqual(self.store.read_json("result.json"), {"new": True})
+                raise OSError(errno.EIO, "fixture directory sync failure")
+            events.append("file")
+            real_sync(fd)
+
+        with patch.object(artifact_io.os, "fsync", fail_parent):
+            with self.assertRaisesRegex(OSError, "directory sync failure"):
+                self.store.write_json("result.json", {"new": True})
+        self.assertEqual(events, ["file", "directory"])
+        self.assertEqual(list(self.base.glob("*.tmp")), [])
+
+    def test_publish_once_resyncs_existing_target_before_acknowledgement(self):
+        self.assertTrue(self.store.publish_json_once("intent.json", {"first": True}))
+        target_inode = (self.base / "intent.json").stat().st_ino
+        root_inode = self.base.stat().st_ino
+        real_sync = os.fsync
+        synced = []
+
+        def recording(fd):
+            synced.append(os.fstat(fd).st_ino)
+            real_sync(fd)
+
+        with patch.object(artifact_io.os, "fsync", recording):
+            self.assertFalse(self.store.publish_json_once("intent.json", {"second": True}))
+        self.assertEqual(synced[-2:], [target_inode, root_inode])
+        self.assertEqual(self.store.read_json("intent.json"), {"first": True})
+
+        def fail_parent(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EIO, "existing target directory sync failed")
+            real_sync(fd)
+
+        with patch.object(artifact_io.os, "fsync", fail_parent):
+            with self.assertRaisesRegex(OSError, "existing target directory sync failed"):
+                self.store.publish_json_once("intent.json", {"second": True})
+        (self.base / "alias.json").symlink_to(self.base / "intent.json")
+        with self.assertRaises(ValueError):
+            self.store.publish_json_once("alias.json", {})
+
+    def test_tree_and_mkdir_sync_real_objects_leaf_first(self):
+        self.store.mkdir("input")
+        self.store.mkdir("input")
+        self.store.mkdir("input/nested")
+        leaf = self.base / "input/nested/data"
+        leaf.write_bytes(b"fixed input")
+        real_sync = os.fsync
+        synced = []
+
+        def recording(fd):
+            synced.append(os.fstat(fd).st_ino)
+            real_sync(fd)
+
+        with patch.object(artifact_io.os, "fsync", recording):
+            self.store.sync_tree("input")
+        self.assertEqual(synced, [p.stat().st_ino for p in
+                                 (leaf, leaf.parent, self.base / "input", self.base)])
+        synced.clear()
+        with patch.object(artifact_io.os, "fsync", recording):
+            self.store.sync("")
+        self.assertEqual(synced, [self.base.stat().st_ino, self.base.parent.stat().st_ino])
+        self.store.sync("input/nested/data", directory=False)
+        with self.assertRaises(ValueError):
+            self.store.mkdir("input/nested/data")
+        link = self.base / "input/link"
+        link.symlink_to(leaf.parent, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.store.mkdir("input/link")
+        with self.assertRaises(ValueError):
+            self.store.sync_tree("input")
+        link.unlink()
+        os.mkfifo(self.base / "input/fifo")
+        with self.assertRaises(ValueError):
+            self.store.sync_tree("input")
 
 
 if __name__ == "__main__":

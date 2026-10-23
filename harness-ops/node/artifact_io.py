@@ -130,42 +130,126 @@ class SafeRoot:
         finally:
             os.close(parent)
 
-    def write_json(self, rel, value):
-        temporary = rel + "." + uuid.uuid4().hex + ".tmp"
-        try:
-            with self.create_file(temporary) as f:
-                f.write(json.dumps(value, ensure_ascii=False).encode())
-            self.replace(temporary, rel)
-        finally:
+    def _sync_target(self, rel, directory=None):
+        """Open the target and parent together; the caller owns both descriptors."""
+        parts = [p for p in relative_path(rel).split("/") if p not in ("", ".")]
+        if not parts:
+            if directory is False:
+                raise ValueError("expected a regular file")
+            parent = os.open("..", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             dir_fd=self.fd)
             try:
-                self.unlink(temporary)
-            except FileNotFoundError:
-                pass
-
-    def publish_json_once(self, rel, value):
-        """Atomically publish complete JSON without replacing an earlier request."""
-        temporary = rel + "." + uuid.uuid4().hex + ".tmp"
+                return parent, os.dup(self.fd)
+            except BaseException:
+                os.close(parent)
+                raise
+        parent, name = self._parent("/".join(parts))
         try:
-            with self.create_file(temporary) as f:
-                f.write(json.dumps(value, ensure_ascii=False).encode())
+            return parent, open_child(parent, name, directory=directory)
+        except BaseException:
+            os.close(parent)
+            raise
+
+    def sync(self, rel, directory=None):
+        """Sync one pinned object and its directory entry, including rel=''."""
+        parent, target = self._sync_target(rel, directory)
+        try:
+            os.fsync(target)
+            os.fsync(parent)
+        finally:
+            os.close(target)
+            os.close(parent)
+
+    def mkdir(self, rel):
+        """Create one directory, or verify an existing real directory, durably."""
+        parent, name = self._parent(rel)
+        try:
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            target = open_child(parent, name, directory=True)
+            try:
+                os.fsync(target)
+                os.fsync(parent)
+            finally:
+                os.close(target)
+        finally:
+            os.close(parent)
+
+    def sync_tree(self, rel):
+        """Sync a fixed tree leaf-first. The caller must exclude concurrent writers."""
+        def visit(fd, depth=0):
+            if depth > 64:
+                raise ValueError("artifact directory nesting exceeds 64")
+            before = os.fstat(fd)
+            if stat.S_ISDIR(before.st_mode):
+                for name in sorted(os.listdir(fd)):
+                    child = open_child(fd, name)
+                    try:
+                        visit(child, depth + 1)
+                    finally:
+                        os.close(child)
+            os.fsync(fd)
+            if stamp(os.fstat(fd)) != stamp(before):
+                raise ArtifactChanged("artifact changed during persistence barrier")
+
+        parent, target = self._sync_target(rel)
+        try:
+            visit(target)
+            os.fsync(parent)
+        finally:
+            os.close(target)
+            os.close(parent)
+
+    def _publish_json(self, rel, value, once):
+        # Keep the same parent fd through publication and its durability barrier.
+        # A failing barrier may leave the new name visible: propagate that error.
+        data = json.dumps(value, ensure_ascii=False).encode()
+        parent, name = self._parent(rel)
+        temporary = name + "." + uuid.uuid4().hex + ".tmp"
+        try:
+            fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=parent)
+            with os.fdopen(fd, "w+b") as f:
+                f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
-            parent, name = self._parent(rel)
-            try:
+            created = True
+            if once:
                 try:
-                    os.link(os.path.basename(temporary), name, src_dir_fd=parent,
-                            dst_dir_fd=parent, follow_symlinks=False)
+                    os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent,
+                            follow_symlinks=False)
                 except FileExistsError:
-                    return False
-                os.fsync(parent)
-                return True
-            finally:
-                os.close(parent)
+                    # A prior link may be visible after its publisher's fsync
+                    # failed. Observing it is not a durability acknowledgement.
+                    created = False
+                    target = open_child(parent, name, directory=False)
+                    try:
+                        os.fsync(target)
+                    finally:
+                        os.close(target)
+                os.unlink(temporary, dir_fd=parent)
+            else:
+                os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+            os.fsync(parent)
+            return created
         finally:
             try:
-                self.unlink(temporary)
-            except FileNotFoundError:
-                pass
+                try:
+                    os.unlink(temporary, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+            finally:
+                os.close(parent)
+
+    def write_json(self, rel, value):
+        """Publish durable JSON; an error can occur after rename made it visible."""
+        self._publish_json(rel, value, once=False)
+
+    def publish_json_once(self, rel, value):
+        """Publish once; an existing target is also synced before returning False."""
+        return self._publish_json(rel, value, once=True)
 
 
 def describe_file(file, cache=None, cache_lock=None):
