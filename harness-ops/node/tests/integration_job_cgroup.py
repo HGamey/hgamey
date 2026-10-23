@@ -40,7 +40,7 @@ def cgroup():
 def facts():
     status = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
     return {'pid':os.getpid(), 'pgid':os.getpgrp(), 'sid':os.getsid(0),
-            'uid':os.getresuid(), 'gid':os.getresgid(), 'groups':os.getgroups(), 'cgroup':cgroup(),
+            'uid':list(os.getresuid()), 'gid':list(os.getresgid()), 'groups':os.getgroups(), 'cgroup':cgroup(),
             'no_new_privs':status['NoNewPrivs'].strip(),
             'caps':{key:status[key].strip() for key in ('CapInh','CapPrm','CapEff','CapAmb')},
             'environment_keys':sorted(os.environ)}
@@ -214,6 +214,9 @@ class KernelFixture:
         self.known_pids.add(self.worker.pid)
         def collecting():
             meta = self.store.read_json(self.jid + "/meta.json")
+            child_pid = meta.get("execution", {}).get("child_pid")
+            if isinstance(child_pid, int) and child_pid > 1:
+                self.known_pids.add(child_pid)
             if meta.get("state") == "finished":
                 raise AssertionError("worker terminated before real cgroup collection: " + json.dumps(meta))
             return meta if meta.get("phase") == "collecting" else None
