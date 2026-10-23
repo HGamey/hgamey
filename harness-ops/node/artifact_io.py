@@ -44,8 +44,16 @@ def open_child(parent, name, directory=None):
 
 class SafeRoot:
     """Pin an operator-configured root once; all later components use openat."""
-    def __init__(self, path):
+    def __init__(self, path, json_owner=None):
         self.fd = None
+        if json_owner is not None:
+            if (not isinstance(json_owner, (tuple, list)) or len(json_owner) != 2
+                    or any(type(value) is not int or value < 0 for value in json_owner)):
+                raise ValueError("json_owner must be a nonnegative UID/GID pair")
+            if os.geteuid() != 0:
+                raise ValueError("json_owner requires a privileged publisher")
+            json_owner = tuple(json_owner)
+        self.json_owner = json_owner
         fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
             # Resolve configured aliases (e.g. macOS /var) before pinning the root.
@@ -94,7 +102,15 @@ class SafeRoot:
         return data
 
     def read_json(self, rel, maximum=1 << 20):
-        return json.loads(self.read_bytes(rel, maximum))
+        if self.json_owner is None:
+            return json.loads(self.read_bytes(rel, maximum))
+        with self.open_file(rel) as f:
+            if os.fstat(f.fileno()).st_uid != self.json_owner[0]:
+                raise ValueError("worker JSON must belong to the configured node identity")
+            data = f.read(maximum + 1)
+        if len(data) > maximum:
+            raise ValueError("metadata exceeds its read limit")
+        return json.loads(data)
 
     def _parent(self, rel):
         relative_path(rel)
@@ -214,6 +230,8 @@ class SafeRoot:
             with os.fdopen(fd, "w+b") as f:
                 f.write(data)
                 f.flush()
+                if self.json_owner is not None:
+                    os.fchown(f.fileno(), *self.json_owner)
                 os.fsync(f.fileno())
             created = True
             if once:

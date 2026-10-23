@@ -53,7 +53,8 @@ def _populated(fd):
 class Domain:
     def __init__(self, config_path, jid):
         self.root = self.group = None
-        self.job_fd = None
+        self.job_fd = self.output_fd = None
+        self.output_pending = False
         self.events = self.procs = self.kill_fd = None
         self.name = "job-" + jid
         self.created = False
@@ -61,12 +62,21 @@ class Domain:
         if sys.platform != "linux" or os.geteuid() != 0:
             raise ValueError("contained worker requires Linux and a privileged worker identity")
         self.libc = _libc()  # Load before the single-threaded worker forks.
-        with SafeRoot(Path(config_path).parent).open_file(Path(config_path).name) as f:
-            _root_owned(f.fileno(), "contained configuration")
-            config = json.load(f)
+        if isinstance(config_path, dict):
+            # Only the fixed privileged entry passes an already validated config.
+            config = config_path
+        else:
+            with SafeRoot(Path(config_path).parent).open_file(Path(config_path).name) as f:
+                _root_owned(f.fileno(), "contained configuration")
+                config = json.load(f)
         self.uid, self.gid = config["uid"], config["gid"]
         if any(type(v) is not int or v <= 0 for v in (self.uid, self.gid)):
             raise ValueError("contained job UID/GID must be nonzero integers")
+        self.node_uid, self.node_gid = config.get("node_uid", 0), config.get("node_gid", 0)
+        if any(type(v) is not int or v < 0 for v in (self.node_uid, self.node_gid)):
+            raise ValueError("contained node UID/GID must be nonnegative integers")
+        if self.uid == self.node_uid or self.gid == self.node_gid:
+            raise ValueError("contained job and node identities must differ")
         root_path = Path(config["cgroup_root"])
         if not root_path.is_absolute():
             raise ValueError("cgroup_root must be absolute")
@@ -105,9 +115,14 @@ class Domain:
             raise
 
     def prepare_files(self, store, jid, job_dir):
+        def node_owned(fd, label):
+            st = os.fstat(fd)
+            if st.st_uid != self.node_uid or st.st_mode & 0o022:
+                raise ValueError(f"{label} must be node-owned and not group/other writable")
+
         def readonly(fd):
             st = os.fstat(fd)
-            _root_owned(fd, "contained input")
+            node_owned(fd, "contained input")
             if stat.S_ISDIR(st.st_mode):
                 for name in os.listdir(fd):
                     child = open_child(fd, name)
@@ -123,14 +138,14 @@ class Domain:
 
         fd = store.open_fd(jid, directory=True)
         try:
-            _root_owned(fd, "job directory")
+            node_owned(fd, "job directory")
             self.job_fd = os.dup(fd)
             for name in os.listdir(fd):
                 if name in ("in", "out"):
                     continue
                 child = open_child(fd, name, directory=False)
                 try:
-                    _root_owned(child, "worker record")
+                    node_owned(child, "worker record")
                     if os.fstat(child).st_nlink != 1:
                         raise ValueError("worker record cannot be a hard link")
                     os.fchmod(child, 0o600)
@@ -144,9 +159,11 @@ class Domain:
                 os.close(inp)
             out = open_child(fd, "out", directory=True)
             try:
-                _root_owned(out, "initial job output")
+                node_owned(out, "initial job output")
                 if os.listdir(out):
                     raise ValueError("contained worker requires a new, empty output directory")
+                self.output_fd = os.dup(out)
+                self.output_pending = True
                 os.fchown(out, self.uid, self.gid)
                 os.fchmod(out, 0o700)
             finally:
@@ -217,9 +234,46 @@ class Domain:
     def seal_files(self):
         if self.job_fd is not None:
             # A serially reused UID must not retain access to previous evidence.
-            # Leave producer file ownership intact; revoke traversal at the root.
             os.fchmod(self.job_fd, 0o700)
             os.fsync(self.job_fd)
+
+    def return_outputs(self):
+        """Return completed output through pinned FDs, never through producer links."""
+        # Even a failed empty-domain check or seal must retain this domain.
+        self.output_pending = True
+        if self.unconfirmed_gate or self.observe()["status"] != "absent":
+            raise ValueError("cannot return output before the owned processes are confirmed absent")
+        self.seal_files()
+
+        def hand_back(fd, depth=0):
+            if depth > 64:
+                raise ValueError("contained output directory nesting exceeds 64")
+            st = os.fstat(fd)
+            if st.st_uid not in (self.uid, self.node_uid):
+                raise ValueError("contained output must belong to its job or node identity")
+            if stat.S_ISDIR(st.st_mode):
+                for name in sorted(os.listdir(fd)):
+                    child = open_child(fd, name)
+                    try:
+                        hand_back(child, depth + 1)
+                    finally:
+                        os.close(child)
+                mode = 0o700
+            elif stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+                mode = 0o600 | (st.st_mode & 0o100)
+            else:
+                raise ValueError("contained output cannot contain links or special files")
+            os.fchown(fd, self.node_uid, self.node_gid)
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+
+        if self.output_fd is not None:
+            hand_back(self.output_fd)
+        if self.job_fd is not None:
+            os.fsync(self.job_fd)
+        # Keep this pending after any failure, including a visible but unsynced
+        # ownership change. close() must preserve the domain for reconciliation.
+        self.output_pending = False
 
     def close(self):
         empty = not self.unconfirmed_gate and self.events is not None and self.observe()["status"] == "absent"
@@ -232,7 +286,7 @@ class Domain:
                 setattr(self, name, None)
         if self.root is not None:
             try:
-                if self.created and empty:
+                if self.created and empty and not self.output_pending:
                     os.rmdir(self.name, dir_fd=self.root.fd)
             finally:
                 self.root.close()
@@ -240,6 +294,9 @@ class Domain:
         if self.job_fd is not None:
             os.close(self.job_fd)
             self.job_fd = None
+        if self.output_fd is not None:
+            os.close(self.output_fd)
+            self.output_fd = None
 
 
 def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
@@ -261,7 +318,12 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
             raise
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
             if domain is not None:
-                domain.seal_files()
+                try:
+                    domain.return_outputs()
+                except (OSError, ValueError) as handback_error:
+                    _finish(store, jid, meta, "interrupted", {"status": "required", "reason": "contained startup output handback is unconfirmed"},
+                            error=f"contained startup failed: {error}; output handback failed: {handback_error}")
+                    return 1
             _finish(store, jid, meta, "failed", {"status": "not_needed", "reason": "command did not start"},
                     error=f"contained startup failed: {type(error).__name__}: {error}")
             return 1
@@ -296,7 +358,12 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
                 meta["execution"]["owned_cgroup"] = group
                 recovery = {"status": "required" if escalated else "not_reported",
                             "reason": "command domain received TERM/KILL" if escalated else "command did not report device recovery"}
-                domain.seal_files()
+                try:
+                    domain.return_outputs()
+                except (OSError, ValueError) as error:
+                    _finish(store, jid, meta, "interrupted", {"status": "required", "reason": "contained output handback is unconfirmed"},
+                            rc, error=f"output handback failed: {type(error).__name__}: {error}")
+                    return 1
                 _finish(store, jid, meta, "cancelled" if signals else "succeeded" if rc == 0 else "failed", recovery, rc)
                 return 0
             if rc is not None and meta["execution"].get("returncode") is None:

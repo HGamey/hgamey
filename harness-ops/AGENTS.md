@@ -26,6 +26,8 @@
 
 job_cgroup提供仅供管理员隔离调用的Linux特权worker后端，公共node能力仍不可用；不得给HTTP服务提权代替生产启动边界。配置使用空的专用cgroup根与专用非root身份；作业只在入域确认后放行，域空后封存job根再完成。未确认的启动门/遗留域阻断身份复用，worker丢失不宣称自动回收。真实内核验收由独立cgroup-kernel CI承担，普通协议测试不改系统cgroup。
 
+install_worker仅由管理员显式安装到新的root-owned固定目录，输出sudo策略但不启用；不得提权执行node自更新树。固定入口只收job ID及runner锁FD，拒绝非contained与旧job重放；管理JSON归node，输出在域空封存后交还。跨UID PF实时会话、失联恢复与实际部署尚未验收，public contained保持不可用。
+
 ## 作业保存边界
 
 关键结束记录在worker释放flock、文件和目录同步后才提交SQLite终态。保存失败只保留该job资源并公开storage_blocked；retry-finalize仅重新保存，不重放命令，普通release不得绕过。准备失败/取消的未执行依据由SQL记录，查询不得通过缺文件猜执行结果。范围不含任意producer输出的断电持久性；合同见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-DURABILITY.md 。

@@ -23,6 +23,9 @@ def _open_file(store, rel, flags):
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise ValueError("job runtime files must be regular files")
+    if store.json_owner is not None and os.fstat(fd).st_uid != store.json_owner[0]:
+        os.close(fd)
+        raise ValueError("job runtime record belongs to another identity")
     return fd
 
 
@@ -31,11 +34,16 @@ def _worker_command(job_dir, lock_fd):
             "--lock-fd", str(lock_fd)]
 
 
-def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None):
+def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None,
+           privileged_entry=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
     job_dir = os.path.abspath(job_dir)
     if os.path.basename(job_dir) != jid:
         raise ValueError("job directory does not match its ID")
+    if contained_config is not None and privileged_entry is not None:
+        raise ValueError("choose an administrator configuration or installed worker entry")
+    if (contained_config is not None or privileged_entry is not None) and execution_policy != "contained":
+        raise ValueError("privileged workers only execute the contained policy")
     lock_fd = _open_file(store, jid + "/runner.lock", os.O_RDWR | os.O_CREAT)
     try:
         try:
@@ -52,7 +60,10 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
         diag_fd = _open_file(store, jid + "/runner.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND)
         try:
             worker_command = _worker_command(job_dir, lock_fd)
-            if contained_config is not None:
+            if privileged_entry is not None:
+                from job_privileged import worker_command as installed_command
+                worker_command = installed_command(privileged_entry, jid, lock_fd)
+            elif contained_config is not None:
                 worker_command += ["--contained-config", os.path.abspath(contained_config)]
             return subprocess.Popen(worker_command, env=env,
                                     stdin=subprocess.DEVNULL, stdout=diag_fd, stderr=subprocess.STDOUT,
@@ -157,11 +168,12 @@ def _finish(store, jid, meta, outcome, recovery, returncode=None, error=None):
     store.write_json(jid + "/meta.json", meta)
 
 
-def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=None):
+def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=None,
+            record_owner=None, _store=None):
     """Delay injection is for direct unit calls, never exposed in CLI or environment."""
     os.set_inheritable(lock_fd, False)
     fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    store = SafeRoot(os.path.dirname(job_dir))
+    store = _store if _store is not None else SafeRoot(os.path.dirname(job_dir), json_owner=record_owner)
     jid = os.path.basename(job_dir)
     try:
         # Do not carry an HTTP launcher's ignored signal dispositions into the child.
@@ -180,7 +192,11 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             _finish(store, jid, meta, "cancelled", {"status": "not_needed", "reason": "cancelled before command started"})
             return 0
         spec = store.read_json(jid + "/launch.json")
-        if contained_config is not None and requested_policy(spec) == "contained":
+        if contained_config is not None:
+            if requested_policy(spec) != "contained":
+                _finish(store, jid, meta, "failed", {"status": "not_needed", "reason": "command did not start"},
+                        error="privileged workers only execute the contained policy")
+                return 1
             # Administrator-only worker entry. Public admission remains unavailable
             # until a production privilege and cross-UID artifact boundary exists.
             from job_cgroup import run

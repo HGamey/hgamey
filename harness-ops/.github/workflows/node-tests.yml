@@ -37,11 +37,26 @@ jobs:
             timeout --signal=TERM --kill-after=10s 90s /usr/bin/python3 \
             node/tests/integration_job_cgroup.py \
             --artifact-dir "$RUNNER_TEMP/job-cgroup-kernel"
+      - name: Non-root node through installed privileged entry
+        id: privileged
+        run: |
+          sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+            timeout --signal=TERM --kill-after=10s 90s /usr/bin/python3 \
+            node/tests/integration_job_privileged.py \
+            --artifact-dir "$RUNNER_TEMP/job-privileged-worker"
       - name: Preserve kernel observations and raw worker files
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: job-cgroup-kernel-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/job-cgroup-kernel
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve privileged entry and cross-identity observations
+        if: always() && steps.privileged.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-privileged-worker-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/job-privileged-worker
           if-no-files-found: error
           retention-days: 14
