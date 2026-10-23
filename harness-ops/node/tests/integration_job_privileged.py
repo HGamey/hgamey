@@ -181,9 +181,9 @@ class PrivilegedFixture(KernelFixture):
         os.chown(jobs_root,self.node_uid,self.node_gid)
         control = self.scratch/'control'; control.mkdir(mode=0o700)
         os.chown(control,self.node_uid,self.node_gid)
-        # Only this new /opt ancestor is changed; the installer receives a new
-        # child path with root-owned, non-writable ancestors all the way to /.
-        self.install_root = Path(tempfile.mkdtemp(prefix='phonefarm-integration-',dir='/opt'))
+        # Runner /opt may be writable by its regular user. Create only our own
+        # root child; never weaken trust checks or chmod a shared ancestor.
+        self.install_root = Path(tempfile.mkdtemp(prefix='phonefarm-integration-',dir='/'))
         self.install_root.chmod(0o755)
         prefix = self.install_root/'worker'
         argv = ['/usr/bin/python3',str(NODE/'install_worker.py'),'--prefix',str(prefix),
