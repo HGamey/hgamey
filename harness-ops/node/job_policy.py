@@ -39,4 +39,3 @@ def require_policy(spec):
 def request_facts(spec):
     return {"execution_policy": spec.get("execution_policy", "process_group"),
             "execution_policy_source": "explicit" if "execution_policy" in spec else "legacy_default"}
-
