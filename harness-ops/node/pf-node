@@ -45,6 +45,7 @@
   pf-node games upload-finalize ID        # 字节收齐后提交/找回同一个校验任务
   pf-node games upload-cancel ID          # 取消写入保留，保留partial与历史
   pf-node results list|show ID             # 显式登记结果索引与来源；不扫描旧任务目录
+  pf-node results search --node NAME [--node OTHER] # 只读搜索已绑定节点，各节点独立分页
   pf-node results register FILE            # 不可变登记；固定 result_id，回执未知仅查询原 ID
   pf-node results import FILE --adapter NAME [--import-id ID] # 仅导入小 JSON，保留原字节
   pf-node results import-status ID         # 找回原导入及全部派生结果

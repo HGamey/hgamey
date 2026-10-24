@@ -48,3 +48,20 @@
 #write-message,#lookup-message { overflow-wrap:anywhere; }
 @media(max-width:1000px){.results-layout{grid-template-columns:minmax(0,1fr)}.results-browser{border-right:0;border-bottom:1px solid var(--line)}.result-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px}.result-list>li{min-width:0}}
 @media(max-width:600px){.results-view .top-right{width:auto}.results-view .nav{gap:0}.results-view .nav a{padding:7px 8px;font-size:13px}.results-page .page-heading{flex-direction:column;align-items:flex-start;gap:12px}.result-write,.result-filters,.result-lookup,.results-browser,.result-detail{padding:18px}.result-list,.result-form-grid,.result-lookup form{grid-template-columns:minmax(0,1fr)}.result-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.result-detail .facts{grid-template-columns:76px minmax(0,1fr);gap:8px 12px}.result-actions button{white-space:normal}.result-lookup button{justify-self:start}}
+.result-federation { margin-bottom:24px; padding:20px; border:1px solid var(--line); border-radius:8px; background:var(--card); min-width:0; }
+.result-federation > summary { font-size:15px; font-weight:600; }
+.result-federation .section-heading { margin-top:16px; }
+.federation-targets { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:16px 0; }
+.results-page .federation-target { display:flex; gap:10px; align-items:flex-start; padding:12px; border:1px solid var(--line); border-radius:6px; }
+.results-page .federation-target input { flex:0 0 auto; width:16px; height:16px; margin:2px 0 0; accent-color:var(--blue); }
+.federation-target > span { min-width:0; }
+.federation-target strong,.federation-source { overflow-wrap:anywhere; }
+.federation-source { white-space:pre-wrap; color:var(--ink2); font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.federation-group { border-top:1px solid var(--line); margin-top:22px; padding-top:4px; min-width:0; }
+.federation-group .section-heading h3 { font-size:16px; }
+.federation-group .note { overflow-wrap:anywhere; }
+.federation-items { list-style:none; padding:0; margin:14px 0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 20px; }
+.federation-items li { min-width:0; padding:12px 0; border-top:1px solid var(--grid); font-size:13px; }
+.federation-items strong { display:block; overflow-wrap:anywhere; }
+.federation-items a { display:inline-block; margin-top:10px; }
+@media(max-width:600px){.result-federation{padding:18px}.federation-targets,.federation-items{grid-template-columns:minmax(0,1fr)}.result-federation .section-heading{align-items:flex-start;flex-wrap:wrap;gap:10px}}

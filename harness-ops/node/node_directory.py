@@ -178,6 +178,21 @@ class NodeDirectory:
         with self._locked() as state:
             return self._public(self._find(state, name))
 
+    def read_target(self, name, node_id, revision):
+        """Private frozen read configuration; never expose its credential to clients."""
+        _name(name)
+        with self._locked() as state:
+            entry = self._find(state, name)
+            if entry["node_id"] != node_id:
+                raise _ProbeError("identity_mismatch", "registered node does not match the selected identity")
+            if entry["revision"] != revision:
+                raise _ProbeError("configuration_changed", "registered node configuration changed; select it again explicitly")
+            if not entry["enabled"]:
+                raise _ProbeError("disabled", "registered node is disabled")
+            if not entry.get("token"):
+                raise _ProbeError("no_credentials", "registered node has no read credential")
+            return copy.deepcopy(entry)
+
     def create(self, body):
         fields = _fields(body, create=True)
         with self._locked() as state:
@@ -288,7 +303,7 @@ class NodeDirectory:
             raise TimeoutError
         return remaining
 
-    def _request(self, entry, path, deadline):
+    def _request(self, entry, path, deadline, expected_node_id=None):
         endpoint = urlsplit(entry["url"])
         cls = http.client.HTTPSConnection if endpoint.scheme == "https" else http.client.HTTPConnection
         connection = cls(endpoint.hostname, endpoint.port, timeout=self._remaining(deadline))
@@ -311,8 +326,10 @@ class NodeDirectory:
             connection.connect()
             sock = socket_ref[0] = connection.sock
             sock.settimeout(self._remaining(deadline))
-            connection.request("GET", endpoint.path + path,
-                               headers={"Authorization": "Bearer " + entry["token"], "User-Agent": "pf-directory/1"})
+            headers = {"Authorization": "Bearer " + entry["token"], "User-Agent": "pf-directory/1"}
+            if expected_node_id is not None:
+                headers["X-Expected-Node-ID"] = expected_node_id
+            connection.request("GET", endpoint.path + path, headers=headers)
             sock.settimeout(self._remaining(deadline))
             response = connection.getresponse()
             if response.status in (401, 403):
@@ -321,6 +338,10 @@ class NodeDirectory:
                 raise _ProbeError("incompatible", "remote node redirected the request; redirects are not followed")
             if response.status == 404:
                 raise _ProbeError("incompatible", "remote node does not support the required read API")
+            if expected_node_id is not None and response.status == 409:
+                raise _ProbeError("identity_mismatch", "remote node rejected the selected identity")
+            if expected_node_id is not None and response.status == 400 and "cursor=" in path:
+                raise _ProbeError("invalid_cursor", "source rejected the cursor or its original filters; do not restart automatically")
             if response.status != 200:
                 raise _ProbeError("unavailable", "remote node returned an unsuccessful HTTP status")
             chunks, size = [], 0

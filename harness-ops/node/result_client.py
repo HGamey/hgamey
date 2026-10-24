@@ -16,6 +16,8 @@ HELP = """用法:
   pf-node results list [--job-id ID] [--game-id ID] [--game-version VERSION]
       [--device TEXT] [--research-id ID] [--direction-id ID] [--outcome VALUE]
       [--limit 1..100] [--cursor CURSOR]
+  pf-node results search --node NAME [--node OTHER] [同 list 的过滤与 limit]
+  pf-node results search --node NAME --source-node-id ID --revision N --cursor CURSOR [同原过滤]
   pf-node results show ID
   pf-node results register FILE
   pf-node results import FILE --adapter doom-lr4-026-v1|gol-optimize-v1 [--import-id ID]
@@ -26,11 +28,17 @@ HELP = """用法:
 register 使用文件内固定 result_id；import 在读文件前打印指定或生成的 import_id。
 写入核对显式目标与能力，只提交一次。回执未知时，用 show 或 import-status 查询原 ID，
 不换 ID、不自动重发。登记不表示测量、收益、设备恢复或同状态资格已经验证。
+search 只读检索 1–4 个已绑定目录节点，必须显式指定 hub --node-id / PF_NODE_ID。
+首屏从 /nodes 冻结目标；续页使用原 source.node_id/revision/cursor，不重新选目标或回第一页。
+各节点独立分页，limit 按每节点计；部分失败仍输出完整 JSON，退出码 2。未自动重试。
 """
 MAX_FILE = 1 << 20
 MAX_REGISTER = 256 << 10
 MAX_RESPONSE = 6 << 20
 OUTCOMES = {"gain", "no_gain", "regression", "failed", "not_run", "unknown"}
+SEARCH_STATUSES = {"ok", "unavailable", "unauthorized", "unsupported", "identity_mismatch",
+                   "configuration_changed", "disabled", "no_credentials", "unknown_node", "busy",
+                   "invalid_cursor"}
 
 
 class RequestError(Exception):
@@ -117,7 +125,9 @@ class Client:
             raise RequestError("节点回包不是有效 JSON；结果未确认") from None
         if not isinstance(value, dict):
             raise RequestError("节点回包不是 JSON 对象；结果未确认")
-        if value.get("schema_version") != 1 or value.get("node_id") != self.target.identity()["node_id"]:
+        local = value.get("local") if method == "GET" and path == "/nodes" else value
+        if (value.get("schema_version") != 1 or not isinstance(local, dict)
+                or local.get("node_id") != self.target.identity()["node_id"]):
             raise RequestError("回执未绑定原 node_id；结果未确认")
         return value
 
@@ -131,6 +141,100 @@ def _options(args, allowed):
             raise ValueError("无效、重复或缺值的 results 选项；用 results --help 查看用法")
         values[key] = args.pop(0)
     return values
+
+
+def _search(client, args):
+    nodes, query = [], {}
+    allowed = set(LABELS) | {"job_id", "outcome", "limit", "cursor", "source_node_id", "revision"}
+    while args:
+        option = args.pop(0)
+        key = option[2:].replace("-", "_") if option.startswith("--") else ""
+        if (key != "node" and (key not in allowed or key in query)) or not args:
+            raise ValueError("无效、重复或缺值的 search 选项；用 results --help 查看用法")
+        value = args.pop(0)
+        if key == "node":
+            if not re.fullmatch(r"[a-z0-9_-]{1,64}", value) or value == "local":
+                raise ValueError("--node 须为已有目录登记名；本节点请用 results list")
+            nodes.append(value)
+        else:
+            query[key] = value
+    if not 1 <= len(nodes) <= 4 or len(set(nodes)) != len(nodes):
+        raise ValueError("search 需选择 1–4 个不同的 --node")
+    if "job_id" in query and not re.fullmatch(r"[0-9a-f]{12}", query["job_id"]):
+        raise ValueError("job_id 须为 12 位任务 ID；搜索时分别作用于各源节点")
+    if "outcome" in query and query["outcome"] not in OUTCOMES:
+        raise ValueError("outcome 不在支持的结果状态中")
+    if "limit" in query and (not query["limit"].isdigit() or not 1 <= int(query["limit"]) <= 100):
+        raise ValueError("limit 须为每节点 1–100")
+    source_id, revision = query.pop("source_node_id", None), query.pop("revision", None)
+    if "cursor" in query:
+        if len(nodes) != 1 or not query["cursor"] or source_id is None or revision is None:
+            raise ValueError("续页需要一个 --node、原 --source-node-id、--revision 和非空 --cursor")
+        if not re.fullmatch(r"[0-9a-f]{32}", source_id) or not re.fullmatch(r"[1-9][0-9]*", revision):
+            raise ValueError("续页 source-node-id 须为 32 位小写十六进制，revision 须为正整数")
+        targets = [{"name": nodes[0], "node_id": source_id, "revision": int(revision)}]
+    elif source_id is not None or revision is not None:
+        raise ValueError("--source-node-id 与 --revision 仅用于 --cursor 续页；首屏从只读目录选择")
+    else:
+        targets = None
+    if client.target.expected_node_id is None:
+        raise ValueError("search 需要显式 hub --node-id / PF_NODE_ID；先用 node 核对原节点身份")
+    hub = client.target.identity()
+    capabilities = hub.get("capabilities")
+    if (not isinstance(capabilities, list) or "node.target-v1" not in capabilities
+            or "results.federation-v1" not in capabilities):
+        raise ValueError("hub 缺少 node.target-v1 或 results.federation-v1；未降级查询")
+    if targets is None:
+        # A directory read never refreshes or binds a previously unknown source.
+        directory = client.request("GET", "/nodes")
+        items = directory.get("items")
+        if not isinstance(items, list):
+            raise RequestError("节点目录回包无效；未查询远端")
+        targets = []
+        for name in nodes:
+            matches = [item for item in items if isinstance(item, dict) and item.get("name") == name]
+            if len(matches) != 1:
+                raise ValueError(f"目录没有唯一的节点 {name}；先核对目录，未查询远端")
+            entry = matches[0]
+            if not isinstance(entry.get("node_id"), str) or not re.fullmatch(r"[0-9a-f]{32}", entry["node_id"]):
+                raise ValueError(f"目录节点 {name} 尚未绑定身份；请先在目录核对，本查询不自动绑定")
+            if type(entry.get("revision")) is not int or entry["revision"] < 1:
+                raise RequestError("目录节点 revision 无效；未查询远端")
+            targets.append({"name": name, "node_id": entry["node_id"], "revision": entry["revision"]})
+    if len({item["node_id"] for item in targets}) != len(targets):
+        raise ValueError("所选目录项绑定同一 node_id；请只选择其中一项")
+    if any(item["node_id"] == hub["node_id"] for item in targets):
+        raise ValueError("本节点不列入远端 targets；请用 results list")
+    query["targets"] = json.dumps(targets, separators=(",", ":"), ensure_ascii=True)
+    value = client.request("GET", "/result-search?" + urllib.parse.urlencode(query))
+    if type(value.get("partial")) is not bool or not isinstance(value.get("nodes"), list):
+        raise RequestError("跨节点搜索回包无效；未自动重试或回到首屏")
+    expected = {item["name"]: item for item in targets}
+    seen, failed = set(), False
+    for item in value["nodes"]:
+        source = item.get("source") if isinstance(item, dict) else None
+        name = source.get("name") if isinstance(source, dict) else None
+        if not isinstance(name, str) or name not in expected or name in seen:
+            raise RequestError("跨节点搜索回包未保留所选节点；未自动重试")
+        seen.add(name)
+        status = item.get("status")
+        if (not isinstance(status, str) or status not in SEARCH_STATUSES
+                or item.get("requested_cursor") != query.get("cursor")):
+            raise RequestError("跨节点搜索分项状态或游标不符；未自动重试")
+        if status == "ok":
+            if (source.get("node_id") != expected[name]["node_id"]
+                    or type(source.get("revision")) is not int
+                    or source.get("revision") != expected[name]["revision"]
+                    or not isinstance(item.get("items"), list)
+                    or (item.get("next_cursor") is not None and not isinstance(item["next_cursor"], str))):
+                raise RequestError("跨节点结果未绑定原源身份或版本；未自动重试")
+        else:
+            if item.get("items") is not None or item.get("next_cursor") is not None:
+                raise RequestError("跨节点失败分项混有未确认结果；未自动重试")
+            failed = True
+    if seen != set(expected) or value["partial"] != failed:
+        raise RequestError("跨节点搜索回包缺少分项或部分失败状态；未自动重试")
+    return value
 
 
 def _submit(client, path, body, identity, *, importing):
@@ -158,7 +262,11 @@ def main(args, *, target):
     try:
         command = args.pop(0)
         client = Client(target)
-        if command == "list":
+        if command == "search":
+            value = _search(client, args)
+            print(json.dumps(value, ensure_ascii=False, allow_nan=False))
+            return 2 if value["partial"] else 0
+        elif command == "list":
             query = _options(args, set(LABELS) | {"job_id", "outcome", "limit", "cursor"})
             if "job_id" in query and not re.fullmatch(r"[0-9a-f]{12}", query["job_id"]):
                 raise ValueError("job_id 须为本节点 12 位任务 ID")

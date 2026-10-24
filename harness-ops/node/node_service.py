@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
+from node_result_search import NodeResultSearch
 from node_fleet import FleetState
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
@@ -648,6 +649,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     if not hasattr(jobs, "directory"):
         jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
     directory = jobs.directory
+    if not hasattr(jobs, "result_search"):
+        jobs.result_search = NodeResultSearch(directory, node.node_id)
+    result_search = jobs.result_search
     if not hasattr(jobs, "games"):
         jobs.games = NodeGames(jobs, node.node_id)
     games = jobs.games
@@ -763,7 +767,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -781,6 +785,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["result-search"]:
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "result search requires an explicit hub identity"})
+                    return self._send(200, result_search.search(q))
                 if parts == ["results"]:
                     return self._send(200, results.list(q))
                 if len(parts) == 2 and parts[0] == "results":

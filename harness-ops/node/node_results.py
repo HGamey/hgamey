@@ -62,6 +62,26 @@ def job_id(value):
     return value
 
 
+def result_query(query):
+    allowed = set(LABELS) | {"job_id", "outcome", "limit", "cursor", "expected_node_id"}
+    if set(query) - allowed or any(len(values) != 1 for values in query.values()):
+        raise ValueError("unsupported or repeated result filter")
+    filters = {k: query[k][0] for k in (*LABELS, "job_id", "outcome") if query.get(k) and query[k][0]}
+    for key, val in filters.items():
+        text(val, 128, True)
+        if key == "job_id":
+            job_id(val)
+        if key == "outcome" and val not in OUTCOMES:
+            raise ValueError("unsupported reported outcome filter")
+    limit = int(query.get("limit", [20])[0])
+    if not 1 <= limit <= 100:
+        raise ValueError("result limit must be 1 to 100")
+    cursor = query.get("cursor", [None])[0]
+    if cursor is not None and (not isinstance(cursor, str) or not cursor or len(cursor) > 2048):
+        raise ValueError("invalid result cursor")
+    return filters, limit, cursor
+
+
 def pointer(document, path):
     if not isinstance(path, str) or len(path) > 2048 or (path and not path.startswith("/")) or re.search(r"~(?![01])", path):
         raise ValueError("invalid JSON pointer")
@@ -315,24 +335,12 @@ class NodeResults:
         return row
 
     def list(self, query):
-        allowed = set(LABELS) | {"job_id", "outcome", "limit", "cursor", "expected_node_id"}
-        if set(query) - allowed or any(len(values) != 1 for values in query.values()):
-            raise ValueError("unsupported or repeated result filter")
-        filters = {k: query[k][0] for k in (*LABELS, "job_id", "outcome") if query.get(k) and query[k][0]}
-        for key, val in filters.items():
-            text(val, 128, True)
-            if key == "job_id":
-                job_id(val)
-            if key == "outcome" and val not in OUTCOMES:
-                raise ValueError("unsupported reported outcome filter")
-        limit = int(query.get("limit", [20])[0])
-        if not 1 <= limit <= 100:
-            raise ValueError("result limit must be 1 to 100")
+        filters, limit, page_cursor = result_query(query)
         after = None
         with self._db() as db:
             upper = db.execute("SELECT COALESCE(MAX(sequence),0) FROM results").fetchone()[0]
-            if query.get("cursor"):
-                cursor = decode_cursor(query["cursor"][0])
+            if page_cursor is not None:
+                cursor = decode_cursor(page_cursor)
                 if (not isinstance(cursor, list) or len(cursor) != 4 or cursor[:2] != [self.node_id, filters]
                         or any(type(n) is not int or not 0 <= n <= (1 << 63) - 1 for n in cursor[2:])):
                     raise ValueError("result cursor belongs to another node or filter")

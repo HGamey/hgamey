@@ -26,6 +26,7 @@ node/pf-node leases                                    # 只读设备所有权�
 node/pf-node jobs --query Doom                         # 任意任务检索、分页，含失败与历史任务
 node/pf-node artifacts <job-id>                        # 列举输出；用 out <job-id> <path> 下载
 node/pf-node results list --game-id doom3               # 显式结果索引；register/import 登记已有小报告
+node/pf-node results search --node lab-a --node lab-b   # 目录绑定的远端索引；各自分页，详情和原件回源
 node/pf-node-deploy --restart                          # 更新节点代码并重启服务
 ```
 
