@@ -51,6 +51,7 @@ HELD_SIDE = int(_env_num("HG_LIVE_HELD_SIDE", 480, 160, 1080))
 FREE_GRACE_S = _env_num("HG_LIVE_FREE_GRACE_S", 5, 0, 120)
 LINGER_S = 5              # 最后一个观看者走后多久停采集（逐帧拉取的间隔要小于它）
 POLICY_EVERY_S = 1.0
+SCREEN_OFF = "手机屏幕已熄灭，没有新画面（远程调试控制台按「唤醒」键点亮）"
 ORIENT_EVERY_S = 5.0      # 空闲直播时多久查一次横竖屏（变了就按新尺寸重启 screenrecord）
 STREAM_MAX_S = 600
 KEEPALIVE_S = 5           # 静止画面也每隔这么久重发一帧：既探测断开，也防隧道空闲超时
@@ -178,6 +179,12 @@ class AdbBackend:
         """同一台手机可能 USB 和 Wi-Fi 两路同时接入（序列号不同），按 ro.serialno 认成一台。"""
         r = self._run(serial, ["shell", "getprop ro.serialno"])
         return r.stdout.decode(errors="replace").strip() or None
+
+    def screen_on(self, serial):
+        """屏幕是否点亮；读不出来返回 None（不下结论）。"""
+        r = self._run(serial, ["shell", "dumpsys power | grep -m1 mWakefulness="])
+        m = re.search(rb"mWakefulness=(\w+)", r.stdout)
+        return None if not m else m.group(1) == b"Awake"
 
     def start_live(self, serial, on_frame):
         return LiveCapture(self, serial, on_frame)
@@ -347,6 +354,8 @@ class DeviceStream:
 
     def publish(self, jpeg, mode=None):
         with self.cond:
+            if self.error == SCREEN_OFF:
+                self.error = None
             self.seq += 1
             self.frame = Frame(self.seq, jpeg, time.time(), mode or self.mode)
             self.stamps.append(time.monotonic())
@@ -412,6 +421,18 @@ class DeviceStream:
                                 self._stop_capture()  # 横竖屏变了，按新尺寸重启
                         except Exception:  # noqa: BLE001
                             pass
+                        # screenrecord 只在画面变化时出帧，熄屏时一帧都没有：说清楚，免得看着像坏了
+                        stale = not self.frame or time.time() - self.frame.at > ORIENT_EVERY_S
+                        on = getattr(self.hub.backend, "screen_on", lambda _s: True)
+                        try:
+                            off = stale and on(self.serial) is False
+                        except Exception:  # noqa: BLE001
+                            off = False
+                        with self.cond:
+                            if off:
+                                self.error = SCREEN_OFF
+                            elif self.error == SCREEN_OFF:
+                                self.error = None
                     if not self.capture and now >= next_try:
                         try:
                             self.capture = self.hub.backend.start_live(self.serial, lambda j: self.publish(j, "live"))

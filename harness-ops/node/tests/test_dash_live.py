@@ -2,6 +2,7 @@ import sys
 import threading
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -186,6 +187,18 @@ class HubTests(unittest.TestCase):
         self.assertEqual(self.backend.captures, [])
         s.leave()
         self.assertTrue(wait(lambda: s.thread is None))
+
+    def test_screen_off_is_reported_and_cleared_by_next_frame(self):
+        hub = self.make()
+        self.backend.screen_on = lambda s: False
+        with unittest.mock.patch.object(dash_live, "ORIENT_EVERY_S", 0.1):
+            s = hub.open("emu")
+            self.assertTrue(wait(lambda: s.error == dash_live.SCREEN_OFF))   # 首帧之后再没新画面且屏幕灭着
+            self.backend.screen_on = lambda s: True
+            s.publish(JPEG, "live")
+            self.assertIsNone(s.error)
+            s.leave()
+            self.assertTrue(wait(lambda: s.thread is None))
 
     def test_viewer_limit(self):
         hub = self.make()
