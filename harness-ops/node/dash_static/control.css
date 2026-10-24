@@ -38,3 +38,9 @@ fieldset#ops:disabled { opacity: .55; }
 #op-name { font-size: 13px; color: var(--teal-ink); }
 .note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 @media (max-width: 900px) { .control-page { grid-template-columns: 1fr; padding: 12px 16px; } }
+
+/* 嵌入的实时画面 (live_embed.js) */
+.screen-wrap { position: relative; }
+.hg-live-img { display: block; max-width: 100%; max-height: 78vh; margin: 0 auto; touch-action: none; user-select: none; cursor: crosshair; }
+.hg-live-badge { position: absolute; top: 8px; left: 8px; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+                 background: rgba(180, 90, 0, .85); color: #fff; }

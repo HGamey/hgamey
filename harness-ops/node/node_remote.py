@@ -301,6 +301,9 @@ class Occupancy:
                     label, serial = m.group(1), serial or m.group(2)
                 else:
                     label = owner.split(" ", 1)[0].strip() or None
+            # 约定: 只碰一台手机的 tools/devlock 持有者把序列号写进标签 「<标签>@<序列号>」 (selfsr_ab 这样做)
+            if not serial and label and "@" in label:
+                serial = label.rsplit("@", 1)[1] or None
             try:
                 age = round(_now() - os.stat(os.path.join(d, "owner")).st_mtime, 1)
             except OSError:

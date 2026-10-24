@@ -104,7 +104,8 @@
     const wrap = $("hg-screen-wrap");
     state.live = null;
     if (window.HGLive && typeof window.HGLive.attach === "function") {
-      try { state.live = window.HGLive.attach(wrap, state.serial); } catch (e) { state.live = null; }
+      // 第三个参数: 设备自然方向的像素尺寸 (wm size); 嵌入画面按当前帧横竖决定是否交换, size() 返回真实设备像素
+      try { state.live = window.HGLive.attach(wrap, state.serial, () => state.session && state.session.screen_size); } catch (e) { state.live = null; }
     }
     const target = state.live && state.live.el ? state.live.el : $("hg-screen");
     $("screen-empty").hidden = true;

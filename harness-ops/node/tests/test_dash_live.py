@@ -77,6 +77,10 @@ class LockPolicyTests(unittest.TestCase):
         pf = {"status": "held", "held_by": "phonefarm:eval:a", "lease": {"status": "clear", "entries": []}}
         self.assertEqual(lock_for("a", pf), (True, "eval"))
         self.assertFalse(lock_for("b", pf)[0])
+        tagged = {"status": "held", "held_by": "selfsr-plain-A1@a since 2026-10-24 08:45:34",
+                  "lease": {"status": "clear", "entries": []}}
+        self.assertEqual(lock_for("a", tagged), (True, "selfsr-plain-A1@a"))   # 标签带序列号: 只占那一台
+        self.assertFalse(lock_for("b", tagged)[0])
 
 
 class HubTests(unittest.TestCase):

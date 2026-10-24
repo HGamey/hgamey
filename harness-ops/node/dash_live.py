@@ -90,6 +90,10 @@ def lock_for(serial, lock):
         # 旧 tools/devlock：只有 owner 文本。phonefarm 写的是 phonefarm:<label>:<serial>，能认出就按设备分；
         # 其余无法归属的旧锁视为全机占用。
         who = lock.get("held_by") or ""
+        # 约定: 只碰一台手机的 tools/devlock 持有者把序列号写进标签 「<标签>@<序列号>」 (selfsr_ab 这样做)
+        tag = who.split(" ", 1)[0]
+        if "@" in tag:
+            return (tag.rsplit("@", 1)[1] == serial), tag
         if who.startswith("phonefarm:") and ":" in who[10:]:
             return (who.rsplit(":", 1)[1] == serial), who.split(":")[1]
         return True, who or "devlock"

@@ -127,6 +127,18 @@ class RemoteTests(Base):
         self.assertEqual((rows[0]["op"], rows[0]["serial"], rows[0]["result"]["ok"]), ("alice", "PHYS1", False))
         self.assertEqual(rows[0]["ip"], "1.2.3.4")
 
+    def test_devlock_label_with_serial_only_holds_that_device(self):
+        # 「<标签>@<序列号>」的 devlock 只占那一台: 别的真机照常可接管, 被点名的那台拒绝
+        self.remote.policy.enable("PHYS1")
+        self.legacy_devlock(label="selfsr-plain-A1@OTHER")
+        self.assertFalse(self.remote.do(self.alice, "ip", "PHYS1", "acquire", {})["reused"])
+        self.remote.do(self.alice, "ip", "PHYS1", "release", {})
+        (self.locks / "devlock.d" / "owner").write_text("selfsr-plain-A1@PHYS1 since 2026-10-24 08:45:34\n")
+        with self.assertRaises(node_remote.RemoteError) as e:
+            self.remote.do(self.alice, "ip", "PHYS1", "acquire", {})
+        self.assertEqual(e.exception.status, 409)
+        self.assertIn("selfsr-plain-A1@PHYS1", e.exception.payload["error"])
+
     def test_lease_naming_device_blocks_even_ignored_global_and_midsession(self):
         self.remote.do(self.alice, "ip", "emulator-5554", "acquire", {})
         self.remote.do(self.alice, "ip", "emulator-5554", "tap", {"x": 1, "y": 2})
