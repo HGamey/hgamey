@@ -10,6 +10,8 @@
   if (!/^[a-z0-9_-]{1,64}$/.test(selected)) selected = 'local';
   let access = null, accessBusy = false, accessError = '', editor = null, writing = false, toggleDraft = null;
   let runtimeBusy = false, runtimeNotice = '', runtimeError = false;
+  let deviceRegistry = null, registryBusy = false, registryWriting = false, registryAttempted = false, registryController = null;
+  let registryError = '', registryNotice = '', registryReadAt = null, deviceEditor = null;
   const uncertainUpdates = new Set();
   const CONNECTION = {unverified: '尚未核验', ready: '节点协议可达', unavailable: '连接不可用', unauthorized: '凭据未获授权', incompatible: '节点协议不兼容', identity_mismatch: '节点身份不匹配', disabled: '登记已停用', no_credentials: '未配置凭据'};
   const text = value => value == null || value === '' ? '未知' : String(value);
@@ -139,6 +141,128 @@
     const pending = new AbortController(), timeout = setTimeout(() => pending.abort(), 15000);
     try { return await json(path, pending.signal, body); } finally { clearTimeout(timeout); }
   }
+  function registrySupported() { return localIdentity?.capabilities?.includes('devices.registry-v1') === true; }
+  function registryWritable() {
+    return selected === 'local' && registrySupported() && deviceRegistry?.node_id === localIdentity?.node_id && !registryError && access?.steer && !accessBusy && HGTarget.canWrite() && !registryBusy && !registryWriting && !writing;
+  }
+  function registryTimestamp(value) {
+    if (!value) return '尚未保存';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString();
+  }
+  function renderDeviceRegistry() {
+    const local = selected === 'local', writable = registryWritable(), supported = registrySupported();
+    $('device-registry-heading').textContent = local ? '本节点设备登记' : '所选节点设备登记';
+    $('device-registry-local').hidden = !local;
+    $('device-registry-refresh').hidden = !local;
+    $('device-registry-create').hidden = !local;
+    $('device-registry-refresh').disabled = !local || !supported || registryBusy || registryWriting || !!HGTarget.problem();
+    $('device-registry-refresh').setAttribute('aria-busy', String(registryBusy));
+    $('device-registry-refresh').textContent = registryBusy ? '正在读取登记…' : '读取设备登记';
+    $('device-registry-create').disabled = !writable || !!deviceEditor;
+    $('device-registry-scope').textContent = local ? '设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。当前仍使用全域排他执行。' : '目录快照不包含此处的权威设备登记。请到源节点读取和编辑；本页不会将远端设备写入当前后台。登记也不等于物理同机核验、设备在线或并发资格。';
+    const source = local ? null : nodePageURL('fleet');
+    $('device-registry-source').hidden = !source;
+    if (source) { $('device-registry-source').href = source; $('device-registry-source').target = '_blank'; $('device-registry-source').rel = 'noopener noreferrer'; }
+    const permission = !access?.steer ? '当前只读；创建和编辑需解锁目录操作。' : '';
+    message('device-registry-message', registryBusy ? '正在读取宿主登记；旧记录保留，不查询设备。' : registryError ? `登记状态未确认：${registryError}。${deviceRegistry ? '下方保留上次读取的记录；' : ''}请显式重读，不会自动重试。` : !localIdentity ? '等待本节点身份…' : !supported ? '此节点未声明 devices.registry-v1，设备登记接口不可用。' : registryNotice || (!deviceRegistry ? '尚未读取设备登记。' : permission || '仅保存维护者声明；未执行设备探测。'), !!registryError);
+    $('device-registry-meta').textContent = deviceRegistry ? `节点 ${deviceRegistry.node_id} · 登记 revision ${deviceRegistry.revision} · 更新于 ${registryTimestamp(deviceRegistry.updated_at)} · 读取于 ${time(registryReadAt)}。${permission}` : '';
+    $('device-registry-empty').hidden = !deviceRegistry || deviceRegistry.devices.length > 0;
+    $('device-registry-list').replaceChildren(...(deviceRegistry?.devices || []).map(device => {
+      const row = el('li', null, 'device-registry-item'), head = el('div', null, 'section-heading'), title = el('div', null, 'device-head');
+      const state = el('span'); badge(state, device.enabled ? '登记启用' : '登记停用', device.enabled ? '' : 'unknown');
+      title.append(el('h3', device.label), state);
+      const edit = el('button', '编辑登记', 'ghost'); edit.type = 'button'; edit.disabled = !writable || !!deviceEditor;
+      edit.setAttribute('aria-label', `编辑设备登记 ${device.device_id}`); edit.addEventListener('click', () => openDeviceEditor(device));
+      head.append(title, edit); row.append(head, el('p', `device_id · ${device.device_id}`, 'device-registry-identity'));
+      const aliases = el('ul', null, 'device-registry-aliases'); aliases.append(...device.aliases.map(alias => el('li', alias))); row.append(aliases); return row;
+    }));
+    $('device-registry-form').hidden = !local || !deviceEditor;
+    const fieldsDisabled = !writable || !!deviceEditor?.needsRead;
+    for (const name of ['label', 'aliases', 'enabled']) $('device-registry-' + name).disabled = fieldsDisabled;
+    $('device-registry-id').disabled = fieldsDisabled || !!deviceEditor?.existing;
+    $('device-registry-save').disabled = fieldsDisabled || !deviceEditor;
+    $('device-registry-save').setAttribute('aria-busy', String(registryWriting));
+    $('device-registry-save').textContent = registryWriting ? '正在保存…' : '保存设备登记';
+    $('device-registry-close').disabled = registryWriting || registryBusy;
+    $('device-registry-reload').hidden = !deviceEditor?.needsRead;
+    $('device-registry-reload').disabled = !local || registryBusy || registryWriting || !supported || !!HGTarget.problem();
+    $('device-registry').setAttribute('aria-busy', String(registryBusy || registryWriting));
+  }
+  function acceptDeviceRegistry(value, expectedNode) {
+    if (value.schema !== 'phonefarm/device-registry@1' || value.node_id !== expectedNode || !Number.isSafeInteger(value.revision) || value.revision < 0 || !Array.isArray(value.devices)) throw new Error('设备登记协议或节点身份不匹配。');
+    deviceRegistry = value; registryReadAt = Date.now() / 1000; registryError = '';
+  }
+  async function readDeviceRegistry() {
+    if (selected !== 'local' || !registrySupported() || registryBusy || registryWriting || disposed) return null;
+    const expectedNode = localIdentity.node_id, pending = new AbortController();
+    registryController = pending; registryBusy = true; registryAttempted = true; registryNotice = '';
+    const timeout = setTimeout(() => pending.abort(), 15000); renderManagement();
+    try {
+      const value = await json('/dash/api/node/devices', pending.signal);
+      acceptDeviceRegistry(value, expectedNode);
+      registryNotice = '已读取设备登记；列表读取不会更新已打开草稿的编辑 revision。';
+      return value;
+    } catch (error) {
+      registryError = error.name === 'AbortError' ? '读取已中止或超时' : error.message;
+      if (error.auth) await loadAccess();
+      return null;
+    } finally { clearTimeout(timeout); registryBusy = false; registryController = null; if (!disposed) renderManagement(); }
+  }
+  function openDeviceEditor(device = null) {
+    if (!registryWritable() || deviceEditor) return;
+    deviceEditor = {existing: !!device, deviceId: device?.device_id || '', revision: deviceRegistry.revision, target: HGTarget.binding(), needsRead: false};
+    fillDeviceEditor(device);
+  }
+  function fillDeviceEditor(device) {
+    $('device-registry-form-heading').textContent = device ? `编辑设备 · ${device.device_id}` : '登记设备';
+    $('device-registry-id').value = device?.device_id || '';
+    $('device-registry-label').value = device?.label || '';
+    $('device-registry-aliases').value = device?.aliases.join('\n') || '';
+    $('device-registry-enabled').checked = device?.enabled ?? true;
+    $('device-registry-edit-revision').textContent = `编辑 revision：${deviceEditor.revision}。保存会核对整个登记版本；不会覆盖并行修改。`;
+    message('device-registry-edit-message', ''); renderManagement();
+    $(device ? 'device-registry-label' : 'device-registry-id').focus();
+  }
+  async function saveDeviceRegistry() {
+    if ($('device-registry-save').disabled || !deviceEditor) return;
+    const attempt = deviceEditor, issue = HGTarget.problem(attempt.target);
+    if (issue) { message('device-registry-edit-message', issue, true); return; }
+    const device = {device_id: $('device-registry-id').value, label: $('device-registry-label').value, aliases: $('device-registry-aliases').value.split(/\r?\n/).filter(line => line !== ''), enabled: $('device-registry-enabled').checked};
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(device.device_id) || !device.label || /[\u0000-\u001f\u007f]/.test(device.label)) { message('device-registry-edit-message', '请填写有效设备 ID 和不含控制字符的标签。', true); return; }
+    if (!device.aliases.length || device.aliases.length > 32 || new Set(device.aliases).size !== device.aliases.length || device.aliases.some(alias => /\s|[\u0000-\u001f\u007f]/.test(alias) || new TextEncoder().encode(alias).length > 256)) { message('device-registry-edit-message', '请每行填写一个原始 serial：1–32 个、不重复、不含空白或控制字符，每项最多 256 字节。不会自动修正别名。', true); return; }
+    const body = {expected_revision: attempt.revision, device};
+    attempt.deviceId = device.device_id; attempt.submitted = body;
+    suspend(); registryWriting = true; renderManagement(); message('device-registry-edit-message', '正在保存设备登记，不会自动重试…');
+    try {
+      const value = await post('/dash/api/node/devices', body);
+      acceptDeviceRegistry(value, attempt.target.node_id);
+      registryNotice = `设备登记已保存，revision ${value.revision}；不代表设备已在线、已核验或可并发。`;
+      if (deviceEditor === attempt) {
+        attempt.revision = value.revision; attempt.existing = true; attempt.needsRead = false;
+        $('device-registry-edit-revision').textContent = `已保存 revision：${value.revision}`;
+        message('device-registry-edit-message', '登记已保存。启停和别名修改只作用于登记信息，不改变已有任务。');
+      }
+    } catch (error) {
+      if (deviceEditor === attempt) {
+        const uncertain = !error.status || error.status >= 500;
+        attempt.needsRead = uncertain || error.status === 409;
+        if (attempt.needsRead) registryError = error.message || '写入结果未确认';
+        message('device-registry-edit-message', `${uncertain ? '保存结果未确认：' : '保存被拒绝：'}${error.name === 'AbortError' ? '请求超时。' : error.message} ${attempt.needsRead ? '草稿及原 expected_revision 已保留；请显式读取当前登记，核对后再保存，不会自动重放。' : '请检查输入或操作权限；没有自动重试。'}`, true);
+      }
+      if (error.auth) await loadAccess();
+    } finally { registryWriting = false; if (!disposed) { renderManagement(); schedule(); } }
+  }
+  async function reloadDeviceEditor() {
+    if ($('device-registry-reload').disabled || !deviceEditor) return;
+    const attempt = deviceEditor, value = await readDeviceRegistry();
+    if (!value || deviceEditor !== attempt || selected !== 'local') return;
+    const saved = value.devices.find(device => device.device_id === attempt.deviceId);
+    attempt.revision = value.revision; attempt.needsRead = false; attempt.existing = !!saved;
+    if (saved) fillDeviceEditor(saved);
+    else { $('device-registry-edit-revision').textContent = `当前 revision：${value.revision}。未找到此 ID；新建草稿保留，请核对后再保存。`; renderManagement(); }
+    message('device-registry-edit-message', saved ? '已读取当前登记并替换此设备草稿。请核对内容后显式保存；没有重新发送写入。' : '当前未找到此设备 ID，保留新建输入并更新编辑 revision。请核对后显式保存；没有重新发送写入。');
+  }
   function renderDirectory() {
     const local = el('li'), button = el('button', null, 'node-choice');
     button.type = 'button'; button.setAttribute('aria-current', String(selected === 'local'));
@@ -160,7 +284,7 @@
   }
   document.addEventListener('hgamey-target-change', () => renderManagement());
   function renderManagement() {
-    const entry = remoteEntry(), writable = directoryKnown && access?.steer && HGTarget.canWrite() && !accessBusy && !writing;
+    const entry = remoteEntry(), writable = directoryKnown && access?.steer && HGTarget.canWrite() && !accessBusy && !writing && !registryWriting;
     $('register-open').disabled = !writable;
     $('registration-edit').disabled = !entry || !writable;
     $('registration-toggle').disabled = !entry || !writable || uncertainUpdates.has(selected);
@@ -170,7 +294,7 @@
     $('remote-devices').setAttribute('aria-busy', String(!!entry?.refreshing));
     $('remote-devices').textContent = entry?.refreshing ? '目录请求处理中…' : '请求远端设备采样';
     $('disable-submit').disabled = !writable || uncertainUpdates.has(selected);
-    $('access-toggle').disabled = accessBusy || writing || !access?.steer_configured;
+    $('access-toggle').disabled = accessBusy || writing || registryWriting || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定目录操作' : '解锁目录操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
     message('access-message', accessError || (accessBusy ? '正在核对目录操作权限…' : !access ? '权限尚未取得，仅查看目录。' : !access.steer_configured ? '本节点未配置掌舵密码，目录保持只读。' : access.steer ? '已解锁登记、更新和停用；不改变远端任务。' : '当前只读；目录查询与明确设备采样可用，修改登记需解锁。'), !!accessError);
@@ -183,8 +307,9 @@
     $('registration-reload').hidden = !editor?.needsRead;
     $('registration-reload').disabled = writing || loading;
     $('registration-close').disabled = writing;
-    $('refresh-fleet').disabled = loading || runtimeBusy;
+    $('refresh-fleet').disabled = loading || runtimeBusy || registryWriting;
     renderRuntimeRefresh();
+    renderDeviceRegistry();
   }
   async function loadAccess() {
     accessBusy = true; renderManagement();
@@ -459,9 +584,10 @@
       if(url){link.href=url;link.target=selected==='local'?'_self':'_blank';link.rel='noopener noreferrer';}
     }
     renderManagement();
+    if (selected === 'local' && registrySupported() && !registryAttempted && !disposed) readDeviceRegistry();
   }
   async function refresh(manual = false, devices = false) {
-    if (loading || writing || runtimeBusy || disposed || document.hidden) return;
+    if (loading || writing || runtimeBusy || registryWriting || disposed || document.hidden) return;
     clearTimeout(timer);
     const version = ++revision;
     const requestController = new AbortController();
@@ -551,6 +677,11 @@
   }
   $('refresh-fleet').addEventListener('click', () => refresh(true));
   $('refresh-runtime').addEventListener('click', refreshRuntime);
+  $('device-registry-refresh').addEventListener('click', readDeviceRegistry);
+  $('device-registry-create').addEventListener('click', () => openDeviceEditor());
+  $('device-registry-close').addEventListener('click', () => { if (!registryWriting && !registryBusy) { deviceEditor = null; renderManagement(); } });
+  $('device-registry-form').addEventListener('submit', event => { event.preventDefault(); saveDeviceRegistry(); });
+  $('device-registry-reload').addEventListener('click', reloadDeviceEditor);
   $('remote-devices').addEventListener('click', () => { if (!$('remote-devices').disabled) refresh(true, true); });
   $('register-open').addEventListener('click', () => openEditor());
   $('registration-edit').addEventListener('click', () => openEditor(remoteEntry()));
@@ -574,7 +705,7 @@
     else if ($('auto-refresh').checked && !authLost && Date.now() - lastStartedAt >= AUTO_MS) refresh();
     else schedule();
   });
-  window.addEventListener('pagehide', () => { disposed = true; closeUnlock(); $('registration-token').value = ''; suspend(); });
+  window.addEventListener('pagehide', () => { disposed = true; registryController?.abort(); closeUnlock(); $('registration-token').value = ''; suspend(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { disposed = false; schedule(); } });
   renderDirectory(); loadAccess(); refresh(true);
 })();

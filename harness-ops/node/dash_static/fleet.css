@@ -121,3 +121,12 @@
 }
 
 .selected-node-links{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center}
+.device-registry > .section-heading .directory-actions { margin-top: 0; }
+.device-registry-list { list-style: none; margin: 16px 0 0; padding: 0; }
+.device-registry-item { border-top: 1px solid var(--line); padding: 16px 0; min-width: 0; }
+.device-registry-item:last-child { padding-bottom: 0; }
+.device-registry-item h3 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.device-registry-identity { margin: 6px 0; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; color: var(--muted); }
+.device-registry-aliases { margin: 8px 0 0; padding-left: 18px; color: var(--ink2); font-size: 13px; overflow-wrap: anywhere; }
+.device-registry .registration-fields textarea { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; padding: 8px 10px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.device-registry .registration-fields textarea:disabled { background: var(--panel); color: var(--muted); }

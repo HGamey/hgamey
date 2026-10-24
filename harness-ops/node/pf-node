@@ -26,6 +26,8 @@
   pf-node status|log|wait|kill|out <id>
   pf-node cancel <id> [--force]            # 默认请求 SIGINT；--force 允许 15s 后 TERM、再 15s 后 KILL
   pf-node node [--refresh-runtime]        # 服务启动观察、配置程序身份；显式刷新不改历史job
+  pf-node devices                       # 本节点人工登记的稳定设备ID/连接别名；不探测设备
+  pf-node devices-set FILE|-             # CAS登记/更新；写入未知先读devices，不自动重发
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
@@ -760,6 +762,39 @@ def main():
         return
     TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     URL, TOKEN = TARGET.url, TARGET.token
+    if args[0] in ("devices", "devices-set"):
+        if (request_id is not None or inputs_path is not None or resources or device_access is not None
+                or recovery_for is not None or execution_policy is not None or exe or detach or outdir):
+            sys.exit("pf-node: devices/devices-set 不接收作业选项；登记不会创建作业")
+        if args == ["devices"]:
+            try:
+                print(call("GET", "/node/devices", attempts=1, raise_errors=True).decode())
+            except ClientError as error:
+                sys.exit(f"pf-node: 设备登记读取失败：{error}")
+            except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
+                sys.exit("pf-node: 设备登记读取未确认；没有探测设备或创建任务")
+            return
+        if len(args) != 2 or args[0] != "devices-set":
+            sys.exit("用法: pf-node devices | pf-node devices-set FILE|-")
+        try:
+            if args[1] == "-":
+                raw = sys.stdin.buffer.read((64 << 10) + 1)
+            else:
+                with open(args[1], "rb") as source:
+                    raw = source.read((64 << 10) + 1)
+            if len(raw) > 64 << 10 or not isinstance(json.loads(raw), dict):
+                raise ValueError("登记请求必须是最多64KiB的JSON对象")
+        except (OSError, ValueError) as error:
+            sys.exit(f"pf-node: 无法读取登记请求：{error}")
+        TARGET.require_write()
+        try:
+            print(call("POST", "/node/devices", raw, {"Content-Type": "application/json"},
+                       attempts=1, raise_errors=True).decode())
+        except ClientError as error:
+            sys.exit(f"pf-node: 设备登记请求失败：{error}；未自动重试，用 devices 核对当前 revision")
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
+            sys.exit("pf-node: 设备登记写入未确认；未自动重试。先用 devices 核对原请求及 revision，再决定是否显式重提。")
+        return
     if args[0] == "results":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or exe or detach or outdir):

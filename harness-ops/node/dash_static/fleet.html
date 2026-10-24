@@ -69,6 +69,30 @@
       <div id="node-programs"></div><p class="note">服务启动观察、配置程序缓存与作业实际自报分别记录；构建声明不证明已加载的全部字节，也不证明设备资格。</p>
     </details>
   </section>
+  <section id="device-registry" class="directory-panel device-registry" aria-labelledby="device-registry-heading">
+    <div class="section-heading"><h2 id="device-registry-heading">本节点设备登记</h2><div class="directory-actions"><button id="device-registry-refresh" class="ghost" type="button" disabled>读取设备登记</button><button id="device-registry-create" class="ghost" type="button" disabled>登记设备</button></div></div>
+    <p id="device-registry-scope" class="note">设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。当前仍使用全域排他执行。</p>
+    <a id="device-registry-source" class="workspace-link" hidden>到源节点查看设备登记 →</a>
+    <div id="device-registry-local">
+      <p id="device-registry-message" class="note" role="status">等待本节点身份…</p>
+      <p id="device-registry-meta" class="note"></p>
+      <ul id="device-registry-list" class="device-registry-list" aria-label="已登记设备"></ul>
+      <p id="device-registry-empty" class="note" hidden>尚无设备登记；这不表示没有连接设备。</p>
+      <form id="device-registry-form" class="registration-form" autocomplete="off" hidden>
+        <div class="section-heading"><h3 id="device-registry-form-heading">登记设备</h3><button id="device-registry-close" class="ghost" type="button">关闭草稿</button></div>
+        <div class="registration-fields">
+          <label>稳定设备 ID<input id="device-registry-id" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}" maxlength="64" required><span class="field-help">字母或数字开头，可含下划线、连字符。保存后以此 ID 编辑，不删除身份。</span></label>
+          <label>设备标签<input id="device-registry-label" maxlength="128" required></label>
+          <label class="wide-field">连接别名（每行一个原始 serial）<textarea id="device-registry-aliases" rows="4" required spellcheck="false" placeholder="USB-SERIAL&#10;192.0.2.10:5555"></textarea><span class="field-help">精确匹配，最多 32 个，不含空白。USB、网络或 hdc 别名属于同机需由维护者明确声明；已停用登记也保留别名占用。</span></label>
+          <label class="credential-clear wide-field"><input id="device-registry-enabled" type="checkbox" checked> 启用此登记</label>
+        </div>
+        <p class="note">停用不表示设备离线，也不取消已有任务或撤销原工具权限。修改别名只影响新版本，不改写历史。</p>
+        <p id="device-registry-edit-revision" class="note"></p>
+        <div class="directory-actions"><button id="device-registry-save" class="ghost primary" type="submit">保存设备登记</button><button id="device-registry-reload" class="ghost" type="button" hidden>读取当前登记（替换此设备草稿）</button></div>
+        <p id="device-registry-edit-message" class="note" role="status"></p>
+      </form>
+    </div>
+  </section>
   <div class="refresh-bar">
     <p id="refresh-note" class="note">可见时每 10 秒刷新页面快照。</p>
     <label class="auto-control"><input id="auto-refresh" type="checkbox" checked> 自动刷新</label>

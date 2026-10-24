@@ -33,6 +33,7 @@ import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess,
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
+from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
@@ -652,6 +653,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
+    device_registry = DeviceRegistry(jobs, node.node_id)
     if not hasattr(jobs, "results"):
         jobs.results = NodeResults(jobs, node.node_id)
     results = jobs.results
@@ -797,6 +799,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["node", "devices"]:
+                    return self._send(200, device_registry.read())
                 if parts[:1] == ["research-state"]:
                     if len(parts) == 4 and parts[1] == "research" and parts[3] == "assessment":
                         if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
@@ -918,7 +922,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
-            except (ResearchError, MediaError) as e:
+            except (ResearchError, MediaError, RegistryError) as e:
                 return self._send(e.status, e.payload)
             except ResultError as e:
                 return self._send(e.status, {"code": e.code, "error": str(e)})
@@ -958,6 +962,29 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
             with blob:
                 return self._stream_out(blob, info, q)
+
+        def _device_registry_post(self, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                if not (self.headers.get("X-Expected-Node-ID") or
+                        parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "device registration requires an explicit node identity"})
+                length = self._upload_length(MAX_DEVICE_REGISTRY, 1)
+                if self.headers.get_content_type() != "application/json":
+                    raise RegistryError("invalid_request", "device registration requires application/json")
+                self.connection.settimeout(10)
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise RegistryError("invalid_request", "device registration body was interrupted")
+                return self._send(200, device_registry.write(body))
+            except RegistryError as error:
+                return self._send(error.status, error.payload)
+            except AssetUploadError:
+                return self._send(400, {"code": "invalid_request", "error": "device registration requires a Content-Length of 1 to 65536 bytes"})
+            except (ValueError, OSError):
+                return self._send(503, {"code": "unavailable", "error": "registration could not be confirmed; read the registry before any explicit retry"})
 
         def _runtime_refresh(self, dashboard):
             self.close_connection = True
@@ -1187,6 +1214,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if self._remote("POST"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if parts == ["node", "devices"]:
+                return self._device_registry_post(False)
+            if board and parts == ["dash", "api", "node", "devices"]:
+                return self._device_registry_post(True)
             if parts == ["node", "runtime", "refresh"]:
                 return self._runtime_refresh(False)
             if board and parts == ["dash", "api", "node", "runtime", "refresh"]:
