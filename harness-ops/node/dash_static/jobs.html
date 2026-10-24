@@ -248,10 +248,17 @@
             <details class="session-tools"><summary>会话恢复记录</summary><dl id="session-recovery" class="facts"></dl><p class="note">会话关闭与整个任务的资源释放分别记录。关闭后刷新任务，核查现有 lease 证据，再从“解除资源保留”填写说明放行。</p></details>
           </div>
           <section id="session-recover-panel" class="session-tools" aria-labelledby="session-recover-heading" hidden>
-            <h4 id="session-recover-heading">异步会话恢复</h4>
+            <div class="section-heading"><h4 id="session-recover-heading">异步会话恢复</h4><button id="session-recovery-plan-refresh" class="ghost" type="button" hidden>读取恢复计划</button></div>
+            <div id="session-recovery-plan" hidden>
+              <p id="session-recovery-plan-message" class="note" role="status"></p><p id="session-recovery-plan-time" class="read-time"></p>
+              <dl id="session-recovery-plan-info" class="facts"></dl>
+              <ul id="session-recovery-attempts" class="lease-receipt-list" aria-label="服务端恢复尝试"></ul>
+              <p class="note">会话仍保存在原任务输出中；恢复任务接续当前阻断叶子。限定恢复成功也不自动释放资源，请按最新恢复任务 → 较早恢复任务 → 原任务核查收据并显式解除保留。</p>
+            </div>
             <p id="session-recover-help" class="note"></p>
             <div class="session-actions"><button id="session-recover-submit" class="ghost" type="button" disabled>提交恢复任务</button><button id="session-recover-query" class="ghost" type="button" hidden>查询恢复请求</button><a id="session-recover-job" class="ghost" hidden>查看恢复任务</a><button id="session-recover-new" class="ghost" type="button" hidden>新建恢复尝试</button><a id="session-recover-previous" class="ghost" hidden>查看上次恢复任务</a></div>
             <p id="session-recover-request" class="request-id"></p><p id="session-recover-result" class="note" role="status"></p>
+            <details id="session-recovery-previous-requests" hidden><summary>本页此前的恢复请求</summary><ul id="session-recovery-request-history" class="lease-receipt-list"></ul></details>
           </section>
           <form id="session-receipt-form" class="session-receipt-form"><label for="session-request-id">动作请求 ID</label><div class="lookup-input"><input id="session-request-id" autocomplete="off" spellcheck="false" placeholder="查询已提交动作"><button id="session-query" class="ghost" type="submit">查询回执</button></div></form>
           <p id="session-pending" class="note"></p><p id="session-receipt-message" class="note" role="status"></p>

@@ -84,7 +84,7 @@ class NodeRead:
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1", "jobs.inputs-v1",
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
-                                 "jobs.session-recovery-v1"] +
+                                 "jobs.session-recovery-v1", "jobs.session-recovery-chain-v1"] +
                                 (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +
                                 (["games.deploy-v1"] if getattr(self.jobs, "deployments", None)
                                  and self.jobs.deployments.support["available"] else []) +

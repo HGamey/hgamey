@@ -119,7 +119,7 @@
         const prefix = ({401: '查看登录已失效，请重新登录。', 403: '操作未获授权，请重新解锁任务操作。',
           409: '请求冲突，请核对已有记录。'})[response.status] || `请求失败（HTTP ${response.status}）。`;
         const error = new Error(`${prefix}${data.error || data.reason || ''}`);
-        error.status = response.status;
+        error.status = response.status; error.payload = data;
         throw error;
       }
       if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('请求结果未确认，节点未返回 JSON。');
@@ -852,6 +852,8 @@
   let referenceRun = null;
   const pendingActions = new Map();
   const sessionRecoveries = new Map(), sessionRecovering = new Set();
+  let sessionRecoveryPlan = null, sessionPlanTarget = null, sessionPlanFresh = false, sessionPlanBusy = false;
+  let sessionPlanRevision = 0, sessionPlanReadAt = null, sessionPlanError = '';
   const SESSION_PHASES = {starting: '正在准备', ready: '可交互', executing: '动作执行中', measuring: '正在测量 · 其他操作暂停', restoring: '正在恢复', closed: '会话已关闭', recovery_required: '需要恢复'};
   const ACTION_STATES = {accepted: '请求已记录，尚未执行完成。', started: '动作执行中。', completed: '此动作已完成；请核对结果与证据。', failed: '动作失败，请核对错误和恢复状态。', unknown: '执行结果未知，不要换 ID 重复输入。', not_executed: '请求未执行。'};
   function sessionKey(id = selected) { return `hgamey.session-actions.${id}`; }
@@ -874,7 +876,9 @@
     referenceRun = null;
     $('reference-result').hidden = true;
     message('reference-message', '按标签查询共享回执；本页不保存整组进度。');
-    ++sessionRevision; ++receiptRevision;
+    ++sessionRevision; ++receiptRevision; ++sessionPlanRevision;
+    sessionRecoveryPlan = sessionPlanTarget = sessionPlanReadAt = null;
+    sessionPlanFresh = sessionPlanBusy = false; sessionPlanError = '';
     sessionState = null; sessionFresh = false; sessionBusy = sessionActionBusy = false;
     sessionSampleReceipt = sessionQualityReceipt = null;
     $('session-quality-label').value = '';
@@ -896,24 +900,41 @@
     renderSessionControls();
   }
   function sessionSupported() { return !!nodeInfo?.capabilities?.includes('jobs.session-control-v1'); }
+  const isSessionJobID = value => typeof value === 'string' && /^[0-9a-f]{12}$/.test(value);
+  const sessionRecoveryChainSupported = () => nodeInfo?.capabilities?.includes('jobs.session-recovery-chain-v1') === true;
+  const sessionRecoveryCandidate = () => currentJob?.bin === 'phonefarm' && currentJob.argv?.[0] === 'gray-layer' &&
+    ['session', 'session-recover'].includes(currentJob.argv?.[1]);
   function sessionRecoveryRequest(id = selected) {
     if (!sessionRecoveries.has(id)) {
       let saved = null;
       try { saved = JSON.parse(sessionStorage.getItem(`hgamey.session-recovery.${id}`) || 'null'); } catch (_) { /* The displayed ID can still be queried manually. */ }
       sessionRecoveries.set(id, saved && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(saved.request_id) ? {
-        request_id: saved.request_id, target: saved.target || null, job_id: /^[0-9a-f]{12}$/.test(saved.job_id) ? saved.job_id : null,
-        previous_job_id: /^[0-9a-f]{12}$/.test(saved.previous_job_id) ? saved.previous_job_id : null, prepared: saved.prepared === true
+        request_id: saved.request_id, target: saved.target || null, job_id: isSessionJobID(saved.job_id) ? saved.job_id : null,
+        // Older requests were submitted to their storage-key entry, never to a freshly discovered leaf.
+        target_job_id: Object.hasOwn(saved, 'target_job_id') ? saved.target_job_id : id,
+        source_job_id: saved.source_job_id || null,
+        previous_job_id: isSessionJobID(saved.previous_job_id) ? saved.previous_job_id : null, prepared: saved.prepared === true,
+        rejection: saved.rejection || null, previous_requests: Array.isArray(saved.previous_requests) ? saved.previous_requests : []
       } : null);
     }
     return sessionRecoveries.get(id);
   }
   function keepSessionRecovery(id, record) {
     sessionRecoveries.set(id, record);
-    try { sessionStorage.setItem(`hgamey.session-recovery.${id}`, JSON.stringify({request_id: record.request_id, target: record.target, job_id: record.job_id || null, previous_job_id: record.previous_job_id || null, prepared: record.prepared === true})); }
+    try { sessionStorage.setItem(`hgamey.session-recovery.${id}`, JSON.stringify({request_id: record.request_id, target: record.target,
+      target_job_id: record.target_job_id, source_job_id: record.source_job_id || null, job_id: record.job_id || null,
+      previous_job_id: record.previous_job_id || null, prepared: record.prepared === true,
+      rejection: record.rejection || null, previous_requests: record.previous_requests || []})); }
     catch (_) { /* Keep the same request ID visible even if browser storage is unavailable. */ }
   }
   function sessionRecoveryProblem() {
     if (!currentJob || currentJob.id !== selected) return '请先读取原任务状态。';
+    if (sessionRecoveryChainSupported()) {
+      if (sessionPlanBusy) return '正在读取恢复计划，请稍候。';
+      if (!sessionPlanFresh || !sessionRecoveryPlan) return '请先读取最新恢复计划；旧计划不能作为新尝试的资格。';
+      if (!sessionRecoveryPlan.supported || !sessionRecoveryPlan.eligible) return sessionRecoveryPlan.reason || '节点报告当前不能继续恢复，请核查任务与收据。';
+      return '';
+    }
     if (storageFailed(currentJob) || currentJob.phase === 'finalizing') return '原任务结束记录尚未确认保存，请先处理结果保存。';
     if (currentJob.state !== 'finished' || currentJob.queue?.state !== 'blocked') return '原任务须已结束并保留资源；请先刷新任务核对状态。';
     const hostProblem = hostCompletionProblem(currentJob, true);
@@ -923,13 +944,73 @@
     if (sessionState.live_owner !== false) return '原会话 owner 尚未确认退出，不能另建恢复任务。';
     return '';
   }
+  function recoveryJobLink(id, target, label = id) {
+    const link = el('a', label);
+    link.href = HGTarget.url(`${target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(id)}`, target || null);
+    link.addEventListener('click', event => {
+      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || HGTarget.problem(target || null)) return;
+      event.preventDefault(); selectJob(id); $('detail-heading').focus();
+    });
+    return link;
+  }
+  function renderSessionRecoveryPlan() {
+    const chain = sessionRecoveryChainSupported();
+    $('session-recovery-plan-refresh').hidden = !chain;
+    $('session-recovery-plan-refresh').disabled = !currentJob || sessionPlanBusy || sessionRecovering.has(selected) || !!HGTarget.problem();
+    $('session-recovery-plan-refresh').setAttribute('aria-busy', String(sessionPlanBusy));
+    $('session-recovery-plan-refresh').textContent = sessionPlanBusy ? '读取计划中…' : sessionRecoveryPlan ? '刷新恢复计划' : '读取恢复计划';
+    $('session-recovery-plan').hidden = !chain;
+    const plan = sessionRecoveryPlan;
+    message('session-recovery-plan-message', sessionPlanBusy ? '只读取宿主恢复计划，不执行设备操作…' : sessionPlanError ||
+      (!plan ? '尚未读取恢复链。先核对原会话来源和当前阻断叶子。' : !sessionPlanFresh ? '此计划已失效，请重新读取后再创建尝试。' :
+        plan.eligible ? '当前计划允许接续；提交时节点会再次核查唯一叶子。' : plan.reason || '当前不可接续，请核查任务及恢复收据。'), !!sessionPlanError || !!plan && !plan.eligible);
+    $('session-recovery-plan-time').textContent = sessionPlanReadAt == null ? '' : `计划读取于 ${time(sessionPlanReadAt)}${sessionPlanFresh ? '' : ' · 上次结果，当前资格未确认'}`;
+    $('session-recovery-plan-info').replaceChildren(); $('session-recovery-attempts').replaceChildren();
+    if (!plan) return;
+    for (const [label, id] of [['查询入口', plan.job_id], ['原会话来源', plan.source_job_id], ['当前恢复目标', plan.target_job_id]]) {
+      const value = el('dd'); value.append(isSessionJobID(id) ? recoveryJobLink(id, sessionPlanTarget) : el('span', '未确认'));
+      $('session-recovery-plan-info').append(el('dt', label), value);
+    }
+    for (const [label, value] of [['会话 ID', plan.session_id], ['设备', plan.serial], ['原来源内的相对路径', plan.session_path]])
+      $('session-recovery-plan-info').append(el('dt', label), el('dd', text(value)));
+    for (const attempt of plan.attempts) {
+      const item = el('li', null, 'lease-receipt');
+      const heading = el('h4'); heading.append(recoveryJobLink(attempt.job_id, sessionPlanTarget, `恢复任务 ${attempt.job_id}`));
+      item.append(heading, el('p', `恢复目标 ${text(attempt.recovery_for)} · 调度 ${attempt.queue_state === 'blocked' ? '保留资源，待核查' : text(attempt.queue_state)}`, 'note'),
+        el('p', `请求 ID：${text(attempt.request_id)}`, 'request-id'));
+      $('session-recovery-attempts').append(item);
+    }
+    if (!plan.attempts.length) $('session-recovery-attempts').append(el('li', '尚无此来源的恢复任务记录。', 'note'));
+  }
+  async function loadSessionRecoveryPlan() {
+    if (!selected || !currentJob || !sessionRecoveryChainSupported() || sessionPlanBusy) return null;
+    const id = selected, revision = ++sessionPlanRevision, target = HGTarget.binding();
+    sessionPlanBusy = true; sessionPlanFresh = false; sessionPlanError = ''; renderSessionRecovery();
+    try {
+      const plan = await json(`${API}/jobs/${id}/session/recovery`, target);
+      if (selected !== id || revision !== sessionPlanRevision) return null;
+      HGTarget.assert(target);
+      if (plan.schema_version !== 1 || plan.node_id !== target.node_id || plan.job_id !== id ||
+          typeof plan.supported !== 'boolean' || typeof plan.eligible !== 'boolean' || !Array.isArray(plan.attempts) ||
+          plan.attempts.some(attempt => !isSessionJobID(attempt.job_id) || !isSessionJobID(attempt.recovery_for)) ||
+          plan.eligible && (!plan.supported || !isSessionJobID(plan.source_job_id) || !isSessionJobID(plan.target_job_id)))
+        throw new Error('恢复计划身份或格式未确认，不能据此创建任务。');
+      sessionRecoveryPlan = plan; sessionPlanTarget = target; sessionPlanFresh = true; sessionPlanReadAt = Date.now() / 1000;
+      return plan;
+    } catch (error) {
+      if (selected === id && revision === sessionPlanRevision) sessionPlanError = `${errorText(error)} ${error.payload?.error || error.payload?.reason || ''} 新尝试资格未确认。`;
+      return null;
+    } finally { if (selected === id && revision === sessionPlanRevision) { sessionPlanBusy = false; renderSessionRecovery(); } }
+  }
   function renderSessionRecovery() {
     const record = currentJob && sessionRecoveryRequest(), pending = sessionRecovering.has(selected);
-    const supported = nodeInfo?.capabilities?.includes('jobs.session-recovery-v1');
-    const targetIssue = record ? HGTarget.problem(record.target || null) : HGTarget.problem();
-    $('session-recover-panel').hidden = !currentJob || (!record && sessionState?.phase !== 'recovery_required');
-    $('session-recover-submit').hidden = !supported || !!record?.job_id;
-    $('session-recover-submit').disabled = !!targetIssue || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!record?.job_id || ((!record || record.prepared) && (!!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID));
+    const supported = nodeInfo?.capabilities?.includes('jobs.session-recovery-v1'), chain = sessionRecoveryChainSupported();
+    const targetIssue = record ? HGTarget.problem(record.target || null) || (!isSessionJobID(record.target_job_id) ? '原恢复入口身份未确认，不能查询或重投。' : '') : HGTarget.problem();
+    $('session-recover-panel').hidden = !currentJob || (!record && sessionState?.phase !== 'recovery_required' && !(chain && sessionRecoveryCandidate()));
+    renderSessionRecoveryPlan();
+    $('session-recover-submit').hidden = !supported || !!record?.job_id || !!record?.rejection;
+    $('session-recover-submit').disabled = !!targetIssue || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!record?.job_id || !!record?.rejection ||
+      (!record && (!!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID));
     $('session-recover-submit').textContent = pending ? '正在核对恢复请求…' : record?.prepared ? '提交新恢复尝试' : record ? '使用原请求 ID 重试' : '提交恢复任务';
     $('session-recover-submit').setAttribute('aria-busy', String(pending));
     $('session-recover-query').hidden = !record;
@@ -937,30 +1018,54 @@
     $('session-recover-query').setAttribute('aria-busy', String(pending));
     $('session-recover-job').hidden = !record?.job_id || !record?.target;
     if (record?.job_id) $('session-recover-job').href = HGTarget.url(`${record.target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(record.job_id)}`, record.target || null);
-    $('session-recover-new').hidden = !supported || !record?.job_id;
-    $('session-recover-new').disabled = !!targetIssue || !supported || !record?.job_id || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID;
+    $('session-recover-new').hidden = !supported || !(record?.job_id || chain && record?.rejection);
+    $('session-recover-new').disabled = !!targetIssue || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || sessionPlanBusy ||
+      (chain && sessionPlanFresh && sessionRecoveryPlan?.eligible === false) || (!chain && !!sessionRecoveryProblem()) || !globalThis.crypto?.randomUUID;
     $('session-recover-new').setAttribute('aria-busy', String(pending));
     $('session-recover-previous').hidden = !record?.previous_job_id || !record?.target;
     if (record?.previous_job_id) $('session-recover-previous').href = HGTarget.url(`${record.target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(record.previous_job_id)}`, record.target || null);
-    $('session-recover-request').textContent = record ? `恢复请求 ID：${record.request_id}` : '';
-    message('session-recover-help', targetIssue || (!supported ? '此节点未提供异步会话恢复能力；仍可查看已有恢复记录。' : record?.job_id ? `恢复任务已记录，请打开任务核查执行与证据。创建成功不代表恢复完成，原资源不会自动释放。新建尝试前会读取上一任务，确认已结束且调度资源已释放。${sessionRecoveryProblem()}` : record?.prepared ? `新请求 ID 已生成，尚未提交。${sessionRecoveryProblem() || '核对后点击“提交新恢复尝试”；上次任务原件仍可查看。'}` : record ? '本次请求 ID 已保留。结果不确定时先查询；重试仍使用同一 ID，不会改用新 ID 创建任务。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : sessionRecoveryProblem() || (!globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '节点根据原任务绑定的会话与设备创建恢复任务，无需填写路径；提交后异步执行，原资源继续保留。')));
-    message('session-recover-result', record?.message || (record ? '可按原请求 ID 查询节点中的最新任务记录。' : ''), !!record?.error);
+    $('session-recover-request').textContent = record ? `恢复请求 ID：${record.request_id}\n固定提交入口：${text(record.target_job_id)}${record.source_job_id ? ` · 原会话来源：${record.source_job_id}` : ''}` : '';
+    let help = targetIssue;
+    if (!help && !supported) help = '此节点未提供异步会话恢复能力；仍可查看已有恢复记录。';
+    else if (!help && record?.job_id) help = chain ? '恢复任务已记录。新尝试会重新读取节点计划并冻结当前叶子；失败任务的资源保留不要求提前释放。提交成功不代表恢复完成。' :
+      `恢复任务已记录；旧节点未提供恢复链计划。新尝试前仍须核对上一任务已结束且调度资源已释放。${sessionRecoveryProblem()}`;
+    else if (!help && record?.rejection) help = `节点已明确拒绝本次新请求（${record.rejection.code}）。原 ID 和入口保留；如需继续，请明确点击“新建恢复尝试”核对新计划。`;
+    else if (!help && record?.prepared) help = '新请求 ID 与提交入口已固定，尚未提交。刷新计划不会改投；提交时节点会再次核对当前叶子。';
+    else if (!help && record) help = '结果不确定时先查询原请求；明确重试仍使用同一 ID、节点和入口，不随新计划改投。';
+    else if (!help && (!access?.steer || !HGTarget.canWrite() || accessBusy)) help = '请先解锁任务操作权限。';
+    else if (!help) help = sessionRecoveryProblem() || (!globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '按上方恢复目标提交异步任务，原会话和失败记录保留。');
+    message('session-recover-help', help);
+    message('session-recover-result', record?.message || (record?.rejection ? record.rejection.message : record ? '可按原请求 ID 查询节点中的最新任务记录。' : ''), !!record?.error || !!record?.rejection);
+    const previous = record?.previous_requests || [];
+    $('session-recovery-previous-requests').hidden = !previous.length;
+    $('session-recovery-request-history').replaceChildren(...previous.map(item => {
+      const row = el('li', null, 'lease-receipt'); row.append(el('p', `请求 ${item.request_id} · 固定入口 ${text(item.target_job_id)}`, 'request-id'));
+      if (item.job_id && item.target) row.append(recoveryJobLink(item.job_id, item.target, `恢复任务 ${item.job_id}`));
+      if (item.rejection) row.append(el('p', `${text(item.rejection.code)}：${text(item.rejection.message)}`, 'note'));
+      return row;
+    }));
   }
   function acceptSessionRecovery(id, record, job) {
-    if (!/^[0-9a-f]{12}$/.test(job?.id) || job.recovery_for !== id) throw new Error('恢复任务回包未匹配原任务，结果尚未确认。');
-    keepSessionRecovery(id, {...record, prepared: false, job_id: job.id, message: `恢复任务 ${job.id} · ${status(job)[0]}。提交不代表恢复完成，请核对任务记录。`, error: false});
+    if (!isSessionJobID(job?.id) || job.recovery_for !== record.target_job_id) throw new Error('恢复任务回包未匹配本次固定入口，结果尚未确认。');
+    keepSessionRecovery(id, {...record, rejection: null, prepared: false, job_id: job.id, message: `恢复任务 ${job.id} · ${status(job)[0]}。提交不代表恢复完成，请核对任务记录。`, error: false});
   }
   async function submitSessionRecovery() {
     if (!currentJob || $('session-recover-submit').disabled) return;
-    const id = selected, record = {...(sessionRecoveryRequest(id) || {request_id: crypto.randomUUID(), target: HGTarget.binding()}), prepared: false};
-    keepSessionRecovery(id, {...record, message: '正在提交恢复任务；请求 ID 已固定。', error: false});
+    const id = selected, existing = sessionRecoveryRequest(id), chain = sessionRecoveryChainSupported();
+    const record = {...(existing || {request_id: crypto.randomUUID(), target: HGTarget.binding(),
+      target_job_id: chain ? sessionRecoveryPlan.target_job_id : id, source_job_id: chain ? sessionRecoveryPlan.source_job_id : id}), prepared: false};
+    keepSessionRecovery(id, {...record, message: '正在提交恢复任务；请求 ID、节点与入口已固定。', error: false});
     sessionRecovering.add(id); renderSessionRecovery();
     try {
-      acceptSessionRecovery(id, record, await post(`${API}/jobs/${id}/session/recover`, {}, {'X-Request-ID': record.request_id}, record.target || null));
+      acceptSessionRecovery(id, record, await post(`${API}/jobs/${record.target_job_id}/session/recover`, {}, {'X-Request-ID': record.request_id}, record.target || null));
     } catch (error) {
-      keepSessionRecovery(id, {...record, message: `${errorText(error)} 请先查询此恢复请求；重试仍使用原 ID，不会自动重发。`, error: true});
+      const code = error.payload?.code;
+      const rejection = error.status === 409 && ['session_recovery_leaf', 'session_recovery_blocked'].includes(code) ?
+        {code, message: errorText(error), target_job_id: error.payload?.target_job_id || null} : null;
+      keepSessionRecovery(id, {...record, rejection, message: rejection ? `${rejection.message} 原请求未创建任务，入口未改投。` :
+        `${errorText(error)} 请先查询此恢复请求；重试仍使用原 ID 和入口，不会自动重发。`, error: true});
       if (error.status === 401 || error.status === 403) await loadAccess();
-    } finally { sessionRecovering.delete(id); if (selected === id) renderSessionRecovery(); }
+    } finally { sessionRecovering.delete(id); if (selected === id) { sessionPlanFresh = false; renderSessionRecovery(); } }
   }
   async function querySessionRecovery() {
     const id = selected, record = sessionRecoveryRequest(id);
@@ -969,23 +1074,34 @@
     try {
       acceptSessionRecovery(id, record, await json(`${API}/requests/${encodeURIComponent(record.request_id)}`, record.target || null));
     } catch (error) {
-      keepSessionRecovery(id, {...record, message: error.status === 404 ? '暂未找到此恢复请求。保留原 ID，可稍后查询或使用原 ID 重试；不会自动新建请求。' : `${errorText(error)} 保留原恢复请求 ID，请核对后再继续。`, error: true});
+      keepSessionRecovery(id, {...record, message: error.status === 404 ? '暂未找到此恢复请求。保留原 ID 和入口，可稍后查询或明确同 ID 重试；不会自动新建请求。' : `${errorText(error)} 保留原恢复请求 ID，请核对后再继续。`, error: true});
     } finally { sessionRecovering.delete(id); if (selected === id) renderSessionRecovery(); }
   }
   async function prepareSessionRecoveryAttempt() {
     if (!currentJob || $('session-recover-new').disabled) return;
-    const id = selected, record = sessionRecoveryRequest(id), revision = sessionRevision;
+    const id = selected, record = sessionRecoveryRequest(id), revision = detailRevision;
     sessionRecovering.add(id); renderSessionRecovery();
     try {
-      const previous = await json(`${API}/jobs/${record.job_id}`, record.target || null);
-      if (selected !== id || sessionRevision !== revision) return;
-      if (previous?.id !== record.job_id || previous.recovery_for !== id) throw new Error('上次恢复任务身份未确认，不能生成新请求 ID。');
-      if (previous.state !== 'finished') throw new Error('上次恢复任务尚未结束或状态未知，不能生成新请求 ID。');
-      if (previous.queue?.state !== 'done') throw new Error(previous.queue?.state === 'blocked' ? '上次恢复任务仍保留资源。请打开上一恢复任务核查；未完成恢复时不能释放，不能绕过。' : '上次恢复任务的调度结束状态未确认，不能生成新请求 ID。');
-      const problem = sessionRecoveryProblem();
-      if (problem) throw new Error(problem);
-      keepSessionRecovery(id, {request_id: crypto.randomUUID(), target: HGTarget.binding(), previous_job_id: record.job_id, prepared: true,
-        message: '已确认上次恢复任务结束且调度资源已释放。新请求 ID 已准备，尚未提交。', error: false});
+      let targetJob = id, sourceJob = id;
+      if (sessionRecoveryChainSupported()) {
+        const plan = await loadSessionRecoveryPlan();
+        if (selected !== id || detailRevision !== revision) return;
+        if (!plan) throw new Error(sessionPlanError || '恢复计划未确认，原请求保留。');
+        if (!plan.supported || !plan.eligible) throw new Error(plan.reason || '当前不能继续恢复。');
+        targetJob = plan.target_job_id; sourceJob = plan.source_job_id;
+      } else {
+        const previous = await json(`${API}/jobs/${record.job_id}`, record.target || null);
+        if (selected !== id || detailRevision !== revision) return;
+        if (previous?.id !== record.job_id || previous.recovery_for !== record.target_job_id) throw new Error('上次恢复任务身份未确认，不能生成新请求 ID。');
+        if (previous.state !== 'finished') throw new Error('上次恢复任务尚未结束或状态未知，不能生成新请求 ID。');
+        if (previous.queue?.state !== 'done') throw new Error(previous.queue?.state === 'blocked' ? '旧节点无法接续阻断的恢复子任务。请打开上一任务核查；未完成恢复时不能释放，不能绕过。' : '上次恢复任务的调度结束状态未确认，不能生成新请求 ID。');
+        const problem = sessionRecoveryProblem(); if (problem) throw new Error(problem);
+      }
+      const previousRequests = [...(record.previous_requests || []), {request_id: record.request_id, target: record.target,
+        target_job_id: record.target_job_id, job_id: record.job_id || null, rejection: record.rejection || null}];
+      keepSessionRecovery(id, {request_id: crypto.randomUUID(), target: HGTarget.binding(), target_job_id: targetJob, source_job_id: sourceJob,
+        previous_job_id: record.job_id || record.previous_job_id || null, previous_requests: previousRequests, prepared: true,
+        message: `新请求 ID 已准备，固定入口 ${targetJob}，尚未提交；旧请求与任务记录仍保留。`, error: false});
     } catch (error) {
       keepSessionRecovery(id, {...record, message: `${errorText(error)} 原请求 ID 保留，未创建新尝试。`, error: true});
     } finally { sessionRecovering.delete(id); if (selected === id) renderSessionRecovery(); }
@@ -1846,6 +1962,7 @@
     renderSessionControls();
   });
   $('session-refresh').addEventListener('click', loadSession);
+  $('session-recovery-plan-refresh').addEventListener('click', loadSessionRecoveryPlan);
   $('session-recover-submit').addEventListener('click', submitSessionRecovery);
   $('session-recover-query').addEventListener('click', querySessionRecovery);
   $('session-recover-new').addEventListener('click', prepareSessionRecoveryAttempt);
@@ -1945,7 +2062,7 @@
       message('session-receipt-message', '起点坐标已填写，尚未发送输入。');
     }
   });
-  window.addEventListener('pagehide', () => { stopReference('页面已离开。'); ++sessionRevision; ++receiptRevision; if (sessionImageURL) URL.revokeObjectURL(sessionImageURL); });
+  window.addEventListener('pagehide', () => { stopReference('页面已离开。'); ++sessionRevision; ++receiptRevision; ++sessionPlanRevision; if (sessionImageURL) URL.revokeObjectURL(sessionImageURL); });
 
   $('filters').addEventListener('submit', event => {
     event.preventDefault();

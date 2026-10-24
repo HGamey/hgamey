@@ -13,6 +13,7 @@ import uuid
 from job_queue import JobQueue, RequestConflict, recovery_reservations
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
+from node_session import recovery_source_out, SessionError
 import job_runtime
 
 
@@ -167,10 +168,11 @@ class JobDispatch:
                 access = device_access(row["spec"])
                 # Resource recovery settles a limited producer scope. Keep its
                 # reservation for explicit lease review, just like initial writes.
-                deployment_recovery = (access == "recovery" and row["spec"].get("bin") == "phonefarm"
-                                       and row["spec"].get("argv", [])[:1] == ["game-deploy"])
+                argv = row["spec"].get("argv", [])
+                scoped_recovery = (access == "recovery" and row["spec"].get("bin") == "phonefarm"
+                                   and (argv[:1] == ["game-deploy"] or argv[:2] == ["gray-layer", "session-recover"]))
                 blocked = (candidate.get("lost") or recovery == "required" or
-                           (access == "write" or deployment_recovery)
+                           (access == "write" or scoped_recovery)
                            and recovery == "not_reported")
                 self.queue.set_state(jid, "blocked" if blocked else "done")
                 return True
@@ -259,7 +261,8 @@ class JobDispatch:
                 shared_gid = (int(self.jobs.pf_env["PHONEFARM_SHARED_GID"])
                               if self.jobs.pf_env is not None else None)
                 prepare_receipt_directory(self.jobs._read_root, jid, shared_gid=shared_gid)
-        except (OSError, ValueError, AttributeError) as error:
+            recovery_out = recovery_source_out(self.jobs, row)
+        except (OSError, ValueError, AttributeError, KeyError, SessionError) as error:
             self.finish_unstarted(row, "failed", f"prepared input is unavailable: {error}")
             return
         try:
@@ -275,8 +278,8 @@ class JobDispatch:
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
         env.pop("PF_RECOVERY_OUT", None)
-        if row["spec"].get("recovery_for"):
-            env["PF_RECOVERY_OUT"] = self.jobs.path(row["spec"]["recovery_for"], "out")
+        if recovery_out is not None:
+            env["PF_RECOVERY_OUT"] = recovery_out
         if "phonefarm" in self.jobs.bins:
             env["PHONEFARM_BIN"] = self.jobs.bins["phonefarm"][0]
         try:

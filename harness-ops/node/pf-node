@@ -13,6 +13,7 @@
   pf-node admin-restart                      # 核原节点后仅发送一次服务重启请求
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
   pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
+  pf-node session-recovery <id>             # 只读原会话来源、阻断叶子与恢复尝试计划
   pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
   pf-node session-recover <id> [--request-id ID] # 根据原任务绑定创建异步恢复任务，不等待完成
   pf-node execution-reconcile <id> [--force]   # 异步核查原任务绑定域；force会结束域内残留进程
@@ -86,6 +87,9 @@
   只查询一次，保留服务端错误码；泛404不是 not_found，网络错误为 network_error，不代表请求未提交。
 - session-recover 由节点绑定原会话与设备，不接收路径。提交前打印 request_id；超时后用 request 查询，
   或 session-recover 原任务 --request-id 原ID 重试，不换 ID 重复创建。新任务仍需核查恢复结果与原资源保留。
+- session-recovery 只读恢复链计划，需 jobs.session-recovery-chain-v1；eligible=false 也是有效计划。
+  session-recover 不自动切换叶子；409 时先查计划，原 request_id 始终绑定原入口。
+  原 session 来源与 recovery_for 队列父分别核对；限定恢复成功仍须审收据并由叶子向祖先显式 release。
 - execution-reconcile 只核查原任务绑定域，不重放命令、不新建实验任务；普通核查不杀进程。
   --force 明确允许结束域内残留进程，再核查域空与输出交还。只POST一次，超时仅用 status 原任务核对，
   不自动重发或等待。complete仅为宿主收尾，不代表设备恢复、队列释放，原失联/失败事实保留。
@@ -524,6 +528,62 @@ def execution_reconcile_command(args):
           "complete 只表示宿主域空与输出交还，不代表设备恢复或队列资源释放，原失联/失败记录保留。", file=sys.stderr)
 
 
+def session_recovery_http_error(error, jid, request_id=None):
+    """Expose only bounded error identifiers, never arbitrary response text."""
+    code, target = "http_error", None
+    try:
+        value = json.loads(error.body) if len(error.body) <= (64 << 10) else None
+        candidate = value.get("code") if isinstance(value, dict) else None
+        if (isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate)
+                and (not TOKEN or TOKEN not in candidate)):
+            code = candidate
+        candidate = value.get("target_job_id") if isinstance(value, dict) else None
+        if error.code == 409 and isinstance(candidate, str) and re.fullmatch(r"[0-9a-f]{12}", candidate):
+            target = candidate
+    except (ValueError, UnicodeError, RecursionError):
+        pass
+    message = ("原入口不是当前阻断叶子；读取计划后显式选择目标，未自动改投"
+               if error.code == 409 and code == "session_recovery_leaf" else
+               "当前恢复资格不足；读取计划核对阻断原因"
+               if error.code == 409 and code == "session_recovery_blocked" else
+               "恢复请求被拒绝或未确认；未自动重试")
+    result = {"error": {"code": code, "message": message}, "http_status": error.code, "job_id": jid}
+    if target is not None:
+        result["target_job_id"] = target
+    if request_id is not None:
+        result["request_id"] = request_id
+    print(json.dumps(result, ensure_ascii=False))
+    print(f"pf-node: HTTP {error.code}, code={code}；{message}。" +
+          (f"当前叶子 target_job_id={target}。" if target is not None else "") +
+          f"用 {continuation()} session-recovery {jid} 查询原会话恢复计划。", file=sys.stderr)
+    if request_id is not None:
+        print(f"pf-node: 保留原入口 {jid} 与 request_id={request_id}；"
+              f"用 {continuation()} request {request_id} 查询原请求，不把该 ID 改投其他入口。", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def session_recovery_command(args):
+    if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
+        sys.exit("用法: pf-node session-recovery <任务 id>")
+    try:
+        node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
+        capabilities = node.get("capabilities")
+        if not isinstance(capabilities, list) or "jobs.session-recovery-chain-v1" not in capabilities:
+            sys.exit("pf-node: 节点缺少 jobs.session-recovery-chain-v1；未降级推测恢复叶子")
+        value = json.loads(call("GET", f"/jobs/{args[1]}/session/recovery", attempts=1, raise_errors=True))
+        if (not isinstance(value, dict) or type(value.get("schema_version")) is not int
+                or value["schema_version"] != 1 or value.get("node_id") != node.get("node_id")
+                or value.get("job_id") != args[1] or type(value.get("supported")) is not bool
+                or type(value.get("eligible")) is not bool):
+            raise ValueError("unbound recovery plan")
+    except ClientError as error:
+        session_recovery_http_error(error, args[1])
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError,
+            ValueError, AttributeError, RecursionError):
+        sys.exit("pf-node: 原节点恢复计划读取未确认；未推测叶子、未发起恢复")
+    print(json.dumps(value, ensure_ascii=False))
+
+
 def session_recover_command(args, request_id=None):
     if (len(args) not in (2, 4) or not re.fullmatch(r"[0-9a-f]{12}", args[1])
             or (len(args) == 4 and args[2] != "--request-id")):
@@ -550,7 +610,9 @@ def session_recover_command(args, request_id=None):
                               attempts=1, raise_errors=True))
         if not re.fullmatch(r"[0-9a-f]{12}", str(job.get("id", ""))) or job.get("recovery_for") != args[1]:
             raise ValueError("恢复任务回包未匹配原任务")
-    except (ClientError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError,
+    except ClientError as error:
+        session_recovery_http_error(error, args[1], request_id)
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError,
             ValueError, AttributeError, KeyboardInterrupt) as error:
         print(f"pf-node: 恢复提交未确认：{error}；用 {lookup} 核对，重试仍用 {retry}；不换 ID 盲目重投。", file=sys.stderr)
         raise SystemExit(130 if isinstance(error, KeyboardInterrupt) else 1)
@@ -740,6 +802,8 @@ def main():
         return admin_restart()
     if args[0] == "execution-reconcile":
         return execution_reconcile_command(args)
+    if args[0] == "session-recovery":
+        return session_recovery_command(args)
     if args[0] == "session-recover":
         return session_recover_command(args, request_id)
     if args[0] in ("session-status", "session-action"):

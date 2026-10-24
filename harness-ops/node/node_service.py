@@ -49,7 +49,7 @@ from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable, require_policy
 from node_lease import LeaseState, device_access, job_lease_receipts
-from node_session import session_call, recover_session, SessionError, MAX_REQUEST
+from node_session import session_call, recover_session, recovery_plan, SessionError, MAX_REQUEST
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
                          directory_signature, archive_directory)
 
@@ -891,6 +891,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.deployments.get(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "session":
                     return self._send(200, jobs.session(parts[1]))
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["session", "recovery"]:
+                    if set(q) - {"expected_node_id"}:
+                        raise ValueError("session recovery plan has no source override")
+                    return self._send(200, recovery_plan(jobs, parts[1]))
                 if len(parts) == 5 and parts[0] == "jobs" and parts[2:4] == ["session", "actions"]:
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":

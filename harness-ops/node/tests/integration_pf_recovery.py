@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One contained battery session, known restore failure, then typed node recovery.
+"""One contained battery session, failed typed recovery, then successful recovery.
 
 Explicit isolated Linux/root integration only. The PF, node, installed worker,
 queue, Unix permissions and cgroup are real; all Android responses are fake.
@@ -181,17 +181,19 @@ def action(descriptor,rid,name,params,expected='completed'):
     value=keep(rid,bounded(done))
     assert value['status']==expected,value
     return value
-def preserve(paths):
-    directory=control/'negative-originals'; directory.mkdir()
+def preserve(paths,name='preserved-originals'):
+    directory=control/('negative-originals' if name=='preserved-originals' else name)
+    directory.mkdir()
     result=[]
     for index,path in enumerate(sorted(set(paths))):
         dest=directory/(str(index)+'-'+path.name)
         dest.write_bytes(path.read_bytes())
         result.append({'source':str(path),'copy':str(dest)})
-    return keep('preserved-originals',result)
+    return keep(name,result)
 try:
     capabilities=get('/node')['capabilities']
     assert 'jobs.session-recovery-v1' in capabilities,capabilities
+    assert 'jobs.session-recovery-chain-v1' in capabilities,capabilities
     if operation=='source':
         descriptor=keep('ready',bounded(ready))
         assert descriptor['power']['policy']=='battery'
@@ -245,44 +247,67 @@ try:
         assert ownership(job/'out')['mode']==0o700 and ownership(session/'session.json')['mode']==0o600
         answer({'sample':sample,'stop':stopped,'meta':done,'descriptor':descriptor,'receipts':receipts,
                 'lease':current,'preserved_count':len(preserved),'global_record':ownership(record)})
-    elif operation=='recover':
-        before=keep('before-recovery-lease',lease()); assert before['status']=='blocked',before
-        request_id='pf-recovery-'+plan['nonce']
-        code,submitted=request('POST',session_url+'/recover',{},request_id)
-        keep('recovery-submitted',submitted); assert code==200,(code,submitted)
+    elif operation in ('recover-fail','recover'):
+        failing=operation=='recover-fail'
+        name='failed-recovery' if failing else 'recovery'
+        previous=None if failing else json.loads((control/'failed-recovery-id.json').read_text())
+        target=plan['jid'] if failing else previous['id']
+        endpoint='/jobs/'+target+'/session/recover'
+        before=keep('before-'+name+'-lease',lease()); assert before['status']=='blocked',before
+        saved=json.loads((control/'source-required.json').read_text())
+        proposed=keep(name+'-plan',get(session_url+'/recovery'))
+        assert proposed['supported'] and proposed['eligible'],proposed
+        assert proposed['source_job_id']==plan['jid'] and proposed['target_job_id']==target,proposed
+        assert proposed['session_id']==saved['session_id'] and proposed['serial']==plan['serial']
+        assert proposed['session_path']==saved['session_path']
+        assert [item['job_id'] for item in proposed['attempts']]==([] if failing else [target]),proposed
+        if not failing:
+            from_leaf=get('/jobs/'+target+'/session/recovery')
+            assert from_leaf['job_id']==target and from_leaf['source_job_id']==plan['jid']
+            assert from_leaf['eligible'] and from_leaf['target_job_id']==target
+        request_id='pf-recovery-'+('r1-' if failing else 'r2-')+plan['nonce']
+        code,submitted=request('POST',endpoint,{},request_id)
+        keep(name+'-submitted',submitted); assert code==200,(code,submitted)
         jid=submitted['id']; assert jid!=plan['jid']
-        keep('recovery-id',{'id':jid,'request_id':request_id})
-        code,repeated=request('POST',session_url+'/recover',{},request_id)
+        keep(name+'-id',{'id':jid,'request_id':request_id,'target_job_id':target})
+        code,repeated=request('POST',endpoint,{},request_id)
         assert code==200 and repeated['id']==jid,(code,repeated)
-        done=keep('recovery-terminal',bounded(lambda:terminal(jid),seconds=60))
-        assert done['state']=='finished' and done['exit']==0 and done['outcome']=='succeeded',done
+        done=keep(name+'-terminal',bounded(lambda:terminal(jid),seconds=60))
+        assert done['state']=='finished' and done['exit']==(2 if failing else 0),done
+        assert done['outcome']==('failed' if failing else 'succeeded'),done
         assert done['execution_policy']=='process_group' and done['device_access']=='recovery'
-        assert done['recovery_for']==plan['jid']
+        assert done['recovery_for']==target
+        # The ordinary worker reports process completion, not aggregate PF recovery.
+        assert done['recovery']['status']=='not_reported',done
+        assert done['queue']['state']=='blocked' and jobs.dispatch.queue.get(jid)['state']=='blocked',done
         assert done['execution']['process_management']['completion_scope']=='original_process_group'
+        assert done['execution']['owned_process_group']['status']=='absent'
         launch=store.read_json(jid+'/launch.json')
         assert launch['execution_policy']=='process_group'
-        command=launch['command']; saved=json.loads((control/'source-required.json').read_text())
+        command=launch['command']
         assert 'session-recover' in command and command[command.index('--serial')+1]==plan['serial']
         assert command[command.index('--session')+1]==str(job/'out'/saved['session_path'])
-        descriptor=keep('recovered-source',get(session_url))
-        assert descriptor['phase']=='closed' and not descriptor['live_owner']
-        assert descriptor['recovery']['status']=='reported_complete' and descriptor['power']['stage']=='restored'
+        descriptor=keep(name+'-source',get(session_url))
+        assert descriptor['job_id']==plan['jid'] and descriptor['session_id']==saved['session_id']
+        assert descriptor['session_path']==saved['session_path'] and not descriptor['live_owner']
         info=json.loads((control/'charge-before.json').read_text())
-        assert not pathlib.Path(info['path']).exists()
         assert pathlib.Path(info['binding']).read_bytes()==(control/'charge-before.raw').read_bytes()
-        keep('charge-after',{'path':info['path'],'present':False,'binding_bytes_preserved':True})
         for original in json.loads((control/'preserved-originals.json').read_text()):
             assert pathlib.Path(original['source']).read_bytes()==pathlib.Path(original['copy']).read_bytes(),original
         old_stop=get(session_url+'/actions/battery-stop')
         assert old_stop==json.loads((control/'battery-stop.json').read_text()),'original failed action was rewritten'
         assert jobs._read_meta(plan['jid'])['exit']==2 and jobs.dispatch.queue.get(plan['jid'])['state']=='blocked'
-        receipts=keep('recovery-receipts',job_lease_receipts(store,jid))
+        receipts=keep(name+'-receipts',job_lease_receipts(store,jid))
         assert receipts['status']=='recorded' and len(receipts['entries'])==1,receipts
         entry=receipts['entries'][0]
-        old=json.loads((control/'source-required-receipts.json').read_text())['entries'][0]
-        assert entry['state']=='released' and entry['recovery']['status']=='reported_complete',entry
+        old=json.loads((control/('source-required-receipts.json' if failing else 'failed-recovery-receipts.json')).read_text())['entries'][0]
+        assert entry['job_id']==jid and entry['lease_id']!=old['lease_id'],entry
+        assert entry['state']==('retained' if failing else 'released'),entry
+        assert entry['recovery']['status']==('required' if failing else 'reported_complete'),entry
         assert entry['serial']==plan['serial'] and entry['recovery']['context']==old['recovery']['context']
-        assert entry['recovery_of']=={'job_id':plan['jid'],'lease_id':old['lease_id']},entry
+        # This R1 failed after acquiring the lease. The receipt's actual prior
+        # marker therefore belongs to R1 for R2; do not derive it from queue ancestry.
+        assert entry['recovery_of']=={'job_id':old['job_id'],'lease_id':old['lease_id']},entry
         out=pathlib.Path(jobs.path(jid,'out'))
         for directory in (out,out/'lease-receipts'):
             assert ownership(directory)=={'uid':plan['node_uid'],'gid':plan['job_gid'],'mode':0o2770}
@@ -290,16 +315,54 @@ try:
         assert ownership(receipt_path)=={'uid':plan['node_uid'],'gid':plan['job_gid'],'mode':0o640}
         downloaded=get('/jobs/'+jid+'/out?path='+quote(entry['artifact_path'],safe=''))
         assert downloaded==json.loads(receipt_path.read_text())
-        current=keep('recovered-lease',lease())
-        assert current['status']=='clear' and current['bridge_held'] is False,current
+        current=keep(name+'-lease',lease())
         assert ownership(job)['mode']==0o700 and ownership(job/'out')['mode']==0o700
         assert ownership(job/'out'/saved['session_path']/'session.json')['mode']==0o600
-        code,repeated=request('POST',session_url+'/recover',{},request_id)
+        code,repeated=request('POST',endpoint,{},request_id)
         assert code==200 and repeated['id']==jid,(code,repeated)
         rows=jobs.dispatch.queue.rows(('preparing','queued','claimed','blocked','done'))
-        assert len(rows)==2 and jobs.dispatch.queue.get(jid)['state']=='done',rows
+        assert len(rows)==(2 if failing else 3) and all(r['state']=='blocked' for r in rows),rows
+        releases=[]
+        if failing:
+            assert descriptor['phase']=='recovery_required' and descriptor['recovery']['status']=='required',descriptor
+            assert descriptor['power']['stage']=='restoring' and current['status']=='blocked'
+            assert pathlib.Path(info['path']).read_bytes()==(control/'charge-before.raw').read_bytes()
+            next_plan=keep('after-failed-recovery-plan',get(session_url+'/recovery'))
+            assert next_plan['eligible'] and next_plan['target_job_id']==jid,next_plan
+            preserve([job/'out'/p for p in descriptor['recovery']['reports']]+
+                     [pathlib.Path(jobs.path(jid,'log')),receipt_path],name='failed-recovery-originals')
+        else:
+            assert descriptor['phase']=='closed' and descriptor['recovery']['status']=='reported_complete',descriptor
+            assert descriptor['power']['stage']=='restored'
+            assert current['status']=='clear' and current['bridge_held'] is False,current
+            assert not pathlib.Path(info['path']).exists()
+            keep('charge-after',{'path':info['path'],'present':False,'binding_bytes_preserved':True})
+            for original in json.loads((control/'failed-recovery-originals.json').read_text()):
+                assert pathlib.Path(original['source']).read_bytes()==pathlib.Path(original['copy']).read_bytes(),original
+            first=jobs.status(previous['id'])
+            assert first['exit']==2 and first['outcome']=='failed' and first['recovery']['status']=='not_reported',first
+            code,original=request('POST',session_url+'/recover',{},previous['request_id'])
+            assert code==200 and original['id']==previous['id'],(code,original)
+            closed_plan=keep('closed-recovery-plan',get(session_url+'/recovery'))
+            assert closed_plan['supported'] and not closed_plan['eligible'] and closed_plan['reason'],closed_plan
+            assert closed_plan['source_job_id']==plan['jid'] and closed_plan['target_job_id']==jid
+            assert [item['job_id'] for item in closed_plan['attempts']]==[previous['id'],jid]
+            assert all(item['queue_state']=='blocked' for item in closed_plan['attempts'])
+            # Scoped PF success and a fresh clear lease are evidence for explicit
+            # review, not automatic release. Preserve every attempt's failure.
+            for release_id in (jid,previous['id'],plan['jid']):
+                code,released=request('POST','/jobs/'+release_id+'/queue-release',
+                    {'note':'Reviewed actual fixture receipts, original process completion, and fresh clear synthetic lease; not a real-device claim'})
+                assert code==200 and released['released'] is True,(code,released)
+                assert released['job']['queue']['state']=='done'
+                releases.append(release_id)
+            keep('explicit-release-order',releases)
+            assert all(jobs.dispatch.queue.get(r['job_id'])['state']=='done' for r in rows)
+            assert jobs.status(previous['id'])['exit']==2 and jobs.status(plan['jid'])['exit']==2
         answer({'job':done,'recovery_id':jid,'descriptor':descriptor,'lease':current,'receipts':receipts,
-                'source_queue_state':'blocked','job_count':len(rows),'output':ownership(out),
+                'source_queue_state':jobs.dispatch.queue.get(plan['jid'])['state'],
+                'pre_review_queue_states':{r['job_id']:r['state'] for r in rows},
+                'release_order':releases,'job_count':len(rows),'output':ownership(out),
                 'receipt':ownership(receipt_path),'originals_unchanged':True})
     else: raise AssertionError('unknown fixture helper operation')
 finally:
@@ -312,7 +375,7 @@ finally:
 class RecoveryFixture(SharedFixture):
     def __init__(self, artifact_dir, phonefarm, devlock):
         super().__init__(artifact_dir, phonefarm, devlock)
-        self.report['scope'] = 'one actual contained PF battery session and typed process_group recovery across UIDs; synthetic Android only'
+        self.report['scope'] = 'one actual contained PF battery session, failed and successful typed process_group recoveries across UIDs, explicit leaf-first releases; synthetic Android only'
 
     def helper(self, operation, *, job_identity=False):
         uid,gid = (self.uid,self.gid) if job_identity else (self.node_uid,self.node_gid)
@@ -322,7 +385,7 @@ class RecoveryFixture(SharedFixture):
             env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8','PF_NODE_TOKEN':'fixture-secret-must-not-reach-job'},
             stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         self.helper_handles.append(process); self.known_pids.add(process.pid)
-        try: stdout,stderr=process.communicate(timeout=90 if operation in ('source','recover') else 45 if operation=='cleanup' else 12)
+        try: stdout,stderr=process.communicate(timeout=90 if operation in ('source','recover-fail','recover') else 45 if operation=='cleanup' else 12)
         except subprocess.TimeoutExpired:
             process.kill(); stdout,stderr=process.communicate(timeout=3)
             (self.artifacts/(operation+'.stdout')).write_text(stdout)
@@ -433,20 +496,32 @@ class RecoveryFixture(SharedFixture):
         mismatch=next(i for i,c in enumerate(calls) if c['kind']=='known-charge-readback-mismatch')
         assert not any(c['kind'] in ('sampling-close','sampling-trace-remove') for c in calls[mismatch:])
         before_recovery=len(calls)
-        # Only the fake Android readback fault is removed, never a PF record.
+        self.report['checks']['failed_typed_recovery']=self.helper('recover-fail')
+        calls=[json.loads(line) for line in self.transport_log.read_text().splitlines()]
+        before_success=len(calls)
+        failed_recovery=calls[before_recovery:before_success]
+        assert any(c['kind']=='known-charge-readback-mismatch' for c in failed_recovery)
+        assert not any(c['kind'] in ('sampling-close','sampling-trace-remove') for c in failed_recovery)
+        # Only after the real R1 failure remove the fake Android readback fault,
+        # never a PF record or a queue state, and recover the same source via R1.
         (device/'restore-mismatch').unlink()
         self.report['checks']['typed_recovery']=self.helper('recover')
         self.report['checks']['sealed_after_recovery']=self.helper('job-read',job_identity=True)
         calls=[json.loads(line) for line in self.transport_log.read_text().splitlines()]
         recovery=calls[before_recovery:]
+        success=calls[before_success:]
         assert len([c for c in calls if c['kind']=='control-sample'])==1
         assert len([c for c in calls if c['kind']=='launch'])==1
-        assert [c['value'] for c in calls if c['kind']=='charge-control-write']==['1','0','0']
+        assert [c['value'] for c in calls if c['kind']=='charge-control-write']==['1','0','0','0']
         assert not any(c['kind'] in ('control-sample','launch') for c in recovery)
-        groups=next(i for i,c in enumerate(recovery) if c['kind']=='sampling-groups-verify')
-        charge=next(i for i,c in enumerate(recovery) if c['kind']=='charge-control-write')
-        closed=next(i for i,c in enumerate(recovery) if c['kind']=='sampling-close')
+        groups=next(i for i,c in enumerate(success) if c['kind']=='sampling-groups-verify')
+        charge=next(i for i,c in enumerate(success) if c['kind']=='charge-control-write')
+        closed=next(i for i,c in enumerate(success) if c['kind']=='sampling-close')
         assert groups<charge<closed
+        first_id=self.report['checks']['failed_typed_recovery']['recovery_id']
+        second_id=self.report['checks']['typed_recovery']['recovery_id']
+        assert all(c['job_id']==first_id for c in failed_recovery)
+        assert all(c['job_id']==second_id for c in success)
         assert all(c['uid']==self.uid for c in calls[:before_recovery])
         assert all(c['uid']==self.node_uid for c in recovery)
         assert all(c['shared_gid']==str(self.gid) for c in calls)
@@ -459,8 +534,11 @@ class RecoveryFixture(SharedFixture):
         assert after['processes']==['init','org.example.other']
         assert len(after['sampling_rounds'])==1 and after['sampling_closed']
         self.report['checks']['transport_scope']={'transports':len(calls),'source_transports':before_recovery,
-            'recovery_transports':len(recovery),'samples':1,'charge_writes':['1','0','0'],
-            'source_reservation':'blocked','device_state':'synthetic only','game_state_restored':False}
+            'recovery_transports':len(recovery),'failed_recovery_transports':len(failed_recovery),
+            'successful_recovery_transports':len(success),'samples':1,'charge_writes':['1','0','0','0'],
+            'source_reservation':'explicitly_released',
+            'release_order':[second_id,first_id,self.jid],
+            'device_state':'synthetic only','game_state_restored':False}
         self.report['passed']=True
 
     def cleanup(self):
