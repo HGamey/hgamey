@@ -174,6 +174,11 @@ class AdbBackend:
             raise RuntimeError("读不到屏幕尺寸（设备离线？）")
         return int(m.group(1)), int(m.group(2))
 
+    def hw_id(self, serial):
+        """同一台手机可能 USB 和 Wi-Fi 两路同时接入（序列号不同），按 ro.serialno 认成一台。"""
+        r = self._run(serial, ["shell", "getprop ro.serialno"])
+        return r.stdout.decode(errors="replace").strip() or None
+
     def start_live(self, serial, on_frame):
         return LiveCapture(self, serial, on_frame)
 
@@ -456,9 +461,35 @@ class LiveHub:
         self.streams = {}
         self.lock = threading.Lock()
         self._dev_cache = (0.0, [])
+        self._hw = {}
+
+    def aliases(self, serial):
+        """同一台物理手机的所有在线序列号（含自己）。读不到硬件序列号的只算它自己。"""
+        def hw(s):
+            if s not in self._hw:
+                try:
+                    self._hw[s] = getattr(self.backend, "hw_id", lambda _s: None)(s)
+                except (OSError, subprocess.SubprocessError):
+                    return None  # 不缓存失败，下次再读
+            return self._hw[s]
+        online = {d["serial"] for d in self.devices()}
+        for s in [k for k in self._hw if k not in online]:
+            del self._hw[s]  # 掉线的序列号（比如 Wi-Fi 地址换了手机）下次重读
+        mine = hw(serial)
+        if not mine:
+            return [serial]
+        return [serial] + [d["serial"] for d in self.devices()
+                           if d["serial"] != serial and d["state"] == "device" and hw(d["serial"]) == mine]
 
     def held(self, serial):
-        return lock_for(serial, self.lock_fn())
+        lock = self.lock_fn()
+        free_label = None
+        for s in self.aliases(serial):  # 任何一路序列号被测量占用，整台手机都算占用
+            held, label = lock_for(s, lock)
+            if held:
+                return held, label
+            free_label = free_label or label
+        return False, free_label
 
     def devices(self):
         t, devs = self._dev_cache

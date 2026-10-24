@@ -83,6 +83,23 @@ class LockPolicyTests(unittest.TestCase):
         self.assertFalse(lock_for("b", tagged)[0])
 
 
+class AliasTests(unittest.TestCase):
+    def test_usb_and_wifi_serials_of_one_phone_share_the_lock(self):
+        b = FakeBackend()
+        b.devices = lambda: [{"serial": "USB1", "state": "device"}, {"serial": "10.0.0.5:5555", "state": "device"},
+                             {"serial": "OTHER", "state": "device"}]
+        b.hw_id = lambda s: {"USB1": "HW1", "10.0.0.5:5555": "HW1", "OTHER": "HW2"}[s]
+        state = {"lock": lease("USB1", "eval-3")}
+        hub = LiveHub(lambda: state["lock"], b)
+        self.assertEqual(hub.held("10.0.0.5:5555"), (True, "eval-3"))   # Wi-Fi 那一路也算占用
+        self.assertFalse(hub.held("OTHER")[0])
+        state["lock"] = lease("10.0.0.5:5555", "eval-4")
+        self.assertEqual(hub.held("USB1"), (True, "eval-4"))
+        b.hw_id = lambda s: None                                          # 读不到硬件序列号: 只按自己判
+        hub2 = LiveHub(lambda: lease("USB1"), b)
+        self.assertFalse(hub2.held("10.0.0.5:5555")[0])
+
+
 class HubTests(unittest.TestCase):
     def make(self, lock=None, **kw):
         self.lock = lock if lock is not None else lease()
