@@ -15,7 +15,7 @@
   <div class="brand-row">
     <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a>
     <span class="brand-name">HGamey</span>
-    <nav class="nav" aria-label="主导航" style="flex-wrap:wrap"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs" aria-current="page">任务与结果</a><a href="/dash/maint">维护</a></nav>
+    <nav class="nav" aria-label="主导航" style="flex-wrap:wrap"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs" aria-current="page">任务与结果</a><a href="/dash/results">研究结果</a><a href="/dash/maint">维护</a></nav>
   </div>
   <div class="top-right">
     <button id="refresh-all" class="ghost" type="button">刷新页面数据</button>
@@ -154,6 +154,7 @@
         <div class="job-heading"><h3 id="job-title"></h3><span id="job-state" class="task-state"></span></div>
         <p id="detail-updated" class="read-time"></p>
         <dl id="job-info" class="facts job-facts"></dl>
+        <p class="note"><a id="job-results-link">查看此任务已登记结果</a> · <a id="job-register-result">登记此任务结果</a>。原件仍在下方输出目录；登记不代表实验有效或恢复完成。</p>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
         <section id="job-inputs" class="job-inputs" aria-labelledby="job-inputs-heading">
           <div class="section-heading"><h3 id="job-inputs-heading">输入工件与准备记录</h3><button id="load-job-inputs" class="ghost" type="button" disabled>读取输入记录</button></div>

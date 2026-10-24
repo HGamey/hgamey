@@ -54,7 +54,7 @@ STEER_MAX_AGE = 12 * 3600
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash_static")
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
-TARGET_PAGES = {"/dash", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint"}
+TARGET_PAGES = {"/dash", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results"}
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
 SCAN_EVERY_S = 30         # 实验证据多久扫一次（只在有人看时）
@@ -398,9 +398,9 @@ class Dash:
             return self._login_redirect(h)
         if dash_live.handle(self, h, sub, query):  # /dash/live 与 /dash/api/live/*
             return
-        if sub in (["jobs"], ["fleet"], ["games"]):
+        if sub in (["jobs"], ["fleet"], ["games"], ["results"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("target.js", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("target.js", "results.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()

@@ -204,7 +204,7 @@
     const sel = $("exp-sel"), exps = S.exps;
     if (!exps.length) {
       sel.innerHTML = ""; sel.hidden = true;
-      $("exp-head").innerHTML = `<div class="empty">手机节点上还没有实验记录（只看最近 3 天和最近的任务）。</div>`;
+      $("exp-head").innerHTML = `<div class="empty">未在近期扫描范围发现兼容格式；这不代表节点上没有实验或已登记结果。</div>`;
       $("exp-chart").innerHTML = ""; $("exp-gens").innerHTML = ""; return;
     }
     sel.hidden = false;

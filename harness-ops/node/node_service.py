@@ -33,6 +33,7 @@ import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess,
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
+from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_fleet import FleetState
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
@@ -641,6 +642,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
+    if not hasattr(jobs, "results"):
+        jobs.results = NodeResults(jobs, node.node_id)
+    results = jobs.results
     if not hasattr(jobs, "directory"):
         jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
     directory = jobs.directory
@@ -691,7 +695,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 # subsequent API/media requests carry the pin and are checked.
                 page = parsed.path.rstrip("/") in {
                     "/dash", "/dash/jobs", "/dash/games", "/dash/fleet",
-                    "/dash/control", "/dash/live", "/dash/maint", "/dash/login",
+                    "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/login",
                 }
                 if (page and self.command == "GET" and not headers
                         or parsed.path == "/dash/login" and not headers
@@ -759,7 +763,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -777,6 +781,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["results"]:
+                    return self._send(200, results.list(q))
+                if len(parts) == 2 and parts[0] == "results":
+                    return self._send(200, results.get(unquote(parts[1])))
+                if len(parts) == 4 and parts[0] == "results" and parts[2] == "sources":
+                    return self._result_source(results.source(unquote(parts[1]), unquote(parts[3])), q)
+                if len(parts) == 2 and parts[0] == "result-imports":
+                    return self._send(200, results.imported(unquote(parts[1])))
+                if len(parts) == 3 and parts[0] == "result-imports" and parts[2] == "source":
+                    return self._result_source(results.imported(unquote(parts[1]), source=True), q)
                 if parts == ["games"]:
                     return self._send(200, games.list())
                 if len(parts) == 2 and parts[0] == "uploads":
@@ -846,6 +860,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
+            except ResultError as e:
+                return self._send(e.status, {"code": e.code, "error": str(e)})
+            except sqlite3.Error:
+                return self._send(503, {"code": "node_storage_unavailable", "error": "node records could not be read; retain the original ID"})
             except job_inputs.InputError as e:
                 return self._send(e.status, {"code": e.code, "error": str(e)})
             except AssetUploadError as e:
@@ -867,6 +885,49 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             blob, info = jobs.out_blob(jid, rel)
             with blob:
                 return self._stream_out(blob, info, q)
+
+        def _result_source(self, source, q):
+            blob, info = source
+            if isinstance(blob, bytes):
+                # Imported JSON is already bounded, immutable and hashed once
+                # in the transaction. It needs no temporary file or rehash.
+                if "meta" in q:
+                    return self._send(200, info)
+                return self._send(200, blob, "application/json; charset=utf-8", {
+                    "Content-Disposition": "attachment", "X-Content-SHA256": info["sha256"],
+                    "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+            with blob:
+                return self._stream_out(blob, info, q)
+
+        def _result_post(self, parts, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                if parts not in (["results"], ["result-imports"]):
+                    raise ResultError(404, "result_operation_not_found", "no such result operation")
+                if not (self.headers.get("X-Expected-Node-ID") or
+                        parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    raise ResultError(400, "target_required", "result registration requires an expected node identity")
+                maximum = MAX_IMPORT_BODY if parts == ["result-imports"] else MAX_RECORD
+                length = self._upload_length(maximum, 1)
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("result writes require application/json")
+                self.connection.settimeout(30)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("result request body was interrupted; query the original ID")
+                payload = json.loads(raw)
+                value = results.import_report(payload) if parts == ["result-imports"] else results.register(payload)
+                return self._send(201, value)
+            except ResultError as e:
+                return self._send(e.status, {"code": e.code, "error": str(e)})
+            except AssetUploadError as e:
+                return self._send(e.status, {"code": "invalid_result_request", "error": e.message})
+            except (OSError, sqlite3.Error):
+                return self._send(503, {"code": "result_storage_error", "error": "registration could not be confirmed; query the original ID"})
+            except (ValueError, TypeError, OverflowError) as e:
+                return self._send(400, {"code": "invalid_result", "error": str(e)})
 
         def _stream_out(self, blob, info, q):
             ensure_unchanged(blob)
@@ -1016,6 +1077,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if self._remote("POST"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if parts[:1] in (["results"], ["result-imports"]):
+                return self._result_post(parts, False)
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["results"], ["result-imports"]):
+                return self._result_post(parts[2:], True)
             if parts[:1] == ["uploads"]:
                 return self._upload_post(parts, False)
             if board and parts[:3] == ["dash", "api", "uploads"]:

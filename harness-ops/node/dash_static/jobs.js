@@ -826,6 +826,8 @@
       $('detail-updated').textContent = readTime();
       facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['开始', time(job.started)], [job.phase === 'finalizing' || storageFailed(job) ? '候选结束时间（未提交）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
       $('job-command').textContent = JSON.stringify({bin: job.bin, argv: job.argv || []}, null, 2);
+      $('job-results-link').href = HGTarget.url(`/dash/results?job_id=${encodeURIComponent(job.id)}`);
+      $('job-register-result').href = HGTarget.url(`/dash/results#register=${encodeURIComponent(job.id)}`);
       renderExecution(job);
       $('detail-content').hidden = false;
       $('detail-placeholder').hidden = true;

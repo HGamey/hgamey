@@ -44,6 +44,10 @@
   pf-node games upload-status ID          # 原上传的持久offset、缓存事实与校验任务
   pf-node games upload-finalize ID        # 字节收齐后提交/找回同一个校验任务
   pf-node games upload-cancel ID          # 取消写入保留，保留partial与历史
+  pf-node results list|show ID             # 显式登记结果索引与来源；不扫描旧任务目录
+  pf-node results register FILE            # 不可变登记；固定 result_id，回执未知仅查询原 ID
+  pf-node results import FILE --adapter NAME [--import-id ID] # 仅导入小 JSON，保留原字节
+  pf-node results import-status ID         # 找回原导入及全部派生结果
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 
 - 参数里凡是本机存在的文件/目录（含 --flag=路径 的写法）自动打包上传，在节点上替换成对应路径。
@@ -675,8 +679,18 @@ def main():
         from game_client import HELP
         print(HELP)
         return
+    if args[0] == "results" and (len(args) == 1 or any(arg in ("--help", "-h") for arg in args[1:])):
+        from result_client import HELP
+        print(HELP)
+        return
     TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     URL, TOKEN = TARGET.url, TARGET.token
+    if args[0] == "results":
+        if (request_id is not None or inputs_path is not None or resources or device_access is not None
+                or recovery_for is not None or execution_policy is not None or exe or detach or outdir):
+            sys.exit("pf-node: results 不接收作业选项；使用清单 result_id 或 --import-id")
+        from result_client import main as results_main
+        raise SystemExit(results_main(args[1:], target=TARGET))
     CHUNK = int(os.environ.get("PF_NODE_CHUNK", 2 << 20))
     if device_access == "recovery":
         if recovery_for is None:
