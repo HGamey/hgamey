@@ -124,6 +124,8 @@ class JobRestartTests(unittest.TestCase):
                 jid = meta["id"]
                 log = Path(root) / "_jobs" / jid / "log"
                 until(lambda: log.exists() and "ready marker" in log.read_text())
+                # The child may print before its worker commits running metadata.
+                until(lambda: request("/jobs/" + jid)["phase"] == "running")
                 before = request("/jobs/" + jid)
                 worker = before["pid"]
                 self.assertEqual(before["phase"], "running")
