@@ -22,6 +22,7 @@
   /admin/restart  退出进程，由 run_node.sh 的循环用新代码重新拉起。
   /health 无需 token，只回 ok（给隧道探活）。
   /dash   实时看板只读看板，用独立查看密码（~/.config/hgamey/dash.pass），逻辑在 dash.py。
+  /remote 远程操作设备（个人操作员令牌，MCP 在 /remote/mcp），网页控制台 /dash/control，逻辑在 node_remote.py。
 
 phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自己的仓库目录下执行。
 执行任务使用独立的锁 owner，label 只供展示；phonefarm/GOL/helper 保留内部锁路线，raw adb/fetch_apk 由 devlock run 包裹。
@@ -53,6 +54,11 @@ try:
 except Exception as e:  # noqa: BLE001
     dash = None
     print(f"dash 模块加载失败，/dash 不可用: {e!r}", file=sys.stderr)
+try:
+    import node_remote  # 远程操作 /remote 与 /dash/api/remote（操作员令牌）；坏了不拖垮其它接口
+except Exception as e:  # noqa: BLE001
+    node_remote = None
+    print(f"node_remote 加载失败，/remote 不可用: {e!r}", file=sys.stderr)
 
 MCP_ALLOW = {
     "phonefarm_devices", "phonefarm_fleet", "phonefarm_tasks", "phonefarm_runs", "phonefarm_last",
@@ -620,7 +626,7 @@ class Jobs:
 
 # ═════════════ HTTP ═════════════
 
-def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
+def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=None):
     jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
@@ -675,7 +681,17 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                 raise ValueError("上传太大")
             return self.rfile.read(n) if n else b""
 
+        def _remote(self, method):
+            u = urlparse(self.path)
+            parts = [p for p in u.path.split("/") if p]
+            if remote and (parts[:1] == ["remote"] or parts[:3] == ["dash", "api", "remote"] or parts == ["dash", "control"]):
+                node_remote.handle(remote, self, method, parts, u.query, board)
+                return True
+            return False
+
         def do_GET(self):
+            if self._remote("GET"):
+                return
             u = urlparse(self.path)
             parts = [p for p in u.path.split("/") if p]
             if parts == ["health"]:
@@ -843,6 +859,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                 left -= len(b)
 
         def do_DELETE(self):
+            if self._remote("DELETE"):
+                return
             if self._authed():
                 self._send(200, b"")
 
@@ -897,6 +915,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             # Always close chunk connections, including rejected/unconsumed
             # bodies, so residual file bytes cannot become another HTTP request.
             self.close_connection = True
+            if self._remote("PUT"):
+                return
             parts = [unquote(p) for p in urlparse(self.path).path.split("/") if p]
             dashboard = bool(board and parts[:3] == ["dash", "api", "uploads"])
             if dashboard:
@@ -929,6 +949,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                 return self._send(503, {"code": "upload_storage_error", "error": "upload could not be confirmed; query the same ID"})
 
         def do_POST(self):
+            if self._remote("POST"):
+                return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
             if parts[:1] == ["uploads"]:
                 return self._upload_post(parts, False)
@@ -1104,7 +1126,16 @@ def main():
             board = dash.Dash(root, gol, jobs.dir, jobs=jobs, fleet=fleet)
         except Exception as e:  # noqa: BLE001
             log(f"dash 起不来，/dash 不可用: {e!r}")
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet))
+    remote = None
+    if node_remote:
+        try:
+            import shutil
+            remote = node_remote.Remote(node_remote.storage_from_leases(jobs.leases), adb=bins["adb"][0],
+                                        hdc=shutil.which("hdc"))
+        except Exception as e:  # noqa: BLE001
+            log(f"node_remote 起不来，/remote 不可用: {e!r}")
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
+                                                                  remote=remote))
     log(f"节点服务 127.0.0.1:{a.port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})  根目录 {root}")
     try:
         srv.serve_forever()

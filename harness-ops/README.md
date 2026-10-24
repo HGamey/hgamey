@@ -9,6 +9,7 @@
 | `node/pf-fleet` | 跨节点调度：查看所有节点状态，派到空闲节点，宕机后迁移续跑 |
 | `node/pf-node-deploy`、`node/update_node.sh` | 让节点从 GitHub 拉代码、编译、更新 |
 | `node/dash.py`、`node/dash_goals.py`、`node/dash_static/` | 节点自带的只读实时监控面板（/dash） |
+| `node/node_remote.py`、`skills/hgamey-remote/` | 远程调试：个人操作员令牌接管设备（HTTP `/remote`、MCP `/remote/mcp`、网页 `/dash/control`），用法见 skill |
 | `node/run_node.sh` | 在节点上前台运行节点服务和 cloudflared 隧道 |
 | `cloudflare/offline/` | Cloudflare Worker：节点连不上时返回离线提示页 |
 

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>远程调试 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/control.css">
+</head>
+<body class="control-view">
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a>
+    <span class="brand-name">HGamey</span>
+    <nav class="nav" aria-label="主导航" style="flex-wrap:wrap"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/control" aria-current="page">远程调试</a><a href="/dash/jobs">任务与结果</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right" id="who">
+    <form id="op-login" class="op-login" hidden>
+      <label for="op-token">操作员令牌</label>
+      <input id="op-token" type="password" autocomplete="off" placeholder="hgop_..." spellcheck="false">
+      <button type="submit">登录</button>
+    </form>
+    <span id="op-name" hidden></span>
+    <button id="op-logout" class="ghost" type="button" hidden>退出操作员</button>
+  </div>
+</header>
+<main class="control-page">
+  <p id="msg" class="ctl-msg" role="status" aria-live="polite"></p>
+  <section class="ctl-devices" aria-labelledby="dev-h">
+    <h2 id="dev-h">设备</h2>
+    <ul id="devices" class="dev-list"></ul>
+    <p class="note">只有主人开放的设备可操作；实验占用时拒绝接管。</p>
+  </section>
+  <section class="ctl-screen" aria-labelledby="scr-h">
+    <h2 id="scr-h">屏幕 <span id="cur-serial"></span></h2>
+    <!-- 合同：实时画面模块若提供 window.HGLive.attach(wrap, serial) → {el, size(), detach()}，控制台在 el 上接点击/滑动；
+         否则用截图兜底。 -->
+    <div id="hg-screen-wrap" class="screen-wrap"><img id="hg-screen" alt="设备截图" draggable="false" hidden><p id="screen-empty" class="note">选择设备并接管后显示画面</p></div>
+    <p class="note">点击 = tap，拖动 = swipe（按住时长即滑动时长）。</p>
+  </section>
+  <section class="ctl-panel" aria-labelledby="ops-h">
+    <h2 id="ops-h">操作</h2>
+    <div class="lease">
+      <div id="lease-info" class="lease-info">未接管</div>
+      <button id="take" type="button" disabled>接管设备</button>
+      <button id="release" type="button" class="ghost" disabled>释放</button>
+    </div>
+    <fieldset id="ops" disabled>
+      <div class="keys">
+        <button type="button" data-key="back">返回</button>
+        <button type="button" data-key="home">主页</button>
+        <button type="button" data-key="recents">多任务</button>
+        <button type="button" data-key="enter">回车</button>
+        <button type="button" data-key="del">删除</button>
+        <button type="button" data-key="power">电源</button>
+        <button type="button" id="shot-now" class="ghost">刷新画面</button>
+      </div>
+      <form id="text-form" class="row"><input id="text" maxlength="1000" placeholder="输入文本（ASCII）" autocomplete="off"><button type="submit">发送</button></form>
+      <form id="app-form" class="row"><input id="pkg" placeholder="包名 com.example.app" autocomplete="off" spellcheck="false"><button type="submit" data-act="app_start">启动</button><button type="button" id="app-stop" class="ghost">强停</button></form>
+      <form id="shell-form" class="row"><input id="shell" placeholder="adb shell 命令，如 dumpsys window | grep mCurrentFocus" autocomplete="off" spellcheck="false"><button type="submit">执行</button></form>
+      <div class="row"><button type="button" id="logcat" class="ghost">logcat 尾部 200 行</button>
+        <label class="file">安装 APK <input id="apk" type="file" accept=".apk,.hap"></label></div>
+      <pre id="out" class="out" tabindex="0" aria-label="命令输出"></pre>
+    </fieldset>
+  </section>
+</main>
+<script src="/dash/static/control.js"></script>
+</body>
+</html>
