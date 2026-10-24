@@ -66,10 +66,12 @@ class JobDispatch:
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
                 "recovery": {"status": "not_needed", "reason": "command has not started"}}
 
-    def submit(self, spec, body, request_id):
+    def submit(self, spec, body, request_id, *, admit=None):
         key = self.request_key(uuid.uuid4().hex if request_id is None else request_id)
         fingerprint = request_fingerprint(spec, body)
         with file_lock(self.intake_path):
+            if admit is not None and not self.queue.by_request(key):
+                admit()
             if spec.get("recovery_for") and not self.queue.by_request(key):
                 parent = self.queue.get(spec["recovery_for"])
                 if not parent or parent["state"] != "blocked":
@@ -162,8 +164,14 @@ class JobDispatch:
                 store.sync(jid, directory=True)
                 store.sync("", directory=True)
                 recovery = candidate.get("recovery", {}).get("status")
+                access = device_access(row["spec"])
+                # Resource recovery settles a limited producer scope. Keep its
+                # reservation for explicit lease review, just like initial writes.
+                deployment_recovery = (access == "recovery" and row["spec"].get("bin") == "phonefarm"
+                                       and row["spec"].get("argv", [])[:1] == ["game-deploy"])
                 blocked = (candidate.get("lost") or recovery == "required" or
-                           device_access(row["spec"]) == "write" and recovery == "not_reported")
+                           (access == "write" or deployment_recovery)
+                           and recovery == "not_reported")
                 self.queue.set_state(jid, "blocked" if blocked else "done")
                 return True
         except (OSError, ValueError) as error:

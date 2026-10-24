@@ -1,4 +1,4 @@
-/* Host resource preparation only. Device installation and scene state remain separate. */
+/* Version directory; host preparation and explicit device deployment retain separate evidence. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id), API = '/dash/api';
@@ -13,6 +13,11 @@
   const preparing = new Set(), pending = new Map(), receipts = new Map();
   const uploads = window.createGameUploads({
     context: () => ({node: nodeInfo, canWrite: directoryReady && access?.steer && !accessBusy, detailFresh, selected, disposed}),
+    refresh: binding => current && selected === `${binding.game_id}/${binding.version}` ? selectVersion(current, true) : Promise.resolve(),
+    auth: loadAccess
+  });
+  const deployments = window.createGameDeployments({
+    context: () => ({node: nodeInfo, record: current, canWrite: directoryReady && access?.steer && !accessBusy, detailFresh, selected, disposed}),
     refresh: binding => current && selected === `${binding.game_id}/${binding.version}` ? selectVersion(current, true) : Promise.resolve(),
     auth: loadAccess
   });
@@ -76,7 +81,7 @@
     $('access-toggle').disabled = accessBusy || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定操作' : '解锁操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
-    message('access-message', accessError || (accessBusy ? '正在核对操作权限…' : !access ? '权限未知，保持只读。' : !access.steer_configured ? '本节点未配置掌舵密码，保持只读。' : access.steer ? '可登记清单和提交宿主准备任务；不会操作设备。' : '可查看清单、缓存与原任务；登记和准备需解锁。'), !!accessError);
+    message('access-message', accessError || (accessBusy ? '正在核对操作权限…' : !access ? '权限未知，保持只读。' : !access.steer_configured ? '本节点未配置掌舵密码，保持只读。' : access.steer ? '可登记、准备资源；设备操作需在部署区显式提交任务。' : '可查看清单、缓存与原任务；登记、准备和部署需解锁。'), !!accessError);
     const allowed = directoryReady && access?.steer && !accessBusy;
     $('register-open').disabled = !allowed || registrationBusy;
     $('register-submit').disabled = !allowed || registrationBusy || !!registrationPending;
@@ -106,7 +111,7 @@
   async function loadNode() {
     try { const node = await request(`${API}/node`); nodeInfo = node; $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`; message('node-message', '资源留在此节点的数据目录；本页不自动分发到其他节点。'); }
     catch (error) { nodeInfo = null; message('node-message', `节点身份读取失败：${error.message}`, true); }
-    finally { uploads.update(); }
+    finally { uploads.update(); deployments.update(); }
   }
   function renderList() {
     const query = $('game-search').value.trim().toLowerCase();
@@ -216,7 +221,6 @@
     $('detail-content').hidden = false; $('game-title').textContent = record.title || record.game_id;
     badge($('resource-state'), resourceState(record.resource_state), record.resource_state === 'verified' ? '' : 'unknown');
     facts($('game-info'), [['游戏 ID', record.game_id], ['不可变版本', record.version], ['节点 ID', record.node_id], ['登记时间', time(record.created_at)]]);
-    $('device-state').textContent = '安装：未知 · 资源部署：未知 · 登录：未知 · 场景就绪：未知';
     $('game-manifest').textContent = JSON.stringify(record.manifest, null, 2);
     const preparations = orderedPreparations(record), attempt = pending.get(keyOf(record));
     if (attempt) {
@@ -243,7 +247,7 @@
     finally { if (!disposed && version === detailRevision) { $('refresh-detail').disabled = false; $('refresh-detail').setAttribute('aria-busy', 'false'); renderPrepare(); } }
   }
   function renderPrepare() {
-    uploads.update();
+    uploads.update(); deployments.update();
     const attempt = pending.get(selected), receipt = receipts.get(selected), busy = preparing.has(selected), jobs = current?.preparations || [];
     const active = jobs.some(job => job.state !== 'finished'), blocked = jobs.some(job => job.queue?.state === 'blocked');
     const allowed = directoryReady && access?.steer && !accessBusy;
@@ -283,7 +287,7 @@
       $('lookup-job').href = jobLink(job); $('lookup-job').hidden = false;
       if (job.bin !== 'bundle_prepare') {
         if (expectedKey && pending.has(expectedKey)) { pending.get(expectedKey).conflict = true; savePending(); }
-        message('lookup-message', '此请求 ID 属于另一类任务。请打开原任务核对；不能作为当前版本的准备记录，也不会复用它提交新任务。', true);
+        message('lookup-message', expectedKey ? '此请求 ID 属于另一类任务。请打开原任务核对；不能作为当前版本的准备记录，也不会复用它提交新任务。' : `找到原任务 ${job.id} · ${jobState(job)[0]}。打开任务核对类型、绑定和原件；未重新提交。`, !!expectedKey);
         if (expectedKey) receipts.set(expectedKey, {job, message: '请求 ID 属于另一任务，已禁止按该 ID 重试准备；请核对原任务。', error: true});
       } else {
         message('lookup-message', `找到原准备任务 ${job.id} · ${jobState(job)[0]}。版本归属以清单的持久准备记录为准；没有重新提交。`);
@@ -308,7 +312,7 @@
   $('prepare-retry').addEventListener('click', () => prepare(true));
   $('prepare-query').addEventListener('click', () => { const attempt = pending.get(selected); if (attempt) { $('request-id').value = attempt.request_id; lookup(attempt.request_id, selected); } });
   $('lookup-form').addEventListener('submit', event => { event.preventDefault(); const id = $('request-id').value.trim(); const owner = [...pending].find(([, value]) => value.request_id === id); lookup(id, owner?.[0] || null); });
-  window.addEventListener('pagehide', () => { disposed = true; uploads.pause('页面已离开，停止发送；原上传 ID 保留，回来后重选文件并查询续传。'); ++listRevision; ++detailRevision; detailController?.abort(); closeUnlock(); });
+  window.addEventListener('pagehide', () => { disposed = true; deployments.stop(); uploads.pause('页面已离开，停止发送；原上传 ID 保留，回来后重选文件并查询续传。'); ++listRevision; ++detailRevision; detailController?.abort(); closeUnlock(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { disposed = false; loadAccess(); loadNode(); loadGames(); if (current) selectVersion(current, true); } });
   readSaved(); renderAccess(); loadAccess(); loadNode();
   if (registrationPending) { $('registration-panel').hidden = false; message('registration-message', `有未确认登记 ${registrationPending.game_id}/${registrationPending.version}。先读取原版本，未保存旧清单草稿。`); }

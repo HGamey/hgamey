@@ -18,6 +18,9 @@ HELP = """用法:
   pf-node games register FILE
   pf-node games prepare ID VERSION [--request-id ID]
   pf-node games request REQUEST_ID
+  pf-node games deploy ID VERSION --serial S [--check] [--request-id ID]
+  pf-node games deployment JOB_ID
+  pf-node games deployment-recover JOB_ID --request-id ID
   pf-node games upload ID VERSION ASSET FILE [--upload-id ID]
   pf-node games upload-status ID
   pf-node games upload-finalize ID
@@ -28,6 +31,8 @@ prepare 仅提交宿主资源准备任务，不安装应用或验证场景；结
 不自动重发。使用 games request REQUEST_ID 找回原任务，再查看其准备报告。
 upload 分块读取本地文件，不打包或计算本机全文件哈希；写入结果未知时只查询原上传 ID 后退出。
 显式带原 --upload-id 重跑才能续传。传完仅提交校验任务；当前缓存 observation 才是资源校验证据。
+deploy 仅部署配方选中的资源到已安装引擎的新目录；--check 只读取设备前提，仍经任务排队。
+部署、应用读取、登录和场景状态分别报告。恢复接续原任务，不重放部署，不自动释放队列保留。
 """
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -142,12 +147,12 @@ def confirmed_job(value, request_id):
     return value
 
 
-def prepare(client, path, request_id):
+def submit_job(client, path, body, request_id, description):
     lookup = f"pf-node games request {request_id}"
-    print(f"pf-node: 准备 request_id={request_id}；仅提交一次。用 {lookup} 找回原任务。",
+    print(f"pf-node: {description} request_id={request_id}；仅提交一次。用 {lookup} 找回原任务。",
           file=sys.stderr, flush=True)
     try:
-        job = confirmed_job(client.request("POST", path + "/prepare", b"{}", request_id), request_id)
+        job = confirmed_job(client.request("POST", path, body, request_id), request_id)
     except KeyboardInterrupt:
         print(f"pf-node: 提交结果未确认；请用 {lookup} 查询，不换 ID 重复提交。", file=sys.stderr)
         return 130
@@ -164,8 +169,58 @@ def prepare(client, path, request_id):
             return 130 if isinstance(lookup_error, KeyboardInterrupt) else 2
     print(json.dumps(job, ensure_ascii=False))
     print(f"pf-node: 原任务 {job['id']}，phase={job.get('phase', '未报告')}；"
-          "任务状态不等于资源校验通过、应用安装或场景就绪。", file=sys.stderr)
+          "任务状态不等于资源校验通过、应用安装、场景就绪或设备恢复完成。", file=sys.stderr)
     return 0
+
+
+def prepare(client, path, request_id):
+    return submit_job(client, path + "/prepare", b"{}", request_id, "准备")
+
+
+def deployment_node(client):
+    node = client.request("GET", "/node")
+    capabilities = node.get("capabilities")
+    if not isinstance(capabilities, list) or "games.deploy-v1" not in capabilities:
+        raise ValueError("节点缺少 games.deploy-v1；未提交，请升级节点服务和 phonefarm")
+    if not isinstance(node.get("node_id"), str) or not node["node_id"]:
+        raise RequestError("节点未提供持久 node_id；未提交")
+    return node["node_id"]
+
+
+def deployment_job_id(value):
+    if not re.fullmatch(r"[0-9a-f]{12}", value):
+        raise ValueError("deployment 需要原任务的 12 位 ID")
+    return value
+
+
+def deployment_arguments(args, request_id, *, recovery=False):
+    serial, mode, index = None, "apply", 0
+    while index < len(args):
+        option = args[index]
+        if option in ("--serial", "--request-id") and index + 1 < len(args):
+            value = args[index + 1]
+            if option == "--serial" and not recovery:
+                if (not value.strip() or len(value) > 256
+                        or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+                    raise ValueError("--serial 需要显式有效设备序列号")
+                serial = value
+            elif option == "--request-id":
+                value = request_identifier(value)
+                if request_id is not None and request_id != value:
+                    raise ValueError("前后 --request-id 不一致；未提交")
+                request_id = value
+            else:
+                raise ValueError("恢复的 serial/context 由原任务派生，不能由客户端指定")
+            index += 2
+        elif option == "--check" and not recovery:
+            mode, index = "check", index + 1
+        else:
+            raise ValueError(HELP)
+    if recovery and request_id is None:
+        raise ValueError("deployment-recover 必须显式指定 --request-id ID")
+    if not recovery and serial is None:
+        raise ValueError("deploy 必须显式指定 --serial S")
+    return serial, mode, request_id or str(uuid.uuid4())
 
 
 def upload_identifier(value):
@@ -353,11 +408,25 @@ def main(args, *, url, token, request_id=None):
         command = args[0]
         if request_id is not None:
             request_identifier(request_id)
-            if command != "prepare":
-                raise ValueError("--request-id 仅用于 games prepare；查找原任务请用 games request ID")
+            if command not in ("prepare", "deploy", "deployment-recover"):
+                raise ValueError("--request-id 仅用于 games prepare/deploy/deployment-recover；查找原任务请用 games request ID")
         body, method = None, "GET"
         if command == "list" and len(args) == 1:
             path = "/games"
+        elif command == "deploy" and len(args) >= 3:
+            path = f"/games/{identifier(args[1])}/versions/{identifier(args[2])}/deploy"
+            serial, mode, key = deployment_arguments(args[3:], request_id)
+            client = Client(url, token)
+            body = json.dumps({"node_id": deployment_node(client), "serial": serial, "mode": mode}).encode()
+            return submit_job(client, path, body, key, "检查设备部署前提" if mode == "check" else "部署资源")
+        elif command == "deployment" and len(args) == 2:
+            path = f"/jobs/{deployment_job_id(args[1])}/deployment"
+        elif command == "deployment-recover" and len(args) >= 2:
+            path = f"/jobs/{deployment_job_id(args[1])}/deployment/recover"
+            _, _, key = deployment_arguments(args[2:], request_id, recovery=True)
+            client = Client(url, token)
+            deployment_node(client)
+            return submit_job(client, path, b"{}", key, "接续原部署恢复")
         elif command == "upload" and (len(args) == 5 or len(args) == 7 and args[5] == "--upload-id"):
             return upload_file(Client(url, token), identifier(args[1]), identifier(args[2]), args[3], args[4],
                                args[6] if len(args) == 7 else None)

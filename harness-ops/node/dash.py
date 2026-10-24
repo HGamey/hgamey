@@ -40,6 +40,7 @@ import sqlite3
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable
 from node_session import SessionError, MAX_REQUEST
+from node_deployments import DeploymentError
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
                         FLEET_EVERY_HELD_S, FREE_GRACE_S, SHOT_EVERY_S)
 
@@ -368,7 +369,7 @@ class Dash:
             return self._redirect(h, "/dash/login")
         if sub in (["jobs"], ["fleet"], ["games"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()
@@ -478,6 +479,10 @@ class Dash:
                 if set(data) - {"force"}:
                     raise ValueError("execution reconciliation accepts only a force boolean")
                 return self._send(h, 200, self.job_service.reconcile_execution(sub[2], force=data.get("force", False)))
+            if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["deployment", "recover"]:
+                if len(body) > MAX_REQUEST:
+                    return self._send(h, 413, {"error": "deployment recovery request exceeds 64 KiB"})
+                return self._send(h, 200, self.job_service.deployments.recover(sub[2], data, h.headers.get("X-Request-ID")))
             if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["session", "recover"]:
                 if data:
                     raise ValueError("session recovery body must be an empty object; source paths and serial are derived by the node")
@@ -514,7 +519,7 @@ class Dash:
         except sqlite3.Error as e:
             self.job_service.dispatch.last_error = f"{type(e).__name__}: {e}"
             return self._send(h, 503, {"error": "无法确认作业存储提交；请先查询任务和队列状态"})
-        except SessionError as e:
+        except (SessionError, DeploymentError) as e:
             return self._send(h, e.status, e.payload)
         except (KeyError, FileNotFoundError):
             return self._send(h, 404, {"error": "没有这个任务或目标运行"})

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 import uuid
 
 from artifact_io import SafeRoot, relative_path, stamp
+from game_deploy_recipe import validate_recipe
 from job_runtime import runner_alive
 
 
@@ -101,7 +102,7 @@ def _asset(value):
 
 
 def validate_manifest(value):
-    metadata = {"application", "engine", "requirements", "scene", "provenance", "license"}
+    metadata = {"application", "engine", "requirements", "scene", "provenance", "license", "deployment"}
     if not isinstance(value, dict) or set(value) - ({"schema_version", "game_id", "version", "title", "assets"} | metadata):
         raise AssetError("unsupported game manifest fields")
     if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
@@ -125,6 +126,8 @@ def validate_manifest(value):
         if asset["sha256"] in sizes and sizes[asset["sha256"]] != asset["size"]:
             raise AssetError("the same content hash cannot declare different sizes")
         sizes[asset["sha256"]] = asset["size"]
+    if "deployment" in value:
+        validate_recipe(value["deployment"], value["assets"])
     return copy.deepcopy(value)
 
 

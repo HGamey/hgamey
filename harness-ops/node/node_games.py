@@ -136,7 +136,8 @@ class NodeGames:
         return result
 
     def _record(self, entry, rows=None, history=True):
-        preparations = self._preparations(entry, self.jobs.dispatch.queue.rows() if rows is None else rows)
+        rows = self.jobs.dispatch.queue.rows() if rows is None else rows
+        preparations = self._preparations(entry, rows)
         latest = preparations[0] if preparations else None
         reported = {a.get("name"): a for a in ((latest or {}).get("report") or {}).get("assets", [])}
         assets = []
@@ -148,7 +149,10 @@ class NodeGames:
             assets.append({**asset, "observation": observation, "progress": progress})
         states = {a["observation"]["state"] for a in assets}
         ready = "verified" if states == {"verified"} else ("unknown" if "unknown" in states else "incomplete")
+        deployments = getattr(self.jobs, "deployments", None)
         return {**entry, "node_id": self.node_id, "assets": assets, "resource_state": ready,
+                "deployment_support": deployments.support if deployments else {"available": False},
+                "deployments": deployments.history(entry, rows) if deployments and history else [],
                 "preparations": preparations if history else [], "preparation_count": len(preparations),
                 "device_state": dict.fromkeys(("installed", "resources_deployed", "login", "scene_ready"), "unknown")}
 
@@ -169,4 +173,6 @@ class NodeGames:
             return 201, self.register(body)
         if len(parts) == 5 and parts[0] == "games" and parts[2] == "versions" and parts[4] == "prepare":
             return 200, self.prepare(parts[1], parts[3], body, request_id)
+        if len(parts) == 5 and parts[0] == "games" and parts[2] == "versions" and parts[4] == "deploy":
+            return 200, self.jobs.deployments.start(parts[1], parts[3], body, request_id)
         raise GameError(404, "no such game operation")

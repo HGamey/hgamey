@@ -82,7 +82,9 @@ class NodeRead:
                                  "jobs.execution-policy-v1",
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
                                  "jobs.session-recovery-v1"] +
-                                (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []),
+                                (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +
+                                (["games.deploy-v1"] if getattr(self.jobs, "deployments", None)
+                                 and self.jobs.deployments.support["available"] else []),
                 "devices": {"status": "not_probed", "reason": "node identity does not probe phones"}}
 
     def list_jobs(self, query):

@@ -36,6 +36,7 @@ from node_fleet import FleetState
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
 from node_uploads import NodeUploads
+from node_deployments import NodeDeployments, DeploymentError
 from game_assets import AssetUploadError, UPLOAD_MAX
 import job_runtime
 from job_dispatch import JobDispatch, file_lock
@@ -228,7 +229,7 @@ class Jobs:
         self.path(jid)
         return self._read_root.read_json(jid + "/meta.json")
 
-    def start(self, spec, body, request_id=None):
+    def start(self, spec, body, request_id=None, *, admit=None):
         if not isinstance(spec, dict):
             raise ValueError("job spec must be an object")
         policy = require_policy(spec)
@@ -265,7 +266,7 @@ class Jobs:
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
                 **({"exe": spec["exe"]} if spec.get("exe") else {})}
-        return self.dispatch.submit(spec, body, request_id)
+        return self.dispatch.submit(spec, body, request_id, admit=admit)
 
     def _prepare(self, row, body):
         spec, jid = row["spec"], row["job_id"]
@@ -632,6 +633,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
     if not hasattr(jobs, "uploads"):
         jobs.uploads = NodeUploads(jobs, games)
     uploads = jobs.uploads
+    if not hasattr(jobs, "deployments"):
+        jobs.deployments = NodeDeployments(jobs, games)
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
         jobs.root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     class H(BaseHTTPRequestHandler):
@@ -757,6 +760,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "leases":
                     jobs._read_meta(parts[1])
                     return self._send(200, job_lease_receipts(jobs._read_root, parts[1]))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "deployment":
+                    return self._send(200, jobs.deployments.get(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "session":
                     return self._send(200, jobs.session(parts[1]))
                 if len(parts) == 5 and parts[0] == "jobs" and parts[2:4] == ["session", "actions"]:
@@ -767,7 +772,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                 return self._send(e.status, {"code": e.code, "error": e.message})
             except (DirectoryError, GameError) as e:
                 return self._send(e.status, {"error": str(e)})
-            except SessionError as e:
+            except (SessionError, DeploymentError) as e:
                 return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
@@ -972,6 +977,15 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     if not isinstance(data, dict) or set(data) - {"force"}:
                         raise ValueError("execution reconciliation accepts only a force boolean")
                     return self._send(200, jobs.reconcile_execution(parts[1], force=data.get("force", False)))
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["deployment", "recover"]:
+                    if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_REQUEST:
+                        self.close_connection = True
+                        return self._send(413, {"error": "deployment recovery request exceeds 64 KiB"})
+                    if "application/json" not in self.headers.get("Content-Type", ""):
+                        self.close_connection = True
+                        return self._send(400, {"error": "deployment recovery requires application/json"})
+                    return self._send(200, jobs.deployments.recover(parts[1], json.loads(self._body() or b"{}"),
+                                                                   self.headers.get("X-Request-ID")))
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "session" and parts[3] in {"actions", "recover"}:
                     if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
                         self.close_connection = True
@@ -1027,7 +1041,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             except sqlite3.Error as e:
                 jobs.dispatch.last_error = f"{type(e).__name__}: {e}"
                 return self._send(503, {"error": "job storage commit could not be confirmed; query job and queue before retrying"})
-            except SessionError as e:
+            except (SessionError, DeploymentError) as e:
                 return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})

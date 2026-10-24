@@ -31,6 +31,9 @@
   pf-node games register FILE             # 仅登记 JSON 清单，不上传其中引用的大文件
   pf-node games prepare ID VERSION [--request-id ID] # 异步准备宿主资源，不安装或启动游戏
   pf-node games request REQUEST_ID        # 找回同一次准备任务，不自动重发
+  pf-node games deploy ID VERSION --serial S [--check] [--request-id ID] # 新目录资源部署；check只读设备前提
+  pf-node games deployment JOB_ID         # 原部署报告、事实与恢复范围
+  pf-node games deployment-recover JOB_ID --request-id ID # 接续原上下文，不重放部署
   pf-node games upload ID VERSION ASSET FILE [--upload-id ID] # 分块上传；原ID显式续传，不打包/本机hash
   pf-node games upload-status ID          # 原上传的持久offset、缓存事实与校验任务
   pf-node games upload-finalize ID        # 字节收齐后提交/找回同一个校验任务

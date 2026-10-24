@@ -58,3 +58,22 @@
 .games-view button:disabled:not([aria-busy="true"]) { cursor: not-allowed; }
 @media (max-width: 900px) { .games-layout { grid-template-columns: minmax(0,1fr); } .game-browser { border-right: 0; border-bottom: 1px solid var(--line); } .game-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 4px 12px; } .game-list > li { min-width: 0; } }
 @media (max-width: 600px) { .games-view .top-right { width: auto; } .games-view .nav { gap: 0; } .games-view .nav a { padding: 7px 8px; font-size: 13px; } .games-page .page-heading { flex-direction: column; align-items: flex-start; gap: 12px; } .game-browser, .game-detail, .game-registration, .game-request-lookup { padding: 18px; } .game-list { grid-template-columns: minmax(0,1fr); } .game-detail .facts { grid-template-columns: 76px minmax(0,1fr); gap: 8px 12px; } .games-page .submission-actions button { white-space: normal; } }
+
+.game-deployment { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 20px; }
+.deploy-target { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; align-items: end; gap: 12px; margin: 16px 0 8px; }
+.deploy-target label { display: grid; gap: 6px; color: var(--ink2); font-size: 12px; min-width: 0; }
+.deploy-target select { width: 100%; min-width: 0; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px; font: inherit; }
+.deploy-status { background: var(--panel); border-left: 3px solid var(--line); padding: 12px 14px; margin: 16px 0; }
+.deploy-status > :first-child { margin-top: 0; }
+.deploy-facts { display: grid; grid-template-columns: auto minmax(0,1fr) auto minmax(0,1fr); gap: 8px 12px; margin: 12px 0; font-size: 13px; }
+.deploy-facts dt { color: var(--muted); }
+.deploy-facts dd { margin: 0; overflow-wrap: anywhere; }
+.deploy-request { padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); margin-top: 12px; }
+.deploy-request .request-id { white-space: pre-wrap; overflow-wrap: anywhere; }
+.deploy-history-detail { margin-top: 12px; font-size: 13px; }
+.deploy-history-detail > summary { cursor: pointer; color: var(--ink2); padding: 5px 0 10px; }
+.game-deployment h4 { font-size: 14px; margin: 24px 0 0; }
+.game-deployment .facts dd { white-space: pre-wrap; overflow-wrap: anywhere; }
+.game-deployment .command-box { max-height: 300px; overflow: auto; }
+@media (max-width: 1100px) { .deploy-target { grid-template-columns: minmax(0,1fr) minmax(0,1fr); } .deploy-target > button { justify-self: start; } }
+@media (max-width: 600px) { .deploy-target { grid-template-columns: minmax(0,1fr); } .deploy-facts { grid-template-columns: 84px minmax(0,1fr); } }
