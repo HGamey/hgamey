@@ -778,7 +778,9 @@ function renderDevice() {
         '<div class="k">心跳</div><div>' + val(hb) + (d.holder && d.holder.stale
           ? ' <span class="badge invalid">心跳已过期，需核查租约状态</span>' : '') + '</div>' +
         '<div class="k">排队</div><div>' + (d.queue.length ? d.queue.length + ' 个' : '无') + '</div>' +
+        '<div class="k">只读队列目录</div><div style="min-width:0;overflow-wrap:anywhere">' + val(DASH.paths ? DASH.paths.lock_root : null) + '</div>' +
       '</div></div>' +
+    '<p class="dim" style="font-size:12px">此位置用于读取队列与日志；显式 --lock-root 可覆盖为历史目录。它不是执行锁域根，不会传给 PF 的设备操作，也不提供并发或恢复资格。</p>' +
     (d.queue.length ? '<div class="queue">' + d.queue.map(function (q, i) {
       return '<span class="q' + (i === 0 ? ' first' : '') + '">' + (i + 1) + '. ' + esc(q) + '</span>';
     }).join('') + '</div>' : '') +

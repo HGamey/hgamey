@@ -213,10 +213,14 @@ done
 ./target/release/game_opt_loop optimize --game 原神 --plan --lock-label gol-probe
 ```
 
-The read-only `serve` page resolves `storage.devlock_dir` from its selected
-`--phonefarm-bin` and refuses unavailable or unmigrated storage. `--lock-root`
-only overrides historical lock-file reads; live fleet sampling still uses
-phonefarm's own lock storage. This override does not grant device write access.
+The read-only `serve` page resolves the current global `storage.queue_dir` from
+its selected `--phonefarm-bin` and refuses unavailable or unmigrated storage.
+`storage.devlock_dir` remains the original execution lock-domain root; layout 2
+does not enable per-device concurrency. The dashboard's compatibility field
+`paths.lock_root` is only the queue/log read directory. `--lock-root` explicitly
+overrides those historical reads; it is not passed to PF fleet sampling or the
+execution Guard. Do not set `DEVLOCK_DIR` to this queue directory to bypass a
+recovery barrier or create another execution domain.
 
 ### Picking the device
 

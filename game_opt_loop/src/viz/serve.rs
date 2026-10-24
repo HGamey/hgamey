@@ -57,7 +57,7 @@ async fn serve(paths: VizPaths, port: u16) -> anyhow::Result<()> {
     println!("面板已启动: http://127.0.0.1:{port}   (Ctrl-C 退出)");
     println!("  层①  算子   ← {}", paths.gol_root.display());
     println!("  层②③ 真机   ← {}", paths.phonefarm_root.display());
-    println!("  设备锁       ← {}", paths.lock_root.display());
+    println!("  只读队列/历史目录 ← {}（不是执行锁域根）", paths.lock_root.display());
 
     let state = AppState {
         paths: Arc::new(paths),

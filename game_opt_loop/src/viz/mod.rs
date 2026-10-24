@@ -39,14 +39,14 @@ pub struct VizPaths {
     pub gol_root: PathBuf,
     /// `phonefarm` 仓库根 (层②③ 与真机任务)。
     pub phonefarm_root: PathBuf,
-    /// `devlock.d` / `devlock.log` 所在目录。
+    /// 只读全局队列目录（或显式历史覆盖），包含 `devlock.d` / `devlock.log`；不是执行锁域根。
     pub lock_root: PathBuf,
     /// 手机状态怎么取。`None` = 不取 (只看历史产物)。
     pub fleet: Option<fleet::FleetConfig>,
 }
 
 impl VizPaths {
-    /// 锁目录须先从 phonefarm 查询或显式指定；phonefarm 仓库默认与 GOL 同级,
+    /// 只读队列目录须先从 phonefarm 解析或显式指定历史覆盖；phonefarm 仓库默认与 GOL 同级,
     /// 这跟 `M0_report.json` 里记的 `phonefarm_binary: ../phonefarm/phonefarm` 一致。
     pub fn from_gol_root(gol_root: PathBuf, lock_root: PathBuf) -> Self {
         let phonefarm_root = gol_root
@@ -100,6 +100,7 @@ pub struct PathsView {
     pub game_opt_loop: String,
     pub phonefarm: String,
     pub phonefarm_present: bool,
+    /// 兼容字段名：只读队列/历史目录，不是传给 PF 的执行锁域根。
     pub lock_root: String,
 }
 

@@ -51,9 +51,9 @@ pub fn script_path(phonefarm_bin: &Path) -> Option<PathBuf> {
     })
 }
 
-/// 只读面板跟随所选 phonefarm 的锁目录，不根据主机或旧版本路径猜测。
+/// 只读面板跟随所选 phonefarm 的当前队列目录，不改变执行域根。
 /// 显式目录只覆盖面板读取的位置，不授予设备写入权限。
-pub fn resolve_root(phonefarm: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
+pub fn resolve_queue_dir(phonefarm: &Path, explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(root) = explicit {
         return Ok(std::path::absolute(root)?);
     }
@@ -90,7 +90,22 @@ pub fn resolve_root(phonefarm: &Path, explicit: Option<&Path>) -> Result<PathBuf
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .context("phonefarm 未返回绝对路径 storage.devlock_dir；请升级 phonefarm")?;
-    Ok(root)
+    let layout = match storage.get("layout_version") {
+        None => 1, // Older PF uses the legacy root layout.
+        Some(value) => value.as_u64().context("phonefarm storage.layout_version 无效")?,
+    };
+    if !matches!(layout, 1 | 2) {
+        bail!("phonefarm storage.layout_version 不支持: {layout}");
+    }
+    if layout == 1 && storage.get("queue_dir").is_none() {
+        return Ok(root);
+    }
+    storage["queue_dir"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .context("phonefarm 未返回绝对路径 storage.queue_dir；不能回退读取根目录 fence")
 }
 
 /// label 的来源: 显式参数 > 环境 `DEVLOCK_LABEL` > [`DEFAULT_LABEL`]。
@@ -317,7 +332,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn root_follows_selected_phonefarm_and_rejects_unready_or_old_storage() {
+    fn queue_directory_follows_selected_phonefarm_and_rejects_unready_or_old_storage() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("gol_lock_root_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -334,7 +349,22 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        assert_eq!(resolve_root(&phonefarm, None).unwrap(), root);
+        assert_eq!(resolve_queue_dir(&phonefarm, None).unwrap(), root);
+        let queue = root.join("v2/global");
+        std::fs::create_dir_all(&queue).unwrap();
+        std::fs::write(root.join("devlock.d"), r#"{"schema":"phonefarm/lease-domain-fence@2"}"#).unwrap();
+        let mut versioned = serde_json::json!({"storage": {
+            "schema_version": 1, "readiness": "ready", "devlock_dir": root,
+            "layout_version": 2, "domain_id": "fixture-domain", "queue_dir": queue
+        }});
+        std::fs::write(&response, versioned.to_string()).unwrap();
+        assert_eq!(resolve_queue_dir(&phonefarm, None).unwrap(), queue);
+        versioned["storage"].as_object_mut().unwrap().remove("queue_dir");
+        std::fs::write(&response, versioned.to_string()).unwrap();
+        assert!(resolve_queue_dir(&phonefarm, None).unwrap_err().to_string().contains("queue_dir"));
+        versioned["storage"]["queue_dir"] = serde_json::json!("relative/queue");
+        std::fs::write(&response, versioned.to_string()).unwrap();
+        assert!(resolve_queue_dir(&phonefarm, None).unwrap_err().to_string().contains("queue_dir"));
         for schema_version in [serde_json::Value::Null, serde_json::json!(2)] {
             std::fs::write(
                 &response,
@@ -344,7 +374,7 @@ mod tests {
                 .to_string(),
             )
             .unwrap();
-            assert!(resolve_root(&phonefarm, None)
+            assert!(resolve_queue_dir(&phonefarm, None)
                 .unwrap_err()
                 .to_string()
                 .contains("schema_version"));
@@ -358,23 +388,23 @@ mod tests {
                 .to_string(),
             )
             .unwrap();
-            assert!(resolve_root(&phonefarm, None)
+            assert!(resolve_queue_dir(&phonefarm, None)
                 .unwrap_err()
                 .to_string()
                 .contains(readiness));
         }
         std::fs::write(&response, "{\"status\":\"clear\"}").unwrap();
         assert!(
-            resolve_root(&phonefarm, None).is_err(),
+            resolve_queue_dir(&phonefarm, None).is_err(),
             "旧协议不能被猜成空闲"
         );
         std::fs::write(&phonefarm, "#!/bin/sh\nexit 7\n").unwrap();
-        assert!(resolve_root(&phonefarm, None)
+        assert!(resolve_queue_dir(&phonefarm, None)
             .unwrap_err()
             .to_string()
             .contains("失败"));
         assert_eq!(
-            resolve_root(&dir.join("missing-phonefarm"), Some(&root)).unwrap(),
+            resolve_queue_dir(&dir.join("missing-phonefarm"), Some(&root)).unwrap(),
             root
         );
         std::fs::remove_dir_all(dir).unwrap();
