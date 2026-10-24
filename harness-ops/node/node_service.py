@@ -1151,8 +1151,16 @@ def main():
     if node_remote:
         try:
             import shutil
-            remote = node_remote.Remote(node_remote.storage_from_leases(jobs.leases), adb=bins["adb"][0],
-                                        hdc=shutil.which("hdc"))
+            from remote_owner import PFRemote
+            pf_exe, pf_cwd = jobs.leases.bins["phonefarm"]
+            owner_backend = PFRemote(pf_exe, pf_cwd, jobs.leases.env,
+                                     os.path.join(jobs.data_root, "_remote"))
+            owner_backend.env.setdefault("ADB_BIN", bins["adb"][0] if os.path.isfile(bins["adb"][0])
+                                         else shutil.which("adb", path=owner_backend.env.get("PATH")) or "adb")
+            remote = node_remote.Remote(node_remote.storage_from_leases(jobs.leases),
+                adb=owner_backend.env.get("ADB_BIN", bins["adb"][0]),
+                hdc=owner_backend.env.get("HDC_BIN") or shutil.which("hdc", path=owner_backend.env.get("PATH")),
+                backend=owner_backend)
         except Exception as e:  # noqa: BLE001
             log(f"node_remote 起不来，/remote 不可用: {e!r}")
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
@@ -1161,6 +1169,8 @@ def main():
     try:
         srv.serve_forever()
     finally:
+        if remote:
+            remote.close()
         jobs.directory.close()
         jobs.games.close()
         fleet.close()

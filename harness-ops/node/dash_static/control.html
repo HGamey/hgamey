@@ -31,22 +31,31 @@
   <section class="ctl-devices" aria-labelledby="dev-h">
     <h2 id="dev-h">设备</h2>
     <ul id="devices" class="dev-list"></ul>
-    <p class="note">只有主人开放的设备可操作；实验占用时拒绝接管。</p>
+    <p class="note">只有主人开放且能力可用的设备可操作。实验占用、待恢复或状态未知时不能接管。</p>
+    <p class="note" id="capability-info"></p>
   </section>
   <section class="ctl-screen" aria-labelledby="scr-h">
     <h2 id="scr-h">屏幕 <span id="cur-serial"></span></h2>
-    <!-- 合同：实时画面模块若提供 window.HGLive.attach(wrap, serial) → {el, size(), detach()}，控制台在 el 上接点击/滑动；
-         否则用截图兜底。 -->
-    <div id="hg-screen-wrap" class="screen-wrap"><img id="hg-screen" alt="设备截图" draggable="false" hidden><p id="screen-empty" class="note">选择设备并接管后显示画面</p></div>
-    <p class="note">点击 = tap，拖动 = swipe（按住时长即滑动时长）。</p>
+    <div id="hg-screen-wrap" class="screen-wrap"><img id="hg-screen" alt="本会话最近一次完成的截图" draggable="false" hidden><p id="screen-empty" class="note">选择设备后可查看共享画面；采集本会话截图需要接管。</p></div>
+    <p class="note" id="frame-info">共享画面仅供查看，不能作为本会话的触控依据。</p>
+    <p class="note">显式采集本会话截图后可点击或拖动。操作后需重新采集，页面不会自动连续截图。</p>
   </section>
-  <section class="ctl-panel" aria-labelledby="ops-h">
+  <section id="ctl-panel" class="ctl-panel" aria-labelledby="ops-h">
     <h2 id="ops-h">操作</h2>
     <div class="lease">
       <div id="lease-info" class="lease-info">未接管</div>
       <button id="take" type="button" disabled>接管设备</button>
-      <button id="release" type="button" class="ghost" disabled>释放</button>
+      <button id="renew" type="button" class="ghost" disabled>续期</button>
+      <button id="release" type="button" class="ghost" disabled>请求交回</button>
+      <button id="check-session" type="button" class="ghost" disabled>查询会话</button>
     </div>
+    <p class="note" id="operation-info"></p>
+    <section class="request-receipt" aria-labelledby="receipt-h">
+      <h3 id="receipt-h">动作回执</h3>
+      <div class="row"><select id="request-select" aria-label="选择动作请求" disabled></select><button id="check-request" type="button" class="ghost" disabled>查询原请求</button></div>
+      <p id="request-info" class="note">尚无动作。接受请求只表示已记录，须查询实际完成状态。</p>
+      <pre id="out" class="out" tabindex="0" aria-label="动作回执与输出"></pre>
+    </section>
     <fieldset id="ops" disabled>
       <div class="keys">
         <button type="button" data-key="back">返回</button>
@@ -56,15 +65,19 @@
         <button type="button" data-key="del">删除</button>
         <button type="button" data-key="power">电源</button>
         <button type="button" data-key="wakeup">唤醒</button>
-        <button type="button" id="shot-now" class="ghost">刷新画面</button>
+        <button type="button" id="shot-now" class="ghost" data-action="screenshot">采集本会话截图</button>
       </div>
-      <form id="text-form" class="row"><input id="text" maxlength="1000" placeholder="输入文本（ASCII）" autocomplete="off"><button type="submit">发送</button></form>
-      <form id="app-form" class="row"><input id="pkg" placeholder="包名 com.example.app" autocomplete="off" spellcheck="false"><button type="submit" data-act="app_start">启动</button><button type="button" id="app-stop" class="ghost">强停</button></form>
-      <form id="shell-form" class="row"><input id="shell" placeholder="adb shell 命令，如 dumpsys window | grep mCurrentFocus" autocomplete="off" spellcheck="false"><button type="submit">执行</button></form>
-      <div class="row"><button type="button" id="logcat" class="ghost">logcat 尾部 200 行</button>
-        <label class="file">安装 APK <input id="apk" type="file" accept=".apk,.hap"></label></div>
-      <pre id="out" class="out" tabindex="0" aria-label="命令输出"></pre>
+      <form id="text-form" class="row"><input id="text" maxlength="1000" placeholder="输入文本（ASCII）" autocomplete="off"><button type="submit" data-action="text">发送</button></form>
+      <form id="app-form" class="row"><input id="pkg" placeholder="包名 com.example.app" autocomplete="off" spellcheck="false"><button type="submit" data-action="app_start">启动</button><button type="button" id="app-stop" class="ghost" data-action="app_stop">强停</button></form>
     </fieldset>
+    <details class="future-operations"><summary>尚未支持的操作</summary>
+      <p class="note">当前 PF 会话尚未提供 shell、文件传输、安装/卸载、logcat 或 HDC 操作。入口保留，不能绕过当前会话能力。</p>
+      <fieldset disabled aria-label="尚未支持的操作">
+        <form id="shell-form" class="row"><input id="shell" placeholder="shell 命令（当前不可用）" autocomplete="off" spellcheck="false"><button type="submit">执行</button></form>
+        <div class="row"><button type="button" id="logcat" class="ghost">logcat</button><label class="file">安装 APK/HAP <input id="apk" type="file" accept=".apk,.hap"></label></div>
+        <div class="row"><button type="button" class="ghost">上传文件</button><button type="button" class="ghost">下载文件</button><button type="button" class="ghost">卸载应用</button></div>
+      </fieldset>
+    </details>
   </section>
 </main>
 <script src="/dash/static/live_embed.js"></script>

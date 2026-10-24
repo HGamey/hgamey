@@ -303,7 +303,12 @@ class Dash:
         self.exps, self.exps_ver = [], "0"
         self.fails = collections.defaultdict(list)
         self.wake = threading.Event()
-        self.live = dash_live.LiveHub(lambda: self.monitor.snapshot()["lock"])  # 实时画面，见 dash_live.py
+        lease_reader = self.monitor.leases
+        pf_exe, pf_cwd = (lease_reader.bins["phonefarm"] if lease_reader else
+                          (os.path.join(self.pf_root, "phonefarm"), self.pf_root))
+        live_backend = dash_live.PFBackend(self.monitor, pf_exe, pf_cwd,
+            lease_reader.env if lease_reader else None, os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "live"))
+        self.live = dash_live.LiveHub(lambda: self.monitor.snapshot()["lock"], live_backend)
         threading.Thread(target=self._scanner, daemon=True, name="dash-scan").start()
 
     # ── 认证 ──
