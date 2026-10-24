@@ -32,6 +32,7 @@
 """
 import collections, glob, hashlib, hmac, json, os, re, threading, time
 from urllib.parse import parse_qs
+from node_directory import DirectoryError
 
 import dash_goals
 import sqlite3
@@ -458,6 +459,12 @@ class Dash:
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:
+            if sub[:2] == ["api", "nodes"] and len(sub) in (2, 3):
+                if len(body) > MAX_REQUEST:
+                    return self._send(h, 413, {"error": "node registration exceeds 64 KiB"})
+                if len(sub) == 2:
+                    return self._send(h, 201, self.job_service.directory.create(data))
+                return self._send(h, 200, self.job_service.directory.update(sub[2], data))
             if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["execution", "reconcile"]:
                 if len(body) > MAX_REQUEST:
                     return self._send(h, 413, {"error": "execution reconciliation exceeds 64 KiB"})
@@ -495,6 +502,8 @@ class Dash:
                 r = self.goals.confirm(str(data.get("id", "")), data.get("goal_md"), ip)
             else:
                 return self._send(h, 404, {"error": "not found"})
+        except DirectoryError as e:
+            return self._send(h, e.status, {"error": str(e)})
         except sqlite3.Error as e:
             self.job_service.dispatch.last_error = f"{type(e).__name__}: {e}"
             return self._send(h, 503, {"error": "无法确认作业存储提交；请先查询任务和队列状态"})

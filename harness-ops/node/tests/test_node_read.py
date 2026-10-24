@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from http.server import ThreadingHTTPServer
@@ -48,6 +49,7 @@ class NodeReadTests(unittest.TestCase):
         self.thread.start()
 
     def tearDown(self):
+        self.jobs.directory.close()
         self.board.monitor.close()
         self.server.shutdown()
         self.server.server_close()
@@ -90,6 +92,79 @@ class NodeReadTests(unittest.TestCase):
         separate = Jobs(str(self.root), {}, str(self.root / "runtime"))
         self.assertEqual(separate.dir, str(self.root / "runtime" / "jobs"))
         self.assertTrue((self.root / "_jobs").is_dir())
+
+    def test_registered_node_web_and_token_clients_share_cached_directory(self):
+        remote_root = self.root / "peer"
+        remote_root.mkdir()
+        remote_jobs = Jobs(str(remote_root), {})
+        remote_node = NodeRead(remote_jobs, remote_jobs.data_root, str(remote_root))
+        remote_fleet = FleetState(str(remote_root), str(remote_root / "locks"), str(remote_root / "shots"))
+        remote_token = "isolated-directory-peer-admin"
+        remote_server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(
+            NoMcp(), remote_jobs, remote_token, node=remote_node, fleet=remote_fleet))
+        remote_thread = threading.Thread(target=remote_server.serve_forever, daemon=True)
+        remote_thread.start()
+        view = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}",
+                "X-HG": "1", "Content-Type": "application/json"}
+        steer = {**view, "Cookie": view["Cookie"] + "; " + dash.STEER_COOKIE + "=" +
+                 self.board._cookie_val(self.board._steer_pass(), b"hgamey-steer-v1")}
+        credential = readonly_token(remote_token)
+        body = json.dumps({"name": "peer", "url": "http://127.0.0.1:" + str(remote_server.server_port),
+                           "token": credential, "tags": ["isolated"]})
+
+        def settled():
+            until = time.monotonic() + 4
+            while time.monotonic() < until:
+                entry = self.get_json("/nodes/peer")
+                if not entry["refreshing"]:
+                    return entry
+                time.sleep(.02)
+            self.fail("isolated node directory refresh did not settle")
+
+        try:
+            self.assertEqual(self.request("/nodes", method="POST", body=body,
+                                          headers={"Content-Type": "application/json"})[0], 401)
+            self.assertEqual(self.request("/dash/api/nodes", method="POST", body=body, headers=view)[0], 403)
+            status, _, created = self.request("/dash/api/nodes", method="POST", body=body, headers=steer)
+            self.assertEqual(status, 201, created)
+            self.assertNotIn(credential, created.decode())
+            self.assertIsNone(json.loads(created)["snapshot"])
+            self.assertIsNone(self.get_json("/fleet?cached=1")["devices"])
+            self.assertIsNone(self.board.monitor._thread)
+            self.get_json("/nodes?refresh=1")
+            ready = settled()
+            self.assertEqual(ready["connection"]["status"], "ready", ready)
+            self.assertEqual(ready["node_id"], remote_node.node_id)
+            self.assertIsNone(ready["snapshot"]["fleet"]["devices"])
+            self.assertIsNone(remote_fleet._thread, "directory polling must not activate device sampler")
+            self.assertEqual(ready, self.get_json("/dash/api/nodes/peer", headers=view))
+            self.assertEqual(self.get_json("/nodes")["local"]["node_id"], self.node.node_id)
+            self.assertEqual(ready["snapshot"]["identity"]["storage"]["data_root"], remote_jobs.data_root)
+
+            # Explicit device refresh uses the existing remote sampler route, not a job or MCP call.
+            sampled = {**remote_fleet.snapshot(), "devices": [], "sampled_at": time.time(), "stale": False}
+            with patch.object(remote_fleet, "request", return_value=sampled) as request:
+                self.get_json("/nodes/peer?devices=1")
+                self.assertEqual(settled()["snapshot"]["fleet"]["devices"], [])
+                request.assert_called_once_with(5.0)
+
+            update = json.dumps({"revision": ready["revision"], "enabled": False})
+            code, _, data = self.request("/nodes/peer", method="POST", token=self.admin,
+                                         body=update, headers={"Content-Type": "application/json"})
+            self.assertEqual(code, 200, data)
+            disabled = json.loads(data)
+            self.assertEqual(disabled["connection"]["status"], "disabled")
+            self.assertTrue(disabled["stale"])
+            self.assertEqual(disabled["snapshot"]["identity"]["node_id"], remote_node.node_id)
+            self.assertEqual(self.request("/nodes/peer", method="POST", token=self.admin,
+                                          body=update, headers={"Content-Type": "application/json"})[0], 409)
+            self.assertEqual(self.get_json("/nodes/peer?devices=1")["connection"]["status"], "disabled")
+        finally:
+            remote_jobs.directory.close()
+            remote_fleet.close()
+            remote_server.shutdown()
+            remote_server.server_close()
+            remote_thread.join()
 
     def test_arbitrary_old_failed_jobs_are_paginated_and_searchable(self):
         for i in range(1, 206):

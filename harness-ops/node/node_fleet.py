@@ -176,7 +176,8 @@ class FleetState:
                 command += ["--lock-dir", self.lock_dir]
             if screenshots:
                 command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
-            env = {k: v for k, v in os.environ.items() if k != "DEVLOCK_LABEL"}
+            configured = self.leases.env if self.leases and self.leases.env is not None else os.environ
+            env = {k: v for k, v in configured.items() if k not in {"DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"}}
             fleet, error, deferred = None, None, None
             try:
                 result = subprocess.run(command, cwd=cwd, env=env, capture_output=True,

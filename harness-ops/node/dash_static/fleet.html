@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>本节点设备 · HGamey</title>
+<title>节点与设备 · HGamey</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/dash/static/app.css">
 <link rel="stylesheet" href="/dash/static/jobs.css">
@@ -16,24 +16,53 @@
   <div class="brand-row">
     <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a>
     <span class="brand-name">HGamey</span>
-    <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet" aria-current="page">本节点设备</a><a href="/dash/jobs">任务与结果</a><a href="/dash/maint">维护</a></nav>
+    <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet" aria-current="page">节点与设备</a><a href="/dash/jobs">任务与结果</a><a href="/dash/maint">维护</a></nav>
   </div>
   <div class="top-right">
-    <button id="refresh-fleet" class="ghost" type="button">刷新快照</button>
+    <button id="refresh-fleet" class="ghost" type="button">刷新目录与快照</button>
     <form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form>
   </div>
 </header>
 <main class="jobs-page fleet-page">
   <div class="page-heading">
-    <div><p class="eyebrow">研究工作台</p><h1>本节点设备</h1><p class="page-description">了解连接到当前节点的设备，以及共享锁的占用情况。</p></div>
-    <a class="workspace-link" href="/dash/jobs">查看任务与结果 <span aria-hidden="true">→</span></a>
+    <div><p class="eyebrow">研究工作台</p><h1>节点与设备</h1><p class="page-description">选择节点，查看已有设备、队列与租约观测。节点可达不代表设备存在或可用。</p></div>
+    <a id="node-jobs-link" class="workspace-link" href="/dash/jobs">查看所选节点任务 <span aria-hidden="true">→</span></a>
   </div>
+  <section class="directory-panel" aria-labelledby="directory-heading">
+    <div class="section-heading"><h2 id="directory-heading">节点目录</h2><button id="register-open" class="ghost" type="button" disabled>登记节点</button></div>
+    <p id="directory-message" class="note" role="status">正在读取目录…</p>
+    <ul id="node-directory" class="node-directory" aria-label="选择节点"></ul>
+    <div class="directory-access"><p id="access-message" class="note" role="status">正在读取操作权限…</p><button id="access-toggle" class="ghost" type="button" disabled>解锁目录操作</button></div>
+    <form id="unlock-form" class="unlock-form" autocomplete="off" hidden>
+      <label for="steer-password">掌舵密码</label><input id="steer-password" type="password" autocomplete="off" required>
+      <div class="directory-actions"><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-close" class="ghost" type="button">取消</button></div>
+      <p id="unlock-message" class="note" role="status"></p>
+    </form>
+    <form id="registration-form" class="registration-form" autocomplete="off" hidden>
+      <div class="section-heading"><h3 id="registration-heading">登记节点</h3><button id="registration-close" class="ghost" type="button">关闭</button></div>
+      <div class="registration-fields">
+        <label>登记名<input id="registration-name" pattern="[a-z0-9_-]{1,64}" maxlength="64" required aria-describedby="registration-name-help"><span id="registration-name-help" class="field-help">小写字母、数字、下划线或连字符；保存后不可改，local 为本节点保留。</span></label>
+        <label>节点 URL<input id="registration-url" type="url" placeholder="https://node.example.com" required></label>
+        <label>标签<input id="registration-tags" placeholder="用逗号分隔"></label>
+        <label>备注<input id="registration-note"></label>
+        <label class="wide-field">远端只读凭据<input id="registration-token" type="password" autocomplete="new-password" aria-describedby="credential-help"><span id="credential-help" class="field-help">空白不发送；更新时保留原凭据。凭据不会回显或存入浏览器存储。</span></label>
+        <label id="credential-clear-field" class="credential-clear wide-field" hidden><input id="registration-clear-token" type="checkbox"> 明确清除已保存的远端凭据</label>
+      </div>
+      <details class="registration-extra"><summary>保留旧配置元数据</summary><div class="registration-fields"><label>SSH 标识<input id="registration-ssh"></label><label>Goals 目录<input id="registration-goals-dir"></label></div><p class="note">仅保存元数据，本页不会执行 SSH 或读取此目录。</p></details>
+      <p id="registration-revision" class="note"></p>
+      <div class="directory-actions"><button id="registration-save" class="ghost primary" type="submit">保存登记</button><button id="registration-reload" class="ghost" type="button" hidden>读取已保存配置（替换草稿）</button></div>
+      <p id="registration-message" class="note" role="status"></p>
+    </form>
+  </section>
   <section class="node-card" aria-labelledby="node-heading">
     <div class="node-context">
-      <div><h2 id="node-heading">当前节点</h2><p id="node-summary" class="node-summary">正在读取身份…</p></div>
+      <div><h2 id="node-heading">所选节点</h2><p id="node-summary" class="node-summary">正在读取身份…</p></div>
       <span id="node-updated" class="muted"></span>
     </div>
     <p id="node-message" class="note" role="status"></p>
+    <div id="remote-actions" class="directory-actions" hidden><button id="remote-devices" class="ghost" type="button">请求远端设备采样</button><button id="registration-edit" class="ghost" type="button" disabled>更新登记</button><button id="registration-toggle" class="ghost" type="button" disabled>停用登记</button></div>
+    <p id="remote-action-message" class="note" role="status"></p>
+    <div id="disable-confirm" class="disable-confirm" hidden><p>停用后保留历史观测，仅停止此目录的远端探测；不会停止远端任务或释放设备。</p><div class="directory-actions"><button id="disable-submit" class="ghost danger" type="button">确认停用登记</button><button id="disable-close" class="ghost" type="button">取消</button></div></div>
     <details id="node-details" class="node-details" hidden><summary>节点信息与数据位置</summary><dl id="node-info" class="facts"></dl></details>
   </section>
   <div class="refresh-bar">
@@ -58,6 +87,7 @@
       <p id="lock-message" class="lock-message">正在读取节点上的锁记录。</p>
       <dl id="lock-info" class="facts lock-facts"></dl>
       <div class="lock-identities"><h3>实例与设备租约</h3><p id="lock-identities-empty" class="note">尚未取得实例记录。</p><ul id="lock-leases"></ul></div>
+      <details id="node-queue-details" class="lock-details"><summary id="node-queue-summary">节点任务队列</summary><p id="node-queue-message" class="note"></p><ul id="node-job-queue" class="lock-events"></ul></details>
       <details class="lock-details">
         <summary id="queue-summary">队列与最近事件</summary>
         <h3>排队记录</h3><ol id="lock-queue" class="lock-queue"></ol><p id="queue-empty" class="note">尚未读取</p>
@@ -68,7 +98,7 @@
   </div>
   <p id="sampling-policy" class="sampling-policy">页面刷新读取共享快照；设备采样由节点按锁状态与采样间隔安排。</p>
 </main>
-<footer class="foot">本页只展示当前节点，不截图、不控制设备、不创建任务。能力声明与本次采样结果分开展示。</footer>
+<footer class="foot">远端日常读取目录缓存；设备采样需明确请求。登记不会分发任务或迁移数据。能力声明、节点可达与设备观测分开展示。</footer>
 <script src="/dash/static/fleet.js"></script>
 </body>
 </html>

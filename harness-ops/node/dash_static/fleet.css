@@ -82,3 +82,40 @@
 
 .sample-line { margin-bottom: 4px; }
 .sample-attempt.read-time { margin: 0 0 14px; overflow-wrap: anywhere; }
+
+.directory-panel { margin-bottom: 24px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 20px; }
+.node-directory { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 16px 0 20px; padding: 0; list-style: none; }
+.node-directory li { min-width: 0; }
+.node-choice { width: 100%; height: 100%; padding: 14px; text-align: left; font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.node-choice:hover { background: var(--panel); }
+.node-choice[aria-current="true"] { background: var(--blue-soft); border-color: var(--blue); box-shadow: inset 3px 0 0 var(--blue); }
+.node-choice-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.node-choice-head strong { font-size: 14px; overflow-wrap: anywhere; }
+.node-choice-meta { display: block; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin-top: 6px; }
+.directory-access { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 16px; border-top: 1px solid var(--grid); padding-top: 14px; }
+.directory-access .note { margin: 0; }
+.directory-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.registration-form { border-top: 1px solid var(--line); padding-top: 20px; margin-top: 20px; }
+.registration-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.registration-fields label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--ink2); font-size: 13px; }
+.registration-fields .wide-field { grid-column: 1 / -1; }
+.registration-fields input { width: 100%; min-width: 0; min-height: 38px; padding: 8px 10px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+.registration-fields input:disabled { background: var(--panel); color: var(--muted); }
+.registration-fields .credential-clear { flex-direction: row; align-items: center; }
+.registration-fields input[type="checkbox"] { width: 16px; min-height: 16px; accent-color: var(--blue); }
+.registration-extra { margin-top: 16px; font-size: 13px; }
+.registration-extra summary { cursor: pointer; color: var(--ink2); padding: 4px 0; }
+.disable-confirm { padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; margin-top: 14px; background: var(--card); }
+.disable-confirm p { font-size: 13px; margin: 0; }
+.fleet-view button:disabled:not([aria-busy="true"]) { cursor: not-allowed; }
+.fleet-view .task-error { color: var(--bad-ink); }
+.fleet-view .node-context { flex-wrap: wrap; }
+.fleet-view .note:empty { display: none; }
+@media (max-width: 1000px) { .node-directory { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) {
+  .directory-panel { padding: 18px; }
+  .node-directory, .registration-fields { grid-template-columns: minmax(0, 1fr); }
+  .directory-actions { gap: 8px; }
+  .directory-actions button { white-space: normal; }
+  .fleet-view .top-right { width: auto; }
+}

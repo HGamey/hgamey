@@ -1,10 +1,16 @@
-/* One node, one shared snapshot. This page never captures screens or submits jobs. */
+/* Directory reads use host caches. Remote device sampling is an explicit action. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
   const AUTO_MS = 10000;
   let revision = 0, controller = null, timer = null, loading = false, disposed = false;
-  let latest = null, receivedAt = 0, lastStartedAt = 0, nodeLoaded = false, authLost = false;
+  let latest = null, receivedAt = 0, lastStartedAt = 0, authLost = false;
+  let localIdentity = null, localQueue = null, localQueueError = '', localReceivedAt = 0, directoryKnown = false, directoryFailed = false;
+  let selected = new URLSearchParams(location.hash.slice(1)).get('node') || 'local', entries = new Map();
+  if (!/^[a-z0-9_-]{1,64}$/.test(selected)) selected = 'local';
+  let access = null, accessBusy = false, accessError = '', editor = null, writing = false, toggleDraft = null;
+  const uncertainUpdates = new Set();
+  const CONNECTION = {unverified: '尚未核验', ready: '节点协议可达', unavailable: '连接不可用', unauthorized: '凭据未获授权', incompatible: '节点协议不兼容', identity_mismatch: '节点身份不匹配', disabled: '登记已停用', no_credentials: '未配置凭据'};
   const text = value => value == null || value === '' ? '未知' : String(value);
   const numeric = (value, unit) => typeof value === 'number' && Number.isFinite(value) ? `${value}${unit}` : '未知';
   const time = value => value == null ? '未记录' : new Date(value * 1000).toLocaleString();
@@ -22,15 +28,37 @@
   }
   function facts(node, rows) { node.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
   function badge(node, value, kind = '') { node.textContent = value; node.className = `task-state ${kind}`; }
+  function message(id, value, error = false) { $(id).textContent = value; $(id).classList.toggle('task-error', error); }
+  function remoteEntry() { return selected === 'local' ? null : entries.get(selected); }
+  function entryStale(entry) { return directoryFailed || entry.stale || !entry.enabled || entry.connection?.status !== 'ready' || !entry.snapshot || Date.now() / 1000 - entry.snapshot.at > 30; }
+  function nodeJobsURL(entry = remoteEntry(), job = '') {
+    let base = '/dash/jobs';
+    if (selected !== 'local') {
+      if (!entry?.snapshot?.url) return null;
+      try {
+        const url = new URL(entry.snapshot.url);
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+        url.pathname = url.pathname.replace(/\/$/, '') + '/dash/jobs'; url.search = ''; url.hash = '';
+        base = url.href;
+      } catch (_) { return null; }
+    }
+    return base + (job ? `#job=${encodeURIComponent(job)}` : '');
+  }
+  function jobLink(id) {
+    const url = nodeJobsURL(remoteEntry(), id), link = el(url ? 'a' : 'span', `任务 ${id}`);
+    if (url) { link.href = url; if (selected !== 'local') { link.target = '_blank'; link.rel = 'noopener noreferrer'; } }
+    return link;
+  }
   function busy(value) {
     loading = value;
     $('refresh-fleet').disabled = value;
     $('refresh-fleet').setAttribute('aria-busy', String(value));
-    $('refresh-fleet').textContent = value ? '读取中…' : '刷新快照';
+    $('refresh-fleet').textContent = value ? '读取中…' : '刷新目录与快照';
+    renderManagement();
   }
   function refreshNote() {
     $('refresh-note').textContent = authLost ? '登录已失效，自动刷新已暂停。' : document.hidden ? '页面不可见，自动刷新已暂停。' :
-      !$('auto-refresh').checked ? '自动刷新已关闭，可手动读取快照。' : '可见时每 10 秒刷新页面快照；设备按节点策略采样。';
+      !$('auto-refresh').checked ? '自动刷新已关闭，可手动读取目录与快照。' : '可见时每 10 秒读取目录并请求到期缓存；远端设备采样需明确点击。';
   }
   function schedule() {
     clearTimeout(timer);
@@ -38,16 +66,162 @@
     if (disposed || document.hidden || authLost || !$('auto-refresh').checked) return;
     timer = setTimeout(() => refresh(), Math.max(AUTO_MS, lastStartedAt + AUTO_MS - Date.now()));
   }
-  async function json(path, signal) {
-    const response = await fetch(path, {credentials: 'same-origin', cache: 'no-store', signal});
+  async function json(path, signal, body) {
+    const response = await fetch(path, {credentials: 'same-origin', cache: 'no-store', signal,
+      ...(body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify(body)})});
     if (response.status === 401 || response.status === 403 || (response.redirected && new URL(response.url).pathname === '/dash/login')) {
       const error = new Error('登录已失效，请重新登录后刷新。');
       error.auth = true;
+      error.status = response.status;
       throw error;
     }
-    if (!response.ok) throw new Error(`读取失败（HTTP ${response.status}），请重试。`);
-    if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('节点未返回 JSON，请检查登录或连接。');
-    return response.json();
+    if (!(response.headers.get('content-type') || '').includes('application/json')) {
+      const error = new Error(response.ok ? '节点未返回 JSON，请检查登录或连接。' : `请求失败（HTTP ${response.status}）`);
+      if (!response.ok) error.status = response.status;
+      throw error;
+    }
+    const value = await response.json();
+    if (!response.ok) {
+      const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || `请求失败（HTTP ${response.status}）`);
+      error.status = response.status; throw error;
+    }
+    return value;
+  }
+  async function post(path, body) {
+    const pending = new AbortController(), timeout = setTimeout(() => pending.abort(), 15000);
+    try { return await json(path, pending.signal, body); } finally { clearTimeout(timeout); }
+  }
+  function renderDirectory() {
+    const local = el('li'), button = el('button', null, 'node-choice');
+    button.type = 'button'; button.setAttribute('aria-current', String(selected === 'local'));
+    button.append(el('strong', '本节点'), el('span', text(localIdentity?.node_id), 'node-choice-meta'));
+    button.addEventListener('click', () => selectNode('local')); local.append(button);
+    const rows = [local];
+    for (const entry of entries.values()) {
+      const row = el('li'), choice = el('button', null, 'node-choice'), head = el('div', null, 'node-choice-head');
+      choice.type = 'button'; choice.setAttribute('aria-current', String(selected === entry.name));
+      const state = el('span'); badge(state, CONNECTION[entry.connection?.status] || '连接状态未知', entry.connection?.status === 'ready' && !entryStale(entry) ? '' : 'unknown');
+      head.append(el('strong', entry.name), state);
+      const devices = entry.snapshot?.fleet?.devices;
+      choice.append(head, el('span', `${text(entry.node_id)}${entry.tags?.length ? ` · ${entry.tags.join(' / ')}` : ''}`, 'node-choice-meta'),
+        el('span', Array.isArray(devices) ? `上次设备记录：${devices.length} 台${entryStale(entry) ? ' · 目录观测已陈旧' : ''}` : '尚无设备列表，不能据此判定零设备', 'node-choice-meta'),
+        el('span', `最近成功：${time(entry.connection?.last_seen_at)}${entry.refreshing ? ' · 目录刷新已排队或执行中' : ''}`, 'node-choice-meta'));
+      choice.addEventListener('click', () => selectNode(entry.name)); row.append(choice); rows.push(row);
+    }
+    $('node-directory').replaceChildren(...rows);
+  }
+  function renderManagement() {
+    const entry = remoteEntry(), writable = directoryKnown && access?.steer && !accessBusy && !writing;
+    $('register-open').disabled = !writable;
+    $('registration-edit').disabled = !entry || !writable;
+    $('registration-toggle').disabled = !entry || !writable || uncertainUpdates.has(selected);
+    $('registration-toggle').textContent = entry?.enabled ? '停用登记' : '启用登记';
+    $('remote-actions').hidden = selected === 'local';
+    $('remote-devices').disabled = !entry || !entry.enabled || !entry.credential_present || entry.refreshing || loading || authLost;
+    $('remote-devices').setAttribute('aria-busy', String(!!entry?.refreshing));
+    $('remote-devices').textContent = entry?.refreshing ? '目录请求处理中…' : '请求远端设备采样';
+    $('disable-submit').disabled = !writable || uncertainUpdates.has(selected);
+    $('access-toggle').disabled = accessBusy || writing || !access?.steer_configured;
+    $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定目录操作' : '解锁目录操作';
+    $('access-toggle').setAttribute('aria-busy', String(accessBusy));
+    message('access-message', accessError || (accessBusy ? '正在核对目录操作权限…' : !access ? '权限尚未取得，仅查看目录。' : !access.steer_configured ? '本节点未配置掌舵密码，目录保持只读。' : access.steer ? '已解锁登记、更新和停用；不改变远端任务。' : '当前只读；目录查询与明确设备采样可用，修改登记需解锁。'), !!accessError);
+    for (const id of ['registration-name', 'registration-url', 'registration-tags', 'registration-note', 'registration-token', 'registration-clear-token', 'registration-ssh', 'registration-goals-dir']) $(id).disabled = !writable || !!editor?.needsRead;
+    $('registration-name').disabled = !writable || !!editor?.revision || !!editor?.needsRead;
+    $('registration-token').disabled ||= $('registration-clear-token').checked;
+    $('registration-save').disabled = !writable || !editor || !!editor.needsRead;
+    $('registration-save').setAttribute('aria-busy', String(writing));
+    $('registration-save').textContent = writing ? '正在保存…' : editor?.revision != null ? '保存更新' : '保存登记';
+    $('registration-reload').hidden = !editor?.needsRead;
+    $('registration-reload').disabled = writing || loading;
+    $('registration-close').disabled = writing;
+  }
+  async function loadAccess() {
+    accessBusy = true; renderManagement();
+    try { access = await json('/dash/api/access'); accessError = ''; }
+    catch (error) { access = null; accessError = error.message; }
+    finally { accessBusy = false; renderManagement(); }
+  }
+  function closeUnlock() { $('unlock-form').hidden = true; $('steer-password').value = ''; }
+  async function setAccess(unlock) {
+    if (accessBusy || writing) return;
+    const body = unlock ? {pw: $('steer-password').value} : {};
+    $('steer-password').value = ''; accessBusy = true; renderManagement();
+    $('unlock-submit').disabled = true; message('unlock-message', '');
+    try { await post(`/dash/api/steer/${unlock ? 'unlock' : 'lock'}`, body); closeUnlock(); await loadAccess(); }
+    catch (error) { access = null; accessError = error.message; message('unlock-message', error.message, true); }
+    finally { accessBusy = false; $('unlock-submit').disabled = false; renderManagement(); }
+  }
+  function closeEditor() {
+    if (writing) return;
+    editor = null; $('registration-token').value = ''; $('registration-form').hidden = true;
+  }
+  function openEditor(entry = null) {
+    if (writing || !access?.steer || !directoryKnown) return;
+    editor = {name: entry?.name || '', revision: entry?.revision ?? null};
+    $('registration-form').hidden = false;
+    $('registration-heading').textContent = entry ? `更新登记 · ${entry.name}` : '登记节点';
+    for (const [id, value] of [['name', entry?.name], ['url', entry?.url], ['tags', entry?.tags?.join(', ')], ['note', entry?.note], ['ssh', entry?.ssh], ['goals-dir', entry?.goals_dir]]) $('registration-' + id).value = value || '';
+    $('registration-token').value = ''; $('registration-clear-token').checked = false;
+    $('credential-clear-field').hidden = !entry;
+    $('credential-help').textContent = `${entry ? `当前${entry.credential_present ? '已有' : '没有'}远端凭据。` : ''}空白不发送；更新时保留原凭据。凭据不回显、不存入浏览器存储。`;
+    $('registration-revision').textContent = entry ? `编辑版本：${entry.revision}。保存时核对版本，不覆盖并行修改。` : '登记后可刷新目录核验远端身份；保存登记不会主动采样设备。';
+    message('registration-message', ''); renderManagement();
+    $(entry ? 'registration-url' : 'registration-name').focus();
+  }
+  async function saveRegistration() {
+    if ($('registration-save').disabled) return;
+    const name = $('registration-name').value.trim(), attempt = editor;
+    if (!/^[a-z0-9_-]{1,64}$/.test(name) || name === 'local') { message('registration-message', '登记名格式不正确或使用了保留名 local。', true); return; }
+    const body = {url: $('registration-url').value.trim(), tags: $('registration-tags').value.split(',').map(s => s.trim()).filter(Boolean), note: $('registration-note').value, ssh: $('registration-ssh').value, goals_dir: $('registration-goals-dir').value};
+    if (attempt.revision == null) body.name = name; else body.revision = attempt.revision;
+    const token = $('registration-token').value.trim(); $('registration-token').value = '';
+    if ($('registration-clear-token').checked) body.token = null; else if (token) body.token = token;
+    attempt.name = name; suspend(); writing = true; renderManagement(); message('registration-message', '正在保存，写入不会自动重试…');
+    try {
+      const entry = await post(attempt.revision == null ? '/dash/api/nodes' : `/dash/api/nodes/${name}`, body);
+      entries.set(entry.name, entry);
+      if (editor === attempt) {
+        attempt.revision = entry.revision; $('credential-clear-field').hidden = false; $('registration-clear-token').checked = false;
+        message('registration-message', '登记已保存。刷新目录核对节点身份；保存不代表远端可达或设备存在。'); $('registration-revision').textContent = `已保存版本：${entry.revision}`;
+        $('credential-help').textContent = `当前${entry.credential_present ? '已有' : '没有'}远端凭据。空白不发送；更新时保留原凭据。凭据不回显、不存入浏览器存储。`;
+      }
+      renderDirectory(); if (selected === entry.name) renderSelected();
+    } catch (error) {
+      if (editor === attempt) {
+        attempt.needsRead = !error.status || error.status >= 500 || error.status === 409;
+        message('registration-message', `${error.message} ${attempt.needsRead ? '请先读取已保存配置；不会自动重试或覆盖。凭据输入已清空。' : '未确认保存，请检查输入或操作权限。凭据输入已清空。'}`, true);
+      }
+      if (error.auth) await loadAccess();
+    } finally { writing = false; renderManagement(); schedule(); }
+  }
+  async function reloadRegistration() {
+    if (!editor?.needsRead || writing || loading) return;
+    const attempt = editor; suspend(); writing = true; renderManagement();
+    try {
+      const entry = await json(`/dash/api/nodes/${attempt.name}`); entries.set(entry.name, entry);
+      if (editor === attempt) { writing = false; openEditor(entry); message('registration-message', '已读取已保存配置并替换草稿。请核对内容；没有重新发送写入。'); }
+      renderDirectory(); if (selected === entry.name) renderSelected();
+    } catch (error) {
+      if (editor === attempt) {
+        if (error.status === 404 && attempt.revision == null) { attempt.needsRead = false; message('registration-message', '当前未找到此登记。请核对参数后显式保存；凭据需要重新填写。'); }
+        else message('registration-message', `读取未完成：${error.message}。没有重新写入。`, true);
+      }
+    } finally { writing = false; renderManagement(); schedule(); }
+  }
+  async function toggleRegistration() {
+    const attempt = toggleDraft;
+    if (!attempt || writing || !access?.steer || uncertainUpdates.has(attempt.name)) return;
+    suspend(); writing = true; renderManagement();
+    try {
+      const entry = await post(`/dash/api/nodes/${attempt.name}`, {revision: attempt.revision, enabled: !attempt.enabled});
+      entries.set(entry.name, entry);
+      if (selected === entry.name) { $('disable-confirm').hidden = true; message('remote-action-message', entry.enabled ? '登记已启用。可刷新目录核对状态。' : '登记已停用，历史观测保留；远端任务不受影响。'); renderSelected(); }
+      renderDirectory();
+    } catch (error) {
+      if (!error.status || error.status >= 500 || error.status === 409) uncertainUpdates.add(attempt.name);
+      if (selected === attempt.name) { $('disable-confirm').hidden = true; message('remote-action-message', `${error.message}。请刷新目录核对结果，不会自动重试。`, true); }
+      if (error.auth) await loadAccess();
+    } finally { toggleDraft = null; writing = false; renderManagement(); schedule(); }
   }
   function processPolicyFacts(node) {
     if (!node?.capabilities?.includes('jobs.execution-policy-v1')) return [['进程执行策略能力', '未提供，执行范围未知']];
@@ -57,16 +231,15 @@
       return [`${label}（${key}）`, `${description}${policy?.reason ? `。${policy.reason}` : ''}`];
     })];
   }
-  function renderNode(node) {
-    nodeLoaded = true;
-    $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`;
-    $('node-updated').textContent = `读取于 ${new Date().toLocaleTimeString()}`;
-    $('node-message').textContent = '';
-    $('node-message').classList.remove('task-error');
+  function renderNode(node, entry = null) {
+    $('node-summary').textContent = `${entry ? `${entry.name} · ` : '本节点 · '}${text(node?.node_id || entry?.node_id)}${node?.host?.hostname ? ` · ${node.host.hostname}` : ''}`;
+    $('node-updated').textContent = entry ? `目录快照：${time(entry.snapshot?.at)}` : `读取于 ${new Date().toLocaleTimeString()}`;
+    message('node-message', entry ? `${CONNECTION[entry.connection?.status] || '连接状态未知'}${entry.refreshing ? ' · 目录刷新已排队或执行中' : ''}。最近尝试：${time(entry.connection?.attempted_at)}；最近成功：${time(entry.connection?.last_seen_at)}。${entry.connection?.error ? ` ${typeof entry.connection.error === 'string' ? entry.connection.error : JSON.stringify(entry.connection.error)}` : ''}${entryStale(entry) ? ' 当前连接或目录观测已陈旧，以下为最后取得的信息。' : ''}` : '', !!entry?.connection?.error);
     $('node-details').hidden = false;
-    facts($('node-info'), [['节点 ID', node.node_id], ['访问入口', location.origin], ['宿主系统', node.host?.platform],
-      ['服务版本', `${text(node.service?.revision)}${node.service?.dirty === true ? '（有本地修改）' : ''}`],
-      ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root], ...processPolicyFacts(node)]);
+    facts($('node-info'), [...(entry ? [['登记名', entry.name], ['配置版本', entry.revision], ['配置入口', entry.url], ['快照来源', entry.snapshot?.url], ['远端凭据', entry.credential_present ? '已保存（不回显）' : '未配置'], ['标签', entry.tags?.join('、')], ['备注', entry.note], ['SSH 元数据', entry.ssh], ['Goals 目录元数据', entry.goals_dir]] : []),
+      ['节点 ID', node?.node_id || entry?.node_id], ['访问入口', entry ? entry.snapshot?.url : location.origin], ['宿主系统', node?.host?.platform],
+      ['服务版本', `${text(node?.service?.revision)}${node?.service?.dirty === true ? '（有本地修改）' : ''}`],
+      ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root], ...processPolicyFacts(node)]);
   }
   function hostProcessFacts(entry) {
     if (entry.role !== 'device_lease') return [];
@@ -75,23 +248,23 @@
     return [['宿主 owner 实例', status], ...(host ? [['宿主 PID', host.pid], ['宿主进程启动身份', host.start], ['宿主 boot ID', host.host_boot_id], ['宿主身份原因', host.reason]] : []),
       ['身份核查范围', '仅宿主 owner 实例；不证明原进程组已结束或设备已恢复。']];
   }
-  function renderLock(lock) {
+  function renderLock(lock, historical = false, snapshotAt = null) {
     const lease = lock?.lease, entries = Array.isArray(lease?.entries) ? lease.entries : [];
     const blocked = lease?.status === 'blocked';
     const unknown = lease?.status === 'unknown' || (lock?.status !== 'free' && lock?.status !== 'held');
     const known = !blocked && !unknown;
     const held = lease?.status === 'held' || lock?.status === 'held';
     const state = blocked ? '需要恢复' : unknown ? '身份或状态未知' : held ? (entries.some(e => e.role === 'device_lease') ? '设备租约占用' : entries.some(e => e.role === 'outer_queue') ? '外层队列占用' : '占用中 · 身份未确认') : '锁记录空闲';
-    badge($('lock-state'), state, blocked || unknown || held ? 'unknown' : '');
+    badge($('lock-state'), historical ? `旧记录 · ${state}（当前未知）` : state, historical || blocked || unknown || held ? 'unknown' : '');
     $('lock-owner').textContent = lock?.held_by ? `标签：${lock.held_by}` : held || blocked || unknown ? '未记录展示标签' : '没有占用标签';
     const reason = lease?.error || lock?.error;
-    $('lock-message').textContent = blocked ? `恢复屏障保留；持有者退出或心跳过期不代表恢复完成。${reason ? ` ${reason}` : ''}` :
+    $('lock-message').textContent = (historical ? `上次目录观测：${time(snapshotAt)}；保留旧记录供核查，当前锁与设备可用性未确认。 ` : '') + (blocked ? `恢复屏障保留；持有者退出或心跳过期不代表恢复完成。${reason ? ` ${reason}` : ''}` :
       unknown ? `身份或状态尚未确认，保持阻断。${reason ? ` ${reason}` : ''}` : reason ? `锁记录读取失败：${reason}` : held && lock.stale ?
       '心跳已过期，需核查租约状态；仍按占用显示。' : held ? '占用记录不代表正在测量；请结合租约与任务原件核对。' :
-      '当前锁记录为空；设备可用性还需结合采样与恢复状态。';
-    $('lock-message').className = `lock-message ${reason ? 'error' : blocked || unknown || held && lock.stale ? 'warning' : ''}`;
-    facts($('lock-info'), known ? [['记录开始', lock.since], ['心跳距今', duration(lock.heartbeat_age_s)],
-      ...(!held ? [['空闲时长', duration(lock.free_for_s)]] : [])] : []);
+      historical ? '上次锁记录为空，不代表现在空闲。' : '当前锁记录为空；设备可用性还需结合采样与恢复状态。');
+    $('lock-message').className = `lock-message ${reason ? 'error' : historical || blocked || unknown || held && lock.stale ? 'warning' : ''}`;
+    facts($('lock-info'), known ? [['记录开始', lock.since], [historical ? '观测时心跳年龄' : '心跳距今', duration(lock.heartbeat_age_s)],
+      ...(!held ? [[historical ? '观测时空闲时长' : '空闲时长', duration(lock.free_for_s)]] : [])] : []);
     const expanded = new Set([...$('lock-leases').querySelectorAll('details[open]')].map(node => node.dataset.lease));
     $('lock-leases').replaceChildren(...entries.map(entry => {
       const item = el('li'), details = el('details');
@@ -105,19 +278,17 @@
       facts(info, [['标签（仅展示）', entry.label], ['实例 ID', entry.instance_id], ['关联外层实例', entry.outer_instance_id], ['外层持有者核验', holder], ...hostProcessFacts(entry), ['原因', entry.reason], ['记录位置', entry.directory]]);
       details.append(info);
       if (entry.job_id) {
-        const link = el('a', `关联任务 ${entry.job_id}`);
-        link.href = `/dash/jobs#job=${encodeURIComponent(entry.job_id)}`;
-        details.append(link);
+        details.append(jobLink(entry.job_id));
       }
       item.append(details); return item;
     }));
     $('lock-identities-empty').hidden = entries.length > 0;
-    $('lock-identities-empty').textContent = lease?.status === 'clear' ? '没有租约记录。' : '未取得实例记录；不据标签认定持有者。';
+    $('lock-identities-empty').textContent = lease?.status === 'clear' ? `${historical ? '上次观测' : ''}没有租约记录。` : '未取得实例记录；不据标签认定持有者。';
     const queue = Array.isArray(lock?.queue) ? lock.queue : [];
     $('lock-queue').replaceChildren(...queue.map(label => el('li', label)));
     $('queue-summary').textContent = known ? `队列与最近事件 · ${queue.length} 条排队记录` : '队列与最近事件';
     $('queue-empty').hidden = queue.length > 0;
-    $('queue-empty').textContent = known ? '没有排队记录。' : '尚未取得队列。';
+    $('queue-empty').textContent = known ? `${historical ? '上次观测' : ''}没有排队记录。` : '尚未取得队列。';
     const events = Array.isArray(lock?.recent) ? lock.recent : [];
     $('lock-events').replaceChildren(...events.map(event => {
       const item = el('li');
@@ -126,6 +297,15 @@
     }));
     $('events-empty').hidden = events.length > 0;
     $('events-empty').textContent = known ? '没有近期记录。' : '尚未取得事件记录。';
+  }
+  function renderQueue(queue, historical = false) {
+    $('node-queue-summary').textContent = historical ? '节点任务队列 · 上次快照' : '节点任务队列';
+    message('node-queue-message', !queue ? '尚未取得节点任务队列。' : `${text(queue.active_count)} 项执行中 / ${text(queue.max_running)} 个名额，${text(queue.queued_count)} 项排队，${text(queue.blocked_count)} 项保留资源。${historical ? ' 当前调度状态未知。' : ''}${queue.dispatcher_error ? ` 调度异常：${queue.dispatcher_error}` : ''}`, !!queue?.dispatcher_error);
+    $('node-job-queue').replaceChildren(...(queue?.items || []).map(job => {
+      const item = el('li'); item.append(jobLink(job.job_id), el('span', ` · ${text(job.phase)}`));
+      if (job.waiting?.kind) item.append(el('p', `等待：${({capacity: '执行名额', resource: '独占资源', recovery: '恢复核查', device_lease: '设备租约', durability: '保存结果', preparing: '准备任务'})[job.waiting.kind] || job.waiting.kind}${job.waiting.reason ? ` · ${job.waiting.reason}` : ''}`, 'note'));
+      return item;
+    }));
   }
   function deviceCard(device) {
     const card = el('article', null, 'device-card');
@@ -145,7 +325,7 @@
       ['前台应用', device.foreground], ['供电状态', device.battery?.on_battery === true ? '电池供电' : device.battery?.on_battery === false ? '非电池供电' : '未知']]);
     card.append(metrics, detail);
     const extra = el('details', null, 'device-details');
-    extra.dataset.device = text(device.serial);
+    extra.dataset.device = JSON.stringify([selected, device.transport, device.serial]);
     extra.append(el('summary', '能力声明与未采集项'));
     const layers = el('ul', null, 'layer-list');
     for (const layer of device.layers || []) {
@@ -170,18 +350,19 @@
     card.append(extra);
     return card;
   }
-  function renderFleet(snapshot, failed = false) {
-    renderLock(failed ? null : snapshot?.lock);
+  function renderFleet(snapshot, failed = false, historical = false, snapshotAt = null) {
+    renderLock(snapshot?.lock, failed || historical, snapshotAt);
     const devices = snapshot?.devices;
     const hasSample = Array.isArray(devices);
     const age = snapshot?.age_s == null ? null : snapshot.age_s + Math.floor((Date.now() - receivedAt) / 1000);
-    const stale = failed || snapshot?.stale || (age != null && age > (snapshot?.policy?.stale_after_s ?? 90));
+    const stale = failed || historical || snapshot?.stale || (age != null && age > (snapshot?.policy?.stale_after_s ?? 90));
     badge($('sample-state'), !hasSample ? '未采集' : stale ? '旧快照' : snapshot.deferred ? '采样暂缓 · 缓存快照' : snapshot.error ? '尝试失败 · 缓存快照' : snapshot.refreshing ? '更新中' : '已有快照',
       !hasSample || stale || snapshot?.error || snapshot?.deferred ? 'unknown' : '');
     $('sample-time').textContent = snapshot?.sampled_at == null ? '尚无成功采样记录' : `最后成功采样：${time(snapshot.sampled_at)} · ${age == null ? '年龄未知' : duration(age) + '前'}`;
     $('sample-attempt').textContent = snapshot?.attempted_at == null ? '尚无采样尝试记录' : `最近已知尝试：${time(snapshot.attempted_at)}${failed ? '（上次返回记录）' : ''}`;
     const notices = [];
     if (failed && hasSample) notices.push('连接失败，以下保留上次取得的设备快照，当前设备状态未确认。');
+    if (historical && hasSample) notices.push(`目录观测已陈旧（${time(snapshotAt)}）。重新读取缓存不会更新设备采样时间。`);
     if (snapshot?.error) notices.push(`最近一次尝试失败：${snapshot.error}`);
     if (stale && hasSample && !failed) notices.push('设备快照已过期，请勿据此判断当前可用性。');
     if (!failed && snapshot?.deferred) notices.push(`采样暂缓：${snapshot.deferred}${hasSample ? '。以下保留最后成功的设备快照，本次未更新设备数据。' : ''}`);
@@ -201,10 +382,32 @@
     if (snapshot?.policy) {
       const p = snapshot.policy;
       $('sampling-policy').textContent = `设备采样策略：空闲采样间隔 ${numeric(p.fleet_every_free_s, ' 秒')}；占用、排队或待恢复时暂缓；释放后等待 ${numeric(p.free_grace_s, ' 秒')}，快照超过 ${numeric(p.stale_after_s, ' 秒')} 标记过期。页面刷新不会绕过此策略。`;
-    }
+    } else $('sampling-policy').textContent = '尚未取得此节点的设备采样策略。远端目录缓存刷新不触发设备采样。';
   }
-  async function refresh(manual = false) {
-    if (loading || disposed || document.hidden) return;
+  function renderSelected(failed = false) {
+    const entry = remoteEntry();
+    if (selected === 'local') {
+      receivedAt = localReceivedAt;
+      renderNode(localIdentity); renderFleet(latest, failed, false, localReceivedAt ? localReceivedAt / 1000 : null); renderQueue(localQueue, failed || !!localQueueError);
+      if (localQueueError) message('node-queue-message', `节点队列读取失败：${localQueueError}。${localQueue ? '下方保留上次取得的记录，当前调度状态未知。' : '尚未取得队列。'}`, true);
+    } else if (entry) {
+      receivedAt = entry.snapshot?.at ? entry.snapshot.at * 1000 : Date.now();
+      renderNode(entry.snapshot?.identity, entry);
+      renderFleet(entry.snapshot?.fleet, failed, entryStale(entry), entry.snapshot?.at);
+      renderQueue(entry.snapshot?.queue, failed || entryStale(entry));
+    } else {
+      $('node-summary').textContent = selected;
+      $('node-updated').textContent = '';
+      message('node-message', '目录中尚未取得此登记，请刷新目录或选择其他节点。', true);
+      $('node-details').hidden = true;
+      receivedAt = Date.now(); renderFleet(null); renderQueue(null);
+    }
+    const url = nodeJobsURL(); $('node-jobs-link').hidden = !url;
+    if (url) { $('node-jobs-link').href = url; $('node-jobs-link').target = selected === 'local' ? '_self' : '_blank'; $('node-jobs-link').rel = 'noopener noreferrer'; }
+    renderManagement();
+  }
+  async function refresh(manual = false, devices = false) {
+    if (loading || writing || disposed || document.hidden) return;
     clearTimeout(timer);
     const version = ++revision;
     const requestController = new AbortController();
@@ -213,38 +416,77 @@
     const timeout = setTimeout(() => requestController.abort(), 15000);
     lastStartedAt = Date.now();
     busy(true);
-    const current = () => version === revision && !disposed;
-    const nodeRequest = manual || !nodeLoaded ? json('/dash/api/node', signal).then(node => {
-      if (current()) renderNode(node);
-    }).catch(error => {
+    const name = selected, current = () => version === revision && selected === name && !disposed;
+    const directoryRequest = json(devices ? '/dash/api/nodes' : '/dash/api/nodes?refresh=1', signal).then(result => {
       if (!current()) return;
-      if (error.auth) authLost = true;
-      $('node-message').textContent = `${error.name === 'AbortError' ? '节点身份读取超时。' : error.message}${nodeLoaded ? ' 上方仍为先前读取的信息。' : ''}`;
-      $('node-message').classList.add('task-error');
-    }) : Promise.resolve();
+      if (result.schema_version !== 1 || !Array.isArray(result.items)) throw new Error('目录接口版本不支持。');
+      directoryKnown = true; directoryFailed = false; localIdentity = result.local;
+      entries = new Map(result.items.map(entry => [entry.name, entry]));
+      for (const name of entries.keys()) uncertainUpdates.delete(name);
+      message('directory-message', `${entries.size} 个远端登记；连接状态与设备观测分开记录。`);
+      renderDirectory();
+    }).catch(async error => {
+      if (!current()) return;
+      directoryFailed = true;
+      if (error.status === 404) {
+        directoryKnown = false;
+        message('directory-message', '此节点尚未提供共享目录，仍可查看本节点设备。');
+        const node = await json('/dash/api/node', signal);
+        if (current()) { localIdentity = node; renderDirectory(); }
+      } else { message('directory-message', `目录读取失败：${error.message}。保留上次观测。`, true); throw error; }
+    });
     try {
-      const snapshot = await json('/dash/api/fleet?wait=5', signal);
+      if (name === 'local') {
+        const [directory, fleet, queue] = await Promise.allSettled([directoryRequest, json('/dash/api/fleet?wait=5', signal), json('/dash/api/queue', signal)]);
+        if (!current()) return;
+        if (fleet.status === 'fulfilled') {
+          if (fleet.value.schema_version !== 1) throw new Error('节点设备接口版本不支持。');
+          latest = fleet.value; localReceivedAt = Date.now();
+        }
+        if (queue.status === 'fulfilled') { localQueue = queue.value; localQueueError = ''; }
+        else localQueueError = queue.reason.message;
+        if (directory.status === 'rejected') throw directory.reason;
+        if (fleet.status === 'rejected') throw fleet.reason;
+        if (queue.status === 'rejected' && queue.reason.auth) throw queue.reason;
+      } else {
+        await directoryRequest;
+        if (!current()) return;
+        if (devices) {
+          const entry = await json(`/dash/api/nodes/${name}?devices=1`, signal);
+          if (!current()) return;
+          entries.set(name, entry); renderDirectory();
+          message('remote-action-message', entry.refreshing ? '远端设备采样请求已排队或处理中。当前仍显示已有快照，请核对后续采样时间。' : '已读取目录回执，请核对采样时间与诊断；请求不代表已完成设备采样。');
+        }
+      }
       if (!current()) return;
-      if (snapshot.schema_version !== 1) throw new Error('节点设备接口版本不支持，请检查服务版本。');
-      latest = snapshot;
-      receivedAt = Date.now();
       authLost = false;
       $('page-error').hidden = true;
       $('login-link').hidden = true;
-      renderFleet(snapshot);
-      if (!nodeLoaded && snapshot.node_id) $('node-summary').textContent = `节点 ${snapshot.node_id}`;
+      renderSelected();
     } catch (error) {
       if (!current()) return;
+      if (devices && error.status === 409) {
+        message('remote-action-message', `已有目录刷新进行中，请在完成后显式重试设备采样。${error.message}。不会自动重放。`, true);
+        renderSelected(); return;
+      }
       authLost = !!error.auth;
       $('page-error').textContent = error.name === 'AbortError' ? '读取超时，请重试。设备与锁的当前状态尚未确认。' : error.message;
       $('page-error').hidden = false;
       $('login-link').hidden = !authLost;
-      renderFleet(latest, true);
+      renderSelected(true);
     } finally {
-      await nodeRequest;
       clearTimeout(timeout);
       if (current()) { busy(false); schedule(); }
     }
+  }
+  function selectNode(name) {
+    if (name === selected) return;
+    suspend(); selected = name;
+    history.replaceState(null, '', `${location.pathname}${location.search}#node=${encodeURIComponent(name)}`);
+    closeEditor(); toggleDraft = null; $('disable-confirm').hidden = true;
+    message('remote-action-message', '');
+    $('devices').replaceChildren(); $('lock-leases').replaceChildren();
+    renderDirectory(); renderSelected(); refresh(true);
   }
   function suspend() {
     clearTimeout(timer);
@@ -254,13 +496,30 @@
     refreshNote();
   }
   $('refresh-fleet').addEventListener('click', () => refresh(true));
+  $('remote-devices').addEventListener('click', () => { if (!$('remote-devices').disabled) refresh(true, true); });
+  $('register-open').addEventListener('click', () => openEditor());
+  $('registration-edit').addEventListener('click', () => openEditor(remoteEntry()));
+  $('registration-close').addEventListener('click', closeEditor);
+  $('registration-form').addEventListener('submit', event => { event.preventDefault(); saveRegistration(); });
+  $('registration-clear-token').addEventListener('change', () => { if ($('registration-clear-token').checked) $('registration-token').value = ''; renderManagement(); });
+  $('registration-reload').addEventListener('click', reloadRegistration);
+  $('registration-toggle').addEventListener('click', () => {
+    if ($('registration-toggle').disabled) return;
+    toggleDraft = {...remoteEntry()};
+    if (toggleDraft.enabled) $('disable-confirm').hidden = false; else toggleRegistration();
+  });
+  $('disable-submit').addEventListener('click', toggleRegistration);
+  $('disable-close').addEventListener('click', () => { toggleDraft = null; $('disable-confirm').hidden = true; });
+  $('access-toggle').addEventListener('click', () => { if (access?.steer) setAccess(false); else { $('unlock-form').hidden = false; $('steer-password').focus(); } });
+  $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess(true); });
+  $('unlock-close').addEventListener('click', closeUnlock);
   $('auto-refresh').addEventListener('change', schedule);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) suspend();
     else if ($('auto-refresh').checked && !authLost && Date.now() - lastStartedAt >= AUTO_MS) refresh();
     else schedule();
   });
-  window.addEventListener('pagehide', () => { disposed = true; suspend(); });
+  window.addEventListener('pagehide', () => { disposed = true; closeUnlock(); $('registration-token').value = ''; suspend(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { disposed = false; schedule(); } });
-  refresh(true);
+  renderDirectory(); loadAccess(); refresh(true);
 })();

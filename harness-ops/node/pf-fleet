@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """pf-fleet：跨节点调度层 —— 在多台手机节点之间看全貌、派任务。
 
+  pf-fleet --hub URL status --refresh --json       # 共享目录；异步刷新，不等待远端
+  pf-fleet --hub URL show NAME --devices           # 明确请求设备采样
+  pf-fleet --hub URL register NAME --url URL --token-file FILE
+  pf-fleet --hub URL update NAME --revision N --note TEXT
+  pf-fleet --hub URL disable|enable NAME --revision N
+  pf-fleet --hub URL import nodes.json --json      # 逐条创建；不覆盖、不删源文件
+  PF_FLEET_HUB=URL pf-fleet nodes                 # 同一共用目录
+  # hub 认证仅使用 PF_NODE_TOKEN(_FILE)；hub 模式 run/migrate 尚未支持，不回落。
+
   pf-fleet nodes                          # 列出注册表里的节点
   pf-fleet status [--json]                # 并行问所有节点：在线？锁谁持有？手机清单（fleet 只读快照）
   pf-fleet run --node mbp1 -- <pf-node 参数…>         # 派到指定节点
@@ -277,10 +286,24 @@ def cmd_migrate(nodes, argv):
 
 
 def main():
-    if len(sys.argv) < 2:
+    argv = sys.argv[1:]
+    hub = os.environ.get("PF_FLEET_HUB")
+    if argv and (argv[0] == "--hub" or argv[0].startswith("--hub=")):
+        if argv[0] == "--hub":
+            if len(argv) < 2:
+                sys.exit("pf-fleet: --hub 需要明确 URL")
+            hub, argv = argv[1], argv[2:]
+        else:
+            hub, argv = argv[0].split("=", 1)[1], argv[1:]
+    if hub is not None:
+        # Lazy import keeps legacy registry/run behavior unchanged.
+        sys.path.insert(0, HERE)
+        from fleet_client import main as managed_main
+        sys.exit(managed_main(hub, argv))
+    if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
-        sys.exit(2)
-    cmd, argv = sys.argv[1], sys.argv[2:]
+        sys.exit(0 if argv else 2)
+    cmd, argv = argv[0], argv[1:]
     nodes = load_registry()
     {"nodes": cmd_nodes, "status": cmd_status, "run": cmd_run, "migrate": cmd_migrate}.get(
         cmd, lambda *_: sys.exit(f"pf-fleet: 不认识子命令 {cmd}（nodes/status/run/migrate）")

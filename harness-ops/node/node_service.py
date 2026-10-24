@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from node_fleet import FleetState
+from node_directory import NodeDirectory, DirectoryError
 import job_runtime
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
@@ -615,6 +616,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
     jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
+    if not hasattr(jobs, "directory"):
+        jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
+    directory = jobs.directory
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
         jobs.root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     class H(BaseHTTPRequestHandler):
@@ -667,7 +671,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -685,6 +689,21 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts[:1] == ["nodes"] and len(parts) <= 2:
+                    refresh = q.get("refresh", ["0"])[0]
+                    devices = q.get("devices", ["0"])[0]
+                    if refresh not in {"0", "1"} or devices not in {"0", "1"}:
+                        raise ValueError("refresh and devices must be 0 or 1")
+                    if len(parts) == 1:
+                        if devices == "1":
+                            raise ValueError("select a registered node before refreshing devices")
+                        items = directory.refresh() if refresh == "1" else directory.list()
+                        return self._send(200, {"schema_version": 1, "now": time.time(),
+                                                "local": node.identity(), "items": items})
+                    name = unquote(parts[1])
+                    entry = (directory.refresh(name, devices=devices == "1")
+                             if refresh == "1" or devices == "1" else directory.get(name))
+                    return self._send(200, entry)
                 if parts == ["queue"]:
                     return self._send(200, {**jobs.dispatch.snapshot(), "node_id": node.node_id})
                 if parts == ["leases"]:
@@ -695,6 +714,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                         raise KeyError(parts[1])
                     return self._send(200, jobs.status(row["job_id"]))
                 if parts == ["fleet"]:
+                    cached = q.get("cached", ["0"])[0]
+                    if cached not in {"0", "1"}:
+                        raise ValueError("cached must be 0 or 1")
+                    if cached == "1":
+                        return self._send(200, {**fleet.snapshot(), "node_id": node.node_id})
                     wait = float(q.get("wait", ["0"])[0])
                     if not 0 <= wait <= 5:
                         raise ValueError("wait must be between 0 and 5 seconds")
@@ -720,6 +744,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
+            except DirectoryError as e:
+                return self._send(e.status, {"error": str(e)})
             except SessionError as e:
                 return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
@@ -809,6 +835,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
+                if parts[:1] == ["nodes"] and len(parts) <= 2:
+                    if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_REQUEST:
+                        self.close_connection = True
+                        return self._send(413, {"error": "node registration exceeds 64 KiB"})
+                    if "application/json" not in self.headers.get("Content-Type", ""):
+                        return self._send(400, {"error": "node registration requires application/json"})
+                    data = json.loads(self._body() or b"{}")
+                    if len(parts) == 1:
+                        return self._send(201, directory.create(data))
+                    return self._send(200, directory.update(unquote(parts[1]), data))
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["execution", "reconcile"]:
                     if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
                         self.close_connection = True
@@ -869,6 +905,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     if not isinstance(data, dict):
                         raise ValueError("release body must be an object")
                     return self._send(200, jobs.release_queue(parts[1], data.get("note")))
+            except DirectoryError as e:
+                return self._send(e.status, {"error": str(e)})
             except sqlite3.Error as e:
                 jobs.dispatch.last_error = f"{type(e).__name__}: {e}"
                 return self._send(503, {"error": "job storage commit could not be confirmed; query job and queue before retrying"})
@@ -940,6 +978,7 @@ def main():
     try:
         srv.serve_forever()
     finally:
+        jobs.directory.close()
         fleet.close()
         srv.server_close()
 

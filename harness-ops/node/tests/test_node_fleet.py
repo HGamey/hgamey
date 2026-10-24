@@ -46,7 +46,9 @@ class FleetStateTests(unittest.TestCase):
     def test_storage_contract_blocks_sampling_and_uses_selected_phonefarm(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            leases = LeaseState({"phonefarm": (str(root / "selected-phonefarm"), directory)})
+            leases = LeaseState({"phonefarm": (str(root / "selected-phonefarm"), directory)}, env={
+                "PF_STATE_ROOT": str(root / "fixed-state"), "ADB_BIN": "/fixture/selected-adb",
+                "DEVLOCK_LABEL": "inherited-job", "DEVLOCK_INSTANCE_ID": "inherited-instance"})
             value = {"schema_version": 1, "status": "clear", "entries": [], "error": None}
             with patch("node_lease.subprocess.run", return_value=Mock(stdout=json.dumps(value))):
                 self.assertEqual(leases.snapshot(refresh=True, force=True)["status"], "unknown")
@@ -78,6 +80,8 @@ class FleetStateTests(unittest.TestCase):
                     result = state.request(wait=1)
                     self.assertEqual(result["lock"]["queue"], ["waiting"])
                     self.assertEqual(run.call_args.args[0], [str(root / "selected-phonefarm"), "fleet", "--json"])
+                    self.assertEqual(run.call_args.kwargs["env"], {
+                        "PF_STATE_ROOT": str(root / "fixed-state"), "ADB_BIN": "/fixture/selected-adb"})
             finally:
                 state.close()
             value.update(status="held", entries=[{"label": "nested-owner"}])
