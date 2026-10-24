@@ -170,6 +170,37 @@ class Base(unittest.TestCase):
 
 
 class RemoteTests(Base):
+    def test_occupancy_follows_current_queue_and_rejects_incomplete_v2_layout(self):
+        self.locks.mkdir()
+        storage = {"schema_version": 1, "readiness": "ready", "devlock_dir": str(self.locks),
+                   "device_lease_dir": str(self.leases)}
+        leases = mock.Mock()
+        leases.snapshot.return_value = {"schema_version": 1, "status": "clear", "storage": storage}
+        self.remote.occupancy = node_remote.Occupancy(node_remote.storage_from_leases(leases))
+        self.assertEqual(self.remote.occupancy.holders(), [])  # Legacy PF, no new fields.
+        (self.locks / "devlock.d").write_text('{"schema":"phonefarm/lease-domain-fence@2"}')
+        queue = self.locks / "v2" / "global"
+        owner = queue / "devlock.d"
+        owner.mkdir(parents=True)
+        (owner / "owner").write_text("fixture-owner since 2026-10-25 10:00:00\n")
+        storage.update(layout_version=2, domain_id="d" * 32, queue_dir=str(queue))
+        with self.assertRaises(node_remote.RemoteError) as held:
+            self.acquire()
+        self.assertEqual(held.exception.status, 409)
+        self.assertEqual(self.remote.occupancy.holders()[0]["label"], "fixture-owner")
+        self.assertEqual(self.backend.mutations(), [])
+        storage["queue_dir"] = "relative-is-not-a-domain"
+        with self.assertRaises(node_remote.RemoteError) as unknown:
+            self.acquire()
+        self.assertEqual(unknown.exception.status, 503)
+        self.assertEqual(self.backend.mutations(), [])
+        storage["queue_dir"] = str(queue)
+        (owner / "owner").unlink()
+        owner.rmdir()
+        self.assertEqual(self.acquire()["phase"], "ready")
+        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
+        self.assertTrue((self.locks / "devlock.d").is_file())
+
     def test_tokens_are_hashed_and_revocable(self):
         stored = (self.cfg / "remote.operators.json").read_text()
         self.assertNotIn(self.alice_token, stored)

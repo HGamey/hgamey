@@ -48,8 +48,11 @@ device=Path(os.environ['QA_GRAY_CAPTURE_DEVICE'])
 entry={'event':'transport','argv':argv,'serial':serial,'pid':os.getpid(),'pgid':os.getpgrp(),
        'simulation':True,'gate_ok':False,'kind':'unhandled','environment_keys':sorted(os.environ)}
 markers=[]
+# The shared chain binds this to the real PF storage.queue_dir before launch.
+# The separate recovery chain intentionally retains its legacy, unupgraded root.
+queue_root=Path(os.environ.get('QA_GRAY_CAPTURE_QUEUE_DIR',os.environ['DEVLOCK_DIR']))
 for name in ('devlock.d','phonefarm-lease.d'):
-    path=Path(os.environ['DEVLOCK_DIR'])/name/'phonefarm-lease.json'
+    path=queue_root/name/'phonefarm-lease.json'
     if path.is_file():
         marker=json.loads(path.read_text())
         if marker.get('serial')==serial:
@@ -319,7 +322,7 @@ def png_bytes():
 
 
 NODE_HELPER = r'''
-import errno,json,os,pathlib,sys,time
+import errno,json,os,pathlib,subprocess,sys,time
 operation, plan_path = sys.argv[1:]
 plan = json.loads(pathlib.Path(plan_path).read_text())
 job = pathlib.Path(plan['jobs_root']) / plan['jid']
@@ -399,9 +402,26 @@ def lease():
     assert value['storage']['devlock_dir']==plan['lock_root'],value
     assert value['storage']['device_lease_dir']==plan['device_lease_root'],value
     assert value['storage']['readiness']=='ready',value
+    if 'lease_domain' in plan:
+        assert all(value['storage'].get(key)==expected
+                   for key,expected in plan['lease_domain'].items()),value
     return value
 try:
     if operation == 'prepare':
+        command=[plan['phonefarm'],'lease','domain-init','--participants-stopped','--json']
+        result=subprocess.run(command,env=env,cwd=plan['node_root'],stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=5)
+        initialized=keep('domain-init',{'argv':command,'exit':result.returncode,
+                                      'stdout':result.stdout,'stderr':result.stderr})
+        assert result.returncode==0,initialized
+        initialized['result']=json.loads(result.stdout)
+        before=lease()
+        storage=before['storage']
+        assert storage['layout_version']==2 and storage['domain_id'],before
+        assert pathlib.Path(storage['queue_dir']).is_absolute(),before
+        assert storage['queue_dir']!=plan['lock_root'],before
+        assert initialized['result']['storage']==storage,initialized
+        assert before['status']=='clear',before
         (job/'in').mkdir(parents=True,mode=0o700)
         job.chmod(0o700)
         (job/'out').mkdir(mode=0o700)
@@ -412,7 +432,7 @@ try:
             'state':'running','phase':'starting','execution_policy':'contained',
             'execution_policy_source':'explicit','execution':{'kind':'supervised-v1'}})
         (job/'runner.lock').touch(mode=0o600)
-        answer({'prepared':True,'before':lease(),'pf_environment':env})
+        answer({'prepared':True,'before':before,'domain_init':initialized,'pf_environment':env})
     elif operation == 'launch':
         command=[plan['phonefarm'],'gray-layer','session','--mode','frameaudit',
             '--serial',plan['serial'],'--package',plan['package'],'--out',str(job/'out'),
@@ -586,10 +606,12 @@ class SharedFixture(PrivilegedFixture):
         fake=self.install_root/'fake-adb'
         fixture_env={'QA_GRAY_CAPTURE_DEVICE':str(device),'QA_GRAY_CAPTURE_LOG':str(self.transport_log),
                      'QA_GRAY_CAPTURE_SERIAL':'PFSHARED-FIXTURE'}
-        fake.write_text('#!/usr/bin/python3\nimport os,sys\n'
+        def write_fake():
+            fake.write_text('#!/usr/bin/python3\nimport os,sys\n'
                         'if sys.argv[1:]==["--version"]:\n print("synthetic adb fixture"); sys.exit(0)\n'
                         +'os.environ.update('+repr(fixture_env)+')\n'+FAKE_ADB)
-        fake.chmod(0o755)
+            fake.chmod(0o755)
+        write_fake()
         prefix=self.install_root/'worker'
         self.command(['/usr/bin/python3',str(node_source/'install_worker.py'),'--prefix',str(prefix),
             '--jobs-root',str(jobs_root),'--cgroup-root',str(self.cgroup_root),
@@ -614,6 +636,28 @@ class SharedFixture(PrivilegedFixture):
         save(self.scratch/'node-plan.json',plan)
         prepared=self.helper('prepare')
         assert prepared['before']['status']=='clear' and not list((self.job/'out').iterdir()),prepared
+        storage=prepared['before']['storage']
+        plan['lease_domain']={key:storage[key] for key in ('layout_version','domain_id','queue_dir')}
+        save(self.scratch/'node-plan.json',plan)
+        queue=Path(storage['queue_dir'])
+        fixture_env['QA_GRAY_CAPTURE_QUEUE_DIR']=str(queue)
+        assert not self.transport_log.exists(),'domain initialization must not use device transport'
+        write_fake()
+        fence=roots['locks']/'devlock.d'
+        assert stat.S_ISREG(fence.lstat().st_mode),'legacy owner slot must be a permanent regular fence'
+        fence_record=json.loads(fence.read_text())
+        assert fence_record=={'schema':'phonefarm/lease-domain-fence@2',
+            'domain_id':storage['domain_id'],'devlock_dir':str(roots['locks'])},fence_record
+        def root_lock_inodes():
+            answer={}
+            for name in ('phonefarm-bridge.lock','queue-owner.lock'):
+                info=(roots['locks']/name).lstat()
+                assert stat.S_ISREG(info.st_mode)
+                answer[name]={'dev':info.st_dev,'inode':info.st_ino}
+            return answer
+        stable_locks=root_lock_inodes()
+        self.report['checks']['explicit_v2_domain']={'storage':storage,'fence':fence_record,
+                                                    'stable_locks':stable_locks}
         self.report['checks']['same_fixed_lease_environment_before_launch']=prepared
         launched=self.helper('launch'); self.known_pids.add(launched['worker_handle_pid'])
         assert not Path('/proc/'+str(launched['launcher_pid'])).exists()
@@ -638,12 +682,16 @@ class SharedFixture(PrivilegedFixture):
         assert sorted(after['dirs'])==before['dirs'] and after['processes']==['init','org.example.other']
         calls=[json.loads(line) for line in self.transport_log.read_text().splitlines()]
         assert calls and all(c['gate_ok'] and c.get('pending_ok',True) and c['kind']!='unhandled' for c in calls)
+        assert all(Path(c['marker_path']).parent.parent==queue for c in calls),calls
         assert sum(c['kind']=='screenshot' for c in calls)==1,'same-ID query repeated capture'
         assert all('PF_NODE_TOKEN' not in c['environment_keys'] for c in calls)
         self.known_pids.update(c['pid'] for c in calls)
         self.known_pids.update(c['marker']['pid'] for c in calls if isinstance(c.get('marker',{}).get('pid'),int))
         self.report['checks']['gated_transport_and_originals']={'transports':len(calls),'screenshots':1,
             'original_png_bytes':len(raw.read_bytes()),'fake_state_restored':True,'game_state_restored':False}
+        assert root_lock_inodes()==stable_locks,'domain root lock inodes changed during the owner lifecycle'
+        assert json.loads(fence.read_text())==fence_record and stat.S_ISREG(fence.lstat().st_mode)
+        self.report['checks']['explicit_v2_domain']['stable_after_close']=True
         assert events(self.cgroup_root)['populated']=='0' and not [p for p in self.cgroup_root.iterdir() if p.is_dir()]
         self.report['passed']=True
 

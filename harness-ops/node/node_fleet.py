@@ -5,7 +5,7 @@ import os
 import subprocess
 import threading
 import time
-from node_lease import LeaseState, storage_root
+from node_lease import LeaseState, queue_directory
 
 VIEW_IDLE_S = 90
 FLEET_EVERY_FREE_S = 30
@@ -16,7 +16,7 @@ STALE_AFTER_S = 90
 
 
 def read_lock(directory):
-    """Read the legacy global bridge; stale or incomplete ownership is not free."""
+    """Read global queue files; stale or incomplete ownership is not free."""
     now = time.time()
     lock_dir = os.path.join(directory, "devlock.d")
     out = dict(status="free", held_by=None, since=None, heartbeat_age_s=None,
@@ -124,7 +124,7 @@ class FleetState:
             return read_lock(self.lock_dir)  # Explicit legacy history/test directory.
         lease = self.leases.snapshot(refresh=True)
         try:
-            lock = read_lock(storage_root(lease))
+            lock = read_lock(queue_directory(lease))
         except ValueError as error:
             lock = dict(status="unknown", held_by=None, since=None, heartbeat_age_s=None,
                         stale=False, queue=[], recent=[], free_for_s=None, error=str(error))

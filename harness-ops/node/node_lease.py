@@ -102,6 +102,23 @@ def storage_root(value):
     return root
 
 
+def queue_directory(value):
+    """Resolve readonly queue files without changing the execution domain root."""
+    root = storage_root(value)
+    storage = value["storage"]
+    layout = storage.get("layout_version", 1)
+    if type(layout) is not int or layout not in (1, 2):
+        raise ValueError("phonefarm returned an unsupported lease layout")
+    # Older PF explicitly uses the legacy root layout. A declared v2 layout
+    # must supply its actual queue path; the root now contains a permanent fence.
+    if layout == 1 and "queue_dir" not in storage:
+        return root
+    directory = storage.get("queue_dir")
+    if not isinstance(directory, str) or not os.path.isabs(directory):
+        raise ValueError("phonefarm returned an invalid storage.queue_dir")
+    return directory
+
+
 class LeaseState:
     def __init__(self, bins, env=None):
         self.bins = bins
@@ -129,7 +146,7 @@ class LeaseState:
                         or not isinstance(value.get("entries"), list)):
                     raise ValueError("incompatible lease status; upgrade phonefarm")
                 try:
-                    storage_root(value)
+                    queue_directory(value)
                 except ValueError as error:
                     value.update(status="unknown", error=str(error))
             except (OSError, subprocess.SubprocessError, ValueError) as error:

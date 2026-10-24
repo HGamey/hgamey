@@ -67,10 +67,15 @@ class FleetStateTests(unittest.TestCase):
                 self.assertFalse((root / "persistent").exists())
             finally:
                 state.close()
-            # A real resolved directory supplies queue/history, never an empty old default.
+            # The root's permanent v2 fence is not the active global owner.
+            # Only PF's resolved queue directory supplies current queue/history.
             (root / "persistent").mkdir()
-            (root / "persistent" / "devlock.queue").write_text("waiting\n")
-            value["storage"].update(readiness="ready", error=None)
+            (root / "persistent" / "devlock.d").write_text('{"schema":"phonefarm/lease-domain-fence@2"}')
+            queue_dir = root / "persistent" / "v2" / "global"
+            queue_dir.mkdir(parents=True)
+            (queue_dir / "devlock.queue").write_text("waiting\n")
+            value["storage"].update(readiness="ready", error=None, layout_version=2,
+                                    domain_id="d" * 32, queue_dir=str(queue_dir))
             with patch("node_lease.subprocess.run", return_value=Mock(stdout=json.dumps(value))):
                 leases.snapshot(refresh=True, force=True)
             state = FleetState(directory, None, str(root / "shots"), lease_state=leases)
@@ -79,6 +84,8 @@ class FleetStateTests(unittest.TestCase):
                         returncode=1, stdout='{"schema":"phonefarm/fleet@1","devices": []}')) as run:
                     result = state.request(wait=1)
                     self.assertEqual(result["lock"]["queue"], ["waiting"])
+                    self.assertEqual(result["lock"]["status"], "free")
+                    self.assertEqual(result["lock"]["lease"]["storage"]["devlock_dir"], str(root / "persistent"))
                     self.assertEqual(run.call_args.args[0], [str(root / "selected-phonefarm"), "fleet", "--json"])
                     self.assertEqual(run.call_args.kwargs["env"], {
                         "PF_STATE_ROOT": str(root / "fixed-state"), "ADB_BIN": "/fixture/selected-adb"})
@@ -93,6 +100,19 @@ class FleetStateTests(unittest.TestCase):
                     result = state.request(wait=1, observe=True)
                     self.assertEqual(result["lock"]["status"], "held")
                     self.assertIn("占用", result["deferred"])
+                    run.assert_not_called()
+            finally:
+                state.close()
+            value.update(status="clear", entries=[])
+            del value["storage"]["queue_dir"]
+            with patch("node_lease.subprocess.run", return_value=Mock(stdout=json.dumps(value))):
+                self.assertEqual(leases.snapshot(refresh=True, force=True)["status"], "unknown")
+            state = FleetState(directory, None, str(root / "shots"), lease_state=leases)
+            try:
+                with patch("node_fleet.subprocess.run") as run:
+                    result = state.request(wait=1)
+                    self.assertEqual(result["lock"]["status"], "unknown")
+                    self.assertIn("queue_dir", result["lock"]["error"])
                     run.assert_not_called()
             finally:
                 state.close()

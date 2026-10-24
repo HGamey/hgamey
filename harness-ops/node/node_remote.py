@@ -241,7 +241,7 @@ def _since(owner_text):
 
 
 class Occupancy:
-    """读 phonefarm 的锁目录（只读），并持有按设备的内核锁。storage() 返回 (device_lease_dir, devlock_dir)。"""
+    """只读当前 global 两槽。storage() 返回 (device_lease_dir, queue_dir)，不授予所有权。"""
 
     def __init__(self, storage):
         self._storage = storage
@@ -937,17 +937,15 @@ def handle(remote, h, method, parts, query, board=None, node=None):
 
 
 def storage_from_leases(leases):
-    """从 node 的 LeaseState（phonefarm lease status --json）取锁目录；成功后缓存。"""
-    cache = {}
+    """Follow each current PF snapshot; never cache a pre-migration queue root."""
+    from node_lease import queue_directory
 
     def get():
-        if "paths" not in cache:
-            snap = leases.snapshot(refresh=True, force=True) if leases else {}
-            st = snap.get("storage") or {}
-            if st.get("readiness") != "ready":
-                return None
-            cache["paths"] = (st.get("device_lease_dir"), st.get("devlock_dir"))
-        return cache["paths"]
+        snap = leases.snapshot(refresh=True) if leases else {}
+        try:
+            return (snap.get("storage", {}).get("device_lease_dir"), queue_directory(snap))
+        except (ValueError, AttributeError):
+            return None
     return get
 
 

@@ -430,9 +430,12 @@
     $('lease-storage-state').className = `task-state ${state[1]}`;
     $('lease-storage-mode').textContent = storage ? `模式：${({default: '默认（default）', custom: '自定义（custom）'})[storage.mode] || text(storage.mode)}` : '';
     const description = !storage ? '节点未提供存储位置与准备状态，持久根尚未确认。' : storage.readiness === 'migration_required' ? '设备写入暂不可调度。迁移需先协调停止旧 worker；此页面不会初始化或迁移目录。' : storage.readiness === 'unavailable' ? '设备写入暂不可调度。请先处理存储错误，再刷新状态。' : '存储就绪只表示记录目录可用；设备占用与恢复仍以实际 lease 状态为准。';
-    message('lease-storage-message', `${description}${storage?.error ? ` 错误：${storage.error}` : ''}`, !!storage?.error || (!!storage && storage.readiness !== 'ready'));
+    message('lease-storage-message', `${description}${storage ? ' DEVLOCK_DIR 对应锁域根，与队列目录分别记录；当前布局仍为全域排他，队列目录不能作为新的执行锁域。' : ''}${storage?.error ? ` 错误：${storage.error}` : ''}`, !!storage?.error || (!!storage && storage.readiness !== 'ready'));
     $('lease-storage-details').hidden = !storage;
-    facts('lease-storage-paths', storage ? [['状态根', storage.state_dir], ['兼容锁目录', storage.devlock_dir], ['设备 lease 根', storage.device_lease_dir]] : []);
+    const layout = storage?.layout_version === 1 ? '1 · 旧全域布局' : storage?.layout_version === 2 ? '2 · 版本化全域布局' : '未报告或未知；不从目录名称推断';
+    facts('lease-storage-paths', storage ? [['状态根', storage.state_dir], ['锁域根', storage.devlock_dir],
+      ['当前全局队列目录', storage.queue_dir || '未报告；不从锁域根推导路径'], ['布局版本', layout],
+      ['锁域 ID（domain_id）', storage.domain_id || (storage.layout_version === 1 ? '未登记（旧布局）' : '未报告')], ['设备 lease 根', storage.device_lease_dir]] : []);
   }
   function hostProcessFacts(entry) {
     if (entry.role !== 'device_lease') return [];
