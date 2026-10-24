@@ -8,7 +8,9 @@ import copy
 import hashlib
 import http.client
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
@@ -32,6 +34,7 @@ PNG = base64.b64decode(
 class FakePF:
     """Persist only the backend contract; do not emulate a device or lease."""
     available, reason = True, None
+    input_contract = "frame-bound-v1"
     actions = ["screenshot", "tap", "swipe", "text", "key", "start_app", "stop_app", "renew", "release"]
 
     def __init__(self, path):
@@ -58,7 +61,9 @@ class FakePF:
         self.data["descriptors"][ident] = {
             "schema": "phonefarm/remote-control@1", "session_id": "session-" + ident,
             "serial": serial, "phase": "ready", "live_owner": True,
-            "capabilities": self.actions, "recovery": {"required": False}}
+            "capabilities": self.actions, "input_contract": self.input_contract,
+            "input_frame_id": None, "frame_max_age_seconds": 30,
+            "recovery": {"required": False}}
         self.save()
         return copy.deepcopy(ref)
 
@@ -85,7 +90,17 @@ class FakePF:
             receipt["status"] = "accepted"
         elif request["action"] == "screenshot":
             receipt["result"] = {"mime": "image/png", "relative_path": "images/" + rid + ".png",
-                                 "bytes": len(PNG), "original_size": [1, 1]}
+                                 "bytes": len(PNG), "original_size": [1, 1],
+                                 "width": 1, "height": 1, "source_width": 1, "source_height": 1,
+                                 "frame_id": rid, "session_id": request["session_id"],
+                                 "serial": ref["serial"], "rotation": 1, "captured_at": time.time()}
+            descriptor["input_frame_id"] = rid
+            descriptor["latest_image"] = copy.deepcopy(receipt["result"])
+        elif request["action"] in ("tap", "swipe"):
+            # PF supplies these facts. No geometry, age or lease algorithm is
+            # emulated by this gateway fixture.
+            receipt["result"] = {"input_issued": True, "frame_id": request["params"]["frame_id"]}
+            descriptor["input_frame_id"] = None
         if rid in self.lose_reply:
             receipt.update(status="unknown", result=None, error="owner completion unknown")
             descriptor.update(phase="recovery_required", live_owner=False, recovery={"required": True})
@@ -204,7 +219,7 @@ class RemoteTests(Base):
             with self.assertRaises(node_remote.RemoteError) as missing_action:
                 self.remote.do(self.alice, "fixture-ip", SERIAL, "tap", params)
             self.assertEqual(missing_action.exception.status, 400)
-        result = self.action(sid, "tap-1", x=1, y=2)
+        result = self.action(sid, "tap-1", x=1, y=2, frame_id="fixture-frame")
         before = self.backend.mutations()
         self.assertEqual(self.remote.query(self.alice, SERIAL, session_id=sid, request_id="tap-1"), result)
         self.assertEqual(self.backend.mutations(), before)
@@ -226,7 +241,7 @@ class RemoteTests(Base):
         acquired = self.acquire()
         sid = acquired["session_id"]
         self.backend.lose_reply.add("lost-1")
-        result = self.action(sid, "lost-1", x=1, y=2)
+        result = self.action(sid, "lost-1", x=1, y=2, frame_id="fixture-frame")
         self.assertEqual(result["status"], "unknown")
         self.assertTrue(result["query_required"])
         self.assertEqual(result["request_id"], "lost-1")
@@ -282,6 +297,95 @@ class RemoteHttpTests(Base):
 
     def bearer(self, token):
         return {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+
+    def test_frame_bound_http_cli_preserves_metadata_and_never_retries_unknown_input(self):
+        auth = self.bearer(self.alice_token)
+        path = f"/remote/devices/{SERIAL}"
+        status, _, raw = self.req("POST", path + "/session", {"request_id": "frame-owner"}, auth)
+        self.assertEqual(status, 200)
+        acquired = json.loads(raw)
+        sid = acquired["session_id"]
+        self.assertEqual(acquired["input_contract"], "frame-bound-v1")
+        self.assertEqual(acquired["frame_max_age_seconds"], 30)
+        credential = self.root / "operator.credential"
+        credential.write_text(self.alice_token)
+        credential.chmod(0o600)
+
+        def cli(*args):
+            return subprocess.run([
+                sys.executable, str(Path(__file__).resolve().parents[1] / "pf-remote"),
+                "--url", f"http://127.0.0.1:{self.server.server_port}",
+                "--node-id", self.jobs.node_id, "--token-file", str(credential), *args,
+            ], env={"PATH": os.defpath, "NO_PROXY": "*", "no_proxy": "*"},
+                capture_output=True, text=True, timeout=5)
+
+        def action(rid, name, *args):
+            return cli("action", SERIAL, name, "--session-id", sid, "--request-id", rid, *args)
+
+        captured = action("frame-1", "screenshot", "--params", '{"max_side":1}',
+                          "--out", str(self.root / "frame.png"))
+        self.assertEqual(captured.returncode, 0, captured.stderr + captured.stdout)
+        self.assertEqual((self.root / "frame.png").read_bytes(), PNG)
+        image = json.loads(captured.stdout)["result"]
+        self.assertEqual({key: image[key] for key in (
+            "frame_id", "session_id", "serial", "rotation", "source_width", "source_height",
+            "width", "height", "original_size")}, {
+            "frame_id": "frame-1", "session_id": sid, "serial": SERIAL, "rotation": 1,
+            "source_width": 1, "source_height": 1, "width": 1, "height": 1, "original_size": [1, 1]})
+        self.assertIsInstance(image["captured_at"], (int, float))
+        status, _, raw = self.req("GET", path + f"/session?session_id={sid}", headers=auth)
+        self.assertEqual((status, json.loads(raw)["input_frame_id"]), (200, "frame-1"))
+
+        tapped = action("frame-tap", "tap", "--frame-id", "frame-1", "--params", '{"x":0,"y":0}')
+        self.assertEqual(tapped.returncode, 0, tapped.stderr + tapped.stdout)
+        request = self.backend.data["requests"]["ref-1:frame-tap"]
+        self.assertEqual(request["params"], {"x": 0, "y": 0, "frame_id": "frame-1"})
+        before = self.backend.mutations()
+        queried = cli("receipt", SERIAL, "frame-tap", "--session-id", sid)
+        self.assertEqual(queried.returncode, 0, queried.stderr + queried.stdout)
+        self.assertEqual(json.loads(queried.stdout), json.loads(tapped.stdout))
+        conflict = action("conflicting-frame", "tap", "--frame-id", "frame-1",
+                          "--params", '{"x":0,"y":0,"frame_id":"other-frame"}')
+        self.assertNotEqual(conflict.returncode, 0)
+        self.assertEqual(self.backend.mutations(), before)
+
+        # A new helper's capability cannot retrofit a persisted old owner.
+        descriptor = self.backend.data["descriptors"]["ref-1"]
+        descriptor.pop("input_contract")
+        self.backend.save()
+        self.assertEqual(self.remote.capabilities()["input_contract"], "frame-bound-v1")
+        status, _, raw = self.req("POST", path + "/tap", {
+            "session_id": sid, "request_id": "old-owner-input", "frame_id": "frame-1", "x": 0, "y": 0}, auth)
+        rejected = json.loads(raw)
+        self.assertEqual((status, rejected["code"]), (409, "input_contract_unavailable"))
+        self.assertEqual((rejected["request_id"], rejected["session_id"]), ("old-owner-input", sid))
+        status, _, raw = self.req("GET", path + f"/requests/frame-tap?session_id={sid}", headers=auth)
+        self.assertEqual((status, json.loads(raw)), (200, json.loads(tapped.stdout)))
+        status, headers, data = self.req("GET", path + f"/requests/frame-1?session_id={sid}&image=1", headers=auth)
+        self.assertEqual((status, data), (200, PNG))
+        self.assertEqual(json.loads(headers["X-Meta"])["result"], image)
+        self.assertEqual(self.backend.mutations(), before)
+        descriptor["input_contract"] = "frame-bound-v1"
+        self.backend.save()
+
+        second = action("frame-2", "screenshot", "--params", '{"max_side":1}')
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        self.backend.lose_reply.add("uncertain-swipe")
+        uncertain = action("uncertain-swipe", "swipe", "--frame-id", "frame-2", "--params",
+                           '{"x1":0,"y1":0,"x2":0,"y2":0,"ms":1}')
+        self.assertEqual(uncertain.returncode, 4, uncertain.stderr + uncertain.stdout)
+        value = json.loads(uncertain.stdout)
+        self.assertEqual((value["status"], value["request_id"]), ("unknown", "uncertain-swipe"))
+        self.assertTrue(value["query_required"])
+        self.assertEqual(self.backend.data["requests"]["ref-1:uncertain-swipe"]["params"], {
+            "frame_id": "frame-2", "x1": 0, "y1": 0, "x2": 0, "y2": 0, "ms": 1})
+        before = self.backend.mutations()
+        found = cli("receipt", SERIAL, "uncertain-swipe", "--session-id", sid)
+        self.assertEqual(found.returncode, 4, found.stderr + found.stdout)
+        self.assertEqual(json.loads(found.stdout)["status"], "unknown")
+        self.assertEqual(self.backend.mutations(), before)
+        self.assertEqual([c[2] for c in self.backend.calls if c[0] == "submit"],
+                         ["frame-1", "frame-tap", "frame-2", "uncertain-swipe"])
 
     def test_http_mcp_query_pending_and_unsupported_upload_without_body_read(self):
         auth = self.bearer(self.alice_token)

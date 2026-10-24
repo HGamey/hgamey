@@ -39,6 +39,10 @@ remote action "$SERIAL" screenshot --session-id "$SESSION_ID" \
   --request-id "$SCREENSHOT_ID" --params '{"max_side":1280}' --out "$OUT_FILE"
 remote receipt "$SERIAL" "$SCREENSHOT_ID" --session-id "$SESSION_ID"
 
+# 仅当该截图仍具输入资格时，用原图像素提交一次点击。
+remote action "$SERIAL" tap --session-id "$SESSION_ID" --request-id "$TAP_ID" \
+  --frame-id "$SCREENSHOT_ID" --params '{"x":100,"y":200}'
+
 # 用单独的动作 ID 请求关闭，再查询原会话。
 remote action "$SERIAL" release --session-id "$SESSION_ID" --request-id "$RELEASE_ID"
 remote session "$SERIAL" --session-id "$SESSION_ID"
@@ -58,22 +62,27 @@ CLI 退出码：`0` 为正常返回，`1` 为拒绝/失败/未执行或输入错
 
 | ACTION | 参数 |
 | --- | --- |
-| `tap` | `x`, `y` |
-| `swipe` | `x1`, `y1`, `x2`, `y2`, `ms`（默认 300，范围 1–10000） |
+| `tap` | `frame_id`, `x`, `y` |
+| `swipe` | `frame_id`, `x1`, `y1`, `x2`, `y2`, `ms`（默认 300，范围 1–10000） |
 | `text` | `text`，1–1000 个非控制字符；实际输入支持仍取决于设备 |
 | `key` | `key`，Android keycode 0–400，或服务端支持的按键名 |
 | `screenshot` | `max_side`，默认 1280，范围 0–8192；0 请求原尺寸 PNG |
 | `app_start` / `app_stop` | `package`；start 可带 `activity` |
 | `renew` / `release` | `{}` |
 
-坐标是设备原始像素，整数范围 0–100000。截图可缩小；普通回执的原尺寸是 `result.original_size`，图片响应的 `X-Meta`（CLI 打印的元数据）另含顶层 `size`。按原尺寸换算，不能拿预览像素直接点击。截图原件上限 8 MiB。`shell`、`install`、`uninstall`、`push`、`pull`、`logcat` 当前明确不支持；不退回旧 raw API 或自行运行远程 ADB 来补齐。
+`tap/swipe` 必须明确指定源截图：可用 `--frame-id` 或 `params.frame_id`，两处同时给出时必须相同。会话 descriptor 必须声明 `input_contract: frame-bound-v1`，且当前 `input_frame_id` 对应所选截图；节点总能力不能升级旧 owner。缺此合同的会话仍可读取原图和原回执，坐标 POST 返回 `input_contract_unavailable`，不能改用旧 raw API。
+
+截图 `result` 保留 `frame_id`、`session_id`、`serial`、`captured_at` 和 `rotation`。原图尺寸是 `original_size` / `source_width` / `source_height`，`width/height` 是传输图尺寸；图片响应的 `X-Meta` 另含顶层 `size`。坐标用原图像素并须在图内，不能直接用预览像素或猜测旋转。方向未知（`rotation: null`）的图片可看但不能输入；截图须在会话的 `frame_max_age_seconds` 内，当前为 30 秒，重读图片或续期不刷新采集时间。开始截图或任何输入/应用动作会取消原图输入资格；下一次坐标动作需显式取得新截图。PF 在注入前再次核图像尺寸和方向，命令完成不证明应用已响应。
+
+截图原件上限 8 MiB。`shell`、`install`、`uninstall`、`push`、`pull`、`logcat` 当前明确不支持；不退回旧 raw API 或自行运行远程 ADB 来补齐。未知结果只查原动作 ID，不自动截图或换 ID 重放。
 
 ## MCP、网页和进一步资料
 
-`/remote/mcp` 使用操作员认证。工具包括 `hgremote_devices`、`hgremote_acquire`、`hgremote_status`，以及 `hgremote_` 前缀的上表动作。接管必须带 `request_id`；动作必须带 `serial`、`session_id`、`request_id`。MCP 客户端也需固定 `X-Expected-Node-ID`、确认节点/动作能力并拒绝跨重定向转发凭据；不能满足这些条件时使用当前 CLI，不照搬旧的仅 Authorization 配置。
+`/remote/mcp` 使用操作员认证。工具包括 `hgremote_devices`、`hgremote_acquire`、`hgremote_status`，以及 `hgremote_` 前缀的上表动作。接管必须带 `request_id`；动作必须带 `serial`、`session_id`、`request_id`，tap/swipe 另须 `frame_id`。MCP 客户端也需固定 `X-Expected-Node-ID`、确认节点/动作能力并拒绝跨重定向转发凭据；不能满足这些条件时使用当前 CLI，不照搬旧的仅 Authorization 配置。
 
 人可使用节点的 `/dash/control`。共享研究目标、方向、协助与反馈接续见可选的 [hgamey-research](../hgamey-research/SKILL.md)，无需把一次 UI 操作扩展成研究流程。
 
 - [目标身份合同](https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/FLEET-TARGET.md)
 - [远程所有权与恢复边界](https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/REMOTE-OWNERSHIP-REPAIR.md)
+- [截图绑定输入合同](https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/CONTROL-FRAME.md)
 - 精确参数以当前 `python3 node/pf-remote --help`、子命令 help 和实例返回能力为准；文档存在不代表该节点已部署对应版本。

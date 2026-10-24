@@ -331,18 +331,19 @@ def _run(argv, timeout, cap=OUTPUT_CAP, env=None):
 
 
 ACTIONS = {'screenshot', 'tap', 'swipe', 'text', 'key', 'app_start', 'app_stop'}
+INPUT_CONTRACT = 'frame-bound-v1'
 UNSUPPORTED = {'shell', 'install', 'uninstall', 'push', 'pull', 'logcat'}
 BINARY_UPLOAD = {}  # Legacy uploads are refused before reading their body.
 
 
-def valid_request_id(value):
+def valid_request_id(value, field='request_id'):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', value):
-        raise RemoteError(400, 'request_id requires 1..64 ASCII letters, digits, dot, underscore or hyphen')
+        raise RemoteError(400, f'{field} requires 1..64 ASCII letters, digits, dot, underscore or hyphen')
     return value
 
 
 def validate_action(action, params):
-    fields = {'tap': {'x', 'y'}, 'swipe': {'x1', 'y1', 'x2', 'y2', 'ms'},
+    fields = {'tap': {'frame_id', 'x', 'y'}, 'swipe': {'frame_id', 'x1', 'y1', 'x2', 'y2', 'ms'},
               'text': {'text'}, 'key': {'key'}, 'screenshot': {'max', 'max_side'},
               'app_start': {'package', 'activity'}, 'app_stop': {'package'}, 'renew': set(), 'release': set()}
     if set(params) - fields[action]:
@@ -352,6 +353,7 @@ def validate_action(action, params):
         if type(p.get(key)) is not int or not low <= p[key] <= high:
             raise RemoteError(400, f'{key} requires integer {low}..{high}')
     if action in ('tap', 'swipe'):
+        valid_request_id(p.get('frame_id'), 'frame_id')
         for key in ('x', 'y') if action == 'tap' else ('x1', 'y1', 'x2', 'y2'):
             integer(key, 0, 100000)
         if action == 'swipe':
@@ -420,7 +422,9 @@ class Remote:
                 'reason': self.backend.reason if self.backend else 'PF remote owner is not configured',
                 'actions': ['acquire'] + [aliases.get(x, x) for x in self.backend.actions]
                            if self.backend and self.backend.available else [],
-                'ownership': 'strong-lease-v1', 'unsupported': sorted(UNSUPPORTED)}
+                'ownership': 'strong-lease-v1',
+                'input_contract': getattr(self.backend, 'input_contract', None),
+                'unsupported': sorted(UNSUPPORTED)}
 
     def _enumerate(self):
         # These commands enumerate the host transport server; they do not probe
@@ -615,6 +619,14 @@ class Remote:
                 if action != 'release' and not self.policy.enabled(serial):
                     self._submit(sess, 'release', {}, 'node-policy-close')
                     raise RemoteError(403, '设备已关闭远程开放；正在有序交回')
+                if action in ('tap', 'swipe'):
+                    # A new helper's capabilities cannot upgrade a saved owner.
+                    # Receipt GET remains available, including for old owners.
+                    self._refresh(sess)
+                    if sess.descriptor.get('input_contract') != INPUT_CONTRACT:
+                        raise RemoteError(409, 'session does not support frame-bound input; query the original request ID to retrieve an existing receipt',
+                            code='input_contract_unavailable', request_id=rid,
+                            session_id=params.get('session_id'), required_input_contract=INPUT_CONTRACT)
                 cleaned = {k: v for k, v in params.items() if k not in ('request_id', 'session_id')}
                 normalized = validate_action(action, cleaned)
                 mapped = {'app_start': 'start_app', 'app_stop': 'stop_app'}.get(action, action)
@@ -689,10 +701,17 @@ for _action, _props in {
     'app_start': {'package': {'type': 'string'}, 'activity': {'type': 'string'}},
     'app_stop': {'package': {'type': 'string'}},
 }.items():
+    _required = ['serial', 'session_id', 'request_id']
+    _input_hint = ''
+    if _action in ('tap', 'swipe'):
+        _props['frame_id'] = {'type': 'string', 'pattern': r'^[A-Za-z0-9_.-]{1,64}$'}
+        _required.append('frame_id')
+        _input_hint = (' Requires the source screenshot frame_id and original image pixel coordinates; '
+                       'the session must declare frame-bound-v1. Never capture or replay automatically.')
     MCP_TOOLS.append(('hgremote_' + _action,
         'Submit one typed PF action. accepted/started are pending; unknown requires querying the same request_id. '
-        'release closes admission and waits for current action; only session phase closed proves handback.',
-        _schema({**_S, **_props}, ['serial', 'session_id', 'request_id'])))
+        'release closes admission and waits for current action; only session phase closed proves handback.' + _input_hint,
+        _schema({**_S, **_props}, _required)))
 MCP_ACTION = {name: name.removeprefix('hgremote_') for name, _, _ in MCP_TOOLS if name not in ('hgremote_devices', 'hgremote_status')}
 
 
@@ -719,7 +738,7 @@ def mcp_call(remote, op, ip, name, args):
     if isinstance(out, tuple):
         meta, data, mime = out
         if action == "screenshot":
-            note = {**meta, "hint": "tap/swipe 用设备像素：按 size（原始宽高）换算缩放后的图片坐标"}
+            note = {**meta, "hint": "tap/swipe 必须携本次截图 result.frame_id，按 result.original_size 换算原图像素；资格由当前会话 input_frame_id 决定"}
             return [{"type": "image", "data": base64.b64encode(data).decode(), "mimeType": mime},
                     {"type": "text", "text": json.dumps(note, ensure_ascii=False)}], False
         return [{"type": "text", "text": json.dumps({**meta, "data_base64": base64.b64encode(data).decode()})}], False

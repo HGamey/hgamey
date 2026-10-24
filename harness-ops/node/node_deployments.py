@@ -289,8 +289,8 @@ class NodeDeployments:
             row = children[0]
             target = row["job_id"]
             try:
-                row, request = self._bound(target)
                 status = self.jobs.status(target)
+                row, request = self._bound(target)
                 report, _ = self._report(target, request)
             except (OSError, ValueError, KeyError, DeploymentError):
                 return {"supported": supported, "eligible": False, "target_job_id": target,
@@ -300,8 +300,10 @@ class NodeDeployments:
                 "target_job_id": target, "reason": reason}
 
     def get(self, jid, rows=None):
-        row, request = self._bound(jid)
         job = self.jobs.status(jid)
+        # Finalization may commit while status is read. Do not qualify that
+        # finished status against a queue row captured before the read.
+        row, request = self._bound(jid)
         report, error = self._report(jid, request)
         kind = operation(request)
         return {"schema_version": 1, "job": job,

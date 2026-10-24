@@ -6,11 +6,12 @@
   const PHASE = { ready: "可操作", starting: "正在建立会话", closing: "正在交回，等待当前动作收尾", closed: "会话已关闭", recovery_required: "需要恢复核查", unknown: "会话状态未知" };
   const STATUS = { accepted: "已接受，尚未完成", started: "已开始，尚未完成", completed: "已完成", failed: "失败", unknown: "结果未知", not_executed: "未执行" };
   const ACTION = { acquire: "接管", release: "交回", renew: "续期", screenshot: "截图", tap: "点击", swipe: "滑动", text: "输入文本", key: "按键", app_start: "启动应用", app_stop: "强停应用" };
+  const FRAME_ERROR = { input_contract_unavailable: "此会话未提供截图绑定输入", frame_unavailable: "来源截图已不可输入，请显式采集新图", frame_stale: "来源截图已过期，请显式采集新图", frame_orientation_unknown: "截图方向未确认，不能输入", coordinate_out_of_bounds: "坐标超出原图范围", frame_geometry_changed: "设备尺寸或方向已变化，请显式采集新图" };
   const TERMINAL = new Set(["completed", "failed", "not_executed"]);
   const state = { op: undefined, devices: [], capabilities: null, devicesFresh: false, devicesError: "尚未读取状态",
     serial: null, binding: null, session: null, sessionFresh: false, sessionError: "", live: null, frame: null, url: null,
     requests: [], selectedRequest: null, posting: false, querying: false, authBusy: false, refreshing: false,
-    revision: 0, refreshCtl: null, timer: 0 };
+    revision: 0, imageRevision: 0, refreshCtl: null, timer: 0 };
 
   function message(value) { return typeof value === "string" ? value : value?.message || value?.error || "请求失败"; }
   function msg(text, err) { $("msg").textContent = text || ""; $("msg").classList.toggle("err", !!err); }
@@ -18,7 +19,7 @@
   const query = (values) => "?" + new URLSearchParams(values).toString();
   function save() {
     try { sessionStorage.setItem(STORAGE, JSON.stringify({ serial: state.serial, binding: state.binding,
-      requests: state.requests.map(({ id, serial, session_id, action, status, at, target }) => ({ id, serial, session_id, action, status, at, target })), selectedRequest: state.selectedRequest })); }
+      requests: state.requests.map(({ id, serial, session_id, action, status, at, target, input }) => ({ id, serial, session_id, action, status, at, target, ...(input ? {input} : {}) })), selectedRequest: state.selectedRequest })); }
     catch (_) { /* 页面仍保留原 ID，回执区可手工记录。 */ }
   }
   try {
@@ -88,7 +89,8 @@
     if (state.session.recovery?.required !== false) return "恢复状态未确认或仍需核查，禁止新操作。";
     return "";
   }
-  function canAction(action) { return !sessionReason() && !state.posting && !state.authBusy && actionSupported(action) && (action === "release" ? !unresolved("release") : !unresolved()); }
+  const coordinateAction = action => action === "tap" || action === "swipe";
+  function canAction(action) { return !sessionReason() && !state.posting && !state.authBusy && actionSupported(action) && (action === "release" ? !unresolved("release") : !unresolved()) && (!coordinateAction(action) || !frameReason()); }
   function holderText(d) {
     const h = d.holder;
     if (!state.devicesFresh) return "上次观测；当前状态未知";
@@ -97,7 +99,25 @@
     if (h.kind === "experiment") return "实验占用：" + (h.label || "未知");
     return "设备 lease 占用或待核查";
   }
-  function invalidateFrame() { if (state.frame) state.frame.inputValid = false; }
+  function invalidateFrame() { ++state.imageRevision; if (state.frame) state.frame.inputValid = false; }
+  function frameTime(frame) { return typeof frame?.captured_at === "number" ? frame.captured_at * 1000 : Date.parse(frame?.captured_at); }
+  function frameReason() {
+    const reason = sessionReason(), f = state.frame;
+    if (reason) return reason;
+    if (state.session.input_contract !== "frame-bound-v1") return "此旧会话未提供截图绑定输入；可继续查看截图、使用其他已支持操作或交回。";
+    if (!f) return "先显式采集本会话截图。";
+    if (!f.bound || f.serial !== state.serial || f.session_id !== state.binding.session_id) return "截图缺少本设备、本会话的完整 frame 身份。";
+    if (!f.decoded || !f.displayed) return "截图尚未完成解码、尺寸核对和显示。";
+    if (!Number.isInteger(f.rotation) || f.rotation < 0 || f.rotation > 3) return "截图方向未确认，仅可查看。";
+    if (state.session.input_frame_id !== f.frame_id) return "owner 未授权此图输入；请显式采集新图。";
+    const age = Date.now() - frameTime(f), maxAge = state.session.frame_max_age_seconds;
+    if (!Number.isFinite(age) || age < 0) return "截图采集时间未确认或晚于当前时间，不能输入。";
+    if (!Number.isFinite(maxAge) || maxAge <= 0) return "会话未提供截图有效期，不能输入。";
+    if (age > maxAge * 1000) return `截图已超过 ${maxAge} 秒，请显式采集新图。`;
+    if (!f.inputValid) return "本页输入资格已撤销；请显式采集新图。";
+    if (state.posting || state.querying || state.authBusy || unresolved()) return "动作或回执尚待确认；先查询原请求。";
+    return "";
+  }
   function acquisitionStatus(s) { return s.not_started === true ? "not_executed" : s.session_id ? "completed" : "unknown"; }
   function sessionText(s) { return s.phase === "closed" && s.original_outcome === "unknown" ? "已核验并关闭，原启动结果未知" : PHASE[s.phase] || PHASE.unknown; }
   function requestStatus(r) {
@@ -107,14 +127,15 @@
     return STATUS[r.status] || STATUS.unknown;
   }
   function renderFrame() {
-    const f = state.frame;
-    const valid = f?.inputValid && !sessionReason() && !unresolved() && !state.posting;
+    const f = state.frame, reason = frameReason(), valid = !!f && !reason;
     $("hg-screen").classList.toggle("stale", !!f && !valid);
     $("hg-screen").classList.toggle("input-ready", !!valid);
-    if (!f) { $("frame-info").textContent = "共享画面仅供查看；采集本会话截图后才可触控。"; return; }
-    const at = typeof f.captured_at === "number" ? f.captured_at * 1000 : Date.parse(f.captured_at);
-    const time = Number.isFinite(at) ? `采集于 ${new Date(at).toLocaleTimeString()} · 约 ${Math.max(0, Math.floor((Date.now() - at) / 1000))} 秒前` : "采集时间未提供";
-    $("frame-info").textContent = `${time} · ${f.width} × ${f.height} · 请求 ${f.request_id}。${valid ? "可点击或拖动；截图不保证当前场景未变化。" : "保留旧图，当前不可触控；确认会话后显式重新采集。"}`;
+    if (!f) { $("frame-info").textContent = "共享画面仅供查看。" + reason; return; }
+    const at = frameTime(f), age = Date.now() - at;
+    const time = Number.isFinite(at) ? `采集于 ${new Date(at).toLocaleTimeString()} · ${age >= 0 ? `约 ${Math.floor(age / 1000)} 秒前` : "采集时间晚于当前时间"}` : "采集时间未提供";
+    const scaled = f.width !== f.imageWidth || f.height !== f.imageHeight ? ` · 传输图 ${f.imageWidth} × ${f.imageHeight}` : "";
+    const rotation = Number.isInteger(f.rotation) ? `${f.rotation}（SurfaceOrientation）` : "未知";
+    $("frame-info").textContent = `设备 ${f.serial} · frame ${f.frame_id || "未提供"} · 原图 ${f.width} × ${f.height}${scaled} · 方向 ${rotation} · ${time}。${valid ? "可点击或拖动；同尺寸与方向不保证游戏内容未变化。" : "保留图片，仅供查看：" + reason}`;
   }
   function renderReceipt() {
     const rows = state.requests.filter(r => r.serial === state.serial), select = $("request-select");
@@ -124,7 +145,10 @@
     const r = rows.find(r => r.id === state.selectedRequest);
     $("check-request").disabled = !state.op || !r || !!(r && HGTarget.problem(r.target || null)) || state.querying || state.authBusy || state.posting;
     $("check-request").textContent = state.querying ? "查询中…" : "查询原请求";
-    $("request-info").textContent = (r && HGTarget.problem(r.target || null)) || (r ? `${ACTION[r.action]}：${requestStatus(r)}。请求 ID ${r.id}${r.session_id ? "；会话 " + r.session_id : "；按接管请求 ID 查询会话"}。${r.action === "release" ? "交回须以会话 closed 为准；接受请求不代表已释放。" : "未决或网络错误只查询原 ID，不自动重发动作。"}${r.error ? " " + r.error : ""}` : "尚无动作。接受请求只表示已记录，须查询实际完成状态。");
+    const source = r?.input ? `来源 frame ${r.input.frame_id}；原图坐标 ${r.action === "tap" ? `${r.input.x}, ${r.input.y}` : `${r.input.x1}, ${r.input.y1} → ${r.input.x2}, ${r.input.y2}`}。` : "";
+    const code = r?.receipt?.error_code || r?.receipt?.result?.code;
+    const result = r?.receipt?.result?.input_issued === false ? "动作已开始核验，但未发出坐标输入。" : r?.receipt?.result?.input_issued === true ? "已发出输入命令；不证明应用已响应。" : "";
+    $("request-info").textContent = (r && HGTarget.problem(r.target || null)) || (r ? `${ACTION[r.action]}：${requestStatus(r)}。请求 ID ${r.id}${r.session_id ? "；会话 " + r.session_id : "；按接管请求 ID 查询会话"}。${source}${result}${code ? (FRAME_ERROR[code] || code) + "。" : ""}${r.action === "release" ? "交回须以会话 closed 为准；接受请求不代表已释放。" : "未决或网络错误只查询原 ID，不自动重发动作。"}${r.error ? " " + r.error : ""}` : "尚无动作。接受请求只表示已记录，须查询实际完成状态。");
     $("out").textContent = r?.receipt ? JSON.stringify(r.receipt, null, 2) : r?.error || "";
   }
   function render() {
@@ -215,14 +239,14 @@
       if (revision === state.revision && !ctl.signal.aborted) { state.devicesFresh = false; state.sessionFresh = false; state.devicesError = e.message; invalidateFrame(); msg("当前状态未确认：" + e.message, true); }
     } finally { if (state.refreshCtl === ctl) { state.refreshCtl = null; state.refreshing = false; render(); } }
   }
-  function addRequest(action, session_id) {
-    const r = { id: crypto.randomUUID(), serial: state.serial, session_id: session_id || null, action, status: "unknown", at: Date.now(), target: HGTarget.binding() };
+  function addRequest(action, session_id, input) {
+    const r = { id: crypto.randomUUID(), serial: state.serial, session_id: session_id || null, action, status: "unknown", at: Date.now(), target: HGTarget.binding(), ...(input ? {input: {...input}} : {}) };
     state.requests = state.requests.filter((item, i, all) => !TERMINAL.has(item.status) || i >= all.length - 19);
     state.requests.push(r); state.selectedRequest = r.id; save(); return r;
   }
   function receipt(r, value) {
     if (!value || value.request_id !== r.id || value.session_id !== r.session_id || !STATUS[value.status]) throw new Error("动作回执身份或状态不匹配，请查询原 ID");
-    r.status = value.status; r.receipt = value; r.error = value.error ? message(value.error) : null; save();
+    r.status = value.status; r.receipt = value; r.error = value.error || value.result?.error ? message(value.error || value.result.error) : null; save();
   }
   function unknownRequest(r, e) {
     r.status = e.httpStatus >= 400 && e.httpStatus < 500 && e.httpStatus !== 409 ? "failed" : "unknown";
@@ -230,33 +254,56 @@
     msg(`请求 ${r.id}：${e.message}。不会自动重发。`, true);
   }
   async function showImage(r, image, knownMeta) {
+    const generation = ++state.imageRevision, revision = state.revision;
+    const current = () => generation === state.imageRevision && revision === state.revision && !document.hidden && !HGTarget.problem(r.target || null)
+      && state.serial === r.serial && state.binding?.session_id === r.session_id && state.selectedRequest === r.id;
     let response = image;
     if (!response) response = await call("GET", dev(r.serial, "requests/" + encodeURIComponent(r.id)) + query({ session_id: r.session_id, image: "1" }), null, {target:r.target || null});
     const meta = response.meta || knownMeta;
     if (!response.blob || !meta || meta.request_id !== r.id || meta.session_id !== r.session_id || meta.status !== "completed") throw new Error("截图身份未确认，保留旧图并查询原请求");
     const result = meta.result || knownMeta || {};
-    const size = meta.size || result.original_size || (result.width && result.height ? [result.width, result.height] : null);
+    const size = result.original_size || (result.source_width && result.source_height ? [result.source_width, result.source_height] : meta.size);
     if (!Array.isArray(size) || size.length !== 2 || !size.every(n => Number.isInteger(n) && n > 0)) throw new Error("截图未提供可用的像素尺寸");
-    if (state.serial !== r.serial || state.binding?.session_id !== r.session_id || state.selectedRequest !== r.id) return;
-    dropLive();
-    const url = URL.createObjectURL(response.blob), old = state.url; state.url = url;
-    const img = $("hg-screen"); img.onload = () => { if (old) URL.revokeObjectURL(old); }; img.src = url; img.hidden = false; $("screen-empty").hidden = true;
-    const latest = state.requests.filter(item => item.serial === r.serial && item.session_id === r.session_id && !["acquire", "renew"].includes(item.action)).at(-1);
-    state.frame = { request_id: r.id, session_id: r.session_id, width: size[0], height: size[1], captured_at: meta.captured_at || result.captured_at || null, inputValid: latest?.id === r.id && !document.hidden && !sessionReason() };
+    if (![result.width, result.height].every(n => Number.isInteger(n) && n > 0)) throw new Error("截图未提供传输图片尺寸");
+    for (const [key, expected] of [["frame_id", r.id], ["session_id", r.session_id], ["serial", r.serial]]) {
+      if (result[key] != null && result[key] !== expected) throw new Error("截图内容的设备、会话或 frame 身份不匹配");
+    }
+    if (!current()) return;
+    const url = URL.createObjectURL(response.blob), decoded = new Image();
+    let shown = false;
+    try {
+      decoded.src = url;
+      await decoded.decode();
+      if (decoded.naturalWidth !== result.width || decoded.naturalHeight !== result.height) throw new Error("图片解码尺寸与截图回执不一致");
+      if (!current()) return;
+      const frame = { request_id: r.id, frame_id: result.frame_id || null, serial: r.serial, session_id: r.session_id,
+        bound: result.frame_id === r.id && result.session_id === r.session_id && result.serial === r.serial,
+        width: size[0], height: size[1], imageWidth: decoded.naturalWidth, imageHeight: decoded.naturalHeight,
+        rotation: Number.isInteger(result.rotation) && result.rotation >= 0 && result.rotation <= 3 ? result.rotation : null,
+        captured_at: result.captured_at ?? meta.captured_at ?? null, decoded: true, displayed: false, inputValid: true };
+      dropLive();
+      const old = state.url, img = $("hg-screen");
+      img.onload = () => { if (old) URL.revokeObjectURL(old); if (state.frame === frame) { frame.displayed = true; renderFrame(); } };
+      img.onerror = () => { if (old) URL.revokeObjectURL(old); if (state.frame === frame) { invalidateFrame(); msg("截图显示失败，保留动作回执；请查询原请求。", true); renderFrame(); } };
+      state.url = url; state.frame = frame; shown = true;
+      img.src = url; img.hidden = false; $("screen-empty").hidden = true;
+    } finally { if (!shown) URL.revokeObjectURL(url); }
   }
   async function displayImage(r, image, knownMeta) {
+    const generation = state.imageRevision + 1;
     try { await showImage(r, image, knownMeta); }
-    catch (e) { r.error = "动作回执已取得，但图片未显示：" + e.message; invalidateFrame(); }
+    catch (e) { r.error = "动作回执已取得，但图片未显示：" + e.message; if (generation === state.imageRevision) invalidateFrame(); }
   }
   function supersedeRead() {
     state.revision++; state.refreshCtl?.abort();
   }
   async function act(action, body = {}) {
-    if (!canAction(action)) { msg(sessionReason() || "当前动作不可用，先查询未决请求或确认能力。", true); return; }
+    if (!canAction(action)) { msg((coordinateAction(action) ? frameReason() : sessionReason()) || "当前动作不可用，先查询未决请求或确认能力。", true); return; }
+    if (coordinateAction(action) && body.frame_id !== state.frame.frame_id) { msg("截图已变化，本次输入未提交；请依据当前图重新操作。", true); return; }
     supersedeRead();
-    const r = addRequest(action, state.binding.session_id), revision = state.revision;
+    const r = addRequest(action, state.binding.session_id, coordinateAction(action) ? body : null), revision = state.revision;
     state.posting = true;
-    if (action !== "renew") invalidateFrame();
+    if (action !== "renew") { invalidateFrame(); state.sessionFresh = false; state.sessionError = "动作提交后须重新读取 owner 的截图资格。"; }
     render();
     try {
       const path = dev(r.serial, action === "release" ? "session" : action);
@@ -316,19 +363,35 @@
   }
   function bindPointer(el) {
     let down = null;
-    function pos(ev) {
-      const f = state.frame, rect = el.getBoundingClientRect();
-      if (!f?.inputValid || sessionReason() || unresolved() || state.posting || !rect.width || !rect.height) return null;
-      return [Math.min(f.width - 1, Math.max(0, Math.round((ev.clientX - rect.left) / rect.width * f.width))), Math.min(f.height - 1, Math.max(0, Math.round((ev.clientY - rect.top) / rect.height * f.height))), ev.clientX, ev.clientY];
+    function pos(ev, frame, rect) {
+      const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+      if (!rect.width || !rect.height || x < 0 || y < 0 || x >= rect.width || y >= rect.height) return null;
+      return [Math.floor(x / rect.width * frame.width), Math.floor(y / rect.height * frame.height)];
     }
-    el.addEventListener("pointerdown", ev => { const p = pos(ev); if (!p || !canAction("tap")) return; down = { p, at: Date.now(), frame: state.frame, session: state.binding?.session_id }; el.setPointerCapture(ev.pointerId); ev.preventDefault(); });
+    const sameRect = (a, b) => ["left", "top", "width", "height"].every(key => a[key] === b[key]);
+    function cancel(reason) { down = null; msg(reason, true); renderFrame(); }
+    el.addEventListener("pointerdown", ev => {
+      if (!ev.isPrimary || ev.button !== 0 || (!canAction("tap") && !canAction("swipe"))) return;
+      const frame = state.frame, rect = el.getBoundingClientRect(), p = pos(ev, frame, rect);
+      if (!p) return;
+      down = { p, clientX: ev.clientX, clientY: ev.clientY, at: Date.now(), frame, rect, pointer: ev.pointerId, session: state.binding.session_id };
+      el.setPointerCapture(ev.pointerId); ev.preventDefault();
+    });
+    el.addEventListener("pointermove", ev => {
+      if (down?.pointer === ev.pointerId && !pos(ev, down.frame, down.rect)) cancel("拖动已超出图片，本次输入已取消。请在图内重新操作。");
+    });
     el.addEventListener("pointercancel", () => { down = null; });
+    el.addEventListener("lostpointercapture", () => { down = null; });
     el.addEventListener("pointerup", ev => {
       const d = down; down = null;
-      if (!d || d.frame !== state.frame || d.session !== state.binding?.session_id) return;
-      const p = pos(ev); if (!p) return;
-      if (Math.hypot(p[2] - d.p[2], p[3] - d.p[3]) > 8) act("swipe", { x1: d.p[0], y1: d.p[1], x2: p[0], y2: p[1], ms: Math.min(5000, Math.max(80, Date.now() - d.at)) });
-      else act("tap", { x: d.p[0], y: d.p[1] });
+      if (!d || d.pointer !== ev.pointerId) return;
+      const reason = frameReason();
+      if (d.frame !== state.frame || d.session !== state.binding?.session_id || !sameRect(d.rect, el.getBoundingClientRect()) || reason) { cancel(reason || "截图或显示位置已变化，本次输入已取消。"); return; }
+      const p = pos(ev, d.frame, d.rect);
+      if (!p) { cancel("结束位置超出图片，本次输入已取消。"); return; }
+      const frame_id = d.frame.frame_id;
+      if (Math.hypot(ev.clientX - d.clientX, ev.clientY - d.clientY) > 8) act("swipe", { frame_id, x1: d.p[0], y1: d.p[1], x2: p[0], y2: p[1], ms: Math.min(5000, Math.max(80, Date.now() - d.at)) });
+      else act("tap", { frame_id, x: d.p[0], y: d.p[1] });
     });
   }
   document.addEventListener("hgamey-target-change", () => { if (!HGTarget.canWrite()) invalidateFrame(); render(); });

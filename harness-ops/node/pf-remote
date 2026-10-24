@@ -4,6 +4,7 @@ import argparse
 from http.client import HTTPException
 import json
 from pathlib import Path
+import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -33,6 +34,7 @@ def main(argv=None):
     action.add_argument('--session-id', required=True)
     action.add_argument('--request-id', required=True)
     action.add_argument('--params', default='{}', help='typed JSON action parameters')
+    action.add_argument('--frame-id', help='source screenshot request ID for tap/swipe; coordinates use original image pixels')
     action.add_argument('--out', help='new output file for a completed screenshot')
     receipt = subs.add_parser('receipt')
     receipt.add_argument('serial')
@@ -64,6 +66,15 @@ def main(argv=None):
             params = json.loads(args.params)
             if not isinstance(params, dict) or {'session_id','request_id'} & params.keys():
                 ap.error('--params must be an object without session_id/request_id')
+            if args.frame_id is not None:
+                if args.action not in ('tap', 'swipe'):
+                    ap.error('--frame-id is only supported for tap/swipe')
+                if 'frame_id' in params and params['frame_id'] != args.frame_id:
+                    ap.error('--frame-id conflicts with params.frame_id')
+                params['frame_id'] = args.frame_id
+            if args.action in ('tap', 'swipe'):
+                if not isinstance(params.get('frame_id'), str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', params['frame_id']):
+                    ap.error('tap/swipe require --frame-id or params.frame_id: 1..64 ASCII letters, digits, dot, underscore or hyphen')
             method, path = ('DELETE', path + '/session') if args.action == 'release' else ('POST', path + '/' + args.action)
             body = {**params, 'session_id': args.session_id, 'request_id': args.request_id}
             query_context = {'session_id': args.session_id, 'request_id': args.request_id, 'serial': args.serial}

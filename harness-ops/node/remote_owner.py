@@ -24,6 +24,7 @@ class PFRemote:
         self.store = SafeRoot(str(self.root))
         self.processes = {}
         self.available, self.actions = False, []
+        self.input_contract = None
         self.reason = "configured PF lacks strong remote owner; raw device fallback disabled"
         try:
             cap = self._call(["capabilities", "--json"])
@@ -31,6 +32,7 @@ class PFRemote:
                               and cap.get("ownership") == "strong-lease-v1")
             if self.available:
                 self.actions = cap["actions"]
+                self.input_contract = cap.get("input_contract")
                 self.reason = None
         except (OwnerError, KeyError):
             pass
