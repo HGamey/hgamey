@@ -22,7 +22,8 @@ HELP = """用法:
   pf-node research create KIND ID FILE [--operation-id ID] [--actor-label TEXT] [--reason TEXT]
   pf-node research update KIND ID FILE --revision N --reason TEXT [--operation-id ID] [--actor-label TEXT]
   pf-node research operation ID
-  pf-node research events [--after N] [--research-id ID] [--limit 1..500]
+  pf-node research events [--after N | --cursor CURSOR] [--research-id ID] [--limit 1..500]
+      [--wait-seconds 0..15]
   pf-node research media REQUEST A|B --revision N --output FILE
 
 KIND 为 research/direction/request/feedback。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
@@ -30,6 +31,10 @@ update 是带原 revision 的并发更新，必须说明理由；feedback 不可
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
 输出与网页同一 API JSON；错误仅保安全错误码、HTTP 状态与 current_revision，不回显源正文。
+events 使用 cursor 或 wait>0 时需显式 node-id 与 research.watch-v1；只发一次事件 GET，
+空等成功退出，不自动重试、翻页或保存/确认消费位置。429 仅提示安全 retry_after_seconds。
+next_cursor 是本批读取位置；处理并保存相应决定后才可作为自己的 checkpoint，head 不是进度。
+失败保留原游标；事件只含研究元数据提交，不含 job/result/设备状态，不会自动唤醒运行器。
 request/feedback data 实际含 evaluation 时需 research.evaluation-v1；旧字段缺席不会补默认值。
 media 只读下载固定版本的一个槽位，需显式 node-id 与评价能力。仅支持 PNG/JPEG/MP4/WebM，
 图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
@@ -93,9 +98,12 @@ def parser():
     operation = commands.add_parser("operation")
     operation.add_argument("id", type=identifier)
     events = commands.add_parser("events")
-    events.add_argument("--after", type=lambda v: integer(v, minimum=0))
+    position = events.add_mutually_exclusive_group()
+    position.add_argument("--after", type=lambda v: integer(v, minimum=0))
+    position.add_argument("--cursor")
     events.add_argument("--research-id", type=identifier)
     events.add_argument("--limit", type=lambda v: integer(v, maximum=500))
+    events.add_argument("--wait-seconds", type=lambda v: integer(v, minimum=0, maximum=15))
     media = commands.add_parser("media")
     media.add_argument("id", type=identifier)
     media.add_argument("slot", choices=("A", "B"))
@@ -136,15 +144,18 @@ def _data(path):
 
 
 class RequestError(Exception):
-    def __init__(self, message, *, status=None, code=None, current_revision=None):
+    def __init__(self, message, *, status=None, code=None, current_revision=None, retry_after_seconds=None):
         super().__init__(message)
         self.status, self.code, self.current_revision = status, code, current_revision
+        self.retry_after_seconds = retry_after_seconds
 
     def public(self):
         value = {"code": self.code or "research_request_unconfirmed", "error": str(self),
                  "http_status": self.status}
         if self.current_revision is not None:
             value["current_revision"] = self.current_revision
+        if self.retry_after_seconds is not None:
+            value["retry_after_seconds"] = self.retry_after_seconds
         return value
 
 
@@ -166,8 +177,16 @@ class Client:
         if "research.evaluation-v1" not in capabilities or (pinned and "node.target-v1" not in capabilities):
             raise ValueError("节点缺少 research.evaluation-v1 或目标绑定能力；未降级读取/写入")
 
+    def require_watch(self):
+        if self.target.expected_node_id is None:
+            raise ValueError("事件等待或 cursor 续读需要显式 --node-id / PF_NODE_ID；未读取")
+        self.require_capability()
+        capabilities = self.target.identity()["capabilities"]
+        if "research.watch-v1" not in capabilities or "node.target-v1" not in capabilities:
+            raise ValueError("节点缺少 research.watch-v1 或目标绑定能力；未降级等待/续读")
+
     def http_error(self, error):
-        status, code, revision = error.code, None, None
+        status, code, revision, retry_after = error.code, None, None, None
         try:
             raw = error.read(MAX_DATA + 1)
             value = _json(raw) if len(raw) <= MAX_DATA else None
@@ -178,6 +197,9 @@ class Client:
             candidate = value.get("current_revision") if isinstance(value, dict) else None
             if type(candidate) is int and candidate >= 1:
                 revision = candidate
+            candidate = value.get("retry_after_seconds") if isinstance(value, dict) else None
+            if status == 429 and type(candidate) is int and 0 <= candidate <= 86400:
+                retry_after = candidate
         except (ValueError, UnicodeError, OSError, http.client.HTTPException, RecursionError):
             pass
         finally:
@@ -190,9 +212,12 @@ class Client:
             message = "对象、版本、原件或原操作当前不可查；不据此自动重新提交"
         elif status in (401, 403):
             message = "节点拒绝访问；读取和写入需要对应权限"
+        elif status == 429:
+            message = "研究请求暂不可用；保留原位置，按提示稍后显式重试，未自动重发"
         else:
             message = "研究状态请求被拒绝或未确认；未自动重试"
-        return RequestError(message, status=status, code=code, current_revision=revision)
+        return RequestError(message, status=status, code=code, current_revision=revision,
+                            retry_after_seconds=retry_after)
 
     def request(self, method, path, body=None):
         request = self.target.request(method, path, body,
@@ -232,7 +257,30 @@ def _error(error, *, operation_id=None, kind=None, identity=None):
         detail += f", code={error.code}"
     if error.current_revision is not None:
         detail += f", current_revision={error.current_revision}"
+    if error.retry_after_seconds is not None:
+        detail += f", retry_after_seconds={error.retry_after_seconds}"
     print(f"pf-node: {error}（{detail}）", file=sys.stderr)
+
+
+def _event_response(value, args):
+    # The server binds opaque cursors to their stream, scope and event anchor.
+    # Check the new response envelope without interpreting or advancing a cursor.
+    stream, scope = value.get("stream_id"), value.get("research_id")
+    position, head = value.get("next_after"), value.get("head")
+    cursor, items = value.get("next_cursor"), value.get("items")
+    valid_scope = (scope is None or isinstance(scope, str) and scope not in (".", "..")
+                   and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", scope))
+    if (not isinstance(stream, str) or not re.fullmatch(r"[0-9a-f]{32}", stream)
+            or "research_id" not in value or not valid_scope
+            or (args.research_id is not None and scope != args.research_id)
+            or (args.cursor is None and scope != args.research_id)
+            or type(head) is not int or not 0 <= head <= (1 << 63) - 1
+            or type(position) is not int or not 0 <= position <= head
+            or not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048
+            or not isinstance(items, list) or len(items) > (args.limit or 100)
+            or type(value.get("has_more")) is not bool
+            or value.get("wait_result") not in ("events", "timeout", "immediate")):
+        raise RequestError("事件回包的流、范围或位置未确认；保留原游标", code="research_watch_invalid_response")
 
 
 def _media_headers(response):
@@ -392,9 +440,15 @@ def main(argv, *, target):
         elif args.command == "operation":
             path = "/research-operations/" + args.id
         else:
-            path = "/research-events" + _query(args, ("after", "research_id", "limit"))
-        client.require_capability()
+            path = "/research-events" + _query(args, ("after", "cursor", "research_id", "limit", "wait_seconds"))
+        watch = args.command == "events" and (args.cursor is not None or (args.wait_seconds or 0) > 0)
+        if watch:
+            client.require_watch()
+        else:
+            client.require_capability()
         value = client.request("GET", path)
+        if watch:
+            _event_response(value, args)
         if args.command == "show" and (value.get("kind") != args.kind or value.get("id") != args.id
                 or (args.revision is not None and value.get("revision") != args.revision)):
             raise RequestError("回包未绑定原对象或指定版本；结果未确认")
@@ -404,9 +458,13 @@ def main(argv, *, target):
         return 0
     except RequestError as error:
         _error(error)
+        if args.command == "events":
+            print("pf-node: 原事件游标/after 保持不变；未自动续读或确认消费。", file=sys.stderr)
         return 2
     except ValueError as error:
         print(f"pf-node: {error}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
+        if args.command == "events":
+            print("pf-node: 已停止事件读取；保留原游标，未确认消费。", file=sys.stderr)
         return 130

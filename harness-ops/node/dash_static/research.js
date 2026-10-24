@@ -43,7 +43,10 @@
   let node = null, access = null, accessBusy = false, accessError = '', disposed = false;
   let records = [], listKind = 'research', listQuery = '', listCursor = null, listBusy = false, listEpoch = 0, listController = null;
   let selection = null, detail = null, detailEpoch = 0, detailController = null, detailFresh = false;
-  let historyCursor = null, historyBusy = false, historyEpoch = 0, eventsAfter = 0, eventsScope = null, eventsBusy = false;
+  let historyCursor = null, historyBusy = false, historyEpoch = 0;
+  const EVENT_KEY = 'hgamey.research.browse.', EVENT_BUDGET = 5 * 60 * 1000, eventPositions = new Map();
+  let eventPosition = null, eventsBusy = false, eventsListening = false, eventsEpoch = 0, eventsController = null;
+  let eventsDeadline = 0, eventsBudgetTimer = null, eventsNextTimer = null, eventsPages = 0, eventsTrimmed = 0, eventsStorageError = '';
   let draft = null, pending = null, writeBusy = false, lookupBusy = false, conflictLatest = null, relatedBusy = false;
   const validID = value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(value) && !['.', '..'].includes(value);
   const capable = () => node?.capabilities?.includes('research.state-v1') === true;
@@ -72,9 +75,9 @@
       let value; try { value = await response.json(); } catch (_) { /* A malformed response does not prove a failed write. */ }
       if (!response.ok) {
         const error = new Error((typeof value?.error === 'string' ? value.error : value?.error?.message) || `请求失败（HTTP ${response.status}）`);
-        error.status = response.status; error.code = value?.code || value?.error?.code; error.currentRevision = value?.current_revision; throw error;
+        error.status = response.status; error.code = value?.code || value?.error?.code; error.currentRevision = value?.current_revision; error.retryAfterSeconds = value?.retry_after_seconds; throw error;
       }
-      if (!value || typeof value !== 'object') throw new Error('节点未返回可核对的 JSON，写入结果未知。');
+      if (!value || typeof value !== 'object') throw new Error('节点未返回可核对的 JSON，结果未确认。');
       return value;
     } finally { if (timer) clearTimeout(timer); }
   }
@@ -132,6 +135,7 @@
       for (const id of ['pending-retry', 'pending-refill', 'conflict-restart']) $(id).disabled = !allowed || writeBusy || !!issue;
       $('conflict-refresh').disabled = writeBusy || !!issue;
     }
+    renderEvents();
   }
   async function loadAccess() {
     accessBusy = true; renderControls();
@@ -162,6 +166,7 @@
     $('more-objects').hidden = !listCursor; $('more-objects').disabled = listBusy;
   }
   async function loadList(append = false) {
+    syncEventScope();
     if (!capable() || disposed) return;
     const epoch = ++listEpoch, target = HGTarget.binding(); listController?.abort(); listController = new AbortController();
     if (!append) {
@@ -452,21 +457,151 @@
     } catch (error) { if (!disposed) message('operation-message', `${failText(error)}${error.status === 404 ? ' 未找到不证明从未发出；本页不会自动重试。' : ''}`, true); }
     finally { lookupBusy = false; if (!disposed) renderControls(); }
   }
-  async function loadEvents() {
-    if (eventsBusy || !capable()) return;
-    const scope = $('filter-research').value.trim(), target = HGTarget.binding();
-    if (eventsScope !== scope) { eventsScope = scope; eventsAfter = 0; $('event-list').replaceChildren(); }
-    const query = new URLSearchParams({after: String(eventsAfter), limit: '50'}); if (scope) query.set('research_id', scope);
-    eventsBusy = true; $('load-events').disabled = true; $('events-scope').textContent = scope ? `研究 ${scope}` : '此节点全部研究'; message('events-message', '正在读取事件…');
-    try {
-      const value = checkedNode(await request(`${API}/research-events?${query}`, {target}), target); if (disposed) return;
-      if (!Array.isArray(value.items)) throw new Error('事件列表格式不可读。');
-      for (const item of value.items) {
-        const li = el('li'); li.append(objectLink(item.kind, item.id, `#${item.sequence} · ${KINDS[item.kind]} ${item.id} v${item.revision}`, item.revision), el('p', `${time(item.at)} · 原操作 ${item.operation_id}`, 'note')); $('event-list').append(li);
+  const watchCapable = () => capable() && node?.capabilities?.includes('research.watch-v1') === true && HGTarget.canWrite();
+  function eventLocation(position = eventPosition) {
+    return position?.cursor ? {schema: 'phonefarm/research-browser-position@1', target: position.target, research_id: position.scope, cursor: position.cursor} : null;
+  }
+  function eventProblem() {
+    if (!eventPosition) return '尚未绑定读取目标。';
+    return HGTarget.problem(eventPosition.target) || (eventPosition.scope && !validID(eventPosition.scope) ? '研究范围 ID 无效，请先调整上方筛选。' : '');
+  }
+  function renderEvents() {
+    const readable = capable() && !disposed && !document.hidden && !eventProblem();
+    const protectedPosition = !!eventPosition?.cursor && !watchCapable();
+    const resumable = readable && !eventPosition?.issue && !protectedPosition;
+    $('load-events').disabled = !resumable || eventsBusy || eventsListening;
+    $('load-events').textContent = eventsBusy && !eventsListening ? '读取中…' : '立即续读';
+    $('load-events').setAttribute('aria-busy', String(eventsBusy && !eventsListening));
+    $('watch-events').disabled = !resumable || !watchCapable() || eventsBusy || eventsListening;
+    $('watch-events').textContent = eventsListening ? '正在监听…' : eventPosition?.cursor ? '继续监听（5 分钟）' : '开始监听（5 分钟）';
+    $('watch-events').setAttribute('aria-busy', String(eventsListening));
+    $('stop-events').disabled = !eventsBusy && !eventsListening;
+    $('restart-events').disabled = !readable || eventsBusy || eventsListening;
+    $('copy-event-position').disabled = !eventPosition?.cursor;
+    $('event-list').setAttribute('aria-busy', String(eventsBusy));
+    $('events-scope').textContent = eventPosition ? `范围：${eventPosition.scope ? '研究 ' + eventPosition.scope : '此节点全部研究'} · 节点 ${eventPosition.target.node_id}` : '范围：尚未绑定节点';
+    $('events-position').textContent = !eventPosition ? '' : `${eventPosition.cursor && eventPosition.after == null ? '已恢复浏览位置；续读时核对原事件流。' : `浏览位置：${eventPosition.after ? '#' + eventPosition.after : '尚未展示事件'}。`}${eventPosition.readAt ? ' 最近成功读取：' + time(eventPosition.readAt) + '。' : ''}`;
+    message('events-capability', eventProblem() || eventPosition?.issue || (protectedPosition ? '节点未提供 research.watch-v1，原受保护位置保留；仅可显式从头立即读取。' : !capable() ? '研究状态能力尚不可用。' : !watchCapable() ? '旧节点仅支持立即读取；监听及可携带浏览位置不可用。' : '仅当前可见页面监听：每次最多等待 15 秒，总计最多 5 分钟。'), !!eventPosition?.issue);
+    message('events-storage', eventsStorageError);
+    message('events-trimmed', eventsTrimmed ? `本页只保留最近 200 条，已移出较早 ${eventsTrimmed} 条。浏览位置仍保留；可显式从头重新读取历史。` : '');
+  }
+  function stopEvents(reason = '', error = false) {
+    ++eventsEpoch; eventsListening = false; eventsBusy = false;
+    clearTimeout(eventsBudgetTimer); clearTimeout(eventsNextTimer); eventsBudgetTimer = null; eventsNextTimer = null;
+    eventsController?.abort(); eventsController = null;
+    if (!disposed) { renderEvents(); if (reason) message('events-message', reason, error); }
+  }
+  function syncEventScope() {
+    const target = HGTarget.binding(), scope = $('filter-research').value.trim() || null;
+    const key = target ? EVENT_KEY + JSON.stringify([target.entry, target.node_id, scope]) : null;
+    if (eventPosition?.key === key || !key && !eventPosition) return;
+    stopEvents(); eventsTrimmed = 0; $('event-list').replaceChildren(); $('event-position-copy').hidden = true; $('event-position-json').value = '';
+    if (!key) { eventPosition = null; renderEvents(); return; }
+    eventPosition = eventPositions.get(key);
+    if (!eventPosition) {
+      eventPosition = {key, target, scope, cursor: null, after: 0, readAt: null, issue: ''};
+      let raw = null;
+      try { raw = localStorage.getItem(key); }
+      catch (_) { eventsStorageError = '浏览器存储不可用；位置仅保留在本页，离开前请复制浏览位置。'; }
+      if (raw) {
+        try {
+          const saved = JSON.parse(raw);
+          if (saved.schema !== 'phonefarm/research-browser-position@1' || saved.target?.entry !== target.entry || saved.target?.node_id !== target.node_id || saved.research_id !== scope || typeof saved.cursor !== 'string' || !saved.cursor) throw new Error('invalid position');
+          eventPosition.cursor = saved.cursor; eventPosition.after = null;
+        } catch (_) { eventPosition.issue = '保存的浏览位置不可读，未自动归零。请核对目标后显式从头重新读取。'; }
       }
-      eventsAfter = value.next_after; message('events-message', value.items.length ? `已读到事件 #${eventsAfter}${value.has_more ? '，可继续读取。' : '，当前无更多。'}` : '此次没有新增事件。'); $('load-events').textContent = '从原序号继续读取';
-    } catch (error) { if (!disposed) message('events-message', failText(error), true); }
-    finally { eventsBusy = false; if (!disposed) $('load-events').disabled = false; }
+      eventPositions.set(key, eventPosition);
+    }
+    renderEvents(); message('events-message', eventPosition.cursor ? '原浏览位置已载入，尚未请求事件。可显式继续；不会自动监听。' : '尚未读取此范围的事件。');
+  }
+  function persistEventPosition() {
+    const value = eventLocation();
+    if (!value) return;
+    try { localStorage.setItem(eventPosition.key, JSON.stringify(value)); eventsStorageError = ''; }
+    catch (_) { eventsStorageError = '无法持久保存浏览位置；内存位置仍可续读，离开前请复制。'; }
+  }
+  function checkedEventPage(value, position, startAfter, protectedRead) {
+    checkedNode(value, position.target);
+    if (!Array.isArray(value.items) || value.items.length > 50 || !Number.isSafeInteger(value.next_after) || value.next_after < 0 || typeof value.has_more !== 'boolean') throw new Error('事件页格式不可读，原浏览位置保留。');
+    let after = startAfter ?? -1;
+    for (const item of value.items) {
+      if (!Number.isSafeInteger(item.sequence) || item.sequence <= 0 || item.sequence <= after || !KINDS[item.kind] || !validID(item.id) || !Number.isInteger(item.revision) || item.revision < 1 || position.scope && item.research_id !== position.scope) throw new Error('事件身份或范围不匹配，原浏览位置保留。');
+      after = item.sequence;
+    }
+    if (value.items.length && value.next_after !== after || !value.items.length && startAfter != null && value.next_after !== startAfter) throw new Error('事件位置不一致，未推进浏览位置。');
+    if (protectedRead && (typeof value.next_cursor !== 'string' || !value.next_cursor || typeof value.stream_id !== 'string' || !value.stream_id || value.research_id !== position.scope || !['events', 'timeout', 'immediate'].includes(value.wait_result))) throw new Error('事件流或游标未确认，原浏览位置保留。');
+    return value;
+  }
+  async function loadEvents({restart = false} = {}) {
+    syncEventScope();
+    if (eventsBusy || !capable() || disposed || document.hidden || eventProblem() || !restart && (eventPosition.issue || eventPosition.cursor && !watchCapable())) return;
+    if (eventsListening && performance.now() >= eventsDeadline) { stopEvents('5 分钟监听已结束，浏览位置保留；可显式继续。'); return; }
+    const position = eventPosition, epoch = ++eventsEpoch, protectedRead = watchCapable();
+    const startAfter = restart ? 0 : position.after, query = new URLSearchParams({limit: '50'});
+    if (!restart && position.cursor && protectedRead) query.set('cursor', position.cursor); else query.set('after', String(startAfter || 0));
+    if (position.scope) query.set('research_id', position.scope);
+    const wait = eventsListening ? Math.min(15, Math.max(1, Math.ceil((eventsDeadline - performance.now()) / 1000))) : 0;
+    if (protectedRead) query.set('wait_seconds', String(wait));
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 20000), started = performance.now();
+    eventsController = controller; eventsBusy = true; renderEvents();
+    message('events-message', eventsListening ? '正在等待研究元数据变化；草稿与当前记录保持原样…' : restart ? '正在从头读取；成功前保留原浏览位置…' : '正在从原浏览位置读取…');
+    let nextDelay = null;
+    try {
+      const raw = await request(`${API}/research-events?${query}`, {target: position.target, signal: controller.signal});
+      if (disposed || epoch !== eventsEpoch || position !== eventPosition) return;
+      if (document.hidden) { stopEvents('页面已隐藏，事件读取暂停；返回后请显式从原位置继续。'); return; }
+      const value = checkedEventPage(raw, position, startAfter, protectedRead);
+      if (wait && !value.items.length && value.wait_result !== 'timeout') throw new Error('节点未确认有界等待，监听已停止；未进行短间隔轮询。');
+      const rows = value.items.map(item => {
+        const li = el('li'); li.append(objectLink(item.kind, item.id, `#${item.sequence} · ${KINDS[item.kind]} ${item.id} v${item.revision}`, item.revision, position.target), el('p', `${time(item.at)} · 原操作 ${item.operation_id}`, 'note')); return li;
+      });
+      if (restart) { $('event-list').replaceChildren(); eventsTrimmed = 0; }
+      $('event-list').append(...rows);
+      while ($('event-list').children.length > 200) { $('event-list').firstElementChild.remove(); ++eventsTrimmed; }
+      position.after = value.next_after; position.cursor = protectedRead ? value.next_cursor : null; position.readAt = Date.now() / 1000; position.issue = '';
+      if (position.cursor) persistEventPosition();
+      else if (restart) {
+        try { localStorage.removeItem(position.key); }
+        catch (_) { eventsStorageError = '无法移除旧浏览位置；当前从头读取位置仅在本页生效。'; }
+      }
+      const status = rows.length ? `新增 ${rows.length} 条，浏览已读到 #${position.after}。${value.has_more ? '还有更多事件。' : ''}` : '此次没有新增事件；原浏览位置保留。';
+      message('events-message', status + (eventsListening ? ' 继续监听，不改变草稿或依赖。' : ''));
+      if (eventsListening) {
+        eventsPages = value.has_more ? eventsPages + 1 : 0;
+        if (eventsPages >= 4) stopEvents(status + ' 已连续补读 4 页，暂停在原位置；可显式继续。');
+        else nextDelay = !rows.length ? Math.max(0, wait * 1000 - (performance.now() - started)) : 0;
+      }
+    } catch (error) {
+      if (!disposed && epoch === eventsEpoch) {
+        if (error.status === 409) position.issue = '原浏览位置与当前事件流冲突，未自动重置；可复制原位置，核对后从头重新读取。';
+        const retry = error.status === 429 && Number.isFinite(error.retryAfterSeconds) ? ` 可在 ${Math.ceil(error.retryAfterSeconds)} 秒后显式重试。` : '';
+        stopEvents((error.name === 'AbortError' ? '读取超时。' : `读取失败：${error.message}`) + retry + ' 原浏览位置保留，监听已停止；不会自动重试。', true);
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (!disposed && epoch === eventsEpoch) {
+        eventsBusy = false; eventsController = null; renderEvents();
+        if (eventsListening && nextDelay != null) eventsNextTimer = setTimeout(() => { if (epoch === eventsEpoch && eventsListening) loadEvents(); }, nextDelay);
+      }
+    }
+  }
+  function startEventWatch() {
+    syncEventScope();
+    if (eventsBusy || eventsListening || !watchCapable() || document.hidden || eventProblem() || eventPosition.issue) return;
+    eventsListening = true; eventsPages = 0; eventsDeadline = performance.now() + EVENT_BUDGET;
+    eventsBudgetTimer = setTimeout(() => stopEvents('5 分钟监听已结束，浏览位置保留；可显式继续。'), EVENT_BUDGET);
+    loadEvents();
+  }
+  async function copyEventPosition() {
+    const value = eventLocation(); if (!value) return;
+    const json = JSON.stringify(value, null, 2), key = eventPosition.key;
+    $('event-position-json').value = json; $('event-position-copy').hidden = false; $('event-position-copy').open = true;
+    try {
+      await navigator.clipboard.writeText(json);
+      if (!disposed && eventPosition?.key === key) message('events-storage', '浏览位置已复制；仅代表已展示，业务处理确认由消费方保存。');
+    } catch (_) {
+      if (!disposed && eventPosition?.key === key) { $('event-position-json').focus(); $('event-position-json').select(); message('events-storage', '剪贴板不可用，请手动复制下方浏览位置 JSON；不含凭据或事件正文。'); }
+    }
   }
   function capabilityMessage() { message('capability-message', capable() ? '当前后台保存独立研究状态；只读记录不会探测手机。声明状态与任务运行、设备恢复分别核对。' : '此节点未提供 research.state-v1，研究记录不可用；旧目标客户端仍可从概览进入。', !capable()); renderControls(); }
   async function refresh() {
@@ -477,6 +612,7 @@
   }
   $('filters').addEventListener('submit', event => { event.preventDefault(); loadList(); });
   $('filter-kind').addEventListener('change', changeKind);
+  $('filter-research').addEventListener('input', syncEventScope);
   $('filter-reset').addEventListener('click', () => { $('filters').reset(); changeKind(); loadList(); });
   $('more-objects').addEventListener('click', () => loadList(true));
   $('refresh-detail').addEventListener('click', () => { if (selection) selectObject(selection.kind, selection.id); });
@@ -500,13 +636,25 @@
   $('copy-draft').addEventListener('click', async () => { try { const value = {kind: draft.kind, id: $('edit-id').value.trim(), target: draft.target, body: collectDraft()}; await navigator.clipboard.writeText(JSON.stringify(value, null, 2)); message('write-message', '草稿已复制；尚未保存。'); } catch (error) { message('write-message', failText(error), true); } });
   $('pending-query').addEventListener('click', queryPending); $('pending-retry').addEventListener('click', () => { if (pending?.missing) sendPending(pending); });
   $('pending-refill').addEventListener('click', refillPending); $('conflict-refresh').addEventListener('click', readConflict); $('conflict-restart').addEventListener('click', restartConflict);
-  $('operation-form').addEventListener('submit', event => { event.preventDefault(); lookupOperation(); }); $('load-events').addEventListener('click', loadEvents);
+  $('operation-form').addEventListener('submit', event => { event.preventDefault(); lookupOperation(); }); $('load-events').addEventListener('click', () => loadEvents());
+  $('watch-events').addEventListener('click', startEventWatch);
+  $('stop-events').addEventListener('click', () => stopEvents('已停止本页事件读取，浏览位置保留；不会影响研究或任务。'));
+  $('restart-events').addEventListener('click', () => loadEvents({restart: true}));
+  $('copy-event-position').addEventListener('click', copyEventPosition);
   $('access-toggle').addEventListener('click', () => { if (access?.steer) setAccess({}, true); else { $('unlock-form').hidden = false; $('steer-password').focus(); } });
   $('unlock-close').addEventListener('click', () => { $('steer-password').value = ''; $('unlock-form').hidden = true; });
   $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess({pw: $('steer-password').value}); });
   for (const id of ['evidence-details', 'record-json-details']) $(id).addEventListener('toggle', () => { if ($(id).open) HGResearchEvaluation.revealDetail(); });
-  document.addEventListener('hgamey-target-change', renderControls);
-  window.addEventListener('pagehide', () => { disposed = true; listController?.abort(); detailController?.abort(); });
+  document.addEventListener('hgamey-target-change', () => {
+    syncEventScope();
+    if ((eventsBusy || eventsListening) && eventProblem()) stopEvents('目标身份需要重新核对，事件监听已停止，原浏览位置保留。');
+    renderControls();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && (eventsBusy || eventsListening)) stopEvents('页面已隐藏，事件读取暂停；返回后请显式从原位置继续。');
+    else renderEvents();
+  });
+  window.addEventListener('pagehide', () => { disposed = true; stopEvents(); listController?.abort(); detailController?.abort(); });
   try {
     const saved = JSON.parse(sessionStorage.getItem(KEY) || 'null');
     if (saved && KINDS[saved.kind] && validID(saved.id) && validID(saved.operation_id) && (saved.base_revision == null || Number.isInteger(saved.base_revision) && saved.base_revision > 0)) pending = {...saved, target: saved.target || null};
@@ -514,6 +662,7 @@
   const query = new URLSearchParams(location.search);
   if (KINDS[query.get('kind')]) $('filter-kind').value = query.get('kind'); changeKind();
   if (query.has('research_id')) $('filter-research').value = query.get('research_id');
+  syncEventScope();
   if (pending) { $('editor').hidden = false; $('edit-form').hidden = true; }
   loadAccess();
   HGTarget.ready().then(value => {

@@ -13,7 +13,24 @@ pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" resear
 pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" research events --research-id "$RESEARCH_ID" --after "$AFTER" --limit 100
 ```
 
-列表续页用原过滤条件和 `--cursor next_cursor`；事件用 `next_after`，看 `has_more`。若本回合页数/时间有限，保存尚未处理的分页位置，不能将第一页当全部。不同 kind 的列表没有共同事务快照；决策前重读目标对象。首次可从 after=0 分页重建，已处理事实以方向中的反馈决定和对象版本核对。
+列表续页用原过滤条件和 `--cursor next_cursor`。事件的旧 numeric after 读取仍支持；新节点返回绑定流/范围的 `next_cursor`，看 `has_more` 判断是否还有页。CLI 不自动翻页；若本回合页数/时间有限，区分未完读取位置和已处理 checkpoint，不能将第一页当全部。不同 kind 的列表没有共同事务快照；决策前重读目标对象。首次可从 after=0 分页重建，已处理事实以方向中的反馈决定和对象版本核对。
+
+## 一次有界等待研究更新
+
+先核原节点有 `research.watch-v1`。`--cursor` 或 `--wait-seconds` 非零需要显式 node ID；等待整数范围 0–15 秒，默认 0。每次调用只有一个事件 GET，沿原 30 秒网络预算，空等正常退出，不自动翻页、重试、写 checkpoint 或业务确认：
+
+```bash
+# 尚无 opaque cursor 时，从自己的原已处理 after 开始一次等待。
+pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" research events --research-id "$RESEARCH_ID" --after "$AFTER" --wait-seconds 15 --limit 100
+# 已处理并保存上批决定后，用该消费者的 checkpoint 接续；不能同时传 after。
+pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" research events --cursor "$PROCESSED_CURSOR" --wait-seconds 15 --limit 100
+```
+
+响应 `stream_id` 标识持久事件流，`research_id` 是本次范围；cursor 省略 research-id 时沿原范围，显式传入则必须一致。`wait_result` 为 events/timeout/immediate。`head` 是全流已提交上界，不能当已处理位置；`next_cursor` 只到本批返回位置。收到事件先读对应对象、保存 adopt/defer/reject 等必要决定，再由消费方明确保存 checkpoint。网页的“浏览位置”不证明 Agent 已处理。
+
+cursor 不作为授权凭据，也不由客户端拆解、修改或重新签发。服务重启可沿原 cursor 接续；流变化、范围不符、事件锚变化或读取失败时保留原位置，不自动归零、换节点或跳过历史。429 的安全 `retry_after_seconds` 是提示，不触发自动重发；SIGINT 停止本次读取。不同消费者独立保存自己的位置，没有全局已读或消费锁。
+
+旧节点可用原 `--after` 立即读取，但不能把缺 watch 能力改成短间隔空轮询。研究事件不含 job 终态、恢复/释放、result 登记或设备重连；这些变化仍用各自原 ID 的 status/result/能力入口。等待返回不启动模型、不采纳反馈、不改变依赖。外部运行器停止后平台不会自动唤醒它。
 
 ## A 等待具体协助
 
@@ -138,7 +155,7 @@ pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" result
 ```text
 目标：node URL + node ID；research ID/当前 revision
 授权与回合边界：复用哪些用户许可；哪些方向尚无前提
-游标：node/research 过滤 + 本客户端已处理 after；未完列表 cursor
+游标：原 node/stream/research 范围 + 本客户端已处理 event cursor（旧节点为 after）；未完读取/列表位置另记
 未决元数据：kind/id/operation_id/原 revision，下一原 operation 查询
 任务：direction/冻结 research revision/request_id/job_id/原输出路径
 结果：result_id/import_id，已登记但未回写方向的引用

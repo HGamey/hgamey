@@ -9,12 +9,16 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 import unittest
+from unittest import mock
+from urllib.parse import urlencode, urlsplit
 
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
 import dash
 from node_fleet import FleetState
+from node_read import decode_cursor, encode_cursor
 from node_service import Jobs, make_handler, readonly_token
 import test_node_games as game_fixture
 
@@ -249,6 +253,149 @@ class NodeResearchTests(unittest.TestCase):
         self.assertEqual(operation.returncode, 0, operation.stderr)
         self.assertEqual(json.loads(operation.stdout), reply_receipt)
         self.assertEqual(self.env.jobs.dispatch.queue.rows(), [])
+
+    def test_watch_cli_timeout_commit_wakeup_and_persisted_cursor(self):
+        self.create("research", "study", {"title": "Watched study", "objective": "Observe committed metadata only"})
+        code, initial = self.call("GET", "/research-events?research_id=study&after=0")
+        self.assertEqual(code, 200, initial)
+        cursor, stream = initial["next_cursor"], initial["stream_id"]
+        self.assertEqual(initial["wait_result"], "events")
+        self.assertEqual(initial["next_after"], initial["head"])
+        # Existing unpinned numeric reads remain possible; portable positions and
+        # active waits require the explicit target, including for read-only users.
+        self.assertEqual(self.env.call("GET", "/research-events?after=0")[0], 200)
+        code, unbound = self.env.call("GET", "/research-events?" + urlencode({"cursor": cursor}))
+        self.assertEqual((code, unbound["code"]), (400, "target_required"))
+
+        event_gets = []
+        handler = self.env.server.RequestHandlerClass
+        original_get = handler.do_GET
+
+        def record_get(request):
+            if urlsplit(request.path).path == "/research-events":
+                event_gets.append(request.path)
+            return original_get(request)
+
+        start = time.monotonic()
+        with mock.patch.object(handler, "do_GET", record_get):
+            empty = self.cli("events", "--cursor", cursor, "--wait-seconds", "1")
+        elapsed = time.monotonic() - start
+        self.assertEqual(empty.returncode, 0, empty.stderr)
+        timeout = json.loads(empty.stdout)
+        self.assertEqual((timeout["items"], timeout["wait_result"], timeout["next_cursor"]), ([], "timeout", cursor))
+        self.assertEqual(len(event_gets), 1, "CLI must not turn empty wait into an automatic polling loop")
+        self.assertGreaterEqual(elapsed, .7)
+        self.assertLess(elapsed, 5, "one-second empty wait must return within a bounded request")
+
+        # Observe entry to the actual Condition.wait; submit only once its last
+        # empty read has completed, without relying on a scheduling sleep.
+        entered = threading.Event()
+        condition = self.env.jobs.research.event_changed
+        original_wait = condition.wait
+
+        def observed_wait(seconds=None):
+            entered.set()
+            return original_wait(seconds)
+
+        with mock.patch.object(condition, "wait", observed_wait), ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.call, "GET", "/research-events?" + urlencode({"cursor": cursor, "wait_seconds": 5}),
+                                     token=readonly_token(self.env.admin))
+            self.assertTrue(entered.wait(3), "watch did not enter its bounded wait")
+            committed = self.create("direction", "a", self.direction("A metadata change"))
+            code, wake = future.result(timeout=3)
+        self.assertEqual(code, 200, wake)
+        self.assertEqual((wake["wait_result"], wake["stream_id"], wake["research_id"]), ("events", stream, "study"))
+        self.assertEqual([item["operation_id"] for item in wake["items"]], ["create-a"])
+        self.assertEqual(wake["next_after"], committed["event_seq"])
+        retained = wake["next_cursor"]
+
+        # A later event in another scope advances head, never this consumer's
+        # position. Reopening the same store preserves both stream and anchor.
+        self.create("research", "other", {"title": "Other study", "objective": "Separate event filter"})
+        self.restart()
+        code, resumed_empty = self.call("GET", "/research-events?" + urlencode({"cursor": retained}))
+        self.assertEqual(code, 200, resumed_empty)
+        self.assertEqual((resumed_empty["stream_id"], resumed_empty["research_id"], resumed_empty["items"]),
+                         (stream, "study", []))
+        self.assertEqual((resumed_empty["wait_result"], resumed_empty["next_cursor"]), ("immediate", retained))
+        self.assertGreater(resumed_empty["head"], resumed_empty["next_after"])
+        self.create("direction", "b", self.direction("After restart"))
+        resumed = self.cli("events", "--cursor", retained, "--limit", "1")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        page = json.loads(resumed.stdout)
+        self.assertEqual([item["operation_id"] for item in page["items"]], ["create-b"])
+        self.assertEqual(page["stream_id"], stream)
+
+        anchor = decode_cursor(page["next_cursor"])
+        mutations = [
+            ({**anchor, "stream_id": "0" * 32 if stream != "0" * 32 else "1" * 32}, "research_cursor_stream_changed"),
+            ({**anchor, "after": page["head"] + 1}, "research_cursor_ahead"),
+            ({**anchor, "operation_id": "not-the-original-event"}, "research_cursor_history_changed"),
+        ]
+        for changed, expected in mutations:
+            with self.subTest(rejection=expected):
+                code, error = self.call("GET", "/research-events?" + urlencode({"cursor": encode_cursor(changed)}))
+                self.assertEqual((code, error["code"]), (409, expected))
+        code, scope_error = self.call("GET", "/research-events?" + urlencode({"cursor": retained, "research_id": "other"}))
+        self.assertEqual((code, scope_error["code"]), (409, "research_cursor_scope_changed"))
+        self.assertEqual(self.call("GET", "/research-events?" + urlencode({"cursor": retained, "after": 0}))[0], 400)
+        code, original_again = self.call("GET", "/research-events?" + urlencode({"cursor": retained}))
+        self.assertEqual(code, 200, original_again)
+        self.assertEqual(original_again["items"], page["items"], "rejected positions must not advance the original consumer")
+        self.assertEqual([item["operation_id"] for item in self.events()], ["create-study", "create-a", "create-b"])
+        self.assertEqual(self.env.jobs.dispatch.queue.rows(), [])
+        self.assertIsNone(self.env.board.monitor._thread, "metadata watch must not activate device sampling")
+
+    def test_watch_capacity_does_not_block_reads_or_the_commit_that_releases_waiters(self):
+        self.create("research", "study", {"title": "Capacity fixture", "objective": "Only waiting requests consume slots"})
+        code, initial = self.call("GET", "/research-events?research_id=study")
+        self.assertEqual(code, 200, initial)
+        cursor = initial["next_cursor"]
+        # Only this loopback fixture needs enough listen backlog for 16 concurrent
+        # requests. It does not change production admission or semaphore limits.
+        self.env.server.socket.listen(32)
+        condition = self.env.jobs.research.event_changed
+        original_wait = condition.wait
+        entered, guard, waiting = threading.Event(), threading.Lock(), set()
+
+        def observed_wait(seconds=None):
+            ident = threading.get_ident()
+            with guard:
+                waiting.add(ident)
+                if len(waiting) == 16:
+                    entered.set()
+            try:
+                return original_wait(seconds)
+            finally:
+                with guard:
+                    waiting.remove(ident)
+
+        path = "/research-events?" + urlencode({"cursor": cursor, "wait_seconds": 8})
+        with mock.patch.object(condition, "wait", observed_wait), ThreadPoolExecutor(max_workers=16) as executor:
+            pending = [executor.submit(self.call, "GET", path, token=readonly_token(self.env.admin)) for _ in range(16)]
+            try:
+                self.assertTrue(entered.wait(5), "all 16 accepted waiters must reach Condition.wait")
+                code, full = self.call("GET", path, token=readonly_token(self.env.admin))
+                self.assertEqual((code, full["code"], full["retry_after_seconds"]), (429, "research_watch_busy", 15))
+                code, immediate = self.call("GET", "/research-events?" + urlencode({"cursor": cursor}))
+                self.assertEqual((code, immediate["wait_result"], immediate["items"]), (200, "immediate", []))
+                # An already-available page also bypasses the waiting capacity.
+                code, existing = self.call("GET", "/research-events?research_id=study&after=0&wait_seconds=1")
+                self.assertEqual((code, existing["wait_result"]), (200, "events"))
+                self.assertEqual(self.read("research", "study")["revision"], 1)
+            finally:
+                # A real committed write releases all waiters even if an assertion
+                # failed, so teardown need not leave up to 16 deadline sleepers.
+                committed = self.create("direction", "capacity-release", self.direction("Wake admitted readers"))
+            for future in pending:
+                code, page = future.result(timeout=3)
+                self.assertEqual((code, page["wait_result"]), (200, "events"))
+                self.assertEqual([item["operation_id"] for item in page["items"]], ["create-capacity-release"])
+                self.assertEqual(page["next_after"], committed["event_seq"])
+        self.assertEqual(waiting, set())
+        self.assertEqual([item["operation_id"] for item in self.events()], ["create-study", "create-capacity-release"])
+        self.assertEqual(self.env.jobs.dispatch.queue.rows(), [])
+        self.assertIsNone(self.env.board.monitor._thread)
 
 
 if __name__ == "__main__":

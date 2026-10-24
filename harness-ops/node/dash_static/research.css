@@ -40,6 +40,9 @@
 .research-lookup form { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:12px; margin-top:14px; }
 .research-page .note { overflow-wrap:anywhere; }
 .research-page .note:empty { display:none; }
+.research-events>.note,.research-events>.request-id { margin:12px 0; }
+.research-events .research-actions { margin:14px 0; }
+.research-events textarea { font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
 .research-derived-item { padding:12px 0; border-bottom:1px solid var(--grid); font-size:13px; overflow-wrap:anywhere; }
 .research-derived-item:last-child { border-bottom:0; }
 .evaluation-editor { margin:20px 0; padding:18px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }

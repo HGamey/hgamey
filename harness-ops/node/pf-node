@@ -54,7 +54,7 @@
   pf-node research create KIND ID FILE     # 仅登记 data JSON；写前固定 operation ID
   pf-node research update KIND ID FILE --revision N --reason TEXT # 显式并发更新，不自动合并
   pf-node research operation ID            # 原元数据操作回执；未知时不自动重发
-  pf-node research events [--after N]      # 有界读取新事件，不自动执行或批准任何方向
+  pf-node research events [--after N | --cursor CURSOR] [--wait-seconds 0..15] # 单次读取/有界等待，不自动翻页或确认消费
   pf-node research media REQUEST A|B --revision N --output FILE # 显式原件下载，核长度/SHA且不覆盖
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 

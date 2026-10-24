@@ -30,7 +30,16 @@
     </div></section>
   </div>
   <section class="research-lookup"><h2>按原操作 ID 找回</h2><form id="operation-form"><label>原 operation_id<input id="operation-id" maxlength="64" autocomplete="off" spellcheck="false" required></label><button id="operation-query" class="ghost" type="submit">只读查询</button></form><p id="operation-message" class="note" role="status"></p><div id="operation-links" class="research-actions"></div><p class="note">此查询不会重新保存或执行；未决操作始终使用自己的原节点与原对象身份。</p></section>
-  <details class="research-events"><summary>研究变更事件</summary><p class="note">按单调序号续读，不是执行通知；页面不会自动唤醒或调度 Agent。</p><div class="research-actions"><button id="load-events" class="ghost" type="button">读取事件</button><span id="events-scope" class="note"></span></div><p id="events-message" class="note" role="status"></p><ul id="event-list" class="research-history"></ul></details>
+  <details id="events-panel" class="research-events"><summary>研究变更事件</summary>
+    <p class="note">只关注研究元数据，不包含任务完成、结果登记或设备重连。新事件不会改草稿、解除依赖或唤醒 Agent。</p>
+    <p id="events-scope" class="request-id"></p><p id="events-position" class="note"></p>
+    <div class="research-actions"><button id="load-events" class="ghost" type="button" disabled>立即续读</button><button id="watch-events" class="ghost primary" type="button" disabled>开始监听（5 分钟）</button><button id="stop-events" class="ghost" type="button" disabled>停止</button></div>
+    <p id="events-capability" class="note"></p><p id="events-message" class="note" role="status"></p><p id="events-storage" class="note"></p>
+    <ul id="event-list" class="research-history" aria-busy="false"></ul><p id="events-trimmed" class="note"></p>
+    <div class="research-actions"><button id="copy-event-position" class="ghost" type="button" disabled>复制浏览位置</button><button id="restart-events" class="ghost" type="button" disabled>从头重新读取</button></div>
+    <p class="note">浏览位置仅表示本页已展示，不是 Agent 已处理。按节点与研究范围保存；隐藏页面、读取错误或 5 分钟结束后暂停，回来需显式继续。</p>
+    <details id="event-position-copy" class="research-json" hidden><summary>可携带的浏览位置 JSON</summary><textarea id="event-position-json" rows="5" readonly aria-label="可携带的浏览位置 JSON"></textarea></details>
+  </details>
 </main>
 <footer class="foot">共享研究状态独立于聊天工具。方向的声明状态、执行任务、设备恢复和研究证据各有自己的依据。</footer>
 <script src="/dash/static/target.js"></script><script src="/dash/static/research-evaluation.js"></script><script src="/dash/static/research.js"></script>

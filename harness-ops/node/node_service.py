@@ -811,6 +811,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if len(parts) == 2 and parts[0] == "research-operations":
                     return self._send(200, research.operation(unquote(parts[1])))
                 if parts == ["research-events"]:
+                    if ("cursor" in q or q.get("wait_seconds", ["0"])[0] != "0") and not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "event wait and cursor require an explicit node identity"})
                     return self._send(200, research.events(q))
                 if parts == ["result-search"]:
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):

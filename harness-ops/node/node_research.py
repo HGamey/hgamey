@@ -6,7 +6,9 @@ import math
 import os
 import re
 import sqlite3
+import threading
 import time
+import uuid
 from urllib.parse import quote, urlencode
 
 from artifact_io import SafeRoot
@@ -247,6 +249,7 @@ class NodeResearch:
         self.path = os.path.join(results.jobs.data_root, "_research", "state.sqlite3")
         with self._db(True) as db:
             for statement in (
+                "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS objects (kind TEXT,id TEXT,research_id TEXT,revision INTEGER,created_at REAL,updated_at REAL,PRIMARY KEY(kind,id))",
                 "CREATE TABLE IF NOT EXISTS revisions (sequence INTEGER PRIMARY KEY,kind TEXT,id TEXT,revision INTEGER,research_id TEXT,title TEXT,state TEXT,request_id TEXT,data TEXT,audit TEXT,bindings TEXT,observations TEXT,at REAL,UNIQUE(kind,id,revision))",
                 "CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY,request TEXT,receipt TEXT)",
@@ -257,6 +260,10 @@ class NodeResearch:
                 "CREATE INDEX IF NOT EXISTS feedback_requests ON revisions(kind,request_id,sequence)",
             ):
                 db.execute(statement)
+            db.execute("INSERT OR IGNORE INTO metadata VALUES ('stream_id',?)", (uuid.uuid4().hex,))
+            self.stream_id = db.execute("SELECT value FROM metadata WHERE key='stream_id'").fetchone()[0]
+        self.event_changed = threading.Condition()
+        self.watch_slots = threading.BoundedSemaphore(16)
 
     @contextmanager
     def _db(self, write=False):
@@ -474,6 +481,10 @@ class NodeResearch:
             receipt = {"schema_version": 1, "node_id": self.node_id, "operation_id": operation_id,
                        "object": {"kind": kind, "id": oid, "revision": revision}, "event_seq": sequence, "committed_at": now}
             db.execute("INSERT INTO operations VALUES (?,?,?)", (operation_id, request, encoded(receipt)))
+        # Commit precedes notification. Readers hold this condition across their final
+        # empty read and wait registration, so a concurrent commit cannot be missed.
+        with self.event_changed:
+            self.event_changed.notify_all()
         return receipt
 
     @staticmethod
@@ -599,19 +610,74 @@ class NodeResearch:
         cursor = encode_cursor(binding + [upper, rows[limit - 1]["sequence"]]) if len(rows) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": items, "next_cursor": cursor}
 
-    def events(self, query):
-        if set(query) - {"after", "limit", "research_id", "expected_node_id"} or any(len(v) != 1 for v in query.values()):
-            raise ValueError("unsupported or repeated research event query")
-        after, limit = int(query.get("after", [0])[0]), int(query.get("limit", [100])[0])
-        if not 0 <= after <= (1 << 63) - 1 or not 1 <= limit <= 500:
-            raise ValueError("invalid event sequence or page limit")
-        rid = query.get("research_id", [None])[0]
+    def _event_page(self, after, limit, rid, cursor):
         params, clause = [after], "sequence>?"
         if rid is not None:
-            identifier(rid); params.append(rid); clause += " AND research_id=?"
+            params.append(rid)
+            clause += " AND research_id=?"
         with self._db() as db:
+            head = db.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
+            if after > head:
+                raise ResearchError(409, "research_cursor_ahead", "event position is beyond this stream; preserve the original cursor")
+            anchor = db.execute("SELECT operation_id FROM events WHERE sequence=?", (after,)).fetchone() if after else None
+            if after and anchor is None or cursor is not None and cursor["operation_id"] != (anchor[0] if anchor else None):
+                raise ResearchError(409, "research_cursor_history_changed", "original event position no longer matches; preserve the original cursor")
             rows = db.execute("SELECT * FROM events WHERE " + clause + " ORDER BY sequence LIMIT ?", (*params, limit + 1)).fetchall()
         items = [{"sequence": row["sequence"], "research_id": row["research_id"], "kind": row["kind"], "id": row["object_id"],
                   "revision": row["revision"], "operation_id": row["operation_id"], "at": row["at"]} for row in rows[:limit]]
-        return {"schema_version": 1, "node_id": self.node_id, "items": items,
-                "next_after": items[-1]["sequence"] if items else after, "has_more": len(rows) > limit}
+        position = items[-1]["sequence"] if items else after
+        operation = items[-1]["operation_id"] if items else anchor[0] if anchor else None
+        next_cursor = encode_cursor({"v": 1, "node_id": self.node_id, "stream_id": self.stream_id,
+                                     "research_id": rid, "after": position, "operation_id": operation})
+        return {"schema_version": 1, "node_id": self.node_id, "stream_id": self.stream_id, "research_id": rid,
+                "items": items, "head": head, "next_after": position, "next_cursor": next_cursor, "has_more": len(rows) > limit}
+
+    def events(self, query):
+        allowed = {"after", "limit", "research_id", "expected_node_id", "cursor", "wait_seconds"}
+        if set(query) - allowed or any(len(v) != 1 for v in query.values()):
+            raise ValueError("unsupported or repeated research event query")
+        after, limit = int(query.get("after", [0])[0]), int(query.get("limit", [100])[0])
+        wait = int(query.get("wait_seconds", [0])[0])
+        if not 0 <= after <= (1 << 63) - 1 or not 1 <= limit <= 500 or not 0 <= wait <= 15:
+            raise ValueError("invalid event sequence, page limit or wait_seconds")
+        rid = query.get("research_id", [None])[0]
+        if rid is not None:
+            identifier(rid)
+        cursor = None
+        if "cursor" in query:
+            if "after" in query:
+                raise ValueError("cursor and after are mutually exclusive")
+            cursor = decode_cursor(query["cursor"][0])
+            if (not isinstance(cursor, dict) or set(cursor) != {"v", "node_id", "stream_id", "research_id", "after", "operation_id"}
+                    or type(cursor["v"]) is not int or cursor["v"] != 1 or type(cursor["after"]) is not int
+                    or not 0 <= cursor["after"] <= (1 << 63) - 1):
+                raise ValueError("invalid research event cursor")
+            if cursor["node_id"] != self.node_id or cursor["stream_id"] != self.stream_id:
+                raise ResearchError(409, "research_cursor_stream_changed", "cursor belongs to another node or stream; preserve the original cursor")
+            if rid is not None and rid != cursor["research_id"]:
+                raise ResearchError(409, "research_cursor_scope_changed", "cursor research scope differs; choose a separate position for the new scope")
+            rid, after = cursor["research_id"], cursor["after"]
+            if rid is not None:
+                identifier(rid)
+            if cursor["operation_id"] is not None:
+                identifier(cursor["operation_id"])
+        value = self._event_page(after, limit, rid, cursor)
+        if value["items"] or wait == 0:
+            return {**value, "wait_result": "events" if value["items"] else "immediate"}
+        if not self.watch_slots.acquire(blocking=False):
+            raise ResearchError(429, "research_watch_busy", "research event wait capacity is occupied; retry explicitly later", retry_after_seconds=15)
+        deadline = time.monotonic() + wait
+        try:
+            with self.event_changed:
+                while True:
+                    # Close the first-read/admission race, and reread after wake or
+                    # deadline. No SQLite transaction remains open while waiting.
+                    value = self._event_page(after, limit, rid, cursor)
+                    if value["items"]:
+                        return {**value, "wait_result": "events"}
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return {**value, "wait_result": "timeout"}
+                    self.event_changed.wait(remaining)
+        finally:
+            self.watch_slots.release()
