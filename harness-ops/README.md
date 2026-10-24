@@ -1,6 +1,6 @@
 # harness-ops
 
-外部 Agent 使用远程真机的节点服务、客户端和网页；研究任务可独立于内置优化 Agent。
+外部 Agent 使用远程真机的节点服务、客户端和网页；参考 [研究 skill](skills/hgamey-research/SKILL.md) 接续方向、反馈与证据，GOL 可选。
 
 | 路径 | 作用 |
 |---|---|
