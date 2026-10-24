@@ -112,6 +112,7 @@
     $('edit-id').disabled = locked || !!draft?.base_revision || !!pending;
     $('edit-actor').disabled = locked; $('edit-reason').disabled = locked;
     for (const field of $('edit-fields').querySelectorAll('input,textarea,select')) field.disabled = locked || field.dataset.immutable === 'true';
+    HGResearchEvaluation.setLocked(locked || !allowed);
     $('editor-close').disabled = writeBusy || !draft;
     $('editor-close').textContent = $('edit-form').hidden ? '展开草稿' : '收起草稿';
     $('refresh-detail').disabled = !selection || !capable();
@@ -238,11 +239,18 @@
       if (type === 'json') body.append(jsonDetails(label, value));
       else body.append(el('h4', label), el('p', type === 'lines' ? value.join('\n') : key === 'type' ? TYPES[value] || value : value));
     }
-    renderDerived(record); renderEvidence(record); $('object-json').textContent = JSON.stringify(record, null, 2); renderControls();
+    const ab = !!record.data.evaluation;
+    $('evidence-details').open = !ab;
+    $('evidence-summary').textContent = ab ? '查看证据引用（会揭示素材标签）' : '查看证据引用';
+    $('record-json-details').open = false;
+    $('record-json-summary').textContent = ab ? '完整记录与绑定（会揭示素材标签）' : '完整记录、作者来源与引用绑定';
+    renderDerived(record); renderEvidence(record); $('object-json').textContent = JSON.stringify(record, null, 2);
+    HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target: HGTarget.binding()}); renderControls();
   }
   async function selectObject(kind, id, revision = null) {
     if (!KINDS[kind] || !validID(id) || !capable() || disposed) return;
     selection = {kind, id, revision}; const epoch = ++detailEpoch, target = HGTarget.binding();
+    HGResearchEvaluation.unloadAll('记录已切换，媒体已卸下；再次查看需明确加载。'); HGResearchEvaluation.clearDetail();
     detailController?.abort(); detailController = new AbortController(); detailFresh = false;
     ++historyEpoch; historyCursor = null; historyBusy = false; $('history-list').replaceChildren(); $('more-history').hidden = true; $('load-history').disabled = false; message('history-message', '');
     $('detail-content').hidden = true; message('detail-message', '正在读取明确版本…'); renderList(); renderControls();
@@ -282,7 +290,7 @@
   function preserveDraft() {
     if (!draft) return;
     const fields = Object.fromEntries([...$('edit-fields').querySelectorAll('[data-field]')].map(field => [field.dataset.field, field.value]));
-    $('previous-draft-json').textContent = JSON.stringify({...draft, id: $('edit-id').value, raw_fields: fields, actor_label: $('edit-actor').value, reason: $('edit-reason').value}, null, 2);
+    $('previous-draft-json').textContent = JSON.stringify({...draft, id: $('edit-id').value, raw_fields: fields, evaluation_draft: HGResearchEvaluation.snapshot(), actor_label: $('edit-actor').value, reason: $('edit-reason').value}, null, 2);
     $('previous-draft').hidden = false;
   }
   function paintDraft() {
@@ -307,6 +315,12 @@
       field.dataset.immutable = String(!!draft.base_revision && (draft.kind === 'request' && !['state', 'close_reason'].includes(key) || key === 'research_id'));
       wrapper.append(field); if (help) wrapper.append(el('span', help, 'field-note')); $('edit-fields').append(wrapper);
     }
+    const target = draft.target;
+    HGResearchEvaluation.mountEditor($('evaluation-editor'), {kind: draft.kind, data: draft.data, baseRevision: draft.base_revision, node, target, resuming: !!pending?.refill,
+      readRequest: async (id, revision) => {
+        if (!validID(id) || !Number.isInteger(revision) || revision <= 0) throw new Error('请输入有效的原请求 ID 与正整数版本。');
+        return checkedObject(await request(`${objectPath('request', id)}?revision=${revision}`, {target}), 'request', id, target, revision);
+      }});
     $('edit-reason').required = draft.base_revision != null; renderControls();
   }
   function openDraft(kind, data = {}, record = null) {
@@ -330,6 +344,7 @@
       if (field.required && (data[key] == null || data[key] === '')) throw new Error(`请填写 ${key}。`);
     }
     if (draft.kind === 'request' && data.state === 'open') data.close_reason = null;
+    HGResearchEvaluation.collect(data);
     if (new TextEncoder().encode(JSON.stringify(data)).length > 65536) throw new Error('研究记录超过 64 KiB，请减少元数据。');
     const reason = $('edit-reason').value.trim() || null;
     if (draft.base_revision != null && !reason) throw new Error('更新记录需要修改理由。');
@@ -345,6 +360,7 @@
     receiptLinks($('write-links'), receipt, p.target);
     message('write-message', `已保存 v${receipt.object.revision} · 事件 #${receipt.event_seq} · ${time(receipt.committed_at)}。${p.kind === 'feedback' ? '答复已追加，问题和方向依赖保持原状态。' : '这里只记录研究状态。'}`);
     pending = null; persistPending(); draft = null; conflictLatest = null; $('edit-form').hidden = true; $('pending-panel').hidden = true;
+    HGResearchEvaluation.unloadAll('已保存答复或记录，媒体已卸下；再次查看需明确加载。');
     if (keyOf(selection) === `${p.kind}/${p.id}`) await selectObject(p.kind, p.id);
     if (listKind === p.kind) await loadList();
   }
@@ -479,7 +495,7 @@
   $('related-requests').addEventListener('click', () => filterRelated('request'));
   $('related-feedback').addEventListener('click', () => filterRelated('feedback'));
   $('load-history').addEventListener('click', () => loadHistory()); $('more-history').addEventListener('click', () => loadHistory(true));
-  $('editor-close').addEventListener('click', () => { $('edit-form').hidden = !$('edit-form').hidden; renderControls(); });
+  $('editor-close').addEventListener('click', () => { $('edit-form').hidden = !$('edit-form').hidden; if ($('edit-form').hidden) HGResearchEvaluation.unloadAll('草稿已收起，媒体已卸下。'); renderControls(); });
   $('edit-form').addEventListener('submit', event => { event.preventDefault(); submit(); });
   $('copy-draft').addEventListener('click', async () => { try { const value = {kind: draft.kind, id: $('edit-id').value.trim(), target: draft.target, body: collectDraft()}; await navigator.clipboard.writeText(JSON.stringify(value, null, 2)); message('write-message', '草稿已复制；尚未保存。'); } catch (error) { message('write-message', failText(error), true); } });
   $('pending-query').addEventListener('click', queryPending); $('pending-retry').addEventListener('click', () => { if (pending?.missing) sendPending(pending); });
@@ -488,6 +504,7 @@
   $('access-toggle').addEventListener('click', () => { if (access?.steer) setAccess({}, true); else { $('unlock-form').hidden = false; $('steer-password').focus(); } });
   $('unlock-close').addEventListener('click', () => { $('steer-password').value = ''; $('unlock-form').hidden = true; });
   $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess({pw: $('steer-password').value}); });
+  for (const id of ['evidence-details', 'record-json-details']) $(id).addEventListener('toggle', () => { if ($(id).open) HGResearchEvaluation.revealDetail(); });
   document.addEventListener('hgamey-target-change', renderControls);
   window.addEventListener('pagehide', () => { disposed = true; listController?.abort(); detailController?.abort(); });
   try {

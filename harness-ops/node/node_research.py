@@ -7,10 +7,12 @@ import os
 import re
 import sqlite3
 import time
+from urllib.parse import quote, urlencode
 
 from artifact_io import SafeRoot
 from node_read import encode_cursor, decode_cursor
 from node_results import encoded, identifier, object_fields, text
+from node_media import LIMITS, MediaError
 
 MAX_DATA = 64 << 10
 MAX_WRITE = 128 << 10
@@ -76,8 +78,43 @@ def unique(items, key):
         raise ValueError("duplicate metadata item identity")
 
 
+def evaluation(kind, value, evidence_refs):
+    if kind == "request":
+        object_fields(value, {"schema", "media_kind", "slots"})
+        if value.get("schema") != "phonefarm/ab-evaluation@1" or value.get("media_kind") not in LIMITS:
+            raise ValueError("evaluation requires phonefarm/ab-evaluation@1 and image/video")
+        slots = object_fields(value.get("slots"), {"A", "B"})
+        if set(slots) != {"A", "B"} or any(type(i) is not int or not 0 <= i < len(evidence_refs) for i in slots.values()):
+            raise ValueError("evaluation slots must select two evidence reference indices")
+        if slots["A"] == slots["B"] or any(evidence_refs[i]["kind"] != "result_source" for i in slots.values()):
+            raise ValueError("evaluation slots must be distinct registered source reference indices")
+    else:
+        fields = {"schema", "preference", "difference", "reviewed", "client_display", "identity_revealed"}
+        object_fields(value, fields)
+        if set(value) != fields or value.get("schema") != "phonefarm/ab-feedback@1":
+            raise ValueError("evaluation feedback requires all phonefarm/ab-feedback@1 fields")
+        if value["preference"] not in {"A", "B", "no_preference", "unable_to_judge", None}:
+            raise ValueError("unsupported subjective preference")
+        if value["difference"] not in {"none", "small", "moderate", "large", "unknown", None}:
+            raise ValueError("unsupported subjective difference")
+        reviewed = object_fields(value["reviewed"], {"A", "B"})
+        display = object_fields(value["client_display"], {"A", "B"})
+        if set(reviewed) != {"A", "B"} or any(v is not None and type(v) is not bool for v in reviewed.values()):
+            raise ValueError("reviewed requires A/B boolean or null declarations")
+        if set(display) != {"A", "B"} or any(v not in {"decoded", "failed", "not_loaded", "unknown"} for v in display.values()):
+            raise ValueError("client_display requires A/B display observations")
+        if value["identity_revealed"] is not None and type(value["identity_revealed"]) is not bool:
+            raise ValueError("identity_revealed must be a boolean or null declaration")
+        if value["preference"] in {"A", "B", "no_preference"}:
+            if not all(v is True for v in reviewed.values()):
+                raise ValueError("a subjective preference requires both reviewed declarations")
+        elif value["difference"] not in {"unknown", None}:
+            raise ValueError("unjudged media must retain unknown/null difference")
+    return value
+
+
 def normalize(kind, data):
-    common = {"evidence_refs"}
+    common = {"evidence_refs"} | ({"evaluation"} if kind in ("request", "feedback") else set())
     fields = {
         "research": {"title", "objective", "game", "constraints", "budgets", "device_requirements", "state", "state_reason", "coverage"},
         "direction": {"research_id", "title", "hypothesis", "priority", "priority_reason", "prerequisites", "cost_expectation",
@@ -190,6 +227,10 @@ def normalize(kind, data):
         value["text"] = text(value.get("text"), 16384, True)
     if kind in ("request", "feedback"):
         value["supersedes"] = identifier(value["supersedes"]) if value.get("supersedes") is not None else None
+        if "evaluation" in value:
+            if kind == "request" and value["type"] != "evaluation":
+                raise ValueError("A/B media requires an evaluation request")
+            evaluation(kind, value["evaluation"], value["evidence_refs"])
     if len(encoded(value).encode()) > MAX_DATA:
         raise ResearchError(413, "research_too_large", "research object exceeds 64 KiB")
     return value
@@ -296,6 +337,38 @@ class NodeResearch:
                             "current_revision": current["revision"], "changed": current["revision"] != direction["revision"]})
         return {"research": parent["revision"] != context["research_revision"], "directions": changes}
 
+    @staticmethod
+    def _evaluation_sources(value, bindings):
+        spec = value["evaluation"]
+        for index in spec["slots"].values():
+            binding = bindings[index]
+            source = binding.get("source_observation") or {}
+            if (source.get("kind") != "job_output" or source.get("status") != "available"
+                    or binding.get("identity_kind") not in {"content_sha256", "registration_bound"}
+                    or type(source.get("size")) is not int or source["size"] < 1):
+                raise ResearchError(409, "research_media_unbound", "A/B slots require registered readable job-output snapshots")
+            if source["size"] > LIMITS[spec["media_kind"]]["max_bytes"]:
+                raise MediaError(413, "media_too_large", "registered media exceeds the evaluation byte limit")
+
+    @staticmethod
+    def _evaluation_binding(request):
+        value, bindings = json.loads(request["data"]), json.loads(request["bindings"])
+        spec = value.get("evaluation")
+        if spec is None:
+            raise ResearchError(409, "research_evaluation_required", "the original request revision has no A/B evaluation")
+        return {**spec, "references": {slot: value["evidence_refs"][i] for slot, i in spec["slots"].items()},
+                "evidence_bindings": {slot: bindings[i] for slot, i in spec["slots"].items()}}
+
+    def media(self, oid, slot, revision):
+        identifier(oid); positive(revision)
+        if slot not in ("A", "B"):
+            raise ValueError("evaluation media slot must be A or B")
+        with self._db() as db:
+            request = self._reference(db, "request", oid, revision)
+            binding = self._evaluation_binding(request)
+        ref = binding["references"][slot]
+        return self.results.source(ref["result_id"], ref["source_name"], media_kind=binding["media_kind"])
+
     def _validate_links(self, db, kind, oid, value, old):
         observations = {}
         if kind == "research":
@@ -307,6 +380,8 @@ class NodeResearch:
             context = json.loads(request["data"])["context"]
             observations = {"request_state_at_submit": latest["state"], "request_revision_at_submit": latest["revision"],
                             "context_changed_at_submit": self._context_changed(db, rid, context)}
+            if "evaluation" in value:
+                observations["evaluation_binding"] = self._evaluation_binding(request)
             if value["supersedes"]:
                 prior = self._reference(db, "feedback", value["supersedes"], research_id=rid)
                 if prior["request_id"] != value["request_id"]:
@@ -374,6 +449,8 @@ class NodeResearch:
             previous = self._latest(db, kind, oid)
         bindings = (json.loads(previous["bindings"]) if previous and json.loads(previous["data"])["evidence_refs"] == value["evidence_refs"]
                     else self._bindings(value))
+        if kind == "request" and "evaluation" in value:
+            self._evaluation_sources(value, bindings)
         with self._db(True) as db:
             receipt = self._operation(db, operation_id, request)
             if receipt is not None:
@@ -438,11 +515,17 @@ class NodeResearch:
             return {"direction_counts": {item["state"]: item["n"] for item in counts}}
         feedback = db.execute("SELECT COUNT(*) AS n,MAX(at) AS at FROM revisions WHERE kind='feedback' AND request_id=?", (oid,)).fetchone()
         impacted = db.execute("SELECT d.*,o.revision FROM dependencies d JOIN objects o ON o.kind='direction' AND o.id=d.direction_id WHERE d.kind='request' AND d.target_id=? ORDER BY d.direction_id,d.id", (oid,)).fetchall()
-        return {"feedback_count": feedback["n"], "last_feedback_at": feedback["at"],
+        derived = {"feedback_count": feedback["n"], "last_feedback_at": feedback["at"],
                 "affected_directions": [{"id": item["direction_id"], "revision": item["revision"], "dependency_id": item["id"],
                                          "blocking": bool(item["blocking"]), "resolved": bool(item["resolved"])} for item in impacted],
                 "context_changed": self._context_changed(db, row["research_id"], value["context"]),
                 "overdue": value["state"] == "open" and value["due_at"] is not None and value["due_at"] < time.time()}
+        if "evaluation" in value:
+            spec = value["evaluation"]
+            query = urlencode({"revision": row["revision"], "expected_node_id": self.node_id})
+            derived["evaluation"] = {**spec, "media": {slot: "/research-state/request/" + quote(oid) + "/media/" + slot + "?" + query for slot in ("A", "B")},
+                                     "limits": LIMITS[spec["media_kind"]], "blinding": "presentation_only"}
+        return derived
 
     def _show(self, db, row):
         value = json.loads(row["data"])

@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 from artifact_io import SafeRoot, describe_file, stamp
 from node_read import encode_cursor, decode_cursor
+from node_media import inspect_media, MediaError
 
 
 MAX_RECORD = 256 << 10
@@ -447,7 +448,7 @@ class NodeResults:
         receipt = json.loads(row["receipt"])
         return (row["content"], {"size": receipt["size"], "sha256": receipt["sha256"], "kind": "json"}) if source else receipt
 
-    def source(self, rid, name):
+    def source(self, rid, name, *, media_kind=None):
         row = self._row(rid)
         sources, observations = json.loads(row["manifest"])["sources"], json.loads(row["observations"])
         pair = next(((s, o) for s, o in zip(sources, observations) if s["name"] == name), None)
@@ -455,6 +456,8 @@ class NodeResults:
             raise ResultError(404, "result_source_not_found", "no named source on this result")
         source, observation = pair
         if source["kind"] == "imported_json":
+            if media_kind is not None:
+                raise MediaError(415, "media_unsupported", "imported JSON is not an evaluation media source")
             return self.imported(source["import_id"], source=True)
         if source["kind"] != "job_output" or not observation.get("stamp"):
             raise ResultError(409, "result_source_unbound", "source was not bound to readable local bytes at registration")
@@ -465,12 +468,13 @@ class NodeResults:
         try:
             if list(stamp(os.fstat(stream.fileno()))) != observation["stamp"]:
                 raise ResultError(409, "result_source_changed", "source changed after registration; old result was not rewritten")
+            media = inspect_media(stream, media_kind) if media_kind is not None else None
             info = describe_file(stream, self.jobs._sha_cache, self.jobs._out_guard)
             if list(stream.artifact_stamp) != observation["stamp"]:
                 raise ResultError(409, "result_source_changed", "source changed before the download snapshot was prepared")
             if observation.get("sha256") and info["sha256"] != observation["sha256"]:
                 raise ResultError(409, "result_source_changed", "source bytes no longer match the registered JSON")
-            return stream, {"kind": "file", **info}
+            return stream, {"kind": "file", **info, **({"media": media} if media is not None else {})}
         except BaseException:
             stream.close()
             raise

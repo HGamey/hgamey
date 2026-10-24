@@ -1,11 +1,14 @@
 """Shared research metadata client. A write has one target and one operation ID."""
 
 import argparse
+import hashlib
 import http.client
 import json
 import math
+import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import uuid
@@ -20,17 +23,24 @@ HELP = """用法:
   pf-node research update KIND ID FILE --revision N --reason TEXT [--operation-id ID] [--actor-label TEXT]
   pf-node research operation ID
   pf-node research events [--after N] [--research-id ID] [--limit 1..500]
+  pf-node research media REQUEST A|B --revision N --output FILE
 
 KIND 为 research/direction/request/feedback。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
 输出与网页同一 API JSON；错误仅保安全错误码、HTTP 状态与 current_revision，不回显源正文。
+request/feedback data 实际含 evaluation 时需 research.evaluation-v1；旧字段缺席不会补默认值。
+media 只读下载固定版本的一个槽位，需显式 node-id 与评价能力。仅支持 PNG/JPEG/MP4/WebM，
+图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
+没有自动重试或续传；失败只清理本次 partial。下载完整不表示已解码、看过或已提交评价。
 """
 KINDS = ("research", "direction", "request", "feedback")
 MAX_DATA = 64 << 10
 MAX_BODY = 128 << 10
 MAX_RESPONSE = 8 << 20
+MEDIA_LIMITS = {"image/png": 16 << 20, "image/jpeg": 16 << 20,
+                "video/mp4": 128 << 20, "video/webm": 128 << 20}
 
 
 def identifier(value):
@@ -86,6 +96,11 @@ def parser():
     events.add_argument("--after", type=lambda v: integer(v, minimum=0))
     events.add_argument("--research-id", type=identifier)
     events.add_argument("--limit", type=lambda v: integer(v, maximum=500))
+    media = commands.add_parser("media")
+    media.add_argument("id", type=identifier)
+    media.add_argument("slot", choices=("A", "B"))
+    media.add_argument("--revision", type=integer, required=True)
+    media.add_argument("--output", required=True)
     return root
 
 
@@ -143,6 +158,42 @@ class Client:
         if not isinstance(capabilities, list) or "research.state-v1" not in capabilities:
             raise ValueError("节点缺少 research.state-v1；未降级到旧 GOL goal/human.md")
 
+    def require_evaluation(self, *, pinned=False):
+        if pinned and self.target.expected_node_id is None:
+            raise ValueError("媒体读取需要显式 --node-id / PF_NODE_ID；未读取")
+        self.require_capability()
+        capabilities = self.target.identity()["capabilities"]
+        if "research.evaluation-v1" not in capabilities or (pinned and "node.target-v1" not in capabilities):
+            raise ValueError("节点缺少 research.evaluation-v1 或目标绑定能力；未降级读取/写入")
+
+    def http_error(self, error):
+        status, code, revision = error.code, None, None
+        try:
+            raw = error.read(MAX_DATA + 1)
+            value = _json(raw) if len(raw) <= MAX_DATA else None
+            candidate = value.get("code") if isinstance(value, dict) else None
+            if (isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate)
+                    and candidate != self.target.token):
+                code = candidate
+            candidate = value.get("current_revision") if isinstance(value, dict) else None
+            if type(candidate) is int and candidate >= 1:
+                revision = candidate
+        except (ValueError, UnicodeError, OSError, http.client.HTTPException, RecursionError):
+            pass
+        finally:
+            error.close()
+        if status == 409:
+            message = "操作内容、对象版本、原目标或原件状态冲突；保留原 ID，先读取当前状态"
+        elif 300 <= status < 400:
+            message = "节点返回重定向；未转发凭据或重发请求"
+        elif status == 404:
+            message = "对象、版本、原件或原操作当前不可查；不据此自动重新提交"
+        elif status in (401, 403):
+            message = "节点拒绝访问；读取和写入需要对应权限"
+        else:
+            message = "研究状态请求被拒绝或未确认；未自动重试"
+        return RequestError(message, status=status, code=code, current_revision=revision)
+
     def request(self, method, path, body=None):
         request = self.target.request(method, path, body,
                                       {"Content-Type": "application/json"} if body is not None else None)
@@ -153,32 +204,7 @@ class Client:
                 raise RequestError("节点回包超过上限；结果未确认")
             value = _json(raw)
         except urllib.error.HTTPError as error:
-            status, code, revision = error.code, None, None
-            try:
-                raw = error.read(MAX_DATA + 1)
-                value = _json(raw) if len(raw) <= MAX_DATA else None
-                candidate = value.get("code") if isinstance(value, dict) else None
-                if (isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate)
-                        and candidate != self.target.token):
-                    code = candidate
-                candidate = value.get("current_revision") if isinstance(value, dict) else None
-                if type(candidate) is int and candidate >= 1:
-                    revision = candidate
-            except (ValueError, UnicodeError, OSError, http.client.HTTPException, RecursionError):
-                pass
-            finally:
-                error.close()
-            if status == 409:
-                message = "操作内容、对象版本或原目标冲突；保留草稿与原操作 ID，先读取当前状态"
-            elif 300 <= status < 400:
-                message = "节点返回重定向；未转发凭据或重发请求"
-            elif status == 404:
-                message = "对象、版本或原操作当前不可查；不据此自动重新提交"
-            elif status in (401, 403):
-                message = "节点拒绝访问；读取和写入需要对应权限"
-            else:
-                message = "研究状态请求被拒绝或未确认；未自动重试"
-            raise RequestError(message, status=status, code=code, current_revision=revision) from None
+            raise self.http_error(error) from None
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
             raise RequestError("网络回执未确认；未自动重试") from None
         except (ValueError, UnicodeError, RecursionError):
@@ -209,6 +235,97 @@ def _error(error, *, operation_id=None, kind=None, identity=None):
     print(f"pf-node: {error}（{detail}）", file=sys.stderr)
 
 
+def _media_headers(response):
+    if response.status != 200:
+        raise RequestError("媒体读取未返回完整 200 响应；未发布文件", code="media_invalid_response")
+    values = {}
+    for name in ("Content-Type", "Content-Length", "X-Content-SHA256"):
+        found = response.headers.get_all(name, [])
+        if len(found) != 1:
+            raise RequestError("媒体响应缺少唯一的类型、长度或 SHA；未发布文件", code="media_invalid_response")
+        values[name] = found[0].strip()
+    mime = values["Content-Type"].split(";", 1)[0].strip().lower()
+    length, digest = values["Content-Length"], values["X-Content-SHA256"]
+    if (mime not in MEDIA_LIMITS or not re.fullmatch(r"[0-9]{1,12}", length)
+            or not 1 <= int(length) <= MEDIA_LIMITS[mime]
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or response.headers.get("Transfer-Encoding") is not None
+            or response.headers.get("Content-Encoding", "identity").lower() != "identity"):
+        raise RequestError("媒体类型、大小、编码或 SHA 不符合同；未发布文件", code="media_invalid_response")
+    return mime, int(length), digest
+
+
+def _media(client, args):
+    path = os.path.abspath(args.output)
+    # lexists also refuses broken symlinks; the final link repeats this check atomically.
+    if os.path.lexists(path):
+        raise ValueError("输出文件已存在；未覆盖、未读取媒体")
+    if not os.path.isdir(os.path.dirname(path)):
+        raise ValueError("输出父目录不存在；未读取媒体")
+    client.require_evaluation(pinned=True)
+    endpoint = f"/research-state/request/{args.id}/media/{args.slot}?revision={args.revision}"
+    request = client.target.request("GET", endpoint, headers={"Accept": ", ".join(MEDIA_LIMITS)})
+    temporary, owned_inode, published = None, None, False
+    try:
+        try:
+            response = client.target.opener.open(request, timeout=30)
+        except urllib.error.HTTPError as error:
+            raise client.http_error(error) from None
+        with response:
+            mime, length, expected_digest = _media_headers(response)
+            fd, temporary = tempfile.mkstemp(prefix=".pf-research-media-", suffix=".partial",
+                                              dir=os.path.dirname(path))
+            info = os.fstat(fd)
+            owned_inode = (info.st_dev, info.st_ino)
+            received, digest = 0, hashlib.sha256()
+            with os.fdopen(fd, "wb") as output:
+                while received < length:
+                    chunk = response.read(min(256 << 10, length - received))
+                    if not chunk:
+                        raise RequestError("媒体读取中断，长度未确认；未发布文件", code="media_read_unconfirmed")
+                    output.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+                actual_digest = digest.hexdigest()
+                if received != length or actual_digest != expected_digest:
+                    raise RequestError("媒体长度或 SHA 校验失败；未发布文件", code="media_integrity_mismatch")
+                output.flush()
+                os.fsync(output.fileno())
+            info = os.lstat(temporary)
+            if (info.st_dev, info.st_ino) != owned_inode:
+                raise RequestError("本次 partial 身份已改变；未发布文件", code="media_local_error")
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                raise RequestError("输出路径在下载期间已存在；未覆盖，原件未发布", code="media_output_exists") from None
+            published = True
+        print(json.dumps({"schema_version": 1, "node_id": client.target.expected_node_id,
+                          "request_id": args.id, "revision": args.revision, "slot": args.slot,
+                          "path": path, "size": received, "sha256": actual_digest, "mime": mime},
+                         ensure_ascii=False, allow_nan=False))
+        print("pf-node: 原件长度与 SHA 已核对；下载不表示已解码、查看或提交反馈。", file=sys.stderr)
+        return 0
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
+        raise RequestError("媒体读取或本地保存未确认；未自动重试，没有创建反馈", code="media_read_unconfirmed") from None
+    except KeyboardInterrupt:
+        print("pf-node: 媒体读取回执未确认；未自动重试，没有创建反馈。" +
+              ("目标文件已在完整性校验后发布，请保留并核对。" if published else "未发布目标文件。"),
+              file=sys.stderr)
+        return 130
+    finally:
+        if temporary is not None and owned_inode is not None:
+            try:
+                info = os.lstat(temporary)
+                if (info.st_dev, info.st_ino) == owned_inode:
+                    os.unlink(temporary)
+                else:
+                    print("pf-node: partial 身份已改变，未删除他人文件。", file=sys.stderr)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                print(f"pf-node: 本次 partial 未能清理，保留在 {temporary}", file=sys.stderr)
+
+
 def _write(client, args):
     if args.command == "update" and args.kind == "feedback":
         raise ValueError("feedback 不可更新；修正需新 ID 与 supersedes")
@@ -222,6 +339,8 @@ def _write(client, args):
     print(f"pf-node: {args.kind}/{args.id} operation_id={operation_id}；仅提交一次。"
           f"回执未知时用 {lookup} 查询原操作。", file=sys.stderr, flush=True)
     data = _data(args.file)
+    if args.kind in ("request", "feedback") and "evaluation" in data:
+        client.require_evaluation()
     body = json.dumps({"schema": "phonefarm/research-write@1", "operation_id": operation_id,
                        "base_revision": args.revision if args.command == "update" else None,
                        "data": data, "actor_label": args.actor_label, "reason": args.reason},
@@ -258,6 +377,8 @@ def main(argv, *, target):
     try:
         if args.command in ("create", "update"):
             return _write(client, args)
+        if args.command == "media":
+            return _media(client, args)
         if args.command == "list":
             if args.request_id is not None and args.kind != "feedback":
                 raise ValueError("--request-id 筛选仅用于 feedback")

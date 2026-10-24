@@ -36,6 +36,7 @@ from node_read import NodeRead
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE
+from node_media import MediaError
 from node_fleet import FleetState
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
@@ -790,6 +791,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if parts == ["node"]:
                     return self._send(200, node.identity())
                 if parts[:1] == ["research-state"]:
+                    if len(parts) == 5 and parts[1] == "request" and parts[3] == "media":
+                        if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                            return self._send(400, {"code": "target_required", "error": "evaluation media requires an explicit node identity"})
+                        if set(q) - {"revision", "expected_node_id"} or "revision" not in q or any(len(v) != 1 for v in q.values()):
+                            raise ValueError("evaluation media requires an explicit revision and no source override")
+                        blob, info = research.media(unquote(parts[2]), parts[4], int(q["revision"][0]))
+                        with blob:
+                            return self._stream_out(blob, info, {}, media_type=info["media"]["mime"])
                     if len(parts) == 2:
                         return self._send(200, research.list(parts[1], q))
                     if len(parts) == 4 and parts[3] == "history":
@@ -886,7 +895,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
-            except ResearchError as e:
+            except (ResearchError, MediaError) as e:
                 return self._send(e.status, e.payload)
             except ResultError as e:
                 return self._send(e.status, {"code": e.code, "error": str(e)})
@@ -947,7 +956,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 value = research.write(parts[1], unquote(parts[2]), json.loads(raw),
                                        "dashboard_steer" if dashboard else "admin_token")
                 return self._send(201, value)
-            except ResearchError as e:
+            except (ResearchError, MediaError) as e:
                 return self._send(e.status, e.payload)
             except AssetUploadError as e:
                 return self._send(e.status, {"code": "invalid_research_request", "error": e.message})
@@ -986,7 +995,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except (ValueError, TypeError, OverflowError) as e:
                 return self._send(400, {"code": "invalid_result", "error": str(e)})
 
-        def _stream_out(self, blob, info, q):
+        def _stream_out(self, blob, info, q, *, media_type=None):
             ensure_unchanged(blob)
             if "meta" in q:
                 return self._send(200, info)
@@ -1016,11 +1025,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     status = 206
             ensure_unchanged(blob)
             self.send_response(status)
-            self.send_header("Content-Type", "application/gzip" if info["kind"] == "tar.gz" else "application/octet-stream")
+            self.send_header("Content-Type", media_type or ("application/gzip" if info["kind"] == "tar.gz" else "application/octet-stream"))
             self.send_header("Content-Length", str(end - start))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Disposition", "attachment")
+            self.send_header("Content-Disposition", "inline" if media_type else "attachment")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("ETag", f'"{etag}"')
             self.send_header("X-Content-SHA256", info["sha256"])
