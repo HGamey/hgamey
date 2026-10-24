@@ -125,16 +125,24 @@ def _delta(baseline, candidate):
         result.update(reason=reason, percent_reason=reason)
         return result
     result["unit"] = a["unit"]
-    value = b["value"] - a["value"]
-    if not math.isfinite(value):
+    try:
+        value = b["value"] - a["value"]
+        valid = math.isfinite(value)
+    except OverflowError:
+        valid = False
+    if not valid:
         result.update(reason="arithmetic_overflow", percent_reason="arithmetic_overflow")
         return result
     result["value"] = value
     if a["value"] <= 0:
         result["percent_reason"] = "baseline_nonpositive"
     else:
-        percent = value / a["value"] * 100
-        if math.isfinite(percent):
+        try:
+            percent = value / a["value"] * 100
+            valid = math.isfinite(percent)
+        except OverflowError:
+            valid = False
+        if valid:
             result["percent"] = percent
         else:
             result["percent_reason"] = "arithmetic_overflow"

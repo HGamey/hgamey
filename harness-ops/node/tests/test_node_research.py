@@ -61,9 +61,9 @@ class NodeResearchTests(unittest.TestCase):
         self.assertEqual(code, 200, value)
         return value["items"]
 
-    def cli(self, *args):
+    def cli(self, *args, token=None):
         env = {**os.environ, "PF_NODE_URL": self.env.url, "PF_NODE_ID": self.pin,
-               "PF_NODE_TOKEN": self.env.admin, "HOME": str(self.env.root)}
+               "PF_NODE_TOKEN": self.env.admin if token is None else token, "HOME": str(self.env.root)}
         env.pop("PF_NODE_TOKEN_FILE", None)
         return subprocess.run([sys.executable, str(NODE / "pf-node"), "research", *args],
                               env=env, capture_output=True, text=True, timeout=10)
@@ -253,6 +253,163 @@ class NodeResearchTests(unittest.TestCase):
         self.assertEqual(operation.returncode, 0, operation.stderr)
         self.assertEqual(json.loads(operation.stdout), reply_receipt)
         self.assertEqual(self.env.jobs.dispatch.queue.rows(), [])
+
+    def test_criteria_declared_before_candidate_and_assessed_at_fixed_revision(self):
+        legacy = {"title": "Synthetic scoped study", "objective": "Module ms with explicit quality tolerance"}
+        original_receipt = self.create("research", "study", legacy)
+        original = self.read("research", "study")
+        self.assertNotIn("criteria", original["data"])
+        self.assertNotIn("criteria_bindings", original["derived"])
+        endpoint = "/research-state/research/study/assessment"
+        code, absent = self.call("GET", endpoint + "?revision=1")
+        self.assertEqual((code, absent["code"]), (409, "research_criteria_required"))
+
+        def register(identity, timing, quality):
+            code, record = self.call("POST", "/results", {
+                "schema": "phonefarm/result@1", "result_id": identity,
+                "title": "Synthetic registered point values only", "outcome": "unknown",
+                "origin": {"producer": "fixture", "evidence_origin": "synthetic"},
+                "metrics": [
+                    {"name": "module_time", "condition": identity, "value": timing, "unit": "ms",
+                     "scope": "module", "method": "reported"},
+                    {"name": "psnr", "condition": identity, "value": quality, "unit": "dB",
+                     "scope": "image", "method": "reported", "region": "full_frame"},
+                    {"name": "power", "condition": identity, "value": None, "unit": "W",
+                     "scope": "power", "method": "unknown", "unavailable_reason": "No power was sampled"}],
+                "claims": ["Synthetic arithmetic, no device or scientific qualification"]})
+            self.assertEqual(code, 201, record)
+            return record
+
+        baseline = register("criteria-native", 4, 40)
+        criteria = {"schema": "phonefarm/research-criteria@1", "baseline_role": "original_game",
+            "comparison": {"schema": "phonefarm/result-compare@1", "node_id": self.pin,
+                "columns": [{"id": "native", "label": "Declared original", "result_id": "criteria-native"},
+                            {"id": "low", "label": "Pending lower-render candidate", "result_id": "criteria-later"}],
+                "rows": [{"id": row, "label": label, "metric_indexes": [index, index]}
+                         for index, row, label in ((0, "timing", "Module elapsed"),
+                                                  (1, "quality", "Declared quality"), (2, "power", "Power"))],
+                "context": {"scope": "Synthetic values, not measured performance",
+                            "assumptions": ["Explicit row selections"],
+                            "interventions": ["Declared lower rendering resolution"]}},
+            "axes": [
+                {"id": "time", "row_id": "timing", "label": "Module time", "unit": "ms", "scope": "module",
+                 "role": "objective", "prefer": "minimize", "required": True,
+                 "rule": {"kind": "absolute_improvement_min", "threshold": .5}},
+                {"id": "image", "row_id": "quality", "label": "Acceptable quality", "unit": "dB", "scope": "image",
+                 "role": "constraint", "prefer": "maximize", "required": True,
+                 "rule": {"kind": "degradation_max", "threshold": 3}},
+                {"id": "power", "row_id": "power", "label": "Optional power", "unit": "W", "scope": "power",
+                 "role": "observe", "prefer": "minimize", "required": False, "rule": None}],
+            "pareto_axes": ["time", "image"]}
+        code, _ = self.write("research", "study", "freeze-before-candidate",
+                             {**original["data"], "criteria": criteria}, 1, "Freeze before candidate registration")
+        self.assertEqual(code, 201)
+        frozen = self.read("research", "study", 2)
+        bindings = frozen["derived"]["criteria_bindings"]
+        self.assertEqual(bindings, [
+            {"column_id": "native", "node_id": self.pin, "result_id": "criteria-native",
+             "status": "registration_bound", "result_sequence": baseline["sequence"],
+             "result_registered_at": baseline["registered_at"]},
+            {"column_id": "low", "node_id": self.pin, "result_id": "criteria-later",
+             "status": "declared_pending", "result_sequence": None, "result_registered_at": None}])
+        self.create("direction", "planned", {**self.direction("A separately scheduled experiment"),
+            "next_experiment": {"title": "Use the frozen goal", "plan": "No job is started by this test",
+                                "research_revision": 2}})
+        planned = self.read("direction", "planned")
+        code, pending = self.call("GET", endpoint + "?revision=2")
+        self.assertEqual(code, 200, pending)
+        self.assertEqual(pending["comparison"]["columns"][1]["error"]["code"], "result_not_found")
+        self.assertEqual(pending["candidates"][1]["requirements"]["status"], "undetermined")
+
+        # Registration is later than the criteria commit; reading does not rewrite
+        # the declaration into evidence that the candidate was known in advance.
+        candidate = register("criteria-later", 3, 38)
+        readonly = readonly_token(self.env.admin)
+        code, assessed = self.call("GET", endpoint + "?revision=2", token=readonly)
+        self.assertEqual(code, 200, assessed)
+        self.assertEqual((assessed["research_id"], assessed["revision"], assessed["criteria"]),
+                         ("study", 2, criteria))
+        self.assertEqual((assessed["basis"], assessed["comparability"]),
+                         ("registered_point_values", "not_established"))
+        self.assertEqual(assessed["criteria_bindings"], bindings)
+        low = assessed["candidates"][1]
+        self.assertEqual(low["column_id"], "low")
+        axes = {axis["axis_id"]: axis for axis in low["axes"]}
+        self.assertEqual((axes["time"]["value"], axes["time"]["observed"], axes["time"]["status"]),
+                         (3, 1, "satisfied"))
+        self.assertEqual((axes["image"]["value"], axes["image"]["observed"], axes["image"]["status"]),
+                         (38, 2, "satisfied"))
+        self.assertEqual((axes["power"]["status"], axes["power"]["reason"], axes["power"]["observed"]),
+                         ("unknown", "value_unavailable", None))
+        self.assertEqual(low["requirements"], {"status": "satisfied", "required_axes": ["time", "image"],
+                                              "unknown_axes": [], "failed_axes": []})
+        self.assertEqual((assessed["pareto"]["status"], assessed["pareto"]["scope"]),
+                         ("computed", "complete_value_subset"))
+        self.assertEqual(assessed["pareto"]["undetermined_column_ids"], [])
+        self.assertEqual(assessed["pareto"]["excluded_axis_ids"], ["power"])
+        self.assertEqual([(item["column_id"], item["status"], item["dominated_by"])
+                          for item in assessed["pareto"]["columns"]],
+                         [("native", "non_dominated", []), ("low", "non_dominated", [])])
+
+        revised = copy.deepcopy(frozen["data"])
+        revised["criteria"]["axes"][1]["rule"]["threshold"] = 1
+        revised["criteria"]["pareto_axes"].append("power")
+        code, _ = self.write("research", "study", "tighten-after-registration", revised, 2,
+                             "Tighten declared quality tolerance and include power in the selected projection")
+        self.assertEqual(code, 201)
+        code, stricter = self.call("GET", endpoint + "?revision=3", token=readonly)
+        self.assertEqual(code, 200, stricter)
+        self.assertEqual(stricter["candidates"][1]["requirements"]["failed_axes"], ["image"])
+        self.assertEqual(stricter["candidates"][1]["requirements"]["status"], "not_satisfied")
+        self.assertEqual(stricter["pareto"]["undetermined_column_ids"], ["native", "low"])
+        for column in stricter["pareto"]["columns"]:
+            self.assertEqual((column["status"], column["dominated_by"]), ("undetermined", []))
+            self.assertIn({"axis_id": "power", "reason": "value_unavailable"}, column["reasons"])
+        self.assertEqual(stricter["criteria_bindings"], bindings)
+        self.assertEqual(self.read("research", "study", 3)["derived"]["criteria_bindings"], bindings)
+        self.assertEqual(self.read("research", "study", 2)["data"], frozen["data"])
+        self.assertEqual(self.read("direction", "planned"), planned)
+
+        before_reads = self.events()
+        code, replay = self.call("POST", "/research-state/research/study",
+                                self.envelope("create-study", legacy))
+        self.assertEqual((code, replay), (201, original_receipt))
+        self.assertEqual(self.read("research", "study", 1)["data"], original["data"])
+        code, no_pin = self.env.call("GET", endpoint + "?revision=2", token=readonly)
+        self.assertEqual((code, no_pin["code"]), (400, "target_required"))
+        self.assertEqual(self.call("GET", endpoint, token=readonly)[0], 400)
+        view = {"Authorization": "Basic " + base64.b64encode(b"viewer:test-view").decode(), "X-HG": "1"}
+        code, viewed = self.call("GET", "/dash/api" + endpoint + "?revision=2", headers=view)
+        self.assertEqual(code, 200, viewed)
+        self.assertEqual(viewed["criteria"], criteria)
+
+        calls = []
+        handler = self.env.server.RequestHandlerClass
+        original_get, original_post = handler.do_GET, handler.do_POST
+
+        def tracked_get(request):
+            calls.append(("GET", request.path))
+            return original_get(request)
+
+        def tracked_post(request):
+            calls.append(("POST", request.path))
+            return original_post(request)
+
+        with mock.patch.object(handler, "do_GET", tracked_get), mock.patch.object(handler, "do_POST", tracked_post):
+            response = self.cli("assess", "study", "--revision", "2", token=readonly)
+        self.assertEqual(response.returncode, 0, response.stderr)
+        prior = json.loads(response.stdout)
+        self.assertEqual(calls, [("GET", "/node"), ("GET", endpoint + "?revision=2")])
+        self.assertEqual((prior["revision"], prior["current_revision"], prior["criteria"]), (2, 3, criteria))
+        self.assertEqual(prior["criteria_bindings"], bindings)
+        self.assertEqual(prior["candidates"], assessed["candidates"])
+        self.assertEqual(prior["pareto"], assessed["pareto"])
+        self.assertEqual(self.events(), before_reads)
+        for record in (baseline, candidate):
+            self.assertEqual(self.call("GET", "/results/" + record["result_id"])[1], record)
+        self.assertEqual(self.env.jobs.dispatch.queue.rows(), [])
+        self.assertIsNone(self.env.jobs.dispatch.thread)
+        self.assertIsNone(self.env.board.monitor._thread)
 
     def test_watch_cli_timeout_commit_wakeup_and_persisted_cursor(self):
         self.create("research", "study", {"title": "Watched study", "objective": "Observe committed metadata only"})

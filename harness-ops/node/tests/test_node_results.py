@@ -145,13 +145,16 @@ class NodeResultTests(unittest.TestCase):
             reported(0, "original_game", name="zero-baseline"),
             reported(3, "low_render", window="different declared window"),
             reported(38, "low_render", **{**quality, "region": "roi"}),
-            reported(None, "low_render", **power), reported(1, "low_render", name="zero-baseline")])
+            reported(None, "low_render", **power), reported(1, "low_render", name="zero-baseline"),
+            reported(-10**308, "original_game", name="integer-boundary"),
+            reported(10**308, "low_render", name="integer-boundary")])
         first["claims"] = ["Synthetic arithmetic fixture; no measurement qualification"]
         second = registration("compare-candidate", None)
         second.update(title="Synthetic alternate candidate", sources=[], metrics=[
             reported(2, "alternate"), reported(37, "alternate", **quality),
             reported(None, "alternate", **power), reported(2, "alternate", scope="game_loop"),
-            reported(2, "alternate", unit="us"), reported(2, "alternate", name="zero-baseline")])
+            reported(2, "alternate", unit="us"), reported(2, "alternate", name="zero-baseline"),
+            reported(10**308, "alternate", name="integer-boundary")])
         spec = {"schema": "phonefarm/result-compare@1", "node_id": self.pin,
                 "columns": [{"id": "native", "label": "Declared original", "result_id": first["result_id"]},
                             {"id": "low", "label": "Lower resolution", "result_id": first["result_id"]},
@@ -160,7 +163,8 @@ class NodeResultTests(unittest.TestCase):
                     ("timing", "Module timing", [0, 4, 0]), ("quality", "Image quality", [1, 5, 1]),
                     ("power", "Unobserved power", [2, 6, 2]), ("scope", "Same name, different scope", [0, 4, 3]),
                     ("unit", "Same name, different unit", [0, 4, 4]), ("zero", "Zero baseline", [3, 7, 5]),
-                    ("selection", "Explicit absence and invalid index", [None, 255, 0])]],
+                    ("selection", "Explicit absence and invalid index", [None, 255, 0]),
+                    ("overflow", "Finite registered integers with overflowing difference", [8, 9, 6])]],
                 "context": {"scope": "Synthetic registered values only",
                             "assumptions": ["Names are not automatic metric bindings"],
                             "interventions": ["Declared rendering resolution changes"]}}
@@ -221,6 +225,8 @@ class NodeResultTests(unittest.TestCase):
         self.assertIsNone(rows["selection"]["cells"][0]["metric"])
         self.assertIsNone(rows["selection"]["cells"][1]["metric"])
         self.assertTrue(rows["selection"]["cells"][1]["reason"])
+        self.assertEqual(rows["overflow"]["cells"][1]["delta"]["reason"], "arithmetic_overflow")
+        self.assertIsNone(rows["overflow"]["cells"][1]["delta"]["value"])
 
         # A viewed table is read-only, but its identity must still be explicit.
         code, unpinned = self.env.call("GET", path, token=self.ro)

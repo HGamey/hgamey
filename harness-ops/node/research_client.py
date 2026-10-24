@@ -19,6 +19,7 @@ HELP = """用法:
       [--limit 1..100] [--cursor CURSOR]
   pf-node research show KIND ID [--revision N]
   pf-node research history KIND ID [--limit 1..100] [--cursor CURSOR]
+  pf-node research assess ID --revision N
   pf-node research create KIND ID FILE [--operation-id ID] [--actor-label TEXT] [--reason TEXT]
   pf-node research update KIND ID FILE --revision N --reason TEXT [--operation-id ID] [--actor-label TEXT]
   pf-node research operation ID
@@ -36,6 +37,10 @@ events 使用 cursor 或 wait>0 时需显式 node-id 与 research.watch-v1；只
 next_cursor 是本批读取位置；处理并保存相应决定后才可作为自己的 checkpoint，head 不是进度。
 失败保留原游标；事件只含研究元数据提交，不含 job/result/设备状态，不会自动唤醒运行器。
 request/feedback data 实际含 evaluation 时需 research.evaluation-v1；旧字段缺席不会补默认值。
+research data 含 criteria 键时需 research.criteria-v1，显式 null 可清空；缺席不会补键。
+assess 需显式 node-id 与 research.criteria-v1，只 GET 指定 revision 的登记点值判断。
+完整 JSON 输出；comparison.partial=true 退出 2，规则 unknown/null 不视为读取失败，退出 0。
+判断不自动采纳、解阻或改写方向，不表示统计显著、因果收益或科学可比性。
 media 只读下载固定版本的一个槽位，需显式 node-id 与评价能力。仅支持 PNG/JPEG/MP4/WebM，
 图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
 没有自动重试或续传；失败只清理本次 partial。下载完整不表示已解码、看过或已提交评价。
@@ -85,6 +90,9 @@ def parser():
     for command in (listing, history):
         command.add_argument("--limit", type=lambda v: integer(v, maximum=100))
         command.add_argument("--cursor")
+    assessment = commands.add_parser("assess")
+    assessment.add_argument("id", type=identifier)
+    assessment.add_argument("--revision", type=integer, required=True)
     for name in ("create", "update"):
         command = commands.add_parser(name)
         command.add_argument("kind", choices=KINDS)
@@ -185,6 +193,14 @@ class Client:
         if "research.watch-v1" not in capabilities or "node.target-v1" not in capabilities:
             raise ValueError("节点缺少 research.watch-v1 或目标绑定能力；未降级等待/续读")
 
+    def require_criteria(self, *, pinned=False):
+        if pinned and self.target.expected_node_id is None:
+            raise ValueError("判据读取需要显式 --node-id / PF_NODE_ID；未读取")
+        self.require_capability()
+        capabilities = self.target.identity()["capabilities"]
+        if "research.criteria-v1" not in capabilities or (pinned and "node.target-v1" not in capabilities):
+            raise ValueError("节点缺少 research.criteria-v1 或目标绑定能力；未降级读取/写入")
+
     def http_error(self, error):
         status, code, revision, retry_after = error.code, None, None, None
         try:
@@ -281,6 +297,16 @@ def _event_response(value, args):
             or type(value.get("has_more")) is not bool
             or value.get("wait_result") not in ("events", "timeout", "immediate")):
         raise RequestError("事件回包的流、范围或位置未确认；保留原游标", code="research_watch_invalid_response")
+
+
+def _assessment_response(value, args):
+    comparison = value.get("comparison")
+    if (value.get("research_id") != args.id or type(value.get("revision")) is not int
+            or value["revision"] != args.revision or not isinstance(comparison, dict)
+            or comparison.get("node_id") != value["node_id"]
+            or type(comparison.get("partial")) is not bool):
+        raise RequestError("判断回包未绑定原研究、版本或比较目标；结果未确认",
+                           code="research_assessment_invalid_response")
 
 
 def _media_headers(response):
@@ -389,6 +415,8 @@ def _write(client, args):
     data = _data(args.file)
     if args.kind in ("request", "feedback") and "evaluation" in data:
         client.require_evaluation()
+    if args.kind == "research" and "criteria" in data:
+        client.require_criteria()
     body = json.dumps({"schema": "phonefarm/research-write@1", "operation_id": operation_id,
                        "base_revision": args.revision if args.command == "update" else None,
                        "data": data, "actor_label": args.actor_label, "reason": args.reason},
@@ -437,25 +465,31 @@ def main(argv, *, target):
             path = f"/research-state/{args.kind}/{args.id}" + _query(args, ("revision",))
         elif args.command == "history":
             path = f"/research-state/{args.kind}/{args.id}/history" + _query(args, ("limit", "cursor"))
+        elif args.command == "assess":
+            path = f"/research-state/research/{args.id}/assessment" + _query(args, ("revision",))
         elif args.command == "operation":
             path = "/research-operations/" + args.id
         else:
             path = "/research-events" + _query(args, ("after", "cursor", "research_id", "limit", "wait_seconds"))
         watch = args.command == "events" and (args.cursor is not None or (args.wait_seconds or 0) > 0)
-        if watch:
+        if args.command == "assess":
+            client.require_criteria(pinned=True)
+        elif watch:
             client.require_watch()
         else:
             client.require_capability()
         value = client.request("GET", path)
         if watch:
             _event_response(value, args)
+        if args.command == "assess":
+            _assessment_response(value, args)
         if args.command == "show" and (value.get("kind") != args.kind or value.get("id") != args.id
                 or (args.revision is not None and value.get("revision") != args.revision)):
             raise RequestError("回包未绑定原对象或指定版本；结果未确认")
         if args.command == "operation" and value.get("operation_id") != args.id:
             raise RequestError("回包未绑定原 operation_id；结果未确认")
         print(json.dumps(value, ensure_ascii=False, allow_nan=False))
-        return 0
+        return 2 if args.command == "assess" and value["comparison"]["partial"] else 0
     except RequestError as error:
         _error(error)
         if args.command == "events":

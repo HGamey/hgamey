@@ -48,6 +48,7 @@
   let eventPosition = null, eventsBusy = false, eventsListening = false, eventsEpoch = 0, eventsController = null;
   let eventsDeadline = 0, eventsBudgetTimer = null, eventsNextTimer = null, eventsPages = 0, eventsTrimmed = 0, eventsStorageError = '';
   let draft = null, pending = null, writeBusy = false, lookupBusy = false, conflictLatest = null, relatedBusy = false;
+  let criteriaTransfer = null;
   const validID = value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(value) && !['.', '..'].includes(value);
   const capable = () => node?.capabilities?.includes('research.state-v1') === true;
   const writable = () => capable() && access?.steer === true && !accessBusy && HGTarget.canWrite();
@@ -116,6 +117,7 @@
     $('edit-actor').disabled = locked; $('edit-reason').disabled = locked;
     for (const field of $('edit-fields').querySelectorAll('input,textarea,select')) field.disabled = locked || field.dataset.immutable === 'true';
     HGResearchEvaluation.setLocked(locked || !allowed);
+    HGResearchCriteria.setLocked(locked || !allowed);
     $('editor-close').disabled = writeBusy || !draft;
     $('editor-close').textContent = $('edit-form').hidden ? '展开草稿' : '收起草稿';
     $('refresh-detail').disabled = !selection || !capable();
@@ -135,7 +137,7 @@
       for (const id of ['pending-retry', 'pending-refill', 'conflict-restart']) $(id).disabled = !allowed || writeBusy || !!issue;
       $('conflict-refresh').disabled = writeBusy || !!issue;
     }
-    renderEvents();
+    renderEvents(); renderCriteriaTransfer();
   }
   async function loadAccess() {
     accessBusy = true; renderControls();
@@ -250,12 +252,16 @@
     $('record-json-details').open = false;
     $('record-json-summary').textContent = ab ? '完整记录与绑定（会揭示素材标签）' : '完整记录、作者来源与引用绑定';
     renderDerived(record); renderEvidence(record); $('object-json').textContent = JSON.stringify(record, null, 2);
-    HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target: HGTarget.binding()}); renderControls();
+    const target = HGTarget.binding();
+    HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target});
+    HGResearchCriteria.renderDetail($('criteria-detail'), record, {node, target,
+      readAssessment: (id, revision, signal) => request(`${objectPath('research', id)}/assessment?revision=${revision}`, {target, signal})});
+    renderControls();
   }
   async function selectObject(kind, id, revision = null) {
     if (!KINDS[kind] || !validID(id) || !capable() || disposed) return;
     selection = {kind, id, revision}; const epoch = ++detailEpoch, target = HGTarget.binding();
-    HGResearchEvaluation.unloadAll('记录已切换，媒体已卸下；再次查看需明确加载。'); HGResearchEvaluation.clearDetail();
+    HGResearchEvaluation.unloadAll('记录已切换，媒体已卸下；再次查看需明确加载。'); HGResearchEvaluation.clearDetail(); HGResearchCriteria.clearDetail();
     detailController?.abort(); detailController = new AbortController(); detailFresh = false;
     ++historyEpoch; historyCursor = null; historyBusy = false; $('history-list').replaceChildren(); $('more-history').hidden = true; $('load-history').disabled = false; message('history-message', '');
     $('detail-content').hidden = true; message('detail-message', '正在读取明确版本…'); renderList(); renderControls();
@@ -295,7 +301,7 @@
   function preserveDraft() {
     if (!draft) return;
     const fields = Object.fromEntries([...$('edit-fields').querySelectorAll('[data-field]')].map(field => [field.dataset.field, field.value]));
-    $('previous-draft-json').textContent = JSON.stringify({...draft, id: $('edit-id').value, raw_fields: fields, evaluation_draft: HGResearchEvaluation.snapshot(), actor_label: $('edit-actor').value, reason: $('edit-reason').value}, null, 2);
+    $('previous-draft-json').textContent = JSON.stringify({...draft, id: $('edit-id').value, raw_fields: fields, evaluation_draft: HGResearchEvaluation.snapshot(), criteria_draft: HGResearchCriteria.snapshot(), actor_label: $('edit-actor').value, reason: $('edit-reason').value}, null, 2);
     $('previous-draft').hidden = false;
   }
   function paintDraft() {
@@ -321,6 +327,7 @@
       wrapper.append(field); if (help) wrapper.append(el('span', help, 'field-note')); $('edit-fields').append(wrapper);
     }
     const target = draft.target;
+    HGResearchCriteria.mountEditor($('criteria-editor'), {kind: draft.kind, data: draft.data, node, target});
     HGResearchEvaluation.mountEditor($('evaluation-editor'), {kind: draft.kind, data: draft.data, baseRevision: draft.base_revision, node, target, resuming: !!pending?.refill,
       readRequest: async (id, revision) => {
         if (!validID(id) || !Number.isInteger(revision) || revision <= 0) throw new Error('请输入有效的原请求 ID 与正整数版本。');
@@ -350,6 +357,7 @@
     }
     if (draft.kind === 'request' && data.state === 'open') data.close_reason = null;
     HGResearchEvaluation.collect(data);
+    HGResearchCriteria.collect(data);
     if (new TextEncoder().encode(JSON.stringify(data)).length > 65536) throw new Error('研究记录超过 64 KiB，请减少元数据。');
     const reason = $('edit-reason').value.trim() || null;
     if (draft.base_revision != null && !reason) throw new Error('更新记录需要修改理由。');
@@ -603,6 +611,20 @@
       if (!disposed && eventPosition?.key === key) { $('event-position-json').focus(); $('event-position-json').select(); message('events-storage', '剪贴板不可用，请手动复制下方浏览位置 JSON；不含凭据或事件正文。'); }
     }
   }
+  function renderCriteriaTransfer() {
+    if (!criteriaTransfer) return;
+    const issue = criteriaTransfer.error || HGTarget.problem(criteriaTransfer.target), supported = HGResearchCriteria.supported(node);
+    $('criteria-transfer').hidden = false;
+    $('criteria-create-draft').disabled = !!issue || !supported || !writable() || !!pending || writeBusy;
+    message('criteria-transfer-message', issue || (!supported ? '当前节点未提供 research.criteria-v1；带入的选择保留，不能创建数值判据。' : pending ? '存在原未决操作，请先核对；带入比较不会覆盖原操作或草稿。' : `比较固定为 ${criteriaTransfer.target.node_id}；${criteriaTransfer.spec.columns.length} 列、${criteriaTransfer.spec.rows.length} 行。${writable() ? '可显式建立新研究草稿。' : '解锁后可建立新研究草稿。'}`), !!issue);
+  }
+  function loadCriteriaTransfer(raw) {
+    if (!raw) return;
+    const target = HGTarget.binding();
+    try { criteriaTransfer = {spec: HGResearchCriteria.parseComparison(raw, target), target}; }
+    catch (error) { criteriaTransfer = {error: error.message, target}; }
+    renderCriteriaTransfer();
+  }
   function capabilityMessage() { message('capability-message', capable() ? '当前后台保存独立研究状态；只读记录不会探测手机。声明状态与任务运行、设备恢复分别核对。' : '此节点未提供 research.state-v1，研究记录不可用；旧目标客户端仍可从概览进入。', !capable()); renderControls(); }
   async function refresh() {
     $('refresh-all').disabled = true;
@@ -610,6 +632,10 @@
     catch (error) { node = null; detailFresh = false; message('capability-message', failText(error), true); }
     finally { $('refresh-all').disabled = false; renderControls(); }
   }
+  $('criteria-create-draft').addEventListener('click', () => {
+    if (!criteriaTransfer?.spec || pending || !writable() || writeBusy || HGTarget.problem(criteriaTransfer.target) || !HGResearchCriteria.supported(node)) return;
+    openDraft('research'); HGResearchCriteria.importComparison(criteriaTransfer.spec); $('edit-form').hidden = false;
+  });
   $('filters').addEventListener('submit', event => { event.preventDefault(); loadList(); });
   $('filter-kind').addEventListener('change', changeKind);
   $('filter-research').addEventListener('input', syncEventScope);
@@ -666,7 +692,7 @@
   if (pending) { $('editor').hidden = false; $('edit-form').hidden = true; }
   loadAccess();
   HGTarget.ready().then(value => {
-    node = value; capabilityMessage(); if (!capable()) return; loadList();
+    node = value; capabilityMessage(); loadCriteriaTransfer(query.get('criteria_compare')); if (!capable()) return; loadList();
     if (KINDS[query.get('kind')] && validID(query.get('id'))) { const revision = Number(query.get('revision')); selectObject(query.get('kind'), query.get('id'), Number.isInteger(revision) && revision > 0 ? revision : null); }
   }).catch(error => { message('capability-message', failText(error), true); renderControls(); });
 })();

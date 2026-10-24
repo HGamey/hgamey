@@ -214,6 +214,11 @@
     $('compare-add-row').disabled = compareRows.length >= 16 || !compareColumns.length;
     $('compare-export').disabled = compareColumns.length < 2;
     $('compare-share').disabled = compareColumns.length < 2 || !!issue;
+    const researchLink = $('compare-research-draft'); researchLink.hidden = true; researchLink.removeAttribute('href');
+    if (!issue && compareColumns.length >= 2) {
+      try { const spec = comparisonSpec(); researchLink.href = HGTarget.url('/dash/research?' + new URLSearchParams({criteria_compare: JSON.stringify(spec)}), compareTarget); researchLink.hidden = false; }
+      catch (_) { /* An incomplete selection remains editable, not a ready research draft. */ }
+    }
   }
   function makeButton(label, callback) { const button = el('button', label, 'ghost'); button.type = 'button'; button.addEventListener('click', callback); return button; }
   function renderCompareEditor() {

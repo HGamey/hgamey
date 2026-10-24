@@ -792,6 +792,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if parts == ["node"]:
                     return self._send(200, node.identity())
                 if parts[:1] == ["research-state"]:
+                    if len(parts) == 4 and parts[1] == "research" and parts[3] == "assessment":
+                        if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                            return self._send(400, {"code": "target_required", "error": "criteria assessment requires an explicit node identity"})
+                        if set(q) - {"revision", "expected_node_id"} or "revision" not in q or any(len(v) != 1 for v in q.values()):
+                            raise ValueError("criteria assessment requires one explicit revision")
+                        return self._send(200, research.assessment(unquote(parts[2]), int(q["revision"][0])))
                     if len(parts) == 5 and parts[1] == "request" and parts[3] == "media":
                         if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
                             return self._send(400, {"code": "target_required", "error": "evaluation media requires an explicit node identity"})

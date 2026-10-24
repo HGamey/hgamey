@@ -13,7 +13,9 @@ from urllib.parse import quote, urlencode
 
 from artifact_io import SafeRoot
 from node_read import encode_cursor, decode_cursor
-from node_results import encoded, identifier, object_fields, text
+from node_results import ResultError, encoded, identifier, object_fields, text
+from node_result_compare import compare as compare_results
+import node_research_criteria as criteria_rules
 from node_media import LIMITS, MediaError
 
 MAX_DATA = 64 << 10
@@ -118,7 +120,7 @@ def evaluation(kind, value, evidence_refs):
 def normalize(kind, data):
     common = {"evidence_refs"} | ({"evaluation"} if kind in ("request", "feedback") else set())
     fields = {
-        "research": {"title", "objective", "game", "constraints", "budgets", "device_requirements", "state", "state_reason", "coverage"},
+        "research": {"title", "objective", "game", "constraints", "budgets", "device_requirements", "state", "state_reason", "coverage", "criteria"},
         "direction": {"research_id", "title", "hypothesis", "priority", "priority_reason", "prerequisites", "cost_expectation",
                       "expected_benefit", "next_experiment", "state", "state_reason", "dependencies", "feedback_decisions"},
         "request": {"research_id", "type", "title", "need", "why", "resume_hint", "context", "supersedes", "state", "close_reason", "due_at"},
@@ -165,6 +167,8 @@ def normalize(kind, data):
                 raise ValueError("unsupported coverage disposition")
             item["reason"] = text(item.get("reason"), 16384)
         unique(value["coverage"], "key")
+        if value.get("criteria") is not None:
+            criteria_rules.validate(value["criteria"])
     elif kind == "direction":
         value["hypothesis"] = text(value.get("hypothesis"), 16384, True)
         for key in ("priority_reason", "cost_expectation", "expected_benefit"):
@@ -335,6 +339,32 @@ class NodeResearch:
             output.append(binding)
         return output
 
+    def _criteria_bindings(self, value, previous):
+        criteria = value.get("criteria")
+        if criteria is None:
+            return None
+        spec = criteria["comparison"]
+        if spec["node_id"] != self.node_id:
+            raise ValueError("criteria comparison must belong to this node")
+        if previous:
+            prior = json.loads(previous["data"]).get("criteria")
+            if prior and prior["comparison"] == spec:
+                return json.loads(previous["observations"])["criteria_bindings"]
+        cache, bindings = {}, []
+        for column in spec["columns"]:
+            rid = column["result_id"]
+            if rid not in cache:
+                try:
+                    row = self.results._row(rid)
+                    cache[rid] = {"status": "registration_bound", "result_sequence": row["sequence"],
+                                  "result_registered_at": row["registered_at"]}
+                except ResultError as error:
+                    if error.status != 404:
+                        raise
+                    cache[rid] = {"status": "declared_pending", "result_sequence": None, "result_registered_at": None}
+            bindings.append({"column_id": column["id"], "node_id": self.node_id, "result_id": rid, **cache[rid]})
+        return bindings
+
     def _context_changed(self, db, research_id, context):
         parent = self._reference(db, "research", research_id)
         changes = []
@@ -458,6 +488,7 @@ class NodeResearch:
                     else self._bindings(value))
         if kind == "request" and "evaluation" in value:
             self._evaluation_sources(value, bindings)
+        criteria_bindings = self._criteria_bindings(value, previous) if kind == "research" else None
         with self._db(True) as db:
             receipt = self._operation(db, operation_id, request)
             if receipt is not None:
@@ -469,6 +500,8 @@ class NodeResearch:
             if kind == "feedback" and old:
                 raise ResearchError(409, "research_immutable", "feedback is immutable; append a correction with a new ID")
             rid, observations = self._validate_links(db, kind, oid, value, old)
+            if criteria_bindings is not None:
+                observations["criteria_bindings"] = criteria_bindings
             now, revision = time.time(), (current or 0) + 1
             audit = {"actor_label": actor, "auth_channel": auth_channel, "reason": reason, "at": now}
             sequence = db.execute("INSERT INTO events (research_id,kind,object_id,revision,operation_id,at) VALUES (?,?,?,?,?,?)",
@@ -523,7 +556,10 @@ class NodeResearch:
             return json.loads(row["observations"])
         if kind == "research":
             counts = db.execute("SELECT r.state,COUNT(*) AS n FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id AND r.revision=o.revision WHERE o.kind='direction' AND o.research_id=? GROUP BY r.state", (oid,)).fetchall()
-            return {"direction_counts": {item["state"]: item["n"] for item in counts}}
+            derived = {"direction_counts": {item["state"]: item["n"] for item in counts}}
+            if value.get("criteria") is not None:
+                derived["criteria_bindings"] = json.loads(row["observations"])["criteria_bindings"]
+            return derived
         feedback = db.execute("SELECT COUNT(*) AS n,MAX(at) AS at FROM revisions WHERE kind='feedback' AND request_id=?", (oid,)).fetchone()
         impacted = db.execute("SELECT d.*,o.revision FROM dependencies d JOIN objects o ON o.kind='direction' AND o.id=d.direction_id WHERE d.kind='request' AND d.target_id=? ORDER BY d.direction_id,d.id", (oid,)).fetchall()
         derived = {"feedback_count": feedback["n"], "last_feedback_at": feedback["at"],
@@ -557,6 +593,17 @@ class NodeResearch:
             if row is None:
                 raise ResearchError(404, "research_not_found", "research object or version was not found")
             return self._show(db, row)
+
+    def assessment(self, oid, revision):
+        record = self.get("research", oid, positive(revision))
+        criteria = record["data"].get("criteria")
+        if criteria is None:
+            raise ResearchError(409, "research_criteria_required", "this research revision has no numerical criteria")
+        bindings = record["derived"]["criteria_bindings"]
+        comparison = compare_results(criteria_rules.BoundResults(self.results, bindings), self.node_id, criteria["comparison"])
+        return {"schema_version": 1, "node_id": self.node_id, "research_id": oid, "revision": record["revision"],
+                "current_revision": record["current_revision"], "audit": record["audit"], "criteria": criteria,
+                "criteria_bindings": bindings, **criteria_rules.assess(criteria, comparison)}
 
     def list(self, kind, query):
         self._kind(kind)

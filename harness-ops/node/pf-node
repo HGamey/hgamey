@@ -52,6 +52,7 @@
   pf-node results import FILE --adapter NAME [--import-id ID] # 仅导入小 JSON，保留原字节
   pf-node results import-status ID         # 找回原导入及全部派生结果
   pf-node research list|show|history ...    # 持久研究、方向、协助请求与反馈，共享版本历史
+  pf-node research assess ID --revision N  # 显式pin/判据能力；只读指定版本，partial退出2，规则未知保留
   pf-node research create KIND ID FILE     # 仅登记 data JSON；写前固定 operation ID
   pf-node research update KIND ID FILE --revision N --reason TEXT # 显式并发更新，不自动合并
   pf-node research operation ID            # 原元数据操作回执；未知时不自动重发
