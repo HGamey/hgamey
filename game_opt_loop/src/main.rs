@@ -1,5 +1,7 @@
 //! game_opt_loop CLI
 
+mod runtime_identity;
+
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use game_opt_loop::campaign::{self, Action, Campaign, Mode, State};
@@ -24,6 +26,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Show this executable's build declaration without device or model calls.
+    RuntimeInfo {
+        #[arg(long)]
+        json: bool,
+    },
     /// One deterministic system case through the receiver confirmation driver.
     Case {
         #[command(subcommand)]
@@ -598,6 +605,7 @@ struct FrontRow {
 }
 
 fn main() -> Result<()> {
+    runtime_identity::report_startup();
     // naga 在校验失败时会自己往 stderr 打一条 ERROR 日志。那条信息我们已经
     // 作为 IR_VALIDATION_FAILED 违规原样收进门禁报告了, 再让它裸奔到终端上
     // 只会让「门禁正常拦截了一个非法算子」看起来像「工具自己炸了」。
@@ -610,7 +618,7 @@ fn main() -> Result<()> {
     // 确认与工件协议入口的 stdout 是可解析的 JSON。
     if !matches!(
         &cli.command,
-        Some(Command::Confirm { .. } | Command::Case { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. } | Command::CandidatePrepare { .. })
+        Some(Command::RuntimeInfo { .. } | Command::Confirm { .. } | Command::Case { .. } | Command::ModelPipeline { .. } | Command::CandidateArtifact { .. } | Command::CandidatePrepare { .. })
     ) {
         println!("==================================================");
         println!("  game_opt_loop v{VERSION} — 移动游戏画质跃升闭环");
@@ -619,6 +627,10 @@ fn main() -> Result<()> {
 
 
     match cli.command {
+        Some(Command::RuntimeInfo { json: _ }) => {
+            println!("{}", runtime_identity::identity());
+            return Ok(());
+        }
         Some(Command::CandidatePrepare { action }) => return game_opt_loop::candidate_prepare::run(action),
         Some(Command::CandidateArtifact { action }) => return game_opt_loop::candidate_artifact::run(action),
         Some(Command::Case { action }) => return game_opt_loop::system_case_blackbox::run(action),
