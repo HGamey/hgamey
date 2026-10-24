@@ -18,6 +18,7 @@ HELP = """用法:
       [--limit 1..100] [--cursor CURSOR]
   pf-node results search --node NAME [--node OTHER] [同 list 的过滤与 limit]
   pf-node results search --node NAME --source-node-id ID --revision N --cursor CURSOR [同原过滤]
+  pf-node results compare FILE
   pf-node results show ID
   pf-node results register FILE
   pf-node results import FILE --adapter doom-lr4-026-v1|gol-optimize-v1 [--import-id ID]
@@ -31,9 +32,15 @@ register 使用文件内固定 result_id；import 在读文件前打印指定或
 search 只读检索 1–4 个已绑定目录节点，必须显式指定 hub --node-id / PF_NODE_ID。
 首屏从 /nodes 冻结目标；续页使用原 source.node_id/revision/cursor，不重新选目标或回第一页。
 各节点独立分页，limit 按每节点计；部分失败仍输出完整 JSON，退出码 2。未自动重试。
+compare 只读至多 16 KiB UTF-8 spec，需显式 node-id 与 results.compare-v1，单次 GET。
+spec.schema=phonefarm/result-compare@1，node_id 为原目标，columns 为 2–4 个候选列（首列基线），
+rows 为 1–16 个指标行，各行 metric_indexes 明确选原数组索引或 null；不按名称自动配对。
+返回登记值差/正基准百分比及原描述差异，不代表科学可比、统计显著或已采纳。
+不可查列保留完整响应并 exit2；缺值/未选/越界单元格不填零。不自动重试、注册或翻页。
 """
 MAX_FILE = 1 << 20
 MAX_REGISTER = 256 << 10
+MAX_COMPARE = 16 << 10
 MAX_RESPONSE = 6 << 20
 OUTCOMES = {"gain", "no_gain", "regression", "failed", "not_run", "unknown"}
 SEARCH_STATUSES = {"ok", "unavailable", "unauthorized", "unsupported", "identity_mismatch",
@@ -141,6 +148,90 @@ def _options(args, allowed):
             raise ValueError("无效、重复或缺值的 results 选项；用 results --help 查看用法")
         values[key] = args.pop(0)
     return values
+
+
+def _compare_spec(path, node_id):
+    try:
+        _, spec = _read(path, MAX_COMPARE)
+    except RecursionError:
+        raise ValueError("比较 spec 嵌套过深；未查询") from None
+    if spec.get("schema") != "phonefarm/result-compare@1" or spec.get("node_id") != node_id:
+        raise ValueError("比较需 phonefarm/result-compare@1 且 node_id 匹配原显式目标；未查询")
+    columns, rows = spec.get("columns"), spec.get("rows")
+    if not isinstance(columns, list) or not 2 <= len(columns) <= 4:
+        raise ValueError("比较 columns 须有 2–4 个明确列，首列为基线")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 16:
+        raise ValueError("比较 rows 须有 1–16 个明确指标行")
+    for group in (columns, rows):
+        seen = set()
+        for item in group:
+            if not isinstance(item, dict):
+                raise ValueError("比较行列须为 JSON 对象")
+            identity = identifier(item.get("id"))
+            if identity in seen:
+                raise ValueError("比较行或列 ID 重复；未自动合并")
+            seen.add(identity)
+            if not isinstance(item.get("label"), str) or not item["label"].strip():
+                raise ValueError("比较行列需明确 label；未自动选标签")
+    for column in columns:
+        identifier(column.get("result_id"))
+    for row in rows:
+        indexes = row.get("metric_indexes")
+        if (not isinstance(indexes, list) or len(indexes) != len(columns)
+                or any(index is not None and (type(index) is not int or not 0 <= index <= 255)
+                       for index in indexes)):
+            raise ValueError("每行 metric_indexes 须与列数相同，值为 0..255 整数或 null")
+    return spec
+
+
+def _compare(client, path):
+    target = client.target
+    if target.expected_node_id is None:
+        raise ValueError("compare 需要显式 --node-id / PF_NODE_ID；未读取或选择替代节点")
+    capabilities = client.require_capability()["capabilities"]
+    if "node.target-v1" not in capabilities or "results.compare-v1" not in capabilities:
+        raise ValueError("节点缺少 node.target-v1 或 results.compare-v1；未降级比较")
+    spec = _compare_spec(path, target.expected_node_id)
+    query = urllib.parse.urlencode({"spec": json.dumps(spec, ensure_ascii=False, separators=(",", ":"),
+                                                      allow_nan=False)})
+    value = client.request("GET", "/result-compare?" + query)
+    columns, rows = value.get("columns"), value.get("rows")
+    if (value.get("spec") != spec or value.get("basis") != "registered_values"
+            or value.get("comparability") != "not_established"
+            or value.get("baseline_column_id") != spec["columns"][0]["id"]
+            or type(value.get("partial")) is not bool
+            or not isinstance(columns, list) or len(columns) != len(spec["columns"])
+            or not isinstance(rows, list) or len(rows) != len(spec["rows"])):
+        raise RequestError("比较回包未绑定原 spec、基线或登记值范围；保留原选择，未自动重试")
+    failed = False
+    for column, requested in zip(columns, spec["columns"]):
+        if (not isinstance(column, dict) or column.get("node_id") != target.expected_node_id
+                or any(column.get(key) != requested[key] for key in ("id", "label", "result_id"))
+                or column.get("status") not in ("available", "unavailable")):
+            raise RequestError("比较列未保留原节点、结果或列顺序；未自动重试")
+        if column["status"] == "available":
+            record = column.get("result")
+            if (not isinstance(record, dict) or record.get("node_id") != target.expected_node_id
+                    or record.get("result_id") != requested["result_id"]):
+                raise RequestError("比较列的原结果身份未确认；未自动重试")
+        else:
+            if column.get("result") is not None:
+                raise RequestError("不可查比较列混有未确认原结果；未自动重试")
+            failed = True
+    for row, requested in zip(rows, spec["rows"]):
+        cells = row.get("cells") if isinstance(row, dict) else None
+        if (not isinstance(row, dict)
+                or any(row.get(key) != requested[key] for key in ("id", "label", "metric_indexes"))
+                or not isinstance(cells, list) or len(cells) != len(columns)):
+            raise RequestError("比较行未保留原指标选择或行顺序；未自动重试")
+        for cell, column, index in zip(cells, spec["columns"], requested["metric_indexes"]):
+            if (not isinstance(cell, dict) or cell.get("column_id") != column["id"]
+                    or cell.get("metric_index") != index or type(cell.get("metric_index")) is not type(index)
+                    or cell.get("status") not in ("available", "not_selected", "result_unavailable", "invalid_index")):
+                raise RequestError("比较单元格未绑定原列与 metric_index；未自动重试")
+    if value["partial"] != failed:
+        raise RequestError("比较回包的部分失败状态与列状态不符；未自动重试")
+    return value
 
 
 def _search(client, args):
@@ -264,6 +355,10 @@ def main(args, *, target):
         client = Client(target)
         if command == "search":
             value = _search(client, args)
+            print(json.dumps(value, ensure_ascii=False, allow_nan=False))
+            return 2 if value["partial"] else 0
+        elif command == "compare" and len(args) == 1:
+            value = _compare(client, args[0])
             print(json.dumps(value, ensure_ascii=False, allow_nan=False))
             return 2 if value["partial"] else 0
         elif command == "list":

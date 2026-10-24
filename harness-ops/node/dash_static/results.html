@@ -34,7 +34,7 @@
   <div class="results-layout">
     <section class="results-browser" aria-labelledby="results-heading"><div class="section-heading"><h2 id="results-heading" tabindex="-1">此后台已登记结果</h2><span id="result-count" class="count-label"></span></div><p id="list-message" class="note" role="status"></p><ul id="result-list" class="result-list"></ul><button id="more-results" class="ghost more" type="button" hidden>加载更多</button></section>
     <section id="result-detail" class="result-detail" aria-labelledby="detail-heading"><div class="section-heading"><h2 id="detail-heading" tabindex="-1">结果与依据</h2><button id="refresh-detail" class="ghost" type="button" disabled>刷新所选记录</button></div><p id="detail-message" class="note" role="status">选择一条记录，查看声明、指标与原件。</p><div id="detail-content" hidden>
-      <div class="result-title"><h3 id="result-title"></h3><span id="result-outcome" class="task-state unknown"></span></div><p id="detail-updated" class="read-time"></p><dl id="result-info" class="facts"></dl>
+      <div class="result-title"><h3 id="result-title"></h3><span id="result-outcome" class="task-state unknown"></span><button id="compare-add-detail" class="ghost" type="button" disabled>加入比较</button></div><p id="detail-updated" class="read-time"></p><dl id="result-info" class="facts"></dl>
       <section class="result-section"><h3>登记声明与局限</h3><p class="note">以下来自登记者或原 producer，不是平台验证的科学结论。</p><ul id="result-claims" class="result-notes"></ul><ul id="result-limitations" class="result-notes"></ul></section>
       <section class="result-section"><h3>原指标与条件</h3><p class="note">按原数值、单位和条件并列。模块、方法、窗口、分母、rail 或图像区域不同 / 未知时不能自动比较；不换算、相加或排名。</p><ul id="metric-list" class="metric-list"></ul></section>
       <section class="result-section"><h3>来源与原件</h3><p class="note">登记时观察与当前可读状态分别显示。指针数值相符只证明与当时源字节一致，不证明测量或结论有效。</p><ul id="source-list" class="source-list"></ul></section>
@@ -42,6 +42,20 @@
       <details class="result-json"><summary>完整不可变登记与核验记录</summary><pre id="manifest-view" class="command-box"></pre><pre id="evidence-view" class="command-box"></pre></details>
     </div></section>
   </div>
+  <details id="compare-panel" class="result-compare">
+    <summary>比较已登记指标 · 同节点</summary>
+    <p class="note">从上方记录加入 2–4 列，首列是基线。可重复选择同一结果的不同 condition。逐行选择原指标；空项保留未知，不按名称自动配对。</p>
+    <p id="compare-capability" class="note" role="status">正在核对比较能力…</p>
+    <form id="compare-add-form" class="compare-add-form"><label>或按本节点结果 ID 加入<input id="compare-result-id" maxlength="64" autocomplete="off" spellcheck="false" required></label><button id="compare-add" class="ghost" type="submit" disabled>加入一列</button></form>
+    <div id="compare-columns" class="compare-columns"></div>
+    <div class="section-heading"><h2>选择指标行</h2><button id="compare-add-row" class="ghost" type="button" disabled>增加指标行</button></div>
+    <div id="compare-rows" class="compare-rows"></div>
+    <details class="compare-context"><summary>比较范围与有意改变的条件（作者声明）</summary><label>固定范围<input id="compare-scope" maxlength="2000" autocomplete="off"></label><div class="result-form-grid"><label>假设（每行一项）<textarea id="compare-assumptions" rows="3"></textarea></label><label>有意干预（每行一项）<textarea id="compare-interventions" rows="3" placeholder="例如降低渲染分辨率；增加超分模块"></textarea></label></div></details>
+    <div class="result-actions compare-actions"><button id="compare-run" class="ghost primary" type="button" disabled>读取登记值对照</button><button id="compare-export" class="ghost" type="button" disabled>导出选择 JSON</button><button id="compare-share" class="ghost" type="button" disabled>生成分享链接</button><button id="compare-reset" class="ghost" type="button">清空比较选择</button></div>
+    <p id="compare-message" class="note" role="status"></p><div id="compare-share-result" class="compare-share-result" hidden><a id="compare-share-link">打开固定节点与选择</a><label>可复制的分享链接<input id="compare-share-url" readonly></label></div>
+    <details id="compare-spec-panel" class="result-json" hidden><summary>已导出的选择 JSON</summary><pre id="compare-spec" class="command-box"></pre></details>
+    <div id="compare-output" class="compare-output" aria-live="polite" hidden></div>
+  </details>
   <section class="result-lookup"><h2>按固定 ID 找回</h2><form id="lookup-form"><label>记录类型<select id="lookup-kind"><option value="register">结果记录</option><option value="import">小报告导入</option></select></label><label>原 ID<input id="lookup-id" maxlength="64" autocomplete="off" spellcheck="false" required></label><button id="lookup-submit" class="ghost" type="submit">只读查询</button></form><p id="lookup-message" class="note" role="status"></p><div id="lookup-links" class="result-actions"></div><p class="note">只查当前明确节点；本页已保存的未决 ID 继续使用它的原入口和节点，不自动改绑。</p></section>
 </main>
 <footer class="foot">此目录只列显式登记结果，不扫描旧输出、不启动测量。原件可读、报告结论、测量资格与设备恢复是分别记录的事实。</footer>

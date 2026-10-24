@@ -11,7 +11,7 @@ import sys
 import threading
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
@@ -120,12 +120,160 @@ class NodeResultTests(unittest.TestCase):
         status, _, raw = self.request(method, path, value, **kwargs)
         return status, json.loads(raw)
 
-    def cli(self, *args):
+    def cli(self, *args, token=None):
         env = {**os.environ, "PF_NODE_URL": self.env.url, "PF_NODE_ID": self.pin,
-               "PF_NODE_TOKEN": self.env.admin, "HOME": str(self.root)}
+               "PF_NODE_TOKEN": self.env.admin if token is None else token, "HOME": str(self.root)}
         env.pop("PF_NODE_TOKEN_FILE", None)
         return subprocess.run([sys.executable, str(NODE / "pf-node"), "results", *args],
                               env=env, capture_output=True, text=True, timeout=10)
+
+    def comparison_fixture(self):
+        def reported(value, condition, **fields):
+            item = metric(value)
+            item.update(condition=condition, source=None)
+            item.update(fields)
+            return item
+
+        native = reported(4, "original_game")
+        quality = {"name": "psnr", "unit": "dB", "scope": "image", "region": "full_frame",
+                   "image_domain": "synthetic RGB"}
+        power = {"name": "power", "unit": "W", "scope": "power",
+                 "unavailable_reason": "No device power was sampled"}
+        first = registration("compare-original-and-low", None)
+        first.update(title="Synthetic original and low-render conditions", sources=[], metrics=[
+            native, reported(40, "original_game", **quality), reported(None, "original_game", **power),
+            reported(0, "original_game", name="zero-baseline"),
+            reported(3, "low_render", window="different declared window"),
+            reported(38, "low_render", **{**quality, "region": "roi"}),
+            reported(None, "low_render", **power), reported(1, "low_render", name="zero-baseline")])
+        first["claims"] = ["Synthetic arithmetic fixture; no measurement qualification"]
+        second = registration("compare-candidate", None)
+        second.update(title="Synthetic alternate candidate", sources=[], metrics=[
+            reported(2, "alternate"), reported(37, "alternate", **quality),
+            reported(None, "alternate", **power), reported(2, "alternate", scope="game_loop"),
+            reported(2, "alternate", unit="us"), reported(2, "alternate", name="zero-baseline")])
+        spec = {"schema": "phonefarm/result-compare@1", "node_id": self.pin,
+                "columns": [{"id": "native", "label": "Declared original", "result_id": first["result_id"]},
+                            {"id": "low", "label": "Lower resolution", "result_id": first["result_id"]},
+                            {"id": "other", "label": "Another candidate", "result_id": second["result_id"]}],
+                "rows": [{"id": key, "label": label, "metric_indexes": indexes} for key, label, indexes in [
+                    ("timing", "Module timing", [0, 4, 0]), ("quality", "Image quality", [1, 5, 1]),
+                    ("power", "Unobserved power", [2, 6, 2]), ("scope", "Same name, different scope", [0, 4, 3]),
+                    ("unit", "Same name, different unit", [0, 4, 4]), ("zero", "Zero baseline", [3, 7, 5]),
+                    ("selection", "Explicit absence and invalid index", [None, 255, 0])]],
+                "context": {"scope": "Synthetic registered values only",
+                            "assumptions": ["Names are not automatic metric bindings"],
+                            "interventions": ["Declared rendering resolution changes"]}}
+        return first, second, spec
+
+    def test_explicit_compare_http_cli_preserves_values_and_partial_columns(self):
+        first, second, spec = self.comparison_fixture()
+        originals = {}
+        for manifest in (first, second):
+            status, result = self.api("POST", "/results", manifest)
+            self.assertEqual(status, 201, result)
+            originals[manifest["result_id"]] = result
+
+        path = "/result-compare?" + urlencode({"spec": json.dumps(spec)})
+        code, compared = self.api("GET", path, token=self.ro)
+        self.assertEqual(code, 200, compared)
+        self.assertEqual(compared["spec"], spec)
+        self.assertEqual((compared["node_id"], compared["baseline_column_id"], compared["partial"]),
+                         (self.pin, "native", False))
+        self.assertEqual((compared["basis"], compared["comparability"]),
+                         ("registered_values", "not_established"))
+        for column, selected in zip(compared["columns"], spec["columns"]):
+            self.assertEqual(column["status"], "available")
+            self.assertEqual(column["result"], originals[selected["result_id"]])
+            self.assertEqual(column["node_id"], self.pin)
+            self.assertIn(selected["result_id"], column["links"]["api"])
+        rows = {row["id"]: row for row in compared["rows"]}
+        low_timing = rows["timing"]["cells"][1]
+        self.assertEqual(low_timing["metric"], originals[first["result_id"]]["manifest"]["metrics"][4])
+        self.assertEqual(low_timing["metric_evidence"], originals[first["result_id"]]["metric_evidence"][4])
+        self.assertEqual(low_timing["metric_evidence"]["status"], "unverified")
+        self.assertEqual((low_timing["delta"]["value"], low_timing["delta"]["percent"]), (-1, -25))
+        self.assertEqual(low_timing["delta"]["formula"], "candidate_minus_baseline")
+        self.assertEqual(rows["timing"]["cells"][2]["delta"]["value"], -2)
+        low_quality = rows["quality"]["cells"][1]
+        self.assertEqual((low_quality["delta"]["value"], low_quality["delta"]["percent"]), (-2, -5))
+        fields = {item["field"]: item for item in low_quality["descriptor_relation"]["fields"]}
+        self.assertEqual(fields["region"], {"field": "region", "baseline": "full_frame",
+                                           "candidate": "roi", "relation": "mismatch"})
+        self.assertEqual(fields["power_rail"]["relation"], "unrecorded")
+        self.assertEqual(low_quality["descriptor_relation"]["status"], "mismatch")
+        for cell in rows["power"]["cells"]:
+            self.assertEqual(cell["status"], "available")
+            self.assertIsNone(cell["metric"]["value"])
+            self.assertIsNone(cell["delta"]["value"])
+            self.assertEqual(cell["delta"]["reason"], "value_unavailable")
+        for row, reason in (("scope", "scope_mismatch"), ("unit", "unit_mismatch")):
+            cell = rows[row]["cells"][2]
+            self.assertEqual(cell["metric"]["name"], low_timing["metric"]["name"])
+            self.assertEqual(cell["metric"]["value"], 2)
+            self.assertIsNone(cell["delta"]["value"])
+            self.assertEqual(cell["delta"]["reason"], reason)
+        zero = rows["zero"]["cells"][1]["delta"]
+        self.assertEqual((zero["value"], zero["percent"], zero["percent_reason"]),
+                         (1, None, "baseline_nonpositive"))
+        self.assertEqual([cell["status"] for cell in rows["selection"]["cells"]],
+                         ["not_selected", "invalid_index", "available"])
+        self.assertIsNone(rows["selection"]["cells"][0]["metric"])
+        self.assertIsNone(rows["selection"]["cells"][1]["metric"])
+        self.assertTrue(rows["selection"]["cells"][1]["reason"])
+
+        # A viewed table is read-only, but its identity must still be explicit.
+        code, unpinned = self.env.call("GET", path, token=self.ro)
+        self.assertEqual((code, unpinned["code"]), (400, "target_required"))
+        other_spec = {**spec, "node_id": "0" * 32 if self.pin != "0" * 32 else "1" * 32}
+        code, wrong_node = self.api("GET", "/result-compare?" + urlencode({"spec": json.dumps(other_spec)}))
+        self.assertEqual((code, wrong_node["code"]), (409, "result_compare_target_mismatch"))
+        self.assertEqual(self.api("GET", path, token="not-authorized")[0], 401)
+        view = {"Authorization": "Basic " + base64.b64encode(b"viewer:test-view").decode(), "X-HG": "1"}
+        code, viewed = self.api("GET", "/dash/api" + path, headers=view)
+        self.assertEqual(code, 200, viewed)
+        self.assertEqual(viewed["rows"], compared["rows"])
+
+        # One missing result must not hide the other three explicit columns.
+        partial_spec = copy.deepcopy(spec)
+        partial_spec["columns"].append({"id": "missing", "label": "Unavailable original ID", "result_id": "not-registered"})
+        for row in partial_spec["rows"]:
+            row["metric_indexes"].append(0)
+        source = self.root / "comparison.json"
+        source.write_text(json.dumps(partial_spec))
+        requests = []
+        handler = self.env.server.RequestHandlerClass
+        original_get, original_post = handler.do_GET, handler.do_POST
+
+        def tracked_get(request):
+            requests.append(("GET", urlsplit(request.path).path))
+            return original_get(request)
+
+        def tracked_post(request):
+            requests.append(("POST", urlsplit(request.path).path))
+            return original_post(request)
+
+        with patch.object(handler, "do_GET", tracked_get), patch.object(handler, "do_POST", tracked_post):
+            reply = self.cli("compare", str(source), token=self.ro)
+        self.assertEqual(reply.returncode, 2, reply.stderr)
+        partial = json.loads(reply.stdout)
+        self.assertEqual(requests, [("GET", "/node"), ("GET", "/result-compare")])
+        self.assertEqual(partial["spec"], partial_spec)
+        self.assertTrue(partial["partial"])
+        unavailable = partial["columns"][3]
+        self.assertEqual((unavailable["status"], unavailable["error"]["code"], unavailable["result"]),
+                         ("unavailable", "result_not_found", None))
+        for full_row, partial_row in zip(compared["rows"], partial["rows"]):
+            self.assertEqual(partial_row["cells"][:3], full_row["cells"])
+            self.assertEqual(partial_row["cells"][3]["status"], "result_unavailable")
+            self.assertIsNone(partial_row["cells"][3]["metric"])
+            self.assertIsNone(partial_row["cells"][3]["delta"]["value"])
+        for rid, original in originals.items():
+            self.assertEqual(self.api("GET", "/results/" + rid)[1], original)
+        self.assertEqual(len(self.api("GET", "/results")[1]["items"]), 2)
+        self.assertEqual(self.jobs.dispatch.queue.rows(), [])
+        self.assertEqual(self.workers, [])
+        self.assertFalse(self.env.board.wake.is_set())
 
     def test_job_registration_pagination_and_bound_source_download(self):
         raw = b'{ "timing": {"gpu_ms": 2.413}, "power_w": null }\n'
