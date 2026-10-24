@@ -368,7 +368,7 @@ class Dash:
             return self._redirect(h, "/dash/login")
         if sub in (["jobs"], ["fleet"], ["games"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()

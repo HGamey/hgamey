@@ -35,6 +35,16 @@
 .asset-error { color: var(--bad-ink); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .asset-details { margin-top: 12px; font-size: 12px; }
 .asset-details .facts { font-size: 12px; margin-top: 10px; grid-template-columns: 76px minmax(0,1fr); }
+.asset-upload { margin-top: 16px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.asset-upload > summary { cursor: pointer; color: var(--ink2); font-weight: 600; }
+.asset-upload > .note { margin: 10px 0; }
+.asset-upload input[type="file"] { font-size: 12px; }
+.asset-upload input[type="file"]::file-selector-button { border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; background: var(--card); color: var(--ink); margin-right: 8px; cursor: pointer; }
+.upload-id-label { display: block; margin: 12px 0 0; font-size: 12px; color: var(--ink2); }
+.upload-id-label input { display: block; margin-top: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.asset-upload .submission-actions { gap: 8px; }
+.asset-upload .submission-actions button { font-size: 12px; }
+.asset-upload .preparation-links { overflow-wrap: anywhere; }
 .preparation p { margin: 8px 0 0; }
 .preparation-links { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 10px; font-size: 13px; }
 .game-registration, .game-request-lookup { border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 20px; margin: 0 0 24px; }

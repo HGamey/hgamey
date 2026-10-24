@@ -35,6 +35,8 @@ from node_read import NodeRead
 from node_fleet import FleetState
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
+from node_uploads import NodeUploads
+from game_assets import AssetUploadError, UPLOAD_MAX
 import job_runtime
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
@@ -627,6 +629,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
     if not hasattr(jobs, "games"):
         jobs.games = NodeGames(jobs, node.node_id)
     games = jobs.games
+    if not hasattr(jobs, "uploads"):
+        jobs.uploads = NodeUploads(jobs, games)
+    uploads = jobs.uploads
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
         jobs.root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     class H(BaseHTTPRequestHandler):
@@ -679,7 +684,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -699,6 +704,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     return self._send(200, node.identity())
                 if parts == ["games"]:
                     return self._send(200, games.list())
+                if len(parts) == 2 and parts[0] == "uploads":
+                    return self._send(200, uploads.get(unquote(parts[1])))
                 if len(parts) == 4 and parts[0] == "games" and parts[2] == "versions":
                     return self._send(200, games.get(unquote(parts[1]), unquote(parts[3])))
                 if parts[:1] == ["nodes"] and len(parts) <= 2:
@@ -756,6 +763,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
+            except AssetUploadError as e:
+                return self._send(e.status, {"code": e.code, "error": e.message})
             except (DirectoryError, GameError) as e:
                 return self._send(e.status, {"error": str(e)})
             except SessionError as e:
@@ -832,8 +841,94 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             if self._authed():
                 self._send(200, b"")
 
+        def _upload_write_auth(self, dashboard):
+            if not dashboard:
+                return self._authed()
+            if not board.authed(self):
+                self._send(401, {"error": "需要查看密码"})
+            elif self.headers.get("X-HG") != "1":
+                self._send(400, {"error": "请求格式不对"})
+            elif not board.steered(self):
+                self._send(403, {"error": "需要掌舵密码", "need_steer": True})
+            else:
+                return True
+            return False
+
+        def _upload_length(self, maximum, minimum=0):
+            lengths = self.headers.get_all("Content-Length", [])
+            if self.headers.get("Transfer-Encoding") or len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,20}", lengths[0]):
+                raise AssetUploadError(400, "invalid_upload_length", "a single Content-Length is required; chunked transfer is unsupported")
+            length = int(lengths[0])
+            if not minimum <= length <= maximum:
+                raise AssetUploadError(413, "invalid_upload_length", "upload request exceeds its permitted size")
+            return length
+
+        def _upload_post(self, parts, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                length = self._upload_length(MAX_MANIFEST)
+                if self.headers.get_content_type() != "application/json":
+                    raise AssetUploadError(400, "invalid_upload_type", "upload action requires application/json")
+                self.connection.settimeout(30)
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise AssetUploadError(400, "upload_interrupted", "upload action body was interrupted; query the same ID")
+                code, result = uploads.write([unquote(p) for p in parts], json.loads(body or b"{}"))
+                return self._send(code, result)
+            except AssetUploadError as e:
+                return self._send(e.status, {"code": e.code, "error": e.message})
+            except GameError as e:
+                return self._send(e.status, {"error": str(e)})
+            except RequestConflict as e:
+                return self._send(409, {"error": str(e)})
+            except (OSError, sqlite3.Error):
+                return self._send(503, {"code": "upload_storage_error", "error": "upload could not be confirmed; query the same ID"})
+            except ValueError:
+                return self._send(400, {"code": "invalid_upload", "error": "invalid upload action"})
+
+        def do_PUT(self):
+            # Always close chunk connections, including rejected/unconsumed
+            # bodies, so residual file bytes cannot become another HTTP request.
+            self.close_connection = True
+            parts = [unquote(p) for p in urlparse(self.path).path.split("/") if p]
+            dashboard = bool(board and parts[:3] == ["dash", "api", "uploads"])
+            if dashboard:
+                parts = parts[2:]
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                if len(parts) != 2 or parts[0] != "uploads":
+                    raise AssetUploadError(404, "upload_operation_not_found", "no such upload operation")
+                length = self._upload_length(UPLOAD_MAX, 1)
+                if self.headers.get_content_type() != "application/octet-stream":
+                    raise AssetUploadError(400, "invalid_upload_type", "upload chunk requires application/octet-stream")
+                offsets = self.headers.get_all("Upload-Offset", [])
+                if len(offsets) != 1 or not re.fullmatch(r"[0-9]{1,20}", offsets[0]):
+                    raise AssetUploadError(400, "invalid_upload_offset", "a nonnegative Upload-Offset is required")
+                handler, deadline = self, time.monotonic() + 30
+
+                class Body:
+                    def read(self, size):
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("upload body deadline")
+                        handler.connection.settimeout(remaining)
+                        return handler.rfile.read1(size)
+
+                return self._send(200, uploads.chunk(parts[1], int(offsets[0]), length, Body()))
+            except AssetUploadError as e:
+                return self._send(e.status, {"code": e.code, "error": e.message})
+            except OSError:
+                return self._send(503, {"code": "upload_storage_error", "error": "upload could not be confirmed; query the same ID"})
+
         def do_POST(self):
             parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if parts[:1] == ["uploads"]:
+                return self._upload_post(parts, False)
+            if board and parts[:3] == ["dash", "api", "uploads"]:
+                return self._upload_post(parts[2:], True)
             if board and parts[:1] == ["dash"]:
                 n = int(self.headers.get("Content-Length", 0))
                 if n > (256 << 10):

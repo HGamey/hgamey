@@ -16,6 +16,13 @@ from node_lease import device_access, prepare_receipt_directory
 import job_runtime
 
 
+def request_fingerprint(spec, body):
+    digest = hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
+    digest.update(b"\0")
+    digest.update(body)
+    return digest.hexdigest()
+
+
 @contextmanager
 def file_lock(path, blocking=True):
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -61,9 +68,7 @@ class JobDispatch:
 
     def submit(self, spec, body, request_id):
         key = self.request_key(uuid.uuid4().hex if request_id is None else request_id)
-        digest = hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
-        digest.update(b"\0")
-        digest.update(body)
+        fingerprint = request_fingerprint(spec, body)
         with file_lock(self.intake_path):
             if spec.get("recovery_for") and not self.queue.by_request(key):
                 parent = self.queue.get(spec["recovery_for"])
@@ -71,7 +76,7 @@ class JobDispatch:
                     raise RequestConflict("recovery_for must name a blocked reservation")
                 if (parent.get("state_reason") or {}).get("kind") == "durability":
                     raise RequestConflict("retry-finalize the target before submitting a recovery job")
-            row, created = self.queue.reserve(key, digest.hexdigest(), spec, spec["resources"])
+            row, created = self.queue.reserve(key, fingerprint, spec, spec["resources"])
             if created:
                 jid = row["job_id"]
                 try:

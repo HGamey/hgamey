@@ -21,6 +21,8 @@ jobs:
       - run: |
           node --check node/dash_static/jobs.js
           node --check node/dash_static/fleet.js
+          node --check node/dash_static/games.js
+          node --check node/dash_static/games-upload.js
           node --check node/dash_static/maint.js
   cgroup-kernel:
     runs-on: ubuntu-24.04

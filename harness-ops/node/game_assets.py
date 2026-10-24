@@ -22,12 +22,27 @@ from job_runtime import runner_alive
 
 
 CHUNK = 1 << 20
+UPLOAD_READ = 256 << 10
+UPLOAD_MAX = 8 << 20
 RESERVE_BYTES = 64 << 20
 RECEIPT_SCHEMA = "phonefarm/game-asset@1"
+UPLOAD_SCHEMA = "phonefarm/game-upload@1"
 
 
 class AssetError(ValueError):
     """An error safe for a public preparation report; never includes final CDN URLs."""
+
+
+class AssetUploadError(AssetError):
+    def __init__(self, status, code, message):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+def _upload_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value):
+        raise AssetUploadError(400, "invalid_upload_id", "invalid upload ID")
+    return value
 
 
 def _public_url(value, redirected=False):
@@ -146,7 +161,7 @@ class AssetCache:
             return
         try:
             if create:
-                for directory in ("blobs", "partial", "receipts", "locks", "quarantine"):
+                for directory in ("blobs", "partial", "receipts", "locks", "quarantine", "uploads"):
                     store.mkdir(directory)
             yield store
         finally:
@@ -194,10 +209,11 @@ class AssetCache:
             return _observation("unknown", size, error="cache file or verification receipt is unreadable")
 
     @contextmanager
-    def _lock(self, store, sha):
+    def _lock(self, store, sha, wait=True, create=True):
         parent = store.open_fd("locks", directory=True)
         try:
-            fd = os.open(sha + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+            fd = os.open(sha + ".lock", os.O_RDWR | (os.O_CREAT if create else 0)
+                         | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
                          0o600, dir_fd=parent)
         finally:
             os.close(parent)
@@ -210,6 +226,8 @@ class AssetCache:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
+                    if not wait:
+                        raise AssetUploadError(409, "upload_busy", "content is busy; query the same upload before retrying") from None
                     time.sleep(0.1)  # SIGINT still interrupts waiting for another producer.
             yield
         finally:
@@ -289,6 +307,231 @@ class AssetCache:
             finally:
                 stream.flush()
                 os.fsync(stream.fileno())
+                store.sync("partial", directory=True)
+
+    @staticmethod
+    def _read_upload(store, asset):
+        try:
+            record = store.read_json("uploads/" + asset["sha256"] + ".json", maximum=64 << 10)
+        except FileNotFoundError:
+            return None
+        if (not isinstance(record, dict) or record.get("schema") != UPLOAD_SCHEMA
+                or record.get("sha256") != asset["sha256"]
+                or type(record.get("size")) is not int or record["size"] < 0
+                or record.get("state") not in {"open", "sealed", "cancelled", "verified", "failed"}
+                or not isinstance(record.get("upload_id"), str)
+                or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", record["upload_id"])
+                or record.get("error") is not None and not isinstance(record["error"], str)):
+            raise AssetError("upload reservation is unreadable")
+        if record["size"] != asset["size"]:
+            raise AssetUploadError(409, "upload_size_conflict", "content hash already has a different declared size")
+        if record["state"] == "sealed":
+            identity = record.get("sealed_identity")
+            if (not isinstance(identity, list) or len(identity) != 6
+                    or any(type(value) is not int for value in identity) or identity[3] != asset["size"]):
+                raise AssetError("sealed upload identity is unreadable")
+        return record
+
+    @staticmethod
+    def _save_upload(store, record, state=None, **extra):
+        updated = {**record, **extra, "updated_at": time.time()}
+        if state is not None:
+            updated["state"] = state
+        store.write_json("uploads/" + updated["sha256"] + ".json", updated)
+        return updated
+
+    @contextmanager
+    def _upload_locked(self, asset, upload_id, wait=False):
+        _asset(asset)
+        _upload_id(upload_id)
+        try:
+            with self._storage(create=True) as store, self._lock(store, asset["sha256"], wait=wait):
+                yield store
+        except AssetUploadError:
+            raise
+        except (OSError, ValueError):
+            raise AssetUploadError(503, "upload_storage_error", "upload storage could not be read or saved") from None
+
+    def _upload_state(self, store, asset, upload_id, record, busy=False):
+        if record is None:
+            if self.observe(asset)["state"] == "verified":
+                return {"state": "verified", "offset": asset["size"], "error": None, "cache_hit": True}
+            return {"state": "unclaimed", "offset": None, "error": None}
+        if record["upload_id"] != upload_id:
+            return {"state": "superseded", "offset": None, "error": "another upload owns this content"}
+        state = record["state"]
+        if busy:
+            # A sealed record is published only after the complete prefix and
+            # its directory entry have been synced, before any verifier starts.
+            if state == "verified" and self.observe(asset)["state"] != "verified":
+                return {"state": "unknown", "offset": None, "error": "verified content identity changed", "busy": True}
+            if state in {"sealed", "verified"}:
+                return {"state": state, "offset": asset["size"], "error": record.get("error"), "busy": True}
+            return {"state": "busy", "offset": None, "error": None, "busy": True}
+        if state in {"sealed", "verified"}:
+            if self.observe(asset)["state"] == "verified":
+                return {"state": "verified", "offset": asset["size"], "error": None, "cache_hit": True}
+            info = self._info(store, "partial/" + asset["sha256"] + ".part")
+            if state == "verified" or info is None or list(stamp(info)) != record["sealed_identity"]:
+                return {"state": "unknown", "offset": None, "error": "sealed upload content identity changed"}
+            return {"state": "sealed", "offset": asset["size"], "error": None}
+        if state == "failed":
+            return {"state": state, "offset": None, "error": record.get("error")}
+        rel = "partial/" + asset["sha256"] + ".part"
+        info = self._info(store, rel)
+        if info is not None:
+            # A killed writer may not have reached its finally block. Sync the
+            # existing prefix before exposing a resumable offset; never create it.
+            store.sync(rel, directory=False)
+        return {"state": state, "offset": info.st_size if info is not None else 0, "error": record.get("error")}
+
+    def upload_status(self, asset, upload_id):
+        """Confirm the persisted prefix without creating paths or hashing.
+
+        A nonblocking SHA lock excludes a writer. Existing open/cancelled bytes
+        and their parent are then synced: fstat alone is not a durability proof
+        after a writer crash or failed fsync. Any barrier failure returns unknown.
+        """
+        _asset(asset)
+        _upload_id(upload_id)
+        try:
+            with self._storage() as store:
+                if store is None:
+                    return {"state": "unclaimed", "offset": None, "error": None}
+                record = self._read_upload(store, asset)
+                if record is None:
+                    return self._upload_state(store, asset, upload_id, None)
+                try:
+                    with self._lock(store, asset["sha256"], wait=False, create=False):
+                        return self._upload_state(store, asset, upload_id, self._read_upload(store, asset))
+                except AssetUploadError as error:
+                    if error.code != "upload_busy":
+                        raise
+                    return self._upload_state(store, asset, upload_id, self._read_upload(store, asset), busy=True)
+        except (OSError, ValueError):
+            return {"state": "unknown", "offset": None, "error": "upload storage is unreadable"}
+
+    def upload_open(self, asset, upload_id):
+        with self._upload_locked(asset, upload_id) as store:
+            record = self._read_upload(store, asset)
+            if record is not None and record["upload_id"] == upload_id:
+                return self._upload_state(store, asset, upload_id, record)
+            if record is not None and record["state"] in {"open", "sealed"}:
+                raise AssetUploadError(409, "upload_owned", "another upload owns this content; cancel it before a new attempt")
+            if self.observe(asset)["state"] == "verified":
+                return {"state": "verified", "offset": asset["size"], "error": None, "cache_hit": True}
+            if self._info(store, "blobs/" + asset["sha256"]) is not None:
+                raise AssetUploadError(409, "cache_needs_verification", "existing completed content needs a preparation job before upload")
+            partial = self._info(store, "partial/" + asset["sha256"] + ".part")
+            if partial is not None and partial.st_size > asset["size"]:
+                raise AssetUploadError(409, "upload_invalid_partial", "existing partial exceeds the declared size")
+            self._space(store, asset["size"] - (partial.st_size if partial else 0))
+            # Create/sync even an empty prefix before publishing its owner.
+            with self._partial(store, asset["sha256"]):
+                pass
+            record = self._save_upload(store, {"schema": UPLOAD_SCHEMA, "upload_id": upload_id,
+                "sha256": asset["sha256"], "size": asset["size"], "state": "open", "error": None})
+            return self._upload_state(store, asset, upload_id, record)
+
+    def _owned_upload(self, store, asset, upload_id, states):
+        record = self._read_upload(store, asset)
+        if record is None or record["upload_id"] != upload_id:
+            raise AssetUploadError(409, "upload_not_owner", "upload no longer owns this content")
+        if record["state"] not in states:
+            raise AssetUploadError(409, "upload_not_writable", "upload state does not permit this operation")
+        return record
+
+    def upload_chunk(self, asset, upload_id, offset, length, stream):
+        if type(offset) is not int or offset < 0 or type(length) is not int or not 1 <= length <= UPLOAD_MAX:
+            raise AssetUploadError(400, "invalid_upload_chunk", "chunk requires a nonnegative offset and 1 byte to 8 MiB length")
+        with self._upload_locked(asset, upload_id) as store:
+            record = self._owned_upload(store, asset, upload_id, {"open"})
+            with self._partial(store, asset["sha256"]) as destination:
+                actual = os.fstat(destination.fileno()).st_size
+                if offset != actual:
+                    raise AssetUploadError(409, "upload_offset_mismatch", "upload offset changed; query the same upload before retrying")
+                if offset + length > asset["size"]:
+                    raise AssetUploadError(409, "upload_size_exceeded", "chunk exceeds the declared asset size")
+                self._space(store, asset["size"] - offset)
+                destination.seek(offset)
+                remaining = length
+                try:
+                    while remaining:
+                        block = stream.read(min(UPLOAD_READ, remaining))
+                        if not isinstance(block, bytes) or not block or len(block) > min(UPLOAD_READ, remaining):
+                            raise AssetUploadError(400, "upload_incomplete", "chunk ended before its declared length; query the persisted offset")
+                        destination.write(block)
+                        remaining -= len(block)
+                except (OSError, http.client.HTTPException):
+                    raise AssetUploadError(400, "upload_interrupted", "chunk was interrupted; query the persisted offset") from None
+            return self._upload_state(store, asset, upload_id, record)
+
+    def upload_seal(self, asset, upload_id):
+        with self._upload_locked(asset, upload_id) as store:
+            record = self._read_upload(store, asset)
+            if record is None and self.observe(asset)["state"] == "verified":
+                return {"state": "verified", "offset": asset["size"], "error": None, "cache_hit": True}
+            record = self._owned_upload(store, asset, upload_id, {"open", "sealed", "verified"})
+            if record["state"] != "open":
+                return self._upload_state(store, asset, upload_id, record)
+            rel = "partial/" + asset["sha256"] + ".part"
+            info = self._info(store, rel)
+            if info is None or info.st_size != asset["size"]:
+                raise AssetUploadError(409, "upload_incomplete", "upload has not received its declared size")
+            store.sync(rel, directory=False)
+            record = self._save_upload(store, record, "sealed", sealed_identity=list(stamp(info)))
+            return self._upload_state(store, asset, upload_id, record)
+
+    def upload_cancel(self, asset, upload_id):
+        with self._upload_locked(asset, upload_id) as store:
+            record = self._read_upload(store, asset)
+            if record is None or record["upload_id"] != upload_id or record["state"] in {"cancelled", "verified", "failed"}:
+                return self._upload_state(store, asset, upload_id, record)
+            # Persist the prefix before releasing its reservation. An old queued
+            # verifier must check this same owner/state after taking the SHA lock.
+            rel = "partial/" + asset["sha256"] + ".part"
+            if self._info(store, rel) is not None:
+                store.sync(rel, directory=False)
+            record = self._save_upload(store, record, "cancelled", error=None)
+            return self._upload_state(store, asset, upload_id, record)
+
+    def verify_upload(self, asset, upload_id, on_progress=None):
+        _asset(asset)
+        _upload_id(upload_id)
+
+        def progress(state, count=0, **extra):
+            value = _observation(state, asset["size"], count, **extra)
+            if on_progress:
+                on_progress(value)
+            return value
+
+        progress("waiting")
+        with self._upload_locked(asset, upload_id, wait=True) as store:
+            record = self._owned_upload(store, asset, upload_id, {"sealed", "verified"})
+            observation = self.observe(asset)
+            if observation["state"] == "verified":
+                self._save_upload(store, record, "verified", error=None)
+                return {**observation, "cache_hit": True}
+            if record["state"] != "sealed":
+                raise AssetUploadError(409, "upload_identity_changed", "previously verified content changed")
+            rel = "partial/" + asset["sha256"] + ".part"
+            info = self._info(store, rel)
+            if info is None or list(stamp(info)) != record["sealed_identity"]:
+                raise AssetUploadError(409, "upload_identity_changed", "sealed upload content identity changed")
+            progress("verifying", info.st_size)
+            with store.open_file(rel) as stream:
+                digest, count = self._digest(stream)
+                identity = stamp(os.fstat(stream.fileno()))
+            if list(identity) != record["sealed_identity"]:
+                raise AssetUploadError(409, "upload_identity_changed", "sealed upload changed during verification")
+            if count != asset["size"] or digest.hexdigest() != asset["sha256"]:
+                reason = "uploaded content failed size/hash verification"
+                rejected = self._quarantine(store, rel, asset, reason, digest.hexdigest())
+                self._save_upload(store, record, "failed", error=reason, quarantine=rejected)
+                return progress("failed", count, error=reason, quarantine=[rejected])
+            result = self._complete(store, asset, rel, identity)
+            self._save_upload(store, record, "verified", error=None)
+            return {**result, "cache_hit": False}
 
     @contextmanager
     def _artifact(self, jobs_root, source):
@@ -394,6 +637,9 @@ class AssetCache:
 
         progress("waiting")
         with self._storage(create=True) as store, self._lock(store, sha):
+            upload = self._read_upload(store, asset)
+            if upload is not None and upload["state"] in {"open", "sealed"}:
+                raise AssetUploadError(409, "upload_owned", "content is reserved by an upload; finalize or cancel that upload first")
             observation = self.observe(asset)
             if observation["state"] == "verified":
                 return {**observation, "cache_hit": True, "quarantine": []}
@@ -456,13 +702,24 @@ class AssetCache:
                     "quarantine": quarantine, **transfer}
 
 
-def run_manifest(manifest, cache_root, jobs_root, out):
+def run_manifest(manifest, cache_root, jobs_root, out, verify_upload=None, asset_index=None):
     manifest = validate_manifest(manifest)
+    selected = manifest["assets"]
+    if verify_upload is not None:
+        _upload_id(verify_upload)
+        if type(asset_index) is not int or not 0 <= asset_index < len(selected):
+            raise AssetError("upload verification requires a valid asset index")
+        selected = [selected[asset_index]]
+    elif asset_index is not None:
+        raise AssetError("asset index is only valid for upload verification")
     cache, output = AssetCache(cache_root), SafeRoot(out)
     report = {"schema_version": 1, "game_id": manifest["game_id"], "version": manifest["version"],
               "state": "preparing", "updated_at": time.time(), "assets": [
                   {"name": asset["name"], "sha256": asset["sha256"], "size": asset["size"], **cache.observe(asset)}
-                  for asset in manifest["assets"]]}
+                  for asset in selected]}
+    if verify_upload is not None:
+        report["scope"] = {"kind": "uploaded_asset", "asset_index": asset_index,
+                           "asset_name": selected[0]["name"], "upload_id": verify_upload}
     last_save = [0.0]
 
     def save(force=False):
@@ -474,14 +731,15 @@ def run_manifest(manifest, cache_root, jobs_root, out):
 
     try:
         save(True)
-        for index, asset in enumerate(manifest["assets"]):
+        for index, asset in enumerate(selected):
             def progress(value):
                 changed = report["assets"][index]["state"] != value["state"]
                 report["assets"][index].update(value)
                 save(changed)
 
             try:
-                result = cache.prepare(asset, jobs_root, progress)
+                result = (cache.verify_upload(asset, verify_upload, progress) if verify_upload is not None
+                          else cache.prepare(asset, jobs_root, progress))
                 progress(result)
             except KeyboardInterrupt:
                 report["assets"][index].update(state="cancelled", error="preparation cancelled; partial retained")
@@ -508,13 +766,16 @@ def main(argv=None):
     parser.add_argument("--cache-root", required=True)
     parser.add_argument("--jobs-root", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--verify-upload")
+    parser.add_argument("--asset-index", type=int)
     args = parser.parse_args(argv)
     try:
         with open(args.manifest, "rb") as stream:
             data = stream.read((64 << 10) + 1)
         if len(data) > 64 << 10:
             raise AssetError("manifest exceeds 64 KiB")
-        return run_manifest(json.loads(data), args.cache_root, args.jobs_root, args.out)
+        return run_manifest(json.loads(data), args.cache_root, args.jobs_root, args.out,
+                            args.verify_upload, args.asset_index)
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError) as error:

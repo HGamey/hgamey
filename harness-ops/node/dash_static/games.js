@@ -9,7 +9,13 @@
   let records = new Map(), selected = '', current = null, detailFresh = false, directoryReady = false;
   let access = null, accessBusy = false, accessError = '', listBusy = false, listRevision = 0, detailRevision = 0, detailController = null;
   let registrationBusy = false, registrationPending = null, lookupBusy = false, disposed = false;
+  let nodeInfo = null;
   const preparing = new Set(), pending = new Map(), receipts = new Map();
+  const uploads = window.createGameUploads({
+    context: () => ({node: nodeInfo, canWrite: directoryReady && access?.steer && !accessBusy, detailFresh, selected, disposed}),
+    refresh: binding => current && selected === `${binding.game_id}/${binding.version}` ? selectVersion(current, true) : Promise.resolve(),
+    auth: loadAccess
+  });
   const text = value => value == null || value === '' ? '未提供' : String(value);
   const validID = value => typeof value === 'string' && ID.test(value);
   const time = value => typeof value === 'number' ? new Date(value * 1000).toLocaleString() : '未记录';
@@ -98,8 +104,9 @@
     finally { accessBusy = false; $('unlock-submit').disabled = false; renderAccess(); }
   }
   async function loadNode() {
-    try { const node = await request(`${API}/node`); $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`; message('node-message', '资源留在此节点的数据目录；本页不自动分发到其他节点。'); }
-    catch (error) { message('node-message', `节点身份读取失败：${error.message}`, true); }
+    try { const node = await request(`${API}/node`); nodeInfo = node; $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`; message('node-message', '资源留在此节点的数据目录；本页不自动分发到其他节点。'); }
+    catch (error) { nodeInfo = null; message('node-message', `节点身份读取失败：${error.message}`, true); }
+    finally { uploads.update(); }
   }
   function renderList() {
     const query = $('game-search').value.trim().toLowerCase();
@@ -186,7 +193,7 @@
       const details = el('details', null, 'asset-details'), info = el('dl', null, 'facts'), source = asset.source || {};
       details.append(el('summary', '来源、目标与校验值'));
       facts(info, [['来源类型', ({url: '公开 HTTP(S) URL', artifact: '本节点任务产物', unavailable: '来源不可用'})[source.kind]], ['来源', source.url || (source.kind === 'artifact' ? `任务 ${source.job_id}\n${source.path}` : source.reason)], ['逻辑目标', asset.target || '未指定'], ['SHA-256', asset.sha256], ['当前记录字节', `${bytes(observation.bytes)} / ${bytes(observation.total)}`]]);
-      details.append(info); item.append(details); return item;
+      details.append(info); item.append(details, uploads.mount(record, asset)); return item;
     }));
     if (!assets.length) $('asset-list').append(el('li', '清单没有资源项；不能据此判断设备状态。', 'note'));
   }
@@ -219,6 +226,7 @@
     renderAssets(record, preparations); renderPreparations(preparations); renderPrepare();
   }
   async function selectVersion(identity, refresh = false) {
+    if (selected && selected !== keyOf(identity)) uploads.pause('已切换版本，暂停发送后续块；原上传 ID 保留，返回后先查询原状态。');
     const key = keyOf(identity), version = ++detailRevision; detailController?.abort(); detailController = new AbortController();
     selected = key; detailFresh = false; if (!refresh || !current || keyOf(current) !== key) current = records.get(key) || null;
     history.replaceState(null, '', `${location.pathname}${location.search}#game=${encodeURIComponent(identity.game_id)}&version=${encodeURIComponent(identity.version)}`);
@@ -235,6 +243,7 @@
     finally { if (!disposed && version === detailRevision) { $('refresh-detail').disabled = false; $('refresh-detail').setAttribute('aria-busy', 'false'); renderPrepare(); } }
   }
   function renderPrepare() {
+    uploads.update();
     const attempt = pending.get(selected), receipt = receipts.get(selected), busy = preparing.has(selected), jobs = current?.preparations || [];
     const active = jobs.some(job => job.state !== 'finished'), blocked = jobs.some(job => job.queue?.state === 'blocked');
     const allowed = directoryReady && access?.steer && !accessBusy;
@@ -299,7 +308,7 @@
   $('prepare-retry').addEventListener('click', () => prepare(true));
   $('prepare-query').addEventListener('click', () => { const attempt = pending.get(selected); if (attempt) { $('request-id').value = attempt.request_id; lookup(attempt.request_id, selected); } });
   $('lookup-form').addEventListener('submit', event => { event.preventDefault(); const id = $('request-id').value.trim(); const owner = [...pending].find(([, value]) => value.request_id === id); lookup(id, owner?.[0] || null); });
-  window.addEventListener('pagehide', () => { disposed = true; ++listRevision; ++detailRevision; detailController?.abort(); closeUnlock(); });
+  window.addEventListener('pagehide', () => { disposed = true; uploads.pause('页面已离开，停止发送；原上传 ID 保留，回来后重选文件并查询续传。'); ++listRevision; ++detailRevision; detailController?.abort(); closeUnlock(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { disposed = false; loadAccess(); loadNode(); loadGames(); if (current) selectVersion(current, true); } });
   readSaved(); renderAccess(); loadAccess(); loadNode();
   if (registrationPending) { $('registration-panel').hidden = false; message('registration-message', `有未确认登记 ${registrationPending.game_id}/${registrationPending.version}。先读取原版本，未保存旧清单草稿。`); }
