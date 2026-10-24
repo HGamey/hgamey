@@ -44,7 +44,7 @@
     }
 
     async function stream(signal) {
-      const r = await fetch(`/dash/api/live/stream?serial=${encodeURIComponent(serial)}`, { signal, credentials: "same-origin", cache: "no-store" });
+      const r = await HGTarget.fetch(`/dash/api/live/stream?serial=${encodeURIComponent(serial)}`, { signal, credentials: "same-origin", cache: "no-store" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const reader = r.body.getReader();
       let buf = new Uint8Array(0), got = false;
@@ -72,7 +72,7 @@
     async function poll(signal) {
       let after = 0;
       for (;;) {
-        const r = await fetch(`/dash/api/live/frame?serial=${encodeURIComponent(serial)}&after=${after}`, { signal, credentials: "same-origin", cache: "no-store" });
+        const r = await HGTarget.fetch(`/dash/api/live/frame?serial=${encodeURIComponent(serial)}&after=${after}`, { signal, credentials: "same-origin", cache: "no-store" });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         after = +(r.headers.get("X-Frame-Seq") || after);
         show(new Uint8Array(await r.arrayBuffer()), r.headers.get("X-Frame-Seq"), r.headers.get("X-Frame-At"), signal);
@@ -89,6 +89,7 @@
         try { await (st.poll ? poll(ctl.signal) : stream(ctl.signal)); fails = 0; }
         catch (e) {
           if (st.ctl !== ctl || ctl.signal.aborted || e.name === "AbortError") return;
+          if(e.target){st.connection=e.message;stop();render();return;}
           fails++;
           st.connection = `画面连接中断：${e.message}，${Math.min(10, fails * 2)} 秒后重试。`; render();
           await new Promise((ok) => setTimeout(ok, Math.min(10, fails * 2) * 1000));
@@ -100,7 +101,7 @@
       const ctl = new AbortController(); st.statusCtl = ctl;
       const timeout = setTimeout(() => ctl.abort(), 10000);
       try {
-        const r = await fetch("/dash/api/live/status", { signal: ctl.signal, credentials: "same-origin", cache: "no-store" });
+        const r = await HGTarget.fetch("/dash/api/live/status", { signal: ctl.signal, credentials: "same-origin", cache: "no-store" });
         if (!r.ok) throw new Error(r.status === 401 ? "查看登录已失效" : `HTTP ${r.status}`);
         const result = await r.json();
         if (st.statusCtl !== ctl || st.detached) return;
@@ -121,6 +122,8 @@
     function visibility() { if (document.visibilityState === "visible") { refresh(); play(); } else disconnect(); }
     function hide() { disconnect(); clearInterval(st.timer); st.timer = 0; }
     function resume() { if (!st.detached) { startTimer(); visibility(); } }
+    const targetChanged = () => {if(!HGTarget.canWrite()){stop();st.connection=HGTarget.problem()||"节点未提供目标约束协议，已断开本订阅。";}render();};
+    document.addEventListener("hgamey-target-change",targetChanged);
     document.addEventListener("visibilitychange", visibility);
     window.addEventListener("pagehide", hide); window.addEventListener("pageshow", resume);
     startTimer(); refresh(); play(); render();
@@ -136,6 +139,7 @@
       detach: () => {
         st.detached = true; hide();
         document.removeEventListener("visibilitychange", visibility);
+        document.removeEventListener("hgamey-target-change",targetChanged);
         window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", resume);
         if (st.url) URL.revokeObjectURL(st.url);
         img.remove(); badge.remove();

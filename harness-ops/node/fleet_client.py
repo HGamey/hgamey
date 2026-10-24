@@ -9,6 +9,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import target_client
 
 
 class ClientError(Exception):
@@ -26,9 +27,7 @@ class Parser(argparse.ArgumentParser):
         raise ClientError("invalid_arguments", "参数无效或缺失；更新/启停须显式 --revision，详见 --help")
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+NoRedirect = target_client.NoRedirect
 
 
 def url(value):
@@ -66,46 +65,37 @@ def revision(value):
 
 def token_file(path):
     try:
-        with open(path, encoding="utf-8") as stream:
-            raw = stream.read(16385)
-        if len(raw) > 16384:
-            raise ValueError("credential file exceeds limit")
-        value = raw.strip()
-    except (OSError, UnicodeError, TypeError, ValueError):
-        raise ClientError("credential_unavailable", "无法读取指定凭据文件") from None
-    return token(value)
+        return target_client.token_file(path)
+    except target_client.TargetError as error:
+        raise ClientError(error.code, str(error)) from None
 
 
 def token(value):
-    if (not isinstance(value, str) or not value or len(value) > 16384
-            or any(ord(c) < 32 or ord(c) >= 127 for c in value)):
-        raise ClientError("invalid_credential", "凭据须为非空、无控制字符的 ASCII token")
-    return value
-
-
-def hub_token():
-    if os.environ.get("PF_NODE_TOKEN"):
-        return token(os.environ["PF_NODE_TOKEN"])
-    if os.environ.get("PF_NODE_TOKEN_FILE"):
-        return token_file(os.environ["PF_NODE_TOKEN_FILE"])
-    raise ClientError("credential_unavailable", "hub 认证需显式提供 PF_NODE_TOKEN 或 PF_NODE_TOKEN_FILE")
+    try:
+        return target_client.token(value)
+    except target_client.TargetError as error:
+        raise ClientError(error.code, str(error)) from None
 
 
 class Client:
-    def __init__(self, hub):
-        self.hub, self.token = url(hub), hub_token()
-        self.opener = urllib.request.build_opener(NoRedirect())
+    def __init__(self, hub, expected_node_id=None, explicit_file=None):
+        self.target = target_client.Target.resolve(hub, expected_node_id, explicit_file)
+        self.hub, self.token = self.target.url, self.target.token
+        self.opener = self.target.opener
 
     def request(self, path, body=None):
+        if path == "/node" and body is None:
+            return self.target.identity()
         writing = body is not None
-        headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json",
-                   "User-Agent": "pf-fleet/2"}
+        if writing or any(key in urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+                          for key in ("refresh", "devices")):
+            self.target.require_write()
+        headers = {"User-Agent": "pf-fleet/2"}
         payload = None
         if writing:
             headers["Content-Type"] = "application/json"
             payload = json.dumps(body, ensure_ascii=False).encode()
-        request = urllib.request.Request(self.hub + path, data=payload,
-                                         method="POST" if writing else "GET", headers=headers)
+        request = self.target.request("POST" if writing else "GET", path, payload, headers)
         try:
             with self.opener.open(request, timeout=10) as response:
                 raw = response.read((8 << 20) + 1)
@@ -148,8 +138,11 @@ class Client:
 
 def parser():
     root = Parser(prog="pf-fleet --hub URL", description="共享节点目录；不代理跨节点作业。",
-                  epilog="hub 认证：PF_NODE_TOKEN(_FILE)。远端凭据只用 --token-file；写操作不重试。")
+                  epilog="hub 认证：--hub-token-file / PF_NODE_TOKEN(_FILE)。写入绑定 --node-id / PF_NODE_ID。远端凭据只用登记命令的 --token-file；写操作不重试。")
+    root.add_argument("--node-id", help="预期 hub 的持久 node_id")
+    root.add_argument("--hub-token-file", help="hub 凭据文件，优先于环境凭据")
     commands = root.add_subparsers(dest="command", required=True)
+    commands.add_parser("node", help="只读发现 hub 身份").add_argument("--json", action="store_true")
     for command in ("nodes", "status", "show"):
         sub = commands.add_parser(command)
         if command == "show":
@@ -280,15 +273,20 @@ def entry_text(entry, detail=False):
               f"  reason={clean(record.get('reason') or '未报告')}")
 
 
-def main(hub, argv):
+def main(hub, argv, *, expected_node_id=None, explicit_file=None):
     as_json = "--json" in argv
     try:
         if argv and argv[0] in ("run", "migrate"):
             raise ClientError("unsupported_in_hub_mode", "共享目录模式尚不支持 run/migrate；不会回落本地注册表")
         args = parser().parse_args(argv)
-        client = Client(hub)
+        client = Client(hub, args.node_id if args.node_id is not None else expected_node_id,
+                        args.hub_token_file if args.hub_token_file is not None else explicit_file)
         command = args.command
-        if command in ("nodes", "status"):
+        if command not in ("node", "nodes", "status", "show"):
+            client.target.require_write()
+        if command == "node":
+            result = client.request("/node")
+        elif command in ("nodes", "status"):
             result = client.request("/nodes" + ("?refresh=1" if getattr(args, "refresh", False) else ""))
             if result.get("schema_version") != 1 or not isinstance(result.get("items"), list):
                 raise ClientError("invalid_protocol", "hub 未返回目录协议 v1")
@@ -315,7 +313,7 @@ def main(hub, argv):
                                     {"revision": args.revision, "enabled": command == "enable"})
         else:
             result = import_nodes(client, args.file)
-        if args.json:
+        if args.json or command == "node":
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif command in ("nodes", "status"):
             identity = result.get("local") or {}
@@ -332,7 +330,9 @@ def main(hub, argv):
         else:
             entry_text(result, detail=command == "show")
         return 2 if command == "import" and result["failed"] else 0
-    except ClientError as error:
+    except (ClientError, target_client.TargetError) as error:
+        if isinstance(error, target_client.TargetError):
+            error = ClientError(error.code, str(error))
         if as_json:
             print(json.dumps({"error": error.public()}, ensure_ascii=False))
         else:

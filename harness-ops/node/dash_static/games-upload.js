@@ -14,11 +14,11 @@
     const saved = new Map(), views = new Map(); let active = null;
     try { for (const b of JSON.parse(sessionStorage.getItem(STORE) || '[]')) if (b && ['node_id','game_id','version','asset_name','upload_id'].every(k => typeof b[k] === 'string') && ID.test(b.upload_id)) saved.set(keyOf(b), b); } catch (_) { /* No local record establishes remote state. */ }
     function persist(v) {
-      if (v.id) saved.set(v.key, {...v.binding, upload_id:v.id});
+      if (v.id) saved.set(v.key, {...v.binding, upload_id:v.id, target:v.target});
       try { sessionStorage.setItem(STORE, JSON.stringify([...saved.values()])); } catch (_) { v.message = '浏览器无法保存上传 ID，请复制可见 ID 后再离开页面。'; }
     }
     function supported() { const c = context(); return !!c.node?.capabilities?.includes('games.upload-v1'); }
-    function canWrite(v) { const c = context(); return supported() && c.canWrite && c.detailFresh && !c.disposed && c.node.node_id === v.binding.node_id && c.selected === `${v.binding.game_id}/${v.binding.version}`; }
+    function canWrite(v) { const c = context(); return (!v.id || !HGTarget.problem(v.target || null)) && supported() && c.canWrite && c.detailFresh && !c.disposed && c.node.node_id === v.binding.node_id && c.selected === `${v.binding.game_id}/${v.binding.version}`; }
     function validFile(v) { return !!v.file && v.file.size === v.asset.size; }
     function checked(v, value, id = v.id) {
       if (!value || value.schema_version !== 1 || value.upload_id !== id || Object.entries(v.binding).some(([k,x]) => value[k] !== x) || value.size !== v.asset.size || value.sha256 !== v.asset.sha256) throw new Error('上传回包的节点、版本、资源或校验声明不匹配，已停止。');
@@ -38,7 +38,7 @@
           else options.headers['X-Request-ID'] = op.view.id;
           options.body = method === 'PUT' ? body : JSON.stringify(body);
         }
-        const response = await fetch(path, options);
+        const response = await HGTarget.fetch(path, options, {target:op.view.target || null});
         if (response.status === 401 || response.status === 403) { const error = new Error('上传权限已失效，请重新核对登录与掌舵权限。'); error.status = response.status; throw error; }
         if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error(`节点未返回可核对的 JSON（HTTP ${response.status}）。`);
         const value = await response.json();
@@ -65,6 +65,7 @@
     function assertRunning(op) { if (op.stopped || !canWrite(op.view)) throw new Error('当前页面或权限已改变，停止发送后续块。'); }
     async function query(v) {
       const id = v.refs.id.value.trim();
+      if (!v.id) v.target = HGTarget.binding();
       if (!ID.test(id)) { v.error = true; v.message = '请输入有效上传 ID：1–64 位小写字母、数字、横线或下划线。'; update(); return; }
       await run(v, 'query', async op => {
         const value = checked(v, await http(op, url(id)), id);
@@ -82,7 +83,7 @@
     async function start(v) {
       if (!canWrite(v) || !validFile(v) || active || (v.fresh && TERMINAL.has(v.record?.phase))) return;
       await run(v, 'transfer', async op => {
-        if (!v.id) { v.id = crypto.randomUUID(); v.refs.id.value = v.id; persist(v); update(); }
+        if (!v.id) { v.target = HGTarget.binding(); v.id = crypto.randomUUID(); v.refs.id.value = v.id; persist(v); update(); }
         let value;
         try { value = checked(v,await http(op,url(v.id))); }
         catch (error) {
@@ -130,13 +131,13 @@
     function updateView(v) {
       const r = v.refs, record = v.record, mine = active?.view === v, busy = !!active, terminal = TERMINAL.has(record?.phase), boundID = r.id.value.trim() === (v.id || '');
       r.block.setAttribute('aria-busy',String(mine));
-      r.hint.textContent = !supported() ? '此节点未声明 games.upload-v1，不能上传。' : !canWrite(v) ? '请成功读取当前版本并解锁操作；上传仅写此节点宿主缓存。' : '每次最多一个上传，默认 1 MiB 块。重选同大小文件不证明内容相同，最终由节点校验 SHA-256。';
+      r.hint.textContent = (v.id && HGTarget.problem(v.target || null)) || (!supported() ? '此节点未声明 games.upload-v1，不能上传。' : !canWrite(v) ? '请成功读取当前版本并解锁操作；上传仅写此节点宿主缓存。' : '每次最多一个上传，默认 1 MiB 块。重选同大小文件不证明内容相同，最终由节点校验 SHA-256。');
       r.file.disabled = busy || !canWrite(v); r.id.disabled = busy;
       r.fileInfo.textContent = v.file ? `${v.file.name} · ${bytes(v.file.size)}${validFile(v) ? ' · 大小匹配清单' : ` · 与清单 ${bytes(v.asset.size)} 不符，不能上传`}` : '未选择文件；刷新后需重新选择原文件，浏览器不保存文件或路径。';
       r.begin.disabled = busy || !canWrite(v) || !validFile(v) || !boundID || (v.fresh && (terminal || ['sealed','verifying'].includes(record?.phase))) || !globalThis.crypto?.randomUUID;
       r.begin.textContent = mine && active.kind === 'transfer' ? '正在上传…' : v.id ? '按原 ID 上传并校验' : '开始上传并校验';
       r.pause.hidden = !(mine && active.kind === 'transfer'); r.pause.disabled = !!active?.stopped;
-      r.query.disabled = busy || !supported();
+      r.query.disabled = busy || !supported() || !!(v.id && HGTarget.problem(v.target || null));
       r.finish.hidden = !v.id; r.finish.disabled = busy || !canWrite(v) || !boundID || !v.fresh || !['received','sealed'].includes(record?.phase) || record.offset !== v.asset.size;
       r.cancel.hidden = !v.id; r.cancel.disabled = busy || !canWrite(v) || !boundID || (v.fresh && terminal);
       r.newAttempt.hidden = !record || !terminal; r.newAttempt.disabled = busy || !canWrite(v) || !boundID || !v.fresh;
@@ -163,7 +164,7 @@
       for (const [name,label] of Object.entries({begin:'开始上传并校验',pause:'暂停传输',query:'查询 / 找回',finish:'提交 / 找回校验任务',cancel:'取消上传保留',newAttempt:'新建上传尝试'})) { buttons[name] = el('button',label,'ghost'+(name==='begin'?' primary':'')); buttons[name].type='button'; actions.append(buttons[name]); }
       const status=el('p',null,'asset-stage'),progress=el('progress',null,'asset-progress'),cache=el('p',null,'note'),serverError=el('p',null,'asset-error'),message=el('p',null,'note'),links=el('div',null,'preparation-links'); message.setAttribute('role','status'); progress.setAttribute('aria-label',`${asset.name} 服务器确认上传字节`);
       block.append(summary,hint,file,fileInfo,idLabel,actions,status,progress,cache,serverError,message,links,el('p','暂停仅停止发送；取消上传保留会留下已收 partial，不等于取消校验任务。已有校验任务请从原任务入口处理。','note'));
-      const v = {key,binding,asset,id:saved.get(key)?.upload_id || null,record:null,fresh:false,file:null,previous:new Set(),message:'',error:false,refs:{block,hint,file,fileInfo,id,status,progress,cache,serverError,message,links,...buttons}}; id.value = v.id || ''; views.set(key,v);
+      const v = {key,binding,asset,id:saved.get(key)?.upload_id || null,target:saved.get(key)?.target || null,record:null,fresh:false,file:null,previous:new Set(),message:'',error:false,refs:{block,hint,file,fileInfo,id,status,progress,cache,serverError,message,links,...buttons}}; id.value = v.id || ''; views.set(key,v);
       file.addEventListener('change',()=>{v.file=file.files?.[0] || null; v.error=false; v.message=''; update();});
       id.addEventListener('input',()=>{v.message='粘贴其他上传 ID 后，请先点击“查询 / 找回”核对资源绑定。'; update();});
       buttons.begin.addEventListener('click',()=>start(v)); buttons.pause.addEventListener('click',()=>halt()); buttons.query.addEventListener('click',()=>query(v)); buttons.finish.addEventListener('click',()=>finish(v)); buttons.cancel.addEventListener('click',()=>cancel(v)); buttons.newAttempt.addEventListener('click',()=>newAttempt(v));

@@ -40,7 +40,7 @@
   async function api(url, body) {
     const opt = body === undefined ? { cache: "no-store", credentials: "same-origin" }
       : { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-HG": "1" }, body: JSON.stringify(body) };
-    const r = await fetch(url, opt);
+    const r = await HGTarget.fetch(url, opt);
     if (r.status === 401) { location.href = "/dash/login"; throw new Error("401"); }
     let j = {}; try { j = await r.json(); } catch (e) { }
     if (!r.ok) { const err = new Error(j.error || `HTTP ${r.status}`); err.data = j; err.status = r.status; throw err; }
@@ -142,7 +142,7 @@
     $("phones").innerHTML = on.map((s) => {
       const cls = !s.online ? "off" : s.busy ? "busy" : "on";
       const st = !s.online ? (s.state || "离线") : s.busy ? "在线 · 占用或待核查" : "在线 · 锁记录空闲";
-      const thumb = s.shot_at ? `<img alt="${esc(s.model || s.serial)} 的画面" src="/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}">`
+      const thumb = s.shot_at && HGTarget.canWrite() ? `<img alt="${esc(s.model || s.serial)} 的画面" src="${esc(HGTarget.url(`/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}`))}">`
         : `<div class="ph">${s.busy ? "占用或待核查，暂缓截图" : "暂无画面"}</div>`;
       const doing = s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
         : s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`
@@ -375,7 +375,7 @@
   function renderSteer(r) {
     const ta = $("human");
     if (!S.humanDirty || S.humanBase === null) { ta.value = r.human_md || ""; S.humanBase = r.human_mtime; }
-    const can = editable(r) && S.home && S.home.steer;
+    const can = HGTarget.canWrite() && editable(r) && S.home && S.home.steer;
     ta.readOnly = !can;
     $("save-human").disabled = !can;
     $("stop-run").disabled = !can || !(["running", "paused"].includes(r.status) || r.run_alive);
@@ -407,6 +407,10 @@
     } catch (e) { }
   });
 
+  document.addEventListener("hgamey-target-change", () => {
+    for(const id of ["do-confirm","do-draft","save-human","stop-run"]){const button=$(id);if(button)button.disabled=!HGTarget.canWrite();}
+    if(S.run)renderSteer(S.run);
+  });
   async function needSteer() {
     if (S.home && S.home.steer) return true;
     $("unlock-msg").textContent = ""; $("steer-pw").value = "";
@@ -424,6 +428,7 @@
   });
 
   async function steerCall(url, body, msgEl) {
+    if (!HGTarget.canWrite()) { $(msgEl).textContent = HGTarget.problem() || "此节点未提供目标约束协议，操作已禁用。"; return null; }
     if (!(await needSteer())) return null;
     const m = $(msgEl); m.className = "msg"; m.innerHTML = `<span class="spin"></span> 提交中`;
     try { const r = await api(url, body); m.textContent = r.note || "已保存"; return r; }

@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from target_client import Target, NoRedirect
 
 
 HELP = """用法:
@@ -57,29 +58,22 @@ class RequestError(Exception):
         self.code = code
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 class Client:
-    def __init__(self, url, token):
-        parsed = urllib.parse.urlsplit(url)
-        if (parsed.scheme not in ("http", "https") or not parsed.hostname
-                or parsed.username is not None or parsed.password is not None
-                or parsed.query or parsed.fragment):
-            raise ValueError("PF_NODE_URL 必须是无凭据、查询串或片段的 HTTP(S) 地址")
-        self.url, self.token = url.rstrip("/"), token
-        self.opener = urllib.request.build_opener(NoRedirect())
+    def __init__(self, url, token, target=None):
+        self.target = target or Target(url, token, os.environ.get("PF_NODE_ID"))
+        self.url, self.token = self.target.url, self.target.token
+        self.opener = self.target.opener
 
     def request(self, method, path, body=None, request_id=None, headers=None):
-        request_headers = {"Authorization": f"Bearer {self.token}", "User-Agent": "pf-node/1"}
+        if method == "GET" and path == "/node":
+            return self.target.identity()
+        request_headers = {"User-Agent": "pf-node/1"}
         if body is not None:
             request_headers["Content-Type"] = "application/json"
         if request_id is not None:
             request_headers["X-Request-ID"] = request_id
         request_headers.update(headers or {})
-        request = urllib.request.Request(self.url + path, data=body, method=method, headers=request_headers)
+        request = self.target.request(method, path, body, request_headers)
         try:
             with self.opener.open(request, timeout=60) as response:
                 value = json.load(response)
@@ -154,7 +148,7 @@ def confirmed_job(value, request_id):
 
 
 def submit_job(client, path, body, request_id, description):
-    lookup = f"pf-node games request {request_id}"
+    lookup = f"{client.target.command()} games request {request_id}"
     print(f"pf-node: {description} request_id={request_id}；仅提交一次。用 {lookup} 找回原任务。",
           file=sys.stderr, flush=True)
     try:
@@ -300,7 +294,7 @@ def confirmed_upload(record, binding):
 def write_upload(client, method, path, binding, body, headers=None, next_offset=None):
     """An unconfirmed write gets one lookup, then returns without another write."""
     upload_id = binding["upload_id"]
-    lookup = f"pf-node games upload-status {upload_id}"
+    lookup = f"{client.target.command()} games upload-status {upload_id}"
     try:
         record = confirmed_upload(client.request(method, path, body, headers=headers), binding)
         if next_offset is not None and record["offset"] != next_offset:
@@ -342,6 +336,7 @@ def check_file(source, expected):
 
 
 def upload_file(client, game_id, version, asset_name, path, upload_id=None):
+    client.target.require_write()
     resume = upload_id is not None
     upload_id = upload_identifier(upload_id) if resume else str(uuid.uuid4())
     print(f"pf-node: upload_id={upload_id}；恢复此上传须显式带 --upload-id {upload_id}。",
@@ -427,7 +422,7 @@ def upload_existing(client, action, upload_id):
     return print_upload(record, code)
 
 
-def main(args, *, url, token, request_id=None):
+def main(args, *, url, token, request_id=None, target=None):
     if args in (["--help"], ["-h"]):
         print(HELP)
         return 0
@@ -435,6 +430,10 @@ def main(args, *, url, token, request_id=None):
         if not args:
             raise ValueError(HELP)
         command = args[0]
+        client = Client(url, token, target)
+        if command in {"register", "prepare", "deploy", "install", "initialize", "scene",
+                       "deployment-recover", "upload", "upload-finalize", "upload-cancel"}:
+            client.target.require_write()
         if request_id is not None:
             request_identifier(request_id)
             if command not in ("prepare", "deploy", "install", "initialize", "scene", "deployment-recover"):
@@ -448,7 +447,6 @@ def main(args, *, url, token, request_id=None):
                 serial, mode, key, sources = scene_arguments(args[3:], request_id)
             else:
                 serial, mode, key = deployment_arguments(args[3:], request_id)
-            client = Client(url, token)
             payload = {"node_id": deployment_node(client, command), "serial": serial, "mode": mode}
             if command == "scene":
                 payload["deployment"] = sources
@@ -460,7 +458,6 @@ def main(args, *, url, token, request_id=None):
         elif command == "deployment-recover" and len(args) >= 2:
             path = f"/jobs/{deployment_job_id(args[1])}/deployment/recover"
             _, _, key = deployment_arguments(args[2:], request_id, recovery=True)
-            client = Client(url, token)
             original = client.request("GET", path.removesuffix("/recover"))
             operation = original.get("operation", "deploy")
             if operation not in ("deploy", "install", "initialize", "scene"):
@@ -472,10 +469,10 @@ def main(args, *, url, token, request_id=None):
                 raise RequestError("节点未声明支持原任务恢复；请用 games deployment 查询 recovery.reason，未提交")
             return submit_job(client, path, b"{}", key, "接续原部署恢复")
         elif command == "upload" and (len(args) == 5 or len(args) == 7 and args[5] == "--upload-id"):
-            return upload_file(Client(url, token), identifier(args[1]), identifier(args[2]), args[3], args[4],
+            return upload_file(client, identifier(args[1]), identifier(args[2]), args[3], args[4],
                                args[6] if len(args) == 7 else None)
         elif command in ("upload-status", "upload-finalize", "upload-cancel") and len(args) == 2:
-            return upload_existing(Client(url, token), command.removeprefix("upload-"), args[1])
+            return upload_existing(client, command.removeprefix("upload-"), args[1])
         elif command in ("show", "prepare") and len(args) >= 3:
             path = f"/games/{identifier(args[1])}/versions/{identifier(args[2])}"
             if command == "show" and len(args) != 3:
@@ -488,14 +485,14 @@ def main(args, *, url, token, request_id=None):
                     request_id = supplied
                 elif len(args) != 3:
                     raise ValueError(HELP)
-                return prepare(Client(url, token), path, request_id or str(uuid.uuid4()))
+                return prepare(client, path, request_id or str(uuid.uuid4()))
         elif command == "register" and len(args) == 2:
             path, method, body = "/games", "POST", manifest_bytes(args[1])
         elif command == "request" and len(args) == 2:
             path = "/requests/" + urllib.parse.quote(request_identifier(args[1]), safe="")
         else:
             raise ValueError(HELP)
-        result = Client(url, token).request(method, path, body)
+        result = client.request(method, path, body)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (RequestError, ValueError) as error:

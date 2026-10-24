@@ -17,10 +17,17 @@ from unittest import mock
 
 NODE = Path(__file__).resolve().parents[1]
 fleet = runpy.run_path(str(NODE / "pf-fleet"))
+NODE_ID = "1" * 32
+HUB_ID = "2" * 32
+
+
+def identity(value=NODE_ID):
+    return {"node_id": value, "capabilities": ["node.target-v1"],
+            "host": {"hostname": "fixture"}, "storage": {"data_root": "/fixture/data"}}
 
 
 def snapshot():
-    return {"schema_version": 1, "node_id": "fixture-node", "now": time.time(),
+    return {"schema_version": 1, "node_id": NODE_ID, "now": time.time(),
             "lock": {"status": "free", "held_by": None, "since": None,
                      "heartbeat_age_s": None, "stale": False, "queue": [], "error": None},
             "devices": [{"serial": "fixture-phone", "thermal": {"status": "warm"}}],
@@ -44,8 +51,11 @@ class FleetCLI(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 requests.append((self.command, self.path))
-                body = json.dumps(snapshot()).encode()
-                self.send_response(404 if self.path.startswith("/old/") else 200)
+                value = identity() if self.path.endswith("/node") else snapshot()
+                if self.path == "/no-cap/node":
+                    value["capabilities"] = []
+                body = json.dumps(value).encode()
+                self.send_response(404 if self.path.startswith("/old/fleet") else 200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -69,17 +79,32 @@ class FleetCLI(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "selected"):
                 fleet["cmd_run"]([node], ["--any-free", "--", "node"])
             self.assertEqual(launch.call_args.args[2]["PF_NODE_URL"], url)
-        env = dict(os.environ, PF_NODE_URL=url, PF_NODE_TOKEN="fixture-token")
+            self.assertEqual(launch.call_args.args[2]["PF_NODE_ID"], NODE_ID)
+        env = dict(os.environ, PF_NODE_URL=url, PF_NODE_TOKEN="fixture-token", PF_NODE_ID=NODE_ID)
+        env.pop("PF_NODE_TOKEN_FILE", None)
         result = subprocess.run([sys.executable, str(NODE / "pf-node"), "fleet", "--wait", "2"],
                                 env=env, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["node_id"], "fixture-node")
+        self.assertEqual(json.loads(result.stdout)["node_id"], NODE_ID)
         old = fleet["probe_node"](self.node(url=url + "/old"), 1)
         self.assertTrue(old["reachable"])
         self.assertFalse(old["ok"])
         self.assertIn("升级", old["error"])
-        self.assertEqual(requests, [("GET", "/fleet?wait=5"), ("GET", "/fleet?wait=5"),
-                                    ("GET", "/fleet?wait=2"), ("GET", "/old/fleet?wait=5")])
+        self.assertEqual(requests, [("GET", "/node"), ("GET", "/fleet?wait=5"),
+                                    ("GET", "/node"), ("GET", "/fleet?wait=5"),
+                                    ("GET", "/node"), ("GET", "/fleet?wait=2"),
+                                    ("GET", "/old/node"), ("GET", "/old/fleet?wait=5")])
+        before = list(requests)
+        unbound = {key: value for key, value in env.items() if key != "PF_NODE_ID"}
+        refused = subprocess.run([sys.executable, str(NODE / "pf-node"), "fleet", "--wait", "0"],
+                                 env=unbound, capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("--node-id", refused.stderr)
+        self.assertEqual(requests, before, "unbound observation must not query the fleet")
+        unsupported = fleet["probe_node"](self.node(url=url + "/no-cap"), 1)
+        self.assertFalse(unsupported["ok"])
+        self.assertIn("node.target-v1", unsupported["error"])
+        self.assertEqual(requests[len(before):], [("GET", "/no-cap/node")])
 
     def test_total_deadline_keeps_every_node_and_ignores_late_results(self):
         release = threading.Event()
@@ -125,7 +150,7 @@ class FleetCLI(unittest.TestCase):
             variants[name] = value
         nodes = [self.node(name, name) for name in variants]
         globals_ = fleet["probe_node"].__globals__
-        with mock.patch.dict(globals_, _get_fleet=lambda url, token, timeout: variants[url]):
+        with mock.patch.dict(globals_, _get_fleet=lambda url, token, timeout, expected_node_id=None: variants[url]):
             with mock.patch.object(os, "execvpe", side_effect=RuntimeError("selected")) as launch:
                 with self.assertRaisesRegex(RuntimeError, "selected"):
                     fleet["cmd_run"](nodes, ["--any-free", "--", "node"])
@@ -178,8 +203,10 @@ class ManagedFleetCLI(unittest.TestCase):
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                if self.path.split("?")[0] == "/nodes":
-                    self.reply(200, {"schema_version": 1, "now": 9, "local": {"node_id": "hub-id"},
+                if self.path == "/node":
+                    self.reply(200, identity(HUB_ID))
+                elif self.path.split("?")[0] == "/nodes":
+                    self.reply(200, {"schema_version": 1, "now": 9, "local": {"node_id": HUB_ID},
                                      "items": [owner.entry]})
                 else:
                     self.reply(200, owner.entry)
@@ -217,7 +244,7 @@ class ManagedFleetCLI(unittest.TestCase):
 
     def cli(self, *args, hub=None):
         # Never inherit a workstation's hub, registry or credentials.
-        env = {"PATH": os.environ.get("PATH", ""), "PF_NODE_TOKEN": "hub-fixture-secret",
+        env = {"PATH": os.environ.get("PATH", ""), "PF_NODE_TOKEN": "hub-fixture-secret", "PF_NODE_ID": HUB_ID,
                "PF_FLEET_HUB": hub or self.url, "PF_FLEET_REGISTRY": str(self.root / "not-a-registry")}
         return subprocess.run([sys.executable, str(NODE / "pf-fleet"), *args],
                               env=env, capture_output=True, text=True, timeout=5)
@@ -237,14 +264,16 @@ class ManagedFleetCLI(unittest.TestCase):
         disabled = self.cli("disable", "fixture", "--revision", "4", "--json")
         enabled = self.cli("enable", "fixture", "--revision", "5", "--json")
         self.assertEqual((disabled.returncode, enabled.returncode), (0, 0))
-        self.assertEqual([(c[0], c[1]) for c in self.calls],
+        operations = [c for c in self.calls if c[1] != "/node"]
+        self.assertEqual(sum(c[1] == "/node" for c in self.calls), 6)
+        self.assertEqual([(c[0], c[1]) for c in operations],
                          [("GET", "/nodes?refresh=1"), ("GET", "/nodes/fixture?devices=1"),
                           ("POST", "/nodes"), ("POST", "/nodes/fixture"),
                           ("POST", "/nodes/fixture"), ("POST", "/nodes/fixture")])
-        self.assertEqual(self.calls[2][2]["token"], "remote-fixture-secret")
-        self.assertEqual(self.calls[3][2], {"revision": 3, "tags": [], "token": None})
-        self.assertEqual(self.calls[4][2], {"revision": 4, "enabled": False})
-        self.assertEqual(self.calls[5][2], {"revision": 5, "enabled": True})
+        self.assertEqual(operations[2][2]["token"], "remote-fixture-secret")
+        self.assertEqual(operations[3][2], {"revision": 3, "tags": [], "token": None})
+        self.assertEqual(operations[4][2], {"revision": 4, "enabled": False})
+        self.assertEqual(operations[5][2], {"revision": 5, "enabled": True})
         self.assertTrue(all(c[3] == "Bearer hub-fixture-secret" for c in self.calls))
         for result in (created, updated, disabled, enabled):
             self.assertNotIn("fixture-secret", result.stdout + result.stderr)
@@ -273,11 +302,13 @@ class ManagedFleetCLI(unittest.TestCase):
         self.assertEqual([r["status"] for r in value["items"]], ["created", "failed", "failed", "created"])
         self.assertEqual(value["items"][1]["error"]["code"], "conflict")
         self.assertEqual(value["items"][2]["error"]["code"], "credential_unavailable")
-        self.assertEqual([c[2]["name"] for c in self.calls], ["first", "clash", "last"])
-        self.assertTrue(all(c[0:2] == ("POST", "/nodes") for c in self.calls))
-        self.assertEqual(self.calls[0][2]["token"], "remote-fixture-secret")
-        self.assertEqual(self.calls[0][2]["ssh"], "ssh-meta")
-        self.assertEqual(self.calls[0][2]["goals_dir"], "/meta/goals")
+        operations = [c for c in self.calls if c[0] == "POST"]
+        self.assertEqual(sum(c[1] == "/node" for c in self.calls), 1)
+        self.assertEqual([c[2]["name"] for c in operations], ["first", "clash", "last"])
+        self.assertTrue(all(c[0:2] == ("POST", "/nodes") for c in operations))
+        self.assertEqual(operations[0][2]["token"], "remote-fixture-secret")
+        self.assertEqual(operations[0][2]["ssh"], "ssh-meta")
+        self.assertEqual(operations[0][2]["goals_dir"], "/meta/goals")
         self.assertEqual(path.read_bytes(), before)
         self.assertNotIn("fixture-secret", result.stdout + result.stderr)
         self.assertNotIn(str(self.remote_token), result.stdout + result.stderr)
@@ -291,14 +322,14 @@ class ManagedFleetCLI(unittest.TestCase):
                           "--token-file", str(self.remote_token), "--json")
         self.assertEqual(result.returncode, 2)
         self.assertEqual(json.loads(result.stdout)["error"]["code"], "write_result_unknown")
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 3)
         self.assertNotIn("fixture-secret", result.stdout + result.stderr)
         for args in (("run", "--any-free", "--", "node"), ("migrate", "old", "--from", "a", "--to", "b"),
                      ("update", "fixture", "--note", "changed")):
             rejected = self.cli(*args)
             self.assertEqual(rejected.returncode, 2)
             self.assertNotIn("not-a-registry", rejected.stdout + rejected.stderr)
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 3)
 
 
 if __name__ == "__main__":

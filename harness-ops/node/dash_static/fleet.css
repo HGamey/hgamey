@@ -119,3 +119,5 @@
   .directory-actions button { white-space: normal; }
   .fleet-view .top-right { width: auto; }
 }
+
+.selected-node-links{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center}

@@ -793,10 +793,12 @@ def _read_body(h, maximum):
     return data
 
 
-def handle(remote, h, method, parts, query, board=None):
+def handle(remote, h, method, parts, query, board=None, node=None):
     """parts: /remote/... 或 /dash/api/remote/...。返回 True 表示已处理。"""
     if parts == ["dash", "control"]:  # 控制台页面：查看密码之后再用操作员令牌登录
         if not (board and board.authed(h)):
+            if board:
+                return board._login_redirect(h) or True
             return h._send(303, b"", "text/plain", {**DASH_HEADERS, "Location": "/dash/login"}) or True
         return board._static(h, "control.html") or True
     dash = parts[:3] == ["dash", "api", "remote"]
@@ -843,6 +845,10 @@ def handle(remote, h, method, parts, query, board=None):
                 raise RemoteError(400, "写接口只收 JSON")
         else:
             op = remote.bearer(h)
+        if sub == ["node"] and method == "GET":
+            if node is None:
+                raise RemoteError(503, "node identity provider unavailable")
+            return _send(h, 200, node.identity()) or True
         if sub == ["whoami"]:
             return _send(h, 200, {"operator": op["name"], "id": op["id"]}) or True
         if sub == ["mcp"] and not dash:

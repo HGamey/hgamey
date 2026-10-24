@@ -32,7 +32,7 @@
   POST /dash/api/goal/draft|confirm        新目标起草 / 确认并开跑（掌舵密码）
 """
 import collections, glob, hashlib, hmac, json, os, re, threading, time
-from urllib.parse import parse_qs, unquote
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from node_directory import DirectoryError
 from node_games import GameError, MAX_MANIFEST
 
@@ -54,6 +54,7 @@ STEER_MAX_AGE = 12 * 3600
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash_static")
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+TARGET_PAGES = {"/dash", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint"}
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
 SCAN_EVERY_S = 30         # 实验证据多久扫一次（只在有人看时）
@@ -367,6 +368,25 @@ class Dash:
     def _ip(self, h):
         return h.headers.get("CF-Connecting-IP", h.client_address[0])
 
+    def _login_redirect(self, h):
+        parsed = urlparse(h.path)
+        values = parse_qs(parsed.query).get("expected_node_id", [])
+        location = "/dash/login"
+        if (parsed.path.rstrip("/") in TARGET_PAGES and len(values) == 1
+                and re.fullmatch(r"[0-9a-f]{32}", values[0])):
+            location += "?" + urlencode({"next": parsed.path.rstrip("/"), "expected_node_id": values[0]})
+        return self._redirect(h, location)
+
+    def _login_destination(self, h):
+        query = parse_qs(urlparse(h.path).query)
+        destination = query.get("next", ["/dash"])
+        expected = query.get("expected_node_id", [])
+        if len(destination) != 1 or destination[0] not in TARGET_PAGES:
+            return "/dash"
+        if len(expected) == 1 and re.fullmatch(r"[0-9a-f]{32}", expected[0]):
+            return destination[0] + "?" + urlencode({"expected_node_id": expected[0]})
+        return destination[0]
+
     # ── HTTP 入口：node_service 只调这两个 ──
     def handle_get(self, h, parts, query):
         sub = parts[1:]
@@ -375,12 +395,12 @@ class Dash:
         if not self.authed(h):
             if sub and sub[0] == "api":
                 return self._send(h, 401, {"error": "需要查看密码"}, extra={"WWW-Authenticate": 'Basic realm="HGamey dash"'})
-            return self._redirect(h, "/dash/login")
+            return self._login_redirect(h)
         if dash_live.handle(self, h, sub, query):  # /dash/live 与 /dash/api/live/*
             return
         if sub in (["jobs"], ["fleet"], ["games"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("target.js", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()
@@ -430,7 +450,7 @@ class Dash:
             real = self._pass()
             if real and hmac.compare_digest(pw.encode(), real.encode()):
                 ck = f"{COOKIE}={self._cookie_val(real)}; Path=/dash; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict"
-                return self._redirect(h, "/dash", {"Set-Cookie": ck})
+                return self._redirect(h, self._login_destination(h), {"Set-Cookie": ck})
             self.fails[ip].append(now)
             time.sleep(1)
             return self._login_page(h, "密码不对", 401)
@@ -850,7 +870,7 @@ h1{margin:0;font-size:22px}.sub{color:var(--sub);margin:4px 0 18px}.err{color:va
 input,button{width:100%;box-sizing:border-box;font:inherit;padding:11px 12px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--ink)}
 button{margin-top:10px;background:var(--acc);border:0;color:#fff;font-weight:600;cursor:pointer}
 </style></head><body>
-<form method="post" action="/dash/login" class="card">
+<form method="post" class="card">
 <h1>HGamey 实时看板</h1><p class="sub">真手机实时状态 · 用查看密码只能看</p>{{msg}}
 <input type="password" name="pw" placeholder="查看密码" autofocus autocomplete="current-password" required>
 <button type="submit">进入</button><p class="hint">{{hint}}</p></form></body></html>"""

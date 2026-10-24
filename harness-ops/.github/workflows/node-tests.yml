@@ -19,11 +19,9 @@ jobs:
         with:
           node-version: '22'
       - run: |
-          node --check node/dash_static/jobs.js
-          node --check node/dash_static/fleet.js
-          node --check node/dash_static/games.js
-          node --check node/dash_static/games-upload.js
-          node --check node/dash_static/maint.js
+          for script in node/dash_static/*.js; do
+            node --check "$script"
+          done
   cgroup-kernel:
     runs-on: ubuntu-24.04
     timeout-minutes: 5

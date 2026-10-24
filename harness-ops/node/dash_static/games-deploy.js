@@ -44,13 +44,13 @@
     const receiptLinks=el('div',null,'preparation-links'), historyErrors=el('section'), historyHeading=el('h4','此目标的部署记录'), history=el('ul',null,'preparation-list'), empty=el('p',null,'note');historyErrors.id='deploy-history-errors';history.id='deploy-history';
     panel.append(target,fleetNote,operationLabel,operationHelp,recipe,sceneSource,status,actions,help,message,requestPanel,receiptLinks,historyErrors,historyHeading,history,empty);
 
-    function persist() { try { sessionStorage.setItem(STORAGE,JSON.stringify([...saved.values()].map(({kind,operation,node_id,game_id,version,serial,mode,request_id,source_job_id,deployment,conflict})=>({kind,operation,node_id,game_id,version,serial,mode,request_id,source_job_id,...(deployment?{deployment}:{}),conflict:!!conflict})))); } catch(_){/* Visible request identity remains available for manual lookup. */} }
+    function persist() { try { sessionStorage.setItem(STORAGE,JSON.stringify([...saved.values()].map(({kind,operation,node_id,game_id,version,serial,mode,request_id,source_job_id,deployment,target,conflict})=>({kind,operation,node_id,game_id,version,serial,mode,request_id,source_job_id,target,...(deployment?{deployment}:{}),conflict:!!conflict})))); } catch(_){/* Visible request identity remains available for manual lookup. */} }
     function pending(v) { return saved.get(v.key); }
     function support(v,operation=v.operation) { const config=OPERATIONS[operation];return !!config && context().node?.capabilities?.includes(config.capability) && v.record[config.support]?.available===true; }
     function current(v) { return !stopped && !context().disposed && currentView===v && context().selected===`${v.record.game_id}/${v.record.version}`; }
     function canManage(v) { return current(v) && context().canWrite && context().detailFresh && context().node?.node_id===v.record.node_id; }
     function canWrite(v,operation=v.operation) { return canManage(v) && support(v,operation); }
-    function canSubmit(v,p) { return p?.kind==='recover' ? canManage(v) : canWrite(v,p?.operation) && (p?.operation!=='scene'||deploymentOK(p.deployment)); }
+    function canSubmit(v,p) { return !!p && !HGTarget.problem(p.target || null) && (p.kind==='recover' ? canManage(v) : canWrite(v,p.operation) && (p.operation!=='scene'||deploymentOK(p.deployment))); }
     function sceneReady(v) { return v.sceneSerial===v.serial && v.sceneDeployment?.report.job_id===v.sceneJob && deploymentOK(v.sceneDeployment); }
     function invalidateScene(v) { if(!v)return;v.sceneController?.abort();v.sceneController=null;v.sceneRevision=(v.sceneRevision||0)+1;v.sceneDeployment=null;v.sceneReading=false;v.sceneError='';v.sceneAt=null; }
     function setMessage(v,value,error=false) { v.message=value;v.error=error; }
@@ -116,17 +116,17 @@
       if(!v.serial)status.append(el('p','选择目标后显示当前准备动作的设备事实与原件。','note'));
       else if(!latest)status.append(el('p',`此目标尚无匹配的${config.label}观测；可先提交只读预检。`,'note'));
       else { status.append(el('p',`最近有据记录 · ${config.label} · ${modeName(latest.mode,v.operation)}${['initialize','scene'].includes(v.operation)?` · ${phaseName(latest.report.phase,v.operation)}`:''} · ${time(latest.report.observed_at)} · ${latest.job?.id||latest.id}`,'read-time'),factRows(latest.report),evidence(latest.report)); }
-      message.textContent=v.message||'';message.classList.toggle('task-error',!!v.error);
+      message.textContent=(p&&HGTarget.problem(p.target||null))||v.message||'';message.classList.toggle('task-error',!!v.error);
       requestPanel.hidden=!p;requestText.textContent=p?`未确认 ${operationName(p.operation)} · ${modeName(p.mode,p.operation)} · 节点 ${p.node_id} · ${p.game_id}/${p.version} · 设备 ${p.serial}\n请求 ID：${p.request_id}${p.source_job_id?` · 原任务 ${p.source_job_id}`:''}${p.operation==='scene'&&p.kind!=='recover'?deploymentOK(p.deployment)?` · 资源来源 ${p.deployment.report.job_id}`:' · 原部署引用不完整，只能查询，不能重构请求':''}`:'';
-      query.disabled=v.busy;retry.disabled=v.busy||!canSubmit(v,p)||!p?.queried||!!p?.conflict;retry.hidden=!p||!!p.conflict;
+      query.disabled=v.busy||!!(p&&HGTarget.problem(p.target||null));retry.disabled=v.busy||!canSubmit(v,p)||!p?.queried||!!p?.conflict;retry.hidden=!p||!!p.conflict;
       receiptLinks.replaceChildren();if(v.job?.id)receiptLinks.append(link(`查看原任务 ${v.job.id}`,jobURL(v.job)));if(active&&active.id!==v.job?.id)receiptLinks.append(link(`查看阻断的${operationName(operationOf(active))}任务 ${active.id}`,jobURL(active)));
       historyErrors.replaceChildren();const errors=v.record.deployment_history_errors||[];historyErrors.hidden=!errors.length;
       if(errors.length){historyErrors.append(el('h4','未能归类的历史记录'),el('p','以下记录的操作或目标身份未确认，未用作当前设备的准备事实。','note'));for(const item of errors){const row=el('div',null,'preparation');row.append(el('strong',`任务 ${text(item.id)} · 状态未知`),el('p',text(item.report_error),'asset-error'));const original=link('查看原任务',item.job_url)||link('查看原任务',jobURL(item));if(original)row.append(original);historyErrors.append(row);}}
       renderHistory(v,items);
     }
-    async function http(path,{body,requestID,signal}={}) {
+    async function http(path,{body,requestID,signal,target}={}) {
       const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);const stop=()=>controller.abort();signal?.addEventListener('abort',stop,{once:true});
-      try { const response=await fetch(path,{credentials:'same-origin',cache:'no-store',signal:controller.signal,...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-HG':'1','X-Request-ID':requestID},body:JSON.stringify(body)})});
+      try { const response=await HGTarget.fetch(path,{credentials:'same-origin',cache:'no-store',signal:controller.signal,...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-HG':'1','X-Request-ID':requestID},body:JSON.stringify(body)})}, target===undefined?{}:{target});
         if(response.redirected && new URL(response.url).pathname==='/dash/login'){const e=new Error('登录已失效。');e.status=401;throw e;}
         const value=await response.json();if(!response.ok){const e=new Error(typeof value.error==='string'?value.error:value.error?.message||`HTTP ${response.status}`);e.status=response.status;throw e;}return value;
       } finally {clearTimeout(timeout);signal?.removeEventListener('abort',stop);}
@@ -149,7 +149,7 @@
       if(v.busy||!canSubmit(v,p))return;v.busy=true;v.busyMode=p.mode;v.busyOperation=p.operation;setMessage(v,'正在提交；节点可能已记录，不会自动重试。');render(v);
       try {
         const path=p.kind==='recover'?`${API}/jobs/${encodeURIComponent(p.source_job_id)}/deployment/recover`:`${API}/games/${encodeURIComponent(p.game_id)}/versions/${encodeURIComponent(p.version)}/${p.operation}`;
-        const body=p.kind==='recover'?{}:{node_id:p.node_id,serial:p.serial,mode:p.mode,...(p.operation==='scene'?{deployment:p.deployment}:{})};const job=await http(path,{body,requestID:p.request_id});
+        const body=p.kind==='recover'?{}:{node_id:p.node_id,serial:p.serial,mode:p.mode,...(p.operation==='scene'?{deployment:p.deployment}:{})};const job=await http(path,{body,requestID:p.request_id,target:p.target||null});
         if(!job?.id||job.request_id!==p.request_id||(p.kind==='recover'&&job.recovery_for!==p.source_job_id))throw new Error('回包未确认原请求身份。');
         saved.delete(v.key);persist();invalidateRecovery(v,p);v.job=job;setMessage(v,`${operationName(p.operation)} · ${modeName(p.mode,p.operation)}任务已记录：${job.id} · 设备 ${p.serial} · ${jobLabel(job)}。接受任务不代表设备准备或恢复已完成。`);
         if(current(v))await refresh(p);
@@ -162,13 +162,13 @@
       if(!(mode==='recover'?canManage(v):canWrite(v))||v.busy||pending(v)||!serialOK(v.serial)||!globalThis.crypto?.randomUUID)return;
       if(mode==='recover') {const value=details.get(source);if(!value?.recovery?.eligible||!value.recovery.supported||!recordMatches(value,v)||!/^[0-9a-f]{12}$/.test(value.recovery.target_job_id))return;source=value.recovery.target_job_id;}
       if(mode!=='recover'&&v.operation==='scene'&&!sceneReady(v))return;
-      const p={kind:mode==='recover'?'recover':'deploy',operation:v.operation,node_id:v.record.node_id,game_id:v.record.game_id,version:v.record.version,serial:v.serial,mode,request_id:crypto.randomUUID(),...(source?{source_job_id:source}:{}),...(mode!=='recover'&&v.operation==='scene'?{deployment:{report:{...v.sceneDeployment.report},state:{...v.sceneDeployment.state}}}:{}),queried:false};saved.set(v.key,p);persist();await submit(v,p);
+      const p={kind:mode==='recover'?'recover':'deploy',operation:v.operation,node_id:v.record.node_id,game_id:v.record.game_id,version:v.record.version,serial:v.serial,mode,request_id:crypto.randomUUID(),target:HGTarget.binding(),...(source?{source_job_id:source}:{}),...(mode!=='recover'&&v.operation==='scene'?{deployment:{report:{...v.sceneDeployment.report},state:{...v.sceneDeployment.state}}}:{}),queried:false};saved.set(v.key,p);persist();await submit(v,p);
     }
     async function queryPending(v) {
       const p=pending(v);if(!p||v.busy)return;let found=false;v.busy=true;setMessage(v,'正在查询原请求，没有重新提交。');render(v);
       try {
-        const job=await http(`${API}/requests/${encodeURIComponent(p.request_id)}`);if(!job?.id||job.request_id!==p.request_id)throw new Error('原请求回包身份不匹配。');v.job=job;found=true;
-        const value=verifyDeployment(await http(`${API}/jobs/${encodeURIComponent(job.id)}/deployment`),v,p);
+        const job=await http(`${API}/requests/${encodeURIComponent(p.request_id)}`,{target:p.target||null});if(!job?.id||job.request_id!==p.request_id)throw new Error('原请求回包身份不匹配。');v.job=job;found=true;
+        const value=verifyDeployment(await http(`${API}/jobs/${encodeURIComponent(job.id)}/deployment`,{target:p.target||null}),v,p);
         if(value.job.id!==job.id)throw new Error('任务回执身份不匹配。');details.set(job.id,value);saved.delete(v.key);persist();invalidateRecovery(v,p);
         setMessage(v,`已找回${operationName(p.operation)}原任务 ${job.id} · ${jobLabel(job)}，没有重复提交。设备事实以该任务的事务报告为准。`);if(current(v))await refresh(p);
       } catch(error) {if(found && error.status===404){p.conflict=true;persist();}setMessage(v,found&&error.status===404?'原请求已对应一个任务，但没有匹配的事务回执。请打开原任务核查，禁止将该 ID 用作另一设备准备操作。':error.status===404?'尚未找到原请求。保留原 ID；可稍后查询或明确使用原 ID 重试。':`查询失败：${error.message}。保留原绑定，不自动重发。`,true);if([401,403].includes(error.status))await auth();}

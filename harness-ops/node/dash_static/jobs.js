@@ -77,11 +77,11 @@
   function errorText(error) {
     return error.name === 'AbortError' ? '请求超时，请重试。' : (error.message || '网络错误，请重试。');
   }
-  async function request(url, consume) {
+  async function request(url, consume, target = undefined) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const response = await fetch(url, {credentials: 'same-origin', cache: 'no-store', signal: controller.signal});
+      const response = await HGTarget.fetch(url, {credentials: 'same-origin', cache: 'no-store', signal: controller.signal}, target === undefined ? {} : {target});
       if (response.status === 401 || response.status === 403 || (response.redirected && new URL(response.url).pathname === '/dash/login')) {
         const error = new Error('查看登录已失效，请重新登录。');
         error.status = response.status;
@@ -97,18 +97,18 @@
       return await consume(response);
     } finally { clearTimeout(timeout); }
   }
-  async function json(url) {
+  async function json(url, target = undefined) {
     return request(url, async response => {
       if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('服务返回了非 JSON 内容，请检查登录或节点连接。');
       return response.json();
-    });
+    }, target);
   }
-  async function post(url, body, headers = {}) {
+  async function post(url, body, headers = {}, target = undefined) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const response = await fetch(url, {method: 'POST', credentials: 'same-origin', signal: controller.signal,
-        headers: {'Content-Type': 'application/json', 'X-HG': '1', ...headers}, body: JSON.stringify(body)});
+      const response = await HGTarget.fetch(url, {method: 'POST', credentials: 'same-origin', signal: controller.signal,
+        headers: {'Content-Type': 'application/json', 'X-HG': '1', ...headers}, body: JSON.stringify(body)}, target === undefined ? {} : {target});
       if (response.redirected && new URL(response.url).pathname === '/dash/login') {
         const error = new Error('查看登录已失效，请重新登录。');
         error.status = 401;
@@ -180,7 +180,7 @@
     const supported = currentJob.execution?.kind === 'supervised-v1';
     const pending = cancelling.has(currentJob.id);
     const saving = currentJob.phase === 'finalizing' || storageFailed(currentJob);
-    const allowed = !!access?.steer && !accessBusy && !pending && !terminal && supported && !saving;
+    const allowed = !!access?.steer && HGTarget.canWrite() && HGTarget.canWrite() && !accessBusy && !pending && !terminal && supported && !saving;
     const queued = ['preparing', 'queued'].includes(currentJob.phase);
     const stopping = currentJob.phase === 'cancelling' && currentJob.cancel?.status !== 'not_applied';
     $('cancel-job').disabled = !allowed || !currentJob.controls?.cancel_supported || stopping;
@@ -190,7 +190,7 @@
     $('cancel-job').textContent = pending ? '提交中…' : queued ? '撤销排队' : '请求停止';
     $('force-submit').setAttribute('aria-busy', String(pending));
     let reason = saving ? '结束记录尚未提交；请核对下方结果保存状态，停止请求不能代替保存。' : !supported ? '旧版任务仅支持查看，当前没有可核验的停止接口。' : terminal ? '任务执行已结束，无法继续发送停止请求。' :
-      !access?.steer || accessBusy ? '请先在上方解锁任务操作权限。' : stopping ? '停止请求已记录，等待任务处理；刷新任务可核对进度。' :
+      !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先在上方解锁任务操作权限。' : stopping ? '停止请求已记录，等待任务处理；刷新任务可核对进度。' :
       !currentJob.controls?.cancel_supported ? '当前任务不支持请求停止。' : queued ? '撤销尚未执行的任务，不发送进程信号。请以最新任务状态确认撤销结果。' : '请求停止只发送 SIGINT，不会自动升级终止。接受请求不代表任务已停止或设备已恢复。';
     if (currentJob.controls?.reason) reason += ` ${currentJob.controls.reason}`;
     $('cancel-help').textContent = reason;
@@ -203,13 +203,13 @@
     const leaseBlocked = ['write', 'recovery'].includes(currentJob.device_access) && (leaseSnapshot?.status !== 'clear' || leaseStorageBlocked(leaseSnapshot));
     const hostProblem = hostCompletionProblem(currentJob);
     $('recovery-prepare-panel').hidden = !blocked;
-    $('prepare-recovery').disabled = !blocked || saving || !access?.steer || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
-    message('recovery-prepare-help', saving ? '结束记录尚未提交，暂不能以此任务创建恢复任务。请先处理存储问题并重试保存结果。' : !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : '只预填恢复目标和模式；请由人或 Agent 填写实际恢复命令，执行后仍需核查并解除资源保留。');
+    $('prepare-recovery').disabled = !blocked || saving || !access?.steer || !HGTarget.canWrite() || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
+    message('recovery-prepare-help', saving ? '结束记录尚未提交，暂不能以此任务创建恢复任务。请先处理存储问题并重试保存结果。' : !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : '只预填恢复目标和模式；请由人或 Agent 填写实际恢复命令，执行后仍需核查并解除资源保留。');
     $('queue-release-note').disabled = releaseBusy;
-    $('queue-release-submit').disabled = !blocked || !access?.steer || accessBusy || releaseBusy || saving || !!hostProblem || leaseBlocked || !$('queue-release-note').value.trim();
+    $('queue-release-submit').disabled = !blocked || !access?.steer || !HGTarget.canWrite() || accessBusy || releaseBusy || saving || !!hostProblem || leaseBlocked || !$('queue-release-note').value.trim();
     $('queue-release-submit').setAttribute('aria-busy', String(releaseBusy));
     $('queue-release-submit').textContent = releaseBusy ? '提交中…' : '确认解除资源保留';
-    message('queue-release-help', saving ? '结束记录尚未保存，不能通过解除资源保留绕过。请先处理存储问题并重试保存结果。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : hostProblem || (leaseBlocked ? '设备写入或恢复任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。请核查屏障与存储状态后刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。'));
+    message('queue-release-help', saving ? '结束记录尚未保存，不能通过解除资源保留绕过。请先处理存储问题并重试保存结果。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : hostProblem || (leaseBlocked ? '设备写入或恢复任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。请核查屏障与存储状态后刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。'));
     const released = releaseReceipts.get(currentJob.id);
     $('queue-release-result').hidden = !released;
     if (released) message('queue-release-result', released.message, released.error);
@@ -249,14 +249,14 @@
     const receipt = reconcileReceipts.get(job.id), pending = reconciling.has(job.id);
     const supported = nodeInfo?.capabilities?.includes('jobs.execution-reconcile-v1'), problem = reconciliationProblem(job);
     $('execution-reconcile-panel').hidden = !supported && !record && !handoff && !receipt;
-    const disabled = !!problem || !access?.steer || accessBusy || pending || !!receipt?.unconfirmed;
+    const disabled = !!problem || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!receipt?.unconfirmed;
     $('execution-reconcile-check').disabled = disabled;
     $('execution-reconcile-force-open').disabled = disabled;
     $('execution-reconcile-force-submit').disabled = disabled || !$('execution-reconcile-force-confirm').checked;
     for (const id of ['execution-reconcile-check', 'execution-reconcile-force-submit']) $(id).setAttribute('aria-busy', String(pending));
     $('execution-reconcile-check').textContent = pending ? '正在提交核查…' : '核查执行域';
     $('execution-reconcile-refresh').disabled = pending;
-    message('execution-reconcile-help', pending ? '只提交一次，接受请求不代表宿主收尾完成。' : receipt?.unconfirmed ? '上次请求结果未确认。请先读取原任务状态；不会自动重发核查或强制操作。' : problem || (!access?.steer || accessBusy ? '请先解锁任务操作权限。' : '普通核查不杀进程；仅检查当前绑定域，域空后交还输出。强制操作需单独确认。'));
+    message('execution-reconcile-help', pending ? '只提交一次，接受请求不代表宿主收尾完成。' : receipt?.unconfirmed ? '上次请求结果未确认。请先读取原任务状态；不会自动重发核查或强制操作。' : problem || (!access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : '普通核查不杀进程；仅检查当前绑定域，域空后交还输出。强制操作需单独确认。'));
     facts('execution-reconcile-info', [['宿主核查状态', ({requested: '已请求，尚未完成', running: '核查中', blocked: '仍被阻断', complete: '宿主核查已完成', failed: '核查失败', unknown: '核查结果未知'})[record?.state] || '未提供'],
       ['强制结束选择', typeof record?.force === 'boolean' ? record.force ? '是 · 可结束域内残留进程' : '否 · 不杀进程' : '未提供'],
       ['请求时间', time(record?.requested_at)], ['结束时间', time(record?.finished_at)], ['核查错误', record?.error || '未报告'],
@@ -293,11 +293,11 @@
     const receipt = finalizeReceipts.get(job.id), pending = finalizing.has(job.id);
     const supported = nodeInfo?.capabilities?.includes('jobs.durability-v1');
     $('finalize-panel').hidden = !failed && !saving && !receipt;
-    $('retry-finalize').disabled = !failed || !supported || !access?.steer || accessBusy || pending;
+    $('retry-finalize').disabled = !failed || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending;
     $('retry-finalize').setAttribute('aria-busy', String(pending));
     $('retry-finalize').textContent = pending ? '正在重试保存…' : '重试保存结果';
     message('finalize-help', pending ? '正在同步原有结果记录，不会重新执行命令。' : saving ? '命令已返回结束记录，正在确认保存；当前仍未确认作业完成。' : failed ?
-      (!supported ? '此节点未提供 jobs.durability-v1，无法从本页重试保存；请升级节点。' : !access?.steer || accessBusy ? '记录保存失败，资源继续保留。请先解锁任务操作权限，再重试保存。' : '记录保存失败，资源继续保留。修复存储问题后可重试；只保存原有结果，不重新执行命令。') : '保存回执仅说明存储提交情况；设备恢复与资源释放请另行核对。', failed);
+      (!supported ? '此节点未提供 jobs.durability-v1，无法从本页重试保存；请升级节点。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '记录保存失败，资源继续保留。请先解锁任务操作权限，再重试保存。' : '记录保存失败，资源继续保留。修复存储问题后可重试；只保存原有结果，不重新执行命令。') : '保存回执仅说明存储提交情况；设备恢复与资源释放请另行核对。', failed);
     const reason = job.queue?.state_reason;
     facts('finalize-info', [['保存阶段', reason?.stage], ['失败原因', reason?.message], ['记录时间', time(reason?.at)], ...(reason?.unstarted != null ? [['未执行依据（节点记录）', structuredText(reason.unstarted)]] : []), ['原命令退出码（诊断）', job.exit], ['执行返回码（诊断）', job.execution?.returncode]]);
     $('finalize-result').hidden = !receipt;
@@ -464,7 +464,7 @@
     }
   }
   function savePending() {
-    try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, pendingRequest.id); else sessionStorage.removeItem(REQUEST_STORAGE); }
+    try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, JSON.stringify({id: pendingRequest.id, target: pendingRequest.target})); else sessionStorage.removeItem(REQUEST_STORAGE); }
     catch (_) { /* The visible request ID remains available if browser storage is unavailable. */ }
   }
   function processPolicyFacts(node) {
@@ -493,7 +493,8 @@
   }
   function renderSubmission() {
     const supported = nodeInfo?.capabilities?.includes('jobs.idempotency-v1') && nodeInfo?.execution?.bins?.length;
-    const allowed = supported && access?.steer && !accessBusy;
+    const allowed = supported && access?.steer && HGTarget.canWrite() && !accessBusy;
+    const targetIssue = pendingRequest ? HGTarget.problem(pendingRequest.target || null) : HGTarget.problem();
     const refilling = !!pendingRequest?.refilling;
     const locked = (!!pendingRequest && !refilling) || submissionBusy;
     const mode = $('submit-device-access').value;
@@ -515,19 +516,19 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || locked || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || !!targetIssue || locked || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
-    message('submit-help', refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。');
+    message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。'));
     $('request-id').readOnly = !!pendingRequest;
     $('request-id').disabled = submissionBusy;
     if (pendingRequest) $('request-id').value = pendingRequest.id;
-    $('request-lookup').disabled = submissionBusy;
+    $('request-lookup').disabled = submissionBusy || !!targetIssue;
     $('request-lookup').setAttribute('aria-busy', String(submissionBusy));
     $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
-    $('submit-refill').disabled = !allowed || submissionBusy;
+    $('submit-refill').disabled = !allowed || !!targetIssue || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
-    $('submit-retry').disabled = !allowed || submissionBusy || !!policyProblem || inputsProblem;
+    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!policyProblem || inputsProblem;
     renderSessionTemplate(allowed);
     renderRefbenchTemplate(allowed);
     renderControls();
@@ -621,7 +622,7 @@
         }
         const resources = $('submit-resources').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
         if (resources.length && mode !== 'recovery') body.resources = [...new Set(resources)];
-        pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), body};
+        pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), target: pendingRequest ? pendingRequest.target : HGTarget.binding(), body};
         savePending();
       } catch (error) { submissionMessage(error instanceof SyntaxError ? '参数不是有效的 JSON，请填写字符串数组。' : error.message, true); return; }
     }
@@ -633,7 +634,7 @@
     submissionMessage('正在提交；本次请求 ID 已固定。', false, attempt.id);
     renderSubmission();
     try {
-      const job = await post(`${API}/jobs`, attempt.body, {'X-Request-ID': attempt.id});
+      const job = await post(`${API}/jobs`, attempt.body, {'X-Request-ID': attempt.id}, attempt.target || null);
       await submissionFound(job, attempt.id, selectionVersion);
     } catch (error) {
       if (error.status >= 400 && error.status < 500 && error.status !== 409) { pendingRequest = null; savePending(); }
@@ -651,7 +652,7 @@
     $('submit-open-job').hidden = true;
     submissionMessage('正在查询请求记录…', false, id);
     renderSubmission();
-    try { await submissionFound(await json(`${API}/requests/${encodeURIComponent(id)}`), id, selectionVersion, true); }
+    try { await submissionFound(await json(`${API}/requests/${encodeURIComponent(id)}`, pendingRequest?.id === id ? pendingRequest.target || null : HGTarget.binding()), id, selectionVersion, true); }
     catch (error) {
       submissionMessage(error.status === 404 ? '暂未找到此请求。若此前提交结果不确定，请保留原 ID 稍后再查；当前页面保有参数时也可用原 ID 重试。' : errorText(error), true, id);
     } finally { submissionBusy = false; renderSubmission(); }
@@ -862,7 +863,7 @@
   }
   function keepAction(id, request, receipt) {
     let pending = sessionPending(id).filter(item => item.request_id !== request.request_id);
-    if (!receipt || ['accepted', 'started', 'unknown'].includes(receipt.status)) pending.push({request_id: request.request_id, action: request.action || 'unknown'});
+    if (!receipt || ['accepted', 'started', 'unknown'].includes(receipt.status)) pending.push({request_id: request.request_id, action: request.action || 'unknown', target: Object.hasOwn(request, 'target') ? request.target : (sessionPending(id).find(p => p.request_id === request.request_id)?.target || (!receipt ? HGTarget.binding() : null))});
     pendingActions.set(id, pending);
     try { if (pending.length) sessionStorage.setItem(sessionKey(id), JSON.stringify(pending)); else sessionStorage.removeItem(sessionKey(id)); } catch (_) { /* Request IDs remain visible in this page. */ }
   }
@@ -898,7 +899,7 @@
       let saved = null;
       try { saved = JSON.parse(sessionStorage.getItem(`hgamey.session-recovery.${id}`) || 'null'); } catch (_) { /* The displayed ID can still be queried manually. */ }
       sessionRecoveries.set(id, saved && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(saved.request_id) ? {
-        request_id: saved.request_id, job_id: /^[0-9a-f]{12}$/.test(saved.job_id) ? saved.job_id : null,
+        request_id: saved.request_id, target: saved.target || null, job_id: /^[0-9a-f]{12}$/.test(saved.job_id) ? saved.job_id : null,
         previous_job_id: /^[0-9a-f]{12}$/.test(saved.previous_job_id) ? saved.previous_job_id : null, prepared: saved.prepared === true
       } : null);
     }
@@ -906,7 +907,7 @@
   }
   function keepSessionRecovery(id, record) {
     sessionRecoveries.set(id, record);
-    try { sessionStorage.setItem(`hgamey.session-recovery.${id}`, JSON.stringify({request_id: record.request_id, job_id: record.job_id || null, previous_job_id: record.previous_job_id || null, prepared: record.prepared === true})); }
+    try { sessionStorage.setItem(`hgamey.session-recovery.${id}`, JSON.stringify({request_id: record.request_id, target: record.target, job_id: record.job_id || null, previous_job_id: record.previous_job_id || null, prepared: record.prepared === true})); }
     catch (_) { /* Keep the same request ID visible even if browser storage is unavailable. */ }
   }
   function sessionRecoveryProblem() {
@@ -923,23 +924,24 @@
   function renderSessionRecovery() {
     const record = currentJob && sessionRecoveryRequest(), pending = sessionRecovering.has(selected);
     const supported = nodeInfo?.capabilities?.includes('jobs.session-recovery-v1');
+    const targetIssue = record ? HGTarget.problem(record.target || null) : HGTarget.problem();
     $('session-recover-panel').hidden = !currentJob || (!record && sessionState?.phase !== 'recovery_required');
     $('session-recover-submit').hidden = !supported || !!record?.job_id;
-    $('session-recover-submit').disabled = !supported || !access?.steer || accessBusy || pending || !!record?.job_id || ((!record || record.prepared) && (!!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID));
+    $('session-recover-submit').disabled = !!targetIssue || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!record?.job_id || ((!record || record.prepared) && (!!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID));
     $('session-recover-submit').textContent = pending ? '正在核对恢复请求…' : record?.prepared ? '提交新恢复尝试' : record ? '使用原请求 ID 重试' : '提交恢复任务';
     $('session-recover-submit').setAttribute('aria-busy', String(pending));
     $('session-recover-query').hidden = !record;
-    $('session-recover-query').disabled = pending;
+    $('session-recover-query').disabled = pending || !!targetIssue;
     $('session-recover-query').setAttribute('aria-busy', String(pending));
-    $('session-recover-job').hidden = !record?.job_id;
-    if (record?.job_id) $('session-recover-job').href = `/dash/jobs#job=${encodeURIComponent(record.job_id)}`;
+    $('session-recover-job').hidden = !record?.job_id || !record?.target;
+    if (record?.job_id) $('session-recover-job').href = HGTarget.url(`${record.target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(record.job_id)}`, record.target || null);
     $('session-recover-new').hidden = !supported || !record?.job_id;
-    $('session-recover-new').disabled = !supported || !record?.job_id || !access?.steer || accessBusy || pending || !!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID;
+    $('session-recover-new').disabled = !!targetIssue || !supported || !record?.job_id || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID;
     $('session-recover-new').setAttribute('aria-busy', String(pending));
-    $('session-recover-previous').hidden = !record?.previous_job_id;
-    if (record?.previous_job_id) $('session-recover-previous').href = `/dash/jobs#job=${encodeURIComponent(record.previous_job_id)}`;
+    $('session-recover-previous').hidden = !record?.previous_job_id || !record?.target;
+    if (record?.previous_job_id) $('session-recover-previous').href = HGTarget.url(`${record.target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(record.previous_job_id)}`, record.target || null);
     $('session-recover-request').textContent = record ? `恢复请求 ID：${record.request_id}` : '';
-    message('session-recover-help', !supported ? '此节点未提供异步会话恢复能力；仍可查看已有恢复记录。' : record?.job_id ? `恢复任务已记录，请打开任务核查执行与证据。创建成功不代表恢复完成，原资源不会自动释放。新建尝试前会读取上一任务，确认已结束且调度资源已释放。${sessionRecoveryProblem()}` : record?.prepared ? `新请求 ID 已生成，尚未提交。${sessionRecoveryProblem() || '核对后点击“提交新恢复尝试”；上次任务原件仍可查看。'}` : record ? '本次请求 ID 已保留。结果不确定时先查询；重试仍使用同一 ID，不会改用新 ID 创建任务。' : !access?.steer || accessBusy ? '请先解锁任务操作权限。' : sessionRecoveryProblem() || (!globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '节点根据原任务绑定的会话与设备创建恢复任务，无需填写路径；提交后异步执行，原资源继续保留。'));
+    message('session-recover-help', targetIssue || (!supported ? '此节点未提供异步会话恢复能力；仍可查看已有恢复记录。' : record?.job_id ? `恢复任务已记录，请打开任务核查执行与证据。创建成功不代表恢复完成，原资源不会自动释放。新建尝试前会读取上一任务，确认已结束且调度资源已释放。${sessionRecoveryProblem()}` : record?.prepared ? `新请求 ID 已生成，尚未提交。${sessionRecoveryProblem() || '核对后点击“提交新恢复尝试”；上次任务原件仍可查看。'}` : record ? '本次请求 ID 已保留。结果不确定时先查询；重试仍使用同一 ID，不会改用新 ID 创建任务。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : sessionRecoveryProblem() || (!globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '节点根据原任务绑定的会话与设备创建恢复任务，无需填写路径；提交后异步执行，原资源继续保留。')));
     message('session-recover-result', record?.message || (record ? '可按原请求 ID 查询节点中的最新任务记录。' : ''), !!record?.error);
   }
   function acceptSessionRecovery(id, record, job) {
@@ -948,11 +950,11 @@
   }
   async function submitSessionRecovery() {
     if (!currentJob || $('session-recover-submit').disabled) return;
-    const id = selected, record = {...(sessionRecoveryRequest(id) || {request_id: crypto.randomUUID()}), prepared: false};
+    const id = selected, record = {...(sessionRecoveryRequest(id) || {request_id: crypto.randomUUID(), target: HGTarget.binding()}), prepared: false};
     keepSessionRecovery(id, {...record, message: '正在提交恢复任务；请求 ID 已固定。', error: false});
     sessionRecovering.add(id); renderSessionRecovery();
     try {
-      acceptSessionRecovery(id, record, await post(`${API}/jobs/${id}/session/recover`, {}, {'X-Request-ID': record.request_id}));
+      acceptSessionRecovery(id, record, await post(`${API}/jobs/${id}/session/recover`, {}, {'X-Request-ID': record.request_id}, record.target || null));
     } catch (error) {
       keepSessionRecovery(id, {...record, message: `${errorText(error)} 请先查询此恢复请求；重试仍使用原 ID，不会自动重发。`, error: true});
       if (error.status === 401 || error.status === 403) await loadAccess();
@@ -963,7 +965,7 @@
     if (!record || sessionRecovering.has(id)) return;
     sessionRecovering.add(id); renderSessionRecovery();
     try {
-      acceptSessionRecovery(id, record, await json(`${API}/requests/${encodeURIComponent(record.request_id)}`));
+      acceptSessionRecovery(id, record, await json(`${API}/requests/${encodeURIComponent(record.request_id)}`, record.target || null));
     } catch (error) {
       keepSessionRecovery(id, {...record, message: error.status === 404 ? '暂未找到此恢复请求。保留原 ID，可稍后查询或使用原 ID 重试；不会自动新建请求。' : `${errorText(error)} 保留原恢复请求 ID，请核对后再继续。`, error: true});
     } finally { sessionRecovering.delete(id); if (selected === id) renderSessionRecovery(); }
@@ -973,14 +975,14 @@
     const id = selected, record = sessionRecoveryRequest(id), revision = sessionRevision;
     sessionRecovering.add(id); renderSessionRecovery();
     try {
-      const previous = await json(`${API}/jobs/${record.job_id}`);
+      const previous = await json(`${API}/jobs/${record.job_id}`, record.target || null);
       if (selected !== id || sessionRevision !== revision) return;
       if (previous?.id !== record.job_id || previous.recovery_for !== id) throw new Error('上次恢复任务身份未确认，不能生成新请求 ID。');
       if (previous.state !== 'finished') throw new Error('上次恢复任务尚未结束或状态未知，不能生成新请求 ID。');
       if (previous.queue?.state !== 'done') throw new Error(previous.queue?.state === 'blocked' ? '上次恢复任务仍保留资源。请打开上一恢复任务核查；未完成恢复时不能释放，不能绕过。' : '上次恢复任务的调度结束状态未确认，不能生成新请求 ID。');
       const problem = sessionRecoveryProblem();
       if (problem) throw new Error(problem);
-      keepSessionRecovery(id, {request_id: crypto.randomUUID(), previous_job_id: record.job_id, prepared: true,
+      keepSessionRecovery(id, {request_id: crypto.randomUUID(), target: HGTarget.binding(), previous_job_id: record.job_id, prepared: true,
         message: '已确认上次恢复任务结束且调度资源已释放。新请求 ID 已准备，尚未提交。', error: false});
     } catch (error) {
       keepSessionRecovery(id, {...record, message: `${errorText(error)} 原请求 ID 保留，未创建新尝试。`, error: true});
@@ -990,8 +992,8 @@
     const controller = sessionState?.controller;
     const actor = $('session-actor').value.trim();
     const pending = sessionPending();
-    return !!(sessionFresh && !sessionBusy && !sessionActionBusy && sessionSupported() && access?.steer && !accessBusy &&
-      (!referenceRun || action === 'stop') && sessionState?.live_owner && sessionState.accepting && sessionState.allowed_actions?.includes(action) &&
+    return !!(sessionFresh && !sessionBusy && !sessionActionBusy && sessionSupported() && access?.steer && HGTarget.canWrite() && !accessBusy &&
+      pending.every(p => !HGTarget.problem(p.target || null)) && (!referenceRun || action === 'stop') && sessionState?.live_owner && sessionState.accepting && sessionState.allowed_actions?.includes(action) &&
       (sessionState.phase !== 'measuring' || action === 'stop') &&
       (['take_control', 'stop'].includes(action) || controller?.actor_id === actor) &&
       (!pending.length || action === 'stop' && !pending.some(p => p.action === 'stop')) && /^[A-Za-z0-9_-]{1,64}$/.test(actor) && globalThis.crypto?.randomUUID);
@@ -1045,7 +1047,8 @@
     $('session-input-submit').disabled = !sessionAllowed(kind) || !sessionState?.latest_image;
     $('session-input-submit').textContent = kind === 'tap' ? '发送点击' : '发送滑动';
     $('session-swipe-fields').hidden = kind !== 'swipe';
-    $('session-query').disabled = !currentJob || !sessionSupported() || sessionActionBusy;
+    const storedAction = sessionPending().find(p => p.request_id === $('session-request-id').value.trim());
+    $('session-query').disabled = !currentJob || !sessionSupported() || sessionActionBusy || !!(storedAction && HGTarget.problem(storedAction.target || null));
     const measuring = sessionState?.phase === 'measuring';
     const samplePosting = sessionActionBusy && $('session-panel').dataset.pendingAction === 'sample';
     const inputReady = renderSampleInput();
@@ -1060,7 +1063,7 @@
     renderQualityControls();
     renderReferenceControls();
     const pending = sessionPending();
-    message('session-pending', pending.length ? `未决请求：${pending.map(v => v.request_id).join('、')}。先查询回执；不会自动重发输入。` : '回执读取不触发设备动作。accepted 仅表示入队，completed 才表示该动作结束。');
+    message('session-pending', (storedAction && HGTarget.problem(storedAction.target || null)) || (pending.length ? `未决请求：${pending.map(v => v.request_id).join('、')}。先查询回执；不会自动重发输入。` : '回执读取不触发设备动作。accepted 仅表示入队，completed 才表示该动作结束。'));
     message('session-action-help', !access?.steer ? '查看权限只能读状态和已有画面；采集或输入需先解锁任务操作。' :
       !sessionFresh ? '状态尚未取得或读取失败；刷新成功前暂停新动作。' :
       sessionState?.phase === 'closed' ? '会话已关闭。请核对限定范围恢复报告，刷新任务后从现有入口核查并解除资源保留。' :
@@ -1240,7 +1243,8 @@
     const revision = ++receiptRevision;
     busy('session-query', true, '查询中…');
     try {
-      const receipt = await json(`${API}/jobs/${id}/session/actions/${encodeURIComponent(requestId)}`);
+      const saved = sessionPending(id).find(p => p.request_id === requestId);
+      const receipt = await json(`${API}/jobs/${id}/session/actions/${encodeURIComponent(requestId)}`, saved ? saved.target || null : HGTarget.binding());
       if (selected !== id || revision !== receiptRevision) return;
       if (receipt.request_id !== requestId || receipt.schema !== 'phonefarm/gray-control-action-result@1') throw new Error('动作回执身份不匹配。');
       keepAction(id, sessionPending(id).find(p => p.request_id === requestId) || {request_id: requestId}, receipt);
@@ -1284,7 +1288,7 @@
     $('reference-query').setAttribute('aria-busy', String(active && !referenceRun.execute));
     $('reference-label').disabled = active;
     $('reference-fields').disabled = active;
-    $('reference-start').disabled = !readable || !access?.steer || accessBusy || sessionActionBusy || !!sessionPending().length;
+    $('reference-start').disabled = !readable || !access?.steer || !HGTarget.canWrite() || accessBusy || sessionActionBusy || !!sessionPending().length;
     $('reference-start').setAttribute('aria-busy', String(active && referenceRun.execute));
     $('reference-start').textContent = active && referenceRun.execute ? '正在核对 / 采集…' : '采集本组参考数据';
     $('reference-stop').hidden = !active;
@@ -1298,6 +1302,7 @@
     renderReferenceControls();
   }
   function referenceCurrent(run) {
+    HGTarget.assert(run.target);
     if (referenceRun !== run || selected !== run.job || run.cancelled || document.hidden) throw new Error('本页编排已停止，未发送后续动作。');
   }
   function referenceTime(value) {
@@ -1329,7 +1334,7 @@
   async function readReferenceReceipt(run, name) {
     referenceCurrent(run);
     try {
-      const value = await json(`${API}/jobs/${run.job}/session/actions/${run.ids[name]}`);
+      const value = await json(`${API}/jobs/${run.job}/session/actions/${run.ids[name]}`, run.target);
       referenceCurrent(run);
       return referenceReceipt(run, name, value);
     } catch (error) {
@@ -1349,8 +1354,8 @@
     const until = Date.now() + 2000;
     while (true) {
       referenceCurrent(run);
-      if (!access?.steer || accessBusy) throw new Error('操作权限已改变，停止后续提交。');
-      const d = referenceDescriptor(await json(`${API}/jobs/${run.job}/session`), run.job);
+      if (!access?.steer || !HGTarget.canWrite() || accessBusy) throw new Error('操作权限已改变，停止后续提交。');
+      const d = referenceDescriptor(await json(`${API}/jobs/${run.job}/session`, run.target), run.job);
       referenceCurrent(run);
       const c = d.controller || {};
       if (d.session_id !== run.session || d.package !== run.options.profile.package || d.mode !== 'passdump') throw new Error('会话 / 包名 / passdump 模式不符，停止后续提交。');
@@ -1382,7 +1387,7 @@
     run.submitted = name;
     message('reference-message', `正在投递 ${run.ids[name]}；固定本次身份，仅发送一次。`);
     try {
-      const receipt = await post(`${API}/jobs/${run.job}/session/actions`, requestBody);
+      const receipt = await post(`${API}/jobs/${run.job}/session/actions`, requestBody, {}, run.target);
       referenceCurrent(run);
       run.receipts[name] = referenceReceipt(run, name, receipt);
     } catch (error) {
@@ -1438,12 +1443,12 @@
     if (!/^[A-Za-z0-9_-]{1,48}$/.test(label)) { message('reference-message', '标签须为 1–48 位字母、数字、下划线或短横线。未发送动作。', true); return; }
     let options;
     try { if (execute) options = referenceOptions(); } catch (error) { message('reference-message', error.message, true); return; }
-    const run = {job: selected, label, execute, options, ids: {capture: `gr-${label}-00`, sample: `gr-${label}-01`, marker: `gr-${label}-02`}, receipts: {}, cancelled: false};
+    const run = {job: selected, target: HGTarget.binding(), label, execute, options, ids: {capture: `gr-${label}-00`, sample: `gr-${label}-01`, marker: `gr-${label}-02`}, receipts: {}, cancelled: false};
     referenceRun = run;
     renderSessionControls(); renderReferenceResult(run);
     message('reference-message', '正在读取平台上的三份回执；尚未发送动作。');
     try {
-      const initial = referenceDescriptor(await json(`${API}/jobs/${run.job}/session`), run.job); referenceCurrent(run);
+      const initial = referenceDescriptor(await json(`${API}/jobs/${run.job}/session`, run.target), run.job); referenceCurrent(run);
       run.session = initial.session_id; run.epoch = initial.controller?.epoch;
       for (const name of ['capture', 'sample', 'marker']) { run.receipts[name] = await readReferenceReceipt(run, name); renderReferenceResult(run); }
       if (Object.values(run.receipts).some(r => r !== null)) {
@@ -2022,9 +2027,11 @@
   $('queue-release-note').addEventListener('input', renderControls);
   $('queue-release-form').addEventListener('submit', event => { event.preventDefault(); releaseQueue(); });
   try {
-    const id = sessionStorage.getItem(REQUEST_STORAGE);
-    if (id) {
-      pendingRequest = {id};
+    const raw = sessionStorage.getItem(REQUEST_STORAGE);
+    if (raw) {
+      let saved; try { saved = JSON.parse(raw); } catch (_) { saved = {id: raw}; }
+      pendingRequest = {id: saved.id, target: saved.target || null};
+      const id = pendingRequest.id;
       $('submit-panel').open = true;
       submissionMessage('有一条未确认的提交。请先按原请求 ID 查询；参数未保存在浏览器中。', true, id);
     }
@@ -2032,5 +2039,6 @@
   const initial = new URLSearchParams(location.hash.slice(1)).get('job');
   if (initial && /^[0-9a-f]{12}$/.test(initial)) selected = initial;
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);
+  document.addEventListener('hgamey-target-change', () => { renderAccess(); });
   refreshAll();
 })();

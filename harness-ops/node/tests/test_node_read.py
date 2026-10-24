@@ -458,7 +458,9 @@ class NodeReadTests(unittest.TestCase):
     def test_cli_queries_use_the_same_read_contract(self):
         jid = self.fixture(1)
         cli = Path(__file__).resolve().parents[1] / "pf-node"
-        env = dict(os.environ, PF_NODE_URL="http://%s:%s" % self.server.server_address, PF_NODE_TOKEN=self.ro)
+        env = dict(os.environ, PF_NODE_URL="http://%s:%s" % self.server.server_address,
+                   PF_NODE_TOKEN=self.ro, PF_NODE_ID=self.node.node_id)
+        env.pop("PF_NODE_TOKEN_FILE", None)
         for args in (["node"], ["jobs", "--query", "Doom"], ["artifacts", jid, "--path", "nested"]):
             result = subprocess.run([sys.executable, str(cli), *args], env=env, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)

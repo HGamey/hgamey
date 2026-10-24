@@ -31,19 +31,18 @@
   function message(id, value, error = false) { $(id).textContent = value; $(id).classList.toggle('task-error', error); }
   function remoteEntry() { return selected === 'local' ? null : entries.get(selected); }
   function entryStale(entry) { return directoryFailed || entry.stale || !entry.enabled || entry.connection?.status !== 'ready' || !entry.snapshot || Date.now() / 1000 - entry.snapshot.at > 30; }
-  function nodeJobsURL(entry = remoteEntry(), job = '') {
-    let base = '/dash/jobs';
-    if (selected !== 'local') {
-      if (!entry?.snapshot?.url) return null;
-      try {
-        const url = new URL(entry.snapshot.url);
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
-        url.pathname = url.pathname.replace(/\/$/, '') + '/dash/jobs'; url.search = ''; url.hash = '';
-        base = url.href;
-      } catch (_) { return null; }
-    }
-    return base + (job ? `#job=${encodeURIComponent(job)}` : '');
+  function nodePageURL(page, entry = remoteEntry(), job = '') {
+    let url;
+    if (selected === 'local') return HGTarget.url(`/dash/${page}${job ? `#job=${encodeURIComponent(job)}` : ''}`);
+    if (!entry?.snapshot?.url || !/^[0-9a-f]{32}$/.test(entry.node_id) || entry.snapshot.identity?.node_id !== entry.node_id) return null;
+    try {
+      url = new URL(entry.snapshot.url);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+      url.pathname = url.pathname.replace(/\/$/, '') + `/dash/${page}`; url.search = ''; url.hash = job ? `job=${encodeURIComponent(job)}` : '';
+      url.searchParams.set('expected_node_id',entry.node_id); return url.href;
+    } catch (_) { return null; }
   }
+  const nodeJobsURL = (entry = remoteEntry(), job = '') => nodePageURL('jobs', entry, job);
   function jobLink(id) {
     const url = nodeJobsURL(remoteEntry(), id), link = el(url ? 'a' : 'span', `任务 ${id}`);
     if (url) { link.href = url; if (selected !== 'local') { link.target = '_blank'; link.rel = 'noopener noreferrer'; } }
@@ -67,7 +66,7 @@
     timer = setTimeout(() => refresh(), Math.max(AUTO_MS, lastStartedAt + AUTO_MS - Date.now()));
   }
   async function json(path, signal, body) {
-    const response = await fetch(path, {credentials: 'same-origin', cache: 'no-store', signal,
+    const response = await HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', signal,
       ...(body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify(body)})});
     if (response.status === 401 || response.status === 403 || (response.redirected && new URL(response.url).pathname === '/dash/login')) {
       const error = new Error('登录已失效，请重新登录后刷新。');
@@ -110,14 +109,15 @@
     }
     $('node-directory').replaceChildren(...rows);
   }
+  document.addEventListener('hgamey-target-change', () => renderManagement());
   function renderManagement() {
-    const entry = remoteEntry(), writable = directoryKnown && access?.steer && !accessBusy && !writing;
+    const entry = remoteEntry(), writable = directoryKnown && access?.steer && HGTarget.canWrite() && !accessBusy && !writing;
     $('register-open').disabled = !writable;
     $('registration-edit').disabled = !entry || !writable;
     $('registration-toggle').disabled = !entry || !writable || uncertainUpdates.has(selected);
     $('registration-toggle').textContent = entry?.enabled ? '停用登记' : '启用登记';
     $('remote-actions').hidden = selected === 'local';
-    $('remote-devices').disabled = !entry || !entry.enabled || !entry.credential_present || entry.refreshing || loading || authLost;
+    $('remote-devices').disabled = !HGTarget.canWrite() || !entry || !entry.enabled || !entry.credential_present || entry.refreshing || loading || authLost;
     $('remote-devices').setAttribute('aria-busy', String(!!entry?.refreshing));
     $('remote-devices').textContent = entry?.refreshing ? '目录请求处理中…' : '请求远端设备采样';
     $('disable-submit').disabled = !writable || uncertainUpdates.has(selected);
@@ -402,8 +402,10 @@
       $('node-details').hidden = true;
       receivedAt = Date.now(); renderFleet(null); renderQueue(null);
     }
-    const url = nodeJobsURL(); $('node-jobs-link').hidden = !url;
-    if (url) { $('node-jobs-link').href = url; $('node-jobs-link').target = selected === 'local' ? '_self' : '_blank'; $('node-jobs-link').rel = 'noopener noreferrer'; }
+    for (const page of ['jobs','games','control']) {
+      const link=$(`node-${page}-link`), url=nodePageURL(page);link.hidden=!url;
+      if(url){link.href=url;link.target=selected==='local'?'_self':'_blank';link.rel='noopener noreferrer';}
+    }
     renderManagement();
   }
   async function refresh(manual = false, devices = false) {

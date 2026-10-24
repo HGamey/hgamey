@@ -69,7 +69,9 @@ class GameFlowTests(unittest.TestCase):
                             "size": 7, "source": {"kind": "unavailable", "reason": "historical metadata only"}}], **extra}
 
     def cli(self, *args):
-        env = {**os.environ, "PF_NODE_TOKEN": self.admin, "PF_NODE_URL": self.url, "HOME": str(self.root)}
+        env = {**os.environ, "PF_NODE_TOKEN": self.admin, "PF_NODE_URL": self.url,
+               "PF_NODE_ID": self.jobs.games.node_id, "HOME": str(self.root)}
+        env.pop("PF_NODE_TOKEN_FILE", None)
         return subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "pf-node"),
                                "games", *args], env=env, text=True, capture_output=True, timeout=15)
 

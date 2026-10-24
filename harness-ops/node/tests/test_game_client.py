@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CLI = Path(__file__).resolve().parents[1] / "pf-node"
 TOKEN = "fixture-game-token"
+NODE_ID = "1" * 32
 PREPARE = "/games/fixture/versions/v1/prepare"
 
 
@@ -23,7 +24,9 @@ class GameClient(unittest.TestCase):
                 calls.append({"method": self.command, "path": self.path, "body": body,
                               "request_id": self.headers.get("X-Request-ID"),
                               "authorization": self.headers.get("Authorization")})
-                response = route(calls[-1])
+                response = ((200, {}, {"node_id": NODE_ID, "capabilities": ["node.target-v1"],
+                                      "host": {"hostname": "fixture"}, "storage": {"data_root": "/fixture/data"}})
+                            if self.command == "GET" and self.path == "/node" else route(calls[-1]))
                 if response is None:
                     self.close_connection = True
                     return
@@ -55,8 +58,9 @@ class GameClient(unittest.TestCase):
         return f"http://127.0.0.1:{server.server_port}", calls
 
     def cli(self, url, *args):
-        env = dict(os.environ, PF_NODE_URL=url, PF_NODE_TOKEN=TOKEN,
+        env = dict(os.environ, PF_NODE_URL=url, PF_NODE_TOKEN=TOKEN, PF_NODE_ID=NODE_ID,
                    NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
+        env.pop("PF_NODE_TOKEN_FILE", None)
         return subprocess.run([sys.executable, str(CLI), "games", *args], env=env,
                               capture_output=True, text=True, timeout=5)
 
@@ -75,9 +79,9 @@ class GameClient(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), job)
         self.assertIn("request_id=prepare-001", result.stderr)
         self.assertEqual([(c["method"], c["path"]) for c in calls],
-                         [("POST", PREPARE), ("GET", "/requests/prepare-001")])
-        self.assertEqual(calls[0]["request_id"], "prepare-001")
-        self.assertEqual(calls[0]["body"], b"{}")
+                         [("GET", "/node"), ("POST", PREPARE), ("GET", "/requests/prepare-001")])
+        self.assertEqual(calls[1]["request_id"], "prepare-001")
+        self.assertEqual(calls[1]["body"], b"{}")
 
     def test_post_and_uncertain_request_lookup_never_follow_redirects(self):
         other, leaked = self.server(lambda _: (200, {}, {"unexpected": True}))
@@ -97,7 +101,8 @@ class GameClient(unittest.TestCase):
         self.assertIn("重定向", redirected.stderr)
         self.assertIn("games request lost-lookup", uncertain.stderr)
         self.assertEqual([(c["method"], c["path"]) for c in calls],
-                         [("POST", PREPARE), ("POST", PREPARE), ("GET", "/requests/lost-lookup")])
+                         [("GET", "/node"), ("POST", PREPARE), ("GET", "/node"),
+                          ("POST", PREPARE), ("GET", "/requests/lost-lookup")])
         self.assertEqual(leaked, [])
         self.assertNotIn(TOKEN, redirected.stdout + redirected.stderr + uncertain.stdout + uncertain.stderr)
 

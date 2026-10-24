@@ -34,7 +34,7 @@
   }
 
   async function runStream(serial, signal) {
-    const r = await fetch(`/dash/api/live/stream?serial=${encodeURIComponent(serial)}`, { signal, credentials: "same-origin", cache: "no-store" });
+    const r = await HGTarget.fetch(`/dash/api/live/stream?serial=${encodeURIComponent(serial)}`, { signal, credentials: "same-origin", cache: "no-store" });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
     const reader = r.body.getReader();
     let buf = new Uint8Array(0), got = false;
@@ -63,7 +63,7 @@
   async function runPoll(serial, signal) {
     let after = 0;
     for (;;) {
-      const r = await fetch(`/dash/api/live/frame?serial=${encodeURIComponent(serial)}&after=${after}`, { signal, credentials: "same-origin", cache: "no-store" });
+      const r = await HGTarget.fetch(`/dash/api/live/frame?serial=${encodeURIComponent(serial)}&after=${after}`, { signal, credentials: "same-origin", cache: "no-store" });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
       after = +(r.headers.get("X-Frame-Seq") || after);
       show(new Uint8Array(await r.arrayBuffer()), r.headers.get("X-Frame-Seq"), r.headers.get("X-Frame-At"), signal);
@@ -86,6 +86,7 @@
         fails = 0;
       } catch (e) {
         if (S.ctl !== ctl || e.name === "AbortError") return;
+        if (e.target) { S.connection=e.message; stop(); renderView(); return; }
         fails++;
         S.connection = `画面连接中断：${e.message}，${Math.min(10, fails * 2)} 秒后重试。`;
         renderView();
@@ -103,7 +104,7 @@
       $("v-img").hidden = true; $("v-img").removeAttribute("src");
     }
     S.serial = serial; S.poll = false; S.times = []; S.active = Date.now();
-    history.replaceState(null, "", `/dash/live?serial=${encodeURIComponent(serial)}`);
+    history.replaceState(null, "", HGTarget.url(`/dash/live?serial=${encodeURIComponent(serial)}`));
     renderDevs(); play();
   }
 
@@ -126,7 +127,7 @@
     const rate = !S.statusError && Number.isFinite(d?.fps) ? `节点采样 ${d.fps} 帧/秒` : "节点采样速率未知";
     $("v-stats").textContent = S.serial ? `${frame} · 本页近 3 秒 ${S.times.length} 个带序号的新帧 · ${rate}（非游戏 FPS）${S.poll ? " · 逐帧接收" : ""}` : "";
     const paused = S.serial && !S.ctl;
-    $("v-resume").hidden = !paused;
+    $("v-resume").hidden = !paused; $("v-resume").disabled = !HGTarget.canWrite();
     $("v-msg").textContent = !S.serial ? "选择设备后观看；采样须取得实际设备 lease。" : paused ? "本页已断开观看，保留最后画面。其他订阅者的采集状态由节点决定。" : S.connection || (mode !== "live" ? `${MODE[mode]}；${S.url ? "保留最后画面" : "尚无可用画面"}。` : "");
     $("screen").classList.toggle("stale", !!S.url && (paused || mode !== "live" || !!S.connection || age == null || age > 3));
     $("v-label").textContent = [S.statusError ? `当前状态未确认：${S.statusError}` : "", d?.label ? `节点说明：${d.label}` : "", d?.error ? `最近采集错误：${d.error}` : "", S.statusAt ? `状态读取于 ${new Date(S.statusAt).toLocaleTimeString()}` : ""].filter(Boolean).join("；");
@@ -137,7 +138,7 @@
     const ctl = new AbortController(); S.statusCtl = ctl;
     const timeout = setTimeout(() => ctl.abort(), 10000);
     try {
-      const r = await fetch("/dash/api/live/status", { signal: ctl.signal, credentials: "same-origin", cache: "no-store" });
+      const r = await HGTarget.fetch("/dash/api/live/status", { signal: ctl.signal, credentials: "same-origin", cache: "no-store" });
       if (r.status === 401) { location.href = "/dash/login"; return; }
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
@@ -171,6 +172,7 @@
   });
   addEventListener("pagehide", () => { disconnect(); clearInterval(S.timer); S.timer = 0; });
   addEventListener("pageshow", () => { startTimer(); refresh(); if (S.serial && !S.ctl) play(); });
+  document.addEventListener("hgamey-target-change", () => { if(!HGTarget.canWrite())stop(); renderView(); });
   refresh(); startTimer();
   if (S.serial) play();
 })();

@@ -17,17 +17,38 @@ from unittest import mock
 
 CLI = Path(__file__).resolve().parents[1] / "pf-node"
 JOB = "0123456789ab"
+NODE_ID = "1" * 32
+
+
+def identity(**fields):
+    return {"node_id": NODE_ID, "capabilities": ["node.target-v1"],
+            "host": {"hostname": "fixture"}, "storage": {"data_root": "/fixture/data"}, **fields}
 
 
 class JobCLI(unittest.TestCase):
-    def load_cli(self):
-        with mock.patch.dict(os.environ, PF_NODE_TOKEN="fixture-token"):
-            return runpy.run_path(str(CLI))
+    def load_cli(self, *, mock_connection=True):
+        cli = runpy.run_path(str(CLI))
+        if mock_connection:
+            # These unit cases replace call(); target-handshake HTTP is covered separately.
+            target = cli["Target"]("http://fixture.invalid", "fixture-token", NODE_ID)
+            target._identity = identity()
+            cli["main"].__globals__.update(TARGET=target, Target=mock.Mock(resolve=mock.Mock(return_value=target)))
+        return cli
 
     def test_cancel_http_modes_permissions_and_legacy_kill(self):
         requests = []
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path != "/node":
+                    self.send_error(404)
+                    return
+                data = json.dumps(identity()).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 requests.append((self.path, json.loads(body) if body else None))
@@ -50,7 +71,8 @@ class JobCLI(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        env = dict(os.environ, PF_NODE_URL=f"http://127.0.0.1:{server.server_port}", PF_NODE_TOKEN="fixture-admin")
+        env = dict(os.environ, PF_NODE_URL=f"http://127.0.0.1:{server.server_port}", PF_NODE_TOKEN="fixture-admin", PF_NODE_ID=NODE_ID)
+        env.pop("PF_NODE_TOKEN_FILE", None)
 
         def run(*args, token="fixture-admin"):
             return subprocess.run([sys.executable, str(CLI), *args],
@@ -95,8 +117,8 @@ class JobCLI(unittest.TestCase):
             def do_GET(self):
                 gets.append(self.path)
                 if self.path == "/node":
-                    self.reply({"capabilities": ["jobs.idempotency-v1", "jobs.queue-v1", "jobs.execution-policy-v1"],
-                                "execution": {"process_policies": {"process_group": {"available": True}}}})
+                    self.reply(identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.execution-policy-v1"],
+                                        execution={"process_policies": {"process_group": {"available": True}}}))
                 elif self.path == "/requests/study-001":
                     self.reply(meta)
                 elif self.path == "/queue":
@@ -123,7 +145,8 @@ class JobCLI(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        env = dict(os.environ, PF_NODE_URL=f"http://127.0.0.1:{server.server_port}", PF_NODE_TOKEN="fixture-admin")
+        env = dict(os.environ, PF_NODE_URL=f"http://127.0.0.1:{server.server_port}", PF_NODE_TOKEN="fixture-admin", PF_NODE_ID=NODE_ID)
+        env.pop("PF_NODE_TOKEN_FILE", None)
 
         def run(*args):
             return subprocess.run([sys.executable, str(CLI), *args], env=env,
@@ -167,7 +190,9 @@ class JobCLI(unittest.TestCase):
         self.assertNotEqual(missing_leases.returncode, 0)
         self.assertIn("节点未提供该 lease 证据入口", missing_leases.stderr)
         self.assertNotEqual(bad_leases.returncode, 0)
-        self.assertEqual(gets, ["/node", "/requests/study-001", "/queue", "/leases", f"/jobs/{JOB}/leases", "/jobs/ffffffffffff/leases"])
+        self.assertEqual(gets, ["/node", "/node", "/requests/study-001", "/node", "/queue",
+                               "/node", "/leases", "/node", f"/jobs/{JOB}/leases",
+                               "/node", "/jobs/ffffffffffff/leases"])
         self.assertEqual(len(posts), 2)
 
     def test_execution_policy_refusal_precedes_packing_or_post(self):
@@ -200,8 +225,8 @@ class JobCLI(unittest.TestCase):
 
             def do_GET(self):
                 self.reply(404 if mode[0] == "404" else 200,
-                           {"capabilities": [] if mode[0] == "old" else ["jobs.idempotency-v1"] +
-                            (["jobs.recovery-v1"] if mode[0] in ("modern", "parent-conflict") else [])})
+                           identity(capabilities=["node.target-v1"] + ([] if mode[0] == "old" else ["jobs.idempotency-v1"] +
+                            (["jobs.recovery-v1"] if mode[0] in ("modern", "parent-conflict") else []))))
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -222,24 +247,25 @@ class JobCLI(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        cli = self.load_cli()
+        cli = self.load_cli(mock_connection=False)
 
         def run(*args):
             stdout, stderr = io.StringIO(), io.StringIO()
-            with mock.patch.dict(cli["main"].__globals__, URL=f"http://127.0.0.1:{server.server_port}"), \
+            with mock.patch.dict(os.environ, {"PF_NODE_URL": f"http://127.0.0.1:{server.server_port}",
+                                             "PF_NODE_TOKEN": "fixture-admin", "PF_NODE_ID": NODE_ID}, clear=True), \
                     mock.patch.object(sys, "argv", ["pf-node", *args]), mock.patch("time.sleep"), \
                     contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 try:
                     cli["main"]()
                     code = 0
-                except SystemExit as e:
-                    code = e.code
+                except (SystemExit, cli["TargetError"]) as e:
+                    code = e.code if isinstance(e, SystemExit) else str(e)
             return code, stdout.getvalue(), stderr.getvalue()
 
         for old in ("old", "404"):
             mode[0] = old
             code, _, _ = run("--detach", "phonefarm", "eval")
-            self.assertIn("升级", str(code))
+            self.assertIn("升级" if old == "old" else "HTTP 404", str(code))
             self.assertEqual(posts, [])
         code, _, _ = run("--request-id", "bad/id", "--detach", "phonefarm", "eval")
         self.assertIn("request_id", str(code))
@@ -274,20 +300,25 @@ class JobCLI(unittest.TestCase):
         mode[0] = "parent-conflict"
         code, _, _ = run("--device-access", "recovery", "--recovery-for", JOB,
                          "--request-id", "recover-001", "--detach", "phonefarm", "fixture-recover")
-        self.assertIn("recovery_for must name a blocked reservation", str(code))
+        self.assertIn("HTTP 409", str(code))
+        self.assertIn("恢复目标条件", str(code))
+        self.assertIn("request_id=recover-001", str(code))
+        self.assertNotIn("recovery_for must name a blocked reservation", str(code))
         self.assertNotIn("与已有提交内容冲突", str(code))
         posts.clear()
         mode[0] = "conflict"
         code, _, _ = run("--request-id", "same-id", "--detach", "phonefarm", "eval")
         self.assertIn("冲突", str(code))
-        self.assertIn("request content differs", str(code))
+        self.assertIn("request_id=same-id", str(code))
+        self.assertNotIn("request content differs", str(code))
         self.assertEqual(len(posts), 1)
         mode[0] = "unknown"
         posts.clear()
         code, _, stderr = run("--request-id", "same-id", "--detach", "phonefarm", "eval")
         self.assertEqual(code, 1)
         self.assertIn("提交结果未知", stderr)
-        self.assertIn("pf-node request same-id", stderr)
+        self.assertIn("request same-id", stderr)
+        self.assertIn(f"--node-id {NODE_ID}", stderr)
         self.assertEqual(len(posts), 5)
         self.assertTrue(all(post == posts[0] for post in posts))
         mode[0] = "ok"
@@ -362,7 +393,8 @@ class JobCLI(unittest.TestCase):
             self.assertNotEqual(failed.exception.code, 0)
             self.assertEqual(call.call_count, expected_calls)
             if expected_calls == 2:
-                self.assertIn(f"pf-node status {JOB}", stderr.getvalue())
+                self.assertIn(f"status {JOB}", stderr.getvalue())
+                self.assertIn(f"--node-id {NODE_ID}", stderr.getvalue())
                 self.assertIn("不自动重发 POST", stderr.getvalue())
             else:
                 self.assertIn("jobs.execution-reconcile-v1", str(failed.exception.code))
@@ -419,8 +451,9 @@ class JobCLI(unittest.TestCase):
                 if mode == "missing-capability":
                     self.assertIn("jobs.session-recovery-v1", str(code))
                 if mode == "timeout":
-                    self.assertIn("pf-node request recover-fixture-1", stderr.getvalue())
-                    self.assertIn(f"pf-node session-recover {JOB} --request-id recover-fixture-1", stderr.getvalue())
+                    self.assertIn("request recover-fixture-1", stderr.getvalue())
+                    self.assertIn(f"--node-id {NODE_ID}", stderr.getvalue())
+                    self.assertIn(f"session-recover {JOB} --request-id recover-fixture-1", stderr.getvalue())
                 if mode == "wrong-parent":
                     self.assertIn("恢复任务回包未匹配原任务", stderr.getvalue())
 
@@ -468,7 +501,7 @@ class JobCLI(unittest.TestCase):
                      if status else urllib.error.URLError("offline"))
             stdout = io.StringIO()
             with self.subTest(status=status, code=code), \
-                    mock.patch("urllib.request.urlopen", side_effect=error) as opened, \
+                    mock.patch.object(cli["call"].__globals__["TARGET"].opener, "open", side_effect=error) as opened, \
                     contextlib.redirect_stdout(stdout), self.assertRaises(SystemExit) as failed:
                 cli["session_command"](["session-status", JOB, "--request-id", "capture-1", "--json"])
             self.assertEqual(failed.exception.code, 1)

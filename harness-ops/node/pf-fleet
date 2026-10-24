@@ -12,8 +12,8 @@
 
   pf-fleet nodes                          # 列出注册表里的节点
   pf-fleet status [--json]                # 并行问所有节点：在线？锁谁持有？手机清单（fleet 只读快照）
-  pf-fleet run --node mbp1 -- <pf-node 参数…>         # 派到指定节点
-  pf-fleet run --tag nx809j -- <…>                    # 派到第一台「在线、锁空闲、带这个标签」的节点
+  pf-fleet run --node example -- <pf-node 参数…>      # 派到指定节点
+  pf-fleet run --tag android -- <…>                  # 派到第一台「在线、锁空闲、带这个标签」的节点
   pf-fleet run --any-free -- <…>                      # 派到第一台「在线、锁空闲」的节点
 
 设计纪律：
@@ -22,45 +22,40 @@
   每个注册节点都有结果，超时/未知/陈旧快照不能作为自动选机的空闲依据。
 - run 不自己实现传输/任务协议：选好节点后置 PF_NODE_URL / PF_NODE_TOKEN_FILE，exec 同目录的 pf-node。
 
-注册表（JSON）：环境变量 PF_FLEET_REGISTRY，缺省从本脚本所在目录逐级往上找 .hgamey/nodes.json：
+注册表（JSON）：显式 --registry FILE 或 PF_FLEET_REGISTRY，不搜索其他目录：
 {
   "nodes": [
-    {"name": "mbp1", "url": "https://mbp1.liyao.space",
+    {"name": "example", "url": "https://node.example.invalid",
      "token_file": ".hgamey/node.token",          # 相对注册表所在目录；也可给绝对路径
-     "tags": ["nx809j", "redmagic", "android", "root", "openharmony", "ema-al00u", "honor"],
-     "ssh": "mbp1",                                # 可选：migrate 用（ssh config 里的别名）
+     "tags": ["android", "fixture"],
+     "ssh": "example-node",                        # 旧元数据；当前不执行迁移
      "goals_dir": "/Users/me/node/goals",          # 可选：目标运行目录的父目录（migrate 用）
-     "note": "主力节点，红魔 NX809J / 华为 EMA-AL00U / 荣耀 AAP-AN00"}
+     "note": "显式登记的示例节点"}
   ]
 }
 
-  pf-fleet migrate <run_id> --from mini1 --to mbp1    # 把一次目标运行整体搬到另一台节点续跑
-      机制：经本机中继 rsync（from 必须 ssh 可达；彻底死的节点只能等它活），
-      搬完在目标节点上 goal resume（GOL#83：已完成的代保留，中途死的那代重跑）。
+  legacy migrate 暂不支持：SSH/rsync 的目标身份尚无本批绑定合同。
+  hub 写入需 --node-id ID / PF_NODE_ID；只读 node 可发现 hub ID。
 """
 import json, math, os, queue, shutil, subprocess, sys, tempfile, threading, time
 import urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+from target_client import Target, TargetError, node_id, token_file
 
 
-def _registry_path():
-    if os.environ.get("PF_FLEET_REGISTRY"):
-        return os.environ["PF_FLEET_REGISTRY"]
-    d = HERE
-    while True:
-        p = os.path.join(d, ".hgamey", "nodes.json")
-        if os.path.isfile(p):
-            return p
-        parent = os.path.dirname(d)
-        if parent == d:
-            sys.exit("pf-fleet: 找不到节点注册表（PF_FLEET_REGISTRY / 上级目录里的 .hgamey/nodes.json）")
-        d = parent
+def _registry_path(explicit=None):
+    path = explicit if explicit is not None else os.environ.get("PF_FLEET_REGISTRY")
+    if not path:
+        sys.exit("pf-fleet: 需显式 --registry FILE 或 PF_FLEET_REGISTRY；未搜索其他注册表")
+    return path
 
 
-def load_registry():
-    p = _registry_path()
-    reg = json.load(open(p))
+def load_registry(explicit=None):
+    p = _registry_path(explicit)
+    with open(p) as source:
+        reg = json.load(source)
     base = os.path.dirname(p)
     for n in reg.get("nodes", []):
         tf = n.get("token_file", "")
@@ -70,11 +65,19 @@ def load_registry():
     return reg.get("nodes", [])
 
 
-def _get_fleet(url, token, timeout):
-    headers = {"Authorization": f"Bearer {token}", "User-Agent": "pf-fleet/1"}
-    req = urllib.request.Request(url.rstrip("/") + "/fleet?wait=5", method="GET", headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+def _get_fleet(url, token, timeout, expected_node_id=None):
+    target = Target(url, token, expected_node_id, credential_source="registry_file")
+    identity = target.identity(timeout=timeout)
+    # Legacy selection explicitly freezes this discovery; ordinary direct CLI
+    # writes never adopt a newly discovered identity on their own.
+    target.expected_node_id = node_id(identity.get("node_id"))
+    target.require_write()  # GET /fleet schedules sampling; require enforcement.
+    req = target.request("GET", "/fleet?wait=5")
+    with target.opener.open(req, timeout=timeout) as response:
+        fleet = json.load(response)
+    if not isinstance(fleet, dict) or fleet.get("node_id") != target.expected_node_id:
+        raise TargetError("target_mismatch", "fleet 快照未匹配刚核实的 node_id")
+    return fleet
 
 
 def _unavailable(node, error):
@@ -88,9 +91,8 @@ def probe_node(node, timeout):
     """只读一次宿主快照；HTTP 可达与设备采样成功分开记录。"""
     res = _unavailable(node, None)
     try:
-        with open(node["token_file"]) as f:
-            token = f.read().strip()
-        fleet = _get_fleet(node["url"], token, timeout)
+        token = token_file(node["token_file"])
+        fleet = _get_fleet(node["url"], token, timeout, node.get("node_id"))
         res["reachable"] = True
         if not isinstance(fleet, dict) or fleet.get("schema_version") != 1:
             raise ValueError("不支持的 /fleet 协议；请升级节点服务")
@@ -235,10 +237,26 @@ def cmd_run(nodes, argv):
         detail = "; ".join(f"{r['name']}: {r.get('error') or r.get('deferred') or ('快照陈旧/尚未采样' if not r.get('sample_ok') else '锁非空闲或有排队')}" for r in probe_out)
         sys.exit(f"pf-fleet run: 没有可用节点（{detail or '无候选'}）")
 
-    print(f"pf-fleet: 派到 {chosen['name']}（{chosen['url']}）", file=sys.stderr)
+    selected_id = node_id(by_name[chosen["name"]].get("node_id"))
+    if chosen.get("node_id") is not None and chosen["node_id"] != selected_id:
+        sys.exit("pf-fleet: 所选节点身份与登记不符；未提交")
+    # Only pf-node's global prefix can override the selected connection. A
+    # target program may independently have an argument named --url.
+    index = 0
+    valued = {"-o", "--out-dir", "--exe", "--label", "--inputs", "--request-id", "--resource",
+              "--device-access", "--execution-policy", "--recovery-for"}
+    while index < len(rest) and rest[index].startswith("-"):
+        option = rest[index].split("=", 1)[0]
+        if option in {"--url", "--node-id", "--token-file"}:
+            sys.exit("pf-fleet: pf-node 参数不能覆盖已选 URL、node_id 或凭据文件")
+        index += 2 if option in valued else 1
+    print(f"pf-fleet: 派到 {chosen['name']}（{chosen['url']}），node_id={selected_id}", file=sys.stderr)
     env = dict(os.environ)
+    for key in ("PF_NODE_TOKEN", "PF_NODE_TOKEN_FILE", "PF_NODE_URL", "PF_NODE_ID"):
+        env.pop(key, None)
     env["PF_NODE_URL"] = chosen["url"]
     env["PF_NODE_TOKEN_FILE"] = chosen["token_file"]
+    env["PF_NODE_ID"] = selected_id
     os.execvpe(os.path.join(HERE, "pf-node"), ["pf-node"] + rest, env)
 
 
@@ -288,27 +306,44 @@ def cmd_migrate(nodes, argv):
 def main():
     argv = sys.argv[1:]
     hub = os.environ.get("PF_FLEET_HUB")
-    if argv and (argv[0] == "--hub" or argv[0].startswith("--hub=")):
-        if argv[0] == "--hub":
-            if len(argv) < 2:
-                sys.exit("pf-fleet: --hub 需要明确 URL")
-            hub, argv = argv[1], argv[2:]
+    registry = expected_node_id = explicit_file = None
+    while argv and argv[0].startswith("--") and argv[0] != "--help":
+        option, separator, value = argv.pop(0).partition("=")
+        if option not in {"--hub", "--registry", "--node-id", "--hub-token-file"}:
+            sys.exit("pf-fleet: 未识别全局选项，详见 --help")
+        if not separator:
+            if not argv:
+                sys.exit(f"pf-fleet: {option} 需要一个值")
+            value = argv.pop(0)
+        if option == "--hub":
+            hub = value
+        elif option == "--registry":
+            registry = value
+        elif option == "--node-id":
+            expected_node_id = value
         else:
-            hub, argv = argv[0].split("=", 1)[1], argv[1:]
+            explicit_file = value
     if hub is not None:
-        # Lazy import keeps legacy registry/run behavior unchanged.
-        sys.path.insert(0, HERE)
         from fleet_client import main as managed_main
-        sys.exit(managed_main(hub, argv))
+        if registry is not None:
+            sys.exit("pf-fleet: --registry 与 hub 模式不能混用")
+        sys.exit(managed_main(hub, argv, expected_node_id=expected_node_id, explicit_file=explicit_file))
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0 if argv else 2)
     cmd, argv = argv[0], argv[1:]
-    nodes = load_registry()
+    if expected_node_id is not None or explicit_file is not None:
+        sys.exit("pf-fleet: --node-id/--hub-token-file 用于 hub；legacy run 冻结所选登记身份和凭据")
+    if cmd == "migrate":
+        sys.exit("pf-fleet: legacy migrate 的 SSH 目标绑定尚未支持；未执行迁移或恢复")
+    nodes = load_registry(registry)
     {"nodes": cmd_nodes, "status": cmd_status, "run": cmd_run, "migrate": cmd_migrate}.get(
         cmd, lambda *_: sys.exit(f"pf-fleet: 不认识子命令 {cmd}（nodes/status/run/migrate）")
     )(nodes, argv)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (TargetError, OSError, ValueError):
+        sys.exit("pf-fleet: 显式注册表、目标身份或凭据无效；未选择其他配置")

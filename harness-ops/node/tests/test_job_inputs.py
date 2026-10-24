@@ -101,8 +101,10 @@ class JobInputsTests(unittest.TestCase):
         self.fail(f"bounded fixture did not finish: {value}; " + (log.read_text() if log.exists() else ""))
 
     def cli(self, *args):
-        env = dict(os.environ, PF_NODE_URL=self.url, PF_NODE_TOKEN=self.admin, HOME=str(self.root),
+        env = dict(os.environ, PF_NODE_URL=self.url, PF_NODE_TOKEN=self.admin,
+                   PF_NODE_ID=self.jobs.games.node_id, HOME=str(self.root),
                    PYTHONDONTWRITEBYTECODE="1")
+        env.pop("PF_NODE_TOKEN_FILE", None)
         env.pop("DEVLOCK_LABEL", None)
         return subprocess.run([sys.executable, str(NODE / "pf-node"), *args], cwd=self.root,
                               env=env, capture_output=True, text=True, timeout=15)

@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 CLI = Path(__file__).resolve().parents[1] / "pf-node"
+NODE_ID = "1" * 32
 
 
 class GameUploadClient(unittest.TestCase):
@@ -38,14 +39,15 @@ class GameUploadClient(unittest.TestCase):
                                     "offset": self.headers.get("Upload-Offset"),
                                     "content_type": self.headers.get("Content-Type")})
                 if self.command == "GET" and self.path == "/node":
-                    return self.reply({"schema_version": 1, "node_id": "fixture-node",
-                                       "capabilities": ["games.upload-v1"]})
+                    return self.reply({"schema_version": 1, "node_id": NODE_ID,
+                                       "capabilities": ["node.target-v1", "games.upload-v1"],
+                                       "host": {"hostname": "fixture"}, "storage": {"data_root": "/fixture/data"}})
                 if self.command == "GET" and self.path == "/games/fixture/versions/v1":
-                    return self.reply({"schema_version": 1, "node_id": "fixture-node", "game_id": "fixture",
+                    return self.reply({"schema_version": 1, "node_id": NODE_ID, "game_id": "fixture",
                                        "version": "v1", "manifest": owner.manifest})
                 if self.command == "POST" and self.path == "/uploads":
                     identity = json.loads(body)
-                    owner.record = {"schema_version": 1, "node_id": "fixture-node", **identity,
+                    owner.record = {"schema_version": 1, "node_id": NODE_ID, **identity,
                                     "sha256": owner.asset["sha256"], "size": owner.asset["size"],
                                     "offset": 0, "phase": "receiving", "error": None,
                                     "chunk_max_bytes": 4, "created_at": 1,
@@ -102,8 +104,9 @@ class GameUploadClient(unittest.TestCase):
 
     def upload(self, upload_id):
         env = dict(os.environ, PF_NODE_URL=f"http://127.0.0.1:{self.server.server_port}",
-                   PF_NODE_TOKEN="upload-fixture-token", NO_PROXY="127.0.0.1,localhost",
+                   PF_NODE_TOKEN="upload-fixture-token", PF_NODE_ID=NODE_ID, NO_PROXY="127.0.0.1,localhost",
                    no_proxy="127.0.0.1,localhost")
+        env.pop("PF_NODE_TOKEN_FILE", None)
         return subprocess.run([sys.executable, str(CLI), "games", "upload", "fixture", "v1",
                                self.asset["name"], str(self.file), "--upload-id", upload_id],
                               env=env, capture_output=True, text=True, timeout=8)
@@ -132,7 +135,7 @@ class GameUploadClient(unittest.TestCase):
 
     def test_unconfirmed_put_offset_only_queries_without_sending_next_chunk(self):
         # Registration persisted its binding, but stopped before claiming bytes.
-        self.record = {"schema_version": 1, "node_id": "fixture-node", "upload_id": "offset-001",
+        self.record = {"schema_version": 1, "node_id": NODE_ID, "upload_id": "offset-001",
                        "game_id": "fixture", "version": "v1", "asset_name": self.asset["name"],
                        "sha256": self.asset["sha256"], "size": self.asset["size"],
                        "offset": None, "phase": "unclaimed", "error": None,

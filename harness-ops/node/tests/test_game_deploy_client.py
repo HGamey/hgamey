@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 CLI = Path(__file__).resolve().parents[1] / "pf-node"
+NODE_ID = "1" * 32
 
 
 class GameDeployClient(unittest.TestCase):
@@ -24,7 +25,8 @@ class GameDeployClient(unittest.TestCase):
                 calls.append({"method": self.command, "path": self.path, "body": body,
                               "request_id": self.headers.get("X-Request-ID")})
                 if self.command == "GET" and self.path == "/node":
-                    value = {"schema_version": 1, "node_id": "fixture-node", "capabilities": ["games.deploy-v1"]}
+                    value = {"schema_version": 1, "node_id": NODE_ID, "capabilities": ["node.target-v1", "games.deploy-v1"],
+                             "host": {"hostname": "fixture"}, "storage": {"data_root": "/fixture/data"}}
                 elif self.command == "POST" and self.path == "/games/fixture/versions/v1/deploy":
                     self.close_connection = True  # Accepted; response lost before reaching the client.
                     return
@@ -50,8 +52,9 @@ class GameDeployClient(unittest.TestCase):
         thread.start()
         try:
             env = dict(os.environ, PF_NODE_URL=f"http://127.0.0.1:{server.server_port}",
-                       PF_NODE_TOKEN="fixture-deploy-token", NO_PROXY="127.0.0.1,localhost",
+                       PF_NODE_TOKEN="fixture-deploy-token", PF_NODE_ID=NODE_ID, NO_PROXY="127.0.0.1,localhost",
                        no_proxy="127.0.0.1,localhost")
+            env.pop("PF_NODE_TOKEN_FILE", None)
             result = subprocess.run([sys.executable, str(CLI), "games", "deploy", "fixture", "v1",
                                      "--serial", "fixture-device", "--check", "--request-id", job["request_id"]],
                                     env=env, capture_output=True, text=True, timeout=5)
@@ -63,7 +66,7 @@ class GameDeployClient(unittest.TestCase):
                 ("GET", "/requests/deploy-001")])
             self.assertEqual(calls[1]["request_id"], "deploy-001")
             self.assertEqual(json.loads(calls[1]["body"]),
-                             {"node_id": "fixture-node", "serial": "fixture-device", "mode": "check"})
+                             {"node_id": NODE_ID, "serial": "fixture-device", "mode": "check"})
         finally:
             server.shutdown()
             server.server_close()

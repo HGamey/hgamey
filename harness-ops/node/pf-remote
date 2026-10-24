@@ -7,20 +7,17 @@ from pathlib import Path
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import Request, HTTPRedirectHandler, build_opener
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+from target_client import Target, TargetError
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--url', required=True, help='exact node URL (HTTPS; HTTP allowed on loopback for isolated testing)')
-    ap.add_argument('--token-file', required=True, help='operator credential file; never use the node admin credential')
+    ap.add_argument('--url', help='exact node URL or PF_NODE_URL (HTTPS; HTTP allowed on loopback)')
+    ap.add_argument('--node-id', help='expected persistent node ID or PF_NODE_ID; required for actions')
+    ap.add_argument('--token-file', help='explicit operator credential file, takes precedence over PF_NODE_TOKEN(_FILE)')
     subs = ap.add_subparsers(dest='command', required=True)
     subs.add_parser('devices')
+    subs.add_parser('node', help='read-only discovery using the operator credential')
     acquire = subs.add_parser('acquire')
     acquire.add_argument('serial')
     acquire.add_argument('--request-id', required=True)
@@ -43,15 +40,15 @@ def main(argv=None):
     receipt.add_argument('--session-id', required=True)
     receipt.add_argument('--out', help='fetch the completed image into a new file; no device capture')
     args = ap.parse_args(argv)
-    target = urlsplit(args.url)
-    if (target.scheme not in ('http','https') or not target.hostname or target.username or target.password
-            or target.query or target.fragment or target.path not in ('','/')):
-        ap.error('--url must identify a node origin without credentials/path/query')
-    if target.scheme == 'http' and target.hostname not in ('127.0.0.1','localhost','::1'):
+    target = Target.resolve(args.url, args.node_id, args.token_file, identity_path='/remote/node')
+    address = urlsplit(target.url)
+    if address.scheme == 'http' and address.hostname not in ('127.0.0.1','localhost','::1'):
         ap.error('operator credentials require HTTPS outside loopback')
-    token = Path(args.token_file).read_text().strip()
-    if not token.startswith('hgop_'):
-        ap.error('--token-file must contain an operator token')
+    if not target.token.startswith('hgop_'):
+        ap.error('credential must be an operator token')
+    if args.command == 'node':
+        print(json.dumps(target.identity(), ensure_ascii=False, indent=2))
+        return 0
     method, path, body = 'GET', '/remote/devices', None
     query_context = {}
     if args.command != 'devices':
@@ -73,19 +70,25 @@ def main(argv=None):
         else:
             path += '/requests/' + quote(args.request_id, safe='') + '?' + urlencode(
                 {'session_id': args.session_id, **({'image': '1'} if args.out else {})})
-    request = Request(args.url.rstrip('/') + path, method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    query_context.update(url=target.url, node_id=target.expected_node_id)
+    request = target.request(method, path, json.dumps(body).encode() if body is not None else None,
+                             {'Content-Type': 'application/json'})
     try:
-        response = build_opener(NoRedirect).open(request, timeout=30)
+        response = target.opener.open(request, timeout=30)
     except HTTPError as error:
         response = error
-    except (URLError, TimeoutError, OSError) as error:
-        print(json.dumps({'status': 'unknown' if body else 'unavailable', 'error': str(error),
+    except (URLError, TimeoutError, OSError):
+        print(json.dumps({'status': 'unknown' if body else 'unavailable', 'error': 'request result unavailable; retain the original target and request ID',
                           'query_required': bool(body), **query_context}, ensure_ascii=False))
         return 4
     try:
         with response:
+            if response.status >= 300:
+                unknown = bool(body) and (response.status < 400 or response.status >= 500)
+                print(json.dumps({'status': 'unknown' if unknown else 'rejected', 'http_status': response.status,
+                                  'error': 'request refused; redirects are not followed',
+                                  'query_required': bool(body), **query_context}, ensure_ascii=False))
+                return 4 if unknown else 1
             data = response.read((8 << 20) + 1)
             if len(data) > 8 << 20:
                 raise ValueError('node response exceeds budget; query original request ID')
@@ -109,8 +112,8 @@ def main(argv=None):
             if value.get('status') in ('accepted','started') or value.get('phase') in ('starting','closing'):
                 return 3
             return 0
-    except (OSError, ValueError, HTTPException) as error:
-        print(json.dumps({'status': 'unknown' if body else 'unavailable', 'error': str(error),
+    except (OSError, ValueError, HTTPException):
+        print(json.dumps({'status': 'unknown' if body else 'unavailable', 'error': 'response could not be confirmed; retain the original target and request ID',
                           'query_required': bool(body), **query_context}, ensure_ascii=False))
         return 4
 
@@ -119,6 +122,9 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (OSError, ValueError) as error:
+    except TargetError as error:
         print(str(error), file=sys.stderr)
+        sys.exit(1)
+    except (OSError, ValueError):
+        print('invalid local input or unavailable output; no fallback target selected', file=sys.stderr)
         sys.exit(1)

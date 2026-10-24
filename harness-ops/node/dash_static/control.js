@@ -18,7 +18,7 @@
   const query = (values) => "?" + new URLSearchParams(values).toString();
   function save() {
     try { sessionStorage.setItem(STORAGE, JSON.stringify({ serial: state.serial, binding: state.binding,
-      requests: state.requests.map(({ id, serial, session_id, action, status, at }) => ({ id, serial, session_id, action, status, at })), selectedRequest: state.selectedRequest })); }
+      requests: state.requests.map(({ id, serial, session_id, action, status, at, target }) => ({ id, serial, session_id, action, status, at, target })), selectedRequest: state.selectedRequest })); }
     catch (_) { /* 页面仍保留原 ID，回执区可手工记录。 */ }
   }
   try {
@@ -37,7 +37,7 @@
     const headers = { "X-HG": "1" };
     if (method !== "GET") headers["Content-Type"] = "application/json";
     try {
-      const r = await fetch(API + path, { method, headers, body: method === "GET" ? undefined : JSON.stringify(body || {}), signal: ctl.signal, credentials: "same-origin", cache: "no-store" });
+      const r = await HGTarget.fetch(API + path, { method, headers, body: method === "GET" ? undefined : JSON.stringify(body || {}), signal: ctl.signal, credentials: "same-origin", cache: "no-store" }, Object.hasOwn(options,"target") ? {target:options.target} : {});
       if ((r.headers.get("Content-Type") || "").includes("application/json")) {
         const value = await r.json();
         if (!r.ok) {
@@ -70,6 +70,8 @@
   }
   function unresolved(action) { return state.requests.some(r => r.serial === state.serial && r.session_id === state.binding?.session_id && !TERMINAL.has(r.status) && !(r.action === "acquire" && r.receipt?.phase === "closed") && (!action || r.action === action)); }
   function sessionReason() {
+    if (!HGTarget.canWrite()) return HGTarget.problem() || "节点未提供目标约束协议，设备观察与操作禁用。";
+    if (state.binding && HGTarget.problem(state.binding.target || null)) return HGTarget.problem(state.binding.target || null);
     if (!state.op) return "先使用操作员令牌登录。";
     if (document.hidden) return "页面已暂停，返回后须重新确认状态。";
     if (!state.devicesFresh) return "设备状态未确认：" + state.devicesError;
@@ -120,9 +122,9 @@
     select.replaceChildren(...rows.map(r => { const o = document.createElement("option"); o.value = r.id; o.textContent = `${ACTION[r.action]} · ${requestStatus(r)} · ${r.id}`; return o; }));
     select.value = state.selectedRequest || ""; select.disabled = !rows.length || state.querying;
     const r = rows.find(r => r.id === state.selectedRequest);
-    $("check-request").disabled = !state.op || !r || state.querying || state.authBusy || state.posting;
+    $("check-request").disabled = !state.op || !r || !!(r && HGTarget.problem(r.target || null)) || state.querying || state.authBusy || state.posting;
     $("check-request").textContent = state.querying ? "查询中…" : "查询原请求";
-    $("request-info").textContent = r ? `${ACTION[r.action]}：${requestStatus(r)}。请求 ID ${r.id}${r.session_id ? "；会话 " + r.session_id : "；按接管请求 ID 查询会话"}。${r.action === "release" ? "交回须以会话 closed 为准；接受请求不代表已释放。" : "未决或网络错误只查询原 ID，不自动重发动作。"}${r.error ? " " + r.error : ""}` : "尚无动作。接受请求只表示已记录，须查询实际完成状态。";
+    $("request-info").textContent = (r && HGTarget.problem(r.target || null)) || (r ? `${ACTION[r.action]}：${requestStatus(r)}。请求 ID ${r.id}${r.session_id ? "；会话 " + r.session_id : "；按接管请求 ID 查询会话"}。${r.action === "release" ? "交回须以会话 closed 为准；接受请求不代表已释放。" : "未决或网络错误只查询原 ID，不自动重发动作。"}${r.error ? " " + r.error : ""}` : "尚无动作。接受请求只表示已记录，须查询实际完成状态。");
     $("out").textContent = r?.receipt ? JSON.stringify(r.receipt, null, 2) : r?.error || "";
   }
   function render() {
@@ -135,12 +137,12 @@
     if (!state.devices.length) { const p = document.createElement("li"); p.className = "note"; p.textContent = state.devicesFresh ? "当前目录没有设备" : "设备目录尚未确认"; $("devices").append(p); }
     const d = selectedDevice(), reason = sessionReason(), h = d?.holder;
     const reconnect = !state.binding && h?.kind === "remote" && h.session_id;
-    const canTake = state.op && state.devicesFresh && d?.enabled && actionSupported("acquire") && !state.posting && !state.authBusy
+    const canTake = HGTarget.canWrite() && state.op && state.devicesFresh && d?.enabled && actionSupported("acquire") && !state.posting && !state.authBusy
       && !state.binding && (!h || reconnect);
     $("cur-serial").textContent = state.serial || "";
     $("take").textContent = reconnect ? "连接已有会话" : "接管设备"; $("take").disabled = !canTake;
     $("release").disabled = !canAction("release"); $("renew").disabled = !canAction("renew");
-    $("check-session").disabled = !state.op || !state.serial || state.refreshing || state.authBusy || state.posting || !(state.binding || reconnect);
+    $("check-session").disabled = !!(state.binding && HGTarget.problem(state.binding.target || null)) || !state.op || !state.serial || state.refreshing || state.authBusy || state.posting || !(state.binding || reconnect);
     $("check-session").textContent = state.refreshing ? "查询中…" : "查询会话";
     $("ops").disabled = !!reason || state.posting || state.authBusy || unresolved();
     document.querySelectorAll("[data-action], [data-key]").forEach(b => { const action = b.dataset.action || "key"; b.disabled = !canAction(action); b.title = actionSupported(action) ? reason || (unresolved() ? "先查询未决动作" : "") : "当前设备未声明支持此动作"; });
@@ -187,7 +189,7 @@
   }
   async function readSession(binding, signal) {
     const params = binding.session_id ? { session_id: binding.session_id } : { acquisition_id: binding.acquisition_id };
-    return call("GET", dev(binding.serial, "session") + query(params), null, { signal });
+    return call("GET", dev(binding.serial, "session") + query(params), null, { signal, target: binding.target || null });
   }
   async function refresh() {
     if (state.refreshing || state.authBusy || state.posting || document.hidden) return;
@@ -214,7 +216,7 @@
     } finally { if (state.refreshCtl === ctl) { state.refreshCtl = null; state.refreshing = false; render(); } }
   }
   function addRequest(action, session_id) {
-    const r = { id: crypto.randomUUID(), serial: state.serial, session_id: session_id || null, action, status: "unknown", at: Date.now() };
+    const r = { id: crypto.randomUUID(), serial: state.serial, session_id: session_id || null, action, status: "unknown", at: Date.now(), target: HGTarget.binding() };
     state.requests = state.requests.filter((item, i, all) => !TERMINAL.has(item.status) || i >= all.length - 19);
     state.requests.push(r); state.selectedRequest = r.id; save(); return r;
   }
@@ -229,7 +231,7 @@
   }
   async function showImage(r, image, knownMeta) {
     let response = image;
-    if (!response) response = await call("GET", dev(r.serial, "requests/" + encodeURIComponent(r.id)) + query({ session_id: r.session_id, image: "1" }));
+    if (!response) response = await call("GET", dev(r.serial, "requests/" + encodeURIComponent(r.id)) + query({ session_id: r.session_id, image: "1" }), null, {target:r.target || null});
     const meta = response.meta || knownMeta;
     if (!response.blob || !meta || meta.request_id !== r.id || meta.session_id !== r.session_id || meta.status !== "completed") throw new Error("截图身份未确认，保留旧图并查询原请求");
     const result = meta.result || knownMeta || {};
@@ -258,7 +260,7 @@
     render();
     try {
       const path = dev(r.serial, action === "release" ? "session" : action);
-      const response = await call(action === "release" ? "DELETE" : "POST", path, { ...body, request_id: r.id, session_id: r.session_id });
+      const response = await call(action === "release" ? "DELETE" : "POST", path, { ...body, request_id: r.id, session_id: r.session_id }, {target:r.target || null});
       if (response.blob) { receipt(r, response.meta); if (action === "screenshot") await displayImage(r, response); }
       else {
         receipt(r, response);
@@ -276,9 +278,9 @@
       await connectExisting(holder); return;
     }
     supersedeRead();
-    const r = addRequest("acquire", null), binding = { serial: state.serial, acquisition_id: r.id };
+    const r = addRequest("acquire", null), binding = { serial: state.serial, acquisition_id: r.id, target:r.target };
     state.binding = binding; state.posting = true; state.sessionFresh = false; save(); render();
-    try { const s = await call("POST", dev(r.serial, "session"), { request_id: r.id }); applySession(s, binding); msg(sessionText(s)); }
+    try { const s = await call("POST", dev(r.serial, "session"), { request_id: r.id }, {target:r.target || null}); applySession(s, binding); msg(sessionText(s)); }
     catch (e) {
       unknownRequest(r, e);
       if (r.status === "failed") { state.binding = null; save(); }
@@ -286,7 +288,7 @@
   }
   async function connectExisting(holder) {
     if (state.posting || !state.op) return;
-    const binding = { serial: state.serial, session_id: holder.session_id };
+    const binding = { serial: state.serial, session_id: holder.session_id, target:HGTarget.binding() };
     supersedeRead(); state.posting = true; render();
     try { const s = await readSession(binding); applySession(s, binding); msg("已读取会话：" + sessionText(s)); }
     catch (e) { state.sessionFresh = false; msg("无法连接此会话：" + e.message, true); }
@@ -299,12 +301,12 @@
     state.querying = true; render();
     try {
       if (r.action === "acquire") {
-        const binding = { serial: r.serial, acquisition_id: r.id }, s = await readSession(binding);
+        const binding = { serial: r.serial, acquisition_id: r.id, target:r.target || null }, s = await readSession(binding);
         validateSession(s, binding);
         if (revision === state.revision && state.serial === r.serial && (!state.binding || state.binding.acquisition_id === r.id || state.binding.session_id === s.session_id)) applySession(s, binding);
         r.status = acquisitionStatus(s); r.session_id = s.session_id; r.receipt = s; r.error = s.error || null;
       } else {
-        const response = await call("GET", dev(r.serial, "requests/" + encodeURIComponent(r.id)) + query({ session_id: r.session_id }));
+        const response = await call("GET", dev(r.serial, "requests/" + encodeURIComponent(r.id)) + query({ session_id: r.session_id }), null, {target:r.target || null});
         receipt(r, response);
         if (r.action === "screenshot" && r.status === "completed" && response.result) await displayImage(r, null, { ...response.result, request_id: r.id, session_id: r.session_id, status: r.status });
       }
@@ -329,10 +331,11 @@
       else act("tap", { x: d.p[0], y: d.p[1] });
     });
   }
+  document.addEventListener("hgamey-target-change", () => { if (!HGTarget.canWrite()) invalidateFrame(); render(); });
   $("op-login").addEventListener("submit", async ev => {
     ev.preventDefault(); if (state.authBusy) return; supersedeRead(); state.authBusy = true; render();
     const token = $("op-token").value.trim(); $("op-token").value = "";
-    try { const r = await call("POST", "/login", { token }); setOp(r.operator); msg("已登录，正在查询会话。"); }
+    try { const r = await call("POST", "/login", { token }); setOp(r.operator); await HGTarget.refresh(); msg("已登录，正在查询会话。"); }
     catch (e) { msg(e.message, true); }
     finally { state.authBusy = false; render(); refresh(); }
   });

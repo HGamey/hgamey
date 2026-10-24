@@ -12,12 +12,12 @@
   let nodeInfo = null;
   const preparing = new Set(), pending = new Map(), receipts = new Map();
   const uploads = window.createGameUploads({
-    context: () => ({node: nodeInfo, canWrite: directoryReady && access?.steer && !accessBusy, detailFresh, selected, disposed}),
+    context: () => ({node: nodeInfo, canWrite: directoryReady && access?.steer && HGTarget.canWrite() && !accessBusy, detailFresh, selected, disposed}),
     refresh: binding => current && selected === `${binding.game_id}/${binding.version}` ? selectVersion(current, true) : Promise.resolve(),
     auth: loadAccess
   });
   const deployments = window.createGameDeployments({
-    context: () => ({node: nodeInfo, record: current, canWrite: directoryReady && access?.steer && !accessBusy, detailFresh, selected, disposed}),
+    context: () => ({node: nodeInfo, record: current, canWrite: directoryReady && access?.steer && HGTarget.canWrite() && !accessBusy, detailFresh, selected, disposed}),
     refresh: binding => current && selected === `${binding.game_id}/${binding.version}` ? selectVersion(current, true) : Promise.resolve(),
     auth: loadAccess
   });
@@ -48,7 +48,7 @@
   }
   function jobLink(job) { return safeLink(job.job_url, `/dash/jobs#job=${encodeURIComponent(job.id)}`); }
   function savePending() {
-    try { sessionStorage.setItem(PENDING_KEY, JSON.stringify([...pending.values()].map(({game_id, version, request_id, conflict}) => ({game_id, version, request_id, conflict: !!conflict})))); }
+    try { sessionStorage.setItem(PENDING_KEY, JSON.stringify([...pending.values()].map(({game_id, version, request_id, target, conflict}) => ({game_id, version, request_id, target, conflict: !!conflict})))); }
     catch (_) { /* Request IDs remain visible for manual lookup. */ }
   }
   function saveRegistrationPending() {
@@ -63,8 +63,8 @@
       if (registration && validID(registration.game_id) && validID(registration.version)) registrationPending = registration;
     } catch (_) { /* Invalid browser data does not establish server state. */ }
   }
-  async function request(path, {body, requestID, signal} = {}) {
-    const response = await fetch(path, {credentials: 'same-origin', cache: 'no-store', signal, ...(body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-HG': '1', ...(requestID ? {'X-Request-ID': requestID} : {})}, body: JSON.stringify(body)})});
+  async function request(path, {body, requestID, signal, target} = {}) {
+    const response = await HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', signal, ...(body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-HG': '1', ...(requestID ? {'X-Request-ID': requestID} : {})}, body: JSON.stringify(body)})}, target === undefined ? {} : {target});
     if (response.status === 401 || response.status === 403 || (response.redirected && new URL(response.url).pathname === '/dash/login')) {
       const error = new Error(response.status === 403 ? '没有此操作的权限，请核对掌舵权限。' : '登录已失效，请重新登录。'); error.status = response.status; error.auth = true; throw error;
     }
@@ -73,16 +73,16 @@
     if (!response.ok) { const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || `请求失败（HTTP ${response.status}）`); error.status = response.status; throw error; }
     return value;
   }
-  async function post(path, body, requestID) {
+  async function post(path, body, requestID, target) {
     const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 15000);
-    try { return await request(path, {body, requestID, signal: controller.signal}); } finally { clearTimeout(timeout); }
+    try { return await request(path, {body, requestID, target, signal: controller.signal}); } finally { clearTimeout(timeout); }
   }
   function renderAccess() {
     $('access-toggle').disabled = accessBusy || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定操作' : '解锁操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
     message('access-message', accessError || (accessBusy ? '正在核对操作权限…' : !access ? '权限未知，保持只读。' : !access.steer_configured ? '本节点未配置掌舵密码，保持只读。' : access.steer ? '可登记、准备资源；设备操作需在准备区显式提交新装、初始化、资源部署或场景诊断任务。' : '可查看清单、缓存与原任务；登记、资源准备和设备操作需解锁。'), !!accessError);
-    const allowed = directoryReady && access?.steer && !accessBusy;
+    const allowed = directoryReady && access?.steer && HGTarget.canWrite() && !accessBusy;
     $('register-open').disabled = !allowed || registrationBusy;
     $('register-submit').disabled = !allowed || registrationBusy || !!registrationPending;
     $('register-submit').textContent = registrationBusy ? '正在核对…' : '保存清单';
@@ -90,7 +90,7 @@
     $('manifest-input').disabled = registrationBusy || !!registrationPending;
     $('manifest-preview').disabled = registrationBusy || !!registrationPending;
     $('register-query').hidden = !registrationPending;
-    $('register-query').disabled = registrationBusy;
+    $('register-query').disabled = registrationBusy || !!(registrationPending && HGTarget.problem(registrationPending.target || null));
     $('registration-close').disabled = registrationBusy;
     renderPrepare();
   }
@@ -147,16 +147,16 @@
   async function registerManifest() {
     if ($('register-submit').disabled) return;
     let manifest; try { manifest = parseManifest(); } catch (error) { message('registration-message', error.message, true); return; }
-    const selectionVersion = detailRevision;
+    const selectionVersion = detailRevision, target = HGTarget.binding();
     registrationBusy = true; renderAccess(); message('registration-message', '正在登记，写入不会自动重试…');
     try {
-      const record = await post(`${API}/games`, manifest);
+      const record = await post(`${API}/games`, manifest, undefined, target);
       if (record.game_id !== manifest.game_id || record.version !== manifest.version) throw new Error('登记回包未确认提交的版本。');
       records.set(keyOf(record), record); renderList(); message('registration-message', '清单已确认登记；相同内容复用原记录。资源尚需单独提交准备任务。');
       if (!disposed && detailRevision === selectionVersion) await selectVersion(record);
     } catch (error) {
       if (!error.status || error.status >= 500 || error.status === 409) {
-        registrationPending = {game_id: manifest.game_id, version: manifest.version}; saveRegistrationPending();
+        registrationPending = {game_id: manifest.game_id, version: manifest.version, target}; saveRegistrationPending();
         message('registration-message', error.status === 409 ? '同名版本内容冲突，不能覆盖。先读取原清单核对；修改内容请使用新 version。' : `${error.message} 登记结果未知，请读取 ${manifest.game_id}/${manifest.version}；不会自动重发。`, true);
       } else message('registration-message', `登记未确认：${error.message}`, true);
       if (error.auth) await loadAccess();
@@ -166,7 +166,7 @@
     if (!registrationPending || registrationBusy) return;
     const expected = registrationPending, selectionVersion = detailRevision; registrationBusy = true; renderAccess();
     try {
-      const record = await request(versionPath(expected));
+      const record = await request(versionPath(expected), {target: expected.target || null});
       if (record.game_id !== expected.game_id || record.version !== expected.version) throw new Error('回包版本不匹配。');
       registrationPending = null; saveRegistrationPending(); records.set(keyOf(record), record); renderList();
       message('registration-message', '找到已登记的同名版本。请核对下方完整清单；没有重新写入，不能仅凭同名断定内容相同。修改请使用新 version。');
@@ -225,7 +225,7 @@
     const preparations = orderedPreparations(record), attempt = pending.get(keyOf(record));
     if (attempt) {
       const known = preparations.find(job => job.request_id === attempt.request_id);
-      if (known) { pending.delete(keyOf(record)); savePending(); receipts.set(keyOf(record), {job: known, message: '已从本版本持久记录找回原准备任务；资源状态仍以当前校验观测为准。'}); }
+      if (known && !HGTarget.problem(attempt.target || null)) { pending.delete(keyOf(record)); savePending(); receipts.set(keyOf(record), {job: known, message: '已从本版本持久记录找回原准备任务；资源状态仍以当前校验观测为准。'}); }
     }
     renderAssets(record, preparations); renderPreparations(preparations); renderPrepare();
   }
@@ -248,26 +248,26 @@
   }
   function renderPrepare() {
     uploads.update(); deployments.update();
-    const attempt = pending.get(selected), receipt = receipts.get(selected), busy = preparing.has(selected), jobs = current?.preparations || [];
+    const attempt = pending.get(selected), targetIssue = attempt ? HGTarget.problem(attempt.target || null) : HGTarget.problem(), receipt = receipts.get(selected), busy = preparing.has(selected), jobs = current?.preparations || [];
     const active = jobs.some(job => job.state !== 'finished'), blocked = jobs.some(job => job.queue?.state === 'blocked');
-    const allowed = directoryReady && access?.steer && !accessBusy;
+    const allowed = directoryReady && access?.steer && HGTarget.canWrite() && !accessBusy;
     $('prepare-submit').disabled = !current || !detailFresh || !allowed || busy || !!attempt || active || blocked || current.resource_state === 'verified' || !globalThis.crypto?.randomUUID;
     $('prepare-submit').textContent = busy ? '正在提交…' : jobs.length ? '新建准备尝试' : '提交准备任务';
     $('prepare-submit').setAttribute('aria-busy', String(busy));
     $('prepare-retry').hidden = !attempt || attempt.conflict;
-    $('prepare-retry').disabled = !attempt || !allowed || busy;
-    $('prepare-query').hidden = !attempt; $('prepare-query').disabled = busy || lookupBusy;
+    $('prepare-retry').disabled = !attempt || !allowed || !!targetIssue || busy;
+    $('prepare-query').hidden = !attempt; $('prepare-query').disabled = busy || lookupBusy || !!targetIssue;
     $('prepare-request').textContent = attempt ? `未确认请求 ID：${attempt.request_id} · ${attempt.game_id}/${attempt.version}` : receipt?.job?.request_id ? `准备请求 ID：${receipt.job.request_id}` : '';
     $('prepare-job').hidden = !receipt?.job; if (receipt?.job) $('prepare-job').href = jobLink(receipt.job);
     message('prepare-message', receipt?.message || '', !!receipt?.error);
-    message('prepare-help', attempt ? '保留原请求 ID 与版本。先查询；重试只发送同一 ID 的空请求体，不创建新 ID。' : !current || !detailFresh ? '先成功读取当前版本与资源状态。' : !directoryReady ? '目录接口尚未确认可用。' : !access?.steer || accessBusy ? '请先解锁操作权限。' : active ? '已有未结束的准备任务，请刷新或打开同一任务查看进度。' : blocked ? '旧准备任务仍保留资源，请先打开该任务核查。' : current.resource_state === 'verified' ? '本节点资源已有校验记录。设备状态仍未知；刷新版本可核对缓存身份是否改变。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '创建持久宿主任务，执行下载、导入与校验；不安装、不操作设备。失败或取消后新尝试使用新请求 ID，沿用内容缓存。');
+    message('prepare-help', targetIssue || (attempt ? '保留原请求 ID 与版本。先查询；重试只发送同一 ID 的空请求体，不创建新 ID。' : !current || !detailFresh ? '先成功读取当前版本与资源状态。' : !directoryReady ? '目录接口尚未确认可用。' : !access?.steer || accessBusy ? '请先解锁操作权限。' : active ? '已有未结束的准备任务，请刷新或打开同一任务查看进度。' : blocked ? '旧准备任务仍保留资源，请先打开该任务核查。' : current.resource_state === 'verified' ? '本节点资源已有校验记录。设备状态仍未知；刷新版本可核对缓存身份是否改变。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '创建持久宿主任务，执行下载、导入与校验；不安装、不操作设备。失败或取消后新尝试使用新请求 ID，沿用内容缓存。'));
   }
   async function prepare(retry = false) {
     if ($(retry ? 'prepare-retry' : 'prepare-submit').disabled) return;
-    const key = selected, identity = retry ? pending.get(key) : {game_id: current.game_id, version: current.version, request_id: crypto.randomUUID()};
+    const key = selected, identity = retry ? pending.get(key) : {game_id: current.game_id, version: current.version, request_id: crypto.randomUUID(), target: HGTarget.binding()};
     pending.set(key, identity); savePending(); preparing.add(key); receipts.set(key, {message: '正在提交原请求，节点可能已记录；不会自动重试。'}); renderPrepare();
     try {
-      const job = await post(versionPath(identity) + '/prepare', {}, identity.request_id);
+      const job = await post(versionPath(identity) + '/prepare', {}, identity.request_id, identity.target || null);
       if (!job?.id || job.request_id !== identity.request_id || job.bin !== 'bundle_prepare') throw new Error('回包未确认此资源准备请求。');
       pending.delete(key); savePending(); receipts.set(key, {job, message: `准备任务已记录：${job.id} · ${jobState(job)[0]}。接受任务不代表资源已校验。`});
       if (!disposed && selected === key) await selectVersion(identity, true);
@@ -282,7 +282,7 @@
     if (lookupBusy || !requestID.trim()) return;
     lookupBusy = true; $('request-lookup').disabled = true; $('request-lookup').setAttribute('aria-busy', 'true'); $('lookup-job').hidden = true; message('lookup-message', '正在查询原请求…'); renderPrepare();
     try {
-      const job = await request(`${API}/requests/${encodeURIComponent(requestID.trim())}`);
+      const job = await request(`${API}/requests/${encodeURIComponent(requestID.trim())}`, {target: expectedKey ? pending.get(expectedKey)?.target || null : HGTarget.binding()});
       if (!job?.id || job.request_id !== requestID.trim()) throw new Error('回包未匹配请求 ID。');
       $('lookup-job').href = jobLink(job); $('lookup-job').hidden = false;
       if (job.bin !== 'bundle_prepare') {
@@ -314,6 +314,7 @@
   $('lookup-form').addEventListener('submit', event => { event.preventDefault(); const id = $('request-id').value.trim(); const owner = [...pending].find(([, value]) => value.request_id === id); lookup(id, owner?.[0] || null); });
   window.addEventListener('pagehide', () => { disposed = true; deployments.stop(); uploads.pause('页面已离开，停止发送；原上传 ID 保留，回来后重选文件并查询续传。'); ++listRevision; ++detailRevision; detailController?.abort(); closeUnlock(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { disposed = false; loadAccess(); loadNode(); loadGames(); if (current) selectVersion(current, true); } });
+  document.addEventListener('hgamey-target-change', () => { renderAccess(); if(registrationPending && HGTarget.problem(registrationPending.target || null)) message('registration-message', HGTarget.problem(registrationPending.target || null), true); });
   readSaved(); renderAccess(); loadAccess(); loadNode();
   if (registrationPending) { $('registration-panel').hidden = false; message('registration-message', `有未确认登记 ${registrationPending.game_id}/${registrationPending.version}。先读取原版本，未保存旧清单草稿。`); }
   const hash = new URLSearchParams(location.hash.slice(1)), initial = {game_id: hash.get('game'), version: hash.get('version')};

@@ -11,7 +11,7 @@
   const S = { state: null, exps: [], expsVer: "", selJob: null, userPickedJob: false, selExp: null, userPickedExp: false, logText: "", fails: 0, shotAt: 0 };
 
   async function getJSON(url) {
-    const r = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+    const r = await HGTarget.fetch(url, { cache: "no-store", credentials: "same-origin" });
     if (r.status === 401) { location.href = "/dash/login"; throw new Error("401"); }
     if (!r.ok) throw new Error(r.status);
     return r.json();
@@ -91,7 +91,7 @@
     // 画面
     const box = document.querySelector(".shot-box");
     if (st.shot) {
-      if (st.shot.at !== S.shotAt) { S.shotAt = st.shot.at; $("shot").src = `/dash/api/shot?t=${st.shot.at}`; }
+      if (HGTarget.canWrite() && st.shot.at !== S.shotAt) { S.shotAt = st.shot.at; $("shot").src = HGTarget.url(`/dash/api/shot?t=${st.shot.at}`); }
       $("shot").hidden = false; $("shot-empty").hidden = true;
       $("shot-age").textContent = `截于 ${ago(st.shot.age_s)}`;
     } else { $("shot").hidden = true; $("shot-empty").hidden = false; $("shot-age").textContent = ""; }

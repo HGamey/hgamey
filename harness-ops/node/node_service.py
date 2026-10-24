@@ -657,6 +657,51 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def parse_request(self):
+            self._target_continue = False
+            if not super().parse_request():
+                return False
+            if not self._target_guard():
+                return False
+            if self._target_continue:
+                return super().handle_expect_100()
+            return True
+
+        def handle_expect_100(self):
+            # Do not invite a large request body until its target is checked.
+            self._target_continue = True
+            return True
+
+        def _target_guard(self):
+            # Bind the connection before routing, consuming an upload body or
+            # activating observation. Legacy requests without a pin remain
+            # readable/executable under their existing authorization contract.
+            parsed = urlparse(self.path)
+            headers = self.headers.get_all("X-Expected-Node-ID", [])
+            query = parse_qs(parsed.query, keep_blank_values=True).get("expected_node_id", [])
+            values = headers + query
+            if not values:
+                return True
+            if (len(headers) > 1 or len(query) > 1
+                    or any(not re.fullmatch(r"[0-9a-f]{32}", v) for v in values)
+                    or len(set(values)) != 1):
+                code, error, message = 400, "invalid_target", "expected node must be one consistent 32-character identity"
+            else:
+                # A page shell must load to explain a changed backend. Its
+                # subsequent API/media requests carry the pin and are checked.
+                page = parsed.path.rstrip("/") in {
+                    "/dash", "/dash/jobs", "/dash/games", "/dash/fleet",
+                    "/dash/control", "/dash/live", "/dash/maint", "/dash/login",
+                }
+                if (page and self.command == "GET" and not headers
+                        or parsed.path == "/dash/login" and not headers
+                        or values[0] == node.node_id):
+                    return True
+                code, error, message = 409, "target_mismatch", "connected node differs from the expected target; original request was not routed"
+            self.close_connection = True
+            self._send(code, {"code": error, "error": message}, extra={"Connection": "close"})
+            return False
+
         def log_message(self, *a):
             pass
 
@@ -696,7 +741,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             u = urlparse(self.path)
             parts = [p for p in u.path.split("/") if p]
             if remote and (parts[:1] == ["remote"] or parts[:3] == ["dash", "api", "remote"] or parts == ["dash", "control"]):
-                node_remote.handle(remote, self, method, parts, u.query, board)
+                node_remote.handle(remote, self, method, parts, u.query, board, node=node)
                 return True
             return False
 
