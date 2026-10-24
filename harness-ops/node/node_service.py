@@ -34,6 +34,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from node_fleet import FleetState
 from node_directory import NodeDirectory, DirectoryError
+from node_games import NodeGames, GameError, MAX_MANIFEST
 import job_runtime
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
@@ -239,6 +240,8 @@ class Jobs:
         external_lock = binname in {"adb", "fetch_apk"}
         if external_lock and spec.get("exe"):
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
+        if binname == "fetch_apk" and (len(argv) != 4 or any(a.startswith("--cache-root") for a in argv)):
+            raise ValueError("fetch_apk requires source, byte size, explicit serial and sha256; cache root is node-owned")
         resources = spec.get("resources", ["legacy-device"] if binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"} else [])
         access = device_access(spec)
         if access not in {"none", "write", "recovery"}:
@@ -293,6 +296,8 @@ class Jobs:
                 raise ValueError("exe 只能是本任务上传的文件 @in/...")
             os.chmod(exe, 0o755)
         command = [exe] + [sub(a) for a in effective_argv]
+        if binname == "fetch_apk":
+            command = [exe, "--cache-root", os.path.join(self.data_root, "_games", "cache")] + command[1:]
         if external_lock:
             command = [self.bins["devlock"][0], "run", owner, "--"] + command
         self._read_root.write_json(jid + "/prepared.json", {"command": command, "cwd": cwd})
@@ -619,6 +624,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
     if not hasattr(jobs, "directory"):
         jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
     directory = jobs.directory
+    if not hasattr(jobs, "games"):
+        jobs.games = NodeGames(jobs, node.node_id)
+    games = jobs.games
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
         jobs.root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     class H(BaseHTTPRequestHandler):
@@ -671,7 +679,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -689,6 +697,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["games"]:
+                    return self._send(200, games.list())
+                if len(parts) == 4 and parts[0] == "games" and parts[2] == "versions":
+                    return self._send(200, games.get(unquote(parts[1]), unquote(parts[3])))
                 if parts[:1] == ["nodes"] and len(parts) <= 2:
                     refresh = q.get("refresh", ["0"])[0]
                     devices = q.get("devices", ["0"])[0]
@@ -744,7 +756,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
-            except DirectoryError as e:
+            except (DirectoryError, GameError) as e:
                 return self._send(e.status, {"error": str(e)})
             except SessionError as e:
                 return self._send(e.status, e.payload)
@@ -835,6 +847,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
+                if parts[:1] == ["games"]:
+                    if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_MANIFEST:
+                        self.close_connection = True
+                        return self._send(413, {"error": "game request exceeds 64 KiB"})
+                    if "application/json" not in self.headers.get("Content-Type", ""):
+                        self.close_connection = True
+                        return self._send(400, {"error": "game request requires application/json"})
+                    code, result = games.write([unquote(p) for p in parts], json.loads(self._body() or b"{}"),
+                                               self.headers.get("X-Request-ID"))
+                    return self._send(code, result)
                 if parts[:1] == ["nodes"] and len(parts) <= 2:
                     if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_REQUEST:
                         self.close_connection = True
@@ -905,7 +927,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None):
                     if not isinstance(data, dict):
                         raise ValueError("release body must be an object")
                     return self._send(200, jobs.release_queue(parts[1], data.get("note")))
-            except DirectoryError as e:
+            except (DirectoryError, GameError) as e:
                 return self._send(e.status, {"error": str(e)})
             except sqlite3.Error as e:
                 jobs.dispatch.last_error = f"{type(e).__name__}: {e}"
@@ -979,6 +1001,7 @@ def main():
         srv.serve_forever()
     finally:
         jobs.directory.close()
+        jobs.games.close()
         fleet.close()
         srv.server_close()
 

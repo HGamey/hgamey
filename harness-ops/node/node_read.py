@@ -76,7 +76,7 @@ class NodeRead:
                 "storage": {"jobs_root": os.path.abspath(self.jobs.dir), "data_root": self.data_root},
                 "execution": {"bins": sorted(self.jobs.bins), "max_running": self.jobs.dispatch.max_running,
                               "process_policies": process_policies()},
-                "capabilities": ["fleet.read", "fleet.cached-v1", "fleet.directory-v1",
+                "capabilities": ["fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1",

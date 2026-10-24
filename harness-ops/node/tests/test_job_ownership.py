@@ -65,10 +65,12 @@ class JobOwnershipTests(unittest.TestCase):
     def test_raw_commands_use_devlock_and_lease_helper_stays_unwrapped(self):
         for name in ("adb", "fetch_apk"):
             with self.subTest(bin=name):
-                meta = self.jobs.start({"bin": name, "argv": ["argument with spaces"]}, b"")
+                argv = ["argument with spaces"] if name == "adb" else ["fixture.apk", "7", "fixture-serial", "a" * 64]
+                cache = [] if name == "adb" else ["--cache-root", os.path.join(self.jobs.data_root, "_games", "cache")]
+                meta = self.jobs.start({"bin": name, "argv": argv}, b"")
                 self.assertEqual(self.jobs._read_root.read_json(meta["id"] + "/prepared.json")["command"],
                                  [self.bins["devlock"][0], "run", meta["lock_label"], "--",
-                                  self.bins[name][0], "argument with spaces"])
+                                  self.bins[name][0], *cache, *argv])
                 self.assertEqual(meta["lock_mode"], "devlock_run")
                 with self.assertRaisesRegex(ValueError, "lease helper"):
                     self.jobs.start({"bin": name, "exe": "@in/helper"}, b"")

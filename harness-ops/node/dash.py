@@ -31,8 +31,9 @@
   POST /dash/api/goal/draft|confirm        新目标起草 / 确认并开跑（掌舵密码）
 """
 import collections, glob, hashlib, hmac, json, os, re, threading, time
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 from node_directory import DirectoryError
+from node_games import GameError, MAX_MANIFEST
 
 import dash_goals
 import sqlite3
@@ -365,9 +366,9 @@ class Dash:
             if sub and sub[0] == "api":
                 return self._send(h, 401, {"error": "需要查看密码"}, extra={"WWW-Authenticate": 'Basic realm="HGamey dash"'})
             return self._redirect(h, "/dash/login")
-        if sub in (["jobs"], ["fleet"]):
+        if sub in (["jobs"], ["fleet"], ["games"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()
@@ -459,6 +460,12 @@ class Dash:
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:
+            if sub[:2] == ["api", "games"]:
+                if len(body) > MAX_MANIFEST:
+                    return self._send(h, 413, {"error": "game request exceeds 64 KiB"})
+                code, result = self.job_service.games.write([unquote(p) for p in sub[1:]], data,
+                                                           h.headers.get("X-Request-ID"))
+                return self._send(h, code, result)
             if sub[:2] == ["api", "nodes"] and len(sub) in (2, 3):
                 if len(body) > MAX_REQUEST:
                     return self._send(h, 413, {"error": "node registration exceeds 64 KiB"})
@@ -502,7 +509,7 @@ class Dash:
                 r = self.goals.confirm(str(data.get("id", "")), data.get("goal_md"), ip)
             else:
                 return self._send(h, 404, {"error": "not found"})
-        except DirectoryError as e:
+        except (DirectoryError, GameError) as e:
             return self._send(h, e.status, {"error": str(e)})
         except sqlite3.Error as e:
             self.job_service.dispatch.last_error = f"{type(e).__name__}: {e}"
@@ -516,7 +523,7 @@ class Dash:
         except PolicyUnavailable as e:
             return self._send(h, 422, e.payload)
         except ValueError as e:
-            return self._send(h, 400 if sub[:2] == ["api", "jobs"] else 409, {"error": str(e)})
+            return self._send(h, 400 if sub[:2] in (["api", "jobs"], ["api", "games"]) else 409, {"error": str(e)})
         log_err(f"dash 掌舵 {'/'.join(sub[1:])} 来自 {ip}: {json.dumps(r, ensure_ascii=False)[:200]}")
         return self._send(h, 200, r)
 

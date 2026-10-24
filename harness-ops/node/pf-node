@@ -27,6 +27,10 @@
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
+  pf-node games list|show ID VERSION       # 本节点游戏清单、资源状态与准备历史
+  pf-node games register FILE             # 仅登记 JSON 清单，不上传其中引用的大文件
+  pf-node games prepare ID VERSION [--request-id ID] # 异步准备宿主资源，不安装或启动游戏
+  pf-node games request REQUEST_ID        # 找回同一次准备任务，不自动重发
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 
 - 参数里凡是本机存在的文件/目录（含 --flag=路径 的写法）自动打包上传，在节点上替换成对应路径。
@@ -620,6 +624,9 @@ def main():
             sys.exit("pf-node: 恢复任务继承父任务资源，不能同时使用 --resource")
     elif recovery_for is not None:
         sys.exit("pf-node: --recovery-for 必须与 --device-access recovery 一起使用")
+    if args[0] == "games":
+        from game_client import main as games_main
+        raise SystemExit(games_main(args[1:], url=URL, token=TOKEN, request_id=request_id))
     if args[0] == "execution-reconcile":
         return execution_reconcile_command(args)
     if args[0] == "session-recover":

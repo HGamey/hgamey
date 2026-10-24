@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>游戏与资源 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/jobs.css">
+<link rel="stylesheet" href="/dash/static/games.css">
+</head>
+<body class="jobs-view games-view">
+<a class="skip-link" href="#games-heading">跳到游戏版本目录</a>
+<header class="top">
+  <div class="brand-row"><a class="logo" href="/dash" aria-label="HGamey 首页">HG</a><span class="brand-name">HGamey</span><nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games" aria-current="page">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/maint">维护</a></nav></div>
+  <div class="top-right"><button id="refresh-all" class="ghost" type="button">刷新记录</button><form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form></div>
+</header>
+<main class="jobs-page games-page">
+  <div class="page-heading"><div><p class="eyebrow">研究工作台</p><h1>游戏与资源</h1><p class="page-description">登记不可变版本清单，在本节点准备资源，再沿同一任务核对进度与原件。</p></div><button id="register-open" class="ghost primary" type="button" disabled>登记版本清单</button></div>
+  <section class="node-card" aria-labelledby="node-heading"><div class="node-context"><div><h2 id="node-heading">资源所在节点</h2><p id="node-summary" class="node-summary">正在读取…</p></div><a href="/dash/fleet">节点目录</a></div><p id="node-message" class="note" role="status">本页准备宿主资源，不自动分发到其他节点。</p></section>
+  <section class="access-panel" aria-labelledby="access-heading">
+    <div class="access-row"><div><h2 id="access-heading">资源操作权限</h2><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁操作</button></div>
+    <form id="unlock-form" class="unlock-form" autocomplete="off" hidden><label for="steer-password">掌舵密码</label><div class="unlock-input"><input id="steer-password" type="password" autocomplete="off" required><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-close" class="ghost" type="button">取消</button></div><p id="unlock-message" class="note" role="status"></p></form>
+    <a id="login-link" href="/dash/login" hidden>重新登录</a>
+  </section>
+  <section id="registration-panel" class="game-registration" aria-labelledby="registration-heading" hidden>
+    <div class="section-heading"><h2 id="registration-heading">登记版本清单</h2><button id="registration-close" class="ghost" type="button">收起</button></div>
+    <p class="note">相同 game_id / version 的内容不可变。重复相同内容会复用原记录；更改内容请使用新 version。登记只保存清单，不下载资源。</p>
+    <form id="registration-form"><label for="manifest-input">JSON 清单</label><textarea id="manifest-input" rows="12" spellcheck="false" required aria-describedby="manifest-help">{
+  "schema_version": 1,
+  "game_id": "",
+  "version": "",
+  "title": "",
+  "assets": []
+}</textarea>
+      <p id="manifest-help" class="note">每项资源需 name、role、sha256、size、source。来源支持公开 URL、本节点 job/out 产物或 unavailable；URL 不含凭据及查询串。最多 64 KiB，由服务端核验。</p>
+      <details class="manifest-example"><summary>查看资源字段示例</summary><pre class="command-box">{"name":"game-data","role":"data","sha256":"填写真实的 64 位小写 SHA-256","size":0,"source":{"kind":"unavailable","reason":"待提供可用来源"}}</pre><p class="note">示例占位值需要替换为真实记录。缺源资源可登记，准备时会明确报告缺源。</p></details>
+      <div class="submission-actions"><button id="manifest-preview" class="ghost" type="button">检查 JSON 概要</button><button id="register-submit" class="ghost primary" type="submit" disabled>保存清单</button><button id="register-query" class="ghost" type="button" hidden>读取同名版本</button></div>
+      <p id="manifest-summary" class="note" role="status"></p><p id="registration-message" class="note" role="status"></p>
+    </form>
+  </section>
+  <div class="games-layout">
+    <section class="game-browser" aria-labelledby="games-heading"><div class="section-heading"><h2 id="games-heading" tabindex="-1">游戏版本</h2><span id="game-count" class="count-label"></span></div><label class="game-search">查找游戏或版本<input id="game-search" type="search" placeholder="名称、ID 或版本"></label><p id="list-message" class="note" role="status">正在读取目录…</p><ul id="game-list" class="game-list" aria-label="游戏版本目录"></ul></section>
+    <section id="game-detail" class="game-detail" aria-labelledby="detail-heading">
+      <div class="section-heading"><h2 id="detail-heading" tabindex="-1">版本与资源</h2><button id="refresh-detail" class="ghost" type="button" disabled>刷新所选版本</button></div>
+      <p id="detail-message" class="note" role="status">选择版本，查看资源观测和准备记录。</p>
+      <div id="detail-content" hidden>
+        <div class="game-title"><h3 id="game-title"></h3><span id="resource-state" class="task-state unknown"></span></div><p id="detail-updated" class="read-time"></p><dl id="game-info" class="facts"></dl>
+        <div class="device-boundary"><strong>宿主资源与设备状态分开核验</strong><p id="device-state"></p><p>本节点资源已缓存或校验，不等于设备已安装、资源已部署、已登录或场景已就绪。</p></div>
+        <details class="game-manifest"><summary>完整不可变清单与说明</summary><pre id="game-manifest" class="command-box"></pre></details>
+        <section class="game-assets" aria-labelledby="assets-heading"><div class="section-heading"><h3 id="assets-heading">逐项资源</h3><span id="asset-count" class="count-label"></span></div><p class="note">当前缓存观测与最近准备任务的阶段分开展示；重新读取不会重新下载或全量计算哈希。</p><ul id="asset-list" class="game-asset-list"></ul></section>
+        <section class="game-prepare" aria-labelledby="prepare-heading"><h3 id="prepare-heading">准备本节点资源</h3><p id="prepare-help" class="note"></p><div class="submission-actions"><button id="prepare-submit" class="ghost primary" type="button" disabled>提交准备任务</button><button id="prepare-retry" class="ghost" type="button" hidden>使用原请求 ID 重试</button><button id="prepare-query" class="ghost" type="button" hidden>查询原请求</button><a id="prepare-job" hidden>查看对应任务</a></div><p id="prepare-request" class="request-id"></p><p id="prepare-message" class="note" role="status"></p></section>
+        <section class="preparations" aria-labelledby="preparations-heading"><div class="section-heading"><h3 id="preparations-heading">持久准备记录</h3><span id="preparation-count" class="count-label"></span></div><p class="note">任务执行结果不代替当前缓存校验。查看任务可读取日志、取消、处理保存异常并下载原件。</p><ul id="preparation-list" class="preparation-list"></ul><p id="preparations-empty" class="note"></p></section>
+      </div>
+    </section>
+  </div>
+  <section class="game-request-lookup" aria-labelledby="lookup-heading"><h2 id="lookup-heading">按准备请求 ID 找回</h2><form id="lookup-form"><label for="request-id">请求 ID</label><div class="lookup-input"><input id="request-id" autocomplete="off" spellcheck="false" maxlength="128" required><button id="request-lookup" class="ghost" type="submit">查询原任务</button></div></form><p class="note">断线或回包不确定时先查询，不自动新建任务。浏览器只保留未确认请求的版本身份和 ID；准备历史来自节点持久记录。</p><p id="lookup-message" class="note" role="status"></p><a id="lookup-job" hidden>查看找到的原任务</a></section>
+</main>
+<footer class="foot">本页只准备宿主资源。设备部署、安装、备份、恢复及场景验证另行执行；不会自动启动游戏。</footer>
+<script src="/dash/static/games.js"></script>
+</body>
+</html>
