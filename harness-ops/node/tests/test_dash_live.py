@@ -193,12 +193,32 @@ class HubTests(unittest.TestCase):
         self.backend.screen_on = lambda s: False
         with unittest.mock.patch.object(dash_live, "ORIENT_EVERY_S", 0.1):
             s = hub.open("emu")
-            self.assertTrue(wait(lambda: s.error == dash_live.SCREEN_OFF))   # 首帧之后再没新画面且屏幕灭着
+            self.assertTrue(wait(lambda: s.error == dash_live.SCREEN_OFF))   # 屏幕灭着、没有新画面
             self.backend.screen_on = lambda s: True
             s.publish(JPEG, "live")
             self.assertIsNone(s.error)
             s.leave()
             self.assertTrue(wait(lambda: s.thread is None))
+
+    def test_screen_off_reported_even_when_capture_keeps_dying(self):
+        hub = self.make()
+        self.backend.screen_on = lambda s: False
+        orig = self.backend.start_live
+        def dying(serial, on_frame):
+            c = FakeCapture(self.backend, serial, lambda j: None)   # 熄屏: 不出帧、马上退出
+            c.dead = True
+            self.backend.captures.append(c)
+            return c
+        self.backend.start_live = dying
+        with unittest.mock.patch.object(dash_live, "ORIENT_EVERY_S", 0.3):
+            s = hub.open("emu")
+            self.assertTrue(wait(lambda: s.error == dash_live.SCREEN_OFF))
+            n = len(self.backend.captures)
+            time.sleep(0.25)
+            self.assertLessEqual(len(self.backend.captures) - n, 1)       # 熄屏时放慢重启
+            s.leave()
+            self.assertTrue(wait(lambda: s.thread is None))
+        self.backend.start_live = orig
 
     def test_viewer_limit(self):
         hub = self.make()

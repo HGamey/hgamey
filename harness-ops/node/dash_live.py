@@ -388,7 +388,7 @@ class DeviceStream:
         return "live", None
 
     def _supervise(self):
-        next_policy = next_try = next_snap = next_orient = 0.0
+        next_policy = next_try = next_snap = next_orient = next_screen = 0.0
         backoff = 1.0
         mode = None
         try:
@@ -410,18 +410,9 @@ class DeviceStream:
                 if mode != "live":
                     self._stop_capture()  # 测量中绝不保留编码器
                 if mode == "live":
-                    if self.capture and not self.capture.alive():
-                        self._stop_capture()
-                        self.restarts += 1
-                        next_try = max(next_try, now + 0.3)
-                    if self.capture and now >= next_orient:
-                        next_orient = now + ORIENT_EVERY_S
-                        try:
-                            if self.hub.backend.display_size(self.serial) != self.capture.size:
-                                self._stop_capture()  # 横竖屏变了，按新尺寸重启
-                        except Exception:  # noqa: BLE001
-                            pass
-                        # screenrecord 只在画面变化时出帧，熄屏时一帧都没有：说清楚，免得看着像坏了
+                    if now >= next_screen:
+                        # 熄屏时 screenrecord 一帧不出（这台还会立刻退出）：说清楚，免得看着像坏了
+                        next_screen = now + ORIENT_EVERY_S
                         stale = not self.frame or time.time() - self.frame.at > ORIENT_EVERY_S
                         on = getattr(self.hub.backend, "screen_on", lambda _s: True)
                         try:
@@ -433,13 +424,27 @@ class DeviceStream:
                                 self.error = SCREEN_OFF
                             elif self.error == SCREEN_OFF:
                                 self.error = None
+                    if self.capture and not self.capture.alive():
+                        self._stop_capture()
+                        self.restarts += 1
+                        # 熄屏时别每 0.3 秒重起一次
+                        next_try = max(next_try, now + (ORIENT_EVERY_S if self.error == SCREEN_OFF else 0.3))
+                    if self.capture and now >= next_orient:
+                        next_orient = now + ORIENT_EVERY_S
+                        try:
+                            if self.hub.backend.display_size(self.serial) != self.capture.size:
+                                self._stop_capture()  # 横竖屏变了，按新尺寸重启
+                        except Exception:  # noqa: BLE001
+                            pass
                     if not self.capture and now >= next_try:
                         try:
                             self.capture = self.hub.backend.start_live(self.serial, lambda j: self.publish(j, "live"))
                             next_orient = now + ORIENT_EVERY_S
                             backoff = 1.0
                             with self.cond:
-                                self.mode, self.error = "live", None
+                                self.mode = "live"
+                                if self.error != SCREEN_OFF:
+                                    self.error = None
                         except Exception as e:  # noqa: BLE001
                             next_try = now + backoff
                             backoff = min(backoff * 2, 15.0)
