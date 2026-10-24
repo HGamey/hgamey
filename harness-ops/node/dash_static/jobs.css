@@ -261,6 +261,8 @@
 .field-help { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
 .submit-panel :is(input, select, textarea), .queue-release-panel textarea { width: 100%; min-width: 0; box-sizing: border-box; margin-top: 6px; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); font: inherit; }
 .submit-panel textarea, .queue-release-panel textarea { resize: vertical; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.input-manifest { min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.input-manifest summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
 .submit-panel :is(input, select, textarea):disabled { background: var(--panel); color: var(--muted); cursor: not-allowed; }
 .submission-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 16px; }
 .submission-receipt { margin-top: 16px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
@@ -290,8 +292,11 @@
 .submit-fields > .field-help { margin: -8px 0 0; }
 @media (max-width: 480px) { .lease-panel { padding: 12px; } .lease-list summary { padding: 6px 0; } }
 
-.job-leases { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 20px; }
-.job-leases .read-time { margin: 6px 0 12px; }
+.job-leases, .job-inputs { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 20px; }
+.job-leases .read-time, .job-inputs .read-time { margin: 6px 0 12px; }
+.artifact-input-reference { min-width: 0; margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.artifact-input-reference label { display: block; font-size: 13px; color: var(--ink2); }
+.artifact-input-reference textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; margin: 8px 0 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); font: 12px/1.7 ui-monospace, monospace; }
 .lease-receipt-list { list-style: none; margin: 0; padding: 0; }
 .lease-receipt { padding: 16px 0; border-top: 1px solid var(--grid); }
 .lease-receipt:first-child { border-top: 0; }

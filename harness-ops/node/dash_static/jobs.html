@@ -67,7 +67,7 @@
   </section>
   <details id="submit-panel" class="submit-panel">
     <summary>提交任务 / 按请求 ID 找回</summary>
-    <p class="note">运行节点已有命令和文件。游戏分发与文件上传暂未接入此入口。</p>
+    <p class="note">运行节点已有命令，可显式引用本节点的小型输出工件。大型游戏文件请使用<a href="/dash/games">游戏与资源</a>入口。</p>
     <details class="session-template">
       <summary>新建灰层会话模板</summary>
       <p class="note">只填入下方任务参数，不立即启动。模板不修改已有会话；功能支持以 producer 的任务返回为准，旧版本可能拒绝新参数。</p>
@@ -107,6 +107,15 @@
         <label>命令<select id="submit-bin" required disabled><option value="">正在读取可用命令…</option></select></label>
         <label>标签 <span class="field-optional">可选</span><input id="submit-label" type="text" placeholder="便于识别这次执行"></label>
         <label class="wide-field">参数 <span class="field-optional">JSON 字符串数组</span><textarea id="submit-argv" rows="3" spellcheck="false" required aria-describedby="argv-help">[]</textarea><span id="argv-help" class="field-help">例如 ["--help"]；每个参数写成一个字符串。</span></label>
+        <details class="input-manifest wide-field">
+          <summary>输入工件清单 <span class="field-optional">可选，JSON</span></summary>
+          <p id="inputs-help" class="note" role="status"></p>
+          <label for="submit-inputs">完整 inputs@1 清单</label>
+          <textarea id="submit-inputs" rows="8" spellcheck="false" autocomplete="off" aria-describedby="inputs-help inputs-format-help" placeholder="留空不声明输入；可粘贴下方输出文件的“复制输入清单”结果。" disabled></textarea>
+          <p id="inputs-format-help" class="note">同节点最多 32 份文件，每份不超过 8 MiB，总计不超过 32 MiB。清单需包含 schema、node_id、files、bindings、cwd；源文件缺失或变化会使准备失败，不会自动等待或重跑。</p>
+          <p class="note">argv 可用 @in/ 加 target；显式 JSON pointer 绑定生成独立文件并保留源 JSON。脚本不做文本替换，可使用 PF_JOB_IN 或 cwd=input 下的相对路径。</p>
+          <button id="clear-inputs" class="ghost" type="button" disabled>清空输入清单</button>
+        </details>
         <label class="wide-field">进程执行策略<select id="submit-execution-policy" disabled aria-describedby="execution-policy-help"><option value="">兼容默认 · 不显式指定</option><option value="process_group">process_group · 原进程组</option><option value="contained">contained · 约束域</option></select><span id="execution-policy-help" class="field-help"></span></label>
         <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主任务 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复任务</option></select></label>
         <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留任务的 12 位 ID" autocomplete="off" spellcheck="false"></label>
@@ -146,6 +155,15 @@
         <p id="detail-updated" class="read-time"></p>
         <dl id="job-info" class="facts job-facts"></dl>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
+        <section id="job-inputs" class="job-inputs" aria-labelledby="job-inputs-heading">
+          <div class="section-heading"><h3 id="job-inputs-heading">输入工件与准备记录</h3><button id="load-job-inputs" class="ghost" type="button" disabled>读取输入记录</button></div>
+          <p id="job-inputs-message" class="note" role="status"></p><p id="job-inputs-updated" class="read-time"></p>
+          <div id="job-inputs-content" hidden>
+            <dl id="job-inputs-info" class="facts"></dl>
+            <ul id="job-inputs-list" class="lease-receipt-list" aria-label="声明的输入来源"></ul>
+            <details class="command-details"><summary>完整声明与准备回执</summary><pre id="job-inputs-record" class="command-box"></pre></details>
+          </div>
+        </section>
         <section id="session-panel" class="session-panel" aria-labelledby="session-heading" hidden>
           <div class="section-heading"><h3 id="session-heading">灰层交互会话</h3><button id="session-refresh" class="ghost" type="button">读取会话状态</button></div>
           <p id="session-message" class="note" role="status">只读取宿主记录，不会采集新画面。</p>
@@ -298,11 +316,19 @@
         </section>
         <section id="artifacts" class="artifacts" aria-labelledby="artifacts-heading">
           <div class="section-heading"><h3 id="artifacts-heading">输出文件</h3><button id="refresh-artifacts" class="ghost" type="button">刷新目录</button></div>
+          <p id="artifact-input-help" class="note"></p>
           <nav id="breadcrumbs" class="breadcrumbs" aria-label="输出目录"></nav>
           <p id="artifact-message" class="note" role="status"></p>
           <ul id="artifact-list" class="artifact-list"></ul>
           <button id="more-artifacts" class="ghost more" type="button" hidden>加载更多文件</button>
           <div id="artifact-meta" class="artifact-meta" role="status" hidden></div>
+          <div id="artifact-input-reference" class="artifact-input-reference" hidden>
+            <p id="artifact-input-message" class="note" role="status"></p>
+            <label for="artifact-input-manifest">可粘贴到提交表单的最小输入清单</label>
+            <textarea id="artifact-input-manifest" rows="8" readonly spellcheck="false"></textarea>
+            <button id="copy-input-manifest" class="ghost" type="button" disabled>复制清单</button>
+            <p class="note">name 与 target 使用文件名生成安全默认值，可按任务需要修改。准备任务仍会核对源内容；此引用不表示设备已恢复。</p>
+          </div>
         </section>
         <section id="task-log" class="task-log" aria-labelledby="log-heading">
           <div class="section-heading"><h3 id="log-heading">执行日志</h3><div class="log-actions"><button id="log-reset" class="ghost" type="button">从头读取</button><button id="log-next" class="ghost" type="button">读取下一段</button></div></div>

@@ -6,6 +6,7 @@
   const LOG_CHUNK = 64 * 1024;
   const LOG_WINDOW = 256 * 1024;
   let jobLeasesRevision = 0, jobLeasesBusy = false, jobLeasesRead = false;
+  let jobInputsRevision = 0, jobInputsBusy = false, jobInputsRead = false, inputReference = '', inputReferenceRevision = 0;
   let nodeRevision = 0, listRevision = 0, detailRevision = 0, artifactRevision = 0, metadataRevision = 0, logRevision = 0;
   let jobsCursor = null, filesCursor = null, selected = '', directory = '';
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
@@ -480,6 +481,16 @@
     const capability = nodeInfo.execution?.process_policies?.[policy];
     return capability?.available === true ? '' : `${policy} 不可用：${capability?.reason || '节点未提供可用声明。'} 不会降级提交。`;
   }
+  function inputsSupported() { return nodeInfo?.capabilities?.includes('jobs.inputs-v1') === true; }
+  function parseInputManifest(value) {
+    let inputs;
+    try { inputs = JSON.parse(value); } catch (_) { throw new Error('输入工件清单不是有效的 JSON。'); }
+    if (!inputs || inputs.schema !== 'phonefarm/job-inputs@1' || !Array.isArray(inputs.files) || !inputs.files.length || inputs.files.length > 32 ||
+        !Array.isArray(inputs.bindings) || !['default', 'input'].includes(inputs.cwd)) throw new Error('输入清单需为 inputs@1 对象，包含 node_id、1–32 项 files、bindings 数组及 cwd（default/input）。');
+    if (inputs.node_id !== nodeInfo?.node_id) throw new Error('输入工件只能引用当前节点；清单 node_id 与当前节点不一致。');
+    if (new TextEncoder().encode(JSON.stringify(inputs)).length > 32 * 1024) throw new Error('输入工件清单不能超过 32 KiB。');
+    return inputs;
+  }
   function renderSubmission() {
     const supported = nodeInfo?.capabilities?.includes('jobs.idempotency-v1') && nodeInfo?.execution?.bins?.length;
     const allowed = supported && access?.steer && !accessBusy;
@@ -489,7 +500,12 @@
     const recovery = mode === 'recovery';
     const policy = pendingRequest?.body ? pendingRequest.body.execution_policy || '' : $('submit-execution-policy').value;
     const policyProblem = executionPolicyProblem(policy);
+    const hasInputs = pendingRequest?.body ? !!pendingRequest.body.inputs : !!$('submit-inputs').value.trim();
+    const inputsProblem = hasInputs && !inputsSupported();
     for (const id of ['submit-bin', 'submit-label', 'submit-argv']) $(id).disabled = !allowed || locked;
+    $('submit-inputs').disabled = !allowed || locked || !inputsSupported();
+    $('clear-inputs').disabled = !allowed || locked || !$('submit-inputs').value.trim();
+    message('inputs-help', !nodeInfo ? '正在核对输入工件能力…' : !inputsSupported() ? '此节点未提供 jobs.inputs-v1，不能提交输入清单。留空可继续使用原有任务入口。' : pendingRequest?.body ? '重试保持原输入清单与参数，按原请求 ID 核对结果。' : '从输出文件按需复制清单，或填写完整声明。留空不发送 inputs 字段；具体路径与绑定由节点校验。', inputsProblem);
     $('submit-execution-policy').disabled = !allowed || locked;
     message('execution-policy-help', `${pendingRequest?.body ? '重试保留原请求策略。' : ''}${policyProblem || (!nodeInfo ? '正在核对执行策略能力…' : !nodeInfo.capabilities?.includes('jobs.execution-policy-v1') ? '此节点未提供策略能力。兼容默认不发送新字段，实际执行范围未知。' : policy ? `${policy}：${nodeInfo.execution?.process_policies?.[policy]?.reason || '以任务中 worker 的实际执行记录为准。'}` : '兼容默认不发送策略字段，沿节点原有行为；当前原进程组策略不涵盖 setsid 脱组后代。')} 设备恢复另行核查。`, !!policyProblem);
     $('submit-device-access').disabled = !allowed || locked || !recoverySupported();
@@ -499,7 +515,7 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || locked || !!policyProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || locked || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。');
@@ -511,7 +527,7 @@
     $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
     $('submit-refill').disabled = !allowed || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
-    $('submit-retry').disabled = !allowed || submissionBusy || !!policyProblem;
+    $('submit-retry').disabled = !allowed || submissionBusy || !!policyProblem || inputsProblem;
     renderSessionTemplate(allowed);
     renderRefbenchTemplate(allowed);
     renderControls();
@@ -587,6 +603,11 @@
         const argv = JSON.parse($('submit-argv').value);
         if (!Array.isArray(argv) || !argv.every(value => typeof value === 'string')) throw new Error('参数必须是 JSON 字符串数组，例如 ["--help"]。');
         const body = {bin: $('submit-bin').value, argv, label: $('submit-label').value.trim()};
+        const inputText = $('submit-inputs').value.trim();
+        if (inputText) {
+          if (!inputsSupported()) throw new Error('此节点未提供 jobs.inputs-v1，未提交输入清单。');
+          body.inputs = parseInputManifest(inputText);
+        }
         const policy = $('submit-execution-policy').value;
         const policyProblem = executionPolicyProblem(policy);
         if (policyProblem) throw new Error(policyProblem);
@@ -658,6 +679,7 @@
     nodeInfo = null;
     renderSubmission();
     updateJobLeaseAccess();
+    updateJobInputAccess();
     regionBusy('node-card', true);
     $('node-summary').hidden = true;
     $('node-details').hidden = true;
@@ -686,7 +708,7 @@
       $('node-updated').textContent = readTime();
     } catch (error) {
       if (revision === nodeRevision) message('node-message', errorText(error), true);
-    } finally { if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); renderSessionControls(); } }
+    } finally { if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -760,6 +782,8 @@
     selected = id;
     currentJob = null;
     resetJobLeases();
+    resetJobInputs();
+    resetInputReference();
     resetSession();
     const revision = ++detailRevision;
     ++artifactRevision;
@@ -787,6 +811,7 @@
       currentJob = job;
       if (reconcileReceipts.get(id)?.unconfirmed) reconcileReceipts.set(id, {message: '已重新读取原任务状态。请核对宿主核查与输出交还记录，再决定是否操作。', error: false});
       updateJobLeaseAccess();
+      updateJobInputAccess();
       renderSessionControls();
       const [label, kind] = status(job);
       $('job-title').textContent = job.label || job.bin || '未命名任务';
@@ -1445,6 +1470,81 @@
     }
   }
 
+  function inputErrorText(error) {
+    const detail = error.payload?.error;
+    const reason = typeof detail === 'string' ? detail : detail?.message;
+    return reason ? `${errorText(error)} ${reason}` : errorText(error);
+  }
+  function updateJobInputAccess() {
+    const supported = inputsSupported();
+    $('load-job-inputs').disabled = !currentJob || !supported || jobInputsBusy;
+    $('load-job-inputs').setAttribute('aria-busy', String(jobInputsBusy));
+    $('load-job-inputs').textContent = jobInputsBusy ? '读取中…' : jobInputsRead ? '刷新输入记录' : '读取输入记录';
+    if (!jobInputsRead && !jobInputsBusy) message('job-inputs-message', !nodeInfo ? '节点能力尚未取得。' : !supported ? '此节点未提供输入工件记录能力，不能判断输入准备情况。' : '按需读取声明和准备回执；准备就绪不表示命令已运行或设备已恢复。');
+    message('artifact-input-help', !nodeInfo ? '正在核对输入引用能力…' : !supported ? '此节点未提供输入引用能力；仍可查看和下载原件。' : '“复制输入清单”只校验所选小文件；需源任务已完成宿主收尾。不会自动提交任务或批量计算哈希。');
+    for (const button of $('artifact-list').querySelectorAll('[data-input-reference]')) button.disabled = !supported || button.getAttribute('aria-busy') === 'true';
+  }
+  function resetJobInputs() {
+    ++jobInputsRevision;
+    jobInputsBusy = false;
+    jobInputsRead = false;
+    regionBusy('job-inputs', false);
+    $('job-inputs-content').hidden = true;
+    $('job-inputs-list').replaceChildren();
+    $('job-inputs-record').textContent = '';
+    $('job-inputs-updated').textContent = '';
+    updateJobInputAccess();
+  }
+  async function loadJobInputs() {
+    if ($('load-job-inputs').disabled || !selected) return;
+    const id = selected, revision = ++jobInputsRevision;
+    jobInputsBusy = true;
+    jobInputsRead = false;
+    $('job-inputs-content').hidden = true;
+    $('job-inputs-list').replaceChildren();
+    $('job-inputs-updated').textContent = '';
+    regionBusy('job-inputs', true);
+    updateJobInputAccess();
+    message('job-inputs-message', '正在读取输入声明与准备回执…');
+    try {
+      const result = await json(`${API}/jobs/${encodeURIComponent(id)}/inputs`);
+      if (revision !== jobInputsRevision || selected !== id) return;
+      if (result.schema !== 'phonefarm/job-input-status@1' || result.job_id !== id || !result.preparation) throw new Error('输入记录格式不正确，不能判断准备情况。');
+      const preparation = result.preparation, declared = result.declared;
+      const labels = {pending: '输入准备中', ready: '输入已冻结', failed: '输入准备失败', not_declared: '未声明输入', not_prepared: '输入尚未准备'};
+      const descriptions = {pending: '准备尚未完成，请刷新记录核对。', ready: '输入冻结已完成；不表示命令已运行或设备已恢复。', failed: '输入准备失败，此任务未启动。修好来源后需显式新请求；原 ID 仍返回此次结果。', not_declared: '此任务没有声明 inputs；旧上传或其他输入不在此记录范围内。', not_prepared: '尚无已完成准备的依据，可能从未开始或已取消；执行状态请看任务记录。'};
+      message('job-inputs-message', `${descriptions[preparation.status] || '输入准备状态未知，请核对完整回执。'}${preparation.error ? ` 原因：${preparation.error}` : ''}`, preparation.status === 'failed' || !!preparation.error || !labels[preparation.status]);
+      facts('job-inputs-info', [['准备状态', labels[preparation.status] || text(preparation.status)], ['来源节点', result.node_id], ['工作目录', declared?.cwd === 'input' ? '本任务输入目录' : declared?.cwd === 'default' ? '程序默认目录' : '未声明'], ['开始准备', time(preparation.started_at)], ['准备记录更新', time(preparation.updated_at)]]);
+      for (const file of declared?.files || []) {
+        const prepared = preparation.files?.find(item => item.name === file.name);
+        const item = el('li', null, 'lease-receipt'), info = el('dl', null, 'facts');
+        item.append(el('h4', file.name));
+        const source = file.source || {};
+        for (const [key, value] of [['输入位置', file.target], ['准备状态', ({pending: '待完成', ready: '已冻结', failed: '失败'})[prepared?.status] || '未记录'], ['来源路径', source.path], ['声明大小', bytes(source.size)], ['来源 SHA-256', source.sha256], ...(prepared?.error ? [['原因', prepared.error]] : [])]) info.append(el('dt', key), el('dd', text(value)));
+        item.append(info);
+        const actions = el('div', null, 'receipt-actions');
+        actions.append(openJobButton(source.job_id, `来源任务 ${source.job_id}`));
+        item.append(actions);
+        $('job-inputs-list').append(item);
+      }
+      for (const binding of declared?.bindings || []) {
+        const item = el('li', null, 'lease-receipt');
+        item.append(el('h4', `JSON 派生声明 · ${binding.target}`), el('p', `源输入：${binding.source}。绑定会保留原 JSON；是否完成以准备回执为准，派生文件不沿用源 SHA。`, 'note'));
+        const mappings = el('ul', null, 'lease-evidence');
+        for (const value of binding.values || []) mappings.append(el('li', `${value.pointer || '根字段'} → 输入 ${value.input}`));
+        item.append(mappings);
+        $('job-inputs-list').append(item);
+      }
+      $('job-inputs-record').textContent = JSON.stringify(result, null, 2);
+      $('job-inputs-content').hidden = false;
+      $('job-inputs-updated').textContent = readTime();
+      jobInputsRead = true;
+    } catch (error) {
+      if (revision === jobInputsRevision && selected === id) { message('job-inputs-message', inputErrorText(error), true); jobInputsRead = true; }
+    } finally {
+      if (revision === jobInputsRevision && selected === id) { jobInputsBusy = false; regionBusy('job-inputs', false); updateJobInputAccess(); }
+    }
+  }
   function updateJobLeaseAccess() {
     const supported = nodeInfo?.capabilities?.includes('jobs.leases-v1');
     $('load-job-leases').disabled = !currentJob || !supported || jobLeasesBusy;
@@ -1559,7 +1659,12 @@
       const download = el('a', '下载');
       download.href = jobURL('/out', {path: file.path});
       download.download = file.name;
-      actions.append(info, download);
+      const reference = el('button', '复制输入清单', 'ghost');
+      reference.type = 'button';
+      reference.dataset.inputReference = file.path;
+      reference.disabled = !inputsSupported();
+      reference.addEventListener('click', () => loadInputReference(file.path, reference));
+      actions.append(info, reference, download);
       item.append(actions);
     }
     $('artifact-list').append(item);
@@ -1567,6 +1672,7 @@
   async function loadArtifacts(append = false) {
     const revision = ++artifactRevision;
     ++metadataRevision;
+    resetInputReference();
     if (!append) { filesCursor = null; $('artifact-list').replaceChildren(); $('more-artifacts').hidden = true; }
     $('artifact-meta').hidden = true;
     regionBusy('artifacts', true);
@@ -1613,6 +1719,62 @@
       button.setAttribute('aria-busy', 'false');
       button.textContent = '校验信息';
       if (revision === artifactRevision && metadata === metadataRevision) regionBusy('artifact-meta', false);
+    }
+  }
+  function resetInputReference() {
+    ++inputReferenceRevision;
+    inputReference = '';
+    $('artifact-input-reference').hidden = true;
+    $('artifact-input-manifest').value = '';
+    busy('copy-input-manifest', false);
+    $('copy-input-manifest').disabled = true;
+    regionBusy('artifact-input-reference', false);
+  }
+  async function copyInputManifest() {
+    if (!inputReference || document.hidden) return;
+    const revision = inputReferenceRevision, value = inputReference;
+    busy('copy-input-manifest', true, '复制中…');
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('此浏览器未提供剪贴板写入。');
+      await navigator.clipboard.writeText(value);
+      if (revision === inputReferenceRevision) message('artifact-input-message', '输入清单已复制，可粘贴到上方提交表单；尚未提交任务。');
+    } catch (_) {
+      if (revision === inputReferenceRevision) {
+        message('artifact-input-message', '清单已生成，但剪贴板写入未获允许。可选中下方完整清单手动复制。', true);
+        $('artifact-input-manifest').focus();
+        $('artifact-input-manifest').select();
+      }
+    } finally { if (revision === inputReferenceRevision) busy('copy-input-manifest', false); }
+  }
+  async function loadInputReference(path, button) {
+    if (button.disabled || !inputsSupported() || !selected) return;
+    resetInputReference();
+    const id = selected, revision = inputReferenceRevision;
+    $('artifact-input-reference').hidden = false;
+    regionBusy('artifact-input-reference', true);
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.textContent = '核对引用…';
+    message('artifact-input-message', `正在核对来源并计算单个文件引用：${path}`);
+    try {
+      const result = await json(`${API}/jobs/${encodeURIComponent(id)}/input-reference?${new URLSearchParams({path})}`);
+      if (revision !== inputReferenceRevision || selected !== id) return;
+      const source = result.source;
+      if (result.schema !== 'phonefarm/job-input-reference@1' || typeof result.node_id !== 'string' || !result.node_id ||
+          source?.job_id !== id || source.path !== path || !Number.isSafeInteger(source.size) || source.size < 0 || !/^[0-9a-f]{64}$/.test(source.sha256)) throw new Error('节点返回的输入引用不完整，未生成清单。');
+      const name = path.split('/').pop().replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 64) || 'input';
+      inputReference = JSON.stringify({schema: 'phonefarm/job-inputs@1', node_id: result.node_id, files: [{name, target: `inputs/${name}`, source}], bindings: [], cwd: 'default'}, null, 2);
+      $('artifact-input-manifest').value = inputReference;
+      $('copy-input-manifest').disabled = false;
+      message('artifact-input-message', '清单已生成，尚未提交任务。');
+      await copyInputManifest();
+    } catch (error) {
+      if (revision === inputReferenceRevision && selected === id) message('artifact-input-message', inputErrorText(error), true);
+    } finally {
+      button.disabled = !inputsSupported();
+      button.setAttribute('aria-busy', 'false');
+      button.textContent = '复制输入清单';
+      if (revision === inputReferenceRevision && selected === id) regionBusy('artifact-input-reference', false);
     }
   }
   function resetLog() {
@@ -1793,6 +1955,8 @@
   $('refresh-all').addEventListener('click', refreshAll);
   $('refresh-detail').addEventListener('click', () => { if (selected) selectJob(selected, true); });
   $('load-job-leases').addEventListener('click', loadJobLeases);
+  $('load-job-inputs').addEventListener('click', loadJobInputs);
+  $('copy-input-manifest').addEventListener('click', copyInputManifest);
   $('refresh-artifacts').addEventListener('click', () => loadArtifacts());
   $('more-artifacts').addEventListener('click', () => loadArtifacts(true));
   $('log-next').addEventListener('click', loadLog);
@@ -1823,6 +1987,8 @@
   $('force-form').addEventListener('submit', event => { event.preventDefault(); cancelJob(true); });
   $('refresh-queue').addEventListener('click', loadQueue);
   $('submit-job-form').addEventListener('submit', event => { event.preventDefault(); submitJob(); });
+  $('submit-inputs').addEventListener('input', renderSubmission);
+  $('clear-inputs').addEventListener('click', () => { if (!$('clear-inputs').disabled) { $('submit-inputs').value = ''; renderSubmission(); } });
   $('session-template-form').addEventListener('submit', event => { event.preventDefault(); applySessionTemplate(); });
   $('refbench-template-form').addEventListener('submit', event => { event.preventDefault(); applyRefbenchTemplate(); });
   $('template-power').addEventListener('change', () => renderSessionTemplate(!$('submit-bin').disabled));

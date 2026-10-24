@@ -40,6 +40,7 @@ from node_uploads import NodeUploads
 from node_deployments import NodeDeployments, DeploymentError
 from game_assets import AssetUploadError, UPLOAD_MAX
 import job_runtime
+import job_inputs
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable, require_policy
@@ -267,7 +268,10 @@ class Jobs:
         if not isinstance(resources, list) or len(resources) > 32 or any(
                 not isinstance(r, str) or not r or len(r) > 160 or any(ord(c) < 32 for c in r) for r in resources):
             raise ValueError("resources must be at most 32 nonempty resource names")
+        inputs = (job_inputs.validate(spec["inputs"], getattr(self, "node_id", None))
+                  if "inputs" in spec else None)
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"), "resources": sorted(set(resources)),
+                **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
@@ -293,12 +297,19 @@ class Jobs:
         if body:
             with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as t:
                 t.extractall(jin, filter="data")
+        if "inputs" in spec:
+            job_inputs.prepare(self, jid, spec["inputs"])
 
         def sub(a):
             a = a.replace("@out", jout)
             return re.sub(r"@in/", jin + "/", a)
 
         exe, cwd = self.bins[binname]
+        if spec.get("inputs", {}).get("cwd") == "input":
+            # Preserve a configured relative executable when changing its cwd.
+            if not os.path.isabs(exe) and os.sep in exe:
+                exe = os.path.abspath(os.path.join(cwd, exe))
+            cwd = jin
         if spec.get("exe"):  # 用上传的可执行替换（测未合并分支）；只能指向本任务的 in 目录
             exe = os.path.realpath(sub(spec["exe"]))
             if not exe.startswith(os.path.realpath(jin) + "/") or not os.path.isfile(exe):
@@ -773,6 +784,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.log_from(parts[1], off, limit), "application/octet-stream")
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "artifacts":
                     return self._send(200, node.artifacts(parts[1], q))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "inputs":
+                    return self._send(200, job_inputs.record(jobs, parts[1]))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "input-reference":
+                    if set(q) != {"path"} or len(q["path"]) != 1:
+                        raise ValueError("input reference requires exactly one artifact path")
+                    return self._send(200, job_inputs.reference(jobs, parts[1], q["path"][0]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "leases":
                     jobs._read_meta(parts[1])
                     return self._send(200, job_lease_receipts(jobs._read_root, parts[1]))
@@ -784,6 +801,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
+            except job_inputs.InputError as e:
+                return self._send(e.status, {"code": e.code, "error": str(e)})
             except AssetUploadError as e:
                 return self._send(e.status, {"code": e.code, "error": e.message})
             except (DirectoryError, GameError) as e:
@@ -1027,6 +1046,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     try:
                         spec = json.loads(self.headers.get("X-Job", "{}"))
                         require_policy(spec)
+                        if "inputs" in spec:
+                            job_inputs.validate(spec["inputs"], node.node_id)
                     except ValueError:
                         self.close_connection = True
                         raise
