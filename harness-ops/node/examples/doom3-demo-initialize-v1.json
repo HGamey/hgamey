@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "game_id": "doom3-demo",
+  "version": "v73-demo-1.1.1286-initialize1",
+  "title": "Doom 3 Demo / idTech4A++ v73 bounded storage initialization",
+  "application": {
+    "package": "com.karin.idTech4Amm",
+    "platform": "android",
+    "abi": "arm64-v8a"
+  },
+  "engine": {
+    "name": "idTech4A++",
+    "release": "v1.1.0harmattan73",
+    "version_code": 11073,
+    "version_name": "1.1.0harmattan73lindaiyu",
+    "variant": "official_release"
+  },
+  "requirements": {
+    "historical_renderer": "OpenGL ES 3.2 / RGBA8 / D24 / S8 / MSAA0",
+    "current_device_compatibility": "unknown",
+    "device_installation": "fresh single-base APK only; package must be absent including retained records; metadata and installer capabilities checked at execution",
+    "storage_initialization": "Explicit bounded launcher attempt; does not guarantee external files directory creation, permissions or scene readiness. Initial app configuration is retained."
+  },
+  "scene": {
+    "name": "Mars City Hangar",
+    "map": "game/demo_mars_city1",
+    "historical_scene_observed": true,
+    "current_scene_ready": "unknown",
+    "save_reload": "not_tested_in_source_record",
+    "reset_recipe": "not_defined"
+  },
+  "provenance": {
+    "kind": "historical_pilot_metadata",
+    "recorded_date": "2026-10-14",
+    "record": "DOOM-GAME-BUNDLE-PILOT.json",
+    "schema": "hgamey/game_distribution_pilot_bundle@1",
+    "current_node_availability": "not_verified",
+    "integrity": "Sizes and SHA-256 values copied from existing receipts; no new download or hash verification.",
+    "demo_source": "https://files.holarse-linuxgaming.de/native/Spiele/Doom%203/Demo/doom3-linux-1.1.1286-demo.x86.run",
+    "scope": "Historical metadata only. Installation selects the official engine APK and requires actual APK metadata checks. Resource deployment remains a separate transaction selecting demo PK4, loose override and static snapshot; the save is never copied automatically. Current node/device/application/scene readiness is unverified. Initialization may start the unique Launcher only when needed and then force-stop that attempt; current-device support is unverified and scene commands/extras are not supplied."
+  },
+  "license": {
+    "engine": "Official upstream release; consult upstream license terms separately from game data.",
+    "game_data": "Original Linux Doom 3 free Demo 1.1.1286; not Doom 3 BFG or the full game.",
+    "full_game_license_assumed": false,
+    "redistribution_permission": "not_established_by_historical_receipts",
+    "compatibility_override": "Local experimental script derived from demo content; redistribution terms not established."
+  },
+  "assets": [
+    {
+      "name": "idtech4amm-v73-arm64.apk",
+      "role": "engine_apk",
+      "sha256": "34d9383bb6ccf641c9e6f09bc009e0d1c80bb27ae0207cefe5c46ba7e86a8dcd",
+      "size": 342959716,
+      "source": {
+        "kind": "url",
+        "url": "https://github.com/glKarin/com.n0n3m4.diii4a/releases/download/v1.1.0harmattan73/idTech4A%2B%2B_1.1.0harmattan73_arm64.apk"
+      },
+      "target": "application/idtech4amm-v73-arm64.apk"
+    },
+    {
+      "name": "demo00.pk4",
+      "role": "demo_game_data",
+      "sha256": "16d7dfe6b9f7f0765b23169dfab79e927514457b069b9ece9583666f423ec6c1",
+      "size": 483535485,
+      "source": {
+        "kind": "unavailable",
+        "reason": "Historical receipt verifies demo/demo00.pk4 extracted from the Linux demo installer. No accessible job/out artifact on this node is registered; the installer URL is not a direct PK4 source."
+      },
+      "target": "doom3/base/demo00.pk4"
+    },
+    {
+      "name": "weapon_base.script",
+      "role": "compatibility_override",
+      "sha256": "5870c79cabda6beec0a6a873bc6544ae840ad7b049da66eb4acce21e610b5226",
+      "size": 2662,
+      "source": {
+        "kind": "unavailable",
+        "reason": "Historical one-field loose override; original PK4 was not modified. No accessible job/out artifact on this node is registered."
+      },
+      "target": "state/base/script/weapon_base.script"
+    },
+    {
+      "name": "shot_pf_state_001.demo",
+      "role": "render_snapshot",
+      "sha256": "bae2ae820fc3ae77defefd01301fb5615c50f91f971013d44505e601c052ac46",
+      "size": 63166,
+      "source": {
+        "kind": "unavailable",
+        "reason": "Historical static render snapshot with playback evidence; no accessible job/out artifact on this node is registered."
+      },
+      "target": "state/base/demos/shot_pf_state_001.demo"
+    },
+    {
+      "name": "pf_state_001.save",
+      "role": "game_save",
+      "sha256": "cc12f2d2bb0cf13a173aae2d4c71b023767ba8756c5456446c7af53fa3de5d1b",
+      "size": 8924016,
+      "source": {
+        "kind": "unavailable",
+        "reason": "Historical save receipt; load-game validation was not recorded. No accessible job/out artifact on this node is registered."
+      },
+      "target": "state/base/savegames/pf_state_001.save"
+    }
+  ],
+  "deployment": {
+    "schema": "phonefarm/game-resources-recipe@1",
+    "package": "com.karin.idTech4Amm",
+    "version_code": 11073,
+    "apk_sha256": "34d9383bb6ccf641c9e6f09bc009e0d1c80bb27ae0207cefe5c46ba7e86a8dcd",
+    "files": [
+      {
+        "asset_name": "demo00.pk4",
+        "path": "doom3/base/demo00.pk4"
+      },
+      {
+        "asset_name": "weapon_base.script",
+        "path": "state/base/script/weapon_base.script"
+      },
+      {
+        "asset_name": "shot_pf_state_001.demo",
+        "path": "state/base/demos/shot_pf_state_001.demo"
+      }
+    ]
+  },
+  "installation": {
+    "schema": "phonefarm/game-install-recipe@1",
+    "package": "com.karin.idTech4Amm",
+    "version_code": 11073,
+    "apk_sha256": "34d9383bb6ccf641c9e6f09bc009e0d1c80bb27ae0207cefe5c46ba7e86a8dcd",
+    "apk_asset_name": "idtech4amm-v73-arm64.apk"
+  },
+  "initialization": {
+    "package": "com.karin.idTech4Amm",
+    "version_code": 11073,
+    "apk_sha256": "34d9383bb6ccf641c9e6f09bc009e0d1c80bb27ae0207cefe5c46ba7e86a8dcd",
+    "schema": "phonefarm/game-initialize-recipe@1",
+    "wait_seconds": 10
+  }
+}

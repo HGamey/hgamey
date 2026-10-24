@@ -4,17 +4,23 @@ import os
 import re
 import subprocess
 
-from game_deploy_recipe import validate_recipe, validate_installation
+from game_deploy_recipe import validate_recipe, validate_installation, validate_initialization
 from job_dispatch import request_fingerprint
 from job_queue import RequestConflict
 from node_games import MAX_MANIFEST, snapshot_body
 
 CAPABILITY = "games.deploy-v1"
 INSTALL_CAPABILITY = "games.install-v1"
+INITIALIZE_CAPABILITY = "games.initialize-v1"
+OPERATIONS = {
+    "deploy": ("deployment", validate_recipe, "phonefarm/game-deployment@1", "resources"),
+    "install": ("installation", validate_installation, "phonefarm/game-installation@1", "APK"),
+    "initialize": ("initialization", validate_initialization, "phonefarm/game-initialization@1", "initialization"),
+}
 
 
 def operation(request):
-    return {"phonefarm/game-deploy-request@1": "deploy", "phonefarm/game-install-request@1": "install"}[request["schema"]]
+    return {f"phonefarm/game-{kind}-request@1": kind for kind in OPERATIONS}[request["schema"]]
 
 
 class DeploymentError(Exception):
@@ -30,6 +36,8 @@ class NodeDeployments:
                         "error": "configured phonefarm does not support resource deployment"}
         self.installation_support = {"available": False, "recovery_available": False, "capability": INSTALL_CAPABILITY,
                                      "error": "configured phonefarm or its fixed APK metadata tool is unavailable"}
+        self.initialization_support = {"available": False, "capability": INITIALIZE_CAPABILITY,
+                                       "error": "configured phonefarm does not support launcher initialization"}
         if "phonefarm" not in jobs.bins:
             return
         exe, cwd = jobs.bins["phonefarm"]
@@ -44,6 +52,8 @@ class NodeDeployments:
                     and value.get("schema") == "phonefarm/game-deploy-capabilities@1"):
                 if value.get("resources_v1") is True:
                     self.support.update(available=True, error=None)
+                if value.get("launcher_initialization_v1") is True:
+                    self.initialization_support.update(available=True, error=None)
                 if value.get("fresh_single_apk_v1") is True:
                     self.installation_support["recovery_available"] = True
                     metadata = value.get("metadata_tool") or {}
@@ -57,7 +67,8 @@ class NodeDeployments:
             pass
 
     def _support(self, kind):
-        return self.installation_support if kind == "install" else self.support
+        return {"deploy": self.support, "install": self.installation_support,
+                "initialize": self.initialization_support}[kind]
 
     def _require_support(self, kind="deploy", recovery=False):
         support = self._support(kind)
@@ -77,14 +88,14 @@ class NodeDeployments:
             raise ValueError("deployment mode must be check or apply")
         entry = self.games.store.read_json(self.games._path(game_id, version))
         manifest = entry["manifest"]
-        field = "installation" if kind == "install" else "deployment"
+        field, validator, _, _ = OPERATIONS[kind]
         if field not in manifest:
             raise DeploymentError(409, "recipe_missing", "this version has no supported " + field + " recipe")
-        validator = validate_installation if kind == "install" else validate_recipe
         recipe = validator(manifest[field], manifest["assets"])
-        selected = {recipe["apk_asset_name"]} if kind == "install" else {item["asset_name"] for item in recipe["files"]}
+        selected = ({recipe["apk_asset_name"]} if kind == "install" else
+                    {item["asset_name"] for item in recipe["files"]} if kind == "deploy" else set())
         assets = [asset for asset in manifest["assets"] if asset["name"] in selected]
-        request = {"schema": "phonefarm/game-install-request@1" if kind == "install" else "phonefarm/game-deploy-request@1",
+        request = {"schema": f"phonefarm/game-{kind}-request@1",
                    "node_id": self.games.node_id,
                    "game_id": game_id, "version": version, "serial": serial, "mode": body["mode"],
                    "recipe": recipe, "assets": [{"name": a["name"], "path": str(self.games.cache.object_path(a["sha256"])),
@@ -97,7 +108,7 @@ class NodeDeployments:
         serial = request["serial"]
         spec = {"bin": "phonefarm", "argv": ["game-deploy", "--request", "@in/manifest.json",
                 "--serial", serial, "--out", "@out", "--json"],
-                "label": f"{request['mode'].title()} {'APK' if operation(request) == 'install' else 'resources'} {request['game_id']} {request['version']}",
+                "label": f"{request['mode'].title()} {OPERATIONS[operation(request)][3]} {request['game_id']} {request['version']}",
                 "device_access": "write", "resources": sorted(["device:" + serial,
                     self.games._resource(request["game_id"], request["version"])])}
         if recovery_for:
@@ -156,12 +167,14 @@ class NodeDeployments:
     def _report(self, jid, request):
         try:
             value = self.jobs._read_root.read_json(jid + "/out/deployment.json", maximum=1 << 20)
-            schema = "phonefarm/game-installation@1" if operation(request) == "install" else "phonefarm/game-deployment@1"
+            schema = OPERATIONS[operation(request)][2]
+            facts = ("installed", "resources_deployed", "application_access", "login", "scene_ready", "recovery")
+            if operation(request) == "initialize":
+                facts += ("storage_initialization", "launch", "stop")
             if (not isinstance(value, dict) or value.get("schema") != schema
                     or any(value.get(k) != request[k] for k in ("node_id", "game_id", "version", "serial", "mode"))
                     or value.get("session_path") not in (None, "game-deploy")
-                    or any(not isinstance(value.get(k), dict) for k in
-                           ("installed", "resources_deployed", "application_access", "login", "scene_ready", "recovery"))):
+                    or any(not isinstance(value.get(k), dict) for k in facts)):
                 raise ValueError("deployment report identity mismatch")
             return value, None
         except FileNotFoundError:

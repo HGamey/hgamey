@@ -67,3 +67,20 @@ def validate_installation(value, assets):
             or type(selected[0].get("size")) is not int or selected[0]["size"] <= 0):
         raise ValueError("installation must select one positive-size asset with the declared APK sha256")
     return copy.deepcopy(value)
+
+
+def validate_initialization(value, assets):
+    """A bounded launcher attempt uses installed identity, not arbitrary commands."""
+    if (not isinstance(value, dict)
+            or set(value) != {"schema", "package", "version_code", "apk_sha256", "wait_seconds"}
+            or value.get("schema") != "phonefarm/game-initialize-recipe@1"):
+        raise ValueError("unsupported initialization recipe schema or fields")
+    if not isinstance(value["package"], str) or not PACKAGE.fullmatch(value["package"]):
+        raise ValueError("initialization package must be an Android package name")
+    if type(value["version_code"]) is not int or value["version_code"] <= 0:
+        raise ValueError("initialization version_code must be a positive integer")
+    if not isinstance(value["apk_sha256"], str) or not SHA256.fullmatch(value["apk_sha256"]):
+        raise ValueError("initialization apk_sha256 must be 64 lowercase hexadecimal characters")
+    if type(value["wait_seconds"]) is not int or not 1 <= value["wait_seconds"] <= 30:
+        raise ValueError("initialization wait_seconds must be an integer from 1 to 30")
+    return copy.deepcopy(value)

@@ -33,6 +33,7 @@
   pf-node games request REQUEST_ID        # 找回同一次准备任务，不自动重发
   pf-node games deploy ID VERSION --serial S [--check] [--request-id ID] # 新目录资源部署；check只读设备前提
   pf-node games install ID VERSION --serial S [--check] [--request-id ID] # 明确缺席的单APK新装；check只读
+  pf-node games initialize ID VERSION --serial S [--check] [--request-id ID] # 有界Launcher初始化尝试与停止；check只读
   pf-node games deployment JOB_ID         # 原部署报告、事实与恢复范围
   pf-node games deployment-recover JOB_ID --request-id ID # 接续原上下文，不重放部署
   pf-node games upload ID VERSION ASSET FILE [--upload-id ID] # 分块上传；原ID显式续传，不打包/本机hash
