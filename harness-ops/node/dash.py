@@ -23,6 +23,7 @@
   GET /dash/api/log?job=ID  任务日志尾部
   GET /dash/api/exps?ver=V  实验证据（optimize / autoloop / eval）汇总；ver 没变时只回 {"same": true}
   GET /dash/api/shot[?serial=S]  最近一张手机截图（jpeg）
+  GET /dash/live, /dash/api/live/{status,stream,frame}  近实时画面（见 dash_live.py 的测量纪律）
   GET /dash/maint           维护页
   GET /dash/api/home        首页：手机槽位（至少 4 格）+ 目标运行列表
   GET /dash/api/run?id=R    一个目标运行：state、goal.md、human.md 与历史、events、report
@@ -36,6 +37,7 @@ from node_directory import DirectoryError
 from node_games import GameError, MAX_MANIFEST
 
 import dash_goals
+import dash_live
 import sqlite3
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable
@@ -300,6 +302,7 @@ class Dash:
         self.exps, self.exps_ver = [], "0"
         self.fails = collections.defaultdict(list)
         self.wake = threading.Event()
+        self.live = dash_live.LiveHub(lambda: self.monitor.snapshot()["lock"])  # 实时画面，见 dash_live.py
         threading.Thread(target=self._scanner, daemon=True, name="dash-scan").start()
 
     # ── 认证 ──
@@ -367,6 +370,8 @@ class Dash:
             if sub and sub[0] == "api":
                 return self._send(h, 401, {"error": "需要查看密码"}, extra={"WWW-Authenticate": 'Basic realm="HGamey dash"'})
             return self._redirect(h, "/dash/login")
+        if dash_live.handle(self, h, sub, query):  # /dash/live 与 /dash/api/live/*
+            return
         if sub in (["jobs"], ["fleet"], ["games"]):
             return self._static(h, sub[0] + ".html")
         if len(sub) == 2 and sub[0] == "static" and sub[1] in ("jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
