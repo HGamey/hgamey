@@ -62,7 +62,7 @@
 .game-deployment { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 20px; }
 .deploy-target { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; align-items: end; gap: 12px; margin: 16px 0 8px; }
 .deploy-target label { display: grid; gap: 6px; color: var(--ink2); font-size: 12px; min-width: 0; }
-.deploy-target select { width: 100%; min-width: 0; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px; font: inherit; }
+.deploy-target select, .deploy-operation select { width: 100%; min-width: 0; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px; font: inherit; }
 .deploy-status { background: var(--panel); border-left: 3px solid var(--line); padding: 12px 14px; margin: 16px 0; }
 .deploy-status > :first-child { margin-top: 0; }
 .deploy-facts { display: grid; grid-template-columns: auto minmax(0,1fr) auto minmax(0,1fr); gap: 8px 12px; margin: 12px 0; font-size: 13px; }
@@ -77,3 +77,5 @@
 .game-deployment .command-box { max-height: 300px; overflow: auto; }
 @media (max-width: 1100px) { .deploy-target { grid-template-columns: minmax(0,1fr) minmax(0,1fr); } .deploy-target > button { justify-self: start; } }
 @media (max-width: 600px) { .deploy-target { grid-template-columns: minmax(0,1fr); } .deploy-facts { grid-template-columns: 84px minmax(0,1fr); } }
+
+.deploy-operation { display: grid; gap: 6px; width: min(100%, 320px); margin-top: 18px; color: var(--ink2); font-size: 13px; }

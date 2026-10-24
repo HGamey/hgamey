@@ -17,7 +17,7 @@
   <div class="top-right"><button id="refresh-all" class="ghost" type="button">刷新记录</button><form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form></div>
 </header>
 <main class="jobs-page games-page">
-  <div class="page-heading"><div><p class="eyebrow">研究工作台</p><h1>游戏与资源</h1><p class="page-description">登记不可变版本清单，准备本节点资源，再核对目标设备的部署与原件。</p></div><button id="register-open" class="ghost primary" type="button" disabled>登记版本清单</button></div>
+  <div class="page-heading"><div><p class="eyebrow">研究工作台</p><h1>游戏与资源</h1><p class="page-description">登记不可变版本清单，准备本节点资源，再核对目标设备的新装、资源部署与原件。</p></div><button id="register-open" class="ghost primary" type="button" disabled>登记版本清单</button></div>
   <section class="node-card" aria-labelledby="node-heading"><div class="node-context"><div><h2 id="node-heading">资源所在节点</h2><p id="node-summary" class="node-summary">正在读取…</p></div><a href="/dash/fleet">节点目录</a></div><p id="node-message" class="note" role="status">本页准备宿主资源，不自动分发到其他节点。</p></section>
   <section class="access-panel" aria-labelledby="access-heading">
     <div class="access-row"><div><h2 id="access-heading">资源操作权限</h2><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁操作</button></div>
@@ -50,14 +50,14 @@
         <details class="game-manifest"><summary>完整不可变清单与说明</summary><pre id="game-manifest" class="command-box"></pre></details>
         <section class="game-assets" aria-labelledby="assets-heading"><div class="section-heading"><h3 id="assets-heading">逐项资源</h3><span id="asset-count" class="count-label"></span></div><p class="note">当前缓存观测与最近准备任务的阶段分开展示；重新读取不会重新下载或全量计算哈希。</p><ul id="asset-list" class="game-asset-list"></ul></section>
         <section class="game-prepare" aria-labelledby="prepare-heading"><h3 id="prepare-heading">准备本节点资源</h3><p id="prepare-help" class="note"></p><div class="submission-actions"><button id="prepare-submit" class="ghost primary" type="button" disabled>提交准备任务</button><button id="prepare-retry" class="ghost" type="button" hidden>使用原请求 ID 重试</button><button id="prepare-query" class="ghost" type="button" hidden>查询原请求</button><a id="prepare-job" hidden>查看对应任务</a></div><p id="prepare-request" class="request-id"></p><p id="prepare-message" class="note" role="status"></p></section>
-        <section id="game-deployment" class="game-deployment" aria-label="本节点资源部署" hidden></section>
+        <section id="game-deployment" class="game-deployment" aria-label="设备准备与记录" hidden></section>
         <section class="preparations" aria-labelledby="preparations-heading"><div class="section-heading"><h3 id="preparations-heading">持久准备记录</h3><span id="preparation-count" class="count-label"></span></div><p class="note">任务执行结果不代替当前缓存校验。查看任务可读取日志、取消、处理保存异常并下载原件。</p><ul id="preparation-list" class="preparation-list"></ul><p id="preparations-empty" class="note"></p></section>
       </div>
     </section>
   </div>
   <section class="game-request-lookup" aria-labelledby="lookup-heading"><h2 id="lookup-heading">按请求 ID 找回</h2><form id="lookup-form"><label for="request-id">请求 ID</label><div class="lookup-input"><input id="request-id" autocomplete="off" spellcheck="false" maxlength="128" required><button id="request-lookup" class="ghost" type="submit">查询原任务</button></div></form><p class="note">断线或回包不确定时先查询，不自动新建任务。浏览器保留未确认请求的绑定和 ID；任务历史来自节点持久记录。</p><p id="lookup-message" class="note" role="status"></p><a id="lookup-job" hidden>查看找到的原任务</a></section>
 </main>
-<footer class="foot">资源缓存、设备部署、应用读取和场景验证分别留证。仅显式提交设备任务会进入部署流程，不会自动启动游戏。</footer>
+<footer class="foot">资源缓存、单 APK 新装、资源部署、应用读取和场景验证分别留证。只执行显式提交的设备任务，不会自动启动游戏。</footer>
 <script src="/dash/static/games-upload.js"></script>
 <script src="/dash/static/games-deploy.js"></script>
 <script src="/dash/static/games.js"></script>

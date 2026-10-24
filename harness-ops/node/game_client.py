@@ -19,6 +19,7 @@ HELP = """用法:
   pf-node games prepare ID VERSION [--request-id ID]
   pf-node games request REQUEST_ID
   pf-node games deploy ID VERSION --serial S [--check] [--request-id ID]
+  pf-node games install ID VERSION --serial S [--check] [--request-id ID]
   pf-node games deployment JOB_ID
   pf-node games deployment-recover JOB_ID --request-id ID
   pf-node games upload ID VERSION ASSET FILE [--upload-id ID]
@@ -32,6 +33,7 @@ prepare 仅提交宿主资源准备任务，不安装应用或验证场景；结
 upload 分块读取本地文件，不打包或计算本机全文件哈希；写入结果未知时只查询原上传 ID 后退出。
 显式带原 --upload-id 重跑才能续传。传完仅提交校验任务；当前缓存 observation 才是资源校验证据。
 deploy 仅部署配方选中的资源到已安装引擎的新目录；--check 只读取设备前提，仍经任务排队。
+install 仅对明确缺席的包新装单个 APK；--check 核元数据和设备前提，不升级、不启动应用。
 部署、应用读取、登录和场景状态分别报告。恢复接续原任务，不重放部署，不自动释放队列保留。
 """
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
@@ -177,11 +179,12 @@ def prepare(client, path, request_id):
     return submit_job(client, path + "/prepare", b"{}", request_id, "准备")
 
 
-def deployment_node(client):
+def deployment_node(client, operation="deploy"):
     node = client.request("GET", "/node")
     capabilities = node.get("capabilities")
-    if not isinstance(capabilities, list) or "games.deploy-v1" not in capabilities:
-        raise ValueError("节点缺少 games.deploy-v1；未提交，请升级节点服务和 phonefarm")
+    capability = "games.install-v1" if operation == "install" else "games.deploy-v1"
+    if not isinstance(capabilities, list) or capability not in capabilities:
+        raise ValueError(f"节点缺少 {capability}；未提交，请核节点服务、phonefarm 和固定工具配置")
     if not isinstance(node.get("node_id"), str) or not node["node_id"]:
         raise RequestError("节点未提供持久 node_id；未提交")
     return node["node_id"]
@@ -219,7 +222,7 @@ def deployment_arguments(args, request_id, *, recovery=False):
     if recovery and request_id is None:
         raise ValueError("deployment-recover 必须显式指定 --request-id ID")
     if not recovery and serial is None:
-        raise ValueError("deploy 必须显式指定 --serial S")
+        raise ValueError("deploy/install 必须显式指定 --serial S")
     return serial, mode, request_id or str(uuid.uuid4())
 
 
@@ -408,24 +411,33 @@ def main(args, *, url, token, request_id=None):
         command = args[0]
         if request_id is not None:
             request_identifier(request_id)
-            if command not in ("prepare", "deploy", "deployment-recover"):
-                raise ValueError("--request-id 仅用于 games prepare/deploy/deployment-recover；查找原任务请用 games request ID")
+            if command not in ("prepare", "deploy", "install", "deployment-recover"):
+                raise ValueError("--request-id 仅用于 games prepare/deploy/install/deployment-recover；查找原任务请用 games request ID")
         body, method = None, "GET"
         if command == "list" and len(args) == 1:
             path = "/games"
-        elif command == "deploy" and len(args) >= 3:
-            path = f"/games/{identifier(args[1])}/versions/{identifier(args[2])}/deploy"
+        elif command in ("deploy", "install") and len(args) >= 3:
+            path = f"/games/{identifier(args[1])}/versions/{identifier(args[2])}/{command}"
             serial, mode, key = deployment_arguments(args[3:], request_id)
             client = Client(url, token)
-            body = json.dumps({"node_id": deployment_node(client), "serial": serial, "mode": mode}).encode()
-            return submit_job(client, path, body, key, "检查设备部署前提" if mode == "check" else "部署资源")
+            body = json.dumps({"node_id": deployment_node(client, command), "serial": serial, "mode": mode}).encode()
+            action = "新装单个 APK" if command == "install" else "部署资源"
+            return submit_job(client, path, body, key, f"检查{action}前提" if mode == "check" else action)
         elif command == "deployment" and len(args) == 2:
             path = f"/jobs/{deployment_job_id(args[1])}/deployment"
         elif command == "deployment-recover" and len(args) >= 2:
             path = f"/jobs/{deployment_job_id(args[1])}/deployment/recover"
             _, _, key = deployment_arguments(args[2:], request_id, recovery=True)
             client = Client(url, token)
-            deployment_node(client)
+            original = client.request("GET", path.removesuffix("/recover"))
+            operation = original.get("operation", "deploy")
+            if operation not in ("deploy", "install"):
+                raise RequestError("原任务未提供可识别的部署/安装类型；未提交")
+            recovery = original.get("recovery")
+            if not isinstance(recovery, dict) or recovery.get("supported") is not True:
+                # Recovery capability is independent of fresh-install aapt2 availability.
+                # Keep server-provided prose out of errors; the original report is queryable.
+                raise RequestError("节点未声明支持原任务恢复；请用 games deployment 查询 recovery.reason，未提交")
             return submit_job(client, path, b"{}", key, "接续原部署恢复")
         elif command == "upload" and (len(args) == 5 or len(args) == 7 and args[5] == "--upload-id"):
             return upload_file(Client(url, token), identifier(args[1]), identifier(args[2]), args[3], args[4],

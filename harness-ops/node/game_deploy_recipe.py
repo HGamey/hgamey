@@ -44,3 +44,26 @@ def validate_recipe(value, assets):
             raise ValueError("deployment paths must be distinct and cannot contain another file path")
         paths.add(path)
     return copy.deepcopy(value)
+
+
+def validate_installation(value, assets):
+    """Select one verified-cache APK; never infer metadata from a file name."""
+    if (not isinstance(value, dict)
+            or set(value) != {"schema", "package", "version_code", "apk_sha256", "apk_asset_name"}
+            or value.get("schema") != "phonefarm/game-install-recipe@1"):
+        raise ValueError("unsupported installation recipe schema or fields")
+    if not isinstance(value["package"], str) or not PACKAGE.fullmatch(value["package"]):
+        raise ValueError("installation package must be an Android package name")
+    if type(value["version_code"]) is not int or value["version_code"] <= 0:
+        raise ValueError("installation version_code must be a positive integer")
+    if not isinstance(value["apk_sha256"], str) or not SHA256.fullmatch(value["apk_sha256"]):
+        raise ValueError("installation apk_sha256 must be 64 lowercase hexadecimal characters")
+    name = value["apk_asset_name"]
+    if (not isinstance(name, str) or not name.strip() or any(ord(c) < 32 or ord(c) == 127 for c in name)
+            or not isinstance(assets, list)):
+        raise ValueError("installation requires an explicit APK asset name and manifest assets")
+    selected = [a for a in assets if isinstance(a, dict) and a.get("name") == name]
+    if (len(selected) != 1 or selected[0].get("sha256") != value["apk_sha256"]
+            or type(selected[0].get("size")) is not int or selected[0]["size"] <= 0):
+        raise ValueError("installation must select one positive-size asset with the declared APK sha256")
+    return copy.deepcopy(value)

@@ -44,7 +44,7 @@ def configuration(prefix):
 
 
 PF_ROOTS = ("PHONEFARM_STATE_DIR", "DEVLOCK_DIR", "PHONEFARM_LEASE_DIR")
-PF_TOOLS = ("ADB_BIN", "DEVLOCK_BIN")
+PF_TOOLS = ("ADB_BIN", "DEVLOCK_BIN", "AAPT2_BIN")
 
 
 def phonefarm_environment(config):

@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--phonefarm-lease-dir", type=Path)
     parser.add_argument("--adb-bin", type=Path)
     parser.add_argument("--devlock-bin", type=Path)
+    parser.add_argument("--aapt2-bin", type=Path)
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() != 0:
         parser.error("installation requires an explicit root administrator on Linux")
@@ -58,10 +59,10 @@ def main():
             parser.error("all three persistent PF roots must be configured together")
         config["pf_env"] = {key: str(path) for key, path in zip(PF_ROOTS, roots)}
         config["pf_env"]["PHONEFARM_SHARED_GID"] = str(args.job_gid)
-        for key, path in zip(PF_TOOLS, (args.adb_bin, args.devlock_bin)):
+        for key, path in zip(PF_TOOLS, (args.adb_bin, args.devlock_bin, args.aapt2_bin)):
             if path is not None:
                 config["pf_env"][key] = str(path)
-    elif args.adb_bin or args.devlock_bin:
+    elif args.adb_bin or args.devlock_bin or args.aapt2_bin:
         parser.error("fixed PF tools require the shared PF profile")
     # Account selection is an administrator operation; do not create or modify
     # accounts, cgroups, data roots, sudoers or an existing installation here.

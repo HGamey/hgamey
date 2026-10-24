@@ -150,9 +150,13 @@ class NodeGames:
         states = {a["observation"]["state"] for a in assets}
         ready = "verified" if states == {"verified"} else ("unknown" if "unknown" in states else "incomplete")
         deployments = getattr(self.jobs, "deployments", None)
+        transactions = deployments.history(entry, rows) if deployments and history else []
         return {**entry, "node_id": self.node_id, "assets": assets, "resource_state": ready,
                 "deployment_support": deployments.support if deployments else {"available": False},
-                "deployments": deployments.history(entry, rows) if deployments and history else [],
+                "deployments": [r for r in transactions if r["operation"] == "deploy"],
+                "installation_support": deployments.installation_support if deployments else {"available": False},
+                "installations": [r for r in transactions if r["operation"] == "install"],
+                "deployment_history_errors": [r for r in transactions if r["operation"] == "unknown"],
                 "preparations": preparations if history else [], "preparation_count": len(preparations),
                 "device_state": dict.fromkeys(("installed", "resources_deployed", "login", "scene_ready"), "unknown")}
 
@@ -175,4 +179,6 @@ class NodeGames:
             return 200, self.prepare(parts[1], parts[3], body, request_id)
         if len(parts) == 5 and parts[0] == "games" and parts[2] == "versions" and parts[4] == "deploy":
             return 200, self.jobs.deployments.start(parts[1], parts[3], body, request_id)
+        if len(parts) == 5 and parts[0] == "games" and parts[2] == "versions" and parts[4] == "install":
+            return 200, self.jobs.deployments.start(parts[1], parts[3], body, request_id, "install")
         raise GameError(404, "no such game operation")
