@@ -79,3 +79,7 @@
 @media (max-width: 600px) { .deploy-target { grid-template-columns: minmax(0,1fr); } .deploy-facts { grid-template-columns: 84px minmax(0,1fr); } }
 
 .deploy-operation { display: grid; gap: 6px; width: min(100%, 320px); margin-top: 18px; color: var(--ink2); font-size: 13px; }
+.scene-source { margin: 16px 0; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.scene-source > label { display: grid; gap: 6px; width: min(100%, 380px); color: var(--ink2); font-size: 13px; }
+.scene-source > button { margin-top: 10px; }
+.scene-source .command-box { white-space: pre-wrap; overflow-wrap: anywhere; }

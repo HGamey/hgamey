@@ -84,3 +84,40 @@ def validate_initialization(value, assets):
     if type(value["wait_seconds"]) is not int or not 1 <= value["wait_seconds"] <= 30:
         raise ValueError("initialization wait_seconds must be an integer from 1 to 30")
     return copy.deepcopy(value)
+
+
+def validate_scene(value, assets):
+    """A bounded v73 demo attempt; paths and console text are derived by PF."""
+    fields = {"schema", "adapter", "package", "version_code", "apk_sha256", "resource_prefix",
+              "demo_name", "demo_asset_name", "compat_asset_name", "renderer", "wait_seconds"}
+    if (not isinstance(value, dict) or set(value) != fields
+            or value.get("schema") != "phonefarm/game-scene-recipe@1"
+            or value.get("adapter") != "doom3-v73-render-demo-v1"
+            or value.get("package") != "com.karin.idTech4Amm"
+            or type(value.get("version_code")) is not int or value["version_code"] != 11073):
+        raise ValueError("scene requires the explicit Doom v73 render-demo recipe")
+    if not isinstance(value["apk_sha256"], str) or not SHA256.fullmatch(value["apk_sha256"]):
+        raise ValueError("scene apk_sha256 must be 64 lowercase hexadecimal characters")
+    prefix = value["resource_prefix"]
+    if (not isinstance(prefix, str) or prefix and any(
+            not COMPONENT.fullmatch(part) or part in {".", ".."} or part.startswith(".phonefarm-")
+            for part in prefix.split("/"))):
+        raise ValueError("scene resource_prefix must be empty or a relative resource directory")
+    if not isinstance(value["demo_name"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value["demo_name"]):
+        raise ValueError("scene demo_name must be a simple name without extension")
+    renderer = value["renderer"]
+    if (not isinstance(renderer, dict) or set(renderer) != {"opengl", "multithread"}
+            or renderer["opengl"] not in ("GLES2", "GLES3.0") or type(renderer["multithread"]) is not bool):
+        raise ValueError("scene renderer requires opengl GLES2/GLES3.0 and boolean multithread")
+    if type(value["wait_seconds"]) is not int or not 1 <= value["wait_seconds"] <= 30:
+        raise ValueError("scene wait_seconds must be an integer from 1 to 30")
+    names = [value["demo_asset_name"], value["compat_asset_name"]]
+    if (not all(isinstance(name, str) and name and not any(ord(c) < 32 for c in name) for name in names)
+            or names[0] == names[1] or not isinstance(assets, list)):
+        raise ValueError("scene requires two distinct explicit seed asset names")
+    selected = [a for a in assets if isinstance(a, dict) and a.get("name") in names]
+    if (len(selected) != 2 or {a["name"] for a in selected} != set(names)
+            or any(type(a.get("size")) is not int or a["size"] <= 0 for a in selected)
+            or sum(a["size"] for a in selected) > 1 << 20):
+        raise ValueError("scene seeds must be two positive-size manifest assets totaling at most 1 MiB")
+    return copy.deepcopy(value)

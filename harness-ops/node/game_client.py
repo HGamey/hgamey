@@ -21,6 +21,7 @@ HELP = """用法:
   pf-node games deploy ID VERSION --serial S [--check] [--request-id ID]
   pf-node games install ID VERSION --serial S [--check] [--request-id ID]
   pf-node games initialize ID VERSION --serial S [--check] [--request-id ID]
+  pf-node games scene ID VERSION --serial S --deployment-inputs FILE [--check] [--request-id ID]
   pf-node games deployment JOB_ID
   pf-node games deployment-recover JOB_ID --request-id ID
   pf-node games upload ID VERSION ASSET FILE [--upload-id ID]
@@ -36,6 +37,7 @@ upload 分块读取本地文件，不打包或计算本机全文件哈希；写�
 deploy 仅部署配方选中的资源到已安装引擎的新目录；--check 只读取设备前提，仍经任务排队。
 install 仅对明确缺席的包新装单个 APK；--check 核元数据和设备前提，不升级、不启动应用。
 initialize 显式有界尝试 Launcher 初始化并停止本次目标；目录已就绪时不启动，首次配置保留，场景仍需核验。
+scene 冻结两份原部署 input-reference 的 source，放入独立运行目录并有界启动/观察/停止；不代表冷启同状态或性能资格。
 部署、应用读取、登录和场景状态分别报告。恢复接续原任务，不重放部署，不自动释放队列保留。
 """
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
@@ -224,8 +226,30 @@ def deployment_arguments(args, request_id, *, recovery=False):
     if recovery and request_id is None:
         raise ValueError("deployment-recover 必须显式指定 --request-id ID")
     if not recovery and serial is None:
-        raise ValueError("deploy/install/initialize 必须显式指定 --serial S")
+        raise ValueError("deploy/install/initialize/scene 必须显式指定 --serial S")
     return serial, mode, request_id or str(uuid.uuid4())
+
+
+def scene_arguments(args, request_id):
+    flags, path, index = [], None, 0
+    while index < len(args):
+        if args[index] == "--deployment-inputs":
+            if path is not None or index + 1 == len(args):
+                raise ValueError("scene 需要唯一的 --deployment-inputs FILE")
+            path, index = args[index + 1], index + 2
+        else:
+            flags.append(args[index])
+            index += 1
+    if path is None:
+        raise ValueError("scene 需要 --deployment-inputs FILE，包含 report/state 两项原部署 source 引用")
+    with open(path, "rb") as source:
+        data = source.read((32 << 10) + 1)
+    if len(data) > 32 << 10:
+        raise ValueError("部署输入引用文件不能超过 32 KiB")
+    sources = json.loads(data)
+    if not isinstance(sources, dict) or set(sources) != {"report", "state"}:
+        raise ValueError("部署输入文件必须是 report/state source 对象；原件由节点冻结，不接受本地设备路径")
+    return (*deployment_arguments(flags, request_id), sources)
 
 
 def upload_identifier(value):
@@ -413,17 +437,23 @@ def main(args, *, url, token, request_id=None):
         command = args[0]
         if request_id is not None:
             request_identifier(request_id)
-            if command not in ("prepare", "deploy", "install", "initialize", "deployment-recover"):
-                raise ValueError("--request-id 仅用于 games prepare/deploy/install/initialize/deployment-recover；查找原任务请用 games request ID")
+            if command not in ("prepare", "deploy", "install", "initialize", "scene", "deployment-recover"):
+                raise ValueError("--request-id 仅用于 games prepare/deploy/install/initialize/scene/deployment-recover；查找原任务请用 games request ID")
         body, method = None, "GET"
         if command == "list" and len(args) == 1:
             path = "/games"
-        elif command in ("deploy", "install", "initialize") and len(args) >= 3:
+        elif command in ("deploy", "install", "initialize", "scene") and len(args) >= 3:
             path = f"/games/{identifier(args[1])}/versions/{identifier(args[2])}/{command}"
-            serial, mode, key = deployment_arguments(args[3:], request_id)
+            if command == "scene":
+                serial, mode, key, sources = scene_arguments(args[3:], request_id)
+            else:
+                serial, mode, key = deployment_arguments(args[3:], request_id)
             client = Client(url, token)
-            body = json.dumps({"node_id": deployment_node(client, command), "serial": serial, "mode": mode}).encode()
-            action = {"install": "新装单个 APK", "deploy": "部署资源", "initialize": "有界初始化应用存储"}[command]
+            payload = {"node_id": deployment_node(client, command), "serial": serial, "mode": mode}
+            if command == "scene":
+                payload["deployment"] = sources
+            body = json.dumps(payload).encode()
+            action = {"install": "新装单个 APK", "deploy": "部署资源", "initialize": "有界初始化应用存储", "scene": "有界场景诊断尝试"}[command]
             return submit_job(client, path, body, key, f"检查{action}前提" if mode == "check" else action)
         elif command == "deployment" and len(args) == 2:
             path = f"/jobs/{deployment_job_id(args[1])}/deployment"
@@ -433,7 +463,7 @@ def main(args, *, url, token, request_id=None):
             client = Client(url, token)
             original = client.request("GET", path.removesuffix("/recover"))
             operation = original.get("operation", "deploy")
-            if operation not in ("deploy", "install", "initialize"):
+            if operation not in ("deploy", "install", "initialize", "scene"):
                 raise RequestError("原任务未提供可识别的游戏准备类型；未提交")
             recovery = original.get("recovery")
             if not isinstance(recovery, dict) or recovery.get("supported") is not True:

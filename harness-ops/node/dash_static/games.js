@@ -81,7 +81,7 @@
     $('access-toggle').disabled = accessBusy || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定操作' : '解锁操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
-    message('access-message', accessError || (accessBusy ? '正在核对操作权限…' : !access ? '权限未知，保持只读。' : !access.steer_configured ? '本节点未配置掌舵密码，保持只读。' : access.steer ? '可登记、准备资源；设备操作需在准备区显式提交新装、初始化或资源部署任务。' : '可查看清单、缓存与原任务；登记、资源准备和设备操作需解锁。'), !!accessError);
+    message('access-message', accessError || (accessBusy ? '正在核对操作权限…' : !access ? '权限未知，保持只读。' : !access.steer_configured ? '本节点未配置掌舵密码，保持只读。' : access.steer ? '可登记、准备资源；设备操作需在准备区显式提交新装、初始化、资源部署或场景诊断任务。' : '可查看清单、缓存与原任务；登记、资源准备和设备操作需解锁。'), !!accessError);
     const allowed = directoryReady && access?.steer && !accessBusy;
     $('register-open').disabled = !allowed || registrationBusy;
     $('register-submit').disabled = !allowed || registrationBusy || !!registrationPending;

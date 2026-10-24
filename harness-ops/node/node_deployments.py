@@ -4,7 +4,8 @@ import os
 import re
 import subprocess
 
-from game_deploy_recipe import validate_recipe, validate_installation, validate_initialization
+from game_deploy_recipe import validate_recipe, validate_installation, validate_initialization, validate_scene
+from job_inputs import validate as validate_inputs
 from job_dispatch import request_fingerprint
 from job_queue import RequestConflict
 from node_games import MAX_MANIFEST, snapshot_body
@@ -12,10 +13,12 @@ from node_games import MAX_MANIFEST, snapshot_body
 CAPABILITY = "games.deploy-v1"
 INSTALL_CAPABILITY = "games.install-v1"
 INITIALIZE_CAPABILITY = "games.initialize-v1"
+SCENE_CAPABILITY = "games.scene-v1"
 OPERATIONS = {
     "deploy": ("deployment", validate_recipe, "phonefarm/game-deployment@1", "resources"),
     "install": ("installation", validate_installation, "phonefarm/game-installation@1", "APK"),
     "initialize": ("initialization", validate_initialization, "phonefarm/game-initialization@1", "initialization"),
+    "scene": ("scene_attempt", validate_scene, "phonefarm/game-scene@1", "scene attempt"),
 }
 
 
@@ -38,6 +41,8 @@ class NodeDeployments:
                                      "error": "configured phonefarm or its fixed APK metadata tool is unavailable"}
         self.initialization_support = {"available": False, "capability": INITIALIZE_CAPABILITY,
                                        "error": "configured phonefarm does not support launcher initialization"}
+        self.scene_support = {"available": False, "capability": SCENE_CAPABILITY,
+                              "error": "configured phonefarm does not support bounded Doom render-demo attempts"}
         if "phonefarm" not in jobs.bins:
             return
         exe, cwd = jobs.bins["phonefarm"]
@@ -54,6 +59,8 @@ class NodeDeployments:
                     self.support.update(available=True, error=None)
                 if value.get("launcher_initialization_v1") is True:
                     self.initialization_support.update(available=True, error=None)
+                if value.get("doom_render_scene_v1") is True:
+                    self.scene_support.update(available=True, error=None)
                 if value.get("fresh_single_apk_v1") is True:
                     self.installation_support["recovery_available"] = True
                     metadata = value.get("metadata_tool") or {}
@@ -68,7 +75,44 @@ class NodeDeployments:
 
     def _support(self, kind):
         return {"deploy": self.support, "install": self.installation_support,
-                "initialize": self.initialization_support}[kind]
+                "initialize": self.initialization_support, "scene": self.scene_support}[kind]
+
+    def _scene_inputs(self, sources):
+        if not isinstance(sources, dict) or set(sources) != {"report", "state"}:
+            raise ValueError("scene deployment requires report and state input sources")
+        files = []
+        for name, path, target in (("report", "deployment.json", "source-deployment.json"),
+                                   ("state", "game-deploy/session.json", "source-session.json")):
+            source = sources[name]
+            if (not isinstance(source, dict) or source.get("path") != path
+                    or type(source.get("size")) is not int or not 0 < source["size"] <= 128 << 10):
+                raise ValueError("scene deployment sources require the original small report and session files")
+            files.append({"name": name, "target": target, "source": source})
+        inputs = validate_inputs({"schema": "phonefarm/job-inputs@1", "node_id": self.games.node_id,
+                                  "files": files, "bindings": [], "cwd": "input"}, self.games.node_id)
+        if inputs["files"][0]["source"]["job_id"] != inputs["files"][1]["source"]["job_id"]:
+            raise ValueError("scene report and session must come from the same deployment job")
+        return inputs
+
+    def _scene_sources(self, row):
+        # A recovery needs its saved session, not a fresh copy of external inputs.
+        # Retain provenance in the original queue declaration for readonly binding.
+        seen = set()
+        while row["spec"].get("recovery_for"):
+            parent = row["spec"]["recovery_for"]
+            if parent in seen:
+                raise ValueError("scene recovery ancestry contains a cycle")
+            seen.add(parent)
+            row = self.jobs.dispatch.queue.get(parent)
+            if row is None:
+                raise ValueError("scene input declaration is unavailable")
+        inputs = row["spec"].get("inputs")
+        if not isinstance(inputs, dict):
+            raise ValueError("scene input declaration is unavailable")
+        sources = {item["name"]: item["source"] for item in inputs.get("files", [])}
+        if self._scene_inputs(sources) != inputs:
+            raise ValueError("scene input declaration changed")
+        return sources
 
     def _require_support(self, kind="deploy", recovery=False):
         support = self._support(kind)
@@ -76,8 +120,9 @@ class NodeDeployments:
             raise DeploymentError(503, "deployment_unavailable", support["error"])
 
     def _request(self, game_id, version, body, kind="deploy"):
-        if not isinstance(body, dict) or set(body) != {"node_id", "serial", "mode"}:
-            raise ValueError("deployment requires node_id, serial and mode")
+        fields = {"node_id", "serial", "mode"} | ({"deployment"} if kind == "scene" else set())
+        if not isinstance(body, dict) or set(body) != fields:
+            raise ValueError("deployment requires node_id, serial and mode; scene also requires its deployment input sources")
         if body["node_id"] != self.games.node_id:
             raise DeploymentError(409, "node_mismatch", "select the current node before deploying")
         serial = body["serial"]
@@ -86,6 +131,8 @@ class NodeDeployments:
             raise ValueError("deployment requires an explicit Android serial")
         if body["mode"] not in {"check", "apply"}:
             raise ValueError("deployment mode must be check or apply")
+        if kind == "scene":
+            self._scene_inputs(body["deployment"])
         entry = self.games.store.read_json(self.games._path(game_id, version))
         manifest = entry["manifest"]
         field, validator, _, _ = OPERATIONS[kind]
@@ -93,18 +140,21 @@ class NodeDeployments:
             raise DeploymentError(409, "recipe_missing", "this version has no supported " + field + " recipe")
         recipe = validator(manifest[field], manifest["assets"])
         selected = ({recipe["apk_asset_name"]} if kind == "install" else
-                    {item["asset_name"] for item in recipe["files"]} if kind == "deploy" else set())
+                    {item["asset_name"] for item in recipe["files"]} if kind == "deploy" else
+                    {recipe["demo_asset_name"], recipe["compat_asset_name"]} if kind == "scene" else set())
         assets = [asset for asset in manifest["assets"] if asset["name"] in selected]
         request = {"schema": f"phonefarm/game-{kind}-request@1",
                    "node_id": self.games.node_id,
                    "game_id": game_id, "version": version, "serial": serial, "mode": body["mode"],
                    "recipe": recipe, "assets": [{"name": a["name"], "path": str(self.games.cache.object_path(a["sha256"])),
                                                 "sha256": a["sha256"], "size": a["size"]} for a in assets]}
+        if kind == "scene":
+            request["deployment"] = {"report_path": "source-deployment.json", "state_path": "source-session.json"}
         if len(json.dumps(request).encode()) > MAX_MANIFEST:
             raise ValueError("frozen deployment request exceeds 64 KiB")
         return request, assets
 
-    def _spec(self, request, recovery_for=None):
+    def _spec(self, request, recovery_for=None, inputs=None):
         serial = request["serial"]
         spec = {"bin": "phonefarm", "argv": ["game-deploy", "--request", "@in/manifest.json",
                 "--serial", serial, "--out", "@out", "--json"],
@@ -116,6 +166,10 @@ class NodeDeployments:
                               self._source_session(recovery_for),
                               "--serial", serial, "--out", "@out", "--json"],
                         label="Recover deployment " + recovery_for, device_access="recovery", recovery_for=recovery_for)
+        elif operation(request) == "scene":
+            if inputs is None:
+                raise ValueError("scene requires frozen deployment input references")
+            spec["inputs"] = inputs
         return spec
 
     def _source_session(self, jid):
@@ -139,7 +193,8 @@ class NodeDeployments:
         if not request_id:
             raise ValueError("X-Request-ID is required; query the same request after an uncertain response")
         request, assets = self._request(game_id, version, body, kind)
-        spec, payload = self._spec(request), snapshot_body(request)
+        inputs = self._scene_inputs(body["deployment"]) if kind == "scene" else None
+        spec, payload = self._spec(request, inputs=inputs), snapshot_body(request)
         # A retry still returns the original job after its cache has disappeared.
         if not self.jobs.dispatch.queue.by_request(key):
             self._require_support(kind)
@@ -154,13 +209,18 @@ class NodeDeployments:
         if not row or row["spec"].get("bin") != "phonefarm" or row["spec"].get("argv", [])[:1] != ["game-deploy"]:
             raise DeploymentError(404, "deployment_not_found", "this job is not a typed resource deployment")
         request = self.jobs._read_root.read_json(jid + "/in/manifest.json", maximum=MAX_MANIFEST)
+        body = {k: request[k] for k in ("node_id", "serial", "mode")}
+        inputs = None
+        if operation(request) == "scene":
+            body["deployment"] = self._scene_sources(row)
+            inputs = self._scene_inputs(body["deployment"])
         expected, _ = self._request(request["game_id"], request["version"],
-                                     {k: request[k] for k in ("node_id", "serial", "mode")}, operation(request))
+                                     body, operation(request))
         parent = row["spec"].get("recovery_for")
         if parent and self.jobs._read_root.read_json(parent + "/in/manifest.json", maximum=MAX_MANIFEST) != request:
             raise DeploymentError(409, "deployment_binding_changed", "recovery inputs differ from its source transaction")
         if request != expected or row["fingerprint"] != request_fingerprint(
-                self._spec(request, row["spec"].get("recovery_for")), snapshot_body(request)):
+                self._spec(request, row["spec"].get("recovery_for"), inputs), snapshot_body(request)):
             raise DeploymentError(409, "deployment_binding_changed", "deployment input or queue binding does not match the registered version")
         return row, request
 
@@ -171,6 +231,8 @@ class NodeDeployments:
             facts = ("installed", "resources_deployed", "application_access", "login", "scene_ready", "recovery")
             if operation(request) == "initialize":
                 facts += ("storage_initialization", "launch", "stop")
+            elif operation(request) == "scene":
+                facts += ("input", "launcher_configuration", "runtime_seed", "launch", "scene_observation", "stop")
             if (not isinstance(value, dict) or value.get("schema") != schema
                     or any(value.get(k) != request[k] for k in ("node_id", "game_id", "version", "serial", "mode"))
                     or value.get("session_path") not in (None, "game-deploy")

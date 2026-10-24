@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "game_id": "doom3-demo",
+  "version": "v73-demo-1.1.1286-scene1",
+  "title": "Doom 3 Demo / idTech4A++ v73 bounded render-demo attempt",
+  "application": {
+    "package": "com.karin.idTech4Amm",
+    "platform": "android",
+    "abi": "arm64-v8a"
+  },
+  "engine": {
+    "name": "idTech4A++",
+    "release": "v1.1.0harmattan73",
+    "version_code": 11073,
+    "version_name": "1.1.0harmattan73lindaiyu",
+    "variant": "official_release"
+  },
+  "requirements": {
+    "installed_engine": "Exact matching v73 single APK required; this recipe does not install or change the engine.",
+    "resource_deployment": "Select the report and session from a committed same-game resource deployment on this node/device. A prior game manifest version is allowed.",
+    "current_device_compatibility": "unknown",
+    "launcher_configuration": "Configuration and actual native engine identity require observations; missing evidence stays unknown. This recipe attempts a bounded diagnostic launch, not a performance run."
+  },
+  "scene": {
+    "name": "Mars City Hangar",
+    "map": "game/demo_mars_city1",
+    "historical_scene_observed": true,
+    "current_scene_ready": "unknown",
+    "save_reload": "not_tested_in_source_record",
+    "reset_recipe": "bounded render-demo attempt; cold-start playback and same-state equivalence not verified"
+  },
+  "provenance": {
+    "kind": "historical_pilot_metadata",
+    "recorded_date": "2026-10-14",
+    "record": "DOOM-GAME-BUNDLE-PILOT.json",
+    "schema": "hgamey/game_distribution_pilot_bundle@1",
+    "current_node_availability": "not_verified",
+    "integrity": "Sizes and SHA-256 values copied from existing receipts; no new download or hash verification.",
+    "demo_source": "https://files.holarse-linuxgaming.de/native/Spiele/Doom%203/Demo/doom3-linux-1.1.1286-demo.x86.run",
+    "scope": "Two small seed metadata records reused from historical receipts. No original file was copied or downloaded. The render demo host source has not been located. Reuse a committed resource deployment; PK4/APK/save are not prepared by this manifest. The new runtime root is retained, application side effects are not claimed to be confined to it."
+  },
+  "license": {
+    "engine": "Official upstream release; consult upstream license terms separately from game data.",
+    "game_data": "Original Linux Doom 3 free Demo 1.1.1286; not Doom 3 BFG or the full game.",
+    "full_game_license_assumed": false,
+    "redistribution_permission": "not_established_by_historical_receipts",
+    "compatibility_override": "Local experimental script derived from demo content; redistribution terms not established."
+  },
+  "assets": [
+    {
+      "name": "weapon_base.script",
+      "role": "compatibility_override",
+      "sha256": "5870c79cabda6beec0a6a873bc6544ae840ad7b049da66eb4acce21e610b5226",
+      "size": 2662,
+      "source": {
+        "kind": "unavailable",
+        "reason": "Historical one-field loose override; original PK4 was not modified. No accessible job/out artifact on this node is registered."
+      },
+      "target": "state/base/script/weapon_base.script"
+    },
+    {
+      "name": "shot_pf_state_001.demo",
+      "role": "render_snapshot",
+      "sha256": "bae2ae820fc3ae77defefd01301fb5615c50f91f971013d44505e601c052ac46",
+      "size": 63166,
+      "source": {
+        "kind": "unavailable",
+        "reason": "Historical static render snapshot with playback evidence; no accessible job/out artifact on this node is registered."
+      },
+      "target": "state/base/demos/shot_pf_state_001.demo"
+    }
+  ],
+  "scene_attempt": {
+    "schema": "phonefarm/game-scene-recipe@1",
+    "adapter": "doom3-v73-render-demo-v1",
+    "package": "com.karin.idTech4Amm",
+    "version_code": 11073,
+    "apk_sha256": "34d9383bb6ccf641c9e6f09bc009e0d1c80bb27ae0207cefe5c46ba7e86a8dcd",
+    "resource_prefix": "doom3",
+    "demo_name": "shot_pf_state_001",
+    "demo_asset_name": "shot_pf_state_001.demo",
+    "compat_asset_name": "weapon_base.script",
+    "renderer": {
+      "opengl": "GLES3.0",
+      "multithread": true
+    },
+    "wait_seconds": 10
+  }
+}

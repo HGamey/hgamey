@@ -158,6 +158,8 @@ class NodeGames:
                 "installations": [r for r in transactions if r["operation"] == "install"],
                 "initialization_support": deployments.initialization_support if deployments else {"available": False},
                 "initializations": [r for r in transactions if r["operation"] == "initialize"],
+                "scene_support": deployments.scene_support if deployments else {"available": False},
+                "scenes": [r for r in transactions if r["operation"] == "scene"],
                 "deployment_history_errors": [r for r in transactions if r["operation"] == "unknown"],
                 "preparations": preparations if history else [], "preparation_count": len(preparations),
                 "device_state": dict.fromkeys(("installed", "resources_deployed", "login", "scene_ready"), "unknown")}
@@ -179,6 +181,6 @@ class NodeGames:
             return 201, self.register(body)
         if len(parts) == 5 and parts[0] == "games" and parts[2] == "versions" and parts[4] == "prepare":
             return 200, self.prepare(parts[1], parts[3], body, request_id)
-        if len(parts) == 5 and parts[0] == "games" and parts[2] == "versions" and parts[4] in {"deploy", "install", "initialize"}:
+        if len(parts) == 5 and parts[0] == "games" and parts[2] == "versions" and parts[4] in {"deploy", "install", "initialize", "scene"}:
             return 200, self.jobs.deployments.start(parts[1], parts[3], body, request_id, parts[4])
         raise GameError(404, "no such game operation")

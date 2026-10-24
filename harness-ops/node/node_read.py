@@ -89,7 +89,9 @@ class NodeRead:
                                 (["games.install-v1"] if getattr(self.jobs, "deployments", None)
                                  and self.jobs.deployments.installation_support["available"] else []) +
                                 (["games.initialize-v1"] if getattr(self.jobs, "deployments", None)
-                                 and self.jobs.deployments.initialization_support["available"] else []),
+                                 and self.jobs.deployments.initialization_support["available"] else []) +
+                                (["games.scene-v1"] if getattr(self.jobs, "deployments", None)
+                                 and self.jobs.deployments.scene_support["available"] else []),
                 "devices": {"status": "not_probed", "reason": "node identity does not probe phones"}}
 
     def list_jobs(self, query):

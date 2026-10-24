@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 import uuid
 
 from artifact_io import SafeRoot, relative_path, stamp
-from game_deploy_recipe import validate_recipe, validate_installation, validate_initialization
+from game_deploy_recipe import validate_recipe, validate_installation, validate_initialization, validate_scene
 from job_runtime import runner_alive
 
 
@@ -102,7 +102,7 @@ def _asset(value):
 
 
 def validate_manifest(value):
-    metadata = {"application", "engine", "requirements", "scene", "provenance", "license", "deployment", "installation", "initialization"}
+    metadata = {"application", "engine", "requirements", "scene", "provenance", "license", "deployment", "installation", "initialization", "scene_attempt"}
     if not isinstance(value, dict) or set(value) - ({"schema_version", "game_id", "version", "title", "assets"} | metadata):
         raise AssetError("unsupported game manifest fields")
     if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
@@ -132,6 +132,8 @@ def validate_manifest(value):
         validate_installation(value["installation"], value["assets"])
     if "initialization" in value:
         validate_initialization(value["initialization"], value["assets"])
+    if "scene_attempt" in value:
+        validate_scene(value["scene_attempt"], value["assets"])
     return copy.deepcopy(value)
 
 
