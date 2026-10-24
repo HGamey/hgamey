@@ -147,7 +147,7 @@
       const doing = s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
         : s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`
         : `<div class="doing">${s.busy ? "占用或状态待核查；不代表正在测量" : "未记录占用；运行前仍需调度与租约核验"}</div>`;
-      return `<div class="phone-card"><div class="thumb">${thumb}</div><div class="meta">
+      return `<div class="phone-card"><a class="thumb" href="/dash/live?serial=${encodeURIComponent(s.serial)}" title="看实时画面">${thumb}</a><div class="meta">
         <div class="name" title="${esc(s.serial)}">${esc(s.model || "未知型号")}</div>
         <span class="status ${cls}"><i></i>${esc(st)}</span>
         <div class="nums"><div><b>${s.soc_c == null ? "—" : num(s.soc_c, 0) + "°"}</b><span>芯片温度</span></div>

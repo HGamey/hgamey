@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>实时画面 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/live.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a>
+    <nav class="nav" aria-label="主导航" style="flex-wrap:wrap"><a href="/dash">概览</a><a href="/dash/live" aria-current="page">实时画面</a><a href="/dash/fleet">节点与设备</a><a href="/dash/jobs">任务与结果</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right">
+    <form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form>
+  </div>
+</header>
+<main class="live-page">
+  <section class="live-devs" aria-label="设备">
+    <h2 class="sec-title">选择手机</h2>
+    <div id="devs" class="devs"><p class="muted">读取设备…</p></div>
+    <p class="note" id="policy"></p>
+  </section>
+  <section class="live-view" aria-label="实时画面">
+    <div class="view-h">
+      <b id="v-name">未选择手机</b>
+      <span id="v-badge" class="badge" hidden></span>
+      <span id="v-stats" class="muted"></span>
+    </div>
+    <div id="screen" class="screen-box">
+      <img id="v-img" alt="手机实时画面" hidden>
+      <div id="v-msg" class="screen-msg">从左侧选择一台手机。只有打开画面时才采集，离开页面即停。</div>
+      <button id="v-resume" class="btn primary resume" type="button" hidden>继续观看</button>
+    </div>
+    <p class="note" id="v-label"></p>
+  </section>
+</main>
+<script src="/dash/static/live.js"></script>
+</body>
+</html>
