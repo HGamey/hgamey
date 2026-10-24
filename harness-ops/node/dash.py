@@ -44,8 +44,9 @@ from node_deployments import DeploymentError
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
                         FLEET_EVERY_HELD_S, FREE_GRACE_S, SHOT_EVERY_S)
 
-PASS_FILE = os.path.expanduser("~/.config/hgamey/dash.pass")     # 查看密码：只能看
-STEER_FILE = os.path.expanduser("~/.config/hgamey/steer.pass")   # 掌舵密码：改 human.md、起新目标、停止
+CONFIG_DIR = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")  # 测试实例可指向别处
+PASS_FILE = os.path.join(CONFIG_DIR, "dash.pass")     # 查看密码：只能看
+STEER_FILE = os.path.join(CONFIG_DIR, "steer.pass")   # 掌舵密码：改 human.md、起新目标、停止
 STEER_COOKIE = "hg_steer"
 STEER_MAX_AGE = 12 * 3600
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash_static")
