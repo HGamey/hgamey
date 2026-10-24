@@ -35,6 +35,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
+from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE
 from node_fleet import FleetState
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
@@ -646,6 +647,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     if not hasattr(jobs, "results"):
         jobs.results = NodeResults(jobs, node.node_id)
     results = jobs.results
+    if not hasattr(jobs, "research"):
+        jobs.research = NodeResearch(results, node.node_id)
+    research = jobs.research
     if not hasattr(jobs, "directory"):
         jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
     directory = jobs.directory
@@ -699,7 +703,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 # subsequent API/media requests carry the pin and are checked.
                 page = parsed.path.rstrip("/") in {
                     "/dash", "/dash/jobs", "/dash/games", "/dash/fleet",
-                    "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/login",
+                    "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/login",
                 }
                 if (page and self.command == "GET" and not headers
                         or parsed.path == "/dash/login" and not headers
@@ -767,7 +771,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["research-state"], ["research-operations"], ["research-events"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -785,6 +789,20 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts[:1] == ["research-state"]:
+                    if len(parts) == 2:
+                        return self._send(200, research.list(parts[1], q))
+                    if len(parts) == 4 and parts[3] == "history":
+                        return self._send(200, research.history(parts[1], unquote(parts[2]), q))
+                    if len(parts) == 3:
+                        if set(q) - {"revision", "expected_node_id"} or any(len(v) != 1 for v in q.values()):
+                            raise ValueError("unsupported research object query")
+                        revision = int(q["revision"][0]) if "revision" in q else None
+                        return self._send(200, research.get(parts[1], unquote(parts[2]), revision))
+                if len(parts) == 2 and parts[0] == "research-operations":
+                    return self._send(200, research.operation(unquote(parts[1])))
+                if parts == ["research-events"]:
+                    return self._send(200, research.events(q))
                 if parts == ["result-search"]:
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
                         return self._send(400, {"code": "target_required", "error": "result search requires an explicit hub identity"})
@@ -868,6 +886,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
+            except ResearchError as e:
+                return self._send(e.status, e.payload)
             except ResultError as e:
                 return self._send(e.status, {"code": e.code, "error": str(e)})
             except sqlite3.Error:
@@ -906,6 +926,35 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
             with blob:
                 return self._stream_out(blob, info, q)
+
+        def _research_post(self, parts, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                if len(parts) != 3 or parts[0] != "research-state":
+                    raise ResearchError(404, "research_operation_not_found", "no such research write operation")
+                if not (self.headers.get("X-Expected-Node-ID") or
+                        parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    raise ResearchError(400, "target_required", "research writes require an explicit node identity")
+                length = self._upload_length(MAX_RESEARCH_WRITE, 1)
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("research writes require application/json")
+                self.connection.settimeout(30)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("research body was interrupted; query the original operation ID")
+                value = research.write(parts[1], unquote(parts[2]), json.loads(raw),
+                                       "dashboard_steer" if dashboard else "admin_token")
+                return self._send(201, value)
+            except ResearchError as e:
+                return self._send(e.status, e.payload)
+            except AssetUploadError as e:
+                return self._send(e.status, {"code": "invalid_research_request", "error": e.message})
+            except (OSError, sqlite3.Error):
+                return self._send(503, {"code": "research_storage_error", "error": "save could not be confirmed; query the original operation ID"})
+            except (ValueError, TypeError, OverflowError) as e:
+                return self._send(400, {"code": "invalid_research", "error": str(e)})
 
         def _result_post(self, parts, dashboard):
             self.close_connection = True
@@ -1085,6 +1134,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if self._remote("POST"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if parts[:1] == ["research-state"]:
+                return self._research_post(parts, False)
+            if board and parts[:3] == ["dash", "api", "research-state"]:
+                return self._research_post(parts[2:], True)
             if parts[:1] in (["results"], ["result-imports"]):
                 return self._result_post(parts, False)
             if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["results"], ["result-imports"]):
