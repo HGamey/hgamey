@@ -59,6 +59,7 @@ class NodeRead:
             self.node_id = f.read().strip()
         if not re.fullmatch(r"[0-9a-f]{32}", self.node_id):
             raise ValueError("invalid persistent node identity; preserve and repair _node/id")
+        jobs.node_id = self.node_id
         self.service = {"revision": None, "dirty": None}
         try:
             self.service["revision"] = subprocess.check_output(
@@ -79,7 +80,7 @@ class NodeRead:
                 "capabilities": ["fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
-                                 "jobs.execution-policy-v1",
+                                 "jobs.execution-policy-v1", "jobs.inputs-v1",
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
                                  "jobs.session-recovery-v1"] +
                                 (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +

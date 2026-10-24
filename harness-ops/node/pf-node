@@ -27,6 +27,9 @@
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
+  pf-node input-reference <id> <path>       # 显式校验一个已收尾任务的小工件，返回同节点输入引用
+  pf-node --inputs inputs.json --detach phonefarm ... # 冻结工件及显式JSON字段绑定后执行
+  pf-node inputs <id>                      # 输入声明、准备回执与失败原因
   pf-node games list|show ID VERSION       # 本节点游戏清单、资源状态与准备历史
   pf-node games register FILE             # 仅登记 JSON 清单，不上传其中引用的大文件
   pf-node games prepare ID VERSION [--request-id ID] # 异步准备宿主资源，不安装或启动游戏
@@ -46,6 +49,9 @@
 - @out 是本次任务在节点上的输出目录；任务结束后它的内容下载到 -o 指定的目录（缺省 ./pf-node-out/<id>）。
   下载分块进行（PF_NODE_CHUNK 字节一块，缺省 2MB），断了自动续，最后校验 sha256；中途中断的进度存在
   <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
+- --inputs 指定 phonefarm/job-inputs@1 小清单：同节点已收尾工件，每份最多8MiB、合计32MiB。
+  显式JSON pointer绑定生成独立文件，源字节保留；不猜改脚本文字。脚本可用已有PF_JOB_IN，
+  或在清单中选cwd=input。准备失败未启动命令；同request_id保持原结果，修好后显式用新ID。
 - 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 只请求柔性 SIGINT 并停止本地跟随（130）；
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
 - 每次提交生成 request_id；同一次重试保持请求内容和 id 不变。--request-id 可手动指定，--resource 可重复声明独占资源。
@@ -163,7 +169,7 @@ def valid_request_id(value):
     return value
 
 
-def require_idempotent_jobs(require_recovery=False, execution_policy=None):
+def require_idempotent_jobs(require_recovery=False, execution_policy=None, inputs=None):
     try:
         node = json.loads(call("GET", "/node", attempts=1, raise_4xx=True))
     except ClientError as e:
@@ -180,6 +186,15 @@ def require_idempotent_jobs(require_recovery=False, execution_policy=None):
         capability = node.get("execution", {}).get("process_policies", {}).get(execution_policy, {})
         if capability.get("available") is not True:
             sys.exit(f"pf-node: 执行策略 {execution_policy} 不可用：{capability.get('reason') or '节点未提供能力证据'}；未打包或提交")
+    if inputs is not None:
+        if "jobs.inputs-v1" not in node.get("capabilities", []):
+            sys.exit("pf-node: 节点缺少 jobs.inputs-v1；未打包或提交")
+        from job_inputs import validate
+        try:
+            validate(inputs, node.get("node_id"))
+        except ValueError as error:
+            sys.exit(f"pf-node: 输入清单无效：{error}；未打包或提交")
+    return node
 
 
 def submit_job(spec, body, request_id):
@@ -581,6 +596,7 @@ def main():
     args, outdir, detach, label, exe = sys.argv[1:], None, False, os.environ.get("DEVLOCK_LABEL"), None
     request_id, resources = None, []
     device_access, recovery_for, execution_policy = None, None, None
+    inputs_path, inputs, submission_node = None, None, None
     while args and args[0].startswith("-"):
         a = args.pop(0)
         if a in ("-o", "--out-dir"):
@@ -591,6 +607,10 @@ def main():
             exe = args.pop(0)
         elif a == "--label":
             label = args.pop(0)
+        elif a == "--inputs":
+            if not args or inputs_path is not None:
+                sys.exit("pf-node: --inputs 需要且只能指定一个清单文件")
+            inputs_path = args.pop(0)
         elif a == "--request-id":
             if not args:
                 sys.exit("pf-node: --request-id 需要一个 ID")
@@ -633,6 +653,21 @@ def main():
             sys.exit("pf-node: 恢复任务继承父任务资源，不能同时使用 --resource")
     elif recovery_for is not None:
         sys.exit("pf-node: --recovery-for 必须与 --device-access recovery 一起使用")
+    if inputs_path is not None:
+        try:
+            with open(inputs_path, "rb") as source:
+                raw = source.read((32 << 10) + 1)
+            if len(raw) > 32 << 10:
+                raise ValueError("input manifest exceeds 32 KiB")
+            inputs = json.loads(raw)
+            if not isinstance(inputs, dict):
+                raise ValueError("input manifest must be an object")
+        except (OSError, ValueError) as error:
+            sys.exit(f"pf-node: 无法读取输入清单：{error}")
+        submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
+                                                 execution_policy=execution_policy, inputs=inputs)
+        if args[0] not in submission_node.get("execution", {}).get("bins", []):
+            sys.exit("pf-node: --inputs 仅用于节点提供的程序作业；未提交")
     if args[0] == "games":
         from game_client import main as games_main
         raise SystemExit(games_main(args[1:], url=URL, token=TOKEN, request_id=request_id))
@@ -646,6 +681,14 @@ def main():
         if len(args) != 2:
             sys.exit("用法: pf-node request <request_id>")
         print(call("GET", f"/requests/{valid_request_id(args[1])}").decode())
+        return
+    if args[0] in ("inputs", "input-reference"):
+        command = args[0]
+        expected = 2 if command == "inputs" else 3
+        if len(args) != expected or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
+            sys.exit("用法: pf-node inputs JOB_ID | input-reference JOB_ID PATH")
+        query = "?" + urllib.parse.urlencode({"path": args[2]}) if command == "input-reference" else ""
+        print(call("GET", f"/jobs/{args[1]}/{command}" + query, attempts=1).decode())
         return
     if args[0] == "leases":
         if len(args) == 1:
@@ -743,10 +786,13 @@ def main():
             sys.exit(rc)
         return
     binname, argv = args[0], args[1:]
-    require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy)
+    if submission_node is None:
+        require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy)
     request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
+    if inputs is not None:
+        spec["inputs"] = inputs
     if exe:
         spec["exe"] = argv[0]
     if resources:
