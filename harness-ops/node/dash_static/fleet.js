@@ -9,6 +9,7 @@
   let selected = new URLSearchParams(location.hash.slice(1)).get('node') || 'local', entries = new Map();
   if (!/^[a-z0-9_-]{1,64}$/.test(selected)) selected = 'local';
   let access = null, accessBusy = false, accessError = '', editor = null, writing = false, toggleDraft = null;
+  let runtimeBusy = false, runtimeNotice = '', runtimeError = false;
   const uncertainUpdates = new Set();
   const CONNECTION = {unverified: '尚未核验', ready: '节点协议可达', unavailable: '连接不可用', unauthorized: '凭据未获授权', incompatible: '节点协议不兼容', identity_mismatch: '节点身份不匹配', disabled: '登记已停用', no_credentials: '未配置凭据'};
   const text = value => value == null || value === '' ? '未知' : String(value);
@@ -27,6 +28,54 @@
     return node;
   }
   function facts(node, rows) { node.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
+  const sourceDirty = value => value === true ? '有本地修改' : value === false ? '声明无本地修改' : '未知';
+  function serviceFacts(service) {
+    const runtime = service?.runtime;
+    return [['服务实例 ID', service?.instance_id], ['服务启动时源码树 revision', service?.revision], ['启动源码树修改状态', sourceDirty(service?.dirty)],
+      ['源码观察来源', service?.source_kind === 'startup_checkout_observation' ? '服务启动时源码树观察' : service?.source_kind || '旧记录未提供'], ['源码观察时间', time(service?.observed_at)],
+      ['入口路径', runtime?.entry_path], ['Python 版本', runtime?.python_version], ['宿主运行身份观察时间', time(runtime?.observed_at)],
+      ['安装构建仓库声明', runtime?.build?.repository], ['安装构建 revision 声明', runtime?.build?.revision], ['安装构建修改声明', sourceDirty(runtime?.build?.dirty)]];
+  }
+  function renderPrograms(node) {
+    const entries = Object.entries(node?.execution?.programs || {});
+    $('node-programs').replaceChildren(...entries.map(([name, record]) => {
+      const detail = el('details', null, 'command-details'), info = el('dl', null, 'facts'), identity = record?.identity;
+      const state = ({observed: '已观察配置入口', stale: '上次观察已过期', unknown: '身份未知'})[record?.state] || '身份未知';
+      detail.append(el('summary', `${name} · ${state}${identity?.package_version ? ' · ' + identity.package_version : ''}`));
+      facts(info, [['缓存状态', state], ['观察时间', time(record?.observed_at)], ['配置解析路径', record?.resolved_path], ['原因', record?.reason || '未报告原因'],
+        ['声明适用范围', record?.state === 'observed' ? '此次配置入口观察；不等于某次作业实际执行身份。' : '如保留声明，仅是上次观察，当前入口身份未知。'],
+        ['程序自报名称', identity?.program], ['程序包版本', identity?.package_version], ['构建来源 revision 声明', identity?.build?.source_revision], ['构建来源修改声明', sourceDirty(identity?.build?.source_dirty)],
+        ['构建 target', identity?.build?.target], ['构建 profile', identity?.build?.profile], ['自报支持协议', identity?.supported_protocols?.join('、')], ['文件观察（stat）', record?.file ? JSON.stringify(record.file) : '未记录']]);
+      detail.append(info); return detail;
+    }));
+    if (!entries.length) $('node-programs').append(el('p', '未记录配置程序观察；不能由命令名或相邻源码推断实际版本。', 'note'));
+  }
+  function renderRuntimeRefresh() {
+    const entry = remoteEntry(), local = selected === 'local', supported = localIdentity?.capabilities?.includes('node.runtime-v1');
+    $('refresh-runtime').hidden = !local;
+    $('refresh-runtime').disabled = !local || !supported || !access?.steer || accessBusy || !HGTarget.canWrite() || runtimeBusy || loading || writing;
+    $('refresh-runtime').setAttribute('aria-busy', String(runtimeBusy));
+    $('refresh-runtime').textContent = runtimeBusy ? '正在观察本节点程序…' : '重新观察本节点配置程序';
+    const source = local ? null : nodePageURL('jobs', entry);
+    $('runtime-source-link').hidden = !source;
+    if (source) { $('runtime-source-link').href = source; $('runtime-source-link').target = '_blank'; $('runtime-source-link').rel = 'noopener noreferrer'; }
+    message('runtime-refresh-help', !local ? `以下程序身份来自目录快照 ${time(entry?.snapshot?.at)}；${entryStale(entry || {}) ? '目录观测已陈旧，当前入口身份未知。' : '观察状态只适用于该快照。'}本页不刷新远端程序，请到源节点明确操作。` : runtimeBusy ? '正在执行有界宿主身份查询，下方保留上次观察；不操作设备，不自动重试。' : runtimeNotice || (!supported ? '此节点未声明 node.runtime-v1，不能刷新程序观察。' : !access?.steer || accessBusy ? '读取缓存无需解锁；重新执行程序身份观察需先解锁目录操作。' : '仅此按钮执行新的程序身份观察；自动刷新只读取缓存并检查文件变化。'), local && runtimeError);
+  }
+  async function refreshRuntime() {
+    if ($('refresh-runtime').disabled || selected !== 'local') return;
+    const expected = localIdentity.node_id;
+    runtimeBusy = true; runtimeNotice = ''; runtimeError = false; clearTimeout(timer); renderManagement();
+    try {
+      const node = await post('/dash/api/node/runtime/refresh', {});
+      if (node.node_id !== expected) throw new Error('程序观察响应的节点身份不匹配。');
+      localIdentity = node;
+      runtimeNotice = '程序观察请求已完成，请核对各项 observed / stale / unknown；没有刷新设备、创建任务或改写历史。';
+      if (!disposed && selected === 'local') renderNode(node);
+    } catch (error) {
+      runtimeError = true; runtimeNotice = `程序观察结果未取得：${error.message || '连接中断'}。下方保留上次观察，当前身份尚未确认；请读取节点缓存核对，不会自动重试。`;
+      if ([401, 403].includes(error.status)) await loadAccess();
+    } finally { runtimeBusy = false; if (!disposed) { renderManagement(); schedule(); } }
+  }
   function badge(node, value, kind = '') { node.textContent = value; node.className = `task-state ${kind}`; }
   function message(id, value, error = false) { $(id).textContent = value; $(id).classList.toggle('task-error', error); }
   function remoteEntry() { return selected === 'local' ? null : entries.get(selected); }
@@ -134,6 +183,8 @@
     $('registration-reload').hidden = !editor?.needsRead;
     $('registration-reload').disabled = writing || loading;
     $('registration-close').disabled = writing;
+    $('refresh-fleet').disabled = loading || runtimeBusy;
+    renderRuntimeRefresh();
   }
   async function loadAccess() {
     accessBusy = true; renderManagement();
@@ -238,8 +289,9 @@
     $('node-details').hidden = false;
     facts($('node-info'), [...(entry ? [['登记名', entry.name], ['配置版本', entry.revision], ['配置入口', entry.url], ['快照来源', entry.snapshot?.url], ['远端凭据', entry.credential_present ? '已保存（不回显）' : '未配置'], ['标签', entry.tags?.join('、')], ['备注', entry.note], ['SSH 元数据', entry.ssh], ['Goals 目录元数据', entry.goals_dir]] : []),
       ['节点 ID', node?.node_id || entry?.node_id], ['访问入口', entry ? entry.snapshot?.url : location.origin], ['宿主系统', node?.host?.platform],
-      ['服务版本', `${text(node?.service?.revision)}${node?.service?.dirty === true ? '（有本地修改）' : ''}`],
+      ...serviceFacts(node?.service), ['服务启动', time(node?.started_at)],
       ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root], ...processPolicyFacts(node)]);
+    renderPrograms(node);
   }
   function hostProcessFacts(entry) {
     if (entry.role !== 'device_lease') return [];
@@ -409,7 +461,7 @@
     renderManagement();
   }
   async function refresh(manual = false, devices = false) {
-    if (loading || writing || disposed || document.hidden) return;
+    if (loading || writing || runtimeBusy || disposed || document.hidden) return;
     clearTimeout(timer);
     const version = ++revision;
     const requestController = new AbortController();
@@ -498,6 +550,7 @@
     refreshNote();
   }
   $('refresh-fleet').addEventListener('click', () => refresh(true));
+  $('refresh-runtime').addEventListener('click', refreshRuntime);
   $('remote-devices').addEventListener('click', () => { if (!$('remote-devices').disabled) refresh(true, true); });
   $('register-open').addEventListener('click', () => openEditor());
   $('registration-edit').addEventListener('click', () => openEditor(remoteEntry()));

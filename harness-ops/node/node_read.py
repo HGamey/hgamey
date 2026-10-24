@@ -1,5 +1,6 @@
 """Host-only node identity and generic job/output discovery. No device probing."""
 import base64
+import copy
 import json
 import math
 import os
@@ -8,10 +9,12 @@ import re
 import socket
 import stat
 import subprocess
+import threading
 import time
 import uuid
 from artifact_io import relative_path
 from job_policy import process_policies
+from runtime_identity import PROGRAMS, observe_program, program_file, runtime_snapshot
 
 
 def page_size(query, default=50):
@@ -60,7 +63,10 @@ class NodeRead:
         if not re.fullmatch(r"[0-9a-f]{32}", self.node_id):
             raise ValueError("invalid persistent node identity; preserve and repair _node/id")
         jobs.node_id = self.node_id
-        self.service = {"revision": None, "dirty": None}
+        self.service = {"revision": None, "dirty": None,
+                        "source_kind": "startup_checkout_observation",
+                        "instance_id": uuid.uuid4().hex, "observed_at": self.started,
+                        "runtime": runtime_snapshot(os.path.join(os.path.dirname(__file__), "node_service.py"))}
         try:
             self.service["revision"] = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=source_dir, stderr=subprocess.DEVNULL, timeout=3).decode().strip()
@@ -69,17 +75,52 @@ class NodeRead:
                 stderr=subprocess.DEVNULL, timeout=3).strip())
         except (OSError, subprocess.SubprocessError):
             pass
+        jobs.service_at_launch = {"node_id": self.node_id, "service": copy.deepcopy(self.service)}
+        self._program_guard, self._refresh_guard = threading.Lock(), threading.Lock()
+        self._programs = {}
+        self.refresh_runtime()
+
+    def refresh_runtime(self):
+        """Explicit host observation; never replace this service's startup facts."""
+        with self._refresh_guard:
+            observed = {
+                name: observe_program(name, executable, cwd, self.jobs.pf_env)
+                for name, (executable, cwd) in list(self.jobs.bins.items()) if name in PROGRAMS
+            }
+            with self._program_guard:
+                self._programs = observed
+        return self.identity()
+
+    def _program_observations(self):
+        with self._program_guard:
+            cached = copy.deepcopy(self._programs)
+        result = {}
+        for name, (executable, cwd) in list(self.jobs.bins.items()):
+            if name not in PROGRAMS:
+                continue
+            path, current = program_file(executable, cwd, self.jobs.pf_env)
+            record = cached.get(name)
+            if record is None:
+                record = {"state": "unknown", "resolved_path": path, "observed_at": None,
+                          "file": None, "identity": None,
+                          "reason": "configured program has not been observed; refresh explicitly"}
+            elif (path, current) != (record["resolved_path"], record["file"]):
+                # Keep the dated declaration as history; do not present it as
+                # the identity of a replacement or probe on a readonly GET.
+                record.update(state="stale", reason="configured program changed since observation; refresh explicitly")
+            result[name] = record
+        return result
 
     def identity(self):
         return {"schema_version": 1, "node_id": self.node_id,
                 "host": {"hostname": socket.gethostname(), "platform": platform.system()},
-                "service": self.service, "started_at": self.started,
+                "service": copy.deepcopy(self.service), "started_at": self.started,
                 "storage": {"jobs_root": os.path.abspath(self.jobs.dir), "data_root": self.data_root},
                 "execution": {"bins": sorted(self.jobs.bins), "max_running": self.jobs.dispatch.max_running,
-                              "process_policies": process_policies()},
+                              "process_policies": process_policies(), "programs": self._program_observations()},
                 "target_binding": {"header": "X-Expected-Node-ID", "query": "expected_node_id",
                                    "unbound_legacy_requests": "accepted_without_target_guarantee"},
-                "capabilities": ["node.target-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1",
+                "capabilities": ["node.target-v1", "node.runtime-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1", "jobs.inputs-v1",

@@ -284,7 +284,8 @@ class JobDispatch:
             env["PHONEFARM_BIN"] = self.jobs.bins["phonefarm"][0]
         try:
             proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"],
-                                      env=env, execution_policy=policy)
+                                      env=env, execution_policy=policy,
+                                      service_at_launch=getattr(self.jobs, "service_at_launch", None))
         except OSError as error:
             self.finish_unstarted(row, "failed", f"worker could not start: {error}")
             return

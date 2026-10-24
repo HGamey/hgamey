@@ -13,6 +13,7 @@ import shutil
 import sys
 
 from worker_config import CONFIG_NAME, MODULES, configuration, trusted_path, PF_ROOTS, PF_TOOLS
+from runtime_identity import read_build_info
 
 
 BOOTSTRAP = '''#!/usr/bin/python3 -I
@@ -80,6 +81,11 @@ def main():
         for name in MODULES:
             target = prefix / name
             shutil.copyfile(source / name, target)
+            target.chmod(0o644)
+        build = read_build_info(source)
+        if build is not None:
+            target = prefix / "runtime-build.json"
+            target.write_text(json.dumps(build, ensure_ascii=False, indent=2) + "\n")
             target.chmod(0o644)
         entry = prefix / "phonefarm-worker"
         entry.write_text(BOOTSTRAP)

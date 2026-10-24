@@ -12,6 +12,7 @@ import traceback
 
 from artifact_io import SafeRoot
 from job_policy import require_policy, requested_policy
+from runtime_identity import read_program_report, runtime_snapshot
 
 
 def _open_file(store, rel, flags):
@@ -35,7 +36,7 @@ def _worker_command(job_dir, lock_fd):
 
 
 def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None,
-           privileged_entry=None):
+           privileged_entry=None, service_at_launch=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
     job_dir = os.path.abspath(job_dir)
     if os.path.basename(job_dir) != jid:
@@ -51,6 +52,8 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
         except BlockingIOError:
             raise ValueError("job already has a live worker") from None
         launch_spec = {"command": command, "cwd": os.fspath(cwd)}
+        if service_at_launch is not None:
+            launch_spec["service_at_launch"] = service_at_launch
         if execution_policy is not None:
             launch_spec["execution_policy"] = execution_policy
         if not store.publish_json_once(jid + "/launch.json", launch_spec):
@@ -191,7 +194,25 @@ def _group_completion(pgid):
         time.sleep(0.025)
 
 
+def _program_identity(store, jid, meta, final=False):
+    execution = meta["execution"]
+    previous = execution.get("program_identity") or {}
+    if previous.get("state") in {"reported", "unknown"}:
+        return False
+    pid = execution.get("child_pid")
+    if pid is None:
+        value = {"state": "unknown" if final else "pending", "source": "program_self_report",
+                 "record": None, "reason": "command did not start" if final else None}
+    else:
+        value = read_program_report(store, jid, pid, final=final)
+    if value == previous:
+        return False
+    execution["program_identity"] = value
+    return True
+
+
 def _finish(store, jid, meta, outcome, recovery, returncode=None, error=None):
+    _program_identity(store, jid, meta, final=True)
     meta.update(state="finished", phase="interrupted" if outcome == "interrupted" else "finished",
                 outcome=outcome, recovery=recovery, ended=time.time(),
                 exit=None if returncode is None else returncode if returncode >= 0 else 128 - returncode)
@@ -218,8 +239,12 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
         signal.signal(signal.SIGINT, signal.default_int_handler)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         meta = store.read_json(jid + "/meta.json")
+        spec = store.read_json(jid + "/launch.json")
         meta.update(pid=os.getpid(), state="running", phase="starting")
-        meta["execution"].update(child_pid=None, returncode=None)
+        meta["execution"].update(child_pid=None, returncode=None,
+                                 service_at_launch=spec.get("service_at_launch"),
+                                 worker_identity=runtime_snapshot(__file__))
+        _program_identity(store, jid, meta)
         meta["execution"]["owned_process_group"] = {
             "scope": "original_process_group", "status": "not_started", "pgid": None,
             "checked_at": None, "error": None}
@@ -229,7 +254,6 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             meta["cancel"] = _cancellation(request, meta)
             _finish(store, jid, meta, "cancelled", {"status": "not_needed", "reason": "cancelled before command started"})
             return 0
-        spec = store.read_json(jid + "/launch.json")
         if contained_config is not None:
             if requested_policy(spec) != "contained":
                 _finish(store, jid, meta, "failed", {"status": "not_needed", "reason": "command did not start"},
@@ -249,6 +273,8 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
         try:
             try:
                 child = subprocess.Popen(spec["command"], cwd=spec["cwd"],
+                                         env=dict(os.environ, PF_JOB_ID=jid,
+                                                  PF_RUNTIME_REPORT=os.path.join(job_dir, "out", ".program-runtime.json")),
                                          stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT,
                                          start_new_session=True, close_fds=True)
             except (OSError, ValueError) as e:
@@ -268,6 +294,8 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
         store.write_json(jid + "/meta.json", meta)
         last_signal_at = None
         while True:
+            if _program_identity(store, jid, meta):
+                store.write_json(jid + "/meta.json", meta)
             request = read_cancel(store, jid)
             if request:
                 cancellation = _cancellation(request, meta)

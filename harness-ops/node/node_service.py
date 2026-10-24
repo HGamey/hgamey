@@ -419,6 +419,12 @@ class Jobs:
             terminal = True
         meta["state"] = "finished" if terminal else "running"
         meta["execution"]["worker_alive"] = alive
+        if terminal and (meta["execution"].get("program_identity") or {}).get("state") == "pending":
+            # A lost worker cannot finish its diagnostic record. Preserve raw
+            # evidence and never fill it by probing today's configured program.
+            meta["execution"]["program_identity"] = {
+                "state": "unknown", "source": "program_self_report", "record": None,
+                "reason": "worker ended before recording a program runtime identity"}
         reconciliation = meta["execution"].get("reconciliation")
         if not alive and reconciliation and reconciliation.get("state") in {"requested", "running"}:
             meta["execution"]["reconciliation"] = {
@@ -953,6 +959,27 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             with blob:
                 return self._stream_out(blob, info, q)
 
+        def _runtime_refresh(self, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                if not (self.headers.get("X-Expected-Node-ID") or
+                        parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "runtime refresh requires an explicit node identity"})
+                length = self._upload_length(1024, 2)
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("runtime refresh requires application/json")
+                self.connection.settimeout(10)
+                body = self.rfile.read(length)
+                if len(body) != length or json.loads(body) != {}:
+                    raise ValueError("runtime refresh requires an empty JSON object")
+                return self._send(200, node.refresh_runtime())
+            except AssetUploadError as error:
+                return self._send(error.status, {"code": error.code, "error": error.message})
+            except (ValueError, OSError) as error:
+                return self._send(400, {"code": "invalid_runtime_refresh", "error": str(error)})
+
         def _research_post(self, parts, dashboard):
             self.close_connection = True
             if not self._upload_write_auth(dashboard):
@@ -1160,6 +1187,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if self._remote("POST"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if parts == ["node", "runtime", "refresh"]:
+                return self._runtime_refresh(False)
+            if board and parts == ["dash", "api", "node", "runtime", "refresh"]:
+                return self._runtime_refresh(True)
             if parts[:1] == ["research-state"]:
                 return self._research_post(parts, False)
             if board and parts[:3] == ["dash", "api", "research-state"]:

@@ -16,6 +16,7 @@
   const finalizing = new Set(), finalizeReceipts = new Map();
   const reconciling = new Set(), reconcileReceipts = new Map();
   let nodeInfo = null, leaseSnapshot = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
+  let runtimeBusy = false;
   const REQUEST_STORAGE = 'hgamey.pending-job-request';
   const PHASES = {preparing: '准备中', queued: '排队中', blocked: '资源保留 · 待核查', starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finalizing: '正在保存结束记录', storage_blocked: '结果保存失败 · 资源保留', finished: '已结束', interrupted: '执行中断'};
 
@@ -52,6 +53,48 @@
   }
   function facts(id, rows) {
     $(id).replaceChildren(...rows.flatMap(([key, value]) => [el('dt', key), el('dd', text(value))]));
+  }
+  const sourceDirty = value => value === true ? '有本地修改' : value === false ? '声明无本地修改' : '未知';
+  function runtimeFacts(runtime) {
+    return [['入口路径', runtime?.entry_path || '未记录'], ['Python 版本', runtime?.python_version || '未记录'], ['宿主运行身份观察时间', time(runtime?.observed_at)],
+      ['安装构建仓库声明', runtime?.build?.repository || '未记录'], ['安装构建 revision 声明', runtime?.build?.revision || '未记录'], ['安装构建修改声明', sourceDirty(runtime?.build?.dirty)]];
+  }
+  function serviceFacts(service) {
+    return [['服务实例 ID', service?.instance_id || '未记录'], ['服务启动时源码树 revision', service?.revision || '未记录'], ['启动源码树修改状态', sourceDirty(service?.dirty)],
+      ['源码观察来源', service?.source_kind === 'startup_checkout_observation' ? '服务启动时源码树观察' : service?.source_kind || '旧记录未提供'], ['源码观察时间', time(service?.observed_at)], ...runtimeFacts(service?.runtime)];
+  }
+  function programFacts(identity) {
+    return [['程序自报名称', identity?.program || '未记录'], ['程序包版本', identity?.package_version || '未记录'], ['构建来源 revision 声明', identity?.build?.source_revision || '未记录'],
+      ['构建来源修改声明', sourceDirty(identity?.build?.source_dirty)], ['构建 target', identity?.build?.target || '未记录'], ['构建 profile', identity?.build?.profile || '未记录'], ['自报支持协议', identity?.supported_protocols?.join('、') || '未记录']];
+  }
+  function renderPrograms(node) {
+    const entries = Object.entries(node?.execution?.programs || {});
+    $('node-programs').replaceChildren(...entries.map(([name, record]) => {
+      const detail = el('details', null, 'command-details'), info = el('dl', null, 'facts');
+      const state = ({observed: '已观察配置入口', stale: '上次观察已过期', unknown: '身份未知'})[record?.state] || '身份未知';
+      detail.append(el('summary', `${name} · ${state}${record?.identity?.package_version ? ' · ' + record.identity.package_version : ''}`));
+      const rows = [['缓存状态', state], ['观察时间', time(record?.observed_at)], ['配置解析路径', record?.resolved_path || '未记录'], ['原因', record?.reason || '未报告原因'],
+        ['声明适用范围', record?.state === 'observed' ? '此次配置入口观察；不等于某次作业实际执行身份。' : '如保留声明，仅是上次观察，当前入口身份未知。'],
+        ...programFacts(record?.identity), ['文件观察（stat）', record?.file ? JSON.stringify(record.file) : '未记录']];
+      info.append(...rows.flatMap(([key, value]) => [el('dt', key), el('dd', text(value))])); detail.append(info); return detail;
+    }));
+    if (!entries.length) $('node-programs').append(el('p', '未记录配置程序观察；不能由命令名或相邻源码推断实际版本。', 'note'));
+  }
+  function renderRuntimeRefresh() {
+    const supported = nodeInfo?.capabilities?.includes('node.runtime-v1');
+    $('refresh-runtime').disabled = runtimeBusy || !supported || !access?.steer || accessBusy || !HGTarget.canWrite();
+    $('refresh-runtime').setAttribute('aria-busy', String(runtimeBusy));
+    $('refresh-runtime').textContent = runtimeBusy ? '正在观察配置程序…' : '重新观察配置程序';
+    message('runtime-refresh-help', runtimeBusy ? '正在执行有界宿主身份查询，下方保留上次观察；不操作设备，不自动重试。' : !nodeInfo ? '当前节点能力尚未取得，请先读取节点信息。' : !supported ? '此节点未声明 node.runtime-v1，不能刷新程序观察。' : !access?.steer || accessBusy ? '读取缓存无需解锁；重新执行程序身份观察需先解锁任务操作。' : '此按钮才执行新的程序身份观察；页面刷新只读取缓存并检查文件变化。');
+  }
+  function renderJobRuntime(job) {
+    const execution = job.execution || {}, report = execution.program_identity;
+    const state = ({pending: '等待主程序自报', reported: '主程序已自报', unknown: '主程序身份未知'})[report?.state] || '主程序身份未知（旧记录未提供）';
+    $('job-runtime-summary').textContent = `本次运行入口身份 · ${state}`;
+    facts('job-service-identity', execution.service_at_launch ? [['启动时节点 ID', execution.service_at_launch.node_id], ...serviceFacts(execution.service_at_launch.service)] : [['服务启动快照', '未记录；不从当前节点回填。']]);
+    facts('job-worker-identity', execution.worker_identity ? runtimeFacts(execution.worker_identity) : [['worker 身份', '未记录；不能使用当前服务版本替代。']]);
+    facts('job-program-identity', [['记录状态', state], ['证据来源', report?.source === 'program_self_report' ? '实际启动程序自报；不是恶意程序认证。' : report?.source || '未记录'],
+      ['原因', report?.reason || (report ? '未报告原因' : '历史记录缺失，不重新执行程序补报。')], ['自报任务 ID', report?.record?.job_id || '未记录'], ['自报 PID', report?.record?.pid ?? '未记录'], ...programFacts(report?.record?.identity)]);
   }
   function status(job) {
     if (storageFailed(job)) return [PHASES.storage_blocked, 'unknown'];
@@ -135,6 +178,7 @@
     renderControls();
     renderSubmission();
     renderSessionControls();
+    renderRuntimeRefresh();
   }
   async function loadAccess() {
     const revision = ++accessRevision;
@@ -675,20 +719,27 @@
     }
   }
 
-  async function loadNode() {
+  async function loadNode(refreshRuntime = false) {
+    if (runtimeBusy || refreshRuntime && $('refresh-runtime').disabled) return;
+    const expected = nodeInfo?.node_id;
+    if (refreshRuntime) runtimeBusy = true;
     const revision = ++nodeRevision;
     nodeInfo = null;
+    renderRuntimeRefresh();
     renderSubmission();
     updateJobLeaseAccess();
     updateJobInputAccess();
     regionBusy('node-card', true);
-    $('node-summary').hidden = true;
-    $('node-details').hidden = true;
-    $('node-updated').textContent = '';
-    message('node-message', '正在读取节点信息…');
+    if (!refreshRuntime) {
+      $('node-summary').hidden = true;
+      $('node-details').hidden = true;
+      $('node-updated').textContent = '';
+    }
+    message('node-message', refreshRuntime ? '正在重新观察配置程序；下方仍是上次取得的信息…' : '正在读取节点信息…');
     try {
-      const node = await json(`${API}/node`);
+      const node = refreshRuntime ? await post(`${API}/node/runtime/refresh`, {}) : await json(`${API}/node`);
       if (revision !== nodeRevision) return;
+      if (refreshRuntime && node.node_id !== expected) throw new Error('程序观察响应的节点身份不匹配。');
       nodeInfo = node;
       const chosen = $('submit-bin').value;
       const bins = node.execution?.bins || [];
@@ -698,18 +749,20 @@
       facts('node-info', [
         ['节点 ID', node.node_id], ['访问入口', location.origin],
         ['宿主', `${text(node.host?.hostname)} · ${text(node.host?.platform)}`],
-        ['服务版本', `${text(node.service?.revision)}${node.service?.dirty === true ? '（有本地修改）' : ''}`],
+        ...serviceFacts(node.service),
         ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root],
         ['服务启动', time(node.started_at)], ...processPolicyFacts(node)
       ]);
+      renderPrograms(node);
       $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`;
       $('node-summary').hidden = false;
       $('node-details').hidden = false;
-      message('node-message', '');
+      message('node-message', refreshRuntime ? '程序观察请求已完成，请核对各项 observed / stale / unknown；没有改写历史作业。' : '');
       $('node-updated').textContent = readTime();
     } catch (error) {
-      if (revision === nodeRevision) message('node-message', errorText(error), true);
-    } finally { if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); } }
+      if (revision === nodeRevision) message('node-message', refreshRuntime ? `程序观察结果未取得：${error.message || '连接中断'}。下方保留上次观察，当前身份尚未确认；请读取节点缓存核对，不会自动重试。` : errorText(error), true);
+      if (refreshRuntime && [401, 403].includes(error.status)) await loadAccess();
+    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -826,6 +879,7 @@
       $('detail-updated').textContent = readTime();
       facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['开始', time(job.started)], [job.phase === 'finalizing' || storageFailed(job) ? '候选结束时间（未提交）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
       $('job-command').textContent = JSON.stringify({bin: job.bin, argv: job.argv || []}, null, 2);
+      renderJobRuntime(job);
       $('job-results-link').href = HGTarget.url(`/dash/results?job_id=${encodeURIComponent(job.id)}`);
       $('job-register-result').href = HGTarget.url(`/dash/results#register=${encodeURIComponent(job.id)}`);
       renderExecution(job);
@@ -2077,6 +2131,7 @@
     finally { busy('refresh-all', false); }
   }
   $('refresh-all').addEventListener('click', refreshAll);
+  $('refresh-runtime').addEventListener('click', () => loadNode(true));
   $('refresh-detail').addEventListener('click', () => { if (selected) selectJob(selected, true); });
   $('load-job-leases').addEventListener('click', loadJobLeases);
   $('load-job-inputs').addEventListener('click', loadJobInputs);

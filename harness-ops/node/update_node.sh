@@ -113,6 +113,32 @@ sync_tracked() {  # $1 源码目录 $2 目标目录
   git -C $1 ls-files -z | rsync -a --from0 --files-from=- $1/ $2/
 }
 
+write_source_build() {  # $1 目标目录 $2 repository $3 所选源码 revision $4 dirty
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, os, pathlib, sys, tempfile
+directory = pathlib.Path(sys.argv[1])
+record = {"schema": "hgamey/source-build@1", "repository": sys.argv[2],
+          "revision": sys.argv[3], "dirty": sys.argv[4] == "true"}
+fd, temporary = tempfile.mkstemp(prefix=".runtime-build-", dir=directory)
+try:
+    with os.fdopen(fd, "w") as output:
+        json.dump(record, output, ensure_ascii=False)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, directory / "runtime-build.json")
+    parent = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+}
+
 if [[ ${1:-} == --git ]]; then
   shift
   targets=($@); (( $#targets )) || targets=(phonefarm game_opt_loop)
@@ -126,6 +152,10 @@ if [[ ${1:-} == --git ]]; then
     git -C $src fetch -q origin
     git -C $src checkout -q --detach $ref
     echo "$name @ $(git -C $src log --oneline -1)"
+    source_revision=$(git -C $src rev-parse HEAD)
+    source_status=$(git -C $src status --porcelain --untracked-files=normal)
+    source_dirty=false
+    [[ -z $source_status ]] || source_dirty=true
     case $name in
       phonefarm)
         pre=~/node/.prebuilt/phonefarm
@@ -140,12 +170,16 @@ if [[ ${1:-} == --git ]]; then
             install_bin $pre/VkLayer_refknobs.json ~/node/phonefarm/knobs/gray/build/out/VkLayer_refknobs.json
             ls -la ~/node/phonefarm/knobs/gray/build/out/libVkLayer_refknobs.so
           fi
+          # Original downloaded asset provenance, before local signing. It is
+          # not a digest of the installed executable and is retained by source.
+          mkdir -p ~/node/phonefarm/download-builds
+          cp $pre/build.json ~/node/phonefarm/download-builds/$source_revision.json
           rm -rf $pre
           echo "updated ~/node/$name（CI 产物，未在节点编译）"
           continue
         fi
         echo "  退回节点本地编译（慢、吃内存）"
-        (cd $src/src && cargo build --release -q)
+        (cd $src/src && HGAMEY_BUILD_REVISION=$source_revision HGAMEY_BUILD_DIRTY=$source_dirty cargo build --release -q)
         sync_tracked $src ~/node/phonefarm
         install_bin $CARGO_TARGET_DIR/release/phonefarm ~/node/phonefarm/phonefarm
         # 灰档层 .so 不入库，phonefarm 挂层时找 knobs/gray/build/out/；NDK 只装在节点上，所以在这里编
@@ -154,11 +188,12 @@ if [[ ${1:-} == --git ]]; then
           ls -la ~/node/phonefarm/knobs/gray/build/out/libVkLayer_refknobs.so
         fi;;
       game_opt_loop)
-        (cd $src && cargo build --release -q)
+        (cd $src && HGAMEY_BUILD_REVISION=$source_revision HGAMEY_BUILD_DIRTY=$source_dirty cargo build --release -q)
         sync_tracked $src ~/node/game_opt_loop
         install_bin $CARGO_TARGET_DIR/release/game_opt_loop ~/node/game_opt_loop/game_opt_loop;;
       harness-ops)
         rsync -a $src/node/ ~/node/harness-ops/ --exclude __pycache__
+        write_source_build ~/node/harness-ops HGamey/harness-ops $source_revision $source_dirty
         echo "节点服务本身的改动要 /admin/restart 才生效";;
     esac
     echo "updated ~/node/$name"
@@ -176,6 +211,9 @@ for f in dash.pass steer.pass; do
 done
 for d in phonefarm game_opt_loop harness-ops; do
   [ -d "$src/$d" ] || continue
+  # An upload without a declaration must not inherit the previous install's
+  # source identity. A declaration supplied with this upload is copied below.
+  [[ $d != harness-ops ]] || rm -f "$HOME/node/$d/runtime-build.json"
   rsync -a "$src/$d/" "$HOME/node/$d/"
   echo "updated ~/node/$d"
 done

@@ -57,8 +57,18 @@ value = facts()
 assert value['uid'] == [plan['uid']]*3 and value['gid'] == [plan['gid']]*3, value
 assert value['groups'] == [] and value['no_new_privs'] == '1', value
 assert all(int(v,16) == 0 for v in value['caps'].values()), value
-expected = {'PATH','LANG','HOME','TMPDIR','PF_JOB_IN','PF_JOB_OUT','PF_JOB_ID'}
+expected = {'PATH','LANG','HOME','TMPDIR','PF_JOB_IN','PF_JOB_OUT','PF_JOB_ID','PF_RUNTIME_REPORT'}
 assert set(os.environ) == expected, value
+report = pathlib.Path(os.environ.pop('PF_RUNTIME_REPORT'))
+assert report == out/'.program-runtime.json'
+temporary = out/'.program-runtime.tmp'
+temporary.write_text(json.dumps({'schema':'phonefarm/program-start@1',
+    'job_id':plan['jid'],'pid':os.getpid(),'identity':{
+        'schema':'phonefarm/runtime-identity@1','program':'game_opt_loop','package_version':'fixture',
+        'build':{'source_revision':'a'*40,'source_dirty':False,'target':'fixture-linux','profile':'test'},
+        'supported_protocols':['phonefarm/runtime-identity@1','phonefarm/program-start@1']}}))
+os.link(temporary,report)
+temporary.unlink()
 assert os.environ['PATH'] == '/usr/bin:/bin' and os.environ['LANG'] == 'C.UTF-8'
 assert os.environ['HOME'] == os.environ['TMPDIR'] == str(out)
 assert os.environ['PF_JOB_ID'] == plan['jid']

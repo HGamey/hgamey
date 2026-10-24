@@ -413,6 +413,7 @@ class Domain:
     def start_gate(self, command, cwd, job_dir, jid, log_fd):
         env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": os.path.join(job_dir, "out"),
                "TMPDIR": os.path.join(job_dir, "out"), "PF_JOB_ID": jid,
+               "PF_RUNTIME_REPORT": os.path.join(job_dir, "out", ".program-runtime.json"),
                "PF_JOB_IN": os.path.join(job_dir, "in"), "PF_JOB_OUT": os.path.join(job_dir, "out")}
         if self.pf_env is not None:
             env.update(self.pf_env)
@@ -591,7 +592,7 @@ def reconcile(store, jid, job_dir, config, force=False):
 
 
 def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
-    from job_runtime import _open_file, _cancellation, _finish, read_cancel
+    from job_runtime import _open_file, _cancellation, _finish, _program_identity, read_cancel
 
     domain, child, released = None, None, False
     try:
@@ -633,6 +634,8 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
         store.write_json(jid + "/meta.json", meta)
         last_signal_at = None
         while True:
+            if _program_identity(store, jid, meta):
+                store.write_json(jid + "/meta.json", meta)
             request = read_cancel(store, jid)
             if request:
                 cancellation = _cancellation(request, meta)

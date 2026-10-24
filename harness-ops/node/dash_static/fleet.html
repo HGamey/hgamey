@@ -63,7 +63,11 @@
     <div id="remote-actions" class="directory-actions" hidden><button id="remote-devices" class="ghost" type="button">请求远端设备采样</button><button id="registration-edit" class="ghost" type="button" disabled>更新登记</button><button id="registration-toggle" class="ghost" type="button" disabled>停用登记</button></div>
     <p id="remote-action-message" class="note" role="status"></p>
     <div id="disable-confirm" class="disable-confirm" hidden><p>停用后保留历史观测，仅停止此目录的远端探测；不会停止远端任务或释放设备。</p><div class="directory-actions"><button id="disable-submit" class="ghost danger" type="button">确认停用登记</button><button id="disable-close" class="ghost" type="button">取消</button></div></div>
-    <details id="node-details" class="node-details" hidden><summary>节点信息与数据位置</summary><dl id="node-info" class="facts"></dl></details>
+    <details id="node-details" class="node-details" hidden><summary>节点信息与数据位置</summary><dl id="node-info" class="facts"></dl>
+      <div class="section-heading"><h3>配置程序观察</h3><button id="refresh-runtime" class="ghost" type="button" disabled>重新观察本节点配置程序</button></div>
+      <p id="runtime-refresh-help" class="note" role="status"></p><a id="runtime-source-link" class="workspace-link" hidden>到源节点查看与刷新程序观察 →</a>
+      <div id="node-programs"></div><p class="note">服务启动观察、配置程序缓存与作业实际自报分别记录；构建声明不证明已加载的全部字节，也不证明设备资格。</p>
+    </details>
   </section>
   <div class="refresh-bar">
     <p id="refresh-note" class="note">可见时每 10 秒刷新页面快照。</p>

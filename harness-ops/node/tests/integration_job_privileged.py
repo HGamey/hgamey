@@ -273,6 +273,13 @@ class PrivilegedFixture(KernelFixture):
         done = until(finished)
         assert done['outcome']=='cancelled' and done['execution']['owned_cgroup']['status']=='absent'
         assert done['recovery']['status']=='required' and done['exit']==0
+        identity = done['execution']['program_identity']
+        assert identity['state']=='reported' and identity['source']=='program_self_report', identity
+        assert identity['record']['job_id']==self.jid
+        assert identity['record']['pid']==done['execution']['child_pid']
+        assert identity['record']['identity']['build']['source_revision']=='a'*40
+        assert done['execution']['worker_identity']['entry_path']==str(prefix/'job_runtime.py')
+        assert done['execution']['service_at_launch'] is None
         assert events(self.cgroup_root)['populated']=='0'
         final = self.helper('final')
         assert not final['runner_alive'] and final['output']=='real-input-payload\n'

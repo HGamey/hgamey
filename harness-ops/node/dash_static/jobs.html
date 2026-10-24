@@ -36,6 +36,10 @@
     <details id="node-details" class="node-details" hidden>
       <summary>节点信息与数据位置</summary>
       <dl id="node-info" class="facts"></dl>
+      <div class="section-heading"><h3>配置程序观察</h3><button id="refresh-runtime" class="ghost" type="button" disabled>重新观察配置程序</button></div>
+      <p id="runtime-refresh-help" class="note" role="status"></p>
+      <div id="node-programs"></div>
+      <p class="note">配置入口的缓存观察与作业实际自报分开；刷新不会重启服务、创建任务或改写历史身份。构建声明不证明所有已加载字节，也不授予设备操作资格。</p>
     </details>
   </section>
   <section class="access-panel" aria-labelledby="access-heading">
@@ -156,6 +160,7 @@
         <dl id="job-info" class="facts job-facts"></dl>
         <p class="note"><a id="job-results-link">查看此任务已登记结果</a> · <a id="job-register-result">登记此任务结果</a>。原件仍在下方输出目录；登记不代表实验有效或恢复完成。</p>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
+        <details class="command-details"><summary id="job-runtime-summary">本次运行入口身份</summary><p class="note">仅展示此任务保留的服务启动快照、worker 身份和主程序自报；不使用当前配置补齐历史。身份记录不改变命令结果，也不证明设备恢复。</p><h4>启动任务的服务</h4><dl id="job-service-identity" class="facts"></dl><h4>实际 worker</h4><dl id="job-worker-identity" class="facts"></dl><h4>主程序入口自报</h4><dl id="job-program-identity" class="facts"></dl></details>
         <section id="job-inputs" class="job-inputs" aria-labelledby="job-inputs-heading">
           <div class="section-heading"><h3 id="job-inputs-heading">输入工件与准备记录</h3><button id="load-job-inputs" class="ghost" type="button" disabled>读取输入记录</button></div>
           <p id="job-inputs-message" class="note" role="status"></p><p id="job-inputs-updated" class="read-time"></p>

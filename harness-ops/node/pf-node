@@ -25,7 +25,7 @@
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
   pf-node cancel <id> [--force]            # 默认请求 SIGINT；--force 允许 15s 后 TERM、再 15s 后 KILL
-  pf-node node                            # 执行宿主、持久节点身份、数据位置、服务版本
+  pf-node node [--refresh-runtime]        # 服务启动观察、配置程序身份；显式刷新不改历史job
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
@@ -887,6 +887,14 @@ def main():
         return
     if args[0] in ("node", "jobs", "artifacts"):
         cmd = args.pop(0)
+        if cmd == "node" and args == ["--refresh-runtime"]:
+            TARGET.require_write()
+            try:
+                print(call("POST", "/node/runtime/refresh", b"{}", {"Content-Type": "application/json"},
+                           attempts=1, raise_errors=True).decode())
+            except (ClientError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
+                sys.exit("pf-node: 程序身份刷新未确认；未自动重试。用 node 读取缓存，必要时显式再次刷新。")
+            return
         if cmd == "artifacts":
             if not args or not __import__("re").fullmatch(r"[0-9a-f]{12}", args[0]):
                 sys.exit("pf-node: artifacts requires a 12-character job id")
