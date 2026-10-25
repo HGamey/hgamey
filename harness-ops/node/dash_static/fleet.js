@@ -31,6 +31,15 @@
   }
   function facts(node, rows) { node.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
   const sourceDirty = value => value === true ? '有本地修改' : value === false ? '声明无本地修改' : '未知';
+  function exportCacheFacts(node) {
+    const cache = node?.storage?.export_cache;
+    if (!node?.capabilities?.includes('jobs.export-cache-root-v1') || !cache) return [['目录导出缓存位置', '未提供；旧节点位置未知，不从任务目录推断。']];
+    return [['导出缓存模式', ({legacy_job_directory: '作业目录内（legacy_job_directory）', external: '独立缓存根（external）'})[cache.mode] || '未知'],
+      ['导出缓存启动观察', ({available: '启动时已打开；不保证当前可写空间', unavailable: '不可用；不会退回作业目录'})[cache.availability] || '未知'],
+      ['配置缓存根', cache.configured_root === null ? '未显式配置' : cache.configured_root], ['有效缓存根', cache.effective_root ?? '未取得'],
+      ['缓存位置原因', cache.reason ?? '未报告错误'], ['旧导出缓存迁移', cache.legacy_entries_migrated === false ? '未迁移；本页不迁移或清理旧缓存' : '未提供'],
+      ['缓存适用范围', cache.scope === 'directory_export' ? '仅当前作业的目录导出派生件；单文件下载与历史来源不依赖此缓存。实际请求仍需核对导出错误。' : cache.scope || '未知']];
+  }
   function serviceFacts(service) {
     const runtime = service?.runtime;
     return [['服务实例 ID', service?.instance_id], ['服务启动时源码树 revision', service?.revision], ['启动源码树修改状态', sourceDirty(service?.dirty)],
@@ -421,7 +430,7 @@
     facts($('node-info'), [...(entry ? [['登记名', entry.name], ['配置版本', entry.revision], ['配置入口', entry.url], ['快照来源', entry.snapshot?.url], ['远端凭据', entry.credential_present ? '已保存（不回显）' : '未配置'], ['标签', entry.tags?.join('、')], ['备注', entry.note], ['SSH 元数据', entry.ssh], ['Goals 目录元数据', entry.goals_dir]] : []),
       ['节点 ID', node?.node_id || entry?.node_id], ['访问入口', entry ? entry.snapshot?.url : location.origin], ['宿主系统', node?.host?.platform],
       ...serviceFacts(node?.service), ['服务启动', time(node?.started_at)],
-      ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root], ...processPolicyFacts(node)]);
+      ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root], ...exportCacheFacts(node), ...processPolicyFacts(node)]);
     renderPrograms(node);
   }
   function hostProcessFacts(entry) {

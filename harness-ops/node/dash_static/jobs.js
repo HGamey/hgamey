@@ -239,6 +239,15 @@
     return [['入口路径', runtime?.entry_path || '未记录'], ['Python 版本', runtime?.python_version || '未记录'], ['宿主运行身份观察时间', time(runtime?.observed_at)],
       ['安装构建仓库声明', runtime?.build?.repository || '未记录'], ['安装构建 revision 声明', runtime?.build?.revision || '未记录'], ['安装构建修改声明', sourceDirty(runtime?.build?.dirty)]];
   }
+  function exportCacheFacts(node) {
+    const cache = node?.storage?.export_cache;
+    if (!node?.capabilities?.includes('jobs.export-cache-root-v1') || !cache) return [['目录导出缓存位置', '未提供；旧节点位置未知，不从任务目录推断。']];
+    return [['导出缓存模式', ({legacy_job_directory: '作业目录内（legacy_job_directory）', external: '独立缓存根（external）'})[cache.mode] || '未知'],
+      ['导出缓存启动观察', ({available: '启动时已打开；不保证当前可写空间', unavailable: '不可用；不会退回作业目录'})[cache.availability] || '未知'],
+      ['配置缓存根', cache.configured_root === null ? '未显式配置' : cache.configured_root], ['有效缓存根', cache.effective_root ?? '未取得'],
+      ['缓存位置原因', cache.reason ?? '未报告错误'], ['旧导出缓存迁移', cache.legacy_entries_migrated === false ? '未迁移；本页不迁移或清理旧缓存' : '未提供'],
+      ['缓存适用范围', cache.scope === 'directory_export' ? '仅当前作业的目录导出派生件；单文件下载与历史来源不依赖此缓存。实际请求仍需核对导出错误。' : cache.scope || '未知']];
+  }
   function serviceFacts(service) {
     return [['服务实例 ID', service?.instance_id || '未记录'], ['服务启动时源码树 revision', service?.revision || '未记录'], ['启动源码树修改状态', sourceDirty(service?.dirty)],
       ['源码观察来源', service?.source_kind === 'startup_checkout_observation' ? '服务启动时源码树观察' : service?.source_kind || '旧记录未提供'], ['源码观察时间', time(service?.observed_at)], ...runtimeFacts(service?.runtime)];
@@ -1376,7 +1385,7 @@
         ['节点 ID', node.node_id], ['访问入口', location.origin],
         ['宿主', `${text(node.host?.hostname)} · ${text(node.host?.platform)}`],
         ...serviceFacts(node.service),
-        ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root],
+        ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root], ...exportCacheFacts(node),
         ['服务启动', time(node.started_at)], ...processPolicyFacts(node), ...hostCapacityFacts(node.execution?.host_capacity)
       ]);
       renderPrograms(node);
@@ -2468,9 +2477,9 @@
   function renderExportLimits() {
     const supported = nodeInfo?.capabilities?.includes('jobs.export-limits-v1'), policy = supported ? nodeInfo.execution?.export_limits : null;
     message('export-policy-message', policy ? '节点声明的单次目录导出政策；不回填旧节点限值。' : '此节点未提供目录导出政策，限值未知；不会按新版限额推断。');
-    facts('export-policy-info', policy ? [['源文件逻辑字节上限', inputBytes(policy.source_bytes)], ['压缩输出字节上限', inputBytes(policy.compressed_bytes)],
+    facts('export-policy-info', [...exportCacheFacts(nodeInfo), ...(policy ? [['源文件逻辑字节上限', inputBytes(policy.source_bytes)], ['压缩输出字节上限', inputBytes(policy.compressed_bytes)],
       ['目录与文件总条目上限', policy.entries], ['目录深度上限', policy.max_depth], ['写入时最低保留空间', inputBytes(policy.min_free_bytes)],
-      ['限值范围', policy.scope === 'directory_export_cache_generation' ? '目录导出缓存生成（含根目录；压缩输出含格式头尾和填充）' : text(policy.scope)]] : []);
+      ['限值范围', policy.scope === 'directory_export_cache_generation' ? '目录导出缓存生成（含根目录；压缩输出含格式头尾和填充）' : text(policy.scope)]] : [])]);
   }
   function resetDirectoryExport() {
     ++exportRevision;

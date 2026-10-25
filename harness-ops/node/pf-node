@@ -80,6 +80,8 @@
   export_budget_exceeded/export_space_insufficient/export_write_space_failed/export_storage_unavailable/export_busy
   会保留原JSON原因及已有本地partial，不自动重新压缩或转为旧节点二进制下载；busy不当源变化。
   预算超限时可显式选择较小子目录或原文件；空间检查不是预留或全节点缓存配额。旧节点政策未知。
+  `pf-node node` 的 storage.export_cache 原样报告目录缓存模式、配置/有效根和启动打开状态；
+  jobs.export-cache-root-v1 的 available 不保证当前空间。外置根不可用不退回旧根；不迁移/清理旧缓存，单文件下载不依赖它。
 - --inputs 指定 phonefarm/job-inputs@1 小清单：同节点已收尾工件，每份最多8MiB、合计32MiB。
   显式JSON pointer绑定生成独立文件，源字节保留；不猜改脚本文字。脚本可用已有PF_JOB_IN，
   或在清单中选cwd=input。准备失败未启动命令；同request_id保持原结果，修好后显式用新ID。

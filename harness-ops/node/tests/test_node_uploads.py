@@ -100,11 +100,23 @@ class UploadFlowTests(unittest.TestCase):
         source.write_bytes(payload)
         # A write-space refusal crosses the actual HTTP/CLI path once. The
         # client may query the original upload, but must not send the next chunk.
+        errors = []
+        upload_chunk = env.jobs.games.cache.upload_chunk
+        def refusing(*args, **kwargs):
+            try:
+                return upload_chunk(*args, **kwargs)
+            except AssetUploadError as error:
+                errors.append(error.payload["code"])
+                raise
         with patch("game_assets.os.fstatvfs", return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)), \
-                patch.object(env.jobs.games.cache, "upload_chunk", wraps=env.jobs.games.cache.upload_chunk) as chunks:
+                patch.object(env.jobs.games.cache, "upload_chunk", side_effect=refusing) as chunks:
             refused = env.cli("upload", "demo", "v1", asset["name"], str(source), "--upload-id", "resume-fixture")
         self.assertEqual(refused.returncode, 2, refused.stderr)
-        self.assertIn("asset_space_insufficient", refused.stderr)
+        self.assertEqual(errors, ["asset_space_insufficient"])
+        # Early refusal closes an unread PUT body. The sender can observe a
+        # socket error before receiving JSON; neither outcome permits replay.
+        self.assertTrue("asset_space_insufficient" in refused.stderr or "网络请求未确认" in refused.stderr,
+                        refused.stderr)
         self.assertEqual(chunks.call_count, 1)
         self.assertEqual((json.loads(refused.stdout)["upload_id"], json.loads(refused.stdout)["offset"]),
                          ("resume-fixture", prefix))

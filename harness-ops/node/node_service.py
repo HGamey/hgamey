@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from node_history import JobHistory, HistoryError, load_history_config
+from job_export_cache import ExportCache, validate_root as validate_export_cache_root
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
 from device_scope import DeviceScope, validate_job as validate_device_job, resource as device_resource, scope as job_scope, lease_problem
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
@@ -256,7 +257,7 @@ def read_host_capacity(path):
 
 class Jobs:
     def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None,
-                 history_sources=None):
+                 history_sources=None, export_cache_root=None):
         self.root, self.bins = root, bins
         self.history_sources = history_sources if history_sources is not None else []
         self.data_root = os.path.abspath(data_dir or root)
@@ -264,8 +265,10 @@ class Jobs:
         if not os.path.isabs(self.update_config_dir):
             self.update_config_dir = os.path.join(os.path.expanduser("~/node"), self.update_config_dir)
         self.dir = os.path.join(self.data_root, "jobs" if data_dir else "_jobs")
+        validate_export_cache_root(export_cache_root, self.dir, self.history_sources)
         os.makedirs(self.dir, exist_ok=True)
         self._read_root = SafeRoot(self.dir)
+        self.export_cache = ExportCache(self._read_root, self.dir, export_cache_root, self.history_sources)
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
         self.pf_env, self.worker_entry = None, None
@@ -575,8 +578,8 @@ class Jobs:
             except BaseException:
                 f.close()
                 raise
-        cache = jid + "/.outcache-" + hashlib.sha1(rel.encode()).hexdigest()[:10] + ".tar.gz"
         phase, replaced = "inspect", False
+        destination_fd = None
 
         def storage_error(error, failed_phase, original=None):
             space = failed_phase != "cleanup" and error.errno in {errno.ENOSPC, errno.EDQUOT}
@@ -590,10 +593,10 @@ class Jobs:
 
         def cached(signature):
             try:
-                old = self._read_root.read_json(cache + ".json")
-                if old.get("sig") != signature:
+                old = cache_store.read_json(cache + ".json")
+                if old.get("sig") != signature or (binding is not None and old.get("binding") != binding):
                     return None
-                f = self._read_root.open_file(cache)
+                f = cache_store.open_file(cache)
                 try:
                     info = describe_file(f, self._sha_cache, self._out_guard)
                     if info["size"] == old.get("size") and info["sha256"] == old.get("info", {}).get("sha256"):
@@ -612,28 +615,34 @@ class Jobs:
 
         try:
             signature = directory_signature(fd, limits=EXPORT_LIMITS)
+            phase = "cache_location"
+            cache_store, prefix, binding = self.export_cache.target(jid)
+            if binding is not None:
+                binding = {**binding, "path": rel}
+            cache = prefix + "/.outcache-" + hashlib.sha1(rel.encode()).hexdigest()[:10] + ".tar.gz"
             phase = "cache_lookup"
             hit = cached(signature)
             if hit is not None:
                 return hit
             phase = "lock"
-            with export_lock(self._read_root, jid) as space_fd:
+            with export_lock(self._read_root, jid):
+                destination_fd = cache_store.open_fd(prefix, directory=True)
                 phase = "cache_lookup"
                 hit = cached(signature)
                 if hit is not None:
                     return hit
                 temporary = cache + "." + uuid.uuid4().hex + ".tmp"
                 phase = "create"
-                f = self._read_root.create_file(temporary)
+                f = cache_store.create_file(temporary)
                 failure = None
                 try:
                     phase = "archive"
-                    archived_signature = archive_directory(fd, f, limits=EXPORT_LIMITS, space_fd=space_fd)
+                    archived_signature = archive_directory(fd, f, limits=EXPORT_LIMITS, space_fd=destination_fd)
                     if archived_signature != signature:
                         raise ArtifactChanged("artifact directory changed before archiving; retry")
                     phase = "publish_archive"
                     replaced = None
-                    self._read_root.replace(temporary, cache)
+                    cache_store.replace(temporary, cache)
                     replaced = True
                     # Rename changes the file stamp: keep the original single
                     # content hash after publication, then publish its metadata.
@@ -641,12 +650,13 @@ class Jobs:
                     info = {"kind": "tar.gz", "path": os.path.normpath(rel or "."),
                             **describe_file(f, self._sha_cache, self._out_guard)}
                     phase = "publish_metadata"
-                    self._read_root.write_json(cache + ".json", {"sig": signature, "size": info["size"], "info": info})
+                    cache_store.write_json(cache + ".json", {"sig": signature, "size": info["size"], "info": info,
+                                                           **({"binding": binding} if binding is not None else {})})
                 except BaseException as error:
                     failure = error
                 finally:
                     try:
-                        self._read_root.unlink(temporary)
+                        cache_store.unlink(temporary)
                     except FileNotFoundError:
                         pass
                     except OSError as error:
@@ -666,6 +676,8 @@ class Jobs:
         except OSError as error:
             raise storage_error(error, phase) from error
         finally:
+            if destination_fd is not None:
+                os.close(destination_fd)
             os.close(fd)
 
     def cancel(self, jid, force=False):
@@ -1676,6 +1688,7 @@ def argument_parser():
     ap.add_argument("--host-capacity", help="管理员宿主调度容量 JSON 文件（最多4KiB）；省略沿用SQL配置，首次按max-running初始化CPU slots")
     ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
     ap.add_argument("--history-roots", type=history_path, help="旧作业只读来源的绝对配置路径（hgamey/job-history@1，最多64KiB）")
+    ap.add_argument("--export-cache-root", help="当前作业目录导出的独立绝对缓存根；省略保留旧布局，不迁移原件或游戏资源")
     return ap
 
 
@@ -1685,6 +1698,8 @@ def main():
     try:
         history_sources = load_history_config(a.history_roots)
         host_capacity = read_host_capacity(a.host_capacity)
+        jobs_root = os.path.join(os.path.abspath(a.data_dir or a.phonefarm), "jobs" if a.data_dir else "_jobs")
+        validate_export_cache_root(a.export_cache_root, jobs_root, history_sources)
     except (OSError, ValueError) as error:
         ap.error(str(error))
     # 兼容直接 shell 后台启动：继承的 SIGINT 忽略态会穿过 exec，让作业收不到停止信号。
@@ -1703,7 +1718,7 @@ def main():
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
-                host_capacity=host_capacity, history_sources=history_sources)
+                host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:
@@ -1740,6 +1755,7 @@ def main():
         jobs.directory.close()
         jobs.games.close()
         jobs.history.close()
+        jobs.export_cache.close()
         fleet.close()
         srv.server_close()
 
