@@ -212,6 +212,48 @@ class JobCLI(unittest.TestCase):
             call.assert_called_once_with("GET", "/node", attempts=1, raise_4xx=True)
             pack.assert_not_called()
 
+    def test_host_slots_file_is_opt_in_checked_before_pack_and_preserves_rejection(self):
+        cli = self.load_cli(); main = cli["main"]
+        slots = {"cpu": 2, "gpu": 1, "io": 0}
+        # A smaller current configuration must not reject an old request locally.
+        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "jobs.host-capacity-v1"],
+                        execution={"bins": ["phonefarm"], "host_capacity": {"slots": {"cpu": 1, "gpu": 0, "io": 0}}})
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "slots.json"
+            source.write_text(json.dumps(slots))
+            for declared in (True, False):
+                call = mock.Mock(return_value=json.dumps(node).encode())
+                pack, submit = mock.Mock(return_value=(["--help"], b"")), mock.Mock(return_value={"id": JOB, "phase": "queued"})
+                command = [str(CLI), *(["--host-slots", str(source)] if declared else []), "--request-id", "original-slots", "--detach", "phonefarm", "--help"]
+                with mock.patch.dict(main.__globals__, call=call, pack=pack, submit_job=submit), mock.patch.object(sys, "argv", command), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    main()
+                spec = submit.call_args.args[0]
+                self.assertEqual(spec["argv"], ["--help"])
+                self.assertEqual(submit.call_args.args[2], "original-slots")
+                if declared:
+                    self.assertEqual(spec["host_slots"], slots)
+                else:
+                    self.assertNotIn("host_slots", spec)
+                call.assert_called_once_with("GET", "/node", attempts=1, raise_4xx=True)
+            for raw, response, options in [(json.dumps({**slots, "cpu": True}), node, []),
+                                            (" " * 4097, node, []),
+                                            (json.dumps(slots), identity(capabilities=["jobs.idempotency-v1"]), []),
+                                            (json.dumps(slots), node, ["--device-access", "recovery", "--recovery-for", JOB])]:
+                source.write_text(raw); pack, submit = mock.Mock(), mock.Mock()
+                with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(response).encode()), pack=pack, submit_job=submit), \
+                        mock.patch.object(sys, "argv", [str(CLI), "--host-slots", str(source), *options, "--detach", "phonefarm", "--help"]), self.assertRaises(SystemExit):
+                    main()
+                pack.assert_not_called(); submit.assert_not_called()
+        payload = {"code": "host_capacity_exceeded", "error": "exceeds current total", "requested": slots,
+                   "total": {"cpu": 1, "gpu": 0, "io": 0}, "shortages": [{"resource": "gpu", "requested": 1, "total": 0}]}
+        call = mock.Mock(side_effect=cli["ClientError"](422, json.dumps(payload).encode()))
+        with mock.patch.dict(cli["submit_job"].__globals__, call=call), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stopped:
+            cli["submit_job"]({"host_slots": slots}, b"", "slots-rejected")
+        self.assertIn("host_capacity_exceeded", str(stopped.exception))
+        self.assertIn('"requested": {"cpu": 2, "gpu": 1, "io": 0}', str(stopped.exception))
+        self.assertEqual(call.call_count, 1)
+
     def test_time_budget_freezes_explicit_spec_and_preserves_terminal_evidence(self):
         cli = self.load_cli()
         main = cli["main"]

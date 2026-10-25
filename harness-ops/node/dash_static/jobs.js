@@ -407,7 +407,7 @@
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['声明设备范围', scopeText(job.queue?.device_scope || {scope: job.device_binding ? 'device' : job.device_access === 'none' ? 'none' : 'global', binding: job.device_binding})],
       ...(job.device_binding ? bindingFacts(job.device_binding) : []), ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
-      ['命令退出码', job.exit], ...budgetFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
+      ['命令退出码', job.exit], ...jobCapacityFacts(job), ...budgetFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
       ['首次停止来源', cancellation?.source === 'execution_deadline' ? '运行预算期限' : cancellation?.source || '未记录（可能为人工请求）'],
       ['升级来源', cancellation?.escalation_source === 'execution_deadline' ? '运行预算期限' : cancellation?.escalation_source || '未记录'],
       ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
@@ -438,9 +438,37 @@
     }
   }
 
+  const SLOT_KEYS = ['cpu', 'gpu', 'io'];
+  const slotName = key => ({cpu: 'CPU', gpu: 'GPU', io: 'I/O'})[key] || text(key);
+  const slotsText = slots => slots ? SLOT_KEYS.map(key => `${slotName(key)} ${text(slots[key])}`).join(' / ') : '未提供';
+  function shortageText(shortages) {
+    return Array.isArray(shortages) ? shortages.map(item => `${slotName(item.resource)}：请求 ${text(item.requested)} / 总量 ${text(item.total)} / 保留 ${text(item.reserved)} / 可用 ${text(item.available)}`).join('；') : '';
+  }
+  function hostCapacityFacts(capacity) {
+    return capacity ? [['宿主 slots 配置', slotsText(capacity.slots)],
+      ['配置来源', ({initial_default: '首次兼容配置', file: '管理员配置文件'})[capacity.source] || text(capacity.source)],
+      ['配置更新时间', time(capacity.updated_at)], ['容量依据', capacity.basis === 'declared_scheduler_slots' ? '声明调度 slots；不是硬件数量或 OS 限额' : '未提供声明调度依据']] : [['宿主 slots 配置', '未提供；不从硬件或作业列表推算']];
+  }
+  function renderHostCapacity(capacity, problem = '') {
+    message('host-capacity-message', problem || (!capacity ? '节点未提供宿主容量记账，不能按缺值推断为 0。' : '下方为节点读取时的持久调度记账；不由网页重算。与上方作业执行名额分别约束。'), !!problem);
+    facts('host-capacity-info', [...hostCapacityFacts(capacity), ...(capacity ? SLOT_KEYS.map(key => [slotName(key),
+      `总量 ${text(capacity.slots?.[key])} · 保留 ${text(capacity.reserved?.[key])} · 可用 ${text(capacity.available?.[key])} · 超额 ${text(capacity.overcommitted?.[key])}`]) : [])]);
+  }
+  const hostReservationState = state => ({not_claimed: '尚未占位', reserved: '仍保留宿主 slots', released: '已记录宿主 slots 释放', historical_done: '旧完成记录，不构成宿主结束证明'})[state] || '未提供';
+  function jobCapacityFacts(job) {
+    const record = job.queue?.host_capacity;
+    return [['原宿主 slots 声明', job.host_slots ? slotsText(job.host_slots) : '未显式声明'],
+      ['本任务记账需求', record ? `${slotsText(record.slots)} · ${record.source === 'explicit' ? '显式声明' : record.source === 'legacy_default' ? '固定兼容需求' : '来源未知'}` : '节点未提供；不从当前配置回填'],
+      ['宿主 slots 状态', hostReservationState(record?.state)],
+      ...(record?.release ? [['宿主 slots 释放时间', time(record.release.at)], ['宿主释放依据', record.release.basis]] : []),
+      ['调度边界', '宿主 slots 释放不代表设备恢复或独占资源保留已解除。']];
+  }
   function waitingText(waiting) {
-    const label = ({capacity: '等待执行名额', resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待核查并解除资源保留', durability: '等待保存结束记录', device_lease: '等待实际设备 lease'})[waiting?.kind] || '无等待原因';
-    return `${label}${waiting?.reason ? `：${waiting.reason}` : ''}${waiting?.lease_status ? `（${waiting.lease_status}）` : ''}${waiting?.scope ? ` · ${scopeText(waiting.scope)}` : ''}`;
+    const reason = waiting?.reason;
+    const capacityReason = ({max_running: '等待作业执行名额', slots_unavailable: '等待宿主 slots', request_exceeds_current_total: '原请求超过当前宿主容量'})[reason];
+    const label = waiting?.kind === 'capacity' ? capacityReason || '等待执行名额' : ({resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待核查并解除资源保留', durability: '等待保存结束记录', device_lease: '等待实际设备 lease'})[waiting?.kind] || '无等待原因';
+    const shortage = shortageText(waiting?.shortages);
+    return `${label}${reason && !capacityReason ? `：${reason}` : ''}${shortage ? `；${shortage}` : ''}${waiting?.lease_status ? `（${waiting.lease_status}）` : ''}${waiting?.scope ? ` · ${scopeText(waiting.scope)}` : ''}`;
   }
   function scopeText(value) {
     const scope = typeof value === 'string' ? value : value?.scope;
@@ -517,12 +545,14 @@
     $('queue-updated').textContent = '';
     message('queue-message', '正在读取队列…');
     renderLease(null);
+    renderHostCapacity(null, '正在读取宿主调度容量…');
     message('lease-message', '正在读取实际设备 lease…');
     try {
       const queue = await json(`${API}/queue`);
       if (revision !== queueRevision) return;
       renderLease(queue.lease);
-      $('queue-summary').replaceChildren(...[[queue.active_count, `执行中 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '保留资源']].map(([value, label]) => {
+      renderHostCapacity(queue.host_capacity);
+      $('queue-summary').replaceChildren(...[[queue.active_count, `已分配作业 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '保留资源']].map(([value, label]) => {
         const part = el('span'); part.append(el('strong', text(value)), el('span', label)); return part;
       }));
       $('queue-summary').hidden = false;
@@ -533,6 +563,7 @@
         const wait = el('div');
         wait.append(el('p', waitingText(job.waiting)), el('p', job.resources.length ? `独占：${job.resources.join('、')}` : '未声明独占资源', 'queue-resource'));
         wait.append(el('p', scopeText(job.device_scope || {scope: 'global'}), 'note'));
+        if (job.host_capacity) wait.append(el('p', `${slotsText(job.host_capacity.slots)} · ${hostReservationState(job.host_capacity.state)}`, 'note'));
         if (job.state_reason?.kind === 'durability') wait.append(el('p', `保存失败：${text(job.state_reason.stage)} · ${text(job.state_reason.message)}`, 'note'));
         if (job.waiting?.blocking_jobs?.length) {
           const blockers = el('div', null, 'queue-blockers');
@@ -546,7 +577,7 @@
       message('queue-message', queue.dispatcher_error ? `调度异常：${queue.dispatcher_error}。队列记录保留，请核查调度服务后刷新。` : queue.items.length ? '按声明的资源调度；资源保留的任务需核查后释放。' : '当前队列为空。', !!queue.dispatcher_error);
       $('queue-updated').textContent = readTime();
     } catch (error) {
-      if (revision === queueRevision) { message('queue-message', error.status === 404 ? '此节点尚未提供队列入口。已有任务记录仍可查看。' : errorText(error), true); renderLease(null, '实际设备 lease 未能取得，请刷新核对。'); }
+      if (revision === queueRevision) { message('queue-message', error.status === 404 ? '此节点尚未提供队列入口。已有任务记录仍可查看。' : errorText(error), true); renderLease(null, '实际设备 lease 未能取得，请刷新核对。'); renderHostCapacity(null, '宿主容量未能读取，不沿用旧余量判断可调度。'); }
     } finally {
       if (revision === queueRevision) { regionBusy('queue-panel', false); busy('refresh-queue', false); }
     }
@@ -554,8 +585,32 @@
   function savePending() {
     try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, JSON.stringify({id: pendingRequest.id, target: pendingRequest.target,
       ...(pendingRequest.binding_recorded ? {binding_recorded: true, device_binding: pendingRequest.device_binding} : {}),
-      ...(pendingRequest.budget_recorded ? {budget_recorded: true, time_budget: pendingRequest.time_budget} : {})})); else sessionStorage.removeItem(REQUEST_STORAGE); }
+      ...(pendingRequest.budget_recorded ? {budget_recorded: true, time_budget: pendingRequest.time_budget} : {}),
+      ...(pendingRequest.host_slots_recorded ? {host_slots_recorded: true, host_slots: pendingRequest.host_slots} : {})})); else sessionStorage.removeItem(REQUEST_STORAGE); }
     catch (_) { /* The visible request ID remains available if browser storage is unavailable. */ }
+  }
+  const hostSlotsSupported = () => nodeInfo?.capabilities?.includes('jobs.host-capacity-v1') === true;
+  function submissionHostSlots() {
+    if (pendingRequest) return pendingRequest.body?.host_slots ?? (pendingRequest.host_slots_recorded ? pendingRequest.host_slots : null);
+    if (!$('submit-host-slots').checked) return null;
+    return Object.fromEntries(SLOT_KEYS.map(key => [key, $('submit-host-' + key).value.trim() === '' ? NaN : Number($('submit-host-' + key).value)]));
+  }
+  function hostSlotsProblem() {
+    const slots = submissionHostSlots();
+    if (slots == null) return '';
+    if (Object.keys(slots).sort().join(',') !== 'cpu,gpu,io' || !SLOT_KEYS.every(key => Number.isInteger(slots[key]) && slots[key] >= (key === 'cpu' ? 1 : 0) && slots[key] <= 65535)) return 'CPU 须为 1–65535，GPU/I/O 须为 0–65535 的整数 slots；三项都需填写。';
+    if (!hostSlotsSupported()) return '节点未提供 jobs.host-capacity-v1，不能提交显式 slots；不会删除原声明降级。';
+    if ((pendingRequest?.body?.device_access || $('submit-device-access').value) === 'recovery') return '恢复任务暂不接受显式宿主 slots，使用兼容需求而不继承原任务计算需求。';
+    return '';
+  }
+  function renderHostSlots(allowed) {
+    const fixed = !!pendingRequest, slots = submissionHostSlots();
+    if (fixed) { $('submit-host-slots').checked = !!slots; for (const key of SLOT_KEYS) $('submit-host-' + key).value = slots?.[key] ?? (key === 'cpu' ? 1 : 0); }
+    const disabled = !allowed || fixed || submissionBusy || !hostSlotsSupported();
+    $('submit-host-slots').disabled = disabled;
+    for (const key of SLOT_KEYS) $('submit-host-' + key).disabled = disabled || !$('submit-host-slots').checked;
+    const problem = hostSlotsProblem();
+    message('host-slots-help', problem || (fixed ? pendingRequest.host_slots_recorded ? slots ? '原宿主 slots 声明已冻结；重试或刷新不改变需求，先按原 ID 查询。' : '原请求明确省略 slots 声明，本次重填仍省略。' : '旧未决请求未保存 slots 声明，不为原 ID 加入新需求；先查询原任务。' : !hostSlotsSupported() ? '节点未提供 jobs.host-capacity-v1；可继续不声明的兼容提交。' : '仅显式开启才发送三项声明；节点最终核准容量，不按当前余量承诺立即运行。'), !!problem);
   }
   const timeBudgetSupported = () => nodeInfo?.capabilities?.includes('jobs.time-budget-v1') === true;
   function submissionBudget() {
@@ -705,7 +760,9 @@
     const inputsProblem = hasInputs && !inputsSupported();
     const bindingProblem = deviceBindingProblem();
     const budgetProblem = timeBudgetProblem();
+    const slotsProblem = hostSlotsProblem();
     renderTimeBudget(allowed);
+    renderHostSlots(allowed);
     for (const id of ['submit-bin', 'submit-label', 'submit-argv']) $(id).disabled = !allowed || locked;
     $('submit-inputs').disabled = !allowed || locked || !inputsSupported();
     $('clear-inputs').disabled = !allowed || locked || !$('submit-inputs').value.trim();
@@ -719,7 +776,7 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : submissionBinding() ? '节点自动保存绑定设备的必要资源；自由资源不能删除设备范围冲突，也不授予设备权限。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!slotsProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。'));
@@ -731,7 +788,7 @@
     $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
     $('submit-refill').disabled = !allowed || !!targetIssue || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
-    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!bindingProblem || !!budgetProblem || !!policyProblem || inputsProblem;
+    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!bindingProblem || !!budgetProblem || !!slotsProblem || !!policyProblem || inputsProblem;
     renderDeviceBinding(allowed);
     renderSessionTemplate(allowed);
     renderRefbenchTemplate(allowed);
@@ -823,6 +880,11 @@
         const timeBudget = submissionBudget();
         if (timeBudget) body.time_budget = timeBudget;
         const budgetRecorded = pendingRequest ? pendingRequest.budget_recorded === true : true;
+        const slotsProblem = hostSlotsProblem();
+        if (slotsProblem) throw new Error(slotsProblem);
+        const hostSlots = submissionHostSlots();
+        if (hostSlots) body.host_slots = hostSlots;
+        const hostSlotsRecorded = pendingRequest ? pendingRequest.host_slots_recorded === true : true;
         const mode = $('submit-device-access').value;
         if (mode) body.device_access = mode;
         if (mode === 'recovery') {
@@ -837,7 +899,7 @@
         const binding = submissionBinding();
         if (binding) body.device_binding = binding;
         pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), target: pendingRequest ? pendingRequest.target : HGTarget.binding(), body,
-          binding_recorded: true, device_binding: binding, budget_recorded: budgetRecorded, time_budget: timeBudget};
+          binding_recorded: true, device_binding: binding, budget_recorded: budgetRecorded, time_budget: timeBudget, host_slots_recorded: hostSlotsRecorded, host_slots: hostSlots};
         savePending();
       } catch (error) { submissionMessage(error instanceof SyntaxError ? '参数不是有效的 JSON，请填写字符串数组。' : error.message, true); return; }
     }
@@ -854,7 +916,8 @@
     } catch (error) {
       if (error.status >= 400 && error.status < 500 && error.status !== 409) { pendingRequest = null; savePending(); }
       else if (error.status === 409) attempt.conflict = true;
-      submissionMessage(error.status === 409 ? '请求 ID 或参数冲突。已保留原 ID，请查询对应任务并核对参数；不会自动重试。' : pendingRequest ? '提交结果未确认，节点可能已记录。请按原请求 ID 查询；重试也会使用同一 ID 和参数。' : errorText(error), true, attempt.id);
+      const capacityIssue = error.payload?.code === 'host_capacity_exceeded' ? `宿主 slots 请求超过节点配置，未被准入。${shortageText(error.payload.shortages)}。请修改明确需求后提交，不会自动缩减。` : '';
+      submissionMessage(capacityIssue || (error.status === 409 ? '请求 ID 或参数冲突。已保留原 ID，请查询对应任务并核对参数；不会自动重试。' : pendingRequest ? '提交结果未确认，节点可能已记录。请按原请求 ID 查询；重试也会使用同一 ID 和参数。' : errorText(error)), true, attempt.id);
       if (error.status === 401 || error.status === 403) await loadAccess();
     } finally { submissionBusy = false; renderSubmission(); }
   }
@@ -922,7 +985,7 @@
         ['宿主', `${text(node.host?.hostname)} · ${text(node.host?.platform)}`],
         ...serviceFacts(node.service),
         ['任务目录', node.storage?.jobs_root], ['数据目录', node.storage?.data_root],
-        ['服务启动', time(node.started_at)], ...processPolicyFacts(node)
+        ['服务启动', time(node.started_at)], ...processPolicyFacts(node), ...hostCapacityFacts(node.execution?.host_capacity)
       ]);
       renderPrograms(node);
       $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`;
@@ -2366,6 +2429,8 @@
     renderSubmission();
   });
   $('submit-execution-policy').addEventListener('change', renderSubmission);
+  $('submit-host-slots').addEventListener('change', renderSubmission);
+  for (const key of SLOT_KEYS) $('submit-host-' + key).addEventListener('input', renderSubmission);
   $('submit-wall-seconds').addEventListener('input', renderSubmission);
   $('submit-timeout-action').addEventListener('change', renderSubmission);
   $('prepare-recovery').addEventListener('click', () => {
@@ -2392,7 +2457,8 @@
       let saved; try { saved = JSON.parse(raw); } catch (_) { saved = {id: raw}; }
       pendingRequest = {id: saved.id, target: saved.target || null, binding_recorded: saved.binding_recorded === true,
         device_binding: saved.binding_recorded === true ? saved.device_binding : null,
-        budget_recorded: saved.budget_recorded === true, time_budget: saved.budget_recorded === true ? saved.time_budget : null};
+        budget_recorded: saved.budget_recorded === true, time_budget: saved.budget_recorded === true ? saved.time_budget : null,
+        host_slots_recorded: saved.host_slots_recorded === true, host_slots: saved.host_slots_recorded === true ? saved.host_slots : null};
       const id = pendingRequest.id;
       $('submit-panel').open = true;
       submissionMessage('有一条未确认的提交。请先按原请求 ID 查询；参数未保存在浏览器中。', true, id);

@@ -21,7 +21,8 @@ class JobDurabilityTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.jobs = Jobs(str(self.root), {"host": (sys.executable, str(self.root))}, max_running=1)
+        self.jobs = Jobs(str(self.root), {"host": (sys.executable, str(self.root))}, max_running=1,
+                         host_capacity={"cpu": 2, "gpu": 0, "io": 0})
         self.jobs.dispatch.start = lambda: None
         self.queue = self.jobs.dispatch.queue
         self.store = self.jobs._read_root
@@ -145,6 +146,8 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
         public = self.jobs.status(jid)
         self.assertEqual((public["phase"], public["state"], public["queue"]["state"]),
                          ("finalizing", "running", "claimed"))
+        self.assertEqual(public["queue"]["host_capacity"]["state"], "reserved")
+        self.assertIsNone(self.queue.get(jid)["host_capacity_release"])
         self.jobs.dispatch.tick()
         self.assertEqual(self.queue.get(jid)["state"], "claimed")
         self.observations["visible_while_worker_held"] = {"phase": public["phase"], "state": public["state"]}
@@ -164,12 +167,16 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
             blocked = self.until(lambda: self.terminal(jid))
             self.assertEqual((blocked["phase"], blocked["state"], blocked["queue"]["state"]),
                              ("storage_blocked", "running", "blocked"))
+            self.assertEqual(blocked["queue"]["host_capacity"]["state"], "reserved")
+            self.assertIsNone(self.queue.get(jid)["host_capacity_release"])
             reason = blocked["queue"]["state_reason"]
             self.assertEqual(reason["kind"], "durability")
             self.assertTrue(reason["stage"] and reason["message"])
             self.assertIsInstance(reason["at"], (int, float))
             completed_other = self.until(lambda: self.terminal(other))
             self.assertEqual((completed_other["exit"], completed_other["queue"]["state"]), (0, "done"))
+            self.assertEqual(completed_other["queue"]["host_capacity"]["state"], "released")
+            self.assertEqual(self.queue.capacity_snapshot()["reserved"], {"cpu": 1, "gpu": 0, "io": 0})
             self.assertEqual(self.queue.get(waiting)["state"], "queued")
             self.assertFalse(Path(self.jobs.path(waiting, "launch.json")).exists())
             with self.assertRaises(RequestConflict):
@@ -177,7 +184,9 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
             retry = self.jobs.retry_finalize(jid)
             self.assertFalse(retry["storage_committed"])
             self.assertEqual(retry["job"]["phase"], "storage_blocked")
+            self.assertIsNone(self.queue.get(jid)["host_capacity_release"])
             self.observations["blocked"] = reason
+            self.observations["blocked_host_capacity"] = blocked["queue"]["host_capacity"]
 
         armed.unlink()
         before = Path(job_dir, "launch.json").read_bytes()
@@ -187,11 +196,15 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
         self.assertTrue(retry["storage_committed"])
         self.assertEqual((retry["job"]["state"], retry["job"]["phase"], retry["job"]["exit"],
                           retry["job"]["queue"]["state"]), ("finished", "finished", 0, "done"))
+        self.assertEqual(retry["job"]["queue"]["host_capacity"]["state"], "released")
+        self.assertEqual(self.queue.get(jid)["host_capacity_release"]["basis"], "original_process_group_completed")
+        self.assertEqual(self.queue.capacity_snapshot()["reserved"], {"cpu": 0, "gpu": 0, "io": 0})
         self.assertEqual(Path(job_dir, "launch.json").read_bytes(), before)
         self.assertEqual(Path(job_dir, "out", "executions").read_text(), "run\n")
         self.assertTrue(self.jobs.cancel(waiting)["accepted"])
         self.observations["explicit_retry"] = {"storage_committed": True, "command_executions": 1,
-                                                "unrelated_job_done": True, "same_resource_waited": True}
+                                                "unrelated_job_done": True, "same_resource_waited": True,
+                                                "host_capacity": retry["job"]["queue"]["host_capacity"]}
         self.case_ok = True
 
     def test_unstarted_and_cancel_sql_facts_survive_missing_diagnostic_metadata(self):
@@ -211,6 +224,8 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
             self.assertEqual(row["state"], "blocked")
             self.assertEqual(row["state_reason"]["kind"], "durability")
             self.assertEqual(row["state_reason"]["unstarted"]["outcome"], "failed")
+            self.assertEqual(row["host_capacity_release"]["basis"], "not_started")
+            self.assertEqual(status["queue"]["host_capacity"]["state"], "released")
             self.assertFalse(Path(self.jobs.path(jid, "meta.json")).exists())
         with patch.object(job_runtime, "launch", side_effect=AssertionError("unstarted finalize must not launch")) as launch:
             retry = self.jobs.retry_finalize(jid)
@@ -231,6 +246,8 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
                          ("finished", "cancelled", "not_needed"))
         row = self.queue.get(cancelled)
         self.assertEqual((row["state"], row["state_reason"]["kind"]), ("done", "cancelled_before_launch"))
+        self.assertEqual(row["host_capacity_release"]["basis"], "not_started")
+        self.assertEqual(status["queue"]["host_capacity"]["state"], "released")
         self.assertFalse(Path(self.jobs.path(cancelled, "launch.json")).exists())
         self.observations["cancel_sql_fact"] = row["state_reason"]
         self.case_ok = True

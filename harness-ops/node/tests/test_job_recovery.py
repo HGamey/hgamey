@@ -18,7 +18,8 @@ class JobRecoveryTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.jobs = Jobs(temporary.name, {"phonefarm": (sys.executable, temporary.name)}, max_running=1)
+        self.jobs = Jobs(temporary.name, {"phonefarm": (sys.executable, temporary.name)}, max_running=1,
+                         host_capacity={"cpu": 2, "gpu": 0, "io": 0})
         self.jobs.dispatch.start = lambda: None
         self.queue = self.jobs.dispatch.queue
 
@@ -28,6 +29,17 @@ class JobRecoveryTests(unittest.TestCase):
     def terminal(self, jid, phase="finished"):
         meta = self.jobs._read_meta(jid)
         meta.update(phase=phase, recovery={"status": "not_reported"})
+        if phase == "finished":
+            # Synthetic completed-worker receipt for this scheduling fixture;
+            # this PID is descriptive only, never probed or signalled.
+            now, fixture_pid = time.time(), 424242
+            meta.update(state="finished", outcome="succeeded", exit=0, ended=now)
+            meta["execution"].update(child_pid=fixture_pid, returncode=0,
+                process_management={"policy": "process_group", "backend": "posix_process_group",
+                                    "completion_scope": "original_process_group", "detached_descendants": "unverified"},
+                owned_process_group={"scope": "original_process_group", "status": "absent",
+                                     "pgid": fixture_pid, "checked_at": now, "error": None})
+            self.jobs._read_root.write_json(jid + "/exitcode", 0)
         self.jobs._write_meta(jid, meta)
         self.jobs._read_root.write_json(jid + "/launch.json", {})
         self.queue.set_state(jid, "claimed")
@@ -53,13 +65,14 @@ class JobRecoveryTests(unittest.TestCase):
         with patch.object(self.jobs.leases, "snapshot", return_value=blocked):
             self.jobs.dispatch.tick()
             self.assertEqual(self.queue.get(parent)["state"], "blocked")
+            self.assertEqual(self.jobs.status(parent)["queue"]["host_capacity"]["state"], "released")
             waiting = self.submit(resources=["device:other"])
             self.assertEqual(self.jobs.status(waiting)["queue"]["waiting"]["kind"], "device_lease")
             host = self.submit(device_access="none", resources=[])
             with patch.object(self.jobs.dispatch, "launch") as launch:
                 self.jobs.dispatch.tick()
             self.assertEqual([call.args[0]["job_id"] for call in launch.call_args_list], [host])
-            self.queue.set_state(host, "done")
+            self.jobs.dispatch.finish_unstarted(self.queue.get(host), "cancelled", "fixture mock launch did not execute")
             child = self.submit(device_access="recovery", recovery_for=parent)
             self.terminal(child, phase="running")  # launch exists; no owning worker flock.
             sibling = self.submit(device_access="recovery", recovery_for=parent)
@@ -67,6 +80,8 @@ class JobRecoveryTests(unittest.TestCase):
                 self.jobs.dispatch.tick()
             self.assertTrue(self.jobs.status(child)["lost"])
             self.assertEqual(self.queue.get(child)["state"], "blocked")
+            self.assertIsNone(self.queue.get(child)["host_capacity_release"])
+            self.assertEqual(self.jobs.status(child)["queue"]["host_capacity"]["state"], "reserved")
             self.assertEqual(self.queue.get(sibling)["state"], "queued")
             launch.assert_not_called()
             with self.assertRaises(RequestConflict):
@@ -78,20 +93,28 @@ class JobRecoveryTests(unittest.TestCase):
             self.terminal(nested)
             self.jobs.dispatch.tick()
             self.assertEqual(self.queue.get(nested)["state"], "done")
+            self.assertEqual(self.jobs.status(nested)["queue"]["host_capacity"]["state"], "released")
+            self.assertIsNone(self.queue.get(child)["host_capacity_release"])
         self.jobs.cancel(sibling)
         with patch.object(self.jobs.leases, "snapshot", return_value={**blocked, "status": "clear"}):
             with self.assertRaises(RequestConflict):
                 self.jobs.release_queue(parent, "child still blocked")
-            self.jobs.release_queue(child, "reviewed lost child")
-            self.jobs.release_queue(parent, "reviewed original job")
-        self.assertEqual(self.queue.get(parent)["state"], "done")
+            with self.assertRaises(RequestConflict):
+                self.jobs.release_queue(child, "reviewed lost child; host termination remains unknown")
+            with self.assertRaises(RequestConflict):
+                self.jobs.release_queue(parent, "reviewed original job; child remains blocked")
+        self.assertEqual(self.queue.get(parent)["state"], "blocked")
+        self.assertEqual(self.queue.get(child)["state"], "blocked")
+        self.assertIsNone(self.queue.get(child)["host_capacity_release"])
+        self.assertFalse(Path(self.jobs.path(child, "queue-release.json")).exists())
         self.assertEqual(self.jobs.status(child)["recovery"]["status"], "required")
 
     def test_direct_exit_with_live_group_blocks_host_and_recovery_resources(self):
         root = Path(self.jobs.root) / "group-completion"
         root.mkdir()
         # Explicit host-only bin: no PF, ADB, actual lease reader or transport.
-        jobs = Jobs(str(root), {"host": (sys.executable, str(root))}, max_running=1)
+        jobs = Jobs(str(root), {"host": (sys.executable, str(root))}, max_running=1,
+                    host_capacity={"cpu": 2, "gpu": 0, "io": 0})
         jobs.dispatch.start = lambda: None
         queue = jobs.dispatch.queue
         jobs_with_descendants, known_pids = [], set()
@@ -151,10 +174,13 @@ sys.exit(0 if released else 1)
                              ("original_process_group", "present", ready["pgid"]))
             self.assertIsInstance(group["checked_at"], (int, float))
             self.assertEqual(meta["queue"]["state"], "blocked")
+            self.assertEqual(meta["queue"]["host_capacity"]["state"], "reserved")
+            self.assertIsNone(queue.get(jid)["host_capacity_release"])
             checked_jobs.append({"id": jid, "device_access": meta["device_access"], "exit": meta["exit"],
                                  "phase": meta["phase"], "outcome": meta["outcome"],
                                  "queue_state": meta["queue"]["state"], "recovery": meta["recovery"],
-                                 "owned_process_group": group, "descendant": ready})
+                                 "owned_process_group": group, "descendant": ready,
+                                 "host_capacity": meta["queue"]["host_capacity"]})
 
         def gone(pid):
             try:
@@ -176,15 +202,17 @@ sys.exit(0 if released else 1)
                 other_meta = until(lambda: terminal(other))
                 known_pids.update((other_meta["pid"], other_meta["execution"]["child_pid"]))
                 self.assertEqual((other_meta["exit"], other_meta["queue"]["state"]), (0, "done"))
+                self.assertEqual(other_meta["queue"]["host_capacity"]["state"], "released")
                 self.assertTrue(Path(jobs.path(other, "out", "completed")).is_file())
                 self.assertEqual(queue.get(waiting)["state"], "queued")
                 self.assertFalse(Path(jobs.path(waiting, "launch.json")).exists())
 
-                # A targeted recovery may borrow the parent's reservation, but
-                # its own unfinished group must not become an ordinary done row.
+                # Recovery borrows the exclusive resource, not the parent's CPU;
+                # the second CPU is free only because the other job completed.
                 recovery = submit(leader, device_access="recovery", recovery_for=parent)
                 jobs_with_descendants.append(recovery)
                 check_group_failure(recovery)
+                self.assertEqual(queue.capacity_snapshot()["reserved"], {"cpu": 2, "gpu": 0, "io": 0})
                 sibling = submit("raise RuntimeError('recovery sibling must wait')",
                                  device_access="recovery", recovery_for=parent)
                 jobs.dispatch.tick()

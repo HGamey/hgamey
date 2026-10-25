@@ -66,6 +66,12 @@
       <ul id="lease-list" class="lease-list" aria-label="设备 lease 记录"></ul>
     </section>
     <div id="queue-summary" class="queue-summary" hidden></div>
+    <details id="host-capacity-panel" class="node-details">
+      <summary>宿主调度 slots</summary>
+      <p id="host-capacity-message" class="note" role="status">尚未读取容量。</p>
+      <dl id="host-capacity-info" class="facts"></dl>
+      <p class="note">这是声明调度容量，不是硬件数量、资源利用率或 OS 硬限制。宿主结束未确认时可继续保留 slots；设备恢复屏障另行核查。</p>
+    </details>
     <ul id="queue-list" class="queue-list" aria-label="尚未结束调度的任务"></ul>
     <p id="queue-updated" class="read-time"></p>
   </section>
@@ -150,6 +156,17 @@
         <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主任务 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复任务</option></select></label>
         <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留任务的 12 位 ID" autocomplete="off" spellcheck="false"></label>
         <p id="device-access-help" class="field-help wide-field"></p>
+        <details class="input-manifest wide-field" id="host-slots-fields">
+          <summary>宿主调度声明 <span class="field-optional">可选</span></summary>
+          <label class="host-slots-choice"><input id="submit-host-slots" type="checkbox" disabled> 显式声明 CPU / GPU / I/O slots</label>
+          <div class="submit-fields">
+            <label>CPU slots<input id="submit-host-cpu" type="number" min="1" max="65535" step="1" value="1" disabled></label>
+            <label>GPU slots<input id="submit-host-gpu" type="number" min="0" max="65535" step="1" value="0" disabled></label>
+            <label>I/O slots<input id="submit-host-io" type="number" min="0" max="65535" step="1" value="0" disabled></label>
+          </div>
+          <p id="host-slots-help" class="note" role="status"></p>
+          <p class="note">未显式声明时省略字段，新调度器按 CPU 1 / GPU 0 / I/O 0 兼容记账。0 表示未预留，不表示程序不使用该资源。与作业执行名额、独占资源键、设备 lease 分开。</p>
+        </details>
         <label class="wide-field">独占资源 <span class="field-optional">可选，每行一个键</span><textarea id="submit-resources" rows="2" spellcheck="false" placeholder="留空使用节点默认资源" aria-describedby="resources-help"></textarea><span id="resources-help" class="field-help">相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。</span></label>
       </div>
       <div class="submission-actions"><button id="submit-job" class="ghost primary" type="submit" disabled>提交任务</button><span id="submit-help" class="note"></span></div>
@@ -161,7 +178,7 @@
     <form id="request-lookup-form" class="request-lookup-form">
       <label for="request-id">按请求 ID 找回</label>
       <div class="lookup-input"><input id="request-id" type="text" autocomplete="off" spellcheck="false" required placeholder="请求 ID"><button id="request-lookup" class="ghost" type="submit">查询请求</button></div>
-      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页保存原 ID、节点、设备绑定与预算声明，不保存完整参数或掌舵密码；刷新后可继续查询。</p>
+      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页保存原 ID、节点、设备绑定、预算与宿主 slots 声明，不保存完整参数或掌舵密码；刷新后可继续查询。</p>
     </form>
   </details>
   <div class="jobs-layout">
@@ -336,7 +353,7 @@
         </section>
         <details id="queue-release-panel" class="queue-release-panel" hidden>
           <summary>解除资源保留…</summary>
-          <p class="note">此任务仍保留独占资源。恢复任务结束不会自动解除保留；管理员需核查证据后明确放行。设备写入或恢复任务还要求对应设备范围的实际 lease 屏障已清除。</p>
+          <p class="note">此任务仍有资源保留或核查义务。宿主 slots 释放与设备资源保留分别记录；恢复任务结束不会自动解除后者，管理员需核查证据后明确放行。设备写入或恢复任务还要求对应设备范围的实际 lease 屏障已清除。</p>
           <form id="queue-release-form">
             <label for="queue-release-note">核查说明 <span class="field-optional">必填</span></label>
             <textarea id="queue-release-note" rows="3" required placeholder="记录已核查的进程、设备状态和恢复证据"></textarea>

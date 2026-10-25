@@ -219,7 +219,12 @@ class DeviceScopeTests(unittest.TestCase):
 
     def test_claim_global_fifo_and_ancestor_scope_conflicts(self):
         with tempfile.TemporaryDirectory() as temporary:
-            queue = JobQueue(Path(temporary) / "queue.sqlite3")
+            queue = JobQueue(Path(temporary) / "queue.sqlite3", default_cpu=3)
+            def settled(jid, state):
+                # This SQL-only fixture never starts a command. Device/resource
+                # barriers remain independent of the confirmed unused host slot.
+                queue.record_unstarted(jid, "failed", "scope fixture never executed")
+                queue.set_state(jid, state)
             def add(key, value=None, *, access="write", parent=None):
                 spec = {"bin": "phonefarm", "device_access": access}
                 if value is not None:
@@ -236,19 +241,19 @@ class DeviceScopeTests(unittest.TestCase):
             host = add("host", access="none")
             self.assertEqual(queue.claim_next(3)["job_id"], host)
             self.assertIsNone(queue.claim_next(3), "an earlier global wait must drain lanes")
-            queue.set_state(a, "blocked")
+            settled(a, "blocked")
             recovery = add("recover-a", bound("A", "usb-a"), access="recovery", parent=a)
             self.assertEqual(queue.claim_next(3)["job_id"], recovery, "recovery must not deadlock behind global FIFO")
-            queue.set_state(recovery, "blocked")
+            settled(recovery, "blocked")
             sibling = add("sibling", bound("A", "wifi-a"), access="recovery", parent=a)
             leaf = add("leaf", bound("A", "usb-a"), access="recovery", parent=recovery)
             self.assertEqual(queue.claim_next(3)["job_id"], leaf)
             self.assertIsNone(queue.claim_next(4), "a sibling may not borrow the failed recovery reservation")
             for jid in (leaf, recovery, a):
-                queue.set_state(jid, "done")
+                settled(jid, "done")
             self.assertEqual(queue.claim_next(3)["job_id"], global_job)
             self.assertIsNone(queue.claim_next(4), "claimed global covers every device before PF starts")
-            queue.set_state(global_job, "done")
+            settled(global_job, "done")
             self.assertEqual(queue.claim_next(3)["job_id"], b)
             self.assertEqual(queue.claim_next(3)["job_id"], sibling)
 

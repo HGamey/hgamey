@@ -20,6 +20,8 @@
 
 ## 作业结束范围
 
+可选 host_slots 与管理员 --host-capacity 在原队列 SQLite 中原子计账；CPU/GPU/IO 是声明调度容量，不是操作系统硬限制。未知宿主执行保留占位，已有宿主完成收据持久提交后才归还；设备恢复屏障独立。旧请求省略保持原内容并按 cpu1/gpu0/io0 计账，恢复任务不借祖先计算容量。Web/CLI同级，合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-HOST-CAPACITY.md 。
+
 可选 time_budget 由独立 worker 从实际命令启动后用单调时钟执行，复用原取消与升级链。排队不计时，HTTP重启不重置；期限触发与实际退出、设备恢复分别记录。旧请求省略保持原幂等内容，恢复任务暂不支持；Web/CLI同级，CLI可信exit0且期限触发返回124、未知125优先。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-TIME-BUDGET.md 。
 
 显式 device_binding 仅支持固定 PF 灰层 session，来源为已 pin 节点的 devices-resolve。

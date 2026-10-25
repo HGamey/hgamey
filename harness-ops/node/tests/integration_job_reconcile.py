@@ -134,6 +134,7 @@ if operation.startswith('prepare-'):
         assert jobs.dispatch.queue.ready(jid)['state']=='queued'
         claimed=jobs.dispatch.queue.claim_next(1)
         assert claimed['job_id']==jid and claimed['state']=='claimed',claimed
+        assert claimed['host_capacity_release'] is None,claimed
         meta=jobs._read_meta(jid)
         meta.update(phase='starting',recovery={'status':'not_reported','reason':'execution has not reported recovery'})
         meta['execution']['launch_deadline']=time.time()+30
@@ -153,17 +154,23 @@ if operation.startswith('finalize-'):
     if role=='source':
         assert meta.get('lost') is True and meta['phase']=='interrupted' and meta['outcome']=='interrupted',meta
         assert meta['exit']==-1 and meta['recovery']['status']=='required' and row['state']=='blocked',meta
+        assert row['host_capacity_release'] is None and meta['queue']['host_capacity']['state']=='reserved',meta
         keep('original-accident',accident(meta))
+    else:
+        assert row['host_capacity_release'] is not None and meta['queue']['host_capacity']['state']=='released',meta
     answer({'job':meta,'row':row}); sys.exit(0)
 if operation=='final':
     meta=jobs.status(plan['jid'])
     assert accident(meta)==json.loads((control/'original-accident.json').read_text()),meta
     assert jobs.dispatch.queue.get(plan['jid'])['state']=='blocked'
+    release=jobs.dispatch.queue.get(plan['jid'])['host_capacity_release']
+    assert release['basis']=='owned_cgroup_completed' and meta['queue']['host_capacity']['state']=='released',meta
     assert not runtime.runner_alive(store,plan['jid'])
     assert meta['execution']['reconciliation']['state']=='complete'
     assert meta['execution']['containment']['handoff']['status']=='returned'
     assert meta['execution']['owned_cgroup']['status']=='absent'
     assert (source/'out/input-copy.txt').read_bytes()==b'original-reconciliation-output\n'
+    assert jobs.dispatch.queue.capacity_snapshot()['reserved']=={'cpu':0,'gpu':0,'io':0}
     successor=pathlib.Path(plan['jobs_root'])/plan['successor_jid']
     answer({'job':meta,'row':jobs.dispatch.queue.get(plan['jid']),
             'raw_output':(source/'out/input-copy.txt').read_text(),
@@ -191,6 +198,7 @@ try:
     code,node=request('GET','/node')
     assert code==200 and 'jobs.execution-reconcile-v1' in node['capabilities'],(code,node)
     assert node['execution']['process_policies']['contained']['available'] is False,node
+    assert node['execution']['host_capacity']['slots']=={'cpu':2,'gpu':0,'io':0},node
     route='/jobs/'+plan['jid']
     force=operation=='force'
     code,submitted=request('POST',route+'/execution/reconcile',{'force':force})
@@ -211,9 +219,14 @@ try:
         assert code==409,(code,rejected)
         assert not (source/'queue-release.json').exists()
         assert meta['execution']['containment']['handoff']['status']=='pending'
+        assert jobs.dispatch.queue.get(plan['jid'])['host_capacity_release'] is None
+        assert meta['queue']['host_capacity']['state']=='reserved',meta
     else:
         assert meta['execution']['owned_cgroup']['status']=='absent'
         assert meta['execution']['containment']['handoff']['status']=='returned'
+        assert jobs.dispatch.queue.get(plan['jid'])['host_capacity_release']['basis']=='owned_cgroup_completed'
+        assert meta['queue']['host_capacity']['state']=='released',meta
+        assert not (source/'queue-release.json').exists()
         assert (source/'out/input-copy.txt').read_bytes()==b'original-reconciliation-output\n'
     answer({'job':meta,'row':jobs.dispatch.queue.get(plan['jid'])})
 finally:
@@ -393,6 +406,8 @@ class ReconcileFixture(PrivilegedFixture):
         assert refused['job']['outcome']=='failed' and refused['job']['recovery']['status']=='not_needed',refused
         assert refused['job']['execution'].get('child_pid') is None
         assert refused['job']['execution'].get('containment') is None
+        assert refused['row']['host_capacity_release']['basis']=='not_started',refused
+        assert refused['job']['queue']['host_capacity']['state']=='released',refused
         assert not (candidate_job/'out/workload-started.json').exists()
         assert all(path.stat().st_uid==self.node_uid and stat.S_IMODE(path.stat().st_mode)==0o700
                    for path in (candidate_job,candidate_job/'out'))
@@ -414,6 +429,8 @@ class ReconcileFixture(PrivilegedFixture):
         assert successor['job']['outcome']=='succeeded' and successor['job']['exit']==0,successor
         assert successor['job']['execution']['containment']['handoff']['status']=='returned'
         assert successor['row']['state']=='done'
+        assert successor['row']['host_capacity_release']['basis']=='owned_cgroup_completed',successor
+        assert successor['job']['queue']['host_capacity']['state']=='released',successor
         final=self.helper('final')
         assert final['reuse']['uid']==self.uid and final['reuse']['gid']==self.gid
         self.known_pids.add(final['reuse']['pid'])

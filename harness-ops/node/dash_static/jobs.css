@@ -337,3 +337,6 @@
 .device-binding-panel h3 { margin: 0 0 12px; }
 .device-binding-panel .submit-fields { margin-bottom: 12px; }
 .device-binding-panel select { max-width: 100%; }
+
+.submit-panel .host-slots-choice { display: flex; align-items: center; gap: 8px; margin: 14px 0; }
+.submit-panel .host-slots-choice input { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; flex: 0 0 16px; accent-color: var(--blue-ink); }

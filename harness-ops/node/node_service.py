@@ -49,6 +49,7 @@ from game_assets import AssetUploadError, UPLOAD_MAX
 import job_runtime
 import job_inputs
 import job_budget
+from job_capacity import normalize_slots, check_fit, CapacityExceeded
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable, require_policy
@@ -215,8 +216,32 @@ def _job_time_budget(spec):
     return value
 
 
+def _job_host_slots(spec):
+    if "host_slots" not in spec:
+        return None
+    value = normalize_slots(spec["host_slots"])
+    if device_access(spec) == "recovery":
+        raise ValueError("host_slots is not supported for recovery jobs")
+    return value
+
+
+def read_host_capacity(path):
+    """Read an explicit administrator policy before starting the service."""
+    if path is None:
+        return None
+    with open(path, "rb") as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:
+        raise ValueError("host capacity configuration exceeds 4 KiB")
+    value = json.loads(raw)
+    if (not isinstance(value, dict) or set(value) != {"schema", "slots"}
+            or value["schema"] != "phonefarm/host-capacity@1"):
+        raise ValueError("host capacity requires schema phonefarm/host-capacity@1 and slots")
+    return normalize_slots(value["slots"])
+
+
 class Jobs:
-    def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None):
+    def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None):
         self.root, self.bins = root, bins
         self.data_root = os.path.abspath(data_dir or root)
         self.dir = os.path.join(self.data_root, "jobs" if data_dir else "_jobs")
@@ -233,7 +258,7 @@ class Jobs:
                 self.worker_entry = os.path.join(worker_prefix, "phonefarm-worker")
         self.leases = LeaseState(bins, env=self.pf_env)
         self.device_scopes = DeviceScope(self)
-        self.dispatch = JobDispatch(self, max_running)
+        self.dispatch = JobDispatch(self, max_running, host_capacity=host_capacity)
         self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
 
     def path(self, jid, *p):
@@ -274,6 +299,7 @@ class Jobs:
         if access not in {"none", "write", "recovery"}:
             raise ValueError("device_access must be none, write or recovery")
         time_budget = _job_time_budget(spec)
+        host_slots = _job_host_slots(spec)
         recovery_for = spec.get("recovery_for")
         device_binding = validate_device_job(spec, typed_recovery=access == "recovery" and "device_binding" in spec)
         resources = spec.get("resources", [] if device_binding else
@@ -301,6 +327,7 @@ class Jobs:
                 **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
                 **({"time_budget": time_budget} if time_budget is not None else {}),
+                **({"host_slots": host_slots} if host_slots is not None else {}),
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
                 **({"device_binding": device_binding} if device_binding else {}),
@@ -308,12 +335,14 @@ class Jobs:
         if device_binding and access == "recovery":
             from node_session import validate_recovery_spec
             validate_recovery_spec(self, spec)
-        if device_binding and access == "write":
-            original_admit = admit
-            def admit():
+        original_admit = admit
+        def admit():
+            # submit() calls this only for a new request while holding intake.
+            check_fit(spec, self.dispatch.queue.capacity())
+            if device_binding and access == "write":
                 self.device_scopes.admit(device_binding)
-                if original_admit is not None:
-                    original_admit()
+            if original_admit is not None:
+                original_admit()
         return self.dispatch.submit(spec, body, request_id, admit=admit)
 
     def _prepare(self, row, body):
@@ -609,6 +638,26 @@ class Jobs:
         if children:
             raise RequestConflict("recovery jobs must finish and release any blocked reservations first: " + ", ".join(children))
 
+    def host_execution_problem(self, jid, meta):
+        """Read existing owned-scope completion facts, never infer from a PID."""
+        execution = meta.get("execution") or {}
+        if (meta.get("state") != "finished" or execution.get("kind") != "supervised-v1"
+                or execution.get("worker_alive") is not False):
+            return "source worker completion is unconfirmed; reconcile its execution domain first"
+        row = self.dispatch.queue.get(jid)
+        contained = ((row or {}).get("spec", {}).get("execution_policy") == "contained"
+                     or meta.get("execution_policy") == "contained"
+                     or (execution.get("process_management") or {}).get("policy") == "contained")
+        if contained:
+            return self.host_completion_problem(jid, meta)
+        group_status = (execution.get("owned_process_group") or {}).get("status")
+        not_started = (execution.get("child_pid") is None and group_status == "not_started"
+                       and (meta.get("recovery") or {}).get("status") == "not_needed")
+        if (meta.get("phase") != "finished" or meta.get("lost")
+                or group_status != "absent" and not not_started):
+            return "source original process group completion is unconfirmed"
+        return None
+
     def host_completion_problem(self, jid, meta):
         """Qualify contained handback for queue release and session recovery."""
         import stat
@@ -679,6 +728,8 @@ class Jobs:
             eligibility = self.queue_release_eligibility(row, status, lease=lease)
             if not eligibility["eligible"]:
                 raise RequestConflict(eligibility["reason"])
+            if not self.dispatch.release_host_capacity(row):
+                raise RequestConflict("host capacity release could not be confirmed; inspect execution and storage before releasing the reservation")
             try:
                 self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease})
                 self._read_root.sync(jid, directory=True)
@@ -703,7 +754,9 @@ class Jobs:
             except RequestConflict as error:
                 reason = str(error)
         execution = meta.get("execution") or {}
-        if reason is None and (row["spec"].get("execution_policy") == "contained"
+        if reason is None and row.get("host_capacity_release") is None:
+            reason = self.host_execution_problem(row["job_id"], meta)
+        elif reason is None and (row["spec"].get("execution_policy") == "contained"
                                or (execution.get("process_management") or {}).get("policy") == "contained"):
             reason = self.host_completion_problem(row["job_id"], meta)
         if reason is None and device_access(row["spec"]) != "none":
@@ -1382,6 +1435,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         spec = json.loads(self.headers.get("X-Job", "{}"))
                         require_policy(spec)
                         _job_time_budget(spec)
+                        _job_host_slots(spec)
                         validate_device_job(spec, typed_recovery=device_access(spec) == "recovery" and "device_binding" in spec)
                         if "device_binding" in spec and not (self.headers.get("X-Expected-Node-ID") or
                                 parse_qs(urlparse(self.path).query).get("expected_node_id")):
@@ -1389,7 +1443,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                             return self._send(400, {"code": "target_required", "error": "bound jobs require an explicit node identity"})
                         if "inputs" in spec:
                             job_inputs.validate(spec["inputs"], node.node_id)
-                    except ValueError:
+                        key = self.headers.get("X-Request-ID")
+                        if key is not None:
+                            key = jobs.dispatch.request_key(key)
+                        if key is None or jobs.dispatch.queue.by_request(key) is None:
+                            check_fit(spec, jobs.dispatch.queue.capacity())
+                    except (ValueError, CapacityExceeded):
                         self.close_connection = True
                         raise
                 body = self._body()
@@ -1435,6 +1494,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(409, {"error": str(e)})
             except PolicyUnavailable as e:
                 return self._send(422, e.payload)
+            except CapacityExceeded as e:
+                return self._send(e.status, e.payload)
             except (ValueError, tarfile.TarError) as e:
                 return self._send(400, {"error": str(e)})
             self._send(404, {"error": "not found"})
@@ -1464,8 +1525,13 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--data-dir", help="独立运行数据根；新任务写到其中jobs/，不自动搬迁旧_jobs")
     ap.add_argument("--max-running", type=int, default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
+    ap.add_argument("--host-capacity", help="管理员宿主调度容量 JSON 文件（最多4KiB）；省略沿用SQL配置，首次按max-running初始化CPU slots")
     ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
     a = ap.parse_args()
+    try:
+        host_capacity = read_host_capacity(a.host_capacity)
+    except (OSError, ValueError) as error:
+        ap.error(str(error))
     # run_node.sh 用 & 在后台起本进程：非交互 shell 会把后台命令的 SIGINT 设成「忽略」，并一路遗传给
     # 我们起的任务（忽略态跨 exec 保留）—— 结果 kill/停止发的 SIGINT 对 bash 脚本、排队等锁的 devlock 无效。
     # 这里装回 Python 自己的处理器：exec 时处理器会被重置为默认，子进程就能正常收 SIGINT。
@@ -1482,7 +1548,8 @@ def main():
             "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root)),
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
-    jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix)
+    jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
+                host_capacity=host_capacity)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:

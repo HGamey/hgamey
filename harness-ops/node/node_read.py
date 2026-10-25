@@ -117,13 +117,14 @@ class NodeRead:
                 "service": copy.deepcopy(self.service), "started_at": self.started,
                 "storage": {"jobs_root": os.path.abspath(self.jobs.dir), "data_root": self.data_root},
                 "execution": {"bins": sorted(self.jobs.bins), "max_running": self.jobs.dispatch.max_running,
-                              "process_policies": process_policies(), "programs": self._program_observations()},
+                              "process_policies": process_policies(), "programs": self._program_observations(),
+                              "host_capacity": self.jobs.dispatch.queue.capacity()},
                 "target_binding": {"header": "X-Expected-Node-ID", "query": "expected_node_id",
                                    "unbound_legacy_requests": "accepted_without_target_guarantee"},
                 "capabilities": ["node.target-v1", "node.runtime-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
-                                 "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.time-budget-v1",
+                                 "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.time-budget-v1", "jobs.host-capacity-v1",
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
                                  "jobs.session-recovery-v1", "jobs.session-recovery-chain-v1"] +
                                 (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +

@@ -150,17 +150,7 @@ def _recovery_qualification(jobs, row):
         return "commit the source result first; use retry-finalize if storage is blocked"
     if row["state"] != "blocked" or status.get("state") != "finished":
         return "session recovery requires a finished job with a blocked reservation"
-    execution = status.get("execution") or {}
-    if execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False:
-        return "source worker completion is unconfirmed; reconcile its execution domain first"
-    contained = (row["spec"].get("execution_policy") == "contained"
-                 or (execution.get("process_management") or {}).get("policy") == "contained")
-    if contained:
-        return jobs.host_completion_problem(jid, status)
-    if (status.get("phase") != "finished" or status.get("lost")
-            or (execution.get("owned_process_group") or {}).get("status") != "absent"):
-        return "source original process group completion is unconfirmed"
-    return None
+    return jobs.host_execution_problem(jid, status)
 
 
 def recovery_plan(jobs, jid):

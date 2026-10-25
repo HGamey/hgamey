@@ -29,6 +29,12 @@ class JobQueueTests(unittest.TestCase):
         self.queue.ready(row["job_id"])
         return row["job_id"]
 
+    def settle_fixture(self, jid, state="blocked"):
+        # These SQL-only fixtures never start a worker. Record that fact rather
+        # than teaching the queue that every blocked row has stopped executing.
+        self.queue.record_unstarted(jid, "failed", "SQL fixture never executed a command")
+        self.queue.set_state(jid, state)
+
     def test_concurrent_same_request_is_one_job_and_changed_content_conflicts(self):
         def reserve(_):
             return self.queue.reserve("request-1", "content-1", {"command": "example"}, ["phone:a"])
@@ -70,18 +76,18 @@ class JobQueueTests(unittest.TestCase):
 
     def test_recovery_borrows_only_its_blocked_ancestor_chain(self):
         parent = self.submit("parent", ["phone:a"])
-        self.queue.set_state(parent, "blocked")
+        self.settle_fixture(parent)
         failed = self.submit("failed-recovery", ["phone:a"], recovery_for=parent)
         self.assertEqual(self.queue.claim_next(1)["job_id"], failed)
         sibling = self.submit("sibling-recovery", ["phone:a"], recovery_for=parent)
-        self.queue.set_state(failed, "blocked")
+        self.settle_fixture(failed)
         self.assertIsNone(self.queue.claim_next(1))
         nested = self.submit("recover-failed", ["phone:a"], recovery_for=failed)
         self.assertEqual(self.queue.claim_next(1)["job_id"], nested)
         self.assertIsNone(self.queue.claim_next(2))
-        self.queue.set_state(nested, "done")
+        self.settle_fixture(nested, "done")
         self.assertIsNone(self.queue.claim_next(1))
-        self.queue.set_state(failed, "done")
+        self.settle_fixture(failed, "done")
         self.assertEqual(self.queue.claim_next(1)["job_id"], sibling)
 
     def test_blocked_jobs_hold_resources_without_consuming_execution_slots(self):
@@ -93,11 +99,13 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(self.queue.claim_next(2)["job_id"], other)
         self.assertIsNone(self.queue.claim_next(2))
         self.queue.set_state(first, "blocked")
+        self.assertIsNone(self.queue.claim_next(2), "unknown host execution still reserves its CPU slot")
+        self.settle_fixture(first)
         self.assertEqual(self.queue.claim_next(2)["job_id"], free)
-        self.queue.set_state(other, "done")
-        self.queue.set_state(free, "done")
+        self.settle_fixture(other, "done")
+        self.settle_fixture(free, "done")
         self.assertIsNone(self.queue.claim_next(2))
-        self.queue.set_state(first, "done")
+        self.settle_fixture(first, "done")
         self.assertEqual(self.queue.claim_next(2)["job_id"], same)
         self.assertEqual([row["job_id"] for row in self.queue.rows(["done"])], [first, other, free])
         self.assertFalse(self.queue.cancel_pending(same))
@@ -108,6 +116,36 @@ class JobQueueTests(unittest.TestCase):
         self.assertTrue(self.queue.cancel_pending(preparing["job_id"]))
         self.assertEqual(self.queue.ready(preparing["job_id"])["state"], "done")
         self.assertIsNone(self.queue.claim_next(2))
+
+    def test_shared_multidimensional_capacity_survives_restart_and_configuration_changes(self):
+        self.queue = JobQueue(self.path, host_capacity={"cpu": 4, "gpu": 1, "io": 2})
+        gpu = self.submit("gpu", [], host_slots={"cpu": 2, "gpu": 1, "io": 0})
+        wait_gpu = self.submit("wait-gpu", [], host_slots={"cpu": 1, "gpu": 1, "io": 0})
+        io = self.submit("io", [], host_slots={"cpu": 1, "gpu": 0, "io": 2})
+        cpu = self.submit("cpu", [], host_slots={"cpu": 2, "gpu": 0, "io": 0})
+        self.assertEqual(self.queue.claim_next(4)["job_id"], gpu)
+        # The earlier GPU waiter must not block a feasible IO candidate.
+        self.assertEqual(self.queue.claim_next(4)["job_id"], io)
+        self.assertIsNone(self.queue.claim_next(4))
+        self.assertEqual(self.queue.capacity_snapshot()["reserved"], {"cpu": 3, "gpu": 1, "io": 2})
+        self.settle_fixture(gpu)
+        self.assertEqual(self.queue.claim_next(4)["job_id"], wait_gpu)
+        self.assertEqual(self.queue.claim_next(4)["job_id"], cpu)
+        self.assertEqual(self.queue.capacity_snapshot()["reserved"], {"cpu": 4, "gpu": 1, "io": 2})
+
+        pending = self.submit("needs-gpu-after-shrink", [], host_slots={"cpu": 1, "gpu": 1, "io": 0})
+        smaller = JobQueue(self.path, host_capacity={"cpu": 2, "gpu": 0, "io": 1})
+        # The older queue object reads the shared configuration on every claim.
+        self.assertEqual(self.queue.capacity(), smaller.capacity())
+        self.assertEqual(self.queue.capacity_snapshot()["overcommitted"], {"cpu": 2, "gpu": 1, "io": 1})
+        self.assertIsNone(self.queue.claim_next(4))
+        for jid in (wait_gpu, io, cpu):
+            self.settle_fixture(jid)
+        self.assertEqual(self.queue.capacity_snapshot()["reserved"], {"cpu": 0, "gpu": 0, "io": 0})
+        self.assertIsNone(smaller.claim_next(4), "request exceeds current total even with no occupied slots")
+        enlarged = JobQueue(self.path, host_capacity={"cpu": 2, "gpu": 1, "io": 1})
+        self.assertEqual(smaller.claim_next(4)["job_id"], pending)
+        self.assertEqual(JobQueue(self.path).capacity(), enlarged.capacity())
 
 
 if __name__ == "__main__":

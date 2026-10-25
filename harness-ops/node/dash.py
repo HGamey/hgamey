@@ -41,6 +41,7 @@ import dash_live
 import sqlite3
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable
+from job_capacity import CapacityExceeded
 from node_session import SessionError, MAX_REQUEST
 from node_deployments import DeploymentError
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
@@ -556,6 +557,8 @@ class Dash:
             return self._send(h, 404, {"error": "没有这个任务或目标运行"})
         except RequestConflict as e:
             return self._send(h, 409, {"error": str(e)})
+        except CapacityExceeded as e:
+            return self._send(h, e.status, e.payload)
         except PolicyUnavailable as e:
             return self._send(h, 422, e.payload)
         except ValueError as e:

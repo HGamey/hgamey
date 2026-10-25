@@ -17,6 +17,7 @@ from node_lease import device_access, prepare_receipt_directory
 from node_session import recovery_source_out, SessionError
 import job_runtime
 import job_budget
+import job_capacity
 
 
 def request_fingerprint(spec, body):
@@ -41,10 +42,11 @@ def file_lock(path, blocking=True):
 
 
 class JobDispatch:
-    def __init__(self, jobs, max_running):
+    def __init__(self, jobs, max_running, host_capacity=None):
         self.jobs = jobs
         self.max_running = max_running
-        self.queue = JobQueue(os.path.join(jobs.dir, ".queue.sqlite3"))
+        self.queue = JobQueue(os.path.join(jobs.dir, ".queue.sqlite3"), default_cpu=max_running,
+                              host_capacity=host_capacity)
         self.intake_path = os.path.join(jobs.dir, ".intake.lock")
         self.dispatch_path = os.path.join(jobs.dir, ".dispatcher.lock")
         self.guard = threading.Lock()
@@ -66,6 +68,7 @@ class JobDispatch:
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
                 **({"device_binding": spec["device_binding"]} if "device_binding" in spec else {}),
                 **({"time_budget": dict(spec["time_budget"])} if "time_budget" in spec else {}),
+                **({"host_slots": dict(spec["host_slots"])} if "host_slots" in spec else {}),
                 "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1",
                     **({"time_budget": job_budget.initial(spec["time_budget"])} if "time_budget" in spec else {})},
                 "lock_label": None if name == "devlock" else f"job-{jid}",
@@ -179,17 +182,63 @@ class JobDispatch:
                 blocked = (candidate.get("lost") or recovery == "required" or
                            (access == "write" or scoped_recovery)
                            and recovery == "not_reported")
-                self.queue.set_state(jid, "blocked" if blocked else "done")
+                release = self._capacity_release_fact(row, candidate)
+                self.queue.set_state(jid, "blocked" if blocked or release is None else "done",
+                                     host_capacity_release=release)
                 return True
         except (OSError, ValueError) as error:
             self.block_storage(row, stage, error)
             return False
 
+    def _capacity_release_fact(self, row, meta):
+        prior = row.get("host_capacity_release")
+        if prior is not None:
+            return prior
+        if self.jobs.host_execution_problem(row["job_id"], meta) is not None:
+            return None
+        execution = meta.get("execution") or {}
+        policy = (execution.get("process_management") or {}).get("policy")
+        basis = ("owned_cgroup_completed" if policy == "contained" or execution.get("containment") else
+                 "not_started" if execution.get("child_pid") is None else "original_process_group_completed")
+        return {"at": time.time(), "basis": basis}
+
+    def release_host_capacity(self, row):
+        """Caller holds intake. Persist host completion without releasing device resources."""
+        row = self.queue.get(row["job_id"])
+        if row.get("host_capacity_release") is not None:
+            return True
+        if row["state"] != "blocked" or (row.get("state_reason") or {}).get("kind") == "durability":
+            return False
+        jid, store = row["job_id"], self.jobs._read_root
+        try:
+            with job_runtime.runner_lock(store, jid) as acquired:
+                if not acquired:
+                    return False
+                meta = self.jobs._execution_status(jid, worker_alive=False)
+                release = self._capacity_release_fact(row, meta)
+                if release is None:
+                    return False
+                store.sync(jid + "/meta.json", directory=False)
+                store.sync(jid, directory=True)
+                store.sync("", directory=True)
+                self.queue.release_capacity(jid, release)
+                return True
+        except (OSError, ValueError) as error:
+            self.block_storage(row, "host-capacity-release", error)
+            return False
+
+    def _refresh_host_capacity(self):
+        for row in self.queue.rows(("blocked",)):
+            if row.get("host_capacity_release") is None:
+                with file_lock(self.intake_path):
+                    self.release_host_capacity(row)
+
     def start(self):
         with self.guard:
             if self.thread and self.thread.is_alive():
                 return
-            if not self.queue.rows(("preparing", "queued", "claimed")):
+            if not self.queue.rows(("preparing", "queued", "claimed")) and not any(
+                    row.get("host_capacity_release") is None for row in self.queue.rows(("blocked",))):
                 return
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
@@ -199,6 +248,7 @@ class JobDispatch:
             while True:
                 with file_lock(self.dispatch_path, blocking=False) as acquired:
                     if acquired:
+                        self._refresh_host_capacity()
                         while self.queue.rows(("preparing", "queued", "claimed")):
                             self.tick()
                             self.last_error = None
@@ -214,6 +264,7 @@ class JobDispatch:
             self.last_error = f"{type(error).__name__}: {error}"
 
     def tick(self):
+        self._refresh_host_capacity()
         with file_lock(self.intake_path, blocking=False) as acquired:
             if acquired:
                 for row in self.queue.rows(("preparing",)):
@@ -344,7 +395,10 @@ class JobDispatch:
                     "scope": declared, "reason": problem}
         running = [r for r in owners if r["state"] == "claimed"]
         if len(running) >= self.max_running:
-            return {"kind": "capacity", "blocking_jobs": [r["job_id"] for r in running]}
+            return {"kind": "capacity", "reason": "max_running", "blocking_jobs": [r["job_id"] for r in running]}
+        capacity = job_capacity.waiting(row["spec"], self.queue.capacity_snapshot(rows), rows)
+        if capacity:
+            return capacity
         return {"kind": None, "blocking_jobs": []}
 
     def attach(self, meta, row):
@@ -357,6 +411,7 @@ class JobDispatch:
             meta["queue"] = {"state": row["state"], "submitted_at": row["submitted_at"],
                              "resources": row["resources"], "waiting": self.waiting(row),
                              "device_scope": scope(row["spec"]),
+                             "host_capacity": job_capacity.job_facts(row),
                              "release_eligibility": self.jobs.queue_release_eligibility(row, meta),
                              "state_reason": row.get("state_reason"),
                              "recovery_for": row["spec"].get("recovery_for")}
@@ -377,9 +432,11 @@ class JobDispatch:
             items.append({"job_id": row["job_id"], "request_id": row["request_id"], "phase": phase,
                           "recovery_for": row["spec"].get("recovery_for"),
                           "device_scope": scope(row["spec"]),
+                          "host_capacity": job_capacity.job_facts(row),
                           "submitted_at": row["submitted_at"], "resources": row["resources"],
                           "waiting": self.waiting(row, rows), "state_reason": row.get("state_reason")})
         return {"schema_version": 1, "max_running": self.max_running, "lease": lease,
+                "host_capacity": self.queue.capacity_snapshot(rows),
                 "active_count": sum(r["state"] == "claimed" for r in rows),
                 "blocked_count": sum(r["state"] == "blocked" for r in rows),
                 "queued_count": sum(r["state"] in ("preparing", "queued") for r in rows),

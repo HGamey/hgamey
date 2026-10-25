@@ -335,14 +335,34 @@ class NodeReadTests(unittest.TestCase):
                 self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write,
                     body=b'{"note":"child still pending"}')[0], 409)
                 self.get_json(f"/jobs/{child['id']}/cancel", method="POST", token=self.admin, body=b'{}')
+                self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write,
+                    body=b'{"note":"lease clear cannot prove lost host finished"}')[0], 409)
+                unknown_id = jid
+                self.assertIsNone(self.jobs.dispatch.queue.get(jid)["host_capacity_release"])
+                # A separate synthetic completed-worker receipt exercises the
+                # positive review path; the original unknown job stays blocked.
+                known = self.get_json("/dash/api/jobs", method="POST",
+                    headers={**write, "X-Request-ID": "web:completed-fixture"}, body=spec)
+                jid = known["id"]
+                meta = self.jobs._read_meta(jid)
+                meta.update(state="finished", phase="finished", outcome="failed", exit=1, ended=time.time(),
+                            recovery={"status": "required", "reason": "fixture device still needs review"})
+                meta["execution"].update(child_pid=424242, returncode=1,
+                    owned_process_group={"scope": "original_process_group", "status": "absent",
+                                         "pgid": 424242, "checked_at": time.time(), "error": None})
+                self.jobs._write_meta(jid, meta)
+                self.jobs._read_root.write_json(jid + "/exitcode", 1)
+                self.jobs.dispatch.queue.set_state(jid, "claimed")
+                self.assertTrue(self.jobs.dispatch.finalize(self.jobs.dispatch.queue.get(jid)))
                 receipt = self.get_json(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{"note":"checked fixture resource"}')
             self.assertEqual(receipt["job"]["queue"]["state"], "done")
             self.assertEqual(receipt["job"]["queue"]["release"]["note"], "checked fixture resource")
             self.assertEqual(receipt["job"]["queue"]["release"]["lease_observation"]["status"], "clear")
             self.assertEqual(receipt["job"]["recovery"]["status"], "required")
-            self.assertEqual(self.get_json("/queue")["blocked_count"], 0)
+            self.assertEqual(self.get_json("/queue")["blocked_count"], 1)
+            self.assertEqual(self.jobs.dispatch.queue.get(unknown_id)["state"], "blocked")
             self.assertEqual(self.request("/jobs", method="POST", token=self.admin,
-                headers={"X-Job": json.dumps(recovery), "X-Request-ID": "new-recovery"})[0], 409)
+                headers={"X-Job": json.dumps({**recovery, "recovery_for": jid}), "X-Request-ID": "new-recovery"})[0], 409)
             self.assertEqual(self.get_json("/jobs", method="POST", token=self.admin,
                 headers={"X-Job": json.dumps(recovery), "X-Request-ID": "recovery:fixture"})["id"], child["id"])
             self.assertEqual(self.request(f"/jobs/{jid}/queue-release", method="POST", token=self.admin,

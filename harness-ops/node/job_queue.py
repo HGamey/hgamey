@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import time
 from device_scope import conflicts, scope, device_access
+import job_capacity
 
 
 STATES = ("preparing", "queued", "claimed", "blocked", "done")
@@ -35,7 +36,7 @@ def global_waiter(row):
 
 
 class JobQueue:
-    def __init__(self, path):
+    def __init__(self, path, default_cpu=2, host_capacity=None):
         self.path = str(Path(path).absolute())
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._transaction(write=True) as db:
@@ -53,6 +54,38 @@ class JobQueue:
             columns = {r["name"] for r in db.execute("PRAGMA table_info(jobs)")}
             if "state_reason" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN state_reason TEXT")
+            if "host_capacity_release" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN host_capacity_release TEXT")
+            db.execute("CREATE TABLE IF NOT EXISTS host_capacity (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)")
+            self._configure_capacity(db, host_capacity, default_cpu)
+
+    @staticmethod
+    def _configure_capacity(db, slots, default_cpu=2):
+        previous = db.execute("SELECT value FROM host_capacity WHERE id=1").fetchone()
+        if previous and slots is None:
+            return
+        value = job_capacity.normalize_slots(slots if slots is not None else {"cpu": default_cpu, "gpu": 0, "io": 0})
+        if previous and json.loads(previous["value"])["slots"] == value:
+            return
+        config = {"schema": "phonefarm/host-capacity@1", "slots": value,
+                  "source": "file" if slots is not None else "initial_default", "updated_at": time.time(),
+                  "basis": "declared_scheduler_slots"}
+        db.execute("INSERT INTO host_capacity(id,value) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
+                   (json.dumps(config),))
+
+    @staticmethod
+    def _capacity(db):
+        return json.loads(db.execute("SELECT value FROM host_capacity WHERE id=1").fetchone()["value"])
+
+    def capacity(self):
+        with self._transaction() as db:
+            return self._capacity(db)
+
+    def capacity_snapshot(self, rows=None):
+        with self._transaction() as db:
+            if rows is None:
+                rows = [self._row(r) for r in db.execute("SELECT * FROM jobs WHERE state IN ('claimed','blocked')")]
+            return job_capacity.snapshot(self._capacity(db), rows)
 
     @contextmanager
     def _transaction(self, write=False):
@@ -79,6 +112,7 @@ class JobQueue:
         value["spec"] = json.loads(value["spec"])
         value["resources"] = json.loads(value["resources"])
         value["state_reason"] = json.loads(value["state_reason"]) if value["state_reason"] else None
+        value["host_capacity_release"] = json.loads(value["host_capacity_release"]) if value["host_capacity_release"] else None
         return value
 
     def reserve(self, request_id, fingerprint, spec, resources):
@@ -93,6 +127,9 @@ class JobQueue:
                 if prior["fingerprint"] != fingerprint:
                     raise RequestConflict("request_id was already used for different content")
                 return self._row(prior), False
+            # Configuration may change between the HTTP preflight and this
+            # transaction. Existing IDs above retain their original admission.
+            job_capacity.check_fit(spec, self._capacity(db))
             job_id = secrets.token_hex(6)
             db.execute("""INSERT INTO jobs
                 (job_id, request_id, fingerprint, spec, resources, submitted_at, state)
@@ -111,7 +148,8 @@ class JobQueue:
         """Win cancellation only before a dispatcher has claimed the job."""
         with self._transaction(write=True) as db:
             reason = json.dumps({"kind": "cancelled_before_launch", "at": time.time()})
-            result = db.execute("UPDATE jobs SET state='done', state_reason=? WHERE job_id=? AND state IN ('preparing', 'queued')", (reason, jid))
+            release = json.dumps({"at": time.time(), "basis": "not_started"})
+            result = db.execute("UPDATE jobs SET state='done', state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state IN ('preparing', 'queued')", (reason, release, jid))
             return result.rowcount == 1
 
     def claim_next(self, max_running, admit=None):
@@ -119,6 +157,7 @@ class JobQueue:
             active = [self._row(row) for row in db.execute("SELECT * FROM jobs WHERE state IN ('claimed', 'blocked')")]
             if sum(row["state"] == "claimed" for row in active) >= max_running:
                 return None
+            capacity = job_capacity.snapshot(self._capacity(db), active)
             # Insertion order survives wall-clock changes and equal timestamps.
             global_waiting = False
             for row in db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY sequence"):
@@ -131,6 +170,8 @@ class JobQueue:
                     global_waiting = True
                 if admit and not admit(value):
                     continue
+                if job_capacity.waiting(value["spec"], capacity, active):
+                    continue
                 borrowed = recovery_reservations(value, active)
                 if not any(reservation_conflicts(value, owner) for owner in active
                            if owner["job_id"] not in borrowed):
@@ -139,12 +180,19 @@ class JobQueue:
                     return value
             return None
 
-    def set_state(self, jid, state, reason=None):
+    def set_state(self, jid, state, reason=None, host_capacity_release=None):
         if state not in STATES:
             raise ValueError("unknown job queue state")
         with self._transaction(write=True) as db:
-            db.execute("UPDATE jobs SET state=?, state_reason=? WHERE job_id=?", (state, json.dumps(reason) if reason else None, jid))
+            db.execute("UPDATE jobs SET state=?, state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=?",
+                       (state, json.dumps(reason) if reason else None,
+                        json.dumps(host_capacity_release) if host_capacity_release else None, jid))
             return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+
+    def release_capacity(self, jid, fact):
+        with self._transaction(write=True) as db:
+            db.execute("UPDATE jobs SET host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state='blocked'",
+                       (json.dumps(fact), jid))
 
     def record_unstarted(self, jid, outcome, note):
         """Persist caller-confirmed no-launch intent without overriding cancellation."""
@@ -152,8 +200,8 @@ class JobQueue:
         reason = {"kind": "durability", "stage": "unstarted", "message": note, "at": now,
                   "unstarted": {"outcome": outcome, "note": note, "at": now}}
         with self._transaction(write=True) as db:
-            db.execute("UPDATE jobs SET state='blocked', state_reason=? WHERE job_id=? AND state!='done'",
-                       (json.dumps(reason), jid))
+            db.execute("UPDATE jobs SET state='blocked', state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state!='done'",
+                       (json.dumps(reason), json.dumps({"at": now, "basis": "not_started"}), jid))
             return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
 
     def get(self, jid):
