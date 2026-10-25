@@ -1,5 +1,6 @@
 """Small, explicit same-node input snapshots inside the existing preparation step."""
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -200,26 +201,18 @@ def _parents(store, rel):
         store.mkdir("/".join(parts[:count]))
 
 
-def _copy_file(jobs, jid, item):
-    source, store = item["source"], jobs._read_root
-    target = jid + "/in/" + item["target"]
+def _snapshot(jobs, item):
+    """The typed-input budget bounds all retained originals and derived bytes."""
+    source = item["source"]
     with _source_file(jobs, source) as stream:
         before = os.fstat(stream.fileno())
         if before.st_size != source["size"]:
             raise InputError(409, "input_mismatch", "source size differs from its declared input reference")
-        _parents(store, target)
-        digest = hashlib.sha256()
-        with store.create_file(target) as destination:
-            remaining = source["size"]
-            while remaining:
-                chunk = stream.read(min(CHUNK, remaining))
-                if not chunk:
-                    raise InputError(409, "input_mismatch", "source became shorter during input preparation")
-                destination.write(chunk)
-                digest.update(chunk)
-                remaining -= len(chunk)
-        if stamp(before) != stamp(os.fstat(stream.fileno())) or digest.hexdigest() != source["sha256"]:
+        data = stream.read(source["size"])
+        if (len(data) != source["size"] or stamp(before) != stamp(os.fstat(stream.fileno()))
+                or hashlib.sha256(data).hexdigest() != source["sha256"]):
             raise InputError(409, "input_mismatch", "source changed or SHA-256 does not match its input reference")
+        return data
 
 
 def _reject_constant(value):
@@ -260,10 +253,8 @@ def _replace_pointer(value, pointer, replacement):
     return value
 
 
-def _derive(jobs, jid, binding, files, remaining):
-    store = jobs._read_root
-    original = jid + "/in/" + files[binding["source"]]["target"]
-    value = json.loads(store.read_bytes(original, MAX_FILE).decode("utf-8"),
+def _derive(jobs, jid, binding, files, original, remaining):
+    value = json.loads(original.decode("utf-8"),
                        parse_constant=_reject_constant, object_pairs_hook=_unique_object)
     for replacement in binding["values"]:
         path = os.path.abspath(jobs.path(jid, "in", files[replacement["input"]]["target"]))
@@ -273,23 +264,24 @@ def _derive(jobs, jid, binding, files, remaining):
         raise InputError(413, "input_too_large", "derived input JSON exceeds 8 MiB")
     if len(data) > remaining:
         raise InputError(413, "input_too_large", "original and derived inputs together exceed 32 MiB")
-    target = jid + "/in/" + binding["target"]
-    _parents(store, target)
-    with store.create_file(target) as destination:
-        destination.write(data)
-    return len(data)
+    return data
 
 
 def _failure(error):
-    if isinstance(error, InputError):
+    from job_input_archive import Error as ArchiveError
+    if isinstance(error, (InputError, ArchiveError)):
         return error
     if isinstance(error, FileExistsError):
         return InputError(409, "target_conflict", "input target already exists")
+    if isinstance(error, OSError) and error.errno in (errno.ENOSPC, errno.EDQUOT):
+        failure = InputError(507, "input_write_space_failed", str(error))
+        failure.details = {"errno": error.errno}
+        return failure
     return InputError(409 if isinstance(error, ValueError) else 500, "input_preparation_failed", str(error))
 
 
-def prepare(jobs, jid, manifest):
-    """Called once under intake after tar extraction, before queue.ready.
+def prepare(jobs, jid, manifest, *, before_write=None, write=None):
+    """Snapshot bounded inputs once under intake, before any input file write.
 
     Failed partials remain in this never-started job. A retry with the same
     request ID returns that job; only an explicit new request can prepare anew.
@@ -314,17 +306,35 @@ def prepare(jobs, jid, manifest):
             raise InputError(409, "preparation_exists", "input preparation already has a persistent receipt")
         for item in manifest["files"] + manifest["bindings"]:
             _new_target(store, jid + "/in/" + item["target"])
+        payloads = {}
         for item in receipt["files"]:
             active = item
-            _copy_file(jobs, jid, item)
-            item["status"] = "ready"
+            payloads[item["target"]] = _snapshot(jobs, item)
         files = {item["name"]: item for item in manifest["files"]}
-        remaining = MAX_TOTAL - sum(item["source"]["size"] for item in manifest["files"])
+        remaining = MAX_TOTAL - sum(len(data) for data in payloads.values())
         for binding in receipt["bindings"]:
             active = binding
-            binding["size"] = _derive(jobs, jid, binding, files, remaining)
-            remaining -= binding["size"]
-            binding["status"] = "ready"
+            data = _derive(jobs, jid, binding, files,
+                           payloads[files[binding["source"]]["target"]], remaining)
+            binding["size"] = len(data)
+            remaining -= len(data)
+            payloads[binding["target"]] = data
+        active = None
+        if before_write is not None:
+            before_write(payloads)
+        for item in receipt["files"] + receipt["bindings"]:
+            active = item
+            target = jid + "/in/" + item["target"]
+            _parents(store, target)
+            with store.create_file(target) as destination:
+                data = payloads[item["target"]]
+                for offset in range(0, len(data), CHUNK):
+                    chunk = data[offset:offset + CHUNK]
+                    if write is None:
+                        destination.write(chunk)
+                    else:
+                        write(destination, chunk)
+            item["status"] = "ready"
         active = None
         # Jobs._prepare owns the single whole-input durability barrier before
         # queue.ready; this receipt does not claim that the command has started.

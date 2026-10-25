@@ -41,6 +41,12 @@
       <div id="node-programs"></div>
       <p class="note">配置入口的缓存观察与作业实际自报分开；刷新不会重启服务、创建任务或改写历史身份。构建声明不证明所有已加载字节，也不授予设备操作资格。</p>
     </details>
+    <details id="node-input-limits" class="node-details">
+      <summary>输入准备写入限值</summary>
+      <p id="node-input-limits-message" class="note" role="status">尚未读取节点限值。</p>
+      <dl id="node-input-limits-info" class="facts"></dl>
+      <p class="note">归档只接受普通文件和目录，拒绝链接、特殊文件与稀疏文件。归档展开文件、工件原件和实际生成的 JSON 共用输入 payload 上限；完整 gzip 展开流还包含 header、padding 与尾部。成员数与最终命名空间（含隐式目录）各受条目上限约束。可用空间检查不是运行期磁盘配额。</p>
+    </details>
   </section>
   <section class="access-panel" aria-labelledby="access-heading">
     <div class="access-row"><div><h2 id="access-heading">任务操作权限</h2><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁任务操作</button></div>
@@ -78,6 +84,7 @@
   <details id="submit-panel" class="submit-panel">
     <summary>提交任务 / 按请求 ID 找回</summary>
     <p class="note">运行节点已有命令，可显式引用本节点的小型输出工件。大型游戏文件请使用<a href="/dash/games">游戏与资源</a>入口。</p>
+    <p id="submit-input-limits" class="note"></p>
     <section class="device-binding-panel" aria-labelledby="device-binding-heading">
       <h3 id="device-binding-heading">本次设备范围</h3>
       <div class="submit-fields">
@@ -212,6 +219,13 @@
         <details class="command-details"><summary id="job-runtime-summary">本次运行入口身份</summary><p class="note">仅展示此任务保留的服务启动快照、worker 身份和主程序自报；不使用当前配置补齐历史。身份记录不改变命令结果，也不证明设备恢复。</p><h4>启动任务的服务</h4><dl id="job-service-identity" class="facts"></dl><h4>实际 worker</h4><dl id="job-worker-identity" class="facts"></dl><h4>主程序入口自报</h4><dl id="job-program-identity" class="facts"></dl></details>
         <section id="job-inputs" class="job-inputs" aria-labelledby="job-inputs-heading">
           <div class="section-heading"><h3 id="job-inputs-heading">输入工件与准备记录</h3><button id="load-job-inputs" class="ghost" type="button" disabled>读取输入记录</button></div>
+          <p id="input-write-message" class="note" role="status"></p>
+          <details id="input-write-details" class="command-details" hidden>
+            <summary id="input-write-summary">输入写入准备回执</summary>
+            <dl id="input-write-info" class="facts"></dl>
+            <p class="note">已写入字节只计成功返回的受控 write；异常写入可能留下未计入的部分数据。这不是实际磁盘占用或运行期配额。准备就绪不表示命令已运行或设备已恢复。</p>
+            <details class="command-details"><summary>完整写入限值与回执</summary><pre id="input-write-record" class="command-box"></pre></details>
+          </details>
           <p id="job-inputs-message" class="note" role="status"></p><p id="job-inputs-updated" class="read-time"></p>
           <div id="job-inputs-content" hidden>
             <dl id="job-inputs-info" class="facts"></dl>

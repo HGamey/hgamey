@@ -40,6 +40,8 @@ install_worker仅由管理员显式安装到新的root-owned固定目录，输�
 
 ## 作业保存边界
 
+jobs.input-limits-v1 只约束 Node 准备的输入文件：tar、同节点引用和派生 JSON 共用载荷预算，完整 gzip 流和命名空间另有限额。普通 file/dir 归档先预检再经 SafeRoot 写入，链接/稀疏/特殊成员拒绝；旧请求 ID 不重准备。input_preparation 保存采用限值、成功写入字节和失败原因；空间预检不是运行期配额，不删除失败 partial。Web/CLI同级，合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-INPUT-WRITE-LIMITS.md 。
+
 job 的 status_revision 只覆盖 committed_status 小对象；原 SQLite 同事务保存状态、版本和事件，GET 不补历史。独立 worker 离线阶段可合并，dispatcher恢复后提交已观察事实；实时 worker/lease/waiting/controls 仍须独立读取。事件 cursor、列表 cursor、日志字节 offset 分开，不能以版本未变跳过安全资格核查。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-STATE-EVENTS.md 。
 
 关键结束记录在worker释放flock、文件和目录同步后才提交SQLite终态。保存失败只保留该job资源并公开storage_blocked；retry-finalize仅重新保存，不重放命令，普通release不得绕过。准备失败/取消的未执行依据由SQL记录，查询不得通过缺文件猜执行结果。范围不含任意producer输出的断电持久性；合同见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-DURABILITY.md 。

@@ -233,11 +233,13 @@ class JobQueue:
                        (json.dumps(fact), jid))
             self._publish(db, jid, observation=observation)
 
-    def record_unstarted(self, jid, outcome, note):
+    def record_unstarted(self, jid, outcome, note, *, input_preparation_expected=False):
         """Persist caller-confirmed no-launch intent without overriding cancellation."""
         now = time.time()
         reason = {"kind": "durability", "stage": "unstarted", "message": note, "at": now,
                   "unstarted": {"outcome": outcome, "note": note, "at": now}}
+        if input_preparation_expected:
+            reason["unstarted"]["input_preparation_expected"] = True
         with self._transaction(write=True) as db:
             db.execute("UPDATE jobs SET state='blocked', state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state!='done'",
                        (json.dumps(reason), json.dumps({"at": now, "basis": "not_started"}), jid))

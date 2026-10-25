@@ -194,6 +194,40 @@
     if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
     return `${(value / 1024 / 1024).toFixed(1)} MiB`;
   }
+  const inputBytes = value => Number.isFinite(value) ? `${bytes(value)}（${value} 字节）` : '未记录';
+  function inputLimitFacts(policy) {
+    return [['压缩归档上限', inputBytes(policy.compressed_bytes)], ['展开 payload 上限', inputBytes(policy.expanded_bytes)],
+      ['gzip 展开流上限', inputBytes(policy.tar_stream_bytes)], ['单个 PAX/GNU 扩展记录上限', inputBytes(policy.metadata_bytes)],
+      ['成员 / 路径项上限', policy.entries], ['保留可用空间', inputBytes(policy.min_free_bytes)],
+      ['适用范围', policy.scope === 'prepared_input_file_payload' ? '输入准备文件 payload（prepared_input_file_payload）' : policy.scope || '未记录']];
+  }
+  function renderInputLimits() {
+    const supported = nodeInfo?.capabilities?.includes('jobs.input-limits-v1'), policy = supported && nodeInfo.execution?.input_limits;
+    facts('node-input-limits-info', policy ? inputLimitFacts(policy) : []);
+    message('node-input-limits-message', !nodeInfo ? '当前节点限值尚未取得。' : !supported ? '此节点未声明 jobs.input-limits-v1，输入写入限值未知。' : !policy ? '节点未返回输入限值，不能判断当前策略。' : '这是当前节点的输入准备策略；历史任务采用其原回执中的限值。');
+    message('submit-input-limits', policy ? `输入准备共用展开文件 payload 上限 ${bytes(policy.expanded_bytes)}，包含归档文件、工件原件和实际派生 JSON。服务端检查为准；同请求 ID 不会重新准备。` : '输入准备限值尚未确认；不会用未知限值推断可用空间或改写原请求。');
+  }
+  function renderInputPreparation(job) {
+    const receipt = job.input_preparation;
+    $('input-write-details').hidden = !receipt;
+    $('input-write-record').textContent = receipt ? JSON.stringify(receipt, null, 2) : '';
+    if (!receipt) {
+      message('input-write-message', '此任务未记录输入写入限值回执；不按当前节点策略回填历史字节数或准备结果。');
+      facts('input-write-info', []); return;
+    }
+    const label = {pending: '准备尚未完成', ready: '输入写入准备就绪', failed: '输入写入准备失败', unknown: '输入写入回执不可读 · 准备结果未知'}[receipt.status] || '输入写入状态未知';
+    const error = receipt.error;
+    $('input-write-summary').textContent = `${label} · 更新于 ${time(receipt.updated_at)}`;
+    message('input-write-message', `${label}。${receipt.status === 'failed' ? `保留任务 ${job.id}${job.request_id ? ` / 请求 ${job.request_id}` : ''}；原 ID 不会重新准备，修正输入后需显式新请求。` : receipt.status === 'pending' ? '请按需刷新任务，已写入字节不代表准备完成。' : receipt.status === 'ready' ? '不表示命令已运行或设备已恢复。' : '请保留原任务与请求 ID 核对；未取得可信回执，不自动重新准备。'}${error ? ` ${error.code || '准备错误'}：${error.message || '请查看完整回执。'}` : ''}`, receipt.status === 'failed' || !!error || !['pending', 'ready'].includes(receipt.status));
+    facts('input-write-info', [['任务 ID', job.id], ['请求 ID', job.request_id], ['回执状态', receipt.status],
+      ['声明 payload 字节', inputBytes(receipt.declared_bytes)], ['已写入 payload 字节', inputBytes(receipt.written_bytes)],
+      ['完整 gzip 展开流', inputBytes(receipt.tar_stream_bytes)], ['最终命名空间项数', receipt.entries],
+      ['开始准备', time(receipt.started_at)], ['回执更新', time(receipt.updated_at)],
+      ...(receipt.space ? [['预检可用空间', inputBytes(receipt.space.available_bytes)], ['预检所需空间', inputBytes(receipt.space.required_bytes)],
+        ['预检保留空间', inputBytes(receipt.space.reserve_bytes)], ['空间观察依据', receipt.space.basis === 'f_bavail' ? 'f_bavail（调用身份可用块）' : receipt.space.basis]] : [['空间预检', '未记录，不推断磁盘可用量']]),
+      ...(error ? [['失败代码', error.code], ['错误状态码', error.status], ['失败原因', error.message]] : []),
+      ...(receipt.limits ? inputLimitFacts(receipt.limits) : [['本次准备限值', '未记录，不用当前节点策略回填']])]);
+  }
   function facts(id, rows) {
     $(id).replaceChildren(...rows.flatMap(([key, value]) => [el('dt', key), el('dd', text(value))]));
   }
@@ -1101,6 +1135,7 @@
     if (refreshRuntime) runtimeBusy = true;
     const revision = ++nodeRevision;
     nodeInfo = null;
+    renderInputLimits();
     renderRuntimeRefresh();
     renderSubmission();
     updateJobLeaseAccess();
@@ -1138,7 +1173,7 @@
     } catch (error) {
       if (revision === nodeRevision) message('node-message', refreshRuntime ? `程序观察结果未取得：${error.message || '连接中断'}。下方保留上次观察，当前身份尚未确认；请读取节点缓存核对，不会自动重试。` : errorText(error), true);
       if (refreshRuntime && [401, 403].includes(error.status)) await loadAccess();
-    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); renderJobEvents(); } }
+    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); renderJobEvents(); renderInputLimits(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -1256,6 +1291,7 @@
       $('detail-updated').textContent = readTime();
       facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['提交 / 旧开始字段', time(job.started)], [job.phase === 'finalizing' || storageFailed(job) ? '候选结束时间（未提交）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
       renderCommitted(job);
+      renderInputPreparation(job);
       $('job-command').textContent = JSON.stringify({bin: job.bin, argv: job.argv || []}, null, 2);
       renderJobRuntime(job);
       $('job-results-link').href = HGTarget.url(`/dash/results?job_id=${encodeURIComponent(job.id)}`);

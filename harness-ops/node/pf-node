@@ -74,6 +74,14 @@
 - --inputs 指定 phonefarm/job-inputs@1 小清单：同节点已收尾工件，每份最多8MiB、合计32MiB。
   显式JSON pointer绑定生成独立文件，源字节保留；不猜改脚本文字。脚本可用已有PF_JOB_IN，
   或在清单中选cwd=input。准备失败未启动命令；同request_id保持原结果，修好后显式用新ID。
+- jobs.input-limits-v1 节点限制输入准备：压缩归档512MiB、展开文件payload512MiB、tar流544MiB、
+  4096项、可用空间至少保留64MiB；用 node 查看 execution.input_limits 的服务端策略。
+  metadata_bytes 为单个 PAX/GNU 扩展记录的声明大小上限1MiB，总元数据仍受完整流和记录数限制。
+  归档只接受普通file/dir，拒绝链接/特殊/sparse；tar文件、工件原件与实际派生JSON共用展开payload上限。
+  status <id> 的 input_preparation 保留准备状态、部分写入字节、空间预检与失败详情；旧null不是0字节。
+  written_bytes 只计成功返回的write，异常可能留未计入partial，不是磁盘实际占用；空间预检不是运行期配额。
+  准备失败保留job/request ID，原ID不重准备，
+  修正输入后显式新请求。服务端权威检查；客户端不额外改归档字节/指纹或据当前限值阻断旧ID查询。
 - 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 只请求柔性 SIGINT 并停止本地跟随（130）；
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
 - 每次提交生成 request_id；同一次重试保持请求内容和 id 不变。--request-id 可手动指定，--resource 可重复声明独占资源。

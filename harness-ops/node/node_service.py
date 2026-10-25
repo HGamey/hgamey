@@ -48,6 +48,7 @@ from node_deployments import NodeDeployments, DeploymentError
 from game_assets import AssetUploadError, UPLOAD_MAX
 import job_runtime
 import job_inputs
+import job_preparation
 import job_budget
 from job_capacity import normalize_slots, check_fit, CapacityExceeded
 from job_events import NodeJobEvents, JobEventError
@@ -359,14 +360,10 @@ class Jobs:
         shared_gid = (int(self.pf_env["PHONEFARM_SHARED_GID"]) if self.pf_env is not None
                       and spec.get("execution_policy", "process_group") == "process_group" else None)
         self._read_root.mkdir(jid + "/out", shared_gid=shared_gid)
-        self._write_meta(jid, self.dispatch.base_meta(row))
+        self._write_meta(jid, {**self.dispatch.base_meta(row), "input_preparation_expected": True})
         with self._read_root.create_file(jid + "/log"):
             pass
-        if body:
-            with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as t:
-                t.extractall(jin, filter="data")
-        if "inputs" in spec:
-            job_inputs.prepare(self, jid, spec["inputs"])
+        job_preparation.prepare(self, jid, body, spec.get("inputs"))
 
         def sub(a):
             a = a.replace("@out", jout)
@@ -463,6 +460,7 @@ class Jobs:
             meta.update(state="running", phase="finalizing")
             meta["controls"] = {"cancel_supported": False, "force_supported": False,
                                 "reason": "waiting for worker release and result storage commit"}
+        meta["input_preparation"] = job_preparation.record(self._read_root, jid, expected=meta.get("input_preparation_expected", False))
         return self.dispatch.attach(meta, row)
 
     def _execution_status(self, jid, worker_alive=None):

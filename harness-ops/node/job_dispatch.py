@@ -97,7 +97,7 @@ class JobDispatch:
                     if ready["state"] == "done":
                         self.finish_unstarted(row, "cancelled", "cancelled before execution")
                 except (OSError, ValueError, tarfile.TarError) as error:
-                    self.finish_unstarted(row, "failed", f"input preparation failed: {error}")
+                    self.finish_unstarted(row, "failed", f"input preparation failed: {error}", input_preparation_expected=True)
             jid = row["job_id"]
         self.start()
         return self.jobs.status(jid)
@@ -105,6 +105,8 @@ class JobDispatch:
     @staticmethod
     def unstarted_meta(row, fact):
         meta = JobDispatch.base_meta(row)
+        if fact.get("input_preparation_expected"):
+            meta["input_preparation_expected"] = True
         meta.update(state="finished", phase="finished", outcome=fact["outcome"], exit=None,
                     ended=fact["at"], note=fact["note"],
                     recovery={"status": "not_needed", "reason": "command was not started"})
@@ -116,14 +118,21 @@ class JobDispatch:
             meta["cancel"] = {"mode": "graceful", "requested_at": fact["at"], "status": "not_applied", "signals": []}
         return meta
 
-    def finish_unstarted(self, row, outcome, reason):
-        row = self.queue.record_unstarted(row["job_id"], outcome, reason)
+    def finish_unstarted(self, row, outcome, reason, *, input_preparation_expected=False):
+        if not input_preparation_expected:
+            try:
+                input_preparation_expected = self.jobs._read_meta(row["job_id"]).get("input_preparation_expected") is True
+            except (OSError, ValueError):
+                pass
+        row = self.queue.record_unstarted(row["job_id"], outcome, reason,
+                                          input_preparation_expected=input_preparation_expected)
         if row["state"] == "done":
             # Cancellation is already authoritative in SQLite; output is optional.
             try:
                 self.jobs._read_root.mkdir(row["job_id"])
                 self.jobs._write_meta(row["job_id"], self.unstarted_meta(row, {
                     "outcome": "cancelled", "note": "cancelled before execution",
+                    "input_preparation_expected": input_preparation_expected,
                     "at": (row.get("state_reason") or {}).get("at", time.time())}))
             except (OSError, ValueError):
                 pass
@@ -165,7 +174,7 @@ class JobDispatch:
                 store.sync(jid + "/meta.json", directory=False)
                 if candidate.get("exit") is not None and not candidate.get("lost"):
                     store.sync(jid + "/exitcode", directory=False)
-                for name in ("prepared.json", "launch.json", "cancel.json", "cancel.force.json", "queue-release.json"):
+                for name in ("prepared.json", "input-write-limits.json", "inputs.json", "launch.json", "cancel.json", "cancel.force.json", "queue-release.json"):
                     try:
                         store.sync(jid + "/" + name, directory=False)
                     except FileNotFoundError:
