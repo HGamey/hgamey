@@ -42,6 +42,8 @@ install_worker仅由管理员显式安装到新的root-owned固定目录，输�
 
 ## 作业保存边界
 
+games.write-limits-v1覆盖资源URL/import/upload实际partial写入：声明size写前核验、FD空间复核和短写计账，沿原SHA锁/同步/校验发布。失败保本次前缀，原200忽略Range从零重来仍是明确例外；已接受字节不等于已同步offset。Web/CLI共用政策与错误，不自动续写。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/ASSET-WRITE-LIMITS.md 。
+
 jobs.export-limits-v1只约束Node目录导出缓存生成：有界树预检/归档、同job稳定非阻塞flock、gzip实际写入字节与空间检查。失败清本次tmp，不删源或旧cache；发布后的元数据故障不伪称双文件事务。Web显式准备、CLI不自动重压；累计缓存/producer硬限额另列。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-EXPORT-LIMITS.md 。
 
 可选disk_guard由实际worker在日志inode/job/out目录FD上预检和限频观察，达到日志长度/共享空间阈值或观察失败时沿原owner请求停止，不是任意输出硬配额。Web/CLI仅显示最后保存观察；旧请求省略不回填，恢复任务不继承，旧固定prefix缺显式cap在launch写入前拒绝。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-DISK-GUARD.md 。

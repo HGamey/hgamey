@@ -31,6 +31,22 @@
   function facts(node, rows) { node.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
   function badge(node, value, kind = '') { node.textContent = value; node.className = `task-state ${kind}`; }
   function bytes(value) { if (typeof value !== 'number' || !Number.isFinite(value)) return '未知'; if (value < 1024) return `${value} B`; if (value < 1048576) return `${(value / 1024).toFixed(1)} KiB`; return `${(value / 1048576).toFixed(1)} MiB`; }
+  function writePolicyRows(policy) {
+    return [['适用范围', policy.scope === 'game_asset_cache_transfer' ? '单项资源缓存传输' : text(policy.scope)], ['字节上界', policy.size_bound === 'manifest.size' ? '各资源清单声明的 size' : text(policy.size_bound)], ['写入最低剩余空间', bytes(policy.min_free_bytes)], ['每次写前检查空间', policy.per_write_space_check === true ? '是' : policy.per_write_space_check === false ? '否' : '未提供']];
+  }
+  function renderWritePolicy() {
+    const policy = nodeInfo?.capabilities?.includes('games.write-limits-v1') ? nodeInfo.execution?.asset_write_limits : null;
+    message('asset-write-policy-message', policy ? '节点声明的资源写入政策；准备报告另存当次采用的限值。' : '此节点未提供可核对的资源写入政策，限值未知。');
+    facts($('asset-write-policy'), policy ? writePolicyRows(policy) : []);
+  }
+  function appendWriteError(parent, error) {
+    if (!error) return;
+    const detail = error.details || {}, info = el('dl', null, 'facts');
+    parent.append(el('p', `写入拒绝：${text(error.code)}`, 'asset-error'));
+    facts(info, [['当前接受前缀', bytes(detail.prefix_bytes)], ['本次传输已写入', bytes(detail.written_bytes)]]);
+    parent.append(info, el('p', '以上字节不证明 fsync 完成，也不等于实际磁盘占用。上传续传位置须查询原上传 ID 的 offset。', 'note'));
+    const raw = el('details', null, 'asset-details'); raw.append(el('summary', '写入错误原记录'), el('pre', JSON.stringify(error, null, 2), 'command-box')); parent.append(raw);
+  }
   function resourceState(state) { return ({verified: '本节点资源已校验', incomplete: '资源未齐', unknown: '资源状态未知'})[state] || '资源状态未知'; }
   function jobState(job) {
     if (job.phase === 'storage_blocked' || job.queue?.state_reason?.kind === 'durability') return ['结果保存失败', 'unknown'];
@@ -111,7 +127,7 @@
   async function loadNode() {
     try { const node = await request(`${API}/node`); nodeInfo = node; $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`; message('node-message', '资源留在此节点的数据目录；本页不自动分发到其他节点。'); }
     catch (error) { nodeInfo = null; message('node-message', `节点身份读取失败：${error.message}`, true); }
-    finally { uploads.update(); deployments.update(); }
+    finally { renderWritePolicy(); uploads.update(); deployments.update(); }
   }
   function renderList() {
     const query = $('game-search').value.trim().toLowerCase();
@@ -194,6 +210,7 @@
           const meter = el('progress', null, 'asset-progress'); meter.max = progress.total; meter.value = Math.max(0, Math.min(progress.total, progress.bytes)); meter.setAttribute('aria-label', `${asset.name} 最近准备记录字节进度`); item.append(meter);
         }
         if (progress.error) item.append(el('p', text(progress.error), 'asset-error'));
+        appendWriteError(item, progress.write_error);
       }
       const details = el('details', null, 'asset-details'), info = el('dl', null, 'facts'), source = asset.source || {};
       details.append(el('summary', '来源、目标与校验值'));
@@ -210,6 +227,14 @@
       badge(state, label, kind); heading.append(el('strong', job.id), state); item.append(heading);
       item.append(el('p', `请求：${text(job.request_id)} · 提交：${time(job.queue?.submitted_at || job.started)}${job.exit != null ? ` · 退出码（诊断）：${job.exit}` : ''}`, 'game-item-meta'));
       item.append(el('p', job.report ? `准备报告：${STAGES[job.report.state] || text(job.report.state)} · ${time(job.report.updated_at)}` : '尚无准备报告；可能尚未产生或未能读取，请查看原任务。', 'note'));
+      if (job.report) {
+        const write = el('details', null, 'asset-details'), policy = job.report.write_limits;
+        write.append(el('summary', '本次写入政策与失败细节'));
+        if (policy) { const info = el('dl', null, 'facts'); facts(info, writePolicyRows(policy)); write.append(info); }
+        else write.append(el('p', '此报告未记录写入政策，不按当前节点政策补填。', 'note'));
+        for (const asset of job.report.assets || []) if (asset.write_error) { write.append(el('p', text(asset.name), 'asset-stage')); if (asset.error) write.append(el('p', text(asset.error), 'asset-error')); appendWriteError(write, asset.write_error); }
+        item.append(write);
+      }
       if (job.error || job.report_error) item.append(el('p', text(job.error || job.report_error), 'asset-error'));
       if (job.queue?.state_reason?.kind === 'durability') item.append(el('p', `结果保存：${text(job.queue.state_reason.message)}`, 'asset-error'));
       const links = el('div', null, 'preparation-links'), task = el('a', '查看任务、日志与输出'); task.href = jobLink(job); links.append(task);

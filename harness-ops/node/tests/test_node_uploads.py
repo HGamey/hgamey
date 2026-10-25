@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -97,6 +98,16 @@ class UploadFlowTests(unittest.TestCase):
                          (initial["node_id"], prefix, initial["created_at"]))
         source = env.root / "synthetic-game.bin"
         source.write_bytes(payload)
+        # A write-space refusal crosses the actual HTTP/CLI path once. The
+        # client may query the original upload, but must not send the next chunk.
+        with patch("game_assets.os.fstatvfs", return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)), \
+                patch.object(env.jobs.games.cache, "upload_chunk", wraps=env.jobs.games.cache.upload_chunk) as chunks:
+            refused = env.cli("upload", "demo", "v1", asset["name"], str(source), "--upload-id", "resume-fixture")
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn("asset_space_insufficient", refused.stderr)
+        self.assertEqual(chunks.call_count, 1)
+        self.assertEqual((json.loads(refused.stdout)["upload_id"], json.loads(refused.stdout)["offset"]),
+                         ("resume-fixture", prefix))
         result = env.cli("upload", "demo", "v1", asset["name"], str(source), "--upload-id", "resume-fixture")
         self.assertEqual(result.returncode, 0, result.stderr)
         uploaded = json.loads(result.stdout)

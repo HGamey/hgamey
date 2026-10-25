@@ -88,6 +88,10 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(identity["node_id"], self.node.node_id)
         self.assertEqual(identity["storage"]["jobs_root"], self.jobs.dir)
         self.assertEqual(identity["devices"]["status"], "not_probed")
+        self.assertIn("games.write-limits-v1", identity["capabilities"])
+        self.assertEqual(identity["execution"]["asset_write_limits"], {
+            "scope": "game_asset_cache_transfer", "size_bound": "manifest.size",
+            "min_free_bytes": 64 << 20, "per_write_space_check": True})
         self.assertIsNone(identity["service"]["revision"])
         separate = Jobs(str(self.root), {}, str(self.root / "runtime"))
         self.assertEqual(separate.dir, str(self.root / "runtime" / "jobs"))

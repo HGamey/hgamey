@@ -3,10 +3,11 @@
   'use strict';
   const API = '/dash/api/uploads', STORE = 'hgamey.game-upload.identities';
   const ID = /^[a-z0-9][a-z0-9_-]{0,63}$/, CHUNK = 1024 * 1024;
+  const WRITE_ERRORS = new Set(['asset_size_exceeded','asset_space_insufficient','asset_write_space_failed','asset_storage_error']);
   const TERMINAL = new Set(['verified', 'failed', 'cancelled', 'superseded']);
   const PHASE = {unclaimed:'尚未取得缓存写入保留',receiving:'接收中',received:'字节已收齐，待校验',sealed:'已封存，待校验任务',verifying:'后台校验中',verified:'上传校验已完成',failed:'上传或校验失败',cancelled:'上传保留已取消',superseded:'已由其他尝试接替',busy:'缓存忙，当前偏移未知',unknown:'上传状态未知'};
   const el = (tag, text, cls) => { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; };
-  const bytes = n => Number.isSafeInteger(n) && n >= 0 ? n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB` : '未知';
+  const bytes = n => Number.isSafeInteger(n) && n >= 0 ? n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1048576).toFixed(1)} MiB` : '未知';
   const keyOf = b => JSON.stringify([b.node_id,b.game_id,b.version,b.asset_name]);
   const url = id => `${API}/${encodeURIComponent(id)}`;
   const safeLink = path => { if (!path) return ''; try { const u = new URL(path, location.origin); return u.origin === location.origin && !u.username && !u.password ? u.pathname + u.search + u.hash : ''; } catch (_) { return ''; } };
@@ -14,7 +15,7 @@
     const saved = new Map(), views = new Map(); let active = null;
     try { for (const b of JSON.parse(sessionStorage.getItem(STORE) || '[]')) if (b && ['node_id','game_id','version','asset_name','upload_id'].every(k => typeof b[k] === 'string') && ID.test(b.upload_id)) saved.set(keyOf(b), b); } catch (_) { /* No local record establishes remote state. */ }
     function persist(v) {
-      if (v.id) saved.set(v.key, {...v.binding, upload_id:v.id, target:v.target});
+      if (v.id) saved.set(v.key, {...v.binding, upload_id:v.id, target:v.target, requires_query:v.requiresQuery});
       try { sessionStorage.setItem(STORE, JSON.stringify([...saved.values()])); } catch (_) { v.message = '浏览器无法保存上传 ID，请复制可见 ID 后再离开页面。'; }
     }
     function supported() { const c = context(); return !!c.node?.capabilities?.includes('games.upload-v1'); }
@@ -42,7 +43,7 @@
         if (response.status === 401 || response.status === 403) { const error = new Error('上传权限已失效，请重新核对登录与掌舵权限。'); error.status = response.status; throw error; }
         if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error(`节点未返回可核对的 JSON（HTTP ${response.status}）。`);
         const value = await response.json();
-        if (!response.ok) { const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || `HTTP ${response.status}`); error.status = response.status; error.code = value.code || value.error?.code; throw error; }
+        if (!response.ok) { const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || `HTTP ${response.status}`); error.status = response.status; error.code = value.code || value.error?.code; if (WRITE_ERRORS.has(error.code)) error.writeError = {code:error.code,error:value.error,scope:value.scope,details:value.details}; throw error; }
         return value;
       } finally { clearTimeout(timer); if (op.controller === controller) op.controller = null; }
     }
@@ -57,7 +58,8 @@
       catch (error) {
         v.fresh = false;
         if (!op.stopped) {
-          v.error = true; v.message = `${error.message} 保留原上传 ID；先查询状态，不自动重发或新建。${error.status === 409 ? '缓存写入或校验可能正在占用；若已有校验任务，请打开原任务核对。' : ''}`;
+          if (error.writeError) { v.writeError = error.writeError; v.requiresQuery = true; persist(v); }
+          v.error = true; v.message = `${error.code ? `${error.code}（HTTP ${error.status}）：` : ''}${error.message} 保留原上传 ID；先点击“查询 / 找回”核对 offset，不自动重发或新建。${error.status === 409 ? '缓存写入或校验可能正在占用；若已有校验任务，请打开原任务核对。' : ''}`;
           if (error.status === 401 || error.status === 403) await auth();
         }
       } finally { if (active === op) active = null; update(); }
@@ -69,8 +71,8 @@
       if (!ID.test(id)) { v.error = true; v.message = '请输入有效上传 ID：1–64 位小写字母、数字、横线或下划线。'; update(); return; }
       await run(v, 'query', async op => {
         const value = checked(v, await http(op, url(id)), id);
-        if (v.id && v.id !== id) v.previous.add(v.id);
-        v.id = id; persist(v); remember(v,value); v.message = '已读取原上传。重新选择同一文件后可按服务器偏移接续；不会自动发送。';
+        if (v.id && v.id !== id) { v.previous.add(v.id); v.writeError = null; }
+        v.id = id; v.requiresQuery = value.offset === null; persist(v); remember(v,value); v.message = v.requiresQuery ? '原上传已读取，但持久 offset 仍未知，禁止继续写入；保留原 ID 稍后查询。' : '已读取原上传的持久 offset。可显式按原 ID 接续；不会自动发送。';
       });
     }
     async function finalize(op) {
@@ -81,7 +83,7 @@
       if (!op.stopped) await refresh(v.binding);
     }
     async function start(v) {
-      if (!canWrite(v) || !validFile(v) || active || (v.fresh && TERMINAL.has(v.record?.phase))) return;
+      if (!canWrite(v) || !validFile(v) || active || v.requiresQuery || (v.fresh && TERMINAL.has(v.record?.phase))) return;
       await run(v, 'transfer', async op => {
         if (!v.id) { v.target = HGTarget.binding(); v.id = crypto.randomUUID(); v.refs.id.value = v.id; persist(v); update(); }
         let value;
@@ -124,7 +126,7 @@
       await run(v,'new',async op => {
         remember(v,await http(op,url(v.id))); assertRunning(op);
         if (!TERMINAL.has(v.record.phase)) throw new Error('旧上传尚未确认终态，不能新建尝试；先暂停并查询或显式取消上传保留。');
-        v.previous.add(v.id); v.id = crypto.randomUUID(); v.record = null; v.fresh = false; v.file = null; v.refs.file.value = ''; v.refs.id.value = v.id; persist(v);
+        v.previous.add(v.id); v.id = crypto.randomUUID(); v.writeError = null; v.requiresQuery = false; v.record = null; v.fresh = false; v.file = null; v.refs.file.value = ''; v.refs.id.value = v.id; persist(v);
         v.message = '已生成新尝试 ID，尚未发送文件。旧上传与校验报告保留；请重新选择正确文件。';
       });
     }
@@ -134,8 +136,8 @@
       r.hint.textContent = (v.id && HGTarget.problem(v.target || null)) || (!supported() ? '此节点未声明 games.upload-v1，不能上传。' : !canWrite(v) ? '请成功读取当前版本并解锁操作；上传仅写此节点宿主缓存。' : '每次最多一个上传，默认 1 MiB 块。重选同大小文件不证明内容相同，最终由节点校验 SHA-256。');
       r.file.disabled = busy || !canWrite(v); r.id.disabled = busy;
       r.fileInfo.textContent = v.file ? `${v.file.name} · ${bytes(v.file.size)}${validFile(v) ? ' · 大小匹配清单' : ` · 与清单 ${bytes(v.asset.size)} 不符，不能上传`}` : '未选择文件；刷新后需重新选择原文件，浏览器不保存文件或路径。';
-      r.begin.disabled = busy || !canWrite(v) || !validFile(v) || !boundID || (v.fresh && (terminal || ['sealed','verifying'].includes(record?.phase))) || !globalThis.crypto?.randomUUID;
-      r.begin.textContent = mine && active.kind === 'transfer' ? '正在上传…' : v.id ? '按原 ID 上传并校验' : '开始上传并校验';
+      r.begin.disabled = busy || !canWrite(v) || !validFile(v) || !boundID || v.requiresQuery || (v.fresh && (terminal || ['sealed','verifying'].includes(record?.phase))) || !globalThis.crypto?.randomUUID;
+      r.begin.textContent = mine && active.kind === 'transfer' ? '正在上传…' : v.requiresQuery ? '先查询原上传偏移' : v.id ? '按原 ID 上传并校验' : '开始上传并校验';
       r.pause.hidden = !(mine && active.kind === 'transfer'); r.pause.disabled = !!active?.stopped;
       r.query.disabled = busy || !supported() || !!(v.id && HGTarget.problem(v.target || null));
       r.finish.hidden = !v.id; r.finish.disabled = busy || !canWrite(v) || !boundID || !v.fresh || !['received','sealed'].includes(record?.phase) || record.offset !== v.asset.size;
@@ -145,6 +147,12 @@
       r.progress.hidden = !record || record.offset === null; if (!r.progress.hidden) { r.progress.max = Math.max(1,record.size); r.progress.value = record.offset; }
       r.cache.textContent = record ? `当前缓存（会话读取时）：${record.observation?.state === 'verified' ? '已校验' : record.observation?.state || '未知'}。上传阶段和历史 job 不代替当前缓存事实。${record.observation?.error ? ` ${record.observation.error}` : ''}` : '';
       r.serverError.textContent = record?.error ? typeof record.error === 'string' ? record.error : record.error.message || JSON.stringify(record.error) : '';
+      r.writeError.hidden = !v.writeError;
+      if (v.writeError) {
+        const d = v.writeError.details || {};
+        r.writeErrorNote.textContent = `当前接受前缀：${bytes(d.prefix_bytes)}；本次传输已写入：${bytes(d.written_bytes)}。这些字节不证明同步完成；仅查询回包的 offset 可用于续传。`;
+        r.writeErrorRaw.textContent = JSON.stringify(v.writeError, null, 2);
+      }
       r.message.textContent = v.message || ''; r.message.classList.toggle('task-error',!!v.error);
       r.links.replaceChildren();
       if (record?.job?.id) {
@@ -163,8 +171,10 @@
       const actions = el('div',null,'submission-actions'), buttons = {};
       for (const [name,label] of Object.entries({begin:'开始上传并校验',pause:'暂停传输',query:'查询 / 找回',finish:'提交 / 找回校验任务',cancel:'取消上传保留',newAttempt:'新建上传尝试'})) { buttons[name] = el('button',label,'ghost'+(name==='begin'?' primary':'')); buttons[name].type='button'; actions.append(buttons[name]); }
       const status=el('p',null,'asset-stage'),progress=el('progress',null,'asset-progress'),cache=el('p',null,'note'),serverError=el('p',null,'asset-error'),message=el('p',null,'note'),links=el('div',null,'preparation-links'); message.setAttribute('role','status'); progress.setAttribute('aria-label',`${asset.name} 服务器确认上传字节`);
-      block.append(summary,hint,file,fileInfo,idLabel,actions,status,progress,cache,serverError,message,links,el('p','暂停仅停止发送；取消上传保留会留下已收 partial，不等于取消校验任务。已有校验任务请从原任务入口处理。','note'));
-      const v = {key,binding,asset,id:saved.get(key)?.upload_id || null,target:saved.get(key)?.target || null,record:null,fresh:false,file:null,previous:new Set(),message:'',error:false,refs:{block,hint,file,fileInfo,id,status,progress,cache,serverError,message,links,...buttons}}; id.value = v.id || ''; views.set(key,v);
+      const writeError = el('details',null,'asset-details'), writeErrorNote = el('p',null,'note'), writeErrorRaw = el('pre',null,'command-box');
+      writeError.append(el('summary','最近写入失败回执（保留原 ID）'),writeErrorNote,writeErrorRaw);
+      block.append(summary,hint,file,fileInfo,idLabel,actions,status,progress,cache,serverError,message,writeError,links,el('p','暂停仅停止发送；取消上传保留会留下已收 partial，不等于取消校验任务。已有校验任务请从原任务入口处理。','note'));
+      const v = {key,binding,asset,id:saved.get(key)?.upload_id || null,target:saved.get(key)?.target || null,record:null,fresh:false,file:null,requiresQuery:saved.get(key)?.requires_query === true,writeError:null,previous:new Set(),message:'',error:false,refs:{block,hint,file,fileInfo,id,status,progress,cache,serverError,message,writeError,writeErrorNote,writeErrorRaw,links,...buttons}}; id.value = v.id || ''; views.set(key,v);
       file.addEventListener('change',()=>{v.file=file.files?.[0] || null; v.error=false; v.message=''; update();});
       id.addEventListener('input',()=>{v.message='粘贴其他上传 ID 后，请先点击“查询 / 找回”核对资源绑定。'; update();});
       buttons.begin.addEventListener('click',()=>start(v)); buttons.pause.addEventListener('click',()=>halt()); buttons.query.addEventListener('click',()=>query(v)); buttons.finish.addEventListener('click',()=>finish(v)); buttons.cancel.addEventListener('click',()=>cancel(v)); buttons.newAttempt.addEventListener('click',()=>newAttempt(v));

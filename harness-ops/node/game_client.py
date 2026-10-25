@@ -35,6 +35,10 @@ prepare 仅提交宿主资源准备任务，不安装应用或验证场景；结
 不自动重发。使用 games request REQUEST_ID 找回原任务，再查看其准备报告。
 upload 分块读取本地文件，不打包或计算本机全文件哈希；写入结果未知时只查询原上传 ID 后退出。
 显式带原 --upload-id 重跑才能续传。传完仅提交校验任务；当前缓存 observation 才是资源校验证据。
+games.write-limits-v1 的政策由 /node.execution.asset_write_limits 提供；旧节点政策未知。
+资源受 manifest.size 和每次写前空间检查约束，不是累计缓存配额。准备报告的 write_limits/write_error 保留当次事实。
+asset_size_exceeded / asset_space_insufficient / asset_write_space_failed / asset_storage_error 不自动续写；
+prefix_bytes / written_bytes 不证明同步完成，先查询原上传 offset，再显式接续。
 deploy 仅部署配方选中的资源到已安装引擎的新目录；--check 只读取设备前提，仍经任务排队。
 install 仅对明确缺席的包新装单个 APK；--check 核元数据和设备前提，不升级、不启动应用。
 initialize 显式有界尝试 Launcher 初始化并停止本次目标；目录已就绪时不启动，首次配置保留，场景仍需核验。
@@ -47,6 +51,14 @@ MAX_MANIFEST = 64 << 10
 UPLOAD_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 UPLOAD_CHUNK = 1 << 20
 MAX_UPLOAD_CHUNK = 8 << 20
+ASSET_WRITE_ERRORS = {
+    "asset_size_exceeded": "资源超过清单声明大小",
+    "asset_space_insufficient": "本次资源写入的空间检查未通过",
+    "asset_write_space_failed": "资源写入发生空间错误",
+    "asset_storage_error": "资源写入存储故障",
+}
+ASSET_WRITE_NUMBERS = {"limit_bytes", "prefix_bytes", "written_bytes", "attempted_bytes",
+                       "available_bytes", "required_bytes", "response_bytes", "errno"}
 UPLOAD_PHASES = {"unclaimed", "receiving", "received", "sealed", "verifying", "verified", "failed",
                  "cancelled", "superseded", "busy", "unknown"}
 
@@ -79,7 +91,7 @@ class Client:
                 value = json.load(response)
         except urllib.error.HTTPError as error:
             status = error.code
-            code = None
+            code, value = None, None
             try:
                 raw = error.read(MAX_MANIFEST + 1)
                 value = json.loads(raw) if len(raw) <= MAX_MANIFEST else None
@@ -90,6 +102,19 @@ class Client:
                 pass
             finally:
                 error.close()
+            if code in ASSET_WRITE_ERRORS:
+                details = value.get("details")
+                safe_details = ({k: v for k, v in details.items()
+                                 if k in ASSET_WRITE_NUMBERS and type(v) is int and v >= 0}
+                                if isinstance(details, dict) else {})
+                if isinstance(details, dict) and details.get("phase") == "preflight":
+                    safe_details["phase"] = "preflight"
+                record = {"code": code, "details": safe_details}
+                if value.get("scope") == "game_asset_cache_transfer":
+                    record["scope"] = value["scope"]
+                raise RequestError(f"{ASSET_WRITE_ERRORS[code]}（HTTP {status}）；"
+                                   f"{json.dumps(record, ensure_ascii=False)}；"
+                                   "前缀字节不证明同步完成，续传以原上传 offset 为准", status, code) from None
             if 300 <= status < 400:
                 message = "节点返回重定向；为避免转发凭据或重发写入，已停止"
             elif status == 409:

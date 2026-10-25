@@ -14,6 +14,7 @@ import time
 import uuid
 import job_input_archive
 from artifact_io import relative_path, EXPORT_LIMITS
+from game_assets import ASSET_WRITE_LIMITS
 from job_policy import process_policies
 from runtime_identity import PROGRAMS, observe_program, program_file, runtime_snapshot
 
@@ -121,10 +122,11 @@ class NodeRead:
                               "process_policies": process_policies(), "programs": self._program_observations(),
                               "host_capacity": self.jobs.dispatch.queue.capacity(),
                               "input_limits": dict(job_input_archive.POLICY),
-                              "export_limits": dict(EXPORT_LIMITS)},
+                              "export_limits": dict(EXPORT_LIMITS),
+                              "asset_write_limits": dict(ASSET_WRITE_LIMITS)},
                 "target_binding": {"header": "X-Expected-Node-ID", "query": "expected_node_id",
                                    "unbound_legacy_requests": "accepted_without_target_guarantee"},
-                "capabilities": ["node.target-v1", "node.runtime-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1",
+                "capabilities": ["node.target-v1", "node.runtime-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.input-limits-v1", "jobs.export-limits-v1", "jobs.time-budget-v1", "jobs.disk-guard-v1", "jobs.host-capacity-v1", "jobs.state-events-v1",

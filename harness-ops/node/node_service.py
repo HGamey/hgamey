@@ -1126,7 +1126,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except job_inputs.InputError as e:
                 return self._send(e.status, {"code": e.code, "error": str(e)})
             except AssetUploadError as e:
-                return self._send(e.status, {"code": e.code, "error": e.message})
+                return self._send(e.status, e.payload)
             except (DirectoryError, GameError) as e:
                 return self._send(e.status, {"error": str(e)})
             except (SessionError, DeploymentError) as e:
@@ -1200,7 +1200,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     raise ValueError("runtime refresh requires an empty JSON object")
                 return self._send(200, node.refresh_runtime())
             except AssetUploadError as error:
-                return self._send(error.status, {"code": error.code, "error": error.message})
+                return self._send(error.status, error.payload)
             except (ValueError, OSError) as error:
                 return self._send(400, {"code": "invalid_runtime_refresh", "error": str(error)})
 
@@ -1360,7 +1360,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 code, result = uploads.write([unquote(p) for p in parts], json.loads(body or b"{}"))
                 return self._send(code, result)
             except AssetUploadError as e:
-                return self._send(e.status, {"code": e.code, "error": e.message})
+                return self._send(e.status, e.payload)
             except GameError as e:
                 return self._send(e.status, {"error": str(e)})
             except RequestConflict as e:
@@ -1403,7 +1403,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
                 return self._send(200, uploads.chunk(parts[1], int(offsets[0]), length, Body()))
             except AssetUploadError as e:
-                return self._send(e.status, {"code": e.code, "error": e.message})
+                return self._send(e.status, e.payload)
             except OSError:
                 return self._send(503, {"code": "upload_storage_error", "error": "upload could not be confirmed; query the same ID"})
 

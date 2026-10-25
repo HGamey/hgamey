@@ -3,6 +3,7 @@
 import argparse
 from contextlib import contextmanager
 import copy
+import errno
 import fcntl
 import hashlib
 import http.client
@@ -26,6 +27,8 @@ CHUNK = 1 << 20
 UPLOAD_READ = 256 << 10
 UPLOAD_MAX = 8 << 20
 RESERVE_BYTES = 64 << 20
+ASSET_WRITE_LIMITS = {"scope": "game_asset_cache_transfer", "size_bound": "manifest.size",
+                      "min_free_bytes": RESERVE_BYTES, "per_write_space_check": True}
 RECEIPT_SCHEMA = "phonefarm/game-asset@1"
 UPLOAD_SCHEMA = "phonefarm/game-upload@1"
 
@@ -38,6 +41,58 @@ class AssetUploadError(AssetError):
     def __init__(self, status, code, message):
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+        self.payload = {"code": code, "error": message}
+
+
+class AssetWriteError(AssetUploadError):
+    def __init__(self, status, code, message, details):
+        super().__init__(status, code, message)
+        self.details = details
+        self.payload.update(scope=ASSET_WRITE_LIMITS["scope"], details=details)
+
+
+class AssetWriter:
+    """One existing SHA owner writes a bounded prefix to its actual partial FD."""
+    def __init__(self, stream, size, offset):
+        self.fd, self.size, self.start, self.count = stream.fileno(), size, offset, offset
+        self.error = None
+        stream.seek(offset)
+
+    def details(self, **extra):
+        return {"limit_bytes": self.size, "prefix_bytes": self.count,
+                "written_bytes": self.count - self.start, **extra}
+
+    def write(self, data):
+        if self.error is not None:
+            raise self.error
+        view = memoryview(data)
+        try:
+            if len(view) > self.size - self.count:
+                raise AssetWriteError(413, "asset_size_exceeded", "resource exceeds its declared size; partial retained",
+                                      self.details(attempted_bytes=len(view)))
+            offset = 0
+            while offset < len(view):
+                space = os.fstatvfs(self.fd)
+                available = space.f_bavail * space.f_frsize
+                required = len(view) - offset + RESERVE_BYTES
+                if available < required:
+                    raise AssetWriteError(507, "asset_space_insufficient", "insufficient cache space for this write and reserve; partial retained",
+                                          self.details(available_bytes=available, required_bytes=required))
+                accepted = os.write(self.fd, view[offset:])
+                if accepted == 0:
+                    raise OSError(errno.EIO, "asset write made no progress")
+                self.count += accepted
+                offset += accepted
+            return len(view)
+        except (OSError, AssetWriteError) as error:
+            if isinstance(error, OSError):
+                full = error.errno in (errno.ENOSPC, errno.EDQUOT)
+                error = AssetWriteError(507 if full else 503,
+                                        "asset_write_space_failed" if full else "asset_storage_error",
+                                        "resource write failed; query the persisted prefix before continuing",
+                                        self.details(errno=error.errno))
+            self.error = error
+            raise error
 
 
 def _upload_id(value):
@@ -244,9 +299,15 @@ class AssetCache:
 
     @staticmethod
     def _space(store, remaining):
-        usage = os.fstatvfs(store.fd)
-        if usage.f_bavail * usage.f_frsize < max(0, remaining) + RESERVE_BYTES:
-            raise AssetError("insufficient cache space for remaining bytes and 64 MiB reserve")
+        try:
+            usage = os.fstatvfs(store.fd)
+        except OSError as error:
+            raise AssetWriteError(503, "asset_storage_error", "cache space observation failed before transfer",
+                                  {"phase": "preflight", "errno": error.errno}) from error
+        available, required = usage.f_bavail * usage.f_frsize, max(0, remaining) + RESERVE_BYTES
+        if available < required:
+            raise AssetWriteError(507, "asset_space_insufficient", "insufficient cache space for remaining bytes and 64 MiB reserve",
+                                  {"available_bytes": available, "required_bytes": required, "phase": "preflight"})
 
     @staticmethod
     def _digest(stream):
@@ -307,7 +368,7 @@ class AssetCache:
                          0o600, dir_fd=parent)
         finally:
             os.close(parent)
-        with os.fdopen(fd, "r+b") as stream:
+        with os.fdopen(fd, "r+b", buffering=0) as stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise AssetError("partial content must be a private regular file")
@@ -462,14 +523,14 @@ class AssetCache:
                 if offset + length > asset["size"]:
                     raise AssetUploadError(409, "upload_size_exceeded", "chunk exceeds the declared asset size")
                 self._space(store, asset["size"] - offset)
-                destination.seek(offset)
+                writer = AssetWriter(destination, asset["size"], offset)
                 remaining = length
                 try:
                     while remaining:
                         block = stream.read(min(UPLOAD_READ, remaining))
                         if not isinstance(block, bytes) or not block or len(block) > min(UPLOAD_READ, remaining):
                             raise AssetUploadError(400, "upload_incomplete", "chunk ended before its declared length; query the persisted offset")
-                        destination.write(block)
+                        writer.write(block)
                         remaining -= len(block)
                 except (OSError, http.client.HTTPException):
                     raise AssetUploadError(400, "upload_interrupted", "chunk was interrupted; query the persisted offset") from None
@@ -569,6 +630,15 @@ class AssetCache:
         except (OSError, ValueError, http.client.HTTPException):
             raise AssetError("download connection failed; partial retained") from None
         with response:
+            if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                raise AssetError("encoded download cannot be matched to declared byte offsets")
+            response_offset = offset if response.status == 206 else 0
+            declared_length = response.headers.get("Content-Length")
+            if declared_length is not None and declared_length.isascii() and declared_length.isdecimal():
+                if int(declared_length) > asset["size"] - response_offset:
+                    raise AssetWriteError(413, "asset_size_exceeded", "download Content-Length exceeds declared resource size; partial retained",
+                                          {"limit_bytes": asset["size"], "prefix_bytes": offset, "written_bytes": 0,
+                                           "response_bytes": int(declared_length)})
             if response.status == 206:
                 match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
                 if (not match or int(match[1]) != offset or int(match[2]) < offset
@@ -582,22 +652,20 @@ class AssetCache:
                     digest, offset = hashlib.sha256(), 0
             else:
                 raise AssetError("download returned an unsupported status; partial retained")
-            if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-                raise AssetError("encoded download cannot be matched to declared byte offsets")
             count, resumed = offset, offset
-            stream.seek(offset)
+            writer = AssetWriter(stream, asset["size"], offset)
             progress("downloading", count, resumed_bytes=resumed, transferred_bytes=0)
             try:
                 while True:
-                    chunk = response.read1(CHUNK)
+                    chunk = response.read1(min(CHUNK, asset["size"] - writer.count + 1))
                     if not chunk:
                         break
-                    stream.write(chunk)
+                    writer.write(chunk)
                     digest.update(chunk)
-                    count += len(chunk)
+                    count = writer.count
                     progress("downloading", count, resumed_bytes=resumed, transferred_bytes=count - resumed)
-                    if count > asset["size"]:
-                        break
+            except AssetWriteError:
+                raise
             except (OSError, ValueError, http.client.HTTPException):
                 raise AssetError("download interrupted; partial retained") from None
             if count < asset["size"]:
@@ -611,16 +679,16 @@ class AssetCache:
         # Existing bytes are hashed once; the final hash validates both this prefix
         # and the newly copied suffix against the declared content identity.
         source.seek(offset)
-        stream.seek(offset)
+        writer = AssetWriter(stream, asset["size"], offset)
         count = offset
         progress("importing", count, resumed_bytes=offset, transferred_bytes=0)
         while True:
-            chunk = source.read(CHUNK)
+            chunk = source.read(min(CHUNK, asset["size"] - writer.count + 1))
             if not chunk:
                 break
-            stream.write(chunk)
+            writer.write(chunk)
             digest.update(chunk)
-            count += len(chunk)
+            count = writer.count
             progress("importing", count, resumed_bytes=offset, transferred_bytes=count - offset)
         if stamp(before) != stamp(os.fstat(source.fileno())):
             raise AssetError("artifact changed during import; partial retained")
@@ -723,6 +791,7 @@ def run_manifest(manifest, cache_root, jobs_root, out, verify_upload=None, asset
         raise AssetError("asset index is only valid for upload verification")
     cache, output = AssetCache(cache_root), SafeRoot(out)
     report = {"schema_version": 1, "game_id": manifest["game_id"], "version": manifest["version"],
+              "write_limits": dict(ASSET_WRITE_LIMITS),
               "state": "preparing", "updated_at": time.time(), "assets": [
                   {"name": asset["name"], "sha256": asset["sha256"], "size": asset["size"], **cache.observe(asset)}
                   for asset in selected]}
@@ -760,7 +829,9 @@ def run_manifest(manifest, cache_root, jobs_root, out, verify_upload=None, asset
                 return 130
             except (OSError, ValueError) as error:
                 progress({**cache.observe(asset), "state": "failed", "error": str(error) if isinstance(error, AssetError)
-                          else "resource preparation failed; inspect partial and cache permissions"})
+                          else "resource preparation failed; inspect partial and cache permissions",
+                          **({"write_error": {"code": error.code, "details": error.details}}
+                             if isinstance(error, AssetWriteError) else {})})
             save(True)
         report["state"] = "verified" if all(item["state"] == "verified" for item in report["assets"]) else "incomplete"
         save(True)

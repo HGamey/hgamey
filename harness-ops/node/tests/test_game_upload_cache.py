@@ -1,13 +1,17 @@
+import errno
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import game_assets
 from game_assets import AssetCache, AssetUploadError, UPLOAD_READ, run_manifest
 
 
@@ -121,6 +125,62 @@ class GameUploadCacheTests(unittest.TestCase):
             self.assertEqual(rejected.read_bytes(), wrong)
             self.assertTrue(Path(str(rejected) + ".json").is_file())
             self.assertFalse(Path(self.cache.object_path(bad["sha256"])).exists())
+
+    def test_write_space_failures_preserve_actual_prefix_and_same_upload_owner(self):
+        verified = []
+        for fault, expected_code in (("space", "asset_space_insufficient"), ("enospc", "asset_write_space_failed")):
+            with self.subTest(fault=fault):
+                payload = (fault + " bounded upload bytes").encode() * 3
+                item, upload_id = asset(payload, fault), "same-" + fault
+                self.cache.upload_open(item, upload_id)
+                self.cache.upload_chunk(item, upload_id, 0, 7, io.BytesIO(payload[:7]))
+                partial = Path(self.cache.root) / "partial" / (item["sha256"] + ".part")
+                inode = partial.stat().st_ino
+                real_write, real_space = os.write, os.fstatvfs
+                accepted, refused = [], []
+                def target(fd):
+                    return os.fstat(fd).st_ino == inode
+                def space(fd):
+                    if target(fd) and accepted and fault == "space":
+                        return SimpleNamespace(f_bavail=0, f_frsize=4096)
+                    return real_space(fd)
+                def writing(fd, data):
+                    if not target(fd):
+                        return real_write(fd, data)
+                    self.assertFalse(refused, "a failed writer must not retry another write")
+                    if accepted and fault == "enospc":
+                        refused.append(True)
+                        raise OSError(errno.ENOSPC, "fixture partial write exhausted space")
+                    count = real_write(fd, data[:3])
+                    accepted.append(count)
+                    return count
+                with patch.object(game_assets.os, "fstatvfs", space), patch.object(game_assets.os, "write", writing):
+                    with self.assertRaises(game_assets.AssetWriteError) as caught:
+                        self.cache.upload_chunk(item, upload_id, 7, len(payload) - 7, io.BytesIO(payload[7:]))
+                error = caught.exception
+                self.assertEqual((error.status, error.code), (507, expected_code))
+                self.assertEqual(error.payload["scope"], "game_asset_cache_transfer")
+                self.assertEqual((error.details["written_bytes"], error.details["prefix_bytes"]), (3, 10))
+                self.assertEqual(sum(accepted), 3)
+                self.assertEqual(partial.read_bytes(), payload[:10])
+                self.assertEqual(partial.stat().st_ino, inode)
+                self.assertFalse(Path(self.cache.object_path(item["sha256"])).exists())
+                # A new reader queries the same upload, synchronizes the prefix,
+                # then the caller explicitly resumes at that authoritative offset.
+                self.cache = AssetCache(self.root / "cache")
+                with patch.object(self.cache, "_digest", side_effect=AssertionError("upload query rehashed content")):
+                    status = self.cache.upload_status(item, upload_id)
+                    self.assertEqual((status["state"], status["offset"]), ("open", 10))
+                    self.assertEqual(self.cache.upload_open(item, upload_id)["offset"], 10)
+                    resumed = self.cache.upload_chunk(item, upload_id, status["offset"], len(payload) - status["offset"],
+                                                      io.BytesIO(payload[status["offset"]:]))
+                self.assertEqual((resumed["state"], resumed["offset"]), ("open", len(payload)))
+                self.cache.upload_seal(item, upload_id)
+                self.assertEqual(self.cache.verify_upload(item, upload_id)["state"], "verified")
+                blob = Path(self.cache.object_path(item["sha256"]))
+                verified.append((blob, blob.stat().st_ino, payload))
+                for old_blob, old_inode, old_payload in verified:
+                    self.assertEqual((old_blob.stat().st_ino, old_blob.read_bytes()), (old_inode, old_payload))
 
 
 if __name__ == "__main__":
