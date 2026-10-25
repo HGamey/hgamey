@@ -257,6 +257,9 @@ class Jobs:
     def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None):
         self.root, self.bins = root, bins
         self.data_root = os.path.abspath(data_dir or root)
+        self.update_config_dir = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
+        if not os.path.isabs(self.update_config_dir):
+            self.update_config_dir = os.path.join(os.path.expanduser("~/node"), self.update_config_dir)
         self.dir = os.path.join(self.data_root, "jobs" if data_dir else "_jobs")
         os.makedirs(self.dir, exist_ok=True)
         self._read_root = SafeRoot(self.dir)

@@ -367,6 +367,10 @@ class JobDispatch:
                    DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
+        if spec["bin"] == "update_node":
+            # The fixed PF profile omits service credentials and ambient paths.
+            # This admin updater needs only the selected config directory.
+            env["HG_CONFIG_DIR"] = self.jobs.update_config_dir
         env.pop("PF_RECOVERY_OUT", None)
         if "device_binding" in spec:
             env.pop("DEVLOCK_INSTANCE_ID", None)

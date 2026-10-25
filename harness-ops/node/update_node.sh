@@ -202,12 +202,18 @@ if [[ ${1:-} == --git ]]; then
 fi
 
 src=$1
-# 实时看板的两个密码（查看 dash.pass / 掌舵 steer.pass）：上传目录里有 secrets/ 就装到 ~/.config/hgamey/（600）
+# 上传密码沿服务的外置配置根；相对 HG_CONFIG_DIR 与 launcher 一样按 ~/node 解释。
+config_dir=$(python3 - <<'PY'
+import os
+path = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
+print(path if os.path.isabs(path) else os.path.join(os.path.expanduser("~/node"), path))
+PY
+)
 for f in dash.pass steer.pass; do
   [ -f "$src/secrets/$f" ] || continue
-  mkdir -p "$HOME/.config/hgamey" && install -m 600 "$src/secrets/$f" "$HOME/.config/hgamey/$f"
+  (umask 077; mkdir -p "$config_dir" && install -m 600 "$src/secrets/$f" "$config_dir/$f")
   rm -f "$src/secrets/$f"   # 上传目录在 _jobs/<id>/in 下，不留副本
-  echo "updated ~/.config/hgamey/$f"
+  echo "updated $config_dir/$f"
 done
 for d in phonefarm game_opt_loop harness-ops; do
   [ -d "$src/$d" ] || continue

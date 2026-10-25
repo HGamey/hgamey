@@ -5,16 +5,114 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 
 NODE = Path(__file__).resolve().parents[1]
 NODE_ID = "d" * 32
+sys.path.insert(0, str(NODE))
+import job_runtime
+from node_service import Jobs
 
 
 @unittest.skipUnless(Path("/bin/zsh").exists(), "deployment wrapper requires zsh")
 class NodeDeployCLI(unittest.TestCase):
+    def test_upload_credentials_use_selected_config_root_and_preserve_failed_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "isolated home"
+            (home / "node").mkdir(parents=True)
+            default = home / ".config" / "hgamey"
+            default.mkdir(parents=True, mode=0o700)
+            originals = {name: ("old-" + name).encode() for name in ("dash.pass", "steer.pass")}
+            for name, value in originals.items():
+                (default / name).write_bytes(value)
+            selected = root / "selected config with spaces"
+            blocked = root / "config is a file"
+            blocked.write_bytes(b"keep this ordinary file")
+            env = {"HOME": str(home), "PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath}
+            for label, target, succeeds in (("explicit", selected, True),
+                                              ("default", default, True),
+                                              ("failed", blocked, False)):
+                with self.subTest(case=label):
+                    upload = root / (label + " upload")
+                    secrets = upload / "secrets"
+                    secrets.mkdir(parents=True)
+                    payloads = {name: (f"synthetic-{label}-{name}-credential\n").encode()
+                                for name in originals}
+                    for name, value in payloads.items():
+                        (secrets / name).write_bytes(value)
+                    if label == "explicit":
+                        workers, launch = [], job_runtime.launch
+
+                        def track_worker(*args, **kwargs):
+                            worker = launch(*args, **kwargs)
+                            workers.append(worker)
+                            return worker
+
+                        with patch.dict(os.environ, {**env, "HG_CONFIG_DIR": str(target)}, clear=True), \
+                                patch("job_dispatch.job_runtime.launch", side_effect=track_worker):
+                            jobs = Jobs(str(home / "node"), {"update_node": ("/bin/zsh", str(home / "node"))})
+                            # The installed profile filters the service environment;
+                            # use the fixture's own group, with no privileged entry.
+                            jobs.pf_env = {**env, "LANG": "C.UTF-8",
+                                           "PHONEFARM_SHARED_GID": str(os.getegid())}
+                            self.assertNotIn("HG_CONFIG_DIR", jobs.pf_env)
+                            try:
+                                value = jobs.start({"bin": "update_node",
+                                    "argv": [str(NODE / "update_node.sh"), str(upload)],
+                                    "device_access": "none", "resources": []}, b"", "config-upload")
+                                jid = value["id"]
+                                deadline = time.monotonic() + 10
+                                while jobs.dispatch.thread is not None and time.monotonic() < deadline:
+                                    time.sleep(.02)
+                                self.assertIsNone(jobs.dispatch.thread, "update dispatcher did not finish")
+                                self.assertEqual(len(workers), 1)
+                                meta = jobs.status(jid)
+                                self.assertEqual((meta["state"], meta["phase"]), ("finished", "finished"))
+                                self.assertEqual(jobs.dispatch.queue.get(jid)["state"], "done")
+                                returncode = meta["exit"]
+                                output_text = Path(jobs.path(jid, "log")).read_text()
+                            finally:
+                                for worker in workers:
+                                    try:
+                                        worker.wait(timeout=5)
+                                    except subprocess.TimeoutExpired:
+                                        worker.terminate()  # Only this fixture's owned worker.
+                                        worker.wait(timeout=5)
+                                if jobs.dispatch.thread is not None:
+                                    jobs.dispatch.thread.join(timeout=5)
+                                jobs._read_root.close()
+                    else:
+                        result = subprocess.run(["/bin/zsh", str(NODE / "update_node.sh"), str(upload)],
+                            cwd=home / "node", env={**env, **({"HG_CONFIG_DIR": str(target)}
+                                                           if label != "default" else {})},
+                            capture_output=True, text=True, timeout=10)
+                        returncode, output_text = result.returncode, result.stdout + result.stderr
+                    if succeeds:
+                        self.assertEqual(returncode, 0, output_text)
+                        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+                        for name, value in payloads.items():
+                            self.assertEqual((target / name).read_bytes(), value)
+                            self.assertEqual((target / name).stat().st_mode & 0o777, 0o600)
+                            self.assertFalse((secrets / name).exists())
+                        if label == "explicit":
+                            for name, value in originals.items():
+                                self.assertEqual((default / name).read_bytes(), value)
+                    else:
+                        self.assertNotEqual(returncode, 0)
+                        self.assertEqual(blocked.read_bytes(), b"keep this ordinary file")
+                        for name, value in payloads.items():
+                            self.assertEqual((secrets / name).read_bytes(), value)
+                            self.assertEqual((default / name).read_bytes(),
+                                             f"synthetic-default-{name}-credential\n".encode())
+                    self.assertFalse((home / "node" / ".deploy.lock").exists())
+                    for value in payloads.values():
+                        self.assertNotIn(value.decode().strip(), output_text)
+
     def test_wrapper_preserves_target_and_single_restart_never_retries_unknown(self):
         # Only this temporary sibling is executed by the copied wrapper. It
         # records invocation facts and never performs an update or restart.
