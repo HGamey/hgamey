@@ -72,6 +72,10 @@
 - @out 是本次任务在节点上的输出目录；任务结束后它的内容下载到 -o 指定的目录（缺省 ./pf-node-out/<id>）。
   下载分块进行（PF_NODE_CHUNK 字节一块，缺省 2MB），断了自动续，最后校验 sha256；中途中断的进度存在
   <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
+- 目录导出先单次请求元数据；jobs.export-limits-v1 节点的政策见 node.execution.export_limits。
+  export_budget_exceeded/export_space_insufficient/export_write_space_failed/export_storage_unavailable/export_busy
+  会保留原JSON原因及已有本地partial，不自动重新压缩或转为旧节点二进制下载；busy不当源变化。
+  预算超限时可显式选择较小子目录或原文件；空间检查不是预留或全节点缓存配额。旧节点政策未知。
 - --inputs 指定 phonefarm/job-inputs@1 小清单：同节点已收尾工件，每份最多8MiB、合计32MiB。
   显式JSON pointer绑定生成独立文件，源字节保留；不猜改脚本文字。脚本可用已有PF_JOB_IN，
   或在清单中选cwd=input。准备失败未启动命令；同request_id保持原结果，修好后显式用新ID。
@@ -181,7 +185,19 @@ class ClientError(Exception):
         self.code, self.body = code, body
 
 
-def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False, raise_errors=False):
+EXPORT_ERRORS = frozenset({"export_budget_exceeded", "export_space_insufficient", "export_write_space_failed",
+                           "export_storage_unavailable", "export_busy"})
+
+
+def response_error_code(body):
+    try:
+        value = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    return value.get("code") if isinstance(value, dict) and isinstance(value.get("code"), str) else None
+
+
+def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False, raise_errors=False, stop_error_codes=()):
     if TARGET is None:
         raise TargetError("target_unconfigured", "需先显式配置连接目标")
     if method == "GET" and path == "/node":
@@ -192,12 +208,14 @@ def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4x
             with TARGET.opener.open(request, timeout=timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
-            if e.code < 500 or raise_errors:
+            if e.code < 500 or raise_errors or stop_error_codes:
                 with e:
                     body = e.read((1 << 20) + 1)
-                if raise_4xx or raise_errors:
+                stop = response_error_code(body) in stop_error_codes
+                if raise_errors or stop or (e.code < 500 and raise_4xx):
                     raise ClientError(e.code, body)
-                sys.exit(f"pf-node: HTTP {e.code}，请求被拒绝；未跟随重定向")
+                if e.code < 500:
+                    sys.exit(f"pf-node: HTTP {e.code}，请求被拒绝；未跟随重定向")
             err = e
         # http.client.IncompleteRead 等（经 Cloudflare 读到一半断流）也重试
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
@@ -542,7 +560,13 @@ def download_out(jid, rel, part_dir):
     返回 (本地文件, 元信息)；节点服务是旧版（不认 meta）时返回 (bytes, None)。"""
     base = f"/jobs/{jid}/out?" + (urllib.parse.urlencode({"path": rel}) + "&" if rel else "")
     for restart in range(5):
-        raw = call("GET", base + "meta=1", timeout=600)  # 节点要先打 tar.gz，大目录会久一点
+        try:
+            raw = call("GET", base + "meta=1", timeout=600, attempts=1, raise_errors=True)
+        except ClientError as error:
+            sys.exit(f"pf-node: 目录/文件准备失败（HTTP {error.code}）：{error.body.decode('utf-8', errors='replace')}；"
+                     "已有本地 partial 保留，未自动重新压缩或降级下载。")
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as error:
+            sys.exit(f"pf-node: 导出准备结果未确认：{error}；已有本地 partial 保留，未自动重试元数据请求。")
         try:
             meta = json.loads(raw)
         except ValueError:
@@ -564,8 +588,11 @@ def download_out(jid, rel, part_dir):
                 n = min(CHUNK, size - have)
                 try:
                     chunk = call("GET", base + urllib.parse.urlencode({"offset": have, "length": n, "etag": etag}),
-                                 timeout=120, attempts=8, raise_4xx=True)
+                                 timeout=120, attempts=8, raise_4xx=True, stop_error_codes=EXPORT_ERRORS)
                 except ClientError as e:
+                    if response_error_code(e.body) in EXPORT_ERRORS:
+                        sys.exit(f"pf-node: 导出失败（HTTP {e.code}）：{e.body.decode('utf-8', errors='replace')}；"
+                                 f"已有分片保留在 {part}；未自动重试、重新压缩或降级下载。")
                     if e.code == 409:  # 节点上输出变了（任务还在写）：从头来
                         changed = True
                         break

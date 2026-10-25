@@ -1,21 +1,26 @@
 """Deterministic open-time races against local fixtures; never use devices."""
 import errno
+from contextlib import ExitStack
 import hashlib
 import http.client
 import io
+import json
 import os
 import stat
 from pathlib import Path
+import subprocess
 import sys
 import tarfile
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import artifact_io
+import node_service
 from artifact_io import ArtifactChanged, describe_file, ensure_unchanged
 from node_service import Jobs, make_handler, readonly_token
 
@@ -145,6 +150,182 @@ class ArtifactIOTests(unittest.TestCase):
             ensure_unchanged(cached)
             self.assertEqual(cached.read(), content)
         self.assertEqual(info1, info2)
+
+        # Two readers share only the job's filesystem lock, not a Python mutex.
+        peer = Jobs(self.jobs.root, {})
+        self.addCleanup(peer._read_root.close)
+        admin = "unit-test-export-token-not-production"
+        requests = []
+        handler = make_handler(None, self.jobs, admin)
+        class RecordingHandler(handler):
+            def do_GET(self):
+                requests.append(self.path)
+                return super().do_GET()
+
+            def log_message(self, *_):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def get(path, headers=None):
+            connection = http.client.HTTPConnection(*server.server_address, timeout=3)
+            try:
+                connection.request("GET", path, headers={"Authorization": "Bearer " + readonly_token(admin), **(headers or {})})
+                response = connection.getresponse()
+                return response.status, dict(response.getheaders()), response.read()
+            finally:
+                connection.close()
+
+        try:
+            identity = json.loads(get("/node")[2])
+            self.assertIn("jobs.export-limits-v1", identity["capabilities"])
+            self.assertEqual(identity["execution"]["export_limits"], artifact_io.EXPORT_LIMITS)
+            with patch.object(node_service, "archive_directory", side_effect=AssertionError("cache hit must not rebuild")):
+                status, _, data = get(f"/jobs/{self.jid}/out?meta=1")
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(data), info1)
+                status, headers, data = get(f"/jobs/{self.jid}/out", {"Range": "bytes=1-8"})
+                self.assertEqual((status, data), (206, content[1:9]))
+                self.assertEqual(headers["Content-Range"], f"bytes 1-8/{len(content)}")
+            with artifact_io.export_lock(self.jobs._read_root, self.jid) as jobfd:
+                self.assertEqual(os.fstat(jobfd).st_ino, self.job.stat().st_ino)
+                lock_identity = (self.job / ".out-export.lock").stat().st_ino
+                opened, _ = peer.out_blob(self.jid)
+                with opened:
+                    self.assertEqual(opened.read(), content, "an existing cache is readable during another build")
+                # Use a bounded thread so a regression to blocking flock cannot
+                # hang the suite; release the owned lock before joining it.
+                results = []
+                def another_builder():
+                    try:
+                        opened, _ = peer.out_blob(self.jid, "nested")
+                        opened.close()
+                        results.append(None)
+                    except BaseException as error:
+                        results.append(error)
+                contender = threading.Thread(target=another_builder, daemon=True)
+                contender.start()
+                contender.join(1)
+                completed_without_release = not contender.is_alive()
+                if completed_without_release:
+                    status, _, data = get(f"/jobs/{self.jid}/out?path=nested&meta=1")
+                    self.assertEqual((status, json.loads(data)["code"]), (409, "export_busy"))
+            contender.join(3)
+            self.assertTrue(completed_without_release, "second reader blocked on the existing builder")
+            self.assertIsInstance(results[0], artifact_io.ExportError)
+            self.assertEqual((results[0].status, results[0].code), (409, "export_busy"))
+            self.assertEqual((self.job / ".out-export.lock").stat().st_ino, lock_identity)
+
+            # Metadata rejection and a later chunk rejection both preserve the
+            # CLI's existing partial; export_busy is never a source-change retry.
+            destination = self.base / "download"
+            partial = self.base / f".pf-node-{self.jid}-{info1['etag']}.part"
+            partial.write_bytes(content[:5])
+            original = self.jobs.out_blob
+            env = {"PATH": "/usr/bin:/bin", "HOME": str(self.base), "LANG": "C.UTF-8",
+                   "PF_NODE_URL": f"http://127.0.0.1:{server.server_port}", "PF_NODE_ID": identity["node_id"],
+                   "PF_NODE_TOKEN": readonly_token(admin), "PYTHONDONTWRITEBYTECODE": "1"}
+            for reject_call in (1, 2):
+                calls = []
+                def busy_export(*args):
+                    calls.append(args)
+                    if len(calls) >= reject_call:
+                        raise artifact_io.ExportError(409, "export_busy", "fixture builder is occupied")
+                    return original(*args)
+                begin = len(requests)
+                with patch.object(self.jobs, "out_blob", busy_export):
+                    cli = subprocess.run([sys.executable, str(Path(node_service.__file__).with_name("pf-node")),
+                                          "--out-dir", str(destination), "out", self.jid],
+                                         env=env, cwd=self.base, capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(cli.returncode, 0, cli.stdout)
+                self.assertIn("export_busy", cli.stderr)
+                self.assertEqual(len(calls), reject_call)
+                self.assertEqual(sum("meta=1" in path for path in requests[begin:]), 1)
+                self.assertEqual(partial.read_bytes(), content[:5])
+            self.assertFalse(destination.exists())
+            self.assertEqual(self.file.read_bytes(), b"safe fixture bytes")
+            self.assertEqual(list(self.job.glob(".outcache-*.tmp")), [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+            self.jobs.directory.close()
+
+    def test_export_limits_short_writes_and_failures_preserve_sources_and_old_cache(self):
+        original_write = os.write
+        accepted = []
+        def short_write(fd, data):
+            count = original_write(fd, data[:7])
+            accepted.append(count)
+            return count
+        with patch.object(artifact_io.os, "write", short_write):
+            opened, _ = self.jobs.out_blob(self.jid)
+        with opened:
+            old_bytes = opened.read()
+        self.assertEqual(sum(accepted), len(old_bytes))
+        self.assertGreater(len(accepted), 3)
+        with tarfile.open(fileobj=io.BytesIO(old_bytes), mode="r:gz") as archive:
+            self.assertEqual(archive.extractfile("./nested/result.bin").read(), self.file.read_bytes())
+        cache = next(self.job.glob(".outcache-*.tar.gz"))
+        descriptor = Path(str(cache) + ".json")
+        old_descriptor, old_inode = descriptor.read_bytes(), cache.stat().st_ino
+        changed_source = b"source changed after the valid old cache"
+        self.file.write_bytes(changed_source)
+        original_create = self.jobs._read_root.create_file
+        for fault, limits, status, code in (
+                ("entries", {"entries": 2}, 413, "export_budget_exceeded"),
+                ("source_bytes", {"source_bytes": len(changed_source) - 1}, 413, "export_budget_exceeded"),
+                ("compressed_bytes", {"compressed_bytes": 16}, 413, "export_budget_exceeded"),
+                ("space", {}, 507, "export_space_insufficient"),
+                ("enospc", {}, 507, "export_write_space_failed")):
+            with self.subTest(fault=fault):
+                temporary, writes, failed = [], [], []
+                def created(rel):
+                    file = original_create(rel)
+                    if ".outcache-" in rel and rel.endswith(".tmp"):
+                        temporary.append((rel, os.fstat(file.fileno()).st_ino))
+                    return file
+                def writing(fd, data):
+                    if failed:
+                        self.fail("gzip attempted another actual write after a latched failure")
+                    if fault == "enospc" and writes:
+                        failed.append(True)
+                        raise OSError(errno.ENOSPC, "fixture cache space exhausted")
+                    count = original_write(fd, data[:1] if fault == "enospc" else data)
+                    writes.append(count)
+                    return count
+                with ExitStack() as patches:
+                    patches.enter_context(patch.dict(artifact_io.EXPORT_LIMITS, limits))
+                    patches.enter_context(patch.object(self.jobs._read_root, "create_file", created))
+                    patches.enter_context(patch.object(artifact_io.os, "write", writing))
+                    if fault == "space":
+                        patches.enter_context(patch.object(artifact_io.os, "fstatvfs",
+                                                          return_value=SimpleNamespace(f_bavail=0, f_frsize=4096)))
+                    with self.assertRaises(artifact_io.ExportError) as caught:
+                        self.jobs.out_blob(self.jid)
+                error = caught.exception
+                self.assertEqual((error.status, error.code), (status, code))
+                self.assertEqual(error.payload["scope"], "directory_export_cache_generation")
+                if fault in ("entries", "source_bytes", "compressed_bytes"):
+                    self.assertEqual(error.details["dimension"], fault)
+                    self.assertGreater(error.details["observed"], error.details["limit"])
+                if fault in ("entries", "source_bytes"):
+                    self.assertEqual(temporary, [], "static source budget must reject before creating a cache")
+                if fault == "compressed_bytes":
+                    self.assertLessEqual(sum(writes), 16, "gzip close must not append beyond the limit")
+                if fault == "space":
+                    self.assertEqual(writes, [])
+                    self.assertEqual(error.details["available_bytes"], 0)
+                if fault == "enospc":
+                    self.assertTrue(failed)
+                    self.assertEqual(sum(writes), 1)
+                    self.assertEqual(error.details["written_bytes"], 1)
+                self.assertEqual(self.file.read_bytes(), changed_source)
+                self.assertEqual(cache.read_bytes(), old_bytes)
+                self.assertEqual(cache.stat().st_ino, old_inode)
+                self.assertEqual(descriptor.read_bytes(), old_descriptor)
+                self.assertEqual(list(self.job.glob(".outcache-*.tmp")), [])
 
     def test_log_and_metadata_swap_to_symlink_are_rejected(self):
         for name, read in (("log", lambda: self.jobs.log_from(self.jid, 0)),

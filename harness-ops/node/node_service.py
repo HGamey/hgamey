@@ -29,7 +29,7 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 显式 devlock 管理命令的 acquire/renew/release 等身份仍可跨请求，不改写其位置参数。
 """
 import sqlite3
-import argparse, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
+import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
@@ -58,7 +58,7 @@ from job_policy import PolicyUnavailable, require_policy
 from node_lease import LeaseState, device_access, job_lease_receipts
 from node_session import session_call, recover_session, recovery_plan, SessionError, MAX_REQUEST
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
-                         directory_signature, archive_directory)
+                         directory_signature, archive_directory, EXPORT_LIMITS, ExportError, export_lock)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -270,7 +270,7 @@ class Jobs:
         self.leases = LeaseState(bins, env=self.pf_env)
         self.device_scopes = DeviceScope(self)
         self.dispatch = JobDispatch(self, max_running, host_capacity=host_capacity)
-        self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
+        self._out_guard, self._sha_cache = threading.Lock(), {}
 
     def path(self, jid, *p):
         if not re.fullmatch(r"[0-9a-f]{12}", jid or ""):
@@ -566,44 +566,95 @@ class Jobs:
                 f.close()
                 raise
         cache = jid + "/.outcache-" + hashlib.sha1(rel.encode()).hexdigest()[:10] + ".tar.gz"
-        with self._out_guard:
-            lock = self._out_locks.setdefault(cache, threading.Lock())
-        try:
-            with lock:
-                signature = directory_signature(fd)
+        phase, replaced = "inspect", False
+
+        def storage_error(error, failed_phase, original=None):
+            space = failed_phase != "cleanup" and error.errno in {errno.ENOSPC, errno.EDQUOT}
+            details = {"phase": failed_phase, "cache_replaced": replaced, "errno": error.errno}
+            if original is not None and isinstance(original, ExportError):
+                details["original_code"] = original.code
+            return ExportError(507 if space else 503,
+                               "export_write_space_failed" if space else "export_storage_unavailable",
+                               "directory export temporary cleanup failed" if failed_phase == "cleanup"
+                               else "directory export storage operation failed", details)
+
+        def cached(signature):
+            try:
+                old = self._read_root.read_json(cache + ".json")
+                if old.get("sig") != signature:
+                    return None
+                f = self._read_root.open_file(cache)
                 try:
-                    old = self._read_root.read_json(cache + ".json")
-                    if old.get("sig") == signature:
-                        f = self._read_root.open_file(cache)
-                        try:
-                            info = describe_file(f, self._sha_cache, self._out_guard)
-                            if info["size"] == old.get("size") and info["sha256"] == old.get("info", {}).get("sha256"):
-                                return f, {"kind": "tar.gz", "path": os.path.normpath(rel or "."), **info}
-                        except BaseException:
-                            f.close()
-                            raise
-                        f.close()
-                except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                    pass
-                temporary = cache + "." + uuid.uuid4().hex + ".tmp"
-                f = self._read_root.create_file(temporary)
-                try:
-                    archived_signature = archive_directory(fd, f)
-                    if archived_signature != signature:
-                        raise ArtifactChanged("artifact directory changed before archiving; retry")
-                    self._read_root.replace(temporary, cache)
-                    info = {"kind": "tar.gz", "path": os.path.normpath(rel or "."),
-                            **describe_file(f, self._sha_cache, self._out_guard)}
-                    self._read_root.write_json(cache + ".json", {"sig": signature, "size": info["size"], "info": info})
-                    return f, info
+                    info = describe_file(f, self._sha_cache, self._out_guard)
+                    if info["size"] == old.get("size") and info["sha256"] == old.get("info", {}).get("sha256"):
+                        return f, {"kind": "tar.gz", "path": os.path.normpath(rel or "."), **info}
                 except BaseException:
                     f.close()
                     raise
+                f.close()
+            except ExportError:
+                raise
+            except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError):
+                # A missing or invalid cache may be regenerated; an I/O failure
+                # is reported instead of silently starting another write.
+                pass
+            return None
+
+        try:
+            signature = directory_signature(fd, limits=EXPORT_LIMITS)
+            phase = "cache_lookup"
+            hit = cached(signature)
+            if hit is not None:
+                return hit
+            phase = "lock"
+            with export_lock(self._read_root, jid) as space_fd:
+                phase = "cache_lookup"
+                hit = cached(signature)
+                if hit is not None:
+                    return hit
+                temporary = cache + "." + uuid.uuid4().hex + ".tmp"
+                phase = "create"
+                f = self._read_root.create_file(temporary)
+                failure = None
+                try:
+                    phase = "archive"
+                    archived_signature = archive_directory(fd, f, limits=EXPORT_LIMITS, space_fd=space_fd)
+                    if archived_signature != signature:
+                        raise ArtifactChanged("artifact directory changed before archiving; retry")
+                    phase = "publish_archive"
+                    replaced = None
+                    self._read_root.replace(temporary, cache)
+                    replaced = True
+                    # Rename changes the file stamp: keep the original single
+                    # content hash after publication, then publish its metadata.
+                    phase = "describe"
+                    info = {"kind": "tar.gz", "path": os.path.normpath(rel or "."),
+                            **describe_file(f, self._sha_cache, self._out_guard)}
+                    phase = "publish_metadata"
+                    self._read_root.write_json(cache + ".json", {"sig": signature, "size": info["size"], "info": info})
+                except BaseException as error:
+                    failure = error
                 finally:
                     try:
                         self._read_root.unlink(temporary)
                     except FileNotFoundError:
                         pass
+                    except OSError as error:
+                        failure = storage_error(error, "cleanup", failure)
+                    if failure is not None:
+                        try:
+                            f.close()
+                        except OSError as error:
+                            if isinstance(failure, ExportError):
+                                failure = ExportError(failure.status, failure.code, str(failure),
+                                                      {**failure.details, "close_errno": error.errno})
+                            else:
+                                failure = storage_error(error, "close", failure)
+                if failure is not None:
+                    raise failure
+                return f, info
+        except OSError as error:
+            raise storage_error(error, phase) from error
         finally:
             os.close(fd)
 
@@ -1082,6 +1133,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
                 return self._send(404, {"error": "no such job"})
+            except ExportError as e:
+                return self._send(e.status, e.payload)
             except ArtifactChanged as e:
                 return self._send(409, {"error": str(e)})
             except ValueError as e:

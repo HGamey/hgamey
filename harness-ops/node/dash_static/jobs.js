@@ -9,6 +9,7 @@
   let jobInputsRevision = 0, jobInputsBusy = false, jobInputsRead = false, inputReference = '', inputReferenceRevision = 0;
   let nodeRevision = 0, listRevision = 0, detailRevision = 0, artifactRevision = 0, metadataRevision = 0, logRevision = 0;
   let jobsCursor = null, filesCursor = null, selected = '', directory = '';
+  let exportRevision = 0, exportController = null;
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
   let activeFilters = {query: '', state: ''};
   let currentJob = null, access = null, accessRevision = 0, accessBusy = false, accessError = '';
@@ -302,9 +303,9 @@
   function errorText(error) {
     return error.name === 'AbortError' ? '请求超时，请重试。' : (error.message || '网络错误，请重试。');
   }
-  async function request(url, consume, target = undefined) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+  async function request(url, consume, target = undefined, options = {}) {
+    const controller = options.controller || new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 15000);
     try {
       const response = await HGTarget.fetch(url, {credentials: 'same-origin', cache: 'no-store', signal: controller.signal}, target === undefined ? {} : {target});
       if (response.status === 401 || response.status === 403 || (response.redirected && new URL(response.url).pathname === '/dash/login')) {
@@ -322,11 +323,11 @@
       return await consume(response);
     } finally { clearTimeout(timeout); }
   }
-  async function json(url, target = undefined) {
+  async function json(url, target = undefined, options = {}) {
     return request(url, async response => {
       if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('服务返回了非 JSON 内容，请检查登录或节点连接。');
       return response.json();
-    }, target);
+    }, target, options);
   }
   async function post(url, body, headers = {}, target = undefined) {
     const controller = new AbortController();
@@ -1253,7 +1254,7 @@
     } catch (error) {
       if (revision === nodeRevision) message('node-message', refreshRuntime ? `程序观察结果未取得：${error.message || '连接中断'}。下方保留上次观察，当前身份尚未确认；请读取节点缓存核对，不会自动重试。` : errorText(error), true);
       if (refreshRuntime && [401, 403].includes(error.status)) await loadAccess();
-    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); renderJobEvents(); renderInputLimits(); } }
+    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); renderJobEvents(); renderInputLimits(); renderExportLimits(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -1331,6 +1332,7 @@
     resetJobInputs();
     resetInputReference();
     resetSession();
+    resetDirectoryExport();
     const revision = ++detailRevision;
     ++artifactRevision;
     ++metadataRevision;
@@ -2313,6 +2315,53 @@
     $('breadcrumbs').lastElementChild.setAttribute('aria-current', 'location');
   }
   function openDirectory(path) { directory = path; loadArtifacts(); }
+  function renderExportLimits() {
+    const supported = nodeInfo?.capabilities?.includes('jobs.export-limits-v1'), policy = supported ? nodeInfo.execution?.export_limits : null;
+    message('export-policy-message', policy ? '节点声明的单次目录导出政策；不回填旧节点限值。' : '此节点未提供目录导出政策，限值未知；不会按新版限额推断。');
+    facts('export-policy-info', policy ? [['源文件逻辑字节上限', inputBytes(policy.source_bytes)], ['压缩输出字节上限', inputBytes(policy.compressed_bytes)],
+      ['目录与文件总条目上限', policy.entries], ['目录深度上限', policy.max_depth], ['写入时最低保留空间', inputBytes(policy.min_free_bytes)],
+      ['限值范围', policy.scope === 'directory_export_cache_generation' ? '目录导出缓存生成（含根目录；压缩输出含格式头尾和填充）' : text(policy.scope)]] : []);
+  }
+  function resetDirectoryExport() {
+    ++exportRevision;
+    exportController?.abort(); exportController = null;
+    busy('prepare-directory-export', false);
+    $('prepare-directory-export').disabled = !selected || !!HGTarget.problem();
+    $('directory-export-download').hidden = true;
+    $('directory-export-download').removeAttribute('href');
+    $('directory-export-info').hidden = true; $('directory-export-info').replaceChildren();
+    $('directory-export-error').hidden = true; $('directory-export-error').textContent = '';
+    message('directory-export-message', '仅点击准备按钮才请求当前目录打包。页面离开不代表节点已停止生成缓存；不会自动重试。');
+  }
+  async function prepareDirectoryExport() {
+    if (!selected || $('prepare-directory-export').disabled || exportController) return;
+    const id = selected, path = directory, target = HGTarget.binding(), revision = ++exportRevision;
+    const controller = new AbortController(); exportController = controller;
+    busy('prepare-directory-export', true, '正在准备目录…');
+    $('directory-export-download').hidden = true; $('directory-export-download').removeAttribute('href');
+    $('directory-export-info').hidden = true; $('directory-export-info').replaceChildren();
+    $('directory-export-error').hidden = true; $('directory-export-error').textContent = '';
+    message('directory-export-message', `正在准备 ${path || '输出根目录'}；只发送一次元数据请求，可能需要等待压缩完成。`);
+    const query = new URLSearchParams({path, meta: '1'});
+    try {
+      const meta = await json(`${API}/jobs/${encodeURIComponent(id)}/out?${query}`, target, {controller, timeoutMs: 600000});
+      if (revision !== exportRevision || selected !== id || directory !== path) return;
+      if (meta?.kind !== 'tar.gz' || meta.path !== (path || '.') || !Number.isSafeInteger(meta.size) || meta.size < 0 || typeof meta.etag !== 'string' || !meta.etag) throw new Error('目录元数据未确认，未提供下载链接。');
+      facts('directory-export-info', [['已准备目录', path || '输出根目录'], ['压缩文件大小', inputBytes(meta.size)], ['本页收到回包', new Date().toLocaleString()]]);
+      $('directory-export-info').hidden = false;
+      const link = $('directory-export-download');
+      link.href = HGTarget.url(`${API}/jobs/${encodeURIComponent(id)}/out?${new URLSearchParams({path, etag: meta.etag})}`, target);
+      link.download = `${id}-${path.split('/').pop() || 'out'}.tar.gz`; link.hidden = false;
+      message('directory-export-message', '目录已准备，可通过链接下载；不会把 tar 读入页面内存。源文件变化后可能需重新显式准备。');
+    } catch (error) {
+      if (revision !== exportRevision || selected !== id || directory !== path) return;
+      const code = error.payload?.code, hint = code === 'export_budget_exceeded' ? '请选择较小子目录或原文件。' : code === 'export_busy' ? '此任务已有目录缓存正在生成；不是源文件变化，请稍后手动核对。' : '';
+      message('directory-export-message', `${code ? `${code}（HTTP ${error.status}）` : error.name === 'AbortError' ? '准备请求超时，结果尚未确认。' : error.message || '目录准备结果未确认。'} ${hint} 未自动重试；原文件入口仍可使用。`, true);
+      if (error.payload) { $('directory-export-error').textContent = JSON.stringify(error.payload, null, 2); $('directory-export-error').hidden = false; }
+    } finally {
+      if (revision === exportRevision) { exportController = null; busy('prepare-directory-export', false); $('prepare-directory-export').disabled = !!HGTarget.problem(target); }
+    }
+  }
   function addArtifact(file) {
     const item = el('li', null, 'artifact-item');
     const main = el('div', null, 'artifact-main');
@@ -2348,7 +2397,7 @@
     const revision = ++artifactRevision;
     ++metadataRevision;
     resetInputReference();
-    if (!append) { filesCursor = null; $('artifact-list').replaceChildren(); $('more-artifacts').hidden = true; }
+    if (!append) { resetDirectoryExport(); filesCursor = null; $('artifact-list').replaceChildren(); $('more-artifacts').hidden = true; }
     $('artifact-meta').hidden = true;
     regionBusy('artifacts', true);
     busy('refresh-artifacts', true, '读取中…');
@@ -2635,6 +2684,7 @@
   $('load-job-inputs').addEventListener('click', loadJobInputs);
   $('copy-input-manifest').addEventListener('click', copyInputManifest);
   $('refresh-artifacts').addEventListener('click', () => loadArtifacts());
+  $('prepare-directory-export').addEventListener('click', prepareDirectoryExport);
   $('more-artifacts').addEventListener('click', () => loadArtifacts(true));
   $('log-next').addEventListener('click', loadLog);
   $('log-reset').addEventListener('click', () => { resetLog(); loadLog(); });
@@ -2740,6 +2790,7 @@
   const initial = new URLSearchParams(location.hash.slice(1)).get('job');
   if (initial && /^[0-9a-f]{12}$/.test(initial)) selected = initial;
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);
-  document.addEventListener('hgamey-target-change', () => { ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); if (jobEventsBusy && HGTarget.problem(jobEventPosition?.target)) stopJobEvents('节点身份需要重新核对；原浏览位置保留。'); syncJobEventScope(); });
+  document.addEventListener('hgamey-target-change', () => { resetDirectoryExport(); ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); if (jobEventsBusy && HGTarget.problem(jobEventPosition?.target)) stopJobEvents('节点身份需要重新核对；原浏览位置保留。'); syncJobEventScope(); });
+  window.addEventListener('pagehide', resetDirectoryExport);
   refreshAll();
 })();

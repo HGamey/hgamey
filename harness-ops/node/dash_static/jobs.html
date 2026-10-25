@@ -405,6 +405,11 @@
           <div class="section-heading"><h3 id="artifacts-heading">输出文件</h3><button id="refresh-artifacts" class="ghost" type="button">刷新目录</button></div>
           <p id="artifact-input-help" class="note"></p>
           <nav id="breadcrumbs" class="breadcrumbs" aria-label="输出目录"></nav>
+          <details class="command-details"><summary>目录下载限值</summary><p id="export-policy-message" class="note"></p><dl id="export-policy-info" class="facts"></dl><p class="note">仅限制本次目录缓存生成；不是全节点累计缓存配额或空间预留。目录预算不足时可选择较小子目录或下载原文件。</p></details>
+          <div class="submission-actions"><button id="prepare-directory-export" class="ghost" type="button" disabled>准备当前目录下载</button><a id="directory-export-download" class="ghost" hidden>下载已准备的目录</a></div>
+          <p id="directory-export-message" class="note" role="status">仅点击准备按钮才请求目录打包，不自动重试。</p>
+          <dl id="directory-export-info" class="facts" hidden></dl>
+          <pre id="directory-export-error" class="command-box" hidden></pre>
           <p id="artifact-message" class="note" role="status"></p>
           <ul id="artifact-list" class="artifact-list"></ul>
           <button id="more-artifacts" class="ghost more" type="button" hidden>加载更多文件</button>

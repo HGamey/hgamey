@@ -1,5 +1,7 @@
 """Descriptor-relative host artifacts. Never reopen a checked untrusted path."""
 import errno
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -10,6 +12,118 @@ import uuid
 
 class ArtifactChanged(ValueError):
     """A writer changed an artifact while it was being described or archived."""
+
+
+EXPORT_LIMITS = {"scope": "directory_export_cache_generation", "source_bytes": 512 << 20,
+                 "compressed_bytes": 512 << 20, "entries": 4096, "max_depth": 64,
+                 "min_free_bytes": 64 << 20}
+
+
+class ExportError(ValueError):
+    def __init__(self, status, code, message, details=None):
+        super().__init__(message)
+        self.status, self.code, self.details = status, code, details or {}
+        self.payload = {"code": code, "error": message, "scope": "directory_export_cache_generation"}
+        if self.details:
+            self.payload["details"] = self.details
+
+
+def _export_limit(dimension, limit, observed):
+    return ExportError(413, "export_budget_exceeded", "directory export exceeds " + dimension
+                       + "; choose a smaller directory or an original file",
+                       {"dimension": dimension, "limit": limit, "observed": observed})
+
+
+@contextmanager
+def export_lock(store, jid):
+    """A stable per-job builder lock shared by threads and service instances."""
+    directory = store.open_fd(jid, directory=True)
+    lock_fd = None
+    try:
+        lock_fd = os.open(".out-export.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                          0o600, dir_fd=directory)
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            raise ExportError(503, "export_storage_unavailable", "export lock is not a regular file")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ExportError(409, "export_busy", "another directory export is being generated for this job; retry explicitly later") from None
+        yield directory
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(directory)
+
+
+class ExportWriter:
+    """Count real gzip writes, including close/trailer, without buffering copies."""
+    def __init__(self, output, limits, space_fd=None):
+        self.output, self.limits = output, limits
+        self.fd = output.fileno()
+        self.space_fd = self.fd if space_fd is None else space_fd
+        self.written = 0
+        self.error = None
+
+    def _failed(self, error):
+        if not isinstance(error, ExportError):
+            full = error.errno in (errno.ENOSPC, errno.EDQUOT)
+            error = ExportError(507 if full else 503,
+                                "export_write_space_failed" if full else "export_storage_unavailable",
+                                "directory export write failed: " + str(error),
+                                {"written_bytes": self.written, "errno": error.errno})
+        self.error = error
+        raise error
+
+    def write(self, data):
+        if self.error is not None:
+            raise self.error
+        view = memoryview(data)
+        try:
+            if self.written + len(view) > self.limits["compressed_bytes"]:
+                raise _export_limit("compressed_bytes", self.limits["compressed_bytes"], self.written + len(view))
+            offset = 0
+            while offset < len(view):
+                space = os.fstatvfs(self.space_fd)
+                available = space.f_bavail * space.f_frsize
+                required = len(view) - offset + self.limits["min_free_bytes"]
+                if available < required:
+                    raise ExportError(507, "export_space_insufficient", "insufficient space for directory export and reserve",
+                                      {"available_bytes": available, "required_bytes": required,
+                                       "written_bytes": self.written})
+                count = os.write(self.fd, view[offset:])
+                if count == 0:
+                    raise OSError(errno.EIO, "export write made no progress")
+                offset += count
+                self.written += count
+            return len(view)
+        except (OSError, ExportError) as error:
+            self._failed(error)
+
+    def tell(self):
+        return self.written
+
+    def flush(self):
+        if self.error is not None:
+            raise self.error
+        try:
+            self.output.flush()
+        except OSError as error:
+            self._failed(error)
+
+
+class _ExportTreeBudget:
+    def __init__(self, limits):
+        self.limits, self.entries, self.source_bytes = limits, 0, 0
+
+    def entry(self):
+        self.entries += 1
+        if self.entries > self.limits["entries"]:
+            raise _export_limit("entries", self.limits["entries"], self.entries)
+
+    def payload(self, size):
+        self.source_bytes += size
+        if self.source_bytes > self.limits["source_bytes"]:
+            raise _export_limit("source_bytes", self.limits["source_bytes"], self.source_bytes)
 
 
 def relative_path(value):
@@ -317,19 +431,33 @@ def ensure_unchanged(file):
         raise ArtifactChanged("artifact changed before download; retry")
 
 
-def walk_directory(directory, prefix=".", depth=0):
-    if depth > 64:
+def walk_directory(directory, prefix=".", depth=0, *, limits=None, _budget=None, _counted=False):
+    budget = _budget if _budget is not None else _ExportTreeBudget(limits) if limits is not None else None
+    maximum = budget.limits["max_depth"] if budget is not None else 64
+    if depth > maximum:
+        if budget is not None:
+            raise _export_limit("max_depth", maximum, depth)
         raise ValueError("artifact directory nesting exceeds 64")
+    if budget is not None and not _counted:
+        budget.entry()
     before = stamp(os.fstat(directory))
     yield prefix, directory, os.fstat(directory)
-    for name in sorted(os.listdir(directory)):
+    names = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if budget is not None:
+                budget.entry()  # Charge globally before retaining a name or descending.
+            names.append(entry.name)
+    for name in sorted(names):
         child = open_child(directory, name)
         try:
             st = os.fstat(child)
             path = prefix + "/" + name
             if stat.S_ISDIR(st.st_mode):
-                yield from walk_directory(child, path, depth + 1)
+                yield from walk_directory(child, path, depth + 1, _budget=budget, _counted=True)
             else:
+                if budget is not None:
+                    budget.payload(st.st_size)
                 yield path, child, st
                 if stamp(os.fstat(child)) != stamp(st):
                     raise ArtifactChanged("artifact changed while archiving; retry")
@@ -343,28 +471,36 @@ def _signature_update(digest, name, st):
     digest.update(json.dumps([name, stamp(st)], ensure_ascii=True).encode() + b"\n")
 
 
-def directory_signature(directory):
+def directory_signature(directory, limits=None):
     digest = hashlib.sha256()
-    for name, _, st in walk_directory(directory):
+    for name, _, st in walk_directory(directory, limits=limits):
         _signature_update(digest, name, st)
     return digest.hexdigest()
 
 
-def archive_directory(directory, output):
+def archive_directory(directory, output, limits=None, space_fd=None):
     """Add only opened directories/regular files; never let tar reopen a path."""
     digest = hashlib.sha256()
-    with tarfile.open(fileobj=output, mode="w:gz") as archive:
-        for name, fd, st in walk_directory(directory):
-            _signature_update(digest, name, st)
-            info = tarfile.TarInfo(name)
-            info.mode = stat.S_IMODE(st.st_mode)
-            info.uid, info.gid, info.mtime = st.st_uid, st.st_gid, st.st_mtime
-            if stat.S_ISDIR(st.st_mode):
-                info.type = tarfile.DIRTYPE
-                archive.addfile(info)
-            else:
-                info.size = st.st_size
-                with os.fdopen(os.dup(fd), "rb") as source:
-                    archive.addfile(info, source)
-    output.flush()
+    writer = ExportWriter(output, limits, space_fd) if limits is not None else output
+    with tarfile.open(fileobj=writer, mode="w:gz") as archive:
+        try:
+            for name, fd, st in walk_directory(directory, limits=limits):
+                _signature_update(digest, name, st)
+                info = tarfile.TarInfo(name)
+                info.mode = stat.S_IMODE(st.st_mode)
+                info.uid, info.gid, info.mtime = st.st_uid, st.st_gid, st.st_mtime
+                if stat.S_ISDIR(st.st_mode):
+                    info.type = tarfile.DIRTYPE
+                    archive.addfile(info)
+                else:
+                    info.size = st.st_size
+                    with os.fdopen(os.dup(fd), "rb") as source:
+                        archive.addfile(info, source)
+        except ExportError as error:
+            # A tree budget can fail before gzip.write sees it. Prevent close
+            # from adding a trailer after that rejection as well.
+            if isinstance(writer, ExportWriter):
+                writer.error = error
+            raise
+    writer.flush()
     return digest.hexdigest()
