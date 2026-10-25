@@ -48,6 +48,7 @@ from node_deployments import NodeDeployments, DeploymentError
 from game_assets import AssetUploadError, UPLOAD_MAX
 import job_runtime
 import job_inputs
+import job_budget
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable, require_policy
@@ -205,6 +206,15 @@ def _job_lock_args(argv, owner):
     return result
 
 
+def _job_time_budget(spec):
+    if "time_budget" not in spec:
+        return None
+    value = job_budget.normalize(spec["time_budget"])
+    if device_access(spec) == "recovery":
+        raise ValueError("time_budget is not supported for recovery jobs")
+    return value
+
+
 class Jobs:
     def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None):
         self.root, self.bins = root, bins
@@ -263,6 +273,7 @@ class Jobs:
         access = device_access(spec)
         if access not in {"none", "write", "recovery"}:
             raise ValueError("device_access must be none, write or recovery")
+        time_budget = _job_time_budget(spec)
         recovery_for = spec.get("recovery_for")
         device_binding = validate_device_job(spec, typed_recovery=access == "recovery" and "device_binding" in spec)
         resources = spec.get("resources", [] if device_binding else
@@ -289,6 +300,7 @@ class Jobs:
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"), "resources": sorted(set(resources)),
                 **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
+                **({"time_budget": time_budget} if time_budget is not None else {}),
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
                 **({"device_binding": device_binding} if device_binding else {}),
@@ -1369,6 +1381,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     try:
                         spec = json.loads(self.headers.get("X-Job", "{}"))
                         require_policy(spec)
+                        _job_time_budget(spec)
                         validate_device_job(spec, typed_recovery=device_access(spec) == "recovery" and "device_binding" in spec)
                         if "device_binding" in spec and not (self.headers.get("X-Expected-Node-ID") or
                                 parse_qs(urlparse(self.path).query).get("expected_node_id")):

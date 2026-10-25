@@ -12,6 +12,7 @@ import traceback
 
 from artifact_io import SafeRoot
 from job_policy import require_policy, requested_policy
+from job_budget import RunBudget, normalize as normalize_budget
 from runtime_identity import read_program_report, runtime_snapshot
 
 
@@ -36,7 +37,7 @@ def _worker_command(job_dir, lock_fd):
 
 
 def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None,
-           privileged_entry=None, service_at_launch=None):
+           privileged_entry=None, service_at_launch=None, time_budget=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
     job_dir = os.path.abspath(job_dir)
     if os.path.basename(job_dir) != jid:
@@ -56,6 +57,8 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
             launch_spec["service_at_launch"] = service_at_launch
         if execution_policy is not None:
             launch_spec["execution_policy"] = execution_policy
+        if time_budget is not None:
+            launch_spec["time_budget"] = normalize_budget(time_budget)
         if not store.publish_json_once(jid + "/launch.json", launch_spec):
             raise ValueError("job was already launched; create a new job instead of replaying it")
         log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_CREAT | os.O_APPEND)
@@ -155,10 +158,11 @@ def read_cancel(store, jid):
     except FileNotFoundError:
         return None
     try:
-        store.read_json(jid + "/cancel.force.json")
+        force = store.read_json(jid + "/cancel.force.json")
     except FileNotFoundError:
         return request
-    return {**request, "mode": "escalate"}
+    return {**request, "mode": "escalate",
+            **({"escalation_source": force["source"]} if "source" in force else {})}
 
 
 def _cancellation(request, meta):
@@ -168,12 +172,13 @@ def _cancellation(request, meta):
     return {**request, "status": status, "signals": signals}
 
 
-def request_cancel(store, jid, force=False):
+def request_cancel(store, jid, force=False, source=None):
     """Publish idempotent intent; services never signal a PID read from job files."""
     meta = store.read_json(jid + "/meta.json")
-    store.publish_json_once(jid + "/cancel.json", {"mode": "graceful", "requested_at": time.time()})
+    origin = {"source": source} if source is not None else {}
+    store.publish_json_once(jid + "/cancel.json", {"mode": "graceful", "requested_at": time.time(), **origin})
     if force:
-        store.publish_json_once(jid + "/cancel.force.json", {"requested_at": time.time()})
+        store.publish_json_once(jid + "/cancel.force.json", {"requested_at": time.time(), **origin})
     return _cancellation(read_cancel(store, jid), meta)
 
 
@@ -244,6 +249,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
         meta["execution"].update(child_pid=None, returncode=None,
                                  service_at_launch=spec.get("service_at_launch"),
                                  worker_identity=runtime_snapshot(__file__))
+        budget = RunBudget(store, jid, meta, spec)
         _program_identity(store, jid, meta)
         meta["execution"]["owned_process_group"] = {
             "scope": "original_process_group", "status": "not_started", "pgid": None,
@@ -262,7 +268,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             # Administrator-only worker entry. Public admission remains unavailable
             # until a production privilege and cross-UID artifact boundary exists.
             from job_cgroup import run
-            return run(store, jid, job_dir, meta, spec, contained_config, escalation_delays)
+            return run(store, jid, job_dir, meta, spec, contained_config, escalation_delays, budget)
         try:
             policy = require_policy(spec)
         except ValueError as error:
@@ -277,6 +283,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
                                                   PF_RUNTIME_REPORT=os.path.join(job_dir, "out", ".program-runtime.json")),
                                          stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT,
                                          start_new_session=True, close_fds=True)
+                budget.start()
             except (OSError, ValueError) as e:
                 print(f"child could not start: {type(e).__name__}: {e}", flush=True)
                 _finish(store, jid, meta, "failed", {"status": "not_needed", "reason": "command did not start"},
@@ -296,6 +303,9 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
         while True:
             if _program_identity(store, jid, meta):
                 store.write_json(jid + "/meta.json", meta)
+            returncode = child.poll()
+            if returncode is None:
+                budget.check(request_cancel)
             request = read_cancel(store, jid)
             if request:
                 cancellation = _cancellation(request, meta)
@@ -303,8 +313,8 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
                     meta["cancel"] = cancellation
                     meta["phase"] = "cancelling"
                     store.write_json(jid + "/meta.json", meta)
-            returncode = child.poll()
             if returncode is not None:
+                budget.finish()
                 signals = (meta.get("cancel") or {}).get("signals", [])
                 outcome = "cancelled" if signals else "succeeded" if returncode == 0 else "failed"
                 escalated = any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)

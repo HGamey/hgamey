@@ -212,6 +212,47 @@ class JobCLI(unittest.TestCase):
             call.assert_called_once_with("GET", "/node", attempts=1, raise_4xx=True)
             pack.assert_not_called()
 
+    def test_time_budget_freezes_explicit_spec_and_preserves_terminal_evidence(self):
+        cli = self.load_cli()
+        main = cli["main"]
+        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "jobs.time-budget-v1"],
+                        execution={"bins": ["phonefarm"]})
+        for options, expected in [([], None), (["--max-runtime-seconds", "30"], {"wall_seconds": 30, "timeout_action": "graceful"}),
+                                  (["--max-runtime-seconds", "30", "--timeout-action", "escalate"], {"wall_seconds": 30, "timeout_action": "escalate"})]:
+            call = mock.Mock(return_value=json.dumps(node).encode())
+            pack, submit = mock.Mock(return_value=(["--help"], b"")), mock.Mock(return_value={"id": JOB, "phase": "queued"})
+            with mock.patch.dict(main.__globals__, call=call, pack=pack, submit_job=submit), \
+                    mock.patch.object(sys, "argv", [str(CLI), *options, "--detach", "phonefarm", "--help"]), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                main()
+            spec = submit.call_args.args[0]
+            self.assertEqual(spec["argv"], ["--help"])
+            if expected is None:
+                self.assertNotIn("time_budget", spec)
+            else:
+                self.assertEqual(spec["time_budget"], expected)
+            call.assert_called_once_with("GET", "/node", attempts=1, raise_4xx=True)
+        for options, response in [(["--max-runtime-seconds", "30"], identity(capabilities=["jobs.idempotency-v1"])),
+                                   (["--timeout-action", "escalate"], node),
+                                   (["--max-runtime-seconds", "1.5"], node),
+                                   (["--max-runtime-seconds", "30", "--device-access", "recovery", "--recovery-for", JOB], node)]:
+            pack, submit = mock.Mock(), mock.Mock()
+            with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(response).encode()), pack=pack, submit_job=submit), \
+                    mock.patch.object(sys, "argv", [str(CLI), *options, "--detach", "phonefarm", "--help"]), self.assertRaises(SystemExit):
+                main()
+            pack.assert_not_called()
+            submit.assert_not_called()
+        base = {"state": "finished", "phase": "finished", "outcome": "cancelled", "exit": 0,
+                "recovery": {"status": "required"}, "execution": {"owned_process_group": {"status": "absent"},
+                "time_budget": {"status": "exceeded", "exceeded_at": 10, "timeout_action": "graceful"}}}
+        for status, expected in [(base, 124), ({**base, "exit": 7}, 7), ({**base, "exit": None}, 125),
+                                  ({**base, "execution": {**base["execution"], "owned_process_group": {"status": "unknown"}}}, 125)]:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertEqual(cli["terminal_exit"](JOB, status), expected)
+            self.assertIn("运行期限已触发", stderr.getvalue())
+            self.assertIn(f"原命令 exit={status['exit']}", stderr.getvalue())
+
     def test_registered_device_binding_file_is_node_bound_and_not_argv(self):
         main = self.load_cli()["main"]
         node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "devices.lanes-v1"],

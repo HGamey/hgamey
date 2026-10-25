@@ -108,7 +108,9 @@ deadline = time.monotonic() + 20
 while not (out / 'release').exists() and time.monotonic() < deadline:
     time.sleep(.02)
 released = (out / 'release').exists()
-(out / 'descendant-done.json').write_text(json.dumps({'released':released}))
+temporary = out / 'descendant-done.tmp'
+temporary.write_text(json.dumps({'released':released}))
+temporary.replace(out / 'descendant-done.json')
 sys.exit(0 if released else 1)
 """
         leader = ("import pathlib,subprocess,sys,time;out=pathlib.Path(sys.argv[1]);"

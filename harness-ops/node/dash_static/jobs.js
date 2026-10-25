@@ -97,14 +97,17 @@
     facts('job-program-identity', [['记录状态', state], ['证据来源', report?.source === 'program_self_report' ? '实际启动程序自报；不是恶意程序认证。' : report?.source || '未记录'],
       ['原因', report?.reason || (report ? '未报告原因' : '历史记录缺失，不重新执行程序补报。')], ['自报任务 ID', report?.record?.job_id || '未记录'], ['自报 PID', report?.record?.pid ?? '未记录'], ...programFacts(report?.record?.identity)]);
   }
+  function budgetExceeded(job) { return Number.isFinite(job.execution?.time_budget?.exceeded_at); }
   function status(job) {
+    const exceeded = budgetExceeded(job);
     if (storageFailed(job)) return [PHASES.storage_blocked, 'unknown'];
     if (job.phase === 'finalizing') return [PHASES.finalizing, 'unknown'];
-    if (job.queue?.state === 'blocked' || job.phase === 'blocked') return ['资源保留 · 待核查', 'unknown'];
+    if (job.queue?.state === 'blocked' || job.phase === 'blocked') return [exceeded ? '资源保留 · 运行期限已触发' : '资源保留 · 待核查', 'unknown'];
     if (['preparing', 'queued'].includes(job.phase)) return [PHASES[job.phase], ''];
-    if (job.phase === 'interrupted' || job.outcome === 'interrupted') return ['执行中断 · 待核查', 'unknown'];
-    if (job.phase === 'cancelling') return ['停止请求处理中', 'unknown'];
+    if (job.phase === 'interrupted' || job.outcome === 'interrupted') return [exceeded ? '执行中断 · 运行期限已触发' : '执行中断 · 待核查', 'unknown'];
+    if (job.phase === 'cancelling') return [exceeded ? '运行期限已触发 · 停止处理中' : '停止请求处理中', 'unknown'];
     if (job.phase === 'starting') return ['正在启动', 'running'];
+    if (exceeded) return [`运行期限已触发${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'unknown'];
     if (job.outcome === 'cancelled') return job.recovery?.status === 'not_needed' ? ['已取消 · 无需恢复', 'finished'] : ['已停止 · 恢复需核查', 'unknown'];
     if (job.outcome === 'failed') return [`执行失败${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'failed'];
     if (job.outcome === 'succeeded') return [`命令执行完成${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'finished'];
@@ -237,6 +240,7 @@
     let reason = saving ? '结束记录尚未提交；请核对下方结果保存状态，停止请求不能代替保存。' : !supported ? '旧版任务仅支持查看，当前没有可核验的停止接口。' : terminal ? '任务执行已结束，无法继续发送停止请求。' :
       !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先在上方解锁任务操作权限。' : stopping ? '停止请求已记录，等待任务处理；刷新任务可核对进度。' :
       !currentJob.controls?.cancel_supported ? '当前任务不支持请求停止。' : queued ? '撤销尚未执行的任务，不发送进程信号。请以最新任务状态确认撤销结果。' : '请求停止只发送 SIGINT，不会自动升级终止。接受请求不代表任务已停止或设备已恢复。';
+    if (currentJob.time_budget) reason += ' 另有本任务的运行预算，到期动作见预算记录；人工请求不重置既有升级时钟。';
     if (currentJob.controls?.reason) reason += ` ${currentJob.controls.reason}`;
     $('cancel-help').textContent = reason;
     const receipt = cancelReceipts.get(currentJob.id);
@@ -367,6 +371,22 @@
       await Promise.all([loadQueue(), selected === id && detailRevision === revision ? selectJob(id, true) : null]);
     }
   }
+  function budgetFacts(job) {
+    const request = job.time_budget, record = job.execution?.time_budget;
+    const action = value => ({graceful: '只请求 SIGINT', escalate: 'SIGINT 后 15 秒 TERM，再 15 秒 KILL'})[value] || text(value);
+    const label = ({not_started: '尚未启动计时', running: '最近观察为运行中', exceeded: '已触发预算停止请求', finished: '未触发预算停止即观察到结束'})[record?.status] || 'worker 预算观察未提供';
+    $('time-budget-summary').hidden = !request && !record;
+    message('time-budget-summary', record ? `${label}。最近观察：${time(record.observed_at)}。${job.lost || job.execution?.worker_alive === false && job.state !== 'finished' ? 'worker 已丢失或不再存活，仅保留最后观察。' : ''}不按本页时钟推断到期、发信号或恢复。` : request ? '已声明运行预算，尚未取得 worker 计时观察；不从提交时间计算。' : '', budgetExceeded(job));
+    return [
+      ['声明运行预算', request ? `${request.wall_seconds} 秒 · ${action(request.timeout_action)}` : '未声明或旧记录未提供，不回填预算'],
+      ['worker 预算状态', label], ...(record ? [
+        ['worker 实际启动', time(record.started_at)], ['预算期限参考时刻', time(record.deadline_at)],
+        ['最近预算观察', time(record.observed_at)], ['已观察运行时长', Number.isFinite(record.elapsed_seconds) ? `${record.elapsed_seconds} 秒` : '未观察'],
+        ['预算触发时间', time(record.exceeded_at)], ['预算结束观察', time(record.finished_at)],
+        ['预算边界', '期限触发不代表停止完成；未触发即结束也不由轮询时刻证明精确在限时内。']
+      ] : [])
+    ];
+  }
   function renderExecution(job) {
     const cancellation = job.cancel;
     const group = job.execution?.owned_process_group;
@@ -387,7 +407,9 @@
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['声明设备范围', scopeText(job.queue?.device_scope || {scope: job.device_binding ? 'device' : job.device_access === 'none' ? 'none' : 'global', binding: job.device_binding})],
       ...(job.device_binding ? bindingFacts(job.device_binding) : []), ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
-      ['命令退出码', job.exit], ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
+      ['命令退出码', job.exit], ...budgetFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
+      ['首次停止来源', cancellation?.source === 'execution_deadline' ? '运行预算期限' : cancellation?.source || '未记录（可能为人工请求）'],
+      ['升级来源', cancellation?.escalation_source === 'execution_deadline' ? '运行预算期限' : cancellation?.escalation_source || '未记录'],
       ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
       ['请求处理', ({requested: '已记录，等待处理', signaled: '已发送信号', not_applied: '未应用'})[cancellation?.status] || '未记录'],
       ['恢复状态', ({not_reported: '尚未上报', required: '需要核查与恢复', not_needed: '任务报告无需恢复'})[job.recovery?.status] || '尚未上报'],
@@ -531,8 +553,32 @@
   }
   function savePending() {
     try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, JSON.stringify({id: pendingRequest.id, target: pendingRequest.target,
-      ...(pendingRequest.binding_recorded ? {binding_recorded: true, device_binding: pendingRequest.device_binding} : {})})); else sessionStorage.removeItem(REQUEST_STORAGE); }
+      ...(pendingRequest.binding_recorded ? {binding_recorded: true, device_binding: pendingRequest.device_binding} : {}),
+      ...(pendingRequest.budget_recorded ? {budget_recorded: true, time_budget: pendingRequest.time_budget} : {})})); else sessionStorage.removeItem(REQUEST_STORAGE); }
     catch (_) { /* The visible request ID remains available if browser storage is unavailable. */ }
+  }
+  const timeBudgetSupported = () => nodeInfo?.capabilities?.includes('jobs.time-budget-v1') === true;
+  function submissionBudget() {
+    if (pendingRequest) return pendingRequest.body?.time_budget ?? (pendingRequest.budget_recorded ? pendingRequest.time_budget : null);
+    const raw = $('submit-wall-seconds').value.trim();
+    return raw ? {wall_seconds: Number(raw), timeout_action: $('submit-timeout-action').value} : null;
+  }
+  function timeBudgetProblem() {
+    const budget = submissionBudget();
+    if (budget == null) return '';
+    if (!Number.isInteger(budget.wall_seconds) || budget.wall_seconds < 1 || budget.wall_seconds > 604800 || !['graceful', 'escalate'].includes(budget.timeout_action)) return '运行时间须为 1–604800 的整数秒，并选择到期动作。';
+    if (!timeBudgetSupported()) return '节点未提供 jobs.time-budget-v1，不能提交此预算；不会删除原预算或更换请求 ID。';
+    if ((pendingRequest?.body?.device_access || $('submit-device-access').value) === 'recovery') return '恢复任务暂不接受运行预算；不会继承原任务的期限。';
+    return '';
+  }
+  function renderTimeBudget(allowed) {
+    const fixed = !!pendingRequest, budget = submissionBudget();
+    if (fixed) { $('submit-wall-seconds').value = budget?.wall_seconds ?? ''; $('submit-timeout-action').value = budget?.timeout_action || 'graceful'; }
+    const disabled = !allowed || fixed || submissionBusy || !timeBudgetSupported();
+    $('submit-wall-seconds').disabled = disabled;
+    $('submit-timeout-action').disabled = disabled || !$('submit-wall-seconds').value;
+    const problem = timeBudgetProblem();
+    message('time-budget-help', problem || (fixed ? pendingRequest.budget_recorded ? budget ? '原请求预算已冻结，重载或重试不会替换；先按原 ID 查询。' : '原请求明确未声明预算，本次重填仍省略。' : '旧未决请求未保存预算声明，不给原请求加入新预算；先按原 ID 查询。' : !timeBudgetSupported() ? '节点未提供 jobs.time-budget-v1；留空继续兼容提交，不发送预算字段。' : '留空不发送 time_budget。此预算与命令自身的 --max-seconds 等参数互相独立。'), !!problem);
   }
   const deviceLanesSupported = () => nodeInfo?.capabilities?.includes('devices.lanes-v1') === true;
   function validDeviceBinding(binding) {
@@ -658,6 +704,8 @@
     const hasInputs = pendingRequest?.body ? !!pendingRequest.body.inputs : !!$('submit-inputs').value.trim();
     const inputsProblem = hasInputs && !inputsSupported();
     const bindingProblem = deviceBindingProblem();
+    const budgetProblem = timeBudgetProblem();
+    renderTimeBudget(allowed);
     for (const id of ['submit-bin', 'submit-label', 'submit-argv']) $(id).disabled = !allowed || locked;
     $('submit-inputs').disabled = !allowed || locked || !inputsSupported();
     $('clear-inputs').disabled = !allowed || locked || !$('submit-inputs').value.trim();
@@ -671,7 +719,7 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : submissionBinding() ? '节点自动保存绑定设备的必要资源；自由资源不能删除设备范围冲突，也不授予设备权限。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。'));
@@ -683,7 +731,7 @@
     $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
     $('submit-refill').disabled = !allowed || !!targetIssue || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
-    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!bindingProblem || !!policyProblem || inputsProblem;
+    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!bindingProblem || !!budgetProblem || !!policyProblem || inputsProblem;
     renderDeviceBinding(allowed);
     renderSessionTemplate(allowed);
     renderRefbenchTemplate(allowed);
@@ -770,6 +818,11 @@
         const policyProblem = executionPolicyProblem(policy);
         if (policyProblem) throw new Error(policyProblem);
         if (policy) body.execution_policy = policy;
+        const budgetProblem = timeBudgetProblem();
+        if (budgetProblem) throw new Error(budgetProblem);
+        const timeBudget = submissionBudget();
+        if (timeBudget) body.time_budget = timeBudget;
+        const budgetRecorded = pendingRequest ? pendingRequest.budget_recorded === true : true;
         const mode = $('submit-device-access').value;
         if (mode) body.device_access = mode;
         if (mode === 'recovery') {
@@ -784,7 +837,7 @@
         const binding = submissionBinding();
         if (binding) body.device_binding = binding;
         pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), target: pendingRequest ? pendingRequest.target : HGTarget.binding(), body,
-          binding_recorded: true, device_binding: binding};
+          binding_recorded: true, device_binding: binding, budget_recorded: budgetRecorded, time_budget: timeBudget};
         savePending();
       } catch (error) { submissionMessage(error instanceof SyntaxError ? '参数不是有效的 JSON，请填写字符串数组。' : error.message, true); return; }
     }
@@ -995,7 +1048,7 @@
         if (state) { state.textContent = label; state.className = `task-state ${kind}`; }
       }
       $('detail-updated').textContent = readTime();
-      facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['开始', time(job.started)], [job.phase === 'finalizing' || storageFailed(job) ? '候选结束时间（未提交）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
+      facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['提交 / 旧开始字段', time(job.started)], [job.phase === 'finalizing' || storageFailed(job) ? '候选结束时间（未提交）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
       $('job-command').textContent = JSON.stringify({bin: job.bin, argv: job.argv || []}, null, 2);
       renderJobRuntime(job);
       $('job-results-link').href = HGTarget.url(`/dash/results?job_id=${encodeURIComponent(job.id)}`);
@@ -2313,6 +2366,8 @@
     renderSubmission();
   });
   $('submit-execution-policy').addEventListener('change', renderSubmission);
+  $('submit-wall-seconds').addEventListener('input', renderSubmission);
+  $('submit-timeout-action').addEventListener('change', renderSubmission);
   $('prepare-recovery').addEventListener('click', () => {
     if ($('prepare-recovery').disabled || !currentJob) return;
     $('submit-device-access').value = 'recovery';
@@ -2336,7 +2391,8 @@
     if (raw) {
       let saved; try { saved = JSON.parse(raw); } catch (_) { saved = {id: raw}; }
       pendingRequest = {id: saved.id, target: saved.target || null, binding_recorded: saved.binding_recorded === true,
-        device_binding: saved.binding_recorded === true ? saved.device_binding : null};
+        device_binding: saved.binding_recorded === true ? saved.device_binding : null,
+        budget_recorded: saved.budget_recorded === true, time_budget: saved.budget_recorded === true ? saved.time_budget : null};
       const id = pendingRequest.id;
       $('submit-panel').open = true;
       submissionMessage('有一条未确认的提交。请先按原请求 ID 查询；参数未保存在浏览器中。', true, id);

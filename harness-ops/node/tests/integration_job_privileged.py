@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One real non-root node -> fixed sudo entry -> privileged worker chain.
+"""One real non-root node -> fixed sudo entry -> budgeted privileged worker chain.
 
 Explicit integration test for an isolated Linux VM. Accounts, sudoers fragment,
 installation prefix and cgroup belong only to this invocation. No API capability
@@ -85,8 +85,10 @@ try:
         (job/'in/workload.py').chmod(0o700)
         (job/'in/plan.json').write_text(json.dumps(plan['workload_plan']))
         (job/'in/plan.json').chmod(0o600)
-        store.write_json(jid+'/meta.json',{'id':jid,'pid':None,'state':'running','phase':'starting',
-            'execution_policy':'contained','execution_policy_source':'explicit','execution':{'kind':'supervised-v1'}})
+        meta={'id':jid,'pid':None,'state':'running','phase':'starting',
+            'execution_policy':'contained','execution_policy_source':'explicit','execution':{'kind':'supervised-v1'}}
+        if operation == 'prepare': meta['time_budget']=plan['time_budget']
+        store.write_json(jid+'/meta.json',meta)
         (job/'runner.lock').touch(mode=0o600)
         answer({'prepared':True})
     elif operation == 'launch':
@@ -94,7 +96,8 @@ try:
                  AWS_SECRET_ACCESS_KEY='fixture-credential-not-for-job')
         process=runtime.launch(store,plan['jid'],str(job),
             ['/usr/bin/python3','-I',str(job/'in/workload.py'),str(job/'in/plan.json')],
-            str(job/'out'),env,execution_policy='contained',privileged_entry=plan['entry'])
+            str(job/'out'),env,execution_policy='contained',privileged_entry=plan['entry'],
+            time_budget=plan['time_budget'])
         receipt={'launcher_pid':os.getpid(),'launcher_uid':os.getuid(),'worker_handle_pid':process.pid}
         pathlib.Path(plan['launcher_receipt']).write_text(json.dumps(receipt))
         answer(receipt)
@@ -111,7 +114,7 @@ try:
             result['output']=(job/'out/input-copy.txt').read_text()
             result['ownership']={name:{'uid':(job/name).stat().st_uid,'gid':(job/name).stat().st_gid,
                 'mode':(job/name).stat().st_mode & 0o777} for name in
-                ('meta.json','runner.lock','log','cancel.json','out','out/input-copy.txt')}
+                ('meta.json','runner.lock','log','cancel.json','cancel.force.json','out','out/input-copy.txt')}
         answer(result)
     else: raise AssertionError('unknown node helper operation')
 finally:
@@ -126,7 +129,7 @@ class PrivilegedFixture(KernelFixture):
         self.node_created = self.sudoers_created = False
         self.install_root = self.sudoers_path = None
         self.helper_handles = []
-        self.report["scope"] = "one non-root node launch through installed fixed sudo entry; no public contained admission"
+        self.report["scope"] = "one non-root node launch through installed fixed sudo entry; worker budget after launcher exit; no public contained admission"
 
     def helper(self, operation, *, job_identity=False):
         uid, gid = (self.uid,self.gid) if job_identity else (self.node_uid,self.node_gid)
@@ -194,8 +197,8 @@ class PrivilegedFixture(KernelFixture):
         installed = json.loads(self.report['commands'][-1]['stdout'])
         assert installed['entry'] == str(prefix/'phonefarm-worker') and installed['prefix'] == str(prefix)
         assert installed['config'] == str(prefix/'worker.json')
-        assert (prefix/'job_runtime.py').is_file() and (prefix/'job_privileged.py').is_file()
-        assert all((prefix/name).stat().st_uid == 0 for name in ('phonefarm-worker','worker.json','job_runtime.py'))
+        assert all((prefix/name).is_file() for name in ('job_runtime.py','job_privileged.py','job_budget.py'))
+        assert all((prefix/name).stat().st_uid == 0 for name in ('phonefarm-worker','worker.json','job_runtime.py','job_budget.py'))
         assert stat.S_IMODE((prefix/'worker.json').stat().st_mode) == 0o640
         assert (prefix/'worker.json').stat().st_gid == self.node_gid
         save(self.artifacts/'installation.json',installed)
@@ -223,7 +226,8 @@ class PrivilegedFixture(KernelFixture):
             'probe_jid':probe_jid,'probe_marker':str(control/'unexpected-root-execution'),
             'node_uid':self.node_uid,'node_gid':self.node_gid,'job_uid':self.uid,
             'workload_template':str(self.scratch/'workload.py'),'workload_plan':workload_plan,
-            'wrong_fd':str(control/'wrong-fd'),'launcher_receipt':str(control/'launcher.json')}
+            'wrong_fd':str(control/'wrong-fd'),'launcher_receipt':str(control/'launcher.json'),
+            'time_budget':{'wall_seconds':5,'timeout_action':'escalate'}}
         save(self.scratch/'node-plan.json',plan)
         self.helper('prepare-probe')
         before = (probe_job/'meta.json').read_bytes()
@@ -254,6 +258,12 @@ class PrivilegedFixture(KernelFixture):
             return meta if meta.get('phase')=='collecting' else None
         meta = until(collecting)
         save(self.artifacts/'collecting.json',meta)
+        assert meta['time_budget']==plan['time_budget']
+        assert self.store.read_json(self.jid+'/launch.json')['time_budget']==plan['time_budget']
+        started_budget = meta['execution']['time_budget']
+        assert started_budget['schema']=='phonefarm/job-time-budget@1' and started_budget['status']=='running'
+        assert started_budget['exceeded_at'] is None and started_budget['finished_at'] is None
+        assert started_budget['deadline_at']-started_budget['started_at']==plan['time_budget']['wall_seconds']
         inspect = self.helper('inspect')
         assert inspect['runner_alive'] and inspect['meta']['phase']=='collecting'
         assert inspect['meta']['execution']['returncode']==0
@@ -265,14 +275,23 @@ class PrivilegedFixture(KernelFixture):
         assert membership(detached['pid'])=='/'+str(Path(owned['path']).relative_to(mount))
         self.report['checks']['launcher_exit_kept_worker_lock'] = {'launcher':launched,'node_observation':inspect,
             'detached_pid':detached['pid']}
-        cancelled = self.helper('cancel')
-        assert cancelled['cancel_owner']==self.node_uid
+        # No service or helper submits cancellation. The independent installed
+        # worker must time the still-populated domain after its leader exits.
         def finished():
             current=self.store.read_json(self.jid+'/meta.json')
             return current if current.get('state')=='finished' and not runner_alive(self.store,self.jid) else None
-        done = until(finished)
+        done = until(finished,seconds=12)
         assert done['outcome']=='cancelled' and done['execution']['owned_cgroup']['status']=='absent'
         assert done['recovery']['status']=='required' and done['exit']==0
+        budget = done['execution']['time_budget']
+        assert budget['status']=='exceeded' and budget['exceeded_at'] is not None and budget['finished_at'] is not None
+        assert budget['started_at']==started_budget['started_at'] and budget['deadline_at']==started_budget['deadline_at']
+        assert budget['elapsed_seconds']>=plan['time_budget']['wall_seconds']
+        assert done['cancel']['source']=='execution_deadline' and done['cancel']['escalation_source']=='execution_deadline'
+        assert done['cancel']['mode']=='escalate'
+        assert [(s['name'],s['scope']) for s in done['cancel']['signals']]==[('SIGKILL','owned_cgroup')]
+        assert self.store.read_json(self.jid+'/cancel.json')['source']=='execution_deadline'
+        assert self.store.read_json(self.jid+'/cancel.force.json')['source']=='execution_deadline'
         identity = done['execution']['program_identity']
         assert identity['state']=='reported' and identity['source']=='program_self_report', identity
         assert identity['record']['job_id']==self.jid
@@ -289,7 +308,7 @@ class PrivilegedFixture(KernelFixture):
         assert self.job.stat().st_uid==self.node_uid and stat.S_IMODE(self.job.stat().st_mode)==0o700
         denied = self.helper('job-read',job_identity=True)
         assert len(denied['denied'])==2
-        self.report['checks']['node_cancel_terminal_and_output_handback'] = final
+        self.report['checks']['worker_deadline_terminal_and_output_handback'] = final
         self.report['checks']['job_cannot_reopen_old_output_or_records'] = denied
         before = (self.job/'meta.json').read_bytes()
         rejected = self.helper('terminal-replay')

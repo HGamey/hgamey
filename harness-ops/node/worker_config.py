@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import stat
 
-MODULES = ("artifact_io.py", "job_policy.py", "job_runtime.py", "job_cgroup.py", "runtime_identity.py",
+MODULES = ("artifact_io.py", "job_policy.py", "job_budget.py", "job_runtime.py", "job_cgroup.py", "runtime_identity.py",
            "job_privileged.py", "worker_entry.py", "worker_config.py")
 CONFIG_NAME = "worker.json"
 

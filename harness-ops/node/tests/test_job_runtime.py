@@ -48,7 +48,7 @@ class JobRuntimeTests(unittest.TestCase):
     def ready(self, jid):
         return b"ready" in self.store.read_bytes(jid + "/log", 4096)
 
-    def start(self, jid, program, short_delays=False):
+    def start(self, jid, program, short_delays=False, time_budget=None):
         command = [sys.executable, "-u", "-c", program]
         args = (self.store, jid, str(self.root / jid), command, str(self.root), dict(os.environ))
         if short_delays:
@@ -59,8 +59,8 @@ class JobRuntimeTests(unittest.TestCase):
                         f"sys.exit(job_runtime._worker({job_dir!r},{lock_fd},(.12,.12)))")
                 return [sys.executable, "-c", code]
             with patch.object(runtime, "_worker_command", test_command):
-                return runtime.launch(*args)
-        return runtime.launch(*args)
+                return runtime.launch(*args, time_budget=time_budget)
+        return runtime.launch(*args, time_budget=time_budget)
 
     def finished(self, jid, worker):
         meta = self.until(lambda: (m if (m := self.read(jid)).get("state") == "finished" else None))
@@ -124,12 +124,15 @@ class JobRuntimeTests(unittest.TestCase):
     def test_cancel_before_execution_and_child_start_failure_have_no_fake_exitcode(self):
         jid = self.job()
         runtime.request_cancel(self.store, jid)
-        worker = self.start(jid, "raise RuntimeError('must not run')")
+        worker = self.start(jid, "raise RuntimeError('must not run')",
+                            time_budget={"wall_seconds": 1, "timeout_action": "escalate"})
         meta = self.finished(jid, worker)
         self.assertEqual((meta["outcome"], meta["recovery"]["status"]), ("cancelled", "not_needed"))
         self.assertEqual(meta["cancel"]["status"], "not_applied")
         self.assertIsNone(meta["execution"]["child_pid"])
         self.assertEqual(meta["execution"]["owned_process_group"]["status"], "not_started")
+        self.assertEqual(meta["execution"]["time_budget"]["status"], "not_started")
+        self.assertIsNone(meta["execution"]["time_budget"]["started_at"])
         self.assertFalse((self.root / jid / "exitcode").exists())
         jid = self.job()
         worker = runtime.launch(self.store, jid, str(self.root / jid), [str(self.root / "missing-command")],
@@ -166,6 +169,36 @@ class JobRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already launched"):
             self.start(jid, "raise RuntimeError('replay')")
         self.until(done.exists)
+
+    def test_deadline_preserves_natural_exit_and_upgrades_existing_manual_intent(self):
+        budget = {"wall_seconds": 1, "timeout_action": "escalate"}
+        jid = self.job()
+        worker = self.start(jid, "print('done')", time_budget=budget)
+        meta = self.finished(jid, worker)
+        observed = meta["execution"]["time_budget"]
+        self.assertEqual((meta["exit"], observed["status"]), (0, "finished"))
+        self.assertIsNone(observed["exceeded_at"])
+        self.assertIsNotNone(observed["finished_at"])
+        self.assertNotIn("cancel", meta)
+        self.assertEqual(self.store.read_json(jid + "/launch.json")["time_budget"], budget)
+
+        jid = self.job()
+        program = ("import signal,time;signal.alarm(5);"
+                   "signal.signal(signal.SIGINT,lambda *a:print('INT',flush=True));"
+                   "signal.signal(signal.SIGTERM,lambda *a:print('TERM',flush=True));"
+                   "print('ready',flush=True);time.sleep(5)")
+        worker = self.start(jid, program, short_delays=True, time_budget=budget)
+        self.until(lambda: self.ready(jid))
+        manual = runtime.request_cancel(self.store, jid)
+        meta = self.finished(jid, worker)
+        observed = meta["execution"]["time_budget"]
+        self.assertEqual((observed["status"], meta["exit"]), ("exceeded", 137))
+        self.assertGreaterEqual(observed["elapsed_seconds"], 1)
+        self.assertEqual(meta["cancel"]["requested_at"], manual["requested_at"])
+        self.assertNotIn("source", meta["cancel"])
+        self.assertEqual(meta["cancel"]["escalation_source"], "execution_deadline")
+        self.assertEqual([s["name"] for s in meta["cancel"]["signals"]], ["SIGINT", "SIGTERM", "SIGKILL"])
+        self.assertEqual(meta["recovery"]["status"], "required")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
 from node_session import recovery_source_out, SessionError
 import job_runtime
+import job_budget
 
 
 def request_fingerprint(spec, body):
@@ -64,7 +65,9 @@ class JobDispatch:
                 "request_id": row["request_id"], "started": row["submitted_at"],
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
                 **({"device_binding": spec["device_binding"]} if "device_binding" in spec else {}),
-                "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1"},
+                **({"time_budget": dict(spec["time_budget"])} if "time_budget" in spec else {}),
+                "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1",
+                    **({"time_budget": job_budget.initial(spec["time_budget"])} if "time_budget" in spec else {})},
                 "lock_label": None if name == "devlock" else f"job-{jid}",
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
                 "recovery": {"status": "not_needed", "reason": "command has not started"}}
@@ -294,6 +297,7 @@ class JobDispatch:
         try:
             proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"],
                                       env=env, execution_policy=policy,
+                                      **({"time_budget": spec["time_budget"]} if "time_budget" in spec else {}),
                                       service_at_launch=getattr(self.jobs, "service_at_launch", None))
         except OSError as error:
             self.finish_unstarted(row, "failed", f"worker could not start: {error}")

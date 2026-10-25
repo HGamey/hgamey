@@ -20,6 +20,8 @@
 
 ## 作业结束范围
 
+可选 time_budget 由独立 worker 从实际命令启动后用单调时钟执行，复用原取消与升级链。排队不计时，HTTP重启不重置；期限触发与实际退出、设备恢复分别记录。旧请求省略保持原幂等内容，恢复任务暂不支持；Web/CLI同级，CLI可信exit0且期限触发返回124、未知125优先。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-TIME-BUDGET.md 。
+
 显式 device_binding 仅支持固定 PF 灰层 session，来源为已 pin 节点的 devices-resolve。
 省略字段的旧请求仍 global，不自动回填当前登记。设备范围、排队、恢复与 review release
 共用 PF 的缓存 device_scopes；不同设备并行，同机别名与全域仍冲突。恢复沿原绑定，

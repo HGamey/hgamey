@@ -591,8 +591,8 @@ def reconcile(store, jid, job_dir, config, force=False):
             domain.close()
 
 
-def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
-    from job_runtime import _open_file, _cancellation, _finish, _program_identity, read_cancel
+def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget):
+    from job_runtime import _open_file, _cancellation, _finish, _program_identity, read_cancel, request_cancel
 
     domain, child, released = None, None, False
     try:
@@ -629,6 +629,7 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
         store.write_json(jid + "/meta.json", meta)
         os.write(child.stdin.fileno(), b"GO\n")
         released = True
+        budget.start()
         child.stdin.close()
         meta["phase"] = "running"
         store.write_json(jid + "/meta.json", meta)
@@ -636,19 +637,22 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays):
         while True:
             if _program_identity(store, jid, meta):
                 store.write_json(jid + "/meta.json", meta)
+            rc = child.poll()
+            group = domain.observe()
+            if group["status"] != "unknown" and not (group["status"] == "absent" and rc is not None):
+                budget.check(request_cancel)
             request = read_cancel(store, jid)
             if request:
                 cancellation = _cancellation(request, meta)
                 if meta.get("cancel") != cancellation:
                     meta["cancel"], meta["phase"] = cancellation, "cancelling"
                     store.write_json(jid + "/meta.json", meta)
-            rc = child.poll()
-            group = domain.observe()
             if group["status"] == "unknown":
                 meta["execution"]["owned_cgroup"] = group
                 _finish(store, jid, meta, "interrupted", {"status": "required", "reason": "owned cgroup status is unknown"}, rc)
                 return 1
             if group["status"] == "absent" and rc is not None:
+                budget.finish()
                 signals = (meta.get("cancel") or {}).get("signals", [])
                 escalated = any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)
                 meta["execution"]["owned_cgroup"] = group
