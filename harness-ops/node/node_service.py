@@ -1599,23 +1599,35 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     return H
 
 
-def main():
+def argument_parser():
+    def bounded_int(low, high):
+        def parse(value):
+            number = int(value)
+            if not low <= number <= high:
+                raise argparse.ArgumentTypeError(f"must be between {low} and {high}")
+            return number
+        return parse
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--phonefarm", default=os.path.expanduser("~/node/phonefarm"), help="phonefarm 根目录（含 phonefarm 可执行）")
     ap.add_argument("--game-opt-loop", default=os.path.expanduser("~/node/game_opt_loop"), help="game_opt_loop 仓库目录（含 game_opt_loop 可执行），与 phonefarm 同级")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=bounded_int(0, 65535), default=8765)
     ap.add_argument("--data-dir", help="独立运行数据根；新任务写到其中jobs/，不自动搬迁旧_jobs")
-    ap.add_argument("--max-running", type=int, default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
+    ap.add_argument("--max-running", type=bounded_int(1, 64), default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
     ap.add_argument("--host-capacity", help="管理员宿主调度容量 JSON 文件（最多4KiB）；省略沿用SQL配置，首次按max-running初始化CPU slots")
     ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
+    return ap
+
+
+def main():
+    ap = argument_parser()
     a = ap.parse_args()
     try:
         host_capacity = read_host_capacity(a.host_capacity)
     except (OSError, ValueError) as error:
         ap.error(str(error))
-    # run_node.sh 用 & 在后台起本进程：非交互 shell 会把后台命令的 SIGINT 设成「忽略」，并一路遗传给
-    # 我们起的任务（忽略态跨 exec 保留）—— 结果 kill/停止发的 SIGINT 对 bash 脚本、排队等锁的 devlock 无效。
-    # 这里装回 Python 自己的处理器：exec 时处理器会被重置为默认，子进程就能正常收 SIGINT。
+    # 兼容直接 shell 后台启动：继承的 SIGINT 忽略态会穿过 exec，让作业收不到停止信号。
+    # 装回 Python 处理器后，子进程 exec 会将它重置为默认。
     signal.signal(signal.SIGINT, signal.default_int_handler)
     token = os.environ.get("PHONEFARM_NODE_TOKEN", "")
     if len(token) < 32:
@@ -1656,7 +1668,9 @@ def main():
             log(f"node_remote 起不来，/remote 不可用: {e!r}")
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
                                                                   remote=remote))
-    log(f"节点服务 127.0.0.1:{a.port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})  根目录 {root}")
+    log(f"节点服务 127.0.0.1:{srv.server_port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})"
+        f"  entry={os.path.abspath(__file__)}  phonefarm={root}"
+        f"  data_root={jobs.data_root}  jobs_root={jobs.dir}  node_id={jobs.node_id}")
     try:
         srv.serve_forever()
     finally:
