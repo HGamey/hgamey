@@ -34,6 +34,7 @@
   pf-node --device-binding binding.json --detach phonefarm gray-layer session --serial SERIAL ...
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
+  pf-node job-events [--job ID] [--cursor C|--after N] [--limit N] # 单次读取已提交事件，需显式节点 ID
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
   pf-node input-reference <id> <path>       # 显式校验一个已收尾任务的小工件，返回同节点输入引用
   pf-node --inputs inputs.json --detach phonefarm ... # 冻结工件及显式JSON字段绑定后执行
@@ -87,6 +88,9 @@
   process_group 只管理原进程组；contained 当前未提供。省略保留兼容默认，不替旧任务补全树结束证明。
 - finalizing 表示结束记录尚在保存；storage_blocked 表示保存失败，wait/跟随以125退出并保留命令诊断。
   修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
+- job-events 每次只读取一页（limit 1–200），不等待、不自动重试/分页或确认消费；失败保留原 cursor。
+  status_revision 仅覆盖 Node 的 committed_status，不能据相同版本推断 worker、lease、日志或控制资格未变。
+  事件不是无损执行历史；head 不是已处理位置，消费者处理后自行保存 next_cursor。Ctrl-C 不取消任务。
 - --device-access none|write|recovery 显式声明设备访问；recovery 必须配 --recovery-for 原资源保留任务 ID，
   资源由父任务继承，不能同时传 --resource。恢复任务不自动解除原屏障；核查后另行 release。
 - --device-binding FILE 只读 devices-resolve 保存的 JSON 文件，核其 node_id 与当前目标；只将 binding 放入 job spec，
@@ -430,6 +434,52 @@ def follow(jid):
               f"请用 {continuation()} status {jid} 或 wait {jid} 确认；这不是任务终态或设备恢复证明。", file=sys.stderr)
         # Do not download a changing output directory as if this were a terminal result.
         raise SystemExit(130)
+
+
+def job_events_command(args):
+    query = {}
+    while args:
+        option = args.pop(0)
+        key = {"--job": "job_id", "--cursor": "cursor", "--after": "after", "--limit": "limit"}.get(option)
+        if key is None or not args or key in query:
+            sys.exit("用法: pf-node job-events [--job ID] [--cursor C|--after N] [--limit 1..200]")
+        value = args.pop(0)
+        if key == "job_id" and not re.fullmatch(r"[0-9a-f]{12}", value):
+            sys.exit("pf-node: --job 需要 12 位任务 ID")
+        if key == "cursor" and not value:
+            sys.exit("pf-node: cursor 不能为空；未自动回到流首")
+        if key in ("after", "limit"):
+            if not re.fullmatch(r"[0-9]{1,19}", value):
+                sys.exit(f"pf-node: {option} 需要非负整数")
+            value = int(value)
+            if not (0 <= value <= (1 << 63) - 1 if key == "after" else 1 <= value <= 200):
+                sys.exit(f"pf-node: {option} 超出范围")
+        query[key] = value
+    if "cursor" in query and "after" in query:
+        sys.exit("pf-node: --cursor 与 --after 不能同时使用；原位置未改变")
+    if TARGET.expected_node_id is None:
+        sys.exit("pf-node: job-events 需要显式 --node-id / PF_NODE_ID；先用 node 核对原节点")
+    try:
+        node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
+        if "jobs.state-events-v1" not in node.get("capabilities", []):
+            sys.exit("pf-node: 节点缺少 jobs.state-events-v1；原 cursor 保留，未读取事件")
+        value = json.loads(call("GET", "/job-events" + ("?" + urllib.parse.urlencode(query) if query else ""),
+                                attempts=1, raise_errors=True))
+        if (not isinstance(value, dict) or value.get("schema_version") != 1
+                or value.get("node_id") != TARGET.expected_node_id
+                or not isinstance(value.get("items"), list)
+                or not isinstance(value.get("next_cursor"), str) or not value["next_cursor"]
+                or ("job_id" in query and value.get("job_id") != query["job_id"])):
+            raise ValueError("事件回包身份/范围/位置不匹配")
+    except ClientError as error:
+        sys.exit(f"pf-node: 事件读取失败（HTTP {error.code}）：{error.body.decode('utf-8', errors='replace')}；"
+                 "原 cursor/after 保留，未重试或归零")
+    except (TargetError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as error:
+        sys.exit(f"pf-node: 事件读取未确认：{error}；原 cursor/after 保留，未重试或归零")
+    except KeyboardInterrupt:
+        print("pf-node: 已停止本次只读事件请求（130）；未取消任务，原位置保留。", file=sys.stderr)
+        raise SystemExit(130)
+    print(json.dumps(value, ensure_ascii=False))
 
 
 def _extract(data_or_path, dest):
@@ -858,6 +908,13 @@ def main():
         return
     TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     URL, TOKEN = TARGET.url, TARGET.token
+    if args[0] == "job-events":
+        if (request_id is not None or inputs_path is not None or resources or device_access is not None
+                or recovery_for is not None or execution_policy is not None or time_budget is not None
+                or host_slots_path is not None or binding_path is not None or exe or detach or outdir):
+            sys.exit("pf-node: job-events 不接收作业选项；这是单次只读请求")
+        job_events_command(args[1:])
+        return
     if binding_path is not None and (args[:3] != ["phonefarm", "gray-layer", "session"] or exe is not None or device_access in ("none", "recovery")):
         sys.exit("pf-node: --device-binding 仅用于配置 phonefarm 的 gray-layer session，不能替换 --exe 或覆盖恢复/无设备模式；未提交")
     if args[0] == "devices-resolve":

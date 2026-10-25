@@ -50,6 +50,7 @@ import job_runtime
 import job_inputs
 import job_budget
 from job_capacity import normalize_slots, check_fit, CapacityExceeded
+from job_events import NodeJobEvents, JobEventError
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable, require_policy
@@ -476,7 +477,6 @@ class Jobs:
                     rc = int(f.read(128).strip())
                     ended = os.fstat(f.fileno()).st_mtime
                 meta.update(exit=rc, ended=ended, adopted=True)
-                self._write_meta(jid, meta)
             except (FileNotFoundError, ValueError):
                 pass
         if "exit" not in meta and not _pid_alive(meta.get("pid")):
@@ -484,7 +484,6 @@ class Jobs:
             # 记 -1 并标注，免得客户端（pf-node wait/follow）永远等 "running"。
             meta.update(exit=-1, ended=time.time(), lost=True,
                         note="节点服务重启过，这个任务的真实退出码丢了；看日志和输出目录判断结果")
-            self._write_meta(jid, meta)
         meta["state"] = "finished" if "exit" in meta else "running"
         meta["controls"] = {"cancel_supported": False, "force_supported": False,
                             "reason": "legacy job has no verifiable worker ownership"}
@@ -611,6 +610,7 @@ class Jobs:
             return {"accepted": False, "job": meta, "reason": meta["controls"]["reason"],
                     "error": meta["controls"]["reason"]}
         job_runtime.request_cancel(self._read_root, jid, force=force)
+        self.dispatch.start()
         return {"accepted": True, "job": self.status(jid)}
 
     def session(self, jid, *, request_id=None, action=None):
@@ -775,6 +775,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
+    jobs.events = NodeJobEvents(jobs.dispatch.queue, node.node_id)
     device_registry = DeviceRegistry(jobs, node.node_id)
     if not hasattr(jobs, "results"):
         jobs.results = NodeResults(jobs, node.node_id)
@@ -903,7 +904,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -921,6 +922,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["job-events"]:
+                    q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "job events require an explicit node identity"})
+                    return self._send(200, jobs.events.events(q))
                 if parts == ["node", "devices"]:
                     return self._send(200, device_registry.read())
                 if parts == ["node", "devices", "resolve"]:
@@ -1051,7 +1057,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
-            except (ResearchError, MediaError, RegistryError) as e:
+            except (ResearchError, MediaError, RegistryError, JobEventError) as e:
                 return self._send(e.status, e.payload)
             except ResultError as e:
                 return self._send(e.status, {"code": e.code, "error": str(e)})

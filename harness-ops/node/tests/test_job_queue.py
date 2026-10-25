@@ -1,7 +1,9 @@
 """Local SQLite concurrency and scheduling contracts; no service or devices."""
 from concurrent.futures import ThreadPoolExecutor
+import json
 import multiprocessing
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -49,6 +51,22 @@ class JobQueueTests(unittest.TestCase):
             self.queue.reserve("request-1", "changed-content", {"command": "different"}, [])
         self.assertEqual(self.queue.by_request("request-1"), row)
         self.assertEqual(self.queue.rows(), [row])
+        self.assertEqual(row["status_revision"], 1)
+        with self.queue._transaction(write=True) as db:
+            events = db.execute("SELECT * FROM job_events").fetchall()
+            self.assertEqual(len(events), 1, "concurrent retries must publish only one admission")
+            self.assertEqual(json.loads(events[0]["committed_status"]), row["status_projection"])
+            db.execute("""CREATE TRIGGER fail_event BEFORE INSERT ON job_events
+                          BEGIN SELECT RAISE(ABORT,'injected event storage failure'); END""")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.queue.ready(row["job_id"])
+        self.assertEqual(self.queue.get(row["job_id"]), row, "event failure rolls back the queue transition too")
+        with self.queue._transaction(write=True) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM job_events").fetchone()[0], 1)
+            db.execute("DROP TRIGGER fail_event")
+        ready = self.queue.ready(row["job_id"])
+        self.assertEqual(ready["status_revision"], 2)
+        self.assertEqual(self.queue.ready(row["job_id"]), ready, "unchanged ready calls do not publish another event")
 
     def test_reopen_and_two_process_claim_has_one_owner(self):
         jid = self.submit("first", ["phone:a"])
@@ -72,7 +90,10 @@ class JobQueueTests(unittest.TestCase):
             results.close()
             results.join_thread()
         self.assertEqual([row["job_id"] for row in claims if row], [jid])
-        self.assertEqual(JobQueue(self.path).ready(jid)["state"], "claimed")
+        claimed = JobQueue(self.path).ready(jid)
+        self.assertEqual((claimed["state"], claimed["status_revision"]), ("claimed", 3))
+        with self.queue._transaction() as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT revision FROM job_events WHERE job_id=? ORDER BY sequence", (jid,))], [1, 2, 3])
 
     def test_recovery_borrows_only_its_blocked_ancestor_chain(self):
         parent = self.submit("parent", ["phone:a"])

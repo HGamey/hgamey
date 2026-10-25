@@ -1,9 +1,11 @@
 """Small host-only fault chains for the SQL boundary around job completion."""
+from contextlib import closing
 import errno
 import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time
@@ -69,6 +71,19 @@ class JobDurabilityTests(unittest.TestCase):
             self.known_pids.update(pid for pid in (
                 meta.get("pid"), (meta.get("execution") or {}).get("child_pid"))
                 if isinstance(pid, int) and pid > 1)
+
+    def committed_events(self, jid):
+        # One read transaction checks the published row/event pair, not a
+        # recomputation of the production projection.
+        with closing(sqlite3.connect(Path(self.queue.path).as_uri() + "?mode=ro", uri=True)) as db:
+            db.execute("BEGIN")
+            row = db.execute("SELECT status_revision,status_projection FROM jobs WHERE job_id=?", (jid,)).fetchone()
+            events = db.execute("SELECT revision,committed_status FROM job_events WHERE job_id=? ORDER BY sequence", (jid,)).fetchall()
+        projection = json.loads(row[1]) if row[1] is not None else None
+        values = [{"revision": revision, "committed_status": json.loads(raw)} for revision, raw in events]
+        self.assertTrue(values)
+        self.assertEqual(values[-1], {"revision": row[0], "committed_status": projection})
+        return values
 
     def tearDown(self):
         # Release only the test's fsync pause; no historical PID signals or job replay.
@@ -150,6 +165,9 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
         self.assertIsNone(self.queue.get(jid)["host_capacity_release"])
         self.jobs.dispatch.tick()
         self.assertEqual(self.queue.get(jid)["state"], "claimed")
+        held_events = self.committed_events(jid)
+        self.assertFalse(any(item["committed_status"]["outcome"] == "succeeded" for item in held_events))
+        self.assertFalse(any(item["committed_status"]["phase"] == "finished" for item in held_events))
         self.observations["visible_while_worker_held"] = {"phase": public["phase"], "state": public["state"]}
 
         waiting = self.submit("same-resource", ["host:shared"], "raise RuntimeError('must remain queued')")
@@ -185,8 +203,13 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
             self.assertFalse(retry["storage_committed"])
             self.assertEqual(retry["job"]["phase"], "storage_blocked")
             self.assertIsNone(self.queue.get(jid)["host_capacity_release"])
+            blocked_events = self.committed_events(jid)
+            self.assertEqual(blocked_events[-1]["committed_status"]["queue_state"], "blocked")
+            self.assertEqual(blocked_events[-1]["committed_status"]["storage_kind"], "durability")
+            self.assertFalse(any(item["committed_status"]["outcome"] == "succeeded" for item in blocked_events))
             self.observations["blocked"] = reason
             self.observations["blocked_host_capacity"] = blocked["queue"]["host_capacity"]
+            self.observations["blocked_events"] = blocked_events
 
         armed.unlink()
         before = Path(job_dir, "launch.json").read_bytes()
@@ -199,6 +222,19 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
         self.assertEqual(retry["job"]["queue"]["host_capacity"]["state"], "released")
         self.assertEqual(self.queue.get(jid)["host_capacity_release"]["basis"], "original_process_group_completed")
         self.assertEqual(self.queue.capacity_snapshot()["reserved"], {"cpu": 0, "gpu": 0, "io": 0})
+        committed_events = self.committed_events(jid)
+        terminal_event = committed_events[-1]
+        self.assertGreater(terminal_event["revision"], blocked_events[-1]["revision"])
+        self.assertEqual(terminal_event["revision"], retry["job"]["status_revision"])
+        self.assertEqual(terminal_event["committed_status"], retry["job"]["committed_status"])
+        self.assertEqual({key: terminal_event["committed_status"][key] for key in
+                          ("queue_state", "phase", "outcome", "exit", "host_capacity_state", "storage_kind")},
+                         {"queue_state": "done", "phase": "finished", "outcome": "succeeded", "exit": 0,
+                          "host_capacity_state": "released", "storage_kind": None})
+        self.assertEqual(sum(item["committed_status"]["outcome"] == "succeeded" for item in committed_events), 1)
+        self.jobs.status(jid)
+        self.assertEqual(self.committed_events(jid), committed_events)
+        self.observations["committed_terminal_event"] = terminal_event
         self.assertEqual(Path(job_dir, "launch.json").read_bytes(), before)
         self.assertEqual(Path(job_dir, "out", "executions").read_text(), "run\n")
         self.assertTrue(self.jobs.cancel(waiting)["accepted"])

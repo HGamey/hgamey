@@ -18,6 +18,7 @@ from node_session import recovery_source_out, SessionError
 import job_runtime
 import job_budget
 import job_capacity
+import job_events
 
 
 def request_fingerprint(spec, body):
@@ -184,7 +185,7 @@ class JobDispatch:
                            and recovery == "not_reported")
                 release = self._capacity_release_fact(row, candidate)
                 self.queue.set_state(jid, "blocked" if blocked or release is None else "done",
-                                     host_capacity_release=release)
+                                     host_capacity_release=release, observation=candidate)
                 return True
         except (OSError, ValueError) as error:
             self.block_storage(row, stage, error)
@@ -221,7 +222,7 @@ class JobDispatch:
                 store.sync(jid + "/meta.json", directory=False)
                 store.sync(jid, directory=True)
                 store.sync("", directory=True)
-                self.queue.release_capacity(jid, release)
+                self.queue.release_capacity(jid, release, observation=meta)
                 return True
         except (OSError, ValueError) as error:
             self.block_storage(row, "host-capacity-release", error)
@@ -284,7 +285,8 @@ class JobDispatch:
                     self._launch(row)
                 current = self.queue.get(jid)
                 if current["state"] == "claimed":
-                    self.finalize(current)
+                    if not self.finalize(current):
+                        self.observe_running(jid)
         lease = self.jobs.leases.snapshot(refresh=True) if any(
             device_access(r["spec"]) == "write" or "device_binding" in r["spec"]
             for r in self.queue.rows(("queued",))) else {}
@@ -298,7 +300,22 @@ class JobDispatch:
 
     def launch(self, row):
         with file_lock(self.intake_path):
-            return self._launch(row)
+            launched = self._launch(row)
+            self.observe_running(row["job_id"])
+            return launched
+
+    def observe_running(self, jid):
+        """Caller holds intake. Terminal evidence is committed only by finalize."""
+        row = self.queue.get(jid)
+        if row["state"] != "claimed":
+            return
+        try:
+            observation = self.jobs._execution_status(jid)
+        except (OSError, ValueError) as error:
+            self.block_storage(row, "state-observation", error)
+            return
+        if observation.get("state") != "finished":
+            self.queue.observe(jid, observation)
 
     def _launch(self, row):
         jid = row["job_id"]
@@ -402,6 +419,7 @@ class JobDispatch:
         return {"kind": None, "blocking_jobs": []}
 
     def attach(self, meta, row):
+        meta.update(job_events.public_fields(row))
         if row:
             meta["request_id"] = row["request_id"]
             meta["device_access"] = device_access(row["spec"])
@@ -430,6 +448,7 @@ class JobDispatch:
             state = row["state"]
             phase = self.jobs.status(row["job_id"])["phase"] if state == "claimed" else state
             items.append({"job_id": row["job_id"], "request_id": row["request_id"], "phase": phase,
+                          **job_events.public_fields(row),
                           "recovery_for": row["spec"].get("recovery_for"),
                           "device_scope": scope(row["spec"]),
                           "host_capacity": job_capacity.job_facts(row),

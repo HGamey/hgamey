@@ -42,6 +42,7 @@ import sqlite3
 from job_queue import RequestConflict
 from job_policy import PolicyUnavailable
 from job_capacity import CapacityExceeded
+from job_events import public_fields
 from node_session import SessionError, MAX_REQUEST
 from node_deployments import DeploymentError
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
@@ -664,6 +665,7 @@ class Dash:
                         "argv": self._pretty_argv(m["id"], m.get("argv")), "started": m.get("started"),
                         "ended": m.get("ended"), "exit": m.get("exit"), "state": state,
                         "phase": m.get("phase"), "outcome": m.get("outcome"),
+                        **({key: m.get(key) for key in public_fields(None)} if self.job_service else public_fields(None)),
                         "recovery": {key: m["recovery"].get(key) for key in ("status", "reason")}
                         if isinstance(m.get("recovery"), dict) else None,
                         "log_bytes": os.path.getsize(logp) if os.path.exists(logp) else 0, "log_mtime": _mtime(logp)})

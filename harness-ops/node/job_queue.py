@@ -7,6 +7,7 @@ import sqlite3
 import time
 from device_scope import conflicts, scope, device_access
 import job_capacity
+import job_events
 
 
 STATES = ("preparing", "queued", "claimed", "blocked", "done")
@@ -56,6 +57,17 @@ class JobQueue:
                 db.execute("ALTER TABLE jobs ADD COLUMN state_reason TEXT")
             if "host_capacity_release" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN host_capacity_release TEXT")
+            for column, declaration in (("status_revision", "INTEGER NOT NULL DEFAULT 0"),
+                                        ("status_projection", "TEXT"), ("status_committed_at", "REAL")):
+                if column not in columns:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {declaration}")
+            db.execute("CREATE TABLE IF NOT EXISTS job_event_stream (id INTEGER PRIMARY KEY CHECK(id=1), stream_id TEXT NOT NULL)")
+            db.execute("INSERT OR IGNORE INTO job_event_stream(id,stream_id) VALUES (1,?)", (secrets.token_hex(16),))
+            db.execute("""CREATE TABLE IF NOT EXISTS job_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+                job_id TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL,
+                at REAL NOT NULL, committed_status TEXT NOT NULL, UNIQUE(job_id,revision))""")
+            db.execute("CREATE INDEX IF NOT EXISTS job_events_by_job ON job_events(job_id,sequence)")
             db.execute("CREATE TABLE IF NOT EXISTS host_capacity (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)")
             self._configure_capacity(db, host_capacity, default_cpu)
 
@@ -113,7 +125,32 @@ class JobQueue:
         value["resources"] = json.loads(value["resources"])
         value["state_reason"] = json.loads(value["state_reason"]) if value["state_reason"] else None
         value["host_capacity_release"] = json.loads(value["host_capacity_release"]) if value["host_capacity_release"] else None
+        value["status_projection"] = json.loads(value["status_projection"]) if value["status_projection"] else None
         return value
+
+    def _publish(self, db, jid, kind="queue_transition", observation=None):
+        """Commit a bounded projection and its event with the owning SQL change."""
+        row = self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+        if row is None:
+            return None
+        projection = job_events.projection(row, observation)
+        if projection == row["status_projection"]:
+            return row
+        revision, at = row["status_revision"] + 1, time.time()
+        if row["status_revision"] == 0 and kind != "admitted":
+            kind = "baseline"
+        encoded = json.dumps(projection)
+        db.execute("UPDATE jobs SET status_revision=?,status_projection=?,status_committed_at=? WHERE job_id=?",
+                   (revision, encoded, at, jid))
+        db.execute("INSERT INTO job_events(event_id,job_id,revision,kind,at,committed_status) VALUES (?,?,?,?,?,?)",
+                   (secrets.token_hex(16), jid, revision, kind, at, encoded))
+        row.update(status_revision=revision, status_projection=projection, status_committed_at=at)
+        return row
+
+    def observe(self, jid, observation):
+        # Caller reads the worker receipt and commits it under the intake lock.
+        with self._transaction(write=True) as db:
+            return self._publish(db, jid, "worker_observation", observation)
 
     def reserve(self, request_id, fingerprint, spec, resources):
         """The caller supplies a non-secret spec and its content fingerprint."""
@@ -136,13 +173,13 @@ class JobQueue:
                 VALUES (?, ?, ?, ?, ?, ?, 'preparing')""",
                 (job_id, request_id, fingerprint, json.dumps(spec),
                  json.dumps(resources), time.time()))
-            return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()), True
+            return self._publish(db, job_id, "admitted"), True
 
     def ready(self, jid):
         """Publish prepared inputs once; later states are never rewound."""
         with self._transaction(write=True) as db:
             db.execute("UPDATE jobs SET state='queued' WHERE job_id=? AND state='preparing'", (jid,))
-            return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+            return self._publish(db, jid)
 
     def cancel_pending(self, jid):
         """Win cancellation only before a dispatcher has claimed the job."""
@@ -150,6 +187,8 @@ class JobQueue:
             reason = json.dumps({"kind": "cancelled_before_launch", "at": time.time()})
             release = json.dumps({"at": time.time(), "basis": "not_started"})
             result = db.execute("UPDATE jobs SET state='done', state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state IN ('preparing', 'queued')", (reason, release, jid))
+            if result.rowcount == 1:
+                self._publish(db, jid)
             return result.rowcount == 1
 
     def claim_next(self, max_running, admit=None):
@@ -176,23 +215,23 @@ class JobQueue:
                 if not any(reservation_conflicts(value, owner) for owner in active
                            if owner["job_id"] not in borrowed):
                     db.execute("UPDATE jobs SET state='claimed' WHERE job_id=?", (value["job_id"],))
-                    value["state"] = "claimed"
-                    return value
+                    return self._publish(db, value["job_id"])
             return None
 
-    def set_state(self, jid, state, reason=None, host_capacity_release=None):
+    def set_state(self, jid, state, reason=None, host_capacity_release=None, observation=None):
         if state not in STATES:
             raise ValueError("unknown job queue state")
         with self._transaction(write=True) as db:
             db.execute("UPDATE jobs SET state=?, state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=?",
                        (state, json.dumps(reason) if reason else None,
                         json.dumps(host_capacity_release) if host_capacity_release else None, jid))
-            return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+            return self._publish(db, jid, observation=observation)
 
-    def release_capacity(self, jid, fact):
+    def release_capacity(self, jid, fact, observation=None):
         with self._transaction(write=True) as db:
             db.execute("UPDATE jobs SET host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state='blocked'",
                        (json.dumps(fact), jid))
+            self._publish(db, jid, observation=observation)
 
     def record_unstarted(self, jid, outcome, note):
         """Persist caller-confirmed no-launch intent without overriding cancellation."""
@@ -202,7 +241,7 @@ class JobQueue:
         with self._transaction(write=True) as db:
             db.execute("UPDATE jobs SET state='blocked', state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state!='done'",
                        (json.dumps(reason), json.dumps({"at": now, "basis": "not_started"}), jid))
-            return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+            return self._publish(db, jid)
 
     def get(self, jid):
         with self._transaction() as db:

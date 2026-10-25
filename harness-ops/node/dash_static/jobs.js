@@ -19,6 +19,10 @@
   let runtimeBusy = false;
   let deviceRegistry = null, deviceBinding = null, deviceBindingBusy = false, deviceBindingRevision = 0, deviceBindingError = '';
   const REQUEST_STORAGE = 'hgamey.pending-job-request';
+  const JOB_EVENT_STORAGE = 'hgamey.job-browser-position.';
+  const jobEventPositions = new Map();
+  let jobEventPosition = null, jobEventsController = null, jobEventsGeneration = 0, jobEventsBusy = false;
+  let jobEventsTrimmed = 0, jobEventsStorageError = '', jobEventsDisposed = false;
   const PHASES = {preparing: '准备中', queued: '排队中', blocked: '资源保留 · 待核查', starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finalizing: '正在保存结束记录', storage_blocked: '结果保存失败 · 资源保留', finished: '已结束', interrupted: '执行中断'};
 
   const text = value => value == null ? '未记录' : String(value);
@@ -45,6 +49,144 @@
     if (value == null) return '未记录';
     const date = new Date(typeof value === 'number' ? value * 1000 : value);
     return Number.isNaN(date.getTime()) ? '未记录' : date.toLocaleString();
+  }
+  function renderCommitted(job) {
+    const revision = job.status_revision, scope = job.status_revision_scope, record = job.committed_status;
+    const known = Number.isSafeInteger(revision) && revision > 0 && scope === 'committed_job_state' && record;
+    $('committed-summary').textContent = known ? `Node 已提交状态 · v${revision} · ${time(job.status_committed_at)}`
+      : revision === 0 ? 'Node 已提交状态 · 尚未建立版本记录（0）' : 'Node 已提交状态 · 历史记录未提供';
+    facts('committed-info', [['已提交版本', known ? revision : revision === 0 ? '0（尚未建立）' : '未提供，不回填'],
+      ['提交时间', time(job.status_committed_at)], ['版本范围', scope === 'committed_job_state' ? 'Node 已提交作业状态（committed_job_state）' : '未提供'],
+      ['已提交队列状态', record?.queue_state], ['最后提交的执行阶段', record?.phase], ['最后提交的恢复状态', record?.recovery_status]]);
+    $('committed-record').textContent = record ? JSON.stringify(record, null, 2) : '尚无已提交状态原记录；当前执行观察仍见任务详情。';
+  }
+  const jobEventsSupported = () => nodeInfo?.capabilities?.includes('jobs.state-events-v1') === true;
+  function jobEventLocation(position = jobEventPosition) {
+    return position?.cursor ? {schema: 'phonefarm/job-browser-position@1', target: position.target, job_id: position.job, cursor: position.cursor} : null;
+  }
+  function jobEventsProblem() {
+    if (!jobEventPosition) return '请先选择任务并核对节点。';
+    return HGTarget.problem(jobEventPosition.target) || (!HGTarget.canWrite() ? '节点尚未提供可核验的显式目标绑定。' : '')
+      || (!jobEventsSupported() ? '此节点未提供 jobs.state-events-v1；原任务和日志仍可读取，已保存游标保留。' : '')
+      || (!currentJob || currentJob.id !== jobEventPosition.job ? '请先读取本任务的当前状态。' : '')
+      || (currentJob.status_revision == null ? '此历史任务未提供 Node 提交记录；不能伪造其事件历史。' : '');
+  }
+  function renderJobEvents() {
+    const problem = jobEventsProblem(), position = jobEventPosition;
+    const readable = !problem && !jobEventsBusy && !jobEventsDisposed && !document.hidden;
+    $('job-events-next').disabled = !readable || !!position?.issue;
+    $('job-events-next').textContent = jobEventsBusy ? '读取中…' : position?.cursor ? '从原位置读取下一页' : '读取第一页';
+    $('job-events-next').setAttribute('aria-busy', String(jobEventsBusy));
+    $('job-events-restart').disabled = !readable;
+    $('job-events-copy').disabled = !position?.cursor;
+    $('job-events-list').setAttribute('aria-busy', String(jobEventsBusy));
+    $('job-events-scope').textContent = position ? `任务 ${position.job} · 节点 ${position.target.node_id}` : '尚未绑定事件范围。';
+    message('job-events-help', problem || position?.issue || '只读取 Node 已提交事件，每次一页；不会刷新执行状态、采集设备或启动任务。', !!position?.issue);
+    $('job-events-position').textContent = !position ? '' : `${position.after != null ? `已浏览至事件 #${position.after}。` : position.cursor ? '已恢复原浏览游标，续读时核对事件流。' : '尚未浏览事件。'}${position.readAt ? ` 最近成功读取：${time(position.readAt)}。` : ''}`;
+    $('job-events-newer').textContent = position?.latestRevision > (currentJob?.status_revision ?? Infinity)
+      ? `事件包含 Node 已提交 v${position.latestRevision}，可点“刷新任务”读取当前状态；事件不会自动更改操作资格。` : '';
+    message('job-events-storage', jobEventsStorageError);
+    $('job-events-trimmed').textContent = jobEventsTrimmed ? `较早 ${jobEventsTrimmed} 条已移出本页；保留最近 200 条，原历史可显式从头读取。` : '';
+  }
+  function stopJobEvents(reason = '') {
+    ++jobEventsGeneration; jobEventsController?.abort(); jobEventsController = null; jobEventsBusy = false;
+    if (!jobEventsDisposed) { renderJobEvents(); if (reason) message('job-events-message', reason); }
+  }
+  function syncJobEventScope() {
+    const target = HGTarget.binding(), job = selected;
+    const key = target && job ? JOB_EVENT_STORAGE + JSON.stringify([target.entry, target.node_id, job]) : null;
+    if (key === jobEventPosition?.key || !key && !jobEventPosition) { renderJobEvents(); return; }
+    stopJobEvents(); jobEventsTrimmed = 0; jobEventsStorageError = '';
+    $('job-events-list').replaceChildren(); $('job-events-location').hidden = true; $('job-events-location-json').value = '';
+    if (!key) { jobEventPosition = null; renderJobEvents(); return; }
+    let position = jobEventPositions.get(key);
+    if (!position) {
+      position = {key, target, job, cursor: null, after: null, readAt: null, latestRevision: null, issue: ''};
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          try {
+            const saved = JSON.parse(raw);
+            if (saved.schema !== 'phonefarm/job-browser-position@1' || saved.target?.entry !== target.entry || saved.target?.node_id !== target.node_id
+                || saved.job_id !== job || typeof saved.cursor !== 'string' || !saved.cursor) throw new Error('invalid position');
+            position.cursor = saved.cursor;
+          } catch (_) { position.issue = '保存的浏览位置不可读，未自动归零；请保留原记录并显式从头读取。'; }
+        }
+      } catch (_) { jobEventsStorageError = '本地存储不可用，浏览位置仅保留在本页；离开前可复制。'; }
+      jobEventPositions.set(key, position);
+    }
+    jobEventPosition = position; renderJobEvents();
+    message('job-events-message', position.cursor ? '原浏览位置已载入，尚未请求事件；请显式续读。' : '尚未读取此任务事件。');
+  }
+  function checkedJobEventPage(value, position, startAfter) {
+    if (value?.schema_version !== 1 || value.node_id !== position.target.node_id || value.job_id !== position.job
+        || typeof value.stream_id !== 'string' || !value.stream_id || !Array.isArray(value.items) || value.items.length > 100
+        || !Number.isSafeInteger(value.head) || value.head < 0 || !Number.isSafeInteger(value.next_after)
+        || value.next_after < 0 || value.next_after > value.head || typeof value.next_cursor !== 'string' || !value.next_cursor
+        || typeof value.has_more !== 'boolean') throw new Error('事件回包身份、范围或位置未确认。');
+    let after = startAfter ?? -1;
+    for (const item of value.items) {
+      if (item.job_id !== position.job || !Number.isSafeInteger(item.sequence) || item.sequence <= 0 || item.sequence <= after
+          || !Number.isSafeInteger(item.revision) || item.revision < 1 || typeof item.event_id !== 'string' || !item.event_id
+          || !['admitted', 'queue_transition', 'worker_observation', 'baseline'].includes(item.kind)
+          || !item.committed_status || typeof item.committed_status !== 'object') throw new Error('事件身份或顺序未确认。');
+      after = item.sequence;
+    }
+    if (value.items.length ? value.next_after !== after : startAfter != null && value.next_after !== startAfter) throw new Error('事件续读位置不一致。');
+    return value;
+  }
+  function jobEventRow(item) {
+    const row = el('li'), state = item.committed_status;
+    const kind = {admitted: '已接收任务', queue_transition: '队列状态提交', worker_observation: 'worker 观察提交', baseline: '开始建立记录'}[item.kind];
+    row.append(el('strong', `#${item.sequence} · v${item.revision} · ${kind}`), el('p', `提交于 ${time(item.at)}`, 'read-time'));
+    const info = el('dl', null, 'facts');
+    for (const [name, value] of [['队列状态', state.queue_state], ['执行阶段', state.phase], ['结果', state.outcome], ['恢复状态', state.recovery_status]]) info.append(el('dt', name), el('dd', text(value)));
+    const detail = el('details', null, 'command-details');
+    detail.append(el('summary', '已提交事件原记录'), el('pre', JSON.stringify(item, null, 2), 'command-box'));
+    row.append(info, detail); return row;
+  }
+  async function loadJobEvents(restart = false) {
+    syncJobEventScope();
+    if (jobEventsBusy || jobEventsDisposed || document.hidden || jobEventsProblem() || !restart && jobEventPosition.issue) return;
+    const position = jobEventPosition, generation = ++jobEventsGeneration;
+    const startAfter = restart ? 0 : position.cursor ? position.after : 0;
+    const query = new URLSearchParams({job_id: position.job, limit: '100'});
+    if (!restart && position.cursor) query.set('cursor', position.cursor); else query.set('after', '0');
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 15000);
+    jobEventsController = controller; jobEventsBusy = true; renderJobEvents();
+    message('job-events-message', restart ? '正在从头读取；成功前保留原游标…' : '正在从原位置读取一页…');
+    try {
+      const response = await HGTarget.fetch(`${API}/job-events?${query}`, {credentials: 'same-origin', cache: 'no-store', signal: controller.signal}, {target: position.target});
+      const value = await response.json();
+      if (!response.ok) throw new Error(`事件读取失败（HTTP ${response.status}${value.code ? ' · ' + value.code : ''}）：${typeof value.error === 'string' ? value.error : value.error?.message || value.reason || '请求未确认'}`);
+      if (jobEventsDisposed || generation !== jobEventsGeneration || position !== jobEventPosition) return;
+      checkedJobEventPage(value, position, startAfter);
+      const rows = value.items.map(jobEventRow);
+      if (restart) { $('job-events-list').replaceChildren(); jobEventsTrimmed = 0; position.latestRevision = null; }
+      $('job-events-list').append(...rows);
+      while ($('job-events-list').children.length > 200) { $('job-events-list').firstElementChild.remove(); ++jobEventsTrimmed; }
+      position.cursor = value.next_cursor; position.after = value.next_after; position.readAt = Date.now() / 1000; position.issue = '';
+      for (const item of value.items) position.latestRevision = Math.max(position.latestRevision || 0, item.revision);
+      try { localStorage.setItem(position.key, JSON.stringify(jobEventLocation(position))); jobEventsStorageError = ''; }
+      catch (_) { jobEventsStorageError = '无法保存浏览位置；当前内存位置仍可续读，离开前请复制。'; }
+      message('job-events-message', `${value.items.length ? `本页读取 ${value.items.length} 条事件。` : '原位置之后暂无事件；当前 worker、lease 或日志仍可能变化。'}${value.has_more ? ' 还有更多，请显式读取下一页。' : ' 本次已读至可见末尾。'}不代表任务已结束或事件已处理。`);
+    } catch (error) {
+      if (!jobEventsDisposed && generation === jobEventsGeneration) message('job-events-message', `${errorText(error)} 原游标保留，未自动重试或归零。`, true);
+    } finally {
+      clearTimeout(timeout);
+      if (!jobEventsDisposed && generation === jobEventsGeneration) { jobEventsBusy = false; jobEventsController = null; renderJobEvents(); }
+    }
+  }
+  async function copyJobEventPosition() {
+    const value = jobEventLocation(); if (!value) return;
+    const key = jobEventPosition.key, raw = JSON.stringify(value, null, 2);
+    $('job-events-location-json').value = raw; $('job-events-location').hidden = false; $('job-events-location').open = true;
+    try {
+      await navigator.clipboard.writeText(raw);
+      if (jobEventPosition?.key === key) message('job-events-storage', '浏览位置已复制；仅代表已展示，业务处理确认由消费方保存。');
+    } catch (_) {
+      if (jobEventPosition?.key === key) { $('job-events-location-json').focus(); $('job-events-location-json').select(); message('job-events-storage', '请手动复制浏览位置 JSON；不含凭据或事件正文。'); }
+    }
   }
   function bytes(value) {
     if (!Number.isFinite(value)) return '大小未记录';
@@ -996,7 +1138,7 @@
     } catch (error) {
       if (revision === nodeRevision) message('node-message', refreshRuntime ? `程序观察结果未取得：${error.message || '连接中断'}。下方保留上次观察，当前身份尚未确认；请读取节点缓存核对，不会自动重试。` : errorText(error), true);
       if (refreshRuntime && [401, 403].includes(error.status)) await loadAccess();
-    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); } }
+    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); renderJobEvents(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -1069,6 +1211,7 @@
     }
     selected = id;
     currentJob = null;
+    stopJobEvents(); syncJobEventScope();
     resetJobLeases();
     resetJobInputs();
     resetInputReference();
@@ -1112,6 +1255,7 @@
       }
       $('detail-updated').textContent = readTime();
       facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['提交 / 旧开始字段', time(job.started)], [job.phase === 'finalizing' || storageFailed(job) ? '候选结束时间（未提交）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
+      renderCommitted(job);
       $('job-command').textContent = JSON.stringify({bin: job.bin, argv: job.argv || []}, null, 2);
       renderJobRuntime(job);
       $('job-results-link').href = HGTarget.url(`/dash/results?job_id=${encodeURIComponent(job.id)}`);
@@ -1132,6 +1276,7 @@
       if (revision === detailRevision) {
         busy('refresh-detail', false);
         regionBusy('task-detail', false);
+        renderJobEvents();
       }
     }
   }
@@ -2377,6 +2522,14 @@
   $('more-artifacts').addEventListener('click', () => loadArtifacts(true));
   $('log-next').addEventListener('click', loadLog);
   $('log-reset').addEventListener('click', () => { resetLog(); loadLog(); });
+  $('job-events-next').addEventListener('click', () => loadJobEvents());
+  $('job-events-restart').addEventListener('click', () => loadJobEvents(true));
+  $('job-events-copy').addEventListener('click', copyJobEventPosition);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && jobEventsBusy) stopJobEvents('页面已隐藏，原浏览位置保留；回来后请显式继续。');
+    else renderJobEvents();
+  });
+  window.addEventListener('pagehide', () => { jobEventsDisposed = true; stopJobEvents(); });
   $('access-toggle').addEventListener('click', () => {
     if (access?.steer) setAccess(false);
     else { $('unlock-form').hidden = false; $('steer-password').focus(); }
@@ -2467,6 +2620,6 @@
   const initial = new URLSearchParams(location.hash.slice(1)).get('job');
   if (initial && /^[0-9a-f]{12}$/.test(initial)) selected = initial;
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);
-  document.addEventListener('hgamey-target-change', () => { ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); });
+  document.addEventListener('hgamey-target-change', () => { ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); if (jobEventsBusy && HGTarget.problem(jobEventPosition?.target)) stopJobEvents('节点身份需要重新核对；原浏览位置保留。'); syncJobEventScope(); });
   refreshAll();
 })();

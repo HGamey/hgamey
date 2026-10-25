@@ -201,6 +201,12 @@
         <div class="job-heading"><h3 id="job-title"></h3><span id="job-state" class="task-state"></span></div>
         <p id="detail-updated" class="read-time"></p>
         <dl id="job-info" class="facts job-facts"></dl>
+        <details class="command-details committed-record">
+          <summary id="committed-summary">Node 已提交状态</summary>
+          <dl id="committed-info" class="facts"></dl>
+          <p class="note">版本只覆盖下方已提交状态。当前 worker、lease、等待原因、控制资格与日志可能继续变化；相同版本也需要读取当前状态。事件不代表无损执行历史。</p>
+          <pre id="committed-record" class="command-box" aria-label="Node 已提交状态原记录"></pre>
+        </details>
         <p class="note"><a id="job-results-link">查看此任务已登记结果</a> · <a id="job-register-result">登记此任务结果</a>。原件仍在下方输出目录；登记不代表实验有效或恢复完成。</p>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
         <details class="command-details"><summary id="job-runtime-summary">本次运行入口身份</summary><p class="note">仅展示此任务保留的服务启动快照、worker 身份和主程序自报；不使用当前配置补齐历史。身份记录不改变命令结果，也不证明设备恢复。</p><h4>启动任务的服务</h4><dl id="job-service-identity" class="facts"></dl><h4>实际 worker</h4><dl id="job-worker-identity" class="facts"></dl><h4>主程序入口自报</h4><dl id="job-program-identity" class="facts"></dl></details>
@@ -386,6 +392,20 @@
             <p class="note">name 与 target 使用文件名生成安全默认值，可按任务需要修改。准备任务仍会核对源内容；此引用不表示设备已恢复。</p>
           </div>
         </section>
+        <details id="job-events" class="job-events command-details">
+          <summary>Node 已提交事件 · 按需续读</summary>
+          <p id="job-events-scope" class="note"></p>
+          <p id="job-events-help" class="note"></p>
+          <div class="job-event-actions"><button id="job-events-next" class="ghost" type="button" disabled>读取下一页</button><button id="job-events-restart" class="ghost" type="button" disabled>从头读取</button><button id="job-events-copy" class="ghost" type="button" disabled>复制浏览位置</button></div>
+          <p id="job-events-message" class="note" role="status">尚未读取事件。</p>
+          <p id="job-events-position" class="read-time"></p>
+          <p id="job-events-newer" class="note"></p>
+          <p id="job-events-storage" class="note"></p>
+          <p id="job-events-trimmed" class="note"></p>
+          <ol id="job-events-list" class="job-events-list" aria-label="本任务已提交事件"></ol>
+          <details id="job-events-location" class="command-details" hidden><summary>可携带的浏览位置</summary><textarea id="job-events-location-json" rows="6" readonly aria-label="事件浏览位置 JSON"></textarea></details>
+          <p class="note">每次只读一页，本页最多保留 200 条；浏览位置不是 Agent 已处理确认。事件游标、任务列表游标与日志字节位置分别保存。</p>
+        </details>
         <section id="task-log" class="task-log" aria-labelledby="log-heading">
           <div class="section-heading"><h3 id="log-heading">执行日志</h3><div class="log-actions"><button id="log-reset" class="ghost" type="button">从头读取</button><button id="log-next" class="ghost" type="button">读取下一段</button></div></div>
           <p id="log-message" class="note" role="status">每次读取最多 64 KiB，页面保留最近 262,144 个字符；按需读取。</p>
