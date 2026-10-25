@@ -1,6 +1,6 @@
 # harness-ops
 
-外部 Agent 使用远程真机的节点服务、客户端和网页；参考 [研究 skill](skills/hgamey-research/SKILL.md) 接续方向、反馈与证据，GOL 可选。
+外部 Agent 使用远程真机的节点服务、客户端和网页；共享目标、方向、证据与异步协助独立于聊天工具，GOL 可选。参考 [研究 skill](skills/hgamey-research/SKILL.md) 接续研究，网页与 CLI/API 同等优先。
 
 | 路径 | 作用 |
 |---|---|
@@ -27,14 +27,14 @@ node/pf-node jobs --query Doom                         # 任意任务检索、�
 node/pf-node artifacts <job-id>                        # 列举输出；用 out <job-id> <path> 下载
 node/pf-node results list --game-id doom3               # 显式结果索引；register/import 登记已有小报告
 node/pf-node results search --node lab-a --node lab-b   # 目录绑定的远端索引；各自分页，详情和原件回源
-node/pf-node-deploy --restart                          # 更新节点代码并重启服务
+node/pf-node-deploy --restart                          # 运维操作：更新并重启，非上手必需
 ```
 
 节点 URL/凭据必须显式设置；TOKEN 与 TOKEN_FILE 环境变量不可同时设置，`--token-file` 可显式覆盖。凭据不进仓库。
 新客户端拒绝向缺少 `node.target-v1` 的旧节点写入；原 ID 续查保留 URL/node_id，网页旧未绑定请求不会自动转投。
-只读 token 可查询 `/node`、`/jobs`、日志和输出；网页使用查看密码打开 `/dash/jobs`，不触发手机采样。
+只读 token 可查询 `/node`、`/jobs`、日志和输出；查看密码可打开 `/dash/jobs`，该页不触发手机采样。网页另有 `/dash/fleet`、`/dash/games`、`/dash/results`、`/dash/research`；`/dash/control` 另需操作员授权。
 服务可用 `--data-dir` 指定独立数据根（`jobs/`）；不指定时继续读写原 `phonefarm/_jobs`，不自动迁移。
 
 ## 文档
 
-长期文档放 [HGamey/docs](https://github.com/HGamey/docs)。本仓库只放代码，规则见 [AGENTS.md](AGENTS.md)。
+当前入口：[产品准则](https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/PRODUCT-CHARTER.md)与[逐批验证](https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/BATCHES.md)。源码/隔离验收不等于部署或目标设备已就绪；代码仓规则见 [AGENTS.md](AGENTS.md)。
