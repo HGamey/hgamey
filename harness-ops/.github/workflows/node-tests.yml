@@ -91,6 +91,7 @@ jobs:
           path: pf-runtime
           sparse-checkout-cone-mode: false
           sparse-checkout: |
+            /.gitignore
             /src/
             /tools/
             /loop_v1/tools/
