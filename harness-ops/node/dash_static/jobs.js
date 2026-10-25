@@ -274,16 +274,18 @@
       ['原因', report?.reason || (report ? '未报告原因' : '历史记录缺失，不重新执行程序补报。')], ['自报任务 ID', report?.record?.job_id || '未记录'], ['自报 PID', report?.record?.pid ?? '未记录'], ...programFacts(report?.record?.identity)]);
   }
   function budgetExceeded(job) { return Number.isFinite(job.execution?.time_budget?.exceeded_at); }
+  function diskGuardTriggered(job) { return Number.isFinite(job.execution?.disk_guard?.triggered_at); }
   function status(job) {
     const exceeded = budgetExceeded(job);
+    const trigger = [exceeded ? '运行期限已触发' : '', diskGuardTriggered(job) ? '磁盘保护已触发' : ''].filter(Boolean).join('、');
     if (storageFailed(job)) return [PHASES.storage_blocked, 'unknown'];
     if (job.phase === 'finalizing') return [PHASES.finalizing, 'unknown'];
-    if (job.queue?.state === 'blocked' || job.phase === 'blocked') return [exceeded ? '资源保留 · 运行期限已触发' : '资源保留 · 待核查', 'unknown'];
+    if (job.queue?.state === 'blocked' || job.phase === 'blocked') return [trigger ? `资源保留 · ${trigger}` : '资源保留 · 待核查', 'unknown'];
     if (['preparing', 'queued'].includes(job.phase)) return [PHASES[job.phase], ''];
-    if (job.phase === 'interrupted' || job.outcome === 'interrupted') return [exceeded ? '执行中断 · 运行期限已触发' : '执行中断 · 待核查', 'unknown'];
-    if (job.phase === 'cancelling') return [exceeded ? '运行期限已触发 · 停止处理中' : '停止请求处理中', 'unknown'];
+    if (job.phase === 'interrupted' || job.outcome === 'interrupted') return [trigger ? `执行中断 · ${trigger}` : '执行中断 · 待核查', 'unknown'];
+    if (job.phase === 'cancelling') return [trigger ? `${trigger} · 停止处理中` : '停止请求处理中', 'unknown'];
     if (job.phase === 'starting') return ['正在启动', 'running'];
-    if (exceeded) return [`运行期限已触发${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'unknown'];
+    if (trigger) return [`${trigger}${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'unknown'];
     if (job.outcome === 'cancelled') return job.recovery?.status === 'not_needed' ? ['已取消 · 无需恢复', 'finished'] : ['已停止 · 恢复需核查', 'unknown'];
     if (job.outcome === 'failed') return [`执行失败${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'failed'];
     if (job.outcome === 'succeeded') return [`命令执行完成${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'finished'];
@@ -417,6 +419,7 @@
       !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先在上方解锁任务操作权限。' : stopping ? '停止请求已记录，等待任务处理；刷新任务可核对进度。' :
       !currentJob.controls?.cancel_supported ? '当前任务不支持请求停止。' : queued ? '撤销尚未执行的任务，不发送进程信号。请以最新任务状态确认撤销结果。' : '请求停止只发送 SIGINT，不会自动升级终止。接受请求不代表任务已停止或设备已恢复。';
     if (currentJob.time_budget) reason += ' 另有本任务的运行预算，到期动作见预算记录；人工请求不重置既有升级时钟。';
+    if (currentJob.disk_guard) reason += ' 另有磁盘软保护；触发动作与最近保存观察见下方，已有停止意图和信号计时不会重置。';
     if (currentJob.controls?.reason) reason += ` ${currentJob.controls.reason}`;
     $('cancel-help').textContent = reason;
     const receipt = cancelReceipts.get(currentJob.id);
@@ -568,7 +571,7 @@
     $('stop-intent-summary').hidden = !intent;
     message('stop-intent-summary', intent ? '以下是 worker 最后成功保存的停止意图与记录错误历史，可能落后于实际执行。实际已发信号仍看信号记录；停止意图不证明任务已停或设备已恢复，错误历史不表示当前磁盘剩余量。' : '', Boolean(intent?.record_errors));
     if (!intent) return [];
-    const causes = {execution_deadline: '运行预算期限', owner_record_error: 'worker 管理记录读写失败'};
+    const causes = {execution_deadline: '运行预算期限', owner_record_error: 'worker 管理记录读写失败', disk_log_limit: '日志长度达到软阈值', disk_space_low: '文件系统可用量低于软阈值', disk_observation_failed: '磁盘观察失败'};
     const errors = intent.record_errors;
     return [
       ['已保存的停止原因', (intent.causes || []).map(cause => causes[cause] || cause).join('、') || '未新增停止原因；沿用已知取消意图'],
@@ -576,6 +579,30 @@
       ['已保存的停止模式', ({graceful: '柔性停止（SIGINT）', escalate: '允许按原信号链升级终止'})[intent.mode] || text(intent.mode)],
       ...(errors ? [['记录错误次数（已保存）', errors.count], ['首次记录错误', time(errors.first_at)],
         ['最近记录错误', time(errors.last_at)], ['记录错误 errno', errors.errno], ['记录错误说明', errors.message]] : [['记录错误历史', '本次保存的意图未包含错误历史']])
+    ];
+  }
+  function diskGuardFacts(job) {
+    const request = job.disk_guard, record = job.execution?.disk_guard, observation = record?.observation;
+    const action = value => ({graceful: '柔性停止（只请求 SIGINT）', escalate: 'SIGINT 后 15 秒 TERM，再 15 秒 KILL'})[value] || text(value);
+    const label = ({not_started: '尚未启动', running: '最近保存为运行中', triggered: '已触发停止请求', rejected: '启动前检查拒绝放行', finished: '已保存结束观察'})[record?.status] || 'worker 磁盘观察未提供';
+    const reason = ({log_limit: '日志长度达到上限', disk_space_low: '文件系统可用量低于下限', observation_failed: '无法取得磁盘观察'})[record?.trigger_reason] || record?.trigger_reason || '未记录触发或拒绝原因';
+    $('disk-guard-summary').hidden = !request && !record;
+    message('disk-guard-summary', record ? `${label}。最近成功保存的观察：${time(record.observed_at)}；并非实时磁盘状态。${record.status === 'rejected' ? '启动前未放行，不据此补出命令退出码。' : '触发仅表示请求停止，实际退出、信号与设备恢复分别核对。'}` : request ? '已声明磁盘软保护，尚未取得 worker 观察；不能推断已开始检查或当前空间充足。' : '', record?.status === 'triggered' || record?.status === 'rejected' || observation?.status === 'unknown');
+    if (!request && !record) return [];
+    return [
+      ['声明日志长度上限', request ? inputBytes(request.max_log_bytes) : '未提供，不从 worker 记录回填请求'],
+      ['声明最低可用量', request ? inputBytes(request.min_free_bytes) : '未提供'], ['声明磁盘触发动作', request ? action(request.stop_action) : '未提供'],
+      ['worker 磁盘保护状态', label], ...(record ? [
+        ['worker 采用的日志上限', inputBytes(record.max_log_bytes)], ['worker 采用的可用量下限', inputBytes(record.min_free_bytes)], ['worker 磁盘触发动作', action(record.stop_action)],
+        ['磁盘保护边界', record.enforcement === 'observed_stop_request' ? '观察后请求停止；非硬配额，阈值触发与信号处理期间仍可能写入。' : text(record.enforcement)],
+        ['磁盘检查启动', time(record.started_at)], ['已保存观察的采样时间', time(record.observed_at)], ['磁盘触发时间', time(record.triggered_at)],
+        ['磁盘触发 / 拒绝原因', reason], ['磁盘结束观察', time(record.finished_at)],
+        ['磁盘观察完整性', ({known: '本次观察已取得', unknown: '本次观察未知；已读到的部分数值仍保留'})[observation?.status] || '尚未取得观察'],
+        ['日志逻辑长度（已观察）', inputBytes(observation?.log_bytes)],
+        ...(observation?.filesystems?.length ? observation.filesystems.map(fs => [`文件系统 ${text(fs.device)} · ${(fs.roles || []).join(' / ') || '角色未提供'}`, `${inputBytes(fs.available_bytes)} 可用（f_bavail；同一文件系统的角色已合并）`]) : [['文件系统可用量', '未提供，不按零或当前节点空间补值']]),
+        ['磁盘观察错误代码', observation?.error?.code || '未报告'], ['磁盘观察错误', observation?.error?.message || '未报告'],
+        ['空间范围', '共享文件系统余量不能归因于此任务；日志逻辑长度不是磁盘实际占用。不覆盖其他挂载、每用户配额或脱组后代。']
+      ] : [])
     ];
   }
   function renderExecution(job) {
@@ -598,7 +625,7 @@
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['声明设备范围', scopeText(job.queue?.device_scope || {scope: job.device_binding ? 'device' : job.device_access === 'none' ? 'none' : 'global', binding: job.device_binding})],
       ...(job.device_binding ? bindingFacts(job.device_binding) : []), ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
-      ['命令退出码', job.exit], ...jobCapacityFacts(job), ...budgetFacts(job), ...stopIntentFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
+      ['命令退出码', job.exit], ...jobCapacityFacts(job), ...budgetFacts(job), ...diskGuardFacts(job), ...stopIntentFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
       ['首次停止来源', cancellation?.source === 'execution_deadline' ? '运行预算期限' : cancellation?.source || '未记录（可能为人工请求）'],
       ['升级来源', cancellation?.escalation_source === 'execution_deadline' ? '运行预算期限' : cancellation?.escalation_source || '未记录'],
       ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
@@ -777,6 +804,7 @@
     try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, JSON.stringify({id: pendingRequest.id, target: pendingRequest.target,
       ...(pendingRequest.binding_recorded ? {binding_recorded: true, device_binding: pendingRequest.device_binding} : {}),
       ...(pendingRequest.budget_recorded ? {budget_recorded: true, time_budget: pendingRequest.time_budget} : {}),
+      ...(pendingRequest.disk_guard_recorded ? {disk_guard_recorded: true, disk_guard: pendingRequest.disk_guard} : {}),
       ...(pendingRequest.host_slots_recorded ? {host_slots_recorded: true, host_slots: pendingRequest.host_slots} : {})})); else sessionStorage.removeItem(REQUEST_STORAGE); }
     catch (_) { /* The visible request ID remains available if browser storage is unavailable. */ }
   }
@@ -804,6 +832,35 @@
     message('host-slots-help', problem || (fixed ? pendingRequest.host_slots_recorded ? slots ? '原宿主 slots 声明已冻结；重试或刷新不改变需求，先按原 ID 查询。' : '原请求明确省略 slots 声明，本次重填仍省略。' : '旧未决请求未保存 slots 声明，不为原 ID 加入新需求；先查询原任务。' : !hostSlotsSupported() ? '节点未提供 jobs.host-capacity-v1；可继续不声明的兼容提交。' : '仅显式开启才发送三项声明；节点最终核准容量，不按当前余量承诺立即运行。'), !!problem);
   }
   const timeBudgetSupported = () => nodeInfo?.capabilities?.includes('jobs.time-budget-v1') === true;
+  const diskGuardSupported = () => nodeInfo?.capabilities?.includes('jobs.disk-guard-v1') === true;
+  function submissionDiskGuard() {
+    if (pendingRequest) return pendingRequest.body?.disk_guard ?? (pendingRequest.disk_guard_recorded ? pendingRequest.disk_guard : null);
+    if (!$('submit-disk-guard').checked) return null;
+    return {max_log_bytes: Number($('submit-max-log-bytes').value), min_free_bytes: Number($('submit-min-free-bytes').value), stop_action: $('submit-disk-stop-action').value};
+  }
+  function diskGuardProblem() {
+    const guard = submissionDiskGuard();
+    if (guard == null) return '';
+    if (Object.keys(guard).sort().join(',') !== 'max_log_bytes,min_free_bytes,stop_action' ||
+        !['max_log_bytes', 'min_free_bytes'].every(key => Number.isSafeInteger(guard[key]) && guard[key] >= 1) || !['graceful', 'escalate'].includes(guard.stop_action)) return '两个阈值都须为 1–9007199254740991 的整数字节，并选择触发动作。';
+    if (!diskGuardSupported()) return '节点未提供 jobs.disk-guard-v1，不能提交此声明；不会删除原阈值或更换请求 ID。';
+    if ((pendingRequest?.body?.device_access || $('submit-device-access').value) === 'recovery') return '恢复任务暂不接受磁盘软保护声明，也不继承原任务的阈值。';
+    return '';
+  }
+  function renderDiskGuard(allowed) {
+    const fixed = !!pendingRequest, guard = submissionDiskGuard();
+    if (fixed) {
+      $('submit-disk-guard').checked = !!guard;
+      $('submit-max-log-bytes').value = guard?.max_log_bytes ?? '';
+      $('submit-min-free-bytes').value = guard?.min_free_bytes ?? '';
+      $('submit-disk-stop-action').value = guard?.stop_action || 'graceful';
+    }
+    const disabled = !allowed || fixed || submissionBusy || !diskGuardSupported();
+    $('submit-disk-guard').disabled = disabled;
+    for (const id of ['submit-max-log-bytes', 'submit-min-free-bytes', 'submit-disk-stop-action']) $(id).disabled = disabled || !$('submit-disk-guard').checked;
+    const problem = diskGuardProblem();
+    message('disk-guard-help', problem || (fixed ? pendingRequest.disk_guard_recorded ? guard ? '原磁盘软阈值与触发动作已冻结，重载或重试不改变；先按原 ID 查询。' : '原请求明确省略磁盘保护，本次重填仍省略。' : '旧未决请求未保存磁盘声明，不给原 ID 加入新字段；先查询原任务。' : !diskGuardSupported() ? '节点未提供 jobs.disk-guard-v1；可继续不声明的兼容提交。' : '仅显式启用才发送 disk_guard。观察到日志长度达到上限、共享可用量低于下限或观察失败时请求停止；不保证停止完成。'), !!problem);
+  }
   function submissionBudget() {
     if (pendingRequest) return pendingRequest.body?.time_budget ?? (pendingRequest.budget_recorded ? pendingRequest.time_budget : null);
     const raw = $('submit-wall-seconds').value.trim();
@@ -951,8 +1008,10 @@
     const inputsProblem = hasInputs && !inputsSupported();
     const bindingProblem = deviceBindingProblem();
     const budgetProblem = timeBudgetProblem();
+    const guardProblem = diskGuardProblem();
     const slotsProblem = hostSlotsProblem();
     renderTimeBudget(allowed);
+    renderDiskGuard(allowed);
     renderHostSlots(allowed);
     for (const id of ['submit-bin', 'submit-label', 'submit-argv']) $(id).disabled = !allowed || locked;
     $('submit-inputs').disabled = !allowed || locked || !inputsSupported();
@@ -967,7 +1026,7 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : submissionBinding() ? '节点自动保存绑定设备的必要资源；自由资源不能删除设备范围冲突，也不授予设备权限。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!slotsProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!guardProblem || !!slotsProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。'));
@@ -979,7 +1038,7 @@
     $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
     $('submit-refill').disabled = !allowed || !!targetIssue || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
-    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!bindingProblem || !!budgetProblem || !!slotsProblem || !!policyProblem || inputsProblem;
+    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!bindingProblem || !!budgetProblem || !!guardProblem || !!slotsProblem || !!policyProblem || inputsProblem;
     renderDeviceBinding(allowed);
     renderSessionTemplate(allowed);
     renderRefbenchTemplate(allowed);
@@ -1071,6 +1130,11 @@
         const timeBudget = submissionBudget();
         if (timeBudget) body.time_budget = timeBudget;
         const budgetRecorded = pendingRequest ? pendingRequest.budget_recorded === true : true;
+        const guardProblem = diskGuardProblem();
+        if (guardProblem) throw new Error(guardProblem);
+        const diskGuard = submissionDiskGuard();
+        if (diskGuard) body.disk_guard = diskGuard;
+        const diskGuardRecorded = pendingRequest ? pendingRequest.disk_guard_recorded === true : true;
         const slotsProblem = hostSlotsProblem();
         if (slotsProblem) throw new Error(slotsProblem);
         const hostSlots = submissionHostSlots();
@@ -1090,7 +1154,8 @@
         const binding = submissionBinding();
         if (binding) body.device_binding = binding;
         pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), target: pendingRequest ? pendingRequest.target : HGTarget.binding(), body,
-          binding_recorded: true, device_binding: binding, budget_recorded: budgetRecorded, time_budget: timeBudget, host_slots_recorded: hostSlotsRecorded, host_slots: hostSlots};
+          binding_recorded: true, device_binding: binding, budget_recorded: budgetRecorded, time_budget: timeBudget, host_slots_recorded: hostSlotsRecorded, host_slots: hostSlots,
+          disk_guard_recorded: diskGuardRecorded, disk_guard: diskGuard};
         savePending();
       } catch (error) { submissionMessage(error instanceof SyntaxError ? '参数不是有效的 JSON，请填写字符串数组。' : error.message, true); return; }
     }
@@ -2637,6 +2702,9 @@
   for (const key of SLOT_KEYS) $('submit-host-' + key).addEventListener('input', renderSubmission);
   $('submit-wall-seconds').addEventListener('input', renderSubmission);
   $('submit-timeout-action').addEventListener('change', renderSubmission);
+  $('submit-disk-guard').addEventListener('change', renderSubmission);
+  for (const id of ['submit-max-log-bytes', 'submit-min-free-bytes']) $(id).addEventListener('input', renderSubmission);
+  $('submit-disk-stop-action').addEventListener('change', renderSubmission);
   $('prepare-recovery').addEventListener('click', () => {
     if ($('prepare-recovery').disabled || !currentJob) return;
     $('submit-device-access').value = 'recovery';
@@ -2662,6 +2730,7 @@
       pendingRequest = {id: saved.id, target: saved.target || null, binding_recorded: saved.binding_recorded === true,
         device_binding: saved.binding_recorded === true ? saved.device_binding : null,
         budget_recorded: saved.budget_recorded === true, time_budget: saved.budget_recorded === true ? saved.time_budget : null,
+        disk_guard_recorded: saved.disk_guard_recorded === true, disk_guard: saved.disk_guard_recorded === true ? saved.disk_guard : null,
         host_slots_recorded: saved.host_slots_recorded === true, host_slots: saved.host_slots_recorded === true ? saved.host_slots : null};
       const id = pendingRequest.id;
       $('submit-panel').open = true;

@@ -160,6 +160,17 @@
           <p id="time-budget-help" class="note" role="status"></p>
           <p class="note">仅从命令实际启动后计时，上传、排队和输入准备不计入。升级停止在 SIGINT 后 15 秒可发 TERM，再 15 秒可发 KILL，可能打断恢复。到期是停止请求期限，不保证任务已经结束或设备已经恢复。</p>
         </details>
+        <details class="input-manifest wide-field" id="disk-guard-fields">
+          <summary>日志与磁盘软阈值 <span class="field-optional">可选</span></summary>
+          <label class="host-slots-choice"><input id="submit-disk-guard" type="checkbox" disabled> 显式声明磁盘软保护</label>
+          <div class="submit-fields">
+            <label>日志长度上限（字节）<input id="submit-max-log-bytes" type="number" min="1" max="9007199254740991" step="1" placeholder="例如 67108864" disabled></label>
+            <label>文件系统最低可用量（字节）<input id="submit-min-free-bytes" type="number" min="1" max="9007199254740991" step="1" placeholder="例如 1073741824" disabled></label>
+            <label>触发动作<select id="submit-disk-stop-action" disabled><option value="graceful">柔性停止 · 只请求 SIGINT</option><option value="escalate">升级停止 · SIGINT → TERM → KILL</option></select></label>
+          </div>
+          <p id="disk-guard-help" class="note" role="status"></p>
+          <p class="note">启动前核查一次；运行中最多每秒观察一次，达到阈值后请求停止，期间仍可能写入。日志长度是同一日志文件的逻辑长度，空间是相关文件系统的共享可用量。这不是硬配额，不截断或删除原件，也不保证设备已恢复。</p>
+        </details>
         <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主任务 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复任务</option></select></label>
         <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留任务的 12 位 ID" autocomplete="off" spellcheck="false"></label>
         <p id="device-access-help" class="field-help wide-field"></p>
@@ -340,7 +351,7 @@
         </section>
         <section class="execution-panel" aria-labelledby="execution-heading">
           <div class="section-heading"><h3 id="execution-heading">执行与停止</h3><div class="execution-actions"><button id="cancel-job" class="ghost" type="button" aria-describedby="cancel-help" disabled>请求停止</button><button id="force-open" class="ghost danger" type="button" aria-describedby="cancel-help" disabled>升级终止…</button></div></div>
-          <p id="time-budget-summary" class="note" role="status" hidden></p><p id="stop-intent-summary" class="note" role="status" hidden></p><p id="cancel-help" class="note"></p><p id="cancel-result" class="cancel-result" role="status" hidden></p>
+          <p id="time-budget-summary" class="note" role="status" hidden></p><p id="disk-guard-summary" class="note" role="status" hidden></p><p id="stop-intent-summary" class="note" role="status" hidden></p><p id="cancel-help" class="note"></p><p id="cancel-result" class="cancel-result" role="status" hidden></p>
           <form id="force-form" class="force-form" hidden>
             <p>升级终止可能打断任务的还原流程。先核查任务仍未停止，再提交；提交后仍需核对设备恢复证据。</p>
             <label><input id="force-confirm" type="checkbox" required> 我已核查任务仍未停止，并理解可能打断还原。</label>

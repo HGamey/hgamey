@@ -73,6 +73,18 @@ def spawn(*args,**kwargs):
     save()
     return child
 runtime.os.killpg,runtime.subprocess.Popen=send,spawn
+original_statvfs=runtime.os.fstatvfs
+def statvfs(fd):
+    active=bool(owned) and owned[0].poll() is None
+    if scenario=='disk_error' and active and (directory/'child-ready').exists():
+        fault('disk_observation',str(fd),errno.EIO)
+    if scenario=='disk_low' or (scenario=='disk_finished' and owned and not active):
+        from types import SimpleNamespace
+        evidence.setdefault('disk_observations',[]).append({'available_bytes':0,'active':active,'monotonic':time.monotonic()})
+        save()
+        return SimpleNamespace(f_bavail=0,f_frsize=4096)
+    return original_statvfs(fd)
+runtime.os.fstatvfs=statvfs
 try:
     code=runtime._worker(str(directory),lock_fd,(.12,.12))
 finally:
@@ -113,12 +125,16 @@ class JobRuntimeTests(unittest.TestCase):
             for name in ("meta.json", "cancel.json", "cancel.force.json", "fault-evidence.json"):
                 path = self.root / jid / name
                 item[name] = json.loads(path.read_text()) if path.exists() else None
-            for name in ("log", "runner.log", "exitcode"):
+            for name in ("log", "preserved-log", "runner.log", "exitcode"):
                 path = self.root / jid / name
                 item[name] = path.read_bytes()[:8192].decode("utf-8", "replace") if path.exists() else None
             jobs.append(item)
-        path = qa / f"job-owner-record-failure-{self._testMethodName}-{os.getpid()}-{time.time_ns()}.json"
-        path.write_text(json.dumps({"scope": "actual ordinary worker and harmless original process group; injected record I/O only",
+        disk = "disk_guard" in self._testMethodName
+        prefix = "job-disk-guard" if disk else "job-owner-record-failure"
+        scope = ("actual ordinary worker disk guard; small logs and injected statvfs only" if disk else
+                 "actual ordinary worker and harmless original process group; injected record I/O only")
+        path = qa / f"{prefix}-{self._testMethodName}-{os.getpid()}-{time.time_ns()}.json"
+        path.write_text(json.dumps({"scope": scope,
                                    "completed_assertions": self.fault_assertions, "jobs": jobs,
                                    "device_transport_calls": 0}, indent=2) + "\n")
         print(f"job owner record failure evidence: {path}", file=sys.stderr)
@@ -151,9 +167,13 @@ class JobRuntimeTests(unittest.TestCase):
     def ready(self, jid):
         return b"ready" in self.store.read_bytes(jid + "/log", 4096)
 
-    def start(self, jid, program, short_delays=False, time_budget=None, record_fault=None):
+    def start(self, jid, program, short_delays=False, time_budget=None, record_fault=None, disk_guard=None):
         command = [sys.executable, "-u", "-c", program]
         args = (self.store, jid, str(self.root / jid), command, str(self.root), dict(os.environ))
+        options = {"time_budget": time_budget}
+        if disk_guard is not None:
+            self.store.mkdir(jid + "/out")
+            options["disk_guard"] = disk_guard
         if short_delays or record_fault:
             # Explicit test-only entry into the same worker function. The shipped
             # worker CLI has no delay flag or environment override.
@@ -164,12 +184,12 @@ class JobRuntimeTests(unittest.TestCase):
                         f"sys.exit(job_runtime._worker({job_dir!r},{lock_fd},(.12,.12)))")
                 return [sys.executable, "-c", code]
             with patch.object(runtime, "_worker_command", test_command):
-                worker = runtime.launch(*args, time_budget=time_budget)
+                worker = runtime.launch(*args, **options)
             if record_fault:
                 self.fault_jobs.append((jid, worker))
                 self.addCleanup(lambda: worker.wait(timeout=10))
             return worker
-        return runtime.launch(*args, time_budget=time_budget)
+        return runtime.launch(*args, **options)
 
     def finished(self, jid, worker):
         meta = self.until(lambda: (m if (m := self.read(jid)).get("state") == "finished" else None))
@@ -377,6 +397,81 @@ class JobRuntimeTests(unittest.TestCase):
                         self.assertEqual(intent["mode"], "escalate")
                         self.assertIn("owner_record_error", intent["causes"])
                         self.assertEqual((meta["phase"], meta["outcome"]), ("interrupted", "interrupted"))
+                self.fault_assertions.append(scenario)
+
+    def test_disk_guard_pins_log_rejects_low_space_and_preserves_completion(self):
+        guard = {"max_log_bytes": 1024, "min_free_bytes": 1, "stop_action": "graceful"}
+        for scenario in ("disk_log", "disk_low", "disk_error", "disk_finished"):
+            with self.subTest(scenario=scenario):
+                jid = self.job()
+                directory = self.root / jid
+                log = directory / "log"
+                log.write_bytes(b"")
+                original = log.stat()
+                payload = b"small inherited log payload\n" * 128
+                if scenario == "disk_log":
+                    program = ("import os,signal,sys,time;from pathlib import Path;signal.alarm(6);"
+                               "signal.signal(signal.SIGINT,lambda *a:(print('INT',flush=True),sys.exit(0)));"
+                               f"Path({str(log)!r}).rename({str(directory / 'preserved-log')!r});"
+                               f"Path({str(log)!r}).write_bytes(b'');os.write(1,{payload!r});time.sleep(6)")
+                elif scenario == "disk_error":
+                    program = ("import signal,sys,time;from pathlib import Path;signal.alarm(6);"
+                               "signal.signal(signal.SIGINT,lambda *a:(print('INT',flush=True),sys.exit(0)));"
+                               f"Path({str(directory / 'child-ready')!r}).touch();print('ready',flush=True);time.sleep(6)")
+                elif scenario == "disk_low":
+                    program = "raise RuntimeError('preflight must not execute this command')"
+                else:
+                    program = "print('natural completion')"
+                worker = self.start(jid, program, disk_guard=guard, record_fault=scenario)
+                worker.wait(timeout=8)
+                meta, evidence = self.read(jid), self.fault_record(jid)
+                observed = meta["execution"]["disk_guard"]
+                self.assertEqual(observed["schema"], "phonefarm/job-disk-guard@1")
+                self.assertEqual(observed["enforcement"], "observed_stop_request")
+                self.assertEqual(self.store.read_json(jid + "/launch.json")["disk_guard"], guard)
+                self.assertFalse(runtime.runner_alive(self.store, jid))
+                if scenario == "disk_low":
+                    self.assertEqual((observed["status"], observed["trigger_reason"]), ("rejected", "disk_space_low"))
+                    self.assertIsNone(observed["started_at"])
+                    self.assertIsNone(observed["triggered_at"])
+                    self.assertIsNone(meta["exit"])
+                    self.assertIsNone(meta["execution"]["child_pid"])
+                    self.assertEqual(meta["execution"]["owned_process_group"]["status"], "not_started")
+                    self.assertEqual(evidence["children"], [])
+                    self.assertFalse((directory / "exitcode").exists())
+                else:
+                    self.assertEqual(worker.returncode, 0)
+                    self.assertEqual(meta["exit"], 0)
+                    self.assertEqual(meta["execution"]["owned_process_group"]["status"], "absent")
+                    self.assertFalse(evidence["children"][0]["alive_when_worker_returned"])
+                    self.assertIsNotNone(observed["finished_at"])
+                    if scenario == "disk_finished":
+                        self.assertEqual(observed["status"], "finished")
+                        self.assertIsNone(observed["trigger_reason"])
+                        self.assertIsNone(observed["triggered_at"])
+                        self.assertEqual(meta["outcome"], "succeeded")
+                        self.assertNotIn("cancel", meta)
+                        self.assertEqual(evidence["signals"], [])
+                        self.assertTrue(evidence["disk_observations"])
+                        self.assertEqual(observed["observation"]["filesystems"][0]["available_bytes"], 0)
+                    else:
+                        reason = "log_limit" if scenario == "disk_log" else "observation_failed"
+                        cause = "disk_log_limit" if scenario == "disk_log" else "disk_observation_failed"
+                        self.assertEqual((observed["status"], observed["trigger_reason"]), ("triggered", reason))
+                        self.assertIsNotNone(observed["triggered_at"])
+                        self.assertEqual([s["name"] for s in meta["cancel"]["signals"]], ["SIGINT"])
+                        self.assertIn(cause, meta["execution"]["stop_intent"]["causes"])
+                        self.assertEqual(meta["execution"]["stop_intent"]["mode"], "graceful")
+                        if scenario == "disk_log":
+                            preserved = directory / "preserved-log"
+                            self.assertEqual((preserved.stat().st_dev, preserved.stat().st_ino), (original.st_dev, original.st_ino))
+                            self.assertEqual(preserved.read_bytes(), payload + b"INT\n")
+                            self.assertEqual(log.read_bytes(), b"")
+                            self.assertEqual(observed["observation"]["log_bytes"], preserved.stat().st_size)
+                            self.assertEqual(meta["outcome"], "cancelled")
+                        else:
+                            self.assertEqual((meta["phase"], meta["outcome"]), ("interrupted", "interrupted"))
+                            self.assertTrue(any(f["operation"] == "disk_observation" for f in evidence["faults"]))
                 self.fault_assertions.append(scenario)
 
 

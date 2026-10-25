@@ -12,7 +12,7 @@ import traceback
 
 from artifact_io import SafeRoot
 from job_policy import require_policy, requested_policy
-from job_budget import RunBudget, normalize as normalize_budget
+from job_budget import RunBudget, RunDiskGuard, normalize as normalize_budget, normalize_disk_guard
 from runtime_identity import read_program_report, runtime_snapshot
 
 
@@ -37,7 +37,7 @@ def _worker_command(job_dir, lock_fd):
 
 
 def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None,
-           privileged_entry=None, service_at_launch=None, time_budget=None):
+           privileged_entry=None, service_at_launch=None, time_budget=None, disk_guard=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
     job_dir = os.path.abspath(job_dir)
     if os.path.basename(job_dir) != jid:
@@ -46,6 +46,11 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
         raise ValueError("choose an administrator configuration or installed worker entry")
     if (contained_config is not None or privileged_entry is not None) and execution_policy != "contained":
         raise ValueError("privileged workers only execute the contained policy")
+    if disk_guard is not None:
+        disk_guard = normalize_disk_guard(disk_guard)
+        if privileged_entry is not None:
+            from worker_config import require_capability
+            require_capability(privileged_entry, "jobs.disk-guard-v1")
     lock_fd = _open_file(store, jid + "/runner.lock", os.O_RDWR | os.O_CREAT)
     try:
         try:
@@ -59,6 +64,8 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
             launch_spec["execution_policy"] = execution_policy
         if time_budget is not None:
             launch_spec["time_budget"] = normalize_budget(time_budget)
+        if disk_guard is not None:
+            launch_spec["disk_guard"] = disk_guard
         if not store.publish_json_once(jid + "/launch.json", launch_spec):
             raise ValueError("job was already launched; create a new job instead of replaying it")
         log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_CREAT | os.O_APPEND)
@@ -295,7 +302,7 @@ class OwnerStop:
 
     @property
     def interrupted(self):
-        return "owner_record_error" in self.causes
+        return bool({"owner_record_error", "disk_observation_failed"}.intersection(self.causes))
 
 
 def _group_completion(pgid):
@@ -355,6 +362,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
     fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     store = _store if _store is not None else SafeRoot(os.path.dirname(job_dir), json_owner=record_owner)
     jid = os.path.basename(job_dir)
+    disk = None
     try:
         # Do not carry an HTTP launcher's ignored signal dispositions into the child.
         signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -366,6 +374,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
                                  service_at_launch=spec.get("service_at_launch"),
                                  worker_identity=runtime_snapshot(__file__))
         budget = RunBudget(store, jid, meta, spec)
+        disk = RunDiskGuard(store, jid, meta, spec)
         _program_identity(store, jid, meta)
         meta["execution"]["owned_process_group"] = {
             "scope": "original_process_group", "status": "not_started", "pgid": None,
@@ -384,7 +393,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             # Administrator-only worker entry. Public admission remains unavailable
             # until a production privilege and cross-UID artifact boundary exists.
             from job_cgroup import run
-            return run(store, jid, job_dir, meta, spec, contained_config, escalation_delays, budget)
+            return run(store, jid, job_dir, meta, spec, contained_config, escalation_delays, budget, disk)
         try:
             policy = require_policy(spec)
         except ValueError as error:
@@ -394,12 +403,14 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
         log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_APPEND)
         try:
             try:
+                disk.prepare(log_fd)
                 child = subprocess.Popen(spec["command"], cwd=spec["cwd"],
                                          env=dict(os.environ, PF_JOB_ID=jid,
                                                   PF_RUNTIME_REPORT=os.path.join(job_dir, "out", ".program-runtime.json")),
                                          stdin=subprocess.DEVNULL, stdout=log_fd, stderr=subprocess.STDOUT,
                                          start_new_session=True, close_fds=True)
                 budget.start()
+                disk.start()
             except (OSError, ValueError) as e:
                 print(f"child could not start: {type(e).__name__}: {e}", flush=True)
                 _finish(store, jid, meta, "failed", {"status": "not_needed", "reason": "command did not start"},
@@ -422,6 +433,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             returncode = child.poll()
             if returncode is not None:
                 budget.finish()
+                disk.finish()
                 signals = (meta.get("cancel") or {}).get("signals", [])
                 outcome = "interrupted" if owner.interrupted else "cancelled" if signals else "succeeded" if returncode == 0 else "failed"
                 escalated = any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)
@@ -438,6 +450,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             owner.poll()
             owner.observe_program()
             budget.check(owner.request_cancel)
+            disk.check(owner.request_cancel)
             request = owner.request
             if request:
                 signals = meta["cancel"]["signals"]
@@ -460,6 +473,8 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
                     owner.save()
             time.sleep(0.05)
     finally:
+        if disk is not None:
+            disk.close()
         store.close()
         os.close(lock_fd)
 

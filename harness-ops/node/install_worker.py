@@ -53,7 +53,7 @@ def main():
     config = {"schema": "phonefarm/worker-install@1", "jobs_root": str(args.jobs_root),
               "cgroup_root": str(args.cgroup_root), "node_uid": args.node_uid, "node_gid": args.node_gid,
               "uid": args.job_uid, "gid": args.job_gid,
-              "capabilities": ["jobs.execution-reconcile-v1"]}
+              "capabilities": ["jobs.execution-reconcile-v1", "jobs.disk-guard-v1"]}
     roots = (args.phonefarm_state_dir, args.devlock_dir, args.phonefarm_lease_dir)
     if any(roots):
         if not all(roots):

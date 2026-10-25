@@ -11,6 +11,7 @@ OBSERVATION_FIELDS = (
     "cancel_status", "cancel_signals", "time_budget_status", "time_budget_exceeded_at",
     "owned_scope", "owned_status", "reconciliation_state",
 )
+DISK_FIELDS = ("disk_guard_status", "disk_guard_trigger_reason", "disk_guard_triggered_at")
 
 
 def _object(value):
@@ -20,6 +21,9 @@ def _object(value):
 def projection(row, observation=None):
     """Keep SQL facts current without inventing a new worker observation."""
     prior = _object(row.get("status_projection"))
+    # Optional extension: observing an old job must not manufacture new null
+    # keys and publish an event merely because the service was upgraded.
+    disk = {key: copy.deepcopy(prior[key]) for key in DISK_FIELDS if key in prior}
     worker = {key: copy.deepcopy(prior.get(key)) for key in OBSERVATION_FIELDS}
     if worker["cancel_signals"] is None:
         worker["cancel_signals"] = []
@@ -27,6 +31,11 @@ def projection(row, observation=None):
         execution = _object(observation.get("execution"))
         cancel = _object(observation.get("cancel"))
         budget = _object(execution.get("time_budget"))
+        if "disk_guard" in execution:
+            guard = _object(execution["disk_guard"])
+            disk = {"disk_guard_status": guard.get("status"),
+                    "disk_guard_trigger_reason": guard.get("trigger_reason"),
+                    "disk_guard_triggered_at": guard.get("triggered_at")}
         group = _object(execution.get("owned_cgroup")) or _object(execution.get("owned_process_group"))
         worker = {
             "phase": observation.get("phase"), "outcome": observation.get("outcome"),
@@ -53,7 +62,7 @@ def projection(row, observation=None):
     storage = reason if reason.get("kind") == "durability" else {}
     return {"queue_state": row["state"], "storage_kind": storage.get("kind"),
             "storage_stage": storage.get("stage"),
-            "host_capacity_state": job_facts(row)["state"], **worker}
+            "host_capacity_state": job_facts(row)["state"], **worker, **disk}
 
 
 def public_fields(row):

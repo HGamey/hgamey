@@ -10,6 +10,7 @@
   pf-node --execution-policy process_group --detach phonefarm ...
   pf-node --max-runtime-seconds 900 --timeout-action graceful --detach phonefarm ...
   pf-node --host-slots slots.json --detach phonefarm ... # {"cpu":2,"gpu":1,"io":0}
+  pf-node --disk-guard guard.json --detach phonefarm ... # {"max_log_bytes":67108864,"min_free_bytes":1073741824,"stop_action":"graceful"}
   pf-node request <request_id>               # 断网后找回同一次提交的任务
   pf-node queue                              # 只读持久队列快照
   pf-node admin-restart                      # 核原节点后仅发送一次服务重启请求
@@ -92,6 +93,12 @@
 - --max-runtime-seconds N 声明 1–604800 整数秒运行期限；--timeout-action graceful（默认）或 escalate。
   仅实际启动后计时，排队不计入；graceful只请求SIGINT，escalate沿15秒TERM/再15秒KILL。
   恢复任务暂不支持；期限触发不代表已停止/恢复。原exit=0且确认超期限时CLI返回124，未知结束优先125。
+- --disk-guard FILE 读取最多4KiB闭合JSON：max_log_bytes/min_free_bytes 均为1–9007199254740991的整数字节，
+  stop_action=graceful|escalate；缺省不发送，恢复任务不支持。需节点 jobs.disk-guard-v1，不删除原声明降级。
+  启动前核查，运行中最多每秒观察一次；日志达到上限、共享空间低于下限或观察失败时请求停止。
+  这是软阈值，不截断/删除原件，不是任意输出硬配额；日志逻辑长度不是磁盘实际占用，空间不归因当前作业。
+  status 的 execution.disk_guard 只表示最后成功保存的观察，未知不补零；观察触发、实际信号、退出和恢复分开。
+  已知日志/空间阈值触发且可信exit=0返回124；未知/中断125优先，真实非零退出码保留；启动前拒绝不造退出码。
 - status 的 execution.stop_intent 是 worker 最后成功保存的停止原因和管理记录错误历史，可能落后于实际执行。
   实际已发信号仍看 cancel.signals；这些记录不证明已停/已恢复，也不表示当前磁盘剩余量。
   owner_record_error 独立发起停止时，即使命令exit=0仍按interrupted返回125；期限124规则保持。
@@ -240,7 +247,7 @@ def device_binding_envelope(value, node_id):
     return binding
 
 
-def require_idempotent_jobs(require_recovery=False, execution_policy=None, inputs=None, device_binding=None, time_budget=None, host_slots=None):
+def require_idempotent_jobs(require_recovery=False, execution_policy=None, inputs=None, device_binding=None, time_budget=None, host_slots=None, disk_guard=None):
     TARGET.require_write()
     try:
         node = json.loads(call("GET", "/node", attempts=1, raise_4xx=True))
@@ -262,6 +269,8 @@ def require_idempotent_jobs(require_recovery=False, execution_policy=None, input
         sys.exit("pf-node: 节点缺少 jobs.host-capacity-v1；未打包或提交，不删除显式需求降级")
     if time_budget is not None and "jobs.time-budget-v1" not in node.get("capabilities", []):
         sys.exit("pf-node: 节点缺少 jobs.time-budget-v1；未打包或提交，不删除原预算降级")
+    if disk_guard is not None and "jobs.disk-guard-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 jobs.disk-guard-v1；未打包或提交，不删除原磁盘声明降级")
     if inputs is not None:
         if "jobs.inputs-v1" not in node.get("capabilities", []):
             sys.exit("pf-node: 节点缺少 jobs.inputs-v1；未打包或提交")
@@ -365,14 +374,21 @@ def terminal_exit(jid, status):
     if exceeded:
         print(f"pf-node: 运行期限已触发，原命令 exit={rc}，触发时间={exceeded_at}，"
               f"到期动作={budget.get('timeout_action')}；停止和设备恢复仍以独立记录为准。", file=sys.stderr)
+    disk = (status.get("execution") or {}).get("disk_guard") or {}
+    disk_at = disk.get("triggered_at")
+    disk_triggered = isinstance(disk_at, (int, float)) and not isinstance(disk_at, bool) and math.isfinite(disk_at)
+    known_disk_trigger = disk_triggered and disk.get("trigger_reason") in ("log_limit", "disk_space_low")
+    if disk:
+        print("pf-node: 最后成功保存的磁盘保护观察=" + json.dumps(disk, ensure_ascii=False)
+              + "；不是实时空间或硬配额，触发不等于已停止或设备已恢复。", file=sys.stderr)
     group = (status.get("execution") or {}).get("owned_process_group") or {}
     if rc == 0 and group.get("status") in ("present", "unknown"):
         print(f"pf-node: 任务 {jid} 直接命令 exit=0，但原进程组结束未确认"
               f"（{group['status']}），CLI 返回 125；请核查任务和资源保留记录。", file=sys.stderr)
         return 125
     cgroup = (status.get("execution") or {}).get("owned_cgroup") or {}
-    if exceeded and rc == 0 and cgroup and cgroup.get("status") != "absent":
-        print("pf-node: 运行期限已触发，但执行域结束未确认；CLI 返回 125。", file=sys.stderr)
+    if (exceeded or disk_triggered) and rc == 0 and cgroup and cgroup.get("status") != "absent":
+        print("pf-node: 运行期限或磁盘保护已触发，但执行域结束未确认；CLI 返回 125。", file=sys.stderr)
         return 125
     unknown = (not isinstance(rc, int) or isinstance(rc, bool) or rc == -1
                or (phase == "interrupted" and rc == 0))
@@ -384,6 +400,9 @@ def terminal_exit(jid, status):
         return 125
     if exceeded and rc == 0:
         print("pf-node: 原命令 exit=0，但 worker 已触发运行期限；CLI 返回 124，不代表设备已恢复。", file=sys.stderr)
+        return 124
+    if known_disk_trigger and rc == 0:
+        print("pf-node: 原命令 exit=0，但 worker 已触发已知日志/空间软阈值；CLI 返回 124，不代表设备已恢复。", file=sys.stderr)
         return 124
     return rc
 
@@ -819,6 +838,7 @@ def main():
     inputs_path, inputs, submission_node = None, None, None
     binding_path, binding_envelope = None, None
     host_slots_path, host_slots = None, None
+    disk_guard_path, disk_guard = None, None
     wall_seconds, timeout_action, time_budget = None, None, None
     while args and args[0].startswith("-"):
         a = args.pop(0)
@@ -848,6 +868,10 @@ def main():
             if not args or host_slots_path is not None:
                 sys.exit("pf-node: --host-slots 需要且只能指定一个 JSON 文件")
             host_slots_path = args.pop(0)
+        elif a == "--disk-guard":
+            if not args or disk_guard_path is not None:
+                sys.exit("pf-node: --disk-guard 需要且只能指定一个 JSON 文件")
+            disk_guard_path = args.pop(0)
         elif a == "--device-binding":
             if not args or binding_path is not None:
                 sys.exit("pf-node: --device-binding 需要且只能指定一个 devices-resolve JSON 文件")
@@ -902,6 +926,8 @@ def main():
             sys.exit(f"pf-node: 未知选项 {a}")
     if host_slots_path is not None and device_access == "recovery":
         sys.exit("pf-node: 恢复任务暂不接受显式宿主 slots；未提交")
+    if disk_guard_path is not None and device_access == "recovery":
+        sys.exit("pf-node: 恢复任务暂不接受磁盘软保护声明；未提交")
     if timeout_action is not None and wall_seconds is None:
         sys.exit("pf-node: --timeout-action 需与 --max-runtime-seconds 一起使用")
     if wall_seconds is not None:
@@ -928,7 +954,7 @@ def main():
     if args[0] == "job-events":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None
-                or host_slots_path is not None or binding_path is not None or exe or detach or outdir):
+                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach or outdir):
             sys.exit("pf-node: job-events 不接收作业选项；这是单次只读请求")
         job_events_command(args[1:])
         return
@@ -936,7 +962,7 @@ def main():
         sys.exit("pf-node: --device-binding 仅用于配置 phonefarm 的 gray-layer session，不能替换 --exe 或覆盖恢复/无设备模式；未提交")
     if args[0] == "devices-resolve":
         if len(args) != 2 or not args[1] or (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
             sys.exit("用法: pf-node devices-resolve SERIAL；不接收作业选项")
         try:
             node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
@@ -952,7 +978,7 @@ def main():
         return
     if args[0] in ("devices", "devices-set"):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
             sys.exit("pf-node: devices/devices-set 不接收作业选项；登记不会创建作业")
         if args == ["devices"]:
             try:
@@ -985,13 +1011,13 @@ def main():
         return
     if args[0] == "results":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
             sys.exit("pf-node: results 不接收作业选项；使用清单 result_id 或 --import-id")
         from result_client import main as results_main
         raise SystemExit(results_main(args[1:], target=TARGET))
     if args[0] == "research":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
             sys.exit("pf-node: research 不接收作业选项；写入使用 --operation-id")
         from research_client import main as research_main
         raise SystemExit(research_main(args[1:], target=TARGET))
@@ -1024,6 +1050,16 @@ def main():
             host_slots = normalize_slots(json.loads(raw))
         except (OSError, ValueError) as error:
             sys.exit(f"pf-node: 无法读取宿主 slots 声明：{error}；只接受文件路径，未打包或提交")
+    if disk_guard_path is not None:
+        try:
+            from job_budget import normalize_disk_guard
+            with open(disk_guard_path, "rb") as source:
+                raw = source.read((4 << 10) + 1)
+            if len(raw) > 4 << 10:
+                raise ValueError("disk_guard 文件不能超过 4 KiB")
+            disk_guard = normalize_disk_guard(json.loads(raw))
+        except (OSError, ValueError) as error:
+            sys.exit(f"pf-node: 无法读取磁盘保护声明：{error}；只接受文件路径，未打包或提交")
     if inputs_path is not None:
         try:
             with open(inputs_path, "rb") as source:
@@ -1036,16 +1072,16 @@ def main():
         except (OSError, ValueError) as error:
             sys.exit(f"pf-node: 无法读取输入清单：{error}")
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
-                                                 execution_policy=execution_policy, inputs=inputs, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots)
+                                                 execution_policy=execution_policy, inputs=inputs, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard)
         if args[0] not in submission_node.get("execution", {}).get("bins", []):
             sys.exit("pf-node: --inputs 仅用于节点提供的程序作业；未提交")
-    if time_budget is not None or host_slots is not None:
+    if time_budget is not None or host_slots is not None or disk_guard is not None:
         if submission_node is None:
             submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
                                                      execution_policy=execution_policy, device_binding=binding_envelope,
-                                                     time_budget=time_budget, host_slots=host_slots)
+                                                     time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard)
         if args[0] not in submission_node.get("execution", {}).get("bins", []):
-            sys.exit("pf-node: 运行预算和显式宿主 slots 仅用于普通程序作业；不用于管理/内部准备/typed recovery，未提交")
+            sys.exit("pf-node: 运行预算、磁盘软保护和显式宿主 slots 仅用于普通程序作业；不用于管理/内部准备/typed recovery，未提交")
     if args[0] == "games":
         from game_client import main as games_main
         raise SystemExit(games_main(args[1:], url=URL, token=TOKEN, request_id=request_id, target=TARGET))
@@ -1182,7 +1218,7 @@ def main():
         return
     binname, argv = args[0], args[1:]
     if submission_node is None:
-        submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots)
+        submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard)
     request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
@@ -1198,6 +1234,8 @@ def main():
         spec["host_slots"] = host_slots
     if time_budget is not None:
         spec["time_budget"] = time_budget
+    if disk_guard is not None:
+        spec["disk_guard"] = disk_guard
     if execution_policy is not None:
         spec["execution_policy"] = execution_policy
     if device_access is not None:

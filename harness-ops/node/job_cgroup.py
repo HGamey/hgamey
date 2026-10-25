@@ -591,7 +591,7 @@ def reconcile(store, jid, job_dir, config, force=False):
             domain.close()
 
 
-def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget):
+def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget, disk):
     from job_runtime import _open_file, _finish, OwnerStop
 
     domain, child, released = None, None, False
@@ -603,6 +603,7 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget)
             domain.prepare_files(store, jid, job_dir)
             log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_APPEND)
             try:
+                disk.prepare(log_fd)
                 child = domain.start_gate(spec["command"], spec["cwd"], job_dir, jid, log_fd)
             finally:
                 os.close(log_fd)
@@ -630,6 +631,7 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget)
         os.write(child.stdin.fileno(), b"GO\n")
         released = True
         budget.start()
+        disk.start()
         child.stdin.close()
         meta["phase"] = "running"
         owner = OwnerStop(store, jid, meta)
@@ -645,6 +647,7 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget)
                 return 1
             if group["status"] == "absent" and rc is not None:
                 budget.finish()
+                disk.finish()
                 signals = (meta.get("cancel") or {}).get("signals", [])
                 escalated = any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)
                 meta["execution"]["owned_cgroup"] = group
@@ -662,6 +665,7 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget)
             owner.poll()
             owner.observe_program()
             budget.check(owner.request_cancel)
+            disk.check(owner.request_cancel)
             request = owner.request
             if rc is not None and meta["execution"].get("returncode") is None:
                 meta["execution"].update(returncode=rc, owned_cgroup=group)

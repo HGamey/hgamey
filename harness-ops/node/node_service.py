@@ -218,6 +218,15 @@ def _job_time_budget(spec):
     return value
 
 
+def _job_disk_guard(spec):
+    if "disk_guard" not in spec:
+        return None
+    value = job_budget.normalize_disk_guard(spec["disk_guard"])
+    if device_access(spec) == "recovery":
+        raise ValueError("disk_guard is not supported for recovery jobs")
+    return value
+
+
 def _job_host_slots(spec):
     if "host_slots" not in spec:
         return None
@@ -301,6 +310,7 @@ class Jobs:
         if access not in {"none", "write", "recovery"}:
             raise ValueError("device_access must be none, write or recovery")
         time_budget = _job_time_budget(spec)
+        disk_guard = _job_disk_guard(spec)
         host_slots = _job_host_slots(spec)
         recovery_for = spec.get("recovery_for")
         device_binding = validate_device_job(spec, typed_recovery=access == "recovery" and "device_binding" in spec)
@@ -329,6 +339,7 @@ class Jobs:
                 **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
                 **({"time_budget": time_budget} if time_budget is not None else {}),
+                **({"disk_guard": disk_guard} if disk_guard is not None else {}),
                 **({"host_slots": host_slots} if host_slots is not None else {}),
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
@@ -1439,6 +1450,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         spec = json.loads(self.headers.get("X-Job", "{}"))
                         require_policy(spec)
                         _job_time_budget(spec)
+                        _job_disk_guard(spec)
                         _job_host_slots(spec)
                         validate_device_job(spec, typed_recovery=device_access(spec) == "recovery" and "device_binding" in spec)
                         if "device_binding" in spec and not (self.headers.get("X-Expected-Node-ID") or

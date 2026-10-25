@@ -87,7 +87,9 @@ try:
         (job/'in/plan.json').chmod(0o600)
         meta={'id':jid,'pid':None,'state':'running','phase':'starting',
             'execution_policy':'contained','execution_policy_source':'explicit','execution':{'kind':'supervised-v1'}}
-        if operation == 'prepare': meta['time_budget']=plan['time_budget']
+        if operation == 'prepare':
+            meta['time_budget']=plan['time_budget']
+            meta['disk_guard']=plan['disk_guard']
         store.write_json(jid+'/meta.json',meta)
         (job/'runner.lock').touch(mode=0o600)
         answer({'prepared':True})
@@ -97,7 +99,7 @@ try:
         process=runtime.launch(store,plan['jid'],str(job),
             ['/usr/bin/python3','-I',str(job/'in/workload.py'),str(job/'in/plan.json')],
             str(job/'out'),env,execution_policy='contained',privileged_entry=plan['entry'],
-            time_budget=plan['time_budget'])
+            time_budget=plan['time_budget'],disk_guard=plan['disk_guard'])
         receipt={'launcher_pid':os.getpid(),'launcher_uid':os.getuid(),'worker_handle_pid':process.pid}
         pathlib.Path(plan['launcher_receipt']).write_text(json.dumps(receipt))
         answer(receipt)
@@ -201,6 +203,8 @@ class PrivilegedFixture(KernelFixture):
         assert all((prefix/name).stat().st_uid == 0 for name in ('phonefarm-worker','worker.json','job_runtime.py','job_budget.py'))
         assert stat.S_IMODE((prefix/'worker.json').stat().st_mode) == 0o640
         assert (prefix/'worker.json').stat().st_gid == self.node_gid
+        installed_config = json.loads((prefix/'worker.json').read_text())
+        assert 'jobs.disk-guard-v1' in installed_config['capabilities'], installed_config
         save(self.artifacts/'installation.json',installed)
         self.sudoers_path = Path('/etc/sudoers.d')/('phonefarm-integration-'+self.nonce)
         fd = os.open(self.sudoers_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o440)
@@ -227,7 +231,8 @@ class PrivilegedFixture(KernelFixture):
             'node_uid':self.node_uid,'node_gid':self.node_gid,'job_uid':self.uid,
             'workload_template':str(self.scratch/'workload.py'),'workload_plan':workload_plan,
             'wrong_fd':str(control/'wrong-fd'),'launcher_receipt':str(control/'launcher.json'),
-            'time_budget':{'wall_seconds':5,'timeout_action':'escalate'}}
+            'time_budget':{'wall_seconds':5,'timeout_action':'escalate'},
+            'disk_guard':{'max_log_bytes':1<<30,'min_free_bytes':1<<20,'stop_action':'escalate'}}
         save(self.scratch/'node-plan.json',plan)
         self.helper('prepare-probe')
         before = (probe_job/'meta.json').read_bytes()
@@ -259,7 +264,14 @@ class PrivilegedFixture(KernelFixture):
         meta = until(collecting)
         save(self.artifacts/'collecting.json',meta)
         assert meta['time_budget']==plan['time_budget']
+        assert meta['disk_guard']==plan['disk_guard']
         assert self.store.read_json(self.jid+'/launch.json')['time_budget']==plan['time_budget']
+        assert self.store.read_json(self.jid+'/launch.json')['disk_guard']==plan['disk_guard']
+        started_guard = meta['execution']['disk_guard']
+        assert started_guard['schema']=='phonefarm/job-disk-guard@1'
+        assert started_guard['status']=='running' and started_guard['enforcement']=='observed_stop_request'
+        assert started_guard['triggered_at'] is None and started_guard['trigger_reason'] is None
+        assert started_guard['observation']['status']=='known', started_guard
         started_budget = meta['execution']['time_budget']
         assert started_budget['schema']=='phonefarm/job-time-budget@1' and started_budget['status']=='running'
         assert started_budget['exceeded_at'] is None and started_budget['finished_at'] is None
@@ -287,6 +299,17 @@ class PrivilegedFixture(KernelFixture):
         assert budget['status']=='exceeded' and budget['exceeded_at'] is not None and budget['finished_at'] is not None
         assert budget['started_at']==started_budget['started_at'] and budget['deadline_at']==started_budget['deadline_at']
         assert budget['elapsed_seconds']>=plan['time_budget']['wall_seconds']
+        disk = done['execution']['disk_guard']
+        assert disk['status']=='finished' and disk['started_at']==started_guard['started_at'], disk
+        assert disk['finished_at'] is not None and disk['triggered_at'] is None and disk['trigger_reason'] is None, disk
+        observation = disk['observation']
+        assert observation['status']=='known' and observation['error'] is None, observation
+        assert observation['log_bytes']==(self.job/'log').stat().st_size, observation
+        assert 0 < observation['log_bytes'] < plan['disk_guard']['max_log_bytes'], observation
+        filesystems = observation['filesystems']
+        assert len({item['device'] for item in filesystems}) == len(filesystems), observation
+        assert {role for item in filesystems for role in item['roles']} == {'job','out','log'}, observation
+        assert all(item['available_bytes'] >= plan['disk_guard']['min_free_bytes'] for item in filesystems), observation
         assert done['cancel']['source']=='execution_deadline' and done['cancel']['escalation_source']=='execution_deadline'
         assert done['cancel']['mode']=='escalate'
         assert [(s['name'],s['scope']) for s in done['cancel']['signals']]==[('SIGKILL','owned_cgroup')]
@@ -309,6 +332,9 @@ class PrivilegedFixture(KernelFixture):
         denied = self.helper('job-read',job_identity=True)
         assert len(denied['denied'])==2
         self.report['checks']['worker_deadline_terminal_and_output_handback'] = final
+        self.report['checks']['fixed_worker_disk_guard_observed_without_replacing_deadline'] = {
+            'capability':'jobs.disk-guard-v1','declaration':plan['disk_guard'],
+            'started':started_guard,'finished':disk,'time_budget_source':done['cancel']['source']}
         self.report['checks']['job_cannot_reopen_old_output_or_records'] = denied
         before = (self.job/'meta.json').read_bytes()
         rejected = self.helper('terminal-replay')

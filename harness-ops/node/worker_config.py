@@ -43,6 +43,18 @@ def configuration(prefix):
     return config
 
 
+def require_capability(entry, capability):
+    """Check an explicitly requested guarantee in a fixed, trusted install."""
+    entry = Path(entry)
+    if not entry.is_absolute() or entry.name != "phonefarm-worker":
+        raise ValueError("expected an absolute fixed phonefarm-worker entry")
+    config = configuration(entry.parent)
+    capabilities = config.get("capabilities", [])
+    if not isinstance(capabilities, list) or capability not in capabilities:
+        raise ValueError("installed worker does not support " + capability)
+    return config
+
+
 PF_ROOTS = ("PHONEFARM_STATE_DIR", "DEVLOCK_DIR", "PHONEFARM_LEASE_DIR")
 PF_TOOLS = ("ADB_BIN", "DEVLOCK_BIN", "AAPT2_BIN")
 

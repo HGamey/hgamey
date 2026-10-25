@@ -69,9 +69,11 @@ class JobDispatch:
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
                 **({"device_binding": spec["device_binding"]} if "device_binding" in spec else {}),
                 **({"time_budget": dict(spec["time_budget"])} if "time_budget" in spec else {}),
+                **({"disk_guard": dict(spec["disk_guard"])} if "disk_guard" in spec else {}),
                 **({"host_slots": dict(spec["host_slots"])} if "host_slots" in spec else {}),
                 "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1",
-                    **({"time_budget": job_budget.initial(spec["time_budget"])} if "time_budget" in spec else {})},
+                    **({"time_budget": job_budget.initial(spec["time_budget"])} if "time_budget" in spec else {}),
+                    **({"disk_guard": job_budget.initial_disk_guard(spec["disk_guard"])} if "disk_guard" in spec else {})},
                 "lock_label": None if name == "devlock" else f"job-{jid}",
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
                 "recovery": {"status": "not_needed", "reason": "command has not started"}}
@@ -375,6 +377,7 @@ class JobDispatch:
             proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"],
                                       env=env, execution_policy=policy,
                                       **({"time_budget": spec["time_budget"]} if "time_budget" in spec else {}),
+                                      **({"disk_guard": spec["disk_guard"]} if "disk_guard" in spec else {}),
                                       service_at_launch=getattr(self.jobs, "service_at_launch", None))
         except OSError as error:
             self.finish_unstarted(row, "failed", f"worker could not start: {error}")
