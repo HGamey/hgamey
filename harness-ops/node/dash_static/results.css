@@ -99,3 +99,8 @@
 .result-compare .note,.result-compare .result-actions a { overflow-wrap:anywhere; }
 @media(max-width:760px){.compare-cells{grid-template-columns:minmax(0,1fr)}.compare-cell .facts{grid-template-columns:76px minmax(0,1fr)}}
 @media(max-width:600px){.result-compare{padding:18px}.compare-columns,.compare-pickers{grid-template-columns:minmax(0,1fr)}.result-compare .section-heading{flex-wrap:wrap}.compare-edit-row{padding:12px}.compare-column{padding:12px}}
+
+#remote-result-detail { min-width:0; }
+#remote-result-detail > div:last-child > .ghost { margin:14px 16px 0 0; }
+#remote-result-detail .facts,#remote-result-detail .note { overflow-wrap:anywhere; }
+.compare-column > label + label { margin-top:12px; }

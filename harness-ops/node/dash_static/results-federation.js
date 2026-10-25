@@ -103,7 +103,14 @@
         const list = el('ul', null, 'federation-items');
         for (const item of group.items.values()) {
           const li = el('li'); li.append(el('strong', item.title || item.result_id), el('span', `${item.result_id} · ${OUTCOME[item.outcome] || '结论未知'}`, 'result-meta'),
-            el('span', [item.labels?.game_id, item.labels?.game_version, item.labels?.device].filter(Boolean).join(' · ') || '未提供游戏 / 设备标签', 'result-meta'), group.navigationAvailable ? detailLink(item, group.source) : el('span', '本次来源入口未确认；请先到节点目录核对。', 'note')); list.append(li);
+            el('span', [item.labels?.game_id, item.labels?.game_version, item.labels?.device].filter(Boolean).join(' · ') || '未提供游戏 / 设备标签', 'result-meta'), group.navigationAvailable ? detailLink(item, group.source) : el('span', '本次来源入口未确认；请先到节点目录核对。', 'note'));
+          const actions = el('div',null,'result-actions');
+          for (const [label,method] of [['读取指标详情','viewRemote'],['加入跨节点对照','addRemote']]) {
+            const button = el('button',label,'ghost'); button.type='button'; button.disabled = !canRead() || !matching || !window.HGResultCompare?.available();
+            button.addEventListener('click',()=>window.HGResultCompare[method]({...group.target},item.result_id)); actions.append(button);
+          }
+          if (!window.HGResultCompare?.available()) actions.append(el('span','此后台未提供跨节点详情与比较能力。','note'));
+          li.append(actions); list.append(li);
         }
         if (!group.items.size) list.append(el('li', '此节点在本组筛选下返回空页。', 'note'));
         section.append(list);

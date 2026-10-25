@@ -22,7 +22,7 @@
   <form id="filters" class="result-filters" aria-label="筛选已登记结果"><div class="result-filter-grid"><label>游戏 ID<input name="game_id" autocomplete="off"></label><label>游戏版本<input name="game_version" autocomplete="off"></label><label>设备标签<input name="device" autocomplete="off"></label><label>研究 ID<input name="research_id" autocomplete="off"></label><label>方向 ID<input name="direction_id" autocomplete="off"></label><label>报告结论<select name="outcome"><option value="">全部（含失败 / 未知）</option value="gain">报告有收益</option><option value="no_gain">报告无收益</option><option value="regression">报告退化</option><option value="failed">失败</option><option value="not_run">未执行</option><option value="unknown">未知</option></select></label><label>关联任务 ID<input name="job_id" autocomplete="off" spellcheck="false" maxlength="12"></label></div><div class="result-actions"><button id="filter-submit" class="ghost primary" type="submit">筛选本节点</button><button id="filter-reset" class="ghost" type="button">清空筛选</button></div></form>
   <details id="federation-panel" class="result-federation">
     <summary>检索已登记的远端节点</summary>
-    <p class="note">使用上方筛选条件，最多选择 4 个远端。这里不改变当前后台或登记位置；原件和完整详情在源节点查看。</p>
+    <p class="note">使用上方筛选条件，最多选择 4 个远端。这里不改变当前后台或登记位置。可经本后台读取有界指标详情；原件只在源节点查看。</p>
     <p id="federation-capability" class="note" role="status">正在核对跨节点检索能力…</p>
     <div class="section-heading"><h2>选择检索来源</h2><button id="federation-directory-refresh" class="ghost" type="button" disabled>读取节点目录</button></div>
     <p id="federation-directory-message" class="note" role="status">展开后只读取登记元数据，不刷新远端或采集设备。</p>
@@ -30,6 +30,7 @@
     <div class="result-actions"><button id="federation-search" class="ghost primary" type="button" disabled>检索所选远端</button><span id="federation-selection" class="note">尚未选择节点</span><a href="/dash/fleet">管理节点目录</a></div>
     <p id="federation-message" class="note" role="status"></p>
     <div id="federation-results" class="federation-results" aria-live="polite"></div>
+    <section id="remote-result-detail" class="result-section" hidden aria-live="polite"><div class="section-heading"><h2>远端指标详情</h2><button id="remote-result-close" type="button" class="ghost">收起</button></div><p id="remote-result-message" class="note" role="status"></p><div id="remote-result-content"></div></section>
   </details>
   <div class="results-layout">
     <section class="results-browser" aria-labelledby="results-heading"><div class="section-heading"><h2 id="results-heading" tabindex="-1">此后台已登记结果</h2><span id="result-count" class="count-label"></span></div><p id="list-message" class="note" role="status"></p><ul id="result-list" class="result-list"></ul><button id="more-results" class="ghost more" type="button" hidden>加载更多</button></section>
@@ -43,8 +44,8 @@
     </div></section>
   </div>
   <details id="compare-panel" class="result-compare">
-    <summary>比较已登记指标 · 同节点</summary>
-    <p class="note">从上方记录加入 2–4 列，首列是基线。可重复选择同一结果的不同 condition。逐行选择原指标；空项保留未知，不按名称自动配对。</p>
+    <summary>比较已登记指标</summary>
+    <p id="compare-mode-help" class="note">从上方记录加入 2–4 列，本地比较首列是基线。加入远端后逐列明确选择基线；空项保留未知，不按名称自动配对。</p>
     <p id="compare-capability" class="note" role="status">正在核对比较能力…</p>
     <form id="compare-add-form" class="compare-add-form"><label>或按本节点结果 ID 加入<input id="compare-result-id" maxlength="64" autocomplete="off" spellcheck="false" required></label><button id="compare-add" class="ghost" type="submit" disabled>加入一列</button></form>
     <div id="compare-columns" class="compare-columns"></div>

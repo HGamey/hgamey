@@ -20,6 +20,7 @@ HELP = """用法:
   pf-node results search --node NAME --source-node-id ID --revision N --cursor CURSOR [同原过滤]
   pf-node results compare FILE
   pf-node results show ID
+  pf-node results show ID --node NAME --source-node-id ID --revision N
   pf-node results register FILE
   pf-node results import FILE --adapter doom-lr4-026-v1|gol-optimize-v1 [--import-id ID]
       [--game-id ID] [--game-version VERSION] [--device TEXT] [--research-id ID] [--direction-id ID]
@@ -32,7 +33,13 @@ register 使用文件内固定 result_id；import 在读文件前打印指定或
 search 只读检索 1–4 个已绑定目录节点，必须显式指定 hub --node-id / PF_NODE_ID。
 首屏从 /nodes 冻结目标；续页使用原 source.node_id/revision/cursor，不重新选目标或回第一页。
 各节点独立分页，limit 按每节点计；部分失败仍输出完整 JSON，退出码 2。未自动重试。
-compare 只读至多 16 KiB UTF-8 spec，需显式 node-id 与 results.compare-v1，单次 GET。
+远端 show 需完整冻结的 --node/--source-node-id/--revision 及 hub 显式 node-id，
+只读 remote-result，不查询目录选新版。原件回源节点，不代理或转发凭据。
+compare 只读至多 16 KiB UTF-8 spec，需显式 node-id；单次业务 GET。
+本地 schema 需 results.compare-v1；新 phonefarm/result-cross-compare@1 需 results.cross-compare-v1，
+只凭明确新 schema 使用跨节点路由，targets 冻结目录{name,node_id,revision}；
+每列含 node_id 与显式 baseline_column_id（null/自身/另一列），不默认跨机合并。
+远端 show 也需 results.cross-compare-v1；失败分项输出完整 JSON 并 exit2，不自动重试。
 spec.schema=phonefarm/result-compare@1，node_id 为原目标，columns 为 2–4 个候选列（首列基线），
 rows 为 1–16 个指标行，各行 metric_indexes 明确选原数组索引或 null；不按名称自动配对。
 返回登记值差/正基准百分比及原描述差异，不代表科学可比、统计显著或已采纳。
@@ -124,6 +131,8 @@ class Client:
                 message = "原 ID 内容冲突或目标条件不符；保留原 ID 查询"
             elif status == 404:
                 message = "原记录或入口不存在；不据此自动重新提交"
+            elif status == 413 and code == "result_cross_compare_too_large":
+                message = "跨节点比较超过 6 MiB，请减少列或指标；没有截断或自动重查"
             raise RequestError(f"{message}（HTTP {status}" + (f", code={code}" if code else "") + "）",
                                status=status, code=code) from None
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
@@ -155,8 +164,8 @@ def _compare_spec(path, node_id):
         _, spec = _read(path, MAX_COMPARE)
     except RecursionError:
         raise ValueError("比较 spec 嵌套过深；未查询") from None
-    if spec.get("schema") != "phonefarm/result-compare@1" or spec.get("node_id") != node_id:
-        raise ValueError("比较需 phonefarm/result-compare@1 且 node_id 匹配原显式目标；未查询")
+    if spec.get("schema") not in ("phonefarm/result-compare@1", "phonefarm/result-cross-compare@1") or spec.get("node_id") != node_id:
+        raise ValueError("比较需明确本地或跨节点 schema 且 node_id 匹配原显式目标；未查询")
     columns, rows = spec.get("columns"), spec.get("rows")
     if not isinstance(columns, list) or not 2 <= len(columns) <= 4:
         raise ValueError("比较 columns 须有 2–4 个明确列，首列为基线")
@@ -181,37 +190,96 @@ def _compare_spec(path, node_id):
                 or any(index is not None and (type(index) is not int or not 0 <= index <= 255)
                        for index in indexes)):
             raise ValueError("每行 metric_indexes 须与列数相同，值为 0..255 整数或 null")
+    if spec["schema"] == "phonefarm/result-cross-compare@1":
+        targets = spec.get("targets")
+        if not isinstance(targets, list) or not 1 <= len(targets) <= 4:
+            raise ValueError("跨节点比较需要 1–4 个冻结远端来源")
+        for source in targets:
+            _validate_source(source, node_id)
+        if len({source["name"] for source in targets}) != len(targets) or len({source["node_id"] for source in targets}) != len(targets):
+            raise ValueError("跨节点来源名或节点 ID 重复")
+        if any(not isinstance(column.get("node_id"), str)
+               or (column.get("baseline_column_id") is not None and not isinstance(column["baseline_column_id"], str))
+               for column in columns):
+            raise ValueError("列 node_id 和非空 baseline_column_id 必须是字符串")
+        node_ids, column_ids = {source["node_id"] for source in targets}, {column["id"] for column in columns}
+        if {column.get("node_id") for column in columns} - {node_id} != node_ids:
+            raise ValueError("跨节点列必须使用全部且仅使用所选来源")
+        for column in columns:
+            if (column.get("node_id") not in node_ids | {node_id}
+                    or "baseline_column_id" not in column
+                    or (column["baseline_column_id"] is not None and column["baseline_column_id"] not in column_ids)):
+                raise ValueError("每列需明确 node_id 和 baseline_column_id（null 或所选列 ID）")
     return spec
+
+
+def _validate_source(source, hub_id):
+    if (not isinstance(source, dict) or set(source) != {"name", "node_id", "revision"}
+            or not isinstance(source["name"], str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", source["name"]) or source["name"] == "local"
+            or not isinstance(source["node_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", source["node_id"])
+            or source["node_id"] == hub_id or type(source["revision"]) is not int or source["revision"] < 1):
+        raise ValueError("远端来源须为冻结目录 name/node_id/revision，不能是本节点、URL 或凭据")
+
+
+def _remote_show(client, identity, args):
+    if client.target.expected_node_id is None:
+        raise ValueError("远端 show 需要显式 hub --node-id / PF_NODE_ID")
+    options = _options(args, {"node", "source_node_id", "revision"})
+    if set(options) != {"node", "source_node_id", "revision"} or not re.fullmatch(r"[1-9][0-9]*", options["revision"]):
+        raise ValueError("远端 show 需要完整 --node/--source-node-id/--revision；不从目录选新版")
+    source = {"name": options["node"], "node_id": options["source_node_id"], "revision": int(options["revision"])}
+    _validate_source(source, client.target.expected_node_id)
+    capabilities = client.require_capability()["capabilities"]
+    if "node.target-v1" not in capabilities or "results.cross-compare-v1" not in capabilities:
+        raise ValueError("hub 缺少 node.target-v1 或 results.cross-compare-v1；未降级查询")
+    value = client.request("GET", "/remote-result?" + urllib.parse.urlencode({"target": json.dumps(source, separators=(",", ":")), "result_id": identity}))
+    actual, status, record = value.get("source"), value.get("status"), value.get("result")
+    if (value.get("result_id") != identity or not isinstance(actual, dict)
+            or any(actual.get(key) != item for key, item in source.items())
+            or status not in SEARCH_STATUSES | {"not_found"}):
+        raise RequestError("远端详情未绑定原来源版本或结果 ID；未自动重试")
+    if status == "ok":
+        if (not isinstance(record, dict) or record.get("node_id") != source["node_id"]
+                or record.get("result_id") != identity or not isinstance(record.get("manifest"), dict)
+                or record["manifest"].get("result_id") != identity):
+            raise RequestError("远端详情原记录身份未确认；未自动重试")
+    elif record is not None:
+        raise RequestError("失败详情混入未确认结果；未自动重试")
+    return value
 
 
 def _compare(client, path):
     target = client.target
     if target.expected_node_id is None:
         raise ValueError("compare 需要显式 --node-id / PF_NODE_ID；未读取或选择替代节点")
-    capabilities = client.require_capability()["capabilities"]
-    if "node.target-v1" not in capabilities or "results.compare-v1" not in capabilities:
-        raise ValueError("节点缺少 node.target-v1 或 results.compare-v1；未降级比较")
     spec = _compare_spec(path, target.expected_node_id)
+    cross = spec["schema"] == "phonefarm/result-cross-compare@1"
+    capability = "results.cross-compare-v1" if cross else "results.compare-v1"
+    capabilities = client.require_capability()["capabilities"]
+    if "node.target-v1" not in capabilities or capability not in capabilities:
+        raise ValueError(f"节点缺少 node.target-v1 或 {capability}；未降级比较")
     query = urllib.parse.urlencode({"spec": json.dumps(spec, ensure_ascii=False, separators=(",", ":"),
                                                       allow_nan=False)})
-    value = client.request("GET", "/result-compare?" + query)
+    value = client.request("GET", ("/result-cross-compare?" if cross else "/result-compare?") + query)
     columns, rows = value.get("columns"), value.get("rows")
     if (value.get("spec") != spec or value.get("basis") != "registered_values"
             or value.get("comparability") != "not_established"
-            or value.get("baseline_column_id") != spec["columns"][0]["id"]
+            or (not cross and value.get("baseline_column_id") != spec["columns"][0]["id"])
             or type(value.get("partial")) is not bool
             or not isinstance(columns, list) or len(columns) != len(spec["columns"])
             or not isinstance(rows, list) or len(rows) != len(spec["rows"])):
         raise RequestError("比较回包未绑定原 spec、基线或登记值范围；保留原选择，未自动重试")
     failed = False
     for column, requested in zip(columns, spec["columns"]):
-        if (not isinstance(column, dict) or column.get("node_id") != target.expected_node_id
+        expected_node = requested["node_id"] if cross else target.expected_node_id
+        if (not isinstance(column, dict) or column.get("node_id") != expected_node
+                or (cross and column.get("baseline_column_id") != requested["baseline_column_id"])
                 or any(column.get(key) != requested[key] for key in ("id", "label", "result_id"))
                 or column.get("status") not in ("available", "unavailable")):
             raise RequestError("比较列未保留原节点、结果或列顺序；未自动重试")
         if column["status"] == "available":
             record = column.get("result")
-            if (not isinstance(record, dict) or record.get("node_id") != target.expected_node_id
+            if (not isinstance(record, dict) or record.get("node_id") != expected_node
                     or record.get("result_id") != requested["result_id"]):
                 raise RequestError("比较列的原结果身份未确认；未自动重试")
         else:
@@ -227,6 +295,7 @@ def _compare(client, path):
         for cell, column, index in zip(cells, spec["columns"], requested["metric_indexes"]):
             if (not isinstance(cell, dict) or cell.get("column_id") != column["id"]
                     or cell.get("metric_index") != index or type(cell.get("metric_index")) is not type(index)
+                    or (cross and cell.get("baseline_column_id") != column["baseline_column_id"])
                     or cell.get("status") not in ("available", "not_selected", "result_unavailable", "invalid_index")):
                 raise RequestError("比较单元格未绑定原列与 metric_index；未自动重试")
     if value["partial"] != failed:
@@ -371,6 +440,11 @@ def main(args, *, target):
                 raise ValueError("limit 须为 1–100")
             client.require_capability()
             value = client.request("GET", "/results" + ("?" + urllib.parse.urlencode(query) if query else ""))
+        elif command == "show" and len(args) > 1:
+            identity = identifier(args.pop(0))
+            value = _remote_show(client, identity, args)
+            print(json.dumps(value, ensure_ascii=False, allow_nan=False))
+            return 0 if value["status"] == "ok" else 2
         elif command in ("show", "import-status") and len(args) == 1:
             importing = command == "import-status"
             identity = identifier(args[0], importing=importing)

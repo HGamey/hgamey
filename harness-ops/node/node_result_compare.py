@@ -149,6 +149,25 @@ def _delta(baseline, candidate):
     return result
 
 
+def build_rows(columns, requested_rows, baselines=None):
+    """Reuse one arithmetic contract for the old first baseline and explicit pairs."""
+    rows = []
+    for requested in requested_rows:
+        cells = [_cell(column, index) for column, index in zip(columns, requested["metric_indexes"])]
+        by_id = {cell["column_id"]: (column, cell) for column, cell in zip(columns, cells)}
+        for column, cell in zip(columns, cells):
+            baseline_id = columns[0]["id"] if baselines is None else baselines[column["id"]]
+            baseline_column, baseline = (by_id[baseline_id] if baseline_id is not None else
+                                         (None, {"reason": "baseline_not_selected", "metric": None}))
+            cell["descriptor_relation"] = _descriptors(baseline["metric"], cell["metric"])
+            cell["delta"] = _delta(baseline, cell)
+            if baselines is not None:
+                cell.update(baseline_column_id=baseline_id,
+                            cross_node=baseline_column["node_id"] != column["node_id"] if baseline_column else None)
+        rows.append({**requested, "cells": cells})
+    return rows
+
+
 def compare(results, node_id, spec):
     """At most four distinct result reads; a missing column does not erase its peers."""
     spec = validate_spec(spec, node_id)
@@ -168,13 +187,7 @@ def compare(results, node_id, spec):
                         "links": {"api": "/results/" + quote(rid, safe=""),
                                   "dashboard": "/dash/results?" + urlencode({"expected_node_id": node_id})
                                                + "#result=" + quote(rid, safe="")}})
-    rows = []
-    for requested in spec["rows"]:
-        cells = [_cell(column, index) for column, index in zip(columns, requested["metric_indexes"])]
-        for cell in cells:
-            cell["descriptor_relation"] = _descriptors(cells[0]["metric"], cell["metric"])
-            cell["delta"] = _delta(cells[0], cell)
-        rows.append({**requested, "cells": cells})
+    rows = build_rows(columns, spec["rows"])
     return {"schema_version": 1, "node_id": node_id, "basis": "registered_values",
             "comparability": "not_established", "spec": spec, "baseline_column_id": columns[0]["id"],
             "partial": any(column["status"] == "unavailable" for column in columns), "columns": columns, "rows": rows}

@@ -303,7 +303,7 @@ class NodeDirectory:
             raise TimeoutError
         return remaining
 
-    def _request(self, entry, path, deadline, expected_node_id=None):
+    def _request(self, entry, path, deadline, expected_node_id=None, result_not_found=False):
         endpoint = urlsplit(entry["url"])
         cls = http.client.HTTPSConnection if endpoint.scheme == "https" else http.client.HTTPConnection
         connection = cls(endpoint.hostname, endpoint.port, timeout=self._remaining(deadline))
@@ -336,13 +336,13 @@ class NodeDirectory:
                 raise _ProbeError("unauthorized", "remote node rejected the credential")
             if 300 <= response.status < 400:
                 raise _ProbeError("incompatible", "remote node redirected the request; redirects are not followed")
-            if response.status == 404:
+            if response.status == 404 and not result_not_found:
                 raise _ProbeError("incompatible", "remote node does not support the required read API")
             if expected_node_id is not None and response.status == 409:
                 raise _ProbeError("identity_mismatch", "remote node rejected the selected identity")
             if expected_node_id is not None and response.status == 400 and "cursor=" in path:
                 raise _ProbeError("invalid_cursor", "source rejected the cursor or its original filters; do not restart automatically")
-            if response.status != 200:
+            if response.status != 200 and not (response.status == 404 and result_not_found):
                 raise _ProbeError("unavailable", "remote node returned an unsuccessful HTTP status")
             chunks, size = [], 0
             while True:
@@ -361,6 +361,10 @@ class NodeDirectory:
                 value = json.loads(b"".join(chunks))
             except (ValueError, UnicodeError):
                 raise _ProbeError("incompatible", "remote node did not return valid JSON") from None
+            if response.status == 404:
+                if isinstance(value, dict) and value.get("code") == "result_not_found":
+                    raise _ProbeError("not_found", "source has no registered result with this ID")
+                raise _ProbeError("incompatible", "remote node does not support the required result detail API")
             if not isinstance(value, dict) or value.get("schema_version") != 1:
                 raise _ProbeError("incompatible", "remote node returned an incompatible read protocol")
             return value
