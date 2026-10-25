@@ -182,6 +182,122 @@ def request_cancel(store, jid, force=False, source=None):
     return _cancellation(read_cancel(store, jid), meta)
 
 
+class OwnerStop:
+    """Live owner's intent survives failure to save its management records."""
+    def __init__(self, store, jid, meta):
+        self.store, self.jid, self.meta = store, jid, meta
+        self.request = None
+        self.causes = []
+        self.errors = None
+        self.pending_intent = self.dirty = False
+        self.pending_source = None
+        self.next_io = 0.0
+
+    def _merge(self, request):
+        if (not isinstance(request, dict) or request.get("mode") not in ("graceful", "escalate")
+                or not isinstance(request.get("requested_at"), (int, float))):
+            raise ValueError("invalid cancellation record")
+        value = {k: request[k] for k in ("mode", "requested_at", "source", "escalation_source") if k in request}
+        if self.request is not None:
+            old = self.request
+            value = dict(old if old["requested_at"] <= value["requested_at"] else value)
+            if old["mode"] == "escalate" or request["mode"] == "escalate":
+                value["mode"] = "escalate"
+                if request.get("escalation_source"):
+                    value["escalation_source"] = request["escalation_source"]
+        self.request = value
+        self._apply()
+
+    def _apply(self):
+        if self.request is not None:
+            cancellation = _cancellation(self.request, self.meta)
+            if self.meta.get("cancel") != cancellation:
+                self.meta["cancel"] = cancellation
+                self.meta["phase"] = "cancelling"
+                self.dirty = True
+        if self.causes or self.errors is not None:
+            self.meta["execution"]["stop_intent"] = {
+                "schema": "phonefarm/job-stop-intent@1",
+                "requested_at": self.request["requested_at"], "mode": self.request["mode"],
+                "causes": list(self.causes), "record_errors": self.errors}
+
+    def _latch(self, source, force):
+        if not self.pending_intent:
+            self.pending_source = source
+        if source not in self.causes:
+            self.causes.append(source)
+        request = {"mode": "escalate" if force else "graceful",
+                   "requested_at": time.time(), "source": source}
+        if force and (self.request is None or self.request["mode"] != "escalate"):
+            request["escalation_source"] = source
+        self._merge(request)
+        self.pending_intent = self.dirty = True
+
+    def failed(self, error):
+        now = time.time()
+        if self.errors is None:
+            self.errors = {"first_at": now, "count": 0}
+        self.errors.update(last_at=now, count=self.errors["count"] + 1,
+                           errno=getattr(error, "errno", None),
+                           message=(type(error).__name__ + ": " + str(error))[:512])
+        if self.request is None:
+            self._latch("owner_record_error", True)
+        self._apply()
+        self.dirty = True
+        self.next_io = time.monotonic() + 1.0
+
+    def request_cancel(self, store, jid, force=False, source=None):
+        self._latch(source or "execution_deadline", force)
+        self.flush()
+
+    def poll(self):
+        if time.monotonic() < self.next_io:
+            return self.request
+        try:
+            request = read_cancel(self.store, self.jid)
+            if request:
+                self._merge(request)
+        except (OSError, ValueError) as error:
+            self.failed(error)
+            return self.request
+        self.flush()
+        return self.request
+
+    def observe_program(self):
+        if time.monotonic() < self.next_io:
+            return
+        try:
+            if _program_identity(self.store, self.jid, self.meta):
+                self.save()
+        except (OSError, ValueError) as error:
+            self.failed(error)
+
+    def save(self):
+        self.dirty = True
+        self.flush()
+
+    def flush(self):
+        if not self.dirty or time.monotonic() < self.next_io:
+            return
+        try:
+            if self.pending_intent:
+                recorded = request_cancel(self.store, self.jid, force=self.request["mode"] == "escalate",
+                                          source=self.pending_source)
+                self._merge(recorded)
+                self.pending_intent = False
+            self._apply()
+            self.store.write_json(self.jid + "/meta.json", self.meta)
+        except (OSError, ValueError) as error:
+            self.failed(error)
+        else:
+            self.dirty = False
+            self.next_io = 0.0
+
+    @property
+    def interrupted(self):
+        return "owner_record_error" in self.causes
+
+
 def _group_completion(pgid):
     """Observe only the original group after reaping our child; never signal old PIDs."""
     deadline = time.monotonic() + 0.5
@@ -298,25 +414,16 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             "policy": policy, "backend": "posix_process_group", "completion_scope": "original_process_group",
             "detached_descendants": "unverified"}
         meta["execution"]["owned_process_group"].update(status="pending", pgid=child.pid)
-        store.write_json(jid + "/meta.json", meta)
+        owner = OwnerStop(store, jid, meta)
+        owner.poll()
+        owner.save()
         last_signal_at = None
         while True:
-            if _program_identity(store, jid, meta):
-                store.write_json(jid + "/meta.json", meta)
             returncode = child.poll()
-            if returncode is None:
-                budget.check(request_cancel)
-            request = read_cancel(store, jid)
-            if request:
-                cancellation = _cancellation(request, meta)
-                if meta.get("cancel") != cancellation:
-                    meta["cancel"] = cancellation
-                    meta["phase"] = "cancelling"
-                    store.write_json(jid + "/meta.json", meta)
             if returncode is not None:
                 budget.finish()
                 signals = (meta.get("cancel") or {}).get("signals", [])
-                outcome = "cancelled" if signals else "succeeded" if returncode == 0 else "failed"
+                outcome = "interrupted" if owner.interrupted else "cancelled" if signals else "succeeded" if returncode == 0 else "failed"
                 escalated = any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)
                 recovery = {"status": "required" if escalated else "not_reported",
                             "reason": "command received TERM/KILL" if escalated else "command did not report device recovery"}
@@ -328,6 +435,10 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
                                 "direct command exited; original process group is " + group["status"]}
                 _finish(store, jid, meta, outcome, recovery, returncode)
                 return 0
+            owner.poll()
+            owner.observe_program()
+            budget.check(owner.request_cancel)
+            request = owner.request
             if request:
                 signals = meta["cancel"]["signals"]
                 sig = None
@@ -346,7 +457,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
                     last_signal_at = time.monotonic()
                     signals.append({"name": sig.name, "at": time.time()})
                     meta["cancel"]["status"] = "signaled"
-                    store.write_json(jid + "/meta.json", meta)
+                    owner.save()
             time.sleep(0.05)
     finally:
         store.close()

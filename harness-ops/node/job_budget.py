@@ -43,9 +43,8 @@ class RunBudget:
             return
         now = time.time()
         self.record.update(status="exceeded", exceeded_at=now, observed_at=now, elapsed_seconds=elapsed)
-        # Publish the observed cause before requesting any signal. Persistence
-        # failure follows worker-loss handling; it never invents a stop receipt.
-        self.store.write_json(self.jid + "/meta.json", self.meta)
+        # The current owner latches this cause before attempting persistence.
+        # Failure to save must not discard its intent or release supervision.
         request_cancel(self.store, self.jid, force=self.record["timeout_action"] == "escalate",
                        source="execution_deadline")
 

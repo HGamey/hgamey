@@ -92,6 +92,9 @@
 - --max-runtime-seconds N 声明 1–604800 整数秒运行期限；--timeout-action graceful（默认）或 escalate。
   仅实际启动后计时，排队不计入；graceful只请求SIGINT，escalate沿15秒TERM/再15秒KILL。
   恢复任务暂不支持；期限触发不代表已停止/恢复。原exit=0且确认超期限时CLI返回124，未知结束优先125。
+- status 的 execution.stop_intent 是 worker 最后成功保存的停止原因和管理记录错误历史，可能落后于实际执行。
+  实际已发信号仍看 cancel.signals；这些记录不证明已停/已恢复，也不表示当前磁盘剩余量。
+  owner_record_error 独立发起停止时，即使命令exit=0仍按interrupted返回125；期限124规则保持。
 - --execution-policy process_group|contained 显式要求进程管理范围；先核节点能力，不支持时不打包/提交。
   process_group 只管理原进程组；contained 当前未提供。省略保留兼容默认，不替旧任务补全树结束证明。
 - finalizing 表示结束记录尚在保存；storage_blocked 表示保存失败，wait/跟随以125退出并保留命令诊断。
@@ -351,6 +354,11 @@ def terminal_exit(jid, status):
               f"脱组后代={management.get('detached_descendants', '未提供')}；设备恢复另看 recovery。", file=sys.stderr)
     else:
         print("pf-node: 此记录未提供执行范围证据，不能据退出码推断全部后代已结束。", file=sys.stderr)
+    intent = (status.get("execution") or {}).get("stop_intent")
+    if intent:
+        print("pf-node: worker 最后成功保存的停止意图（可能落后于实际执行）="
+              + json.dumps(intent, ensure_ascii=False)
+              + "；实际已发信号看 cancel.signals，停止与设备恢复另看对应记录；记录错误历史不表示当前磁盘剩余量。", file=sys.stderr)
     budget = (status.get("execution") or {}).get("time_budget") or {}
     exceeded_at = budget.get("exceeded_at")
     exceeded = isinstance(exceeded_at, (int, float)) and not isinstance(exceeded_at, bool) and math.isfinite(exceeded_at)
@@ -370,7 +378,8 @@ def terminal_exit(jid, status):
                or (phase == "interrupted" and rc == 0))
     print(f"pf-node: 任务 {jid} 记录终态 phase={phase}，outcome={status.get('outcome', '未报告')}，"
           f"recovery={status.get('recovery', '未报告')}；"
-          + ("没有可信退出码，CLI 返回 125" if unknown else f"exit={rc}"), file=sys.stderr)
+          + ("原命令 exit=0，但执行中断，CLI 返回 125" if phase == "interrupted" and rc == 0
+             else "没有可信退出码，CLI 返回 125" if unknown else f"exit={rc}"), file=sys.stderr)
     if unknown:
         return 125
     if exceeded and rc == 0:

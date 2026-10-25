@@ -592,7 +592,7 @@ def reconcile(store, jid, job_dir, config, force=False):
 
 
 def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget):
-    from job_runtime import _open_file, _cancellation, _finish, _program_identity, read_cancel, request_cancel
+    from job_runtime import _open_file, _finish, OwnerStop
 
     domain, child, released = None, None, False
     try:
@@ -632,21 +632,13 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget)
         budget.start()
         child.stdin.close()
         meta["phase"] = "running"
-        store.write_json(jid + "/meta.json", meta)
+        owner = OwnerStop(store, jid, meta)
+        owner.poll()
+        owner.save()
         last_signal_at = None
         while True:
-            if _program_identity(store, jid, meta):
-                store.write_json(jid + "/meta.json", meta)
             rc = child.poll()
             group = domain.observe()
-            if group["status"] != "unknown" and not (group["status"] == "absent" and rc is not None):
-                budget.check(request_cancel)
-            request = read_cancel(store, jid)
-            if request:
-                cancellation = _cancellation(request, meta)
-                if meta.get("cancel") != cancellation:
-                    meta["cancel"], meta["phase"] = cancellation, "cancelling"
-                    store.write_json(jid + "/meta.json", meta)
             if group["status"] == "unknown":
                 meta["execution"]["owned_cgroup"] = group
                 _finish(store, jid, meta, "interrupted", {"status": "required", "reason": "owned cgroup status is unknown"}, rc)
@@ -664,13 +656,18 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget)
                     _finish(store, jid, meta, "interrupted", {"status": "required", "reason": "contained output handback is unconfirmed"},
                             rc, error=f"output handback failed: {type(error).__name__}: {error}")
                     return 1
-                _finish(store, jid, meta, "cancelled" if signals else "succeeded" if rc == 0 else "failed", recovery, rc)
+                outcome = "interrupted" if owner.interrupted else "cancelled" if signals else "succeeded" if rc == 0 else "failed"
+                _finish(store, jid, meta, outcome, recovery, rc)
                 return 0
+            owner.poll()
+            owner.observe_program()
+            budget.check(owner.request_cancel)
+            request = owner.request
             if rc is not None and meta["execution"].get("returncode") is None:
                 meta["execution"].update(returncode=rc, owned_cgroup=group)
                 if not request:
                     meta["phase"] = "collecting"
-                store.write_json(jid + "/meta.json", meta)
+                owner.save()
             if request:
                 signals = meta["cancel"]["signals"]
                 sig = None
@@ -695,7 +692,7 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget)
                     signals.append({"name": sig.name, "scope": "owned_cgroup" if sig == signal.SIGKILL else "original_process_group",
                                     "at": time.time()})
                     meta["cancel"]["status"] = "signaled"
-                    store.write_json(jid + "/meta.json", meta)
+                    owner.save()
             time.sleep(0.05)
     finally:
         if child is not None and not released:

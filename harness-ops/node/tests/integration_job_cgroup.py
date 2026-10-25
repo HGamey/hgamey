@@ -20,6 +20,7 @@ import tempfile
 import time
 import traceback
 import uuid
+from unittest.mock import patch
 
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
@@ -136,6 +137,43 @@ def membership(pid):
     return next(line[3:] for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines() if line.startswith("0::"))
 
 
+def fault_worker(argv):
+    """Test-only store fault, using the real owner and cgroup implementation."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fault-worker", action="store_true", required=True)
+    parser.add_argument("--job-dir", type=Path, required=True)
+    parser.add_argument("--lock-fd", type=int, required=True)
+    parser.add_argument("--contained-config", type=Path, required=True)
+    args = parser.parse_args(argv)
+    jid = args.job_dir.name
+    config = json.loads(args.contained_config.read_text())
+    domain = Path(config["cgroup_root"]) / ("job-" + jid)
+    diagnostic = args.job_dir.parent.parent / "active-record-fault.json"
+
+    class FaultStore(SafeRoot):
+        def write_json(self, rel, value):
+            # Only the already-running, manually cancelled owner is affected.
+            # Real cgroup emptiness restores storage for output handback/finish.
+            if (rel == jid + "/meta.json" and value.get("state") == "running"
+                    and value.get("phase") in ("running", "collecting", "cancelling")
+                    and (value.get("cancel") or {}).get("mode") == "escalate"
+                    and domain.exists() and events(domain)["populated"] == "1"):
+                if not diagnostic.exists():
+                    save(diagnostic, {"operation": "write_json", "record": "meta.json",
+                        "errno": errno.ENOSPC, "at": time.time(), "worker_pid": os.getpid(),
+                        "runner_lock_held": runtime.runner_alive(self, jid),
+                        "domain": str(domain), "domain_events": events(domain),
+                        "child_pid": value["execution"]["child_pid"],
+                        "direct_returncode": value["execution"].get("returncode"),
+                        "signals_before_failure": (value.get("cancel") or {}).get("signals", [])})
+                raise OSError(errno.ENOSPC, "fixture active owner meta publication failed")
+            return super().write_json(rel, value)
+
+    store = FaultStore(args.job_dir.parent)
+    return runtime._worker(str(args.job_dir), args.lock_fd,
+                           contained_config=str(args.contained_config), _store=store)
+
+
 class KernelFixture:
     def __init__(self, artifact_dir):
         self.artifacts = artifact_dir
@@ -218,9 +256,15 @@ class KernelFixture:
         env = dict(os.environ, PF_NODE_TOKEN="fixture-secret-must-not-reach-job",
                    AWS_SECRET_ACCESS_KEY="fixture-credential-must-not-reach-job",
                    PF_JOB_ID=self.jid, PF_JOB_IN=str(self.job / "in"), PF_JOB_OUT=str(self.job / "out"))
-        self.worker = runtime.launch(self.store, self.jid, str(self.job),
-            ["/usr/bin/python3", "-I", str(self.job / "in/workload.py"), str(self.job / "in/plan.json")],
-            str(self.job / "out"), env, execution_policy="contained", contained_config=str(config))
+        def test_worker_command(job_dir, lock_fd):
+            return [sys.executable, "-I", str(Path(__file__).resolve()), "--fault-worker",
+                    "--job-dir", job_dir, "--lock-fd", str(lock_fd)]
+        # Only this launch uses the test store. Installed worker entry and module
+        # sources stay unchanged; the ordinary launch still owns flock/Popen.
+        with patch.object(runtime, "_worker_command", test_worker_command):
+            self.worker = runtime.launch(self.store, self.jid, str(self.job),
+                ["/usr/bin/python3", "-I", str(self.job / "in/workload.py"), str(self.job / "in/plan.json")],
+                str(self.job / "out"), env, execution_policy="contained", contained_config=str(config))
         self.known_pids.add(self.worker.pid)
         def collecting():
             meta = self.store.read_json(self.jid + "/meta.json")
@@ -256,7 +300,7 @@ class KernelFixture:
         self.report["checks"]["privilege_environment_io_and_protected_records"] = leader
         self.report["checks"]["setsid_retained_after_direct_exit"] = {"descendant":detached, "cgroup":owned,
             "worker_outside_job_domain":True, "pending_with_lock":True}
-        runtime.request_cancel(self.store, self.jid, force=True)
+        requested = runtime.request_cancel(self.store, self.jid, force=True)
         self.worker.wait(timeout=8)
         done = self.store.read_json(self.jid + "/meta.json")
         save(self.artifacts / "finished.json", done)
@@ -264,6 +308,24 @@ class KernelFixture:
         assert done["execution"]["returncode"] == 0 and done["exit"] == 0
         assert done["execution"]["owned_cgroup"]["status"] == "absent"
         assert done["recovery"]["status"] == "required", done
+        fault = json.loads((self.scratch / "active-record-fault.json").read_text())
+        stop = done["execution"]["stop_intent"]
+        signals = done["cancel"]["signals"]
+        assert fault["worker_pid"] == self.worker.pid == done["pid"], (fault, done)
+        assert fault["runner_lock_held"] and fault["domain_events"]["populated"] == "1", fault
+        assert fault["direct_returncode"] == 0 and fault["child_pid"] == leader["pid"], fault
+        assert fault["signals_before_failure"] == [], fault
+        assert stop["schema"] == "phonefarm/job-stop-intent@1" and stop["mode"] == "escalate", stop
+        assert stop["causes"] == [], stop  # Recording failed after the manual intent existed.
+        assert done["cancel"]["requested_at"] == stop["requested_at"] == requested["requested_at"], done
+        assert stop["record_errors"]["errno"] == errno.ENOSPC and stop["record_errors"]["count"] >= 1, stop
+        assert len(signals) == 1 and signals[0]["name"] == "SIGKILL" and signals[0]["scope"] == "owned_cgroup", signals
+        assert done["execution"]["containment"]["handoff"]["status"] == "returned", done
+        assert self.worker.returncode == 0, self.worker.returncode
+        self.report["checks"]["active_record_failure_kept_original_owner"] = {
+            "fault": fault, "stop_intent": stop, "signals": signals,
+            "same_worker_finished": True, "manual_force_preserved": True,
+            "output_handback": done["execution"]["containment"]["handoff"]}
         assert not runtime.runner_alive(self.store, self.jid)
         assert events(self.cgroup_root)["populated"] == "0"
         assert not (self.job / "out/descendant-deadline.json").exists()
@@ -383,6 +445,8 @@ print(json.dumps({'pid':os.getpid(),'uid':os.getuid(),'gid':os.getgid(),'denied'
 
 
 def main():
+    if "--fault-worker" in sys.argv[1:]:
+        return fault_worker(sys.argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-dir", type=Path, required=True)
     args = parser.parse_args()

@@ -563,6 +563,21 @@
       ] : [])
     ];
   }
+  function stopIntentFacts(job) {
+    const intent = job.execution?.stop_intent;
+    $('stop-intent-summary').hidden = !intent;
+    message('stop-intent-summary', intent ? '以下是 worker 最后成功保存的停止意图与记录错误历史，可能落后于实际执行。实际已发信号仍看信号记录；停止意图不证明任务已停或设备已恢复，错误历史不表示当前磁盘剩余量。' : '', Boolean(intent?.record_errors));
+    if (!intent) return [];
+    const causes = {execution_deadline: '运行预算期限', owner_record_error: 'worker 管理记录读写失败'};
+    const errors = intent.record_errors;
+    return [
+      ['已保存的停止原因', (intent.causes || []).map(cause => causes[cause] || cause).join('、') || '未新增停止原因；沿用已知取消意图'],
+      ['停止意图请求时间', time(intent.requested_at)],
+      ['已保存的停止模式', ({graceful: '柔性停止（SIGINT）', escalate: '允许按原信号链升级终止'})[intent.mode] || text(intent.mode)],
+      ...(errors ? [['记录错误次数（已保存）', errors.count], ['首次记录错误', time(errors.first_at)],
+        ['最近记录错误', time(errors.last_at)], ['记录错误 errno', errors.errno], ['记录错误说明', errors.message]] : [['记录错误历史', '本次保存的意图未包含错误历史']])
+    ];
+  }
   function renderExecution(job) {
     const cancellation = job.cancel;
     const group = job.execution?.owned_process_group;
@@ -583,7 +598,7 @@
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['声明设备范围', scopeText(job.queue?.device_scope || {scope: job.device_binding ? 'device' : job.device_access === 'none' ? 'none' : 'global', binding: job.device_binding})],
       ...(job.device_binding ? bindingFacts(job.device_binding) : []), ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
-      ['命令退出码', job.exit], ...jobCapacityFacts(job), ...budgetFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
+      ['命令退出码', job.exit], ...jobCapacityFacts(job), ...budgetFacts(job), ...stopIntentFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
       ['首次停止来源', cancellation?.source === 'execution_deadline' ? '运行预算期限' : cancellation?.source || '未记录（可能为人工请求）'],
       ['升级来源', cancellation?.escalation_source === 'execution_deadline' ? '运行预算期限' : cancellation?.escalation_source || '未记录'],
       ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
