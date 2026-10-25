@@ -38,6 +38,41 @@ def decode_cursor(value):
         raise ValueError("invalid cursor") from None
 
 
+def artifact_page(read_root, jid, query, cursor_scope=()):
+    """Read one safe artifact directory; optional scope binds historical cursors."""
+    rel = relative_path(query.get("path", [""])[0])
+    limit = page_size(query, 100)
+    prefix = [*cursor_scope, jid, rel]
+    after = ""
+    if query.get("cursor"):
+        cursor = decode_cursor(query["cursor"][0])
+        if not (isinstance(cursor, list) and len(cursor) == len(prefix) + 1
+                and cursor[:-1] == prefix and isinstance(cursor[-1], str)):
+            raise ValueError("cursor must belong to this artifact directory")
+        after = cursor[-1]
+    target = jid + "/out" + ("/" + rel if rel else "")
+    directory = read_root.open_fd(target, directory=True)
+    entries = []
+    try:
+        names = sorted(name for name in os.listdir(directory) if name > after)
+        for name in names[:limit]:
+            item = {"name": name, "path": os.path.join(rel, name)}
+            try:
+                st = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+                    item.update(kind="unavailable", reason="links and special files are not downloadable")
+                else:
+                    item.update(kind="directory" if stat.S_ISDIR(st.st_mode) else "file",
+                                size=st.st_size, modified=st.st_mtime)
+            except OSError:
+                item.update(kind="unavailable", reason="artifact changed or is unreadable")
+            entries.append(item)
+    finally:
+        os.close(directory)
+    cursor = encode_cursor([*prefix, entries[-1]["name"]]) if len(names) > limit else None
+    return {"schema_version": 1, "job": jid, "path": rel, "items": entries, "next_cursor": cursor}
+
+
 
 class NodeRead:
     def __init__(self, jobs, data_root, source_dir):
@@ -100,7 +135,7 @@ class NodeRead:
                 "target_binding": {"header": "X-Expected-Node-ID", "query": "expected_node_id",
                                    "unbound_legacy_requests": "accepted_without_target_guarantee"},
                 "capabilities": ["node.target-v1", "node.runtime-v1", "node.protocol-compat-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "results.cross-compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
-                                 "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
+                                 "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range", "jobs.history-read-v1",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.input-limits-v1", "jobs.export-limits-v1", "jobs.time-budget-v1", "jobs.disk-guard-v1", "jobs.host-capacity-v1", "jobs.state-events-v1",
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
@@ -167,33 +202,4 @@ class NodeRead:
 
     def artifacts(self, jid, query):
         self.jobs.status(jid)
-        rel = relative_path(query.get("path", [""])[0])
-        limit = page_size(query, 100)
-        after = ""
-        if query.get("cursor"):
-            cursor = decode_cursor(query["cursor"][0])
-            if not (isinstance(cursor, list) and len(cursor) == 3 and cursor[:2] == [jid, rel]
-                    and isinstance(cursor[2], str)):
-                raise ValueError("cursor must belong to this artifact directory")
-            after = cursor[2]
-        target = jid + "/out" + ("/" + rel if rel else "")
-        directory = self.jobs._read_root.open_fd(target, directory=True)
-        entries = []
-        try:
-            names = sorted(name for name in os.listdir(directory) if name > after)
-            for name in names[:limit]:
-                item = {"name": name, "path": os.path.join(rel, name)}
-                try:
-                    st = os.stat(name, dir_fd=directory, follow_symlinks=False)
-                    if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
-                        item.update(kind="unavailable", reason="links and special files are not downloadable")
-                    else:
-                        item.update(kind="directory" if stat.S_ISDIR(st.st_mode) else "file",
-                                    size=st.st_size, modified=st.st_mtime)
-                except OSError:
-                    item.update(kind="unavailable", reason="artifact changed or is unreadable")
-                entries.append(item)
-        finally:
-            os.close(directory)
-        cursor = encode_cursor([jid, rel, entries[-1]["name"]]) if len(names) > limit else None
-        return {"schema_version": 1, "job": jid, "path": rel, "items": entries, "next_cursor": cursor}
+        return artifact_page(self.jobs._read_root, jid, query)

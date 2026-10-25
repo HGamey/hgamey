@@ -35,6 +35,10 @@
   pf-node --device-binding binding.json --detach phonefarm gray-layer session --serial SERIAL ...
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
+  pf-node job-sources                     # 管理员登记的只读历史来源与 revision
+  pf-node jobs --source old-local --source-revision 1 [--query TEXT] [--limit N] [--cursor C]
+  pf-node status|log|artifacts <id> --source old-local --source-revision 1
+  pf-node out <id> <file-path> --source old-local --source-revision 1
   pf-node job-events [--job ID] [--cursor C|--after N] [--limit N] # 单次读取已提交事件，需显式节点 ID
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
   pf-node input-reference <id> <path>       # 显式校验一个已收尾任务的小工件，返回同节点输入引用
@@ -113,6 +117,10 @@
   process_group 只管理原进程组；contained 当前未提供。省略保留兼容默认，不替旧任务补全树结束证明。
 - finalizing 表示结束记录尚在保存；storage_blocked 表示保存失败，wait/跟随以125退出并保留命令诊断。
   修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
+- 历史 --source 与 --source-revision 必须同时显式提供，只用于 jobs/status/log/artifacts/out；
+  不支持 wait/kill/恢复或写入。来源变化保留原 revision 并报错，不自动选择新目录或退回当前作业。
+  历史 out 仅单文件；默认写到 pf-node-out/SOURCE/revision-N/JOB，下载 partial 绑定节点/来源/revision/job。
+  原 running/exit 只作为历史记录显示，不推断当前进程、实验成功或设备恢复；不向历史根写缓存或归档。
 - job-events 每次只读取一页（limit 1–200），不等待、不自动重试/分页或确认消费；失败保留原 cursor。
   status_revision 仅覆盖 Node 的 committed_status，不能据相同版本推断 worker、lease、日志或控制资格未变。
   事件不是无损执行历史；head 不是已处理位置，消费者处理后自行保存 next_cursor。Ctrl-C 不取消任务。
@@ -599,10 +607,13 @@ def _sha256(p):
     return h.hexdigest()
 
 
-def download_out(jid, rel, part_dir):
+def download_out(jid, rel, part_dir, *, prefix=None, source_binding=None):
     """分块把 /jobs/<id>/out（或 ?path=rel）下到本地文件，断了从断点续，最后核 sha256。
     返回 (本地文件, 元信息)；节点服务是旧版（不认 meta）时返回 (bytes, None)。"""
-    base = f"/jobs/{jid}/out?" + (urllib.parse.urlencode({"path": rel}) + "&" if rel else "")
+    query = {"path": rel} if rel else {}
+    if source_binding:
+        query["source_revision"] = source_binding["source_revision"]
+    base = f"{prefix or '/jobs'}/{jid}/out?" + (urllib.parse.urlencode(query) + "&" if query else "")
     for restart in range(5):
         try:
             raw = call("GET", base + "meta=1", timeout=600, attempts=1, raise_errors=True)
@@ -614,11 +625,19 @@ def download_out(jid, rel, part_dir):
         try:
             meta = json.loads(raw)
         except ValueError:
+            if source_binding:
+                sys.exit("pf-node: 历史单文件元数据格式未知；保留来源，未降级下载整目录")
             if rel:
                 print("pf-node: 节点服务是旧版，不支持只下单个文件，下了整个输出目录", file=sys.stderr)
             return raw, None
+        if source_binding and (not isinstance(meta, dict) or any(meta.get(key) != value for key, value in source_binding.items())):
+            sys.exit("pf-node: 历史单文件元数据的节点/来源/revision不匹配；未写入或替换本地文件")
         size, etag = meta["size"], meta["etag"]
-        part = os.path.join(part_dir, f".pf-node-{jid}-{etag}.part")
+        if source_binding and meta.get("kind") != "file":
+            sys.exit("pf-node: 历史来源仅支持明确单文件；未解包或降级到当前作业")
+        identity = (f"{source_binding['node_id']}-{source_binding['source_id']}-r{source_binding['source_revision']}-{jid}"
+                    if source_binding else jid)
+        part = os.path.join(part_dir, f".pf-node-{identity}-{etag}.part")
         os.makedirs(part_dir, exist_ok=True)
         have = os.path.getsize(part) if os.path.exists(part) else 0
         if have > size:
@@ -632,8 +651,11 @@ def download_out(jid, rel, part_dir):
                 n = min(CHUNK, size - have)
                 try:
                     chunk = call("GET", base + urllib.parse.urlencode({"offset": have, "length": n, "etag": etag}),
-                                 timeout=120, attempts=8, raise_4xx=True, stop_error_codes=EXPORT_ERRORS)
+                                 timeout=120, attempts=8, raise_4xx=True, raise_errors=bool(source_binding), stop_error_codes=EXPORT_ERRORS)
                 except ClientError as e:
+                    if source_binding and (response_error_code(e.body) or "").startswith("history_"):
+                        sys.exit(f"pf-node: 历史读取失败（HTTP {e.code}）：{e.body.decode('utf-8', errors='replace')}；"
+                                 f"原来源/revision不变，已有分片保留在 {part}；未自动重选。")
                     if response_error_code(e.body) in EXPORT_ERRORS:
                         sys.exit(f"pf-node: 导出失败（HTTP {e.code}）：{e.body.decode('utf-8', errors='replace')}；"
                                  f"已有分片保留在 {part}；未自动重试、重新压缩或降级下载。")
@@ -662,9 +684,10 @@ def download_out(jid, rel, part_dir):
     sys.exit("pf-node: 下载输出反复失败")
 
 
-def fetch_out(jid, dest, rel=None):
+def fetch_out(jid, dest, rel=None, *, prefix=None, source_binding=None):
     part_dir = os.path.dirname(os.path.abspath(dest))
-    got, meta = download_out(jid, rel, part_dir)
+    options = {"prefix": prefix, "source_binding": source_binding} if source_binding else {}
+    got, meta = download_out(jid, rel, part_dir, **options)
     if meta is None:  # 旧版节点服务：整份 tar.gz
         if _extract(got, dest):
             print(f"pf-node: 输出已下载到 {dest}", file=sys.stderr)
@@ -681,6 +704,79 @@ def fetch_out(jid, dest, rel=None):
             print(f"pf-node: 输出已下载到 {sub}（sha256 已校验）", file=sys.stderr)
     finally:
         os.remove(got)
+
+
+def history_command(args, outdir):
+    """Explicit read scope; never route historical work through current Jobs or follow()."""
+    command, rest = args[0], list(args[1:])
+    source = revision = None
+    remaining = []
+    while rest:
+        value = rest.pop(0)
+        if value in ("--source", "--source-revision"):
+            if not rest:
+                sys.exit(f"pf-node: {value} 需要一个值")
+            content = rest.pop(0)
+            if value == "--source":
+                if source is not None or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", content):
+                    sys.exit("pf-node: --source 需要唯一有效的来源 ID")
+                source = content
+            else:
+                if revision is not None or not re.fullmatch(r"[1-9][0-9]{0,15}", content) or int(content) > 2**53 - 1:
+                    sys.exit("pf-node: --source-revision 需要唯一正整数，最大 2^53-1")
+                revision = int(content)
+        else:
+            remaining.append(value)
+            if value in ("--query", "--limit", "--cursor", "--path", "--offset") and rest:
+                remaining.append(rest.pop(0))
+    if command == "job-sources":
+        if remaining or source is not None or revision is not None or outdir:
+            sys.exit("用法: pf-node job-sources")
+    elif source is None or revision is None:
+        sys.exit("pf-node: 历史读取需同时显式提供 --source 和 --source-revision；未自动选择 revision")
+    if command not in ("job-sources", "jobs", "status", "log", "artifacts", "out"):
+        sys.exit("pf-node: --source 仅用于 jobs/status/log/artifacts/out；不支持等待、控制或恢复")
+    prefix = f"/job-sources/{urllib.parse.quote(source, safe='')}/jobs" if source else "/job-sources"
+    query = {"source_revision": revision} if source else {}
+    jid = rel = None
+    if command in ("status", "log", "artifacts", "out"):
+        if not remaining or not re.fullmatch(r"[0-9a-f]{12}", remaining[0]):
+            sys.exit("pf-node: 历史任务需要12位小写十六进制 ID")
+        jid = remaining.pop(0)
+    if command == "out":
+        if len(remaining) != 1 or not remaining[0] or remaining[0] == ".":
+            sys.exit("用法: pf-node out JOB FILE --source SOURCE --source-revision N；历史不支持目录下载")
+        rel = remaining.pop(0)
+    allowed = {"--query", "--limit", "--cursor"} if command == "jobs" else {"--path", "--limit", "--cursor"} if command == "artifacts" else {"--offset", "--limit"} if command == "log" else set()
+    while remaining:
+        option = remaining.pop(0)
+        if option not in allowed or not remaining:
+            sys.exit(f"pf-node: 无效历史 {command} 选项 {option}")
+        query[option[2:]] = remaining.pop(0)
+    if outdir and command != "out":
+        sys.exit("pf-node: 历史 --out-dir 仅用于 out 单文件下载")
+    try:
+        node = TARGET.identity()
+        if "jobs.history-read-v1" not in node.get("capabilities", []):
+            sys.exit("pf-node: 节点未提供 jobs.history-read-v1；未降级到当前作业")
+        if command == "out":
+            binding = {"node_id": node["node_id"], "source_id": source, "source_revision": revision}
+            dest = outdir or os.path.join("pf-node-out", source, f"revision-{revision}", jid)
+            fetch_out(jid, dest, rel, prefix=prefix, source_binding=binding)
+            return
+        path = prefix + (f"/{jid}" if jid else "") + (f"/{command}" if command in ("log", "artifacts") else "")
+        raw = call("GET", path + ("?" + urllib.parse.urlencode(query) if query else ""), attempts=1, raise_errors=True)
+        if command == "log":
+            sys.stdout.buffer.write(raw)
+        else:
+            value = json.loads(raw)
+            if value.get("node_id") != node["node_id"] or (source and (value.get("source_id") != source or value.get("source_revision") != revision)):
+                raise ValueError("历史响应身份不匹配")
+            print(raw.decode())
+    except ClientError as error:
+        sys.exit(f"pf-node: 历史读取失败（HTTP {error.code}）：{error.body.decode('utf-8', errors='replace')}；原来源/revision保留，未自动重选或退回当前作业")
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as error:
+        sys.exit(f"pf-node: 历史读取未确认：{error}；原来源/revision保留，未自动重试")
 
 
 def control_request_id(value):
@@ -1022,6 +1118,14 @@ def main():
         return
     TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     URL, TOKEN = TARGET.url, TARGET.token
+    history_commands = ("jobs", "status", "log", "artifacts", "out", "wait", "kill", "cancel", "release", "session-recover", "retry-finalize")
+    if args[0] == "job-sources" or (args[0] in history_commands and any(value in ("--source", "--source-revision") for value in args[1:])):
+        if (request_id is not None or inputs_path is not None or resources or device_access is not None
+                or recovery_for is not None or execution_policy is not None or time_budget is not None
+                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach):
+            sys.exit("pf-node: 历史来源读取不接收作业提交/控制选项")
+        CHUNK = int(os.environ.get("PF_NODE_CHUNK", 2 << 20))
+        return history_command(args, outdir)
     gray_session = is_gray_session({"bin": args[0], "argv": args[1:]})
     existing_gray_request = find_gray_session_request(request_id) if gray_session and request_id is not None else None
     if args[0] == "job-events":

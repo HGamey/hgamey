@@ -33,6 +33,7 @@ import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subp
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
+from node_history import JobHistory, HistoryError, load_history_config
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
 from device_scope import DeviceScope, validate_job as validate_device_job, resource as device_resource, scope as job_scope, lease_problem
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
@@ -254,8 +255,10 @@ def read_host_capacity(path):
 
 
 class Jobs:
-    def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None):
+    def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None,
+                 history_sources=None):
         self.root, self.bins = root, bins
+        self.history_sources = history_sources if history_sources is not None else []
         self.data_root = os.path.abspath(data_dir or root)
         self.update_config_dir = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
         if not os.path.isabs(self.update_config_dir):
@@ -842,6 +845,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))
+    if not hasattr(jobs, "history"):
+        jobs.history = JobHistory(jobs.history_sources, jobs.dir, node.node_id)
+    history = jobs.history
     jobs.events = NodeJobEvents(jobs.dispatch.queue, node.node_id)
     device_registry = DeviceRegistry(jobs, node.node_id)
     if not hasattr(jobs, "results"):
@@ -971,7 +977,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -989,6 +995,26 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts[:1] == ["job-sources"]:
+                    q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if len(parts) == 1:
+                        if set(q) - {"expected_node_id"}:
+                            return self._send(400, {"code": "history_invalid_request", "error": "source discovery has no query filters"})
+                        return self._send(200, history.sources())
+                    if len(parts) >= 3 and parts[2] == "jobs":
+                        source_id = unquote(parts[1])
+                        if len(parts) == 3:
+                            return self._send(200, history.list_jobs(source_id, q))
+                        jid = unquote(parts[3])
+                        if len(parts) == 4:
+                            return self._send(200, history.detail(source_id, jid, q))
+                        if len(parts) == 5 and parts[4] == "artifacts":
+                            return self._send(200, history.artifacts(source_id, jid, q))
+                        if len(parts) == 5 and parts[4] == "log":
+                            return self._send(200, history.log_from(source_id, jid, q), "application/octet-stream")
+                        if len(parts) == 5 and parts[4] == "out":
+                            return self._result_source(history.out_blob(source_id, jid, q), q)
+                    return self._send(404, {"code": "history_route_not_found", "error": "no such history read operation"})
                 if parts == ["job-events"]:
                     q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
@@ -1131,7 +1157,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
-            except (ResearchError, MediaError, RegistryError, JobEventError) as e:
+            except (ResearchError, MediaError, RegistryError, JobEventError, HistoryError) as e:
                 return self._send(e.status, e.payload)
             except ResultError as e:
                 return self._send(e.status, {"code": e.code, "error": str(e)})
@@ -1334,8 +1360,29 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
         def do_DELETE(self):
             if self._remote("DELETE"):
                 return
+            parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if self._history_read_only(parts):
+                return
             if self._authed():
                 self._send(200, b"")
+
+        def _history_read_only(self, parts):
+            parts = [unquote(p) for p in parts]
+            dashboard = parts[:3] == ["dash", "api", "job-sources"]
+            if parts[:1] != ["job-sources"] and not dashboard:
+                return False
+            # The target guard already ran. Never consume a mutation body or
+            # allow its leftover bytes to become the next keep-alive request.
+            self.close_connection = True
+            if dashboard:
+                if not board or not board.authed(self):
+                    self._send(401, {"error": "需要查看密码"})
+                    return True
+            elif not self._authed(allow_ro=True):
+                return True
+            self._send(405, {"code": "history_read_only", "error": "historical job sources are read-only"},
+                       extra={"Allow": "GET", "Connection": "close"})
+            return True
 
         def _upload_write_auth(self, dashboard):
             if not dashboard:
@@ -1391,6 +1438,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if self._remote("PUT"):
                 return
             parts = [unquote(p) for p in urlparse(self.path).path.split("/") if p]
+            if self._history_read_only(parts):
+                return
             dashboard = bool(board and parts[:3] == ["dash", "api", "uploads"])
             if dashboard:
                 parts = parts[2:]
@@ -1425,6 +1474,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if self._remote("POST"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
+            if self._history_read_only(parts):
+                return
             if parts == ["node", "devices"]:
                 return self._device_registry_post(False)
             if board and parts == ["dash", "api", "node", "devices"]:
@@ -1611,6 +1662,11 @@ def argument_parser():
             return number
         return parse
 
+    def history_path(value):
+        if not os.path.isabs(value):
+            raise argparse.ArgumentTypeError("history roots configuration must be an absolute path")
+        return value
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--phonefarm", default=os.path.expanduser("~/node/phonefarm"), help="phonefarm 根目录（含 phonefarm 可执行）")
     ap.add_argument("--game-opt-loop", default=os.path.expanduser("~/node/game_opt_loop"), help="game_opt_loop 仓库目录（含 game_opt_loop 可执行），与 phonefarm 同级")
@@ -1619,6 +1675,7 @@ def argument_parser():
     ap.add_argument("--max-running", type=bounded_int(1, 64), default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
     ap.add_argument("--host-capacity", help="管理员宿主调度容量 JSON 文件（最多4KiB）；省略沿用SQL配置，首次按max-running初始化CPU slots")
     ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
+    ap.add_argument("--history-roots", type=history_path, help="旧作业只读来源的绝对配置路径（hgamey/job-history@1，最多64KiB）")
     return ap
 
 
@@ -1626,6 +1683,7 @@ def main():
     ap = argument_parser()
     a = ap.parse_args()
     try:
+        history_sources = load_history_config(a.history_roots)
         host_capacity = read_host_capacity(a.host_capacity)
     except (OSError, ValueError) as error:
         ap.error(str(error))
@@ -1645,7 +1703,7 @@ def main():
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
-                host_capacity=host_capacity)
+                host_capacity=host_capacity, history_sources=history_sources)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:
@@ -1681,6 +1739,7 @@ def main():
             remote.close()
         jobs.directory.close()
         jobs.games.close()
+        jobs.history.close()
         fleet.close()
         srv.server_close()
 

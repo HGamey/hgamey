@@ -9,6 +9,8 @@
   let jobInputsRevision = 0, jobInputsBusy = false, jobInputsRead = false, inputReference = '', inputReferenceRevision = 0;
   let nodeRevision = 0, listRevision = 0, detailRevision = 0, artifactRevision = 0, metadataRevision = 0, logRevision = 0;
   let jobsCursor = null, filesCursor = null, selected = '', directory = '';
+  let historySource = null, jobSources = [], jobSourcesRevision = 0, jobSourcesError = '';
+  const historical = () => historySource !== null;
   let exportRevision = 0, exportController = null;
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
   let activeFilters = {query: '', state: ''};
@@ -94,7 +96,7 @@
     if (!jobEventsDisposed) { renderJobEvents(); if (reason) message('job-events-message', reason); }
   }
   function syncJobEventScope() {
-    const target = HGTarget.binding(), job = selected;
+    const target = HGTarget.binding(), job = historical() ? '' : selected;
     const key = target && job ? JOB_EVENT_STORAGE + JSON.stringify([target.entry, target.node_id, job]) : null;
     if (key === jobEventPosition?.key || !key && !jobEventPosition) { renderJobEvents(); return; }
     stopJobEvents(); jobEventsTrimmed = 0; jobEventsStorageError = '';
@@ -306,6 +308,7 @@
   function budgetExceeded(job) { return Number.isFinite(job.execution?.time_budget?.exceeded_at); }
   function diskGuardTriggered(job) { return Number.isFinite(job.execution?.disk_guard?.triggered_at); }
   function status(job) {
+    if (job.observation === 'historical_readonly') return [`原记录：${job.recorded_phase || job.recorded_state || '状态未记录'}${Number.isInteger(job.recorded_exit) ? ` · exit ${job.recorded_exit}` : ''}`, 'unknown'];
     const exceeded = budgetExceeded(job);
     const trigger = [exceeded ? '运行期限已触发' : '', diskGuardTriggered(job) ? '磁盘保护已触发' : ''].filter(Boolean).join('、');
     if (storageFailed(job)) return [PHASES.storage_blocked, 'unknown'];
@@ -325,11 +328,87 @@
     if (Number.isInteger(job.exit)) return [`执行失败 · exit ${job.exit}`, 'failed'];
     return ['退出码未知', 'unknown'];
   }
-  function jobURL(suffix = '', params = {}) {
+  function jobsPath() {
+    return historySource ? `${API}/job-sources/${encodeURIComponent(historySource.source_id)}/jobs` : `${API}/jobs`;
+  }
+  function sourceParams(params = {}) {
     const query = new URLSearchParams(params);
-    return `${API}/jobs/${encodeURIComponent(selected)}${suffix}${query.size ? '?' + query : ''}`;
+    if (historySource) query.set('source_revision', historySource.revision);
+    return query;
+  }
+  function jobURL(suffix = '', params = {}) {
+    const query = sourceParams(params);
+    return `${jobsPath()}/${encodeURIComponent(selected)}${suffix}${query.size ? '?' + query : ''}`;
+  }
+  function sourceValue(source = historySource) { return source ? JSON.stringify([source.source_id, source.revision]) : ''; }
+  function updateJobHash() {
+    const hash = new URLSearchParams();
+    if (historySource) { hash.set('source', historySource.source_id); hash.set('source_revision', historySource.revision); }
+    if (selected) hash.set('job', selected);
+    history.replaceState(null, '', `${location.pathname}${location.search}${hash.size ? '#' + hash : ''}`);
+  }
+  function historyProblem() {
+    if (!historySource) return '';
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(historySource.source_id || '')) return '历史来源 ID 无效；保留链接，请显式重新选择。';
+    if (!Number.isSafeInteger(historySource.revision) || historySource.revision < 1) return '历史链接缺少有效 source_revision；保留原来源，请显式重新选择。';
+    return nodeInfo?.capabilities?.includes('jobs.history-read-v1') ? '' : '当前节点未提供 jobs.history-read-v1；历史来源保留，未退回当前作业。';
+  }
+  function checkHistoryIdentity(value) {
+    if (historySource && (value.node_id !== nodeInfo?.node_id || value.source_id !== historySource.source_id || value.source_revision !== historySource.revision)) throw new Error('历史回包与所选节点、来源或 revision 不一致。');
+    return value;
+  }
+  function renderJobSource() {
+    const select = $('job-source'), saved = sourceValue();
+    select.replaceChildren(el('option', '当前作业'));
+    select.firstElementChild.value = '';
+    for (const source of jobSources) {
+      const option = el('option', `${source.label || source.source_id} · r${source.revision}${source.availability === 'available' ? '' : ' · 不可读取'}`);
+      option.value = sourceValue(source); select.append(option);
+    }
+    const source = jobSources.find(item => sourceValue(item) === saved);
+    if (historySource && !source) {
+      const option = el('option', `${historySource.source_id} · r${historySource.revision ?? '未指定'} · 原选择`);
+      option.value = saved; select.append(option);
+    }
+    select.value = saved;
+    $('state').disabled = historical();
+    $('live-job-detail').hidden = historical(); $('historical-detail').hidden = !historical();
+    $('job-events').hidden = historical(); $('directory-export-controls').hidden = historical();
+    $('artifact-input-help').hidden = historical(); $('historical-file-help').hidden = !historical();
+    message('job-source-message', jobSourcesError || historyProblem() || (historySource
+      ? `只读历史：${historySource.source_id} · revision ${historySource.revision}。${source?.reason || '上方队列与提交仍属于当前作业。'}`
+      : '当前作业；上方队列与提交始终属于当前节点的当前作业。'), !!jobSourcesError || !!historyProblem() || source?.availability === 'unavailable');
+    $('job-source-root').textContent = source?.jobs_root ? `登记根目录：${source.jobs_root}` : historySource ? '原来源根路径尚未核对；不会自动选择新 revision。' : '';
+  }
+  async function loadJobSources() {
+    const revision = ++jobSourcesRevision;
+    busy('refresh-job-sources', true, '读取中…');
+    try {
+      if (!nodeInfo?.capabilities?.includes('jobs.history-read-v1')) { jobSources = []; jobSourcesError = '节点未提供历史来源能力；当前作业仍可读取。'; return; }
+      const result = await json(`${API}/job-sources`);
+      if (revision !== jobSourcesRevision) return;
+      if (result.schema !== 'hgamey/job-sources@1' || result.node_id !== nodeInfo.node_id || !Array.isArray(result.items)) throw new Error('历史来源目录身份或格式不正确。');
+      jobSources = result.items; jobSourcesError = '';
+    } catch (error) { if (revision === jobSourcesRevision) jobSourcesError = errorText(error); }
+    finally { if (revision === jobSourcesRevision) { busy('refresh-job-sources', false); renderJobSource(); } }
+  }
+  function changeJobSource(source) {
+    historySource = source; selected = ''; currentJob = null; directory = ''; jobsCursor = filesCursor = null;
+    ++detailRevision; ++listRevision; ++artifactRevision; ++metadataRevision; ++logRevision;
+    resetSession(); resetJobInputs(); resetJobLeases(); resetInputReference(); resetDirectoryExport(); resetLog();
+    stopJobEvents(); syncJobEventScope();
+    $('task-list').replaceChildren(); $('artifact-list').replaceChildren();
+    $('detail-content').hidden = true; $('detail-placeholder').hidden = false; $('refresh-detail').hidden = true;
+    regionBusy('task-detail', false); message('detail-message', '选择一个任务，查看此来源的记录和文件。');
+    activeFilters = {query: $('query').value.trim(), state: historical() ? '' : $('state').value};
+    renderJobSource(); updateJobHash();
+  }
+  function selectCurrentJob(id, keepDirectory = false) {
+    if (historical()) { changeJobSource(null); loadJobs(); }
+    return selectJob(id, keepDirectory);
   }
   function errorText(error) {
+    if (error.payload?.code?.startsWith('history_')) return `${error.payload.code}：${error.payload.error?.message || error.payload.error || error.message}；原来源与 revision 保留，请核对后显式重选。`;
     return error.name === 'AbortError' ? '请求超时，请重试。' : (error.message || '网络错误，请重试。');
   }
   async function request(url, consume, target = undefined, options = {}) {
@@ -682,7 +761,7 @@
       if (error.status === 401 || error.status === 403) await loadAccess();
     } finally {
       cancelling.delete(id);
-      await Promise.all([loadQueue(), selected === id ? selectJob(id, true) : null]);
+      await Promise.all([loadQueue(), !historical() && selected === id ? selectJob(id, true) : null]);
     }
   }
 
@@ -725,7 +804,7 @@
   function openJobButton(id, label = '查看任务') {
     const button = el('button', label, 'ghost');
     button.type = 'button';
-    button.addEventListener('click', () => { selectJob(id); $('detail-heading').focus(); });
+    button.addEventListener('click', () => { selectCurrentJob(id); $('detail-heading').focus(); });
     return button;
   }
   function recoverySupported() { return !!nodeInfo?.capabilities?.includes('jobs.recovery-v1'); }
@@ -1140,7 +1219,7 @@
     submittedJob = job.id;
     $('submit-open-job').hidden = false;
     submissionMessage(`${lookup ? '找到此请求对应的任务，请核对执行参数' : '任务已记录'}：${job.id} · ${status(job)[0]}。`, false, id);
-    await Promise.all([loadJobs(), loadQueue(), detailRevision === selectionVersion ? selectJob(job.id) : null]);
+    await Promise.all([loadJobs(), loadQueue(), detailRevision === selectionVersion ? selectCurrentJob(job.id) : null]);
   }
   async function submitJob(retry = false) {
     if (submissionBusy || (retry ? $('submit-retry').disabled : $('submit-job').disabled)) return;
@@ -1261,7 +1340,7 @@
       if (error.status === 401 || error.status === 403) await loadAccess();
     } finally {
       releasing.delete(job.id);
-      await Promise.all([loadQueue(), selected === job.id ? selectJob(job.id, true) : null]);
+      await Promise.all([loadQueue(), !historical() && selected === job.id ? selectJob(job.id, true) : null]);
     }
   }
 
@@ -1348,11 +1427,13 @@
     busy('search-jobs', true, '搜索中…');
     busy('more-jobs', true, '正在加载…');
     message('list-message', append ? '正在读取更多任务…' : '正在读取任务…');
-    const query = new URLSearchParams({limit: '50', ...activeFilters});
+    const query = sourceParams({limit: '50', query: activeFilters.query, ...(!historical() ? {state: activeFilters.state} : {})});
     if (append && jobsCursor) query.set('cursor', jobsCursor);
     try {
-      const result = await json(`${API}/jobs?${query}`);
+      if (historyProblem()) throw new Error(historyProblem());
+      const result = await json(`${jobsPath()}?${query}`);
       if (revision !== listRevision) return;
+      checkHistoryIdentity(result);
       if (!Array.isArray(result.items)) throw new Error('任务列表格式不正确。');
       result.items.forEach(addJob);
       jobsCursor = result.next_cursor || null;
@@ -1360,10 +1441,11 @@
       const count = $('task-list').children.length;
       $('task-count').textContent = `${count} 条已加载`;
       $('task-count').hidden = false;
-      message('list-message', count ? `已显示 ${count} 个任务${jobsCursor ? '，还有更多' : ''}。` : (activeFilters.query || activeFilters.state ? '没有匹配的任务，可调整搜索条件。' : '这个节点还没有任务记录。'));
+      message('list-message', count ? `已显示 ${count} 个任务${jobsCursor ? '，还有更多' : ''}。` : (activeFilters.query || activeFilters.state ? '没有匹配的任务，可调整搜索条件。' : historical() ? (result.warning_count ? '部分历史元信息不可读取，请核对下方警告；不能据此判断没有任务。' : '此来源未返回任务记录。') : '这个节点还没有任务记录。'));
       const warnings = Array.isArray(result.warnings) ? result.warnings : [];
       $('list-warnings').textContent = warnings.map(w => typeof w === 'string' ? w : JSON.stringify(w)).join('；');
-      $('list-warnings').hidden = !warnings.length;
+      if (result.warning_count > warnings.length) $('list-warnings').textContent += `（共 ${result.warning_count} 项警告）`;
+      $('list-warnings').hidden = !warnings.length && !result.warning_count;
       highlight();
     } catch (error) {
       if (revision === listRevision) message('list-message', errorText(error), true);
@@ -1407,10 +1489,23 @@
     regionBusy('task-detail', true);
     message('detail-message', `正在读取 ${id}…`);
     highlight();
-    history.replaceState(null, '', `${location.pathname}${location.search}#job=${encodeURIComponent(id)}`);
+    updateJobHash();
+    renderJobSource();
     try {
+      if (historyProblem()) throw new Error(historyProblem());
       const job = await json(jobURL());
       if (revision !== detailRevision) return;
+      checkHistoryIdentity(job);
+      if (historical()) {
+        const [label, kind] = status(job);
+        $('job-title').textContent = job.label || job.bin || '未命名历史任务';
+        $('job-state').textContent = label; $('job-state').className = `task-state ${kind}`;
+        $('detail-updated').textContent = `${readTime()} · 文件可由外部程序修改，不是存储快照`;
+        facts('job-info', [['节点', job.node_id], ['来源', job.source_id], ['来源 revision', job.source_revision], ['任务 ID', job.id], ['命令', job.bin], ['原开始字段', time(job.started)], ['原状态', job.recorded_state], ['原阶段', job.recorded_phase], ['记录中的退出码', job.recorded_exit], ['退出码来源', ({meta: '原 meta', exitcode: '原 exitcode 文件'})[job.recorded_exit_source] || '未记录']]);
+        $('historical-record').textContent = JSON.stringify(job.record ?? null, null, 2);
+        $('detail-content').hidden = false; $('detail-placeholder').hidden = true;
+        resetLog(); await Promise.all([loadArtifacts(), loadLog()]); return;
+      }
       currentJob = job;
       if (reconcileReceipts.get(id)?.unconfirmed) reconcileReceipts.set(id, {message: '已重新读取原任务状态。请核对宿主核查与输出交还记录，再决定是否操作。', error: false});
       updateJobLeaseAccess();
@@ -1441,7 +1536,7 @@
       await Promise.all([loadArtifacts(), loadLog(), job.bin === 'phonefarm' && job.argv?.[0] === 'gray-layer' && job.argv?.[1] === 'session' ? loadSession() : null]);
     } catch (error) {
       if (revision === detailRevision) {
-        const receipt = cancelReceipts.get(id);
+        const receipt = historical() ? null : cancelReceipts.get(id);
         message('detail-message', `${errorText(error)}${receipt ? ` ${receipt.message}` : ''}`, true);
       }
     }
@@ -1555,7 +1650,7 @@
     link.href = HGTarget.url(`${target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(id)}`, target || null);
     link.addEventListener('click', event => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || HGTarget.problem(target || null)) return;
-      event.preventDefault(); selectJob(id); $('detail-heading').focus();
+      event.preventDefault(); selectCurrentJob(id); $('detail-heading').focus();
     });
     return link;
   }
@@ -2381,7 +2476,7 @@
     ++exportRevision;
     exportController?.abort(); exportController = null;
     busy('prepare-directory-export', false);
-    $('prepare-directory-export').disabled = !selected || !!HGTarget.problem();
+    $('prepare-directory-export').disabled = historical() || !selected || !!HGTarget.problem();
     $('directory-export-download').hidden = true;
     $('directory-export-download').removeAttribute('href');
     $('directory-export-info').hidden = true; $('directory-export-info').replaceChildren();
@@ -2389,7 +2484,7 @@
     message('directory-export-message', '仅点击准备按钮才请求当前目录打包。页面离开不代表节点已停止生成缓存；不会自动重试。');
   }
   async function prepareDirectoryExport() {
-    if (!selected || $('prepare-directory-export').disabled || exportController) return;
+    if (historical() || !selected || $('prepare-directory-export').disabled || exportController) return;
     const id = selected, path = directory, target = HGTarget.binding(), revision = ++exportRevision;
     const controller = new AbortController(); exportController = controller;
     busy('prepare-directory-export', true, '正在准备目录…');
@@ -2436,14 +2531,16 @@
       info.type = 'button';
       info.addEventListener('click', () => loadMetadata(file.path, info));
       const download = el('a', '下载');
-      download.href = jobURL('/out', {path: file.path});
+      download.href = HGTarget.url(jobURL('/out', {path: file.path}));
       download.download = file.name;
       const reference = el('button', '复制输入清单', 'ghost');
       reference.type = 'button';
       reference.dataset.inputReference = file.path;
       reference.disabled = !inputsSupported();
       reference.addEventListener('click', () => loadInputReference(file.path, reference));
-      actions.append(info, reference, download);
+      actions.append(info);
+      if (!historical()) actions.append(reference);
+      actions.append(download);
       item.append(actions);
     }
     $('artifact-list').append(item);
@@ -2464,6 +2561,7 @@
     try {
       const result = await json(jobURL('/artifacts', params));
       if (revision !== artifactRevision) return;
+      checkHistoryIdentity(result);
       if (!Array.isArray(result.items)) throw new Error('文件列表格式不正确。');
       result.items.forEach(addArtifact);
       filesCursor = result.next_cursor || null;
@@ -2491,7 +2589,8 @@
     try {
       const meta = await json(jobURL('/out', {path, meta: '1'}));
       if (revision !== artifactRevision || metadata !== metadataRevision) return;
-      $('artifact-meta').textContent = `${path}\n大小：${bytes(meta.size)}\nSHA-256：${text(meta.sha256)}\n运行中的文件可能继续变化。`;
+      checkHistoryIdentity(meta);
+      $('artifact-meta').textContent = `${path}\n大小：${bytes(meta.size)}\nSHA-256：${text(meta.sha256)}\n${historical() ? '历史文件也可能被外部程序修改。' : '运行中的文件可能继续变化。'}`;
     } catch (error) { if (revision === artifactRevision && metadata === metadataRevision) $('artifact-meta').textContent = errorText(error); }
     finally {
       button.disabled = false;
@@ -2597,7 +2696,7 @@
       logText += logDecoder.decode(data, {stream: true});
       if (logText.length > LOG_WINDOW) logText = logText.slice(-LOG_WINDOW);
       $('job-log').textContent = logText;
-      message('log-message', data.byteLength ? `已读取至第 ${logOffset} 字节；每次最多 64 KiB，保留最近 262,144 个字符。` : `第 ${logOffset} 字节之后暂无新日志。运行中的任务可稍后再读取。`);
+      message('log-message', data.byteLength ? `已读取至第 ${logOffset} 字节；每次最多 64 KiB，保留最近 262,144 个字符。` : `第 ${logOffset} 字节之后暂无新日志。${historical() ? '不据此判断任务当前是否仍在运行。' : '运行中的任务可稍后再读取。'}`);
     } catch (error) { if (revision === logRevision) message('log-message', errorText(error), true); }
     finally {
       if (revision === logRevision) {
@@ -2624,11 +2723,11 @@
   $('session-recover-new').addEventListener('click', prepareSessionRecoveryAttempt);
   $('session-recover-job').addEventListener('click', event => {
     const job = sessionRecoveryRequest()?.job_id;
-    if (job) { event.preventDefault(); selectJob(job); }
+    if (job) { event.preventDefault(); selectCurrentJob(job); }
   });
   $('session-recover-previous').addEventListener('click', event => {
     const job = sessionRecoveryRequest()?.previous_job_id;
-    if (job) { event.preventDefault(); selectJob(job); }
+    if (job) { event.preventDefault(); selectCurrentJob(job); }
   });
   $('session-receipt-form').addEventListener('submit', event => { event.preventDefault(); querySessionReceipt(); });
   $('reference-query').addEventListener('click', () => runReference(false));
@@ -2729,10 +2828,17 @@
   $('more-jobs').addEventListener('click', () => loadJobs(true));
   async function refreshAll() {
     busy('refresh-all', true, '刷新中…');
-    try { await Promise.all([loadNode(), loadQueue(), loadJobs(), loadAccess(), selected ? selectJob(selected, true) : null]); }
+    try { await loadNode(); await Promise.all([loadJobSources(), loadQueue(), loadJobs(), loadAccess(), selected ? selectJob(selected, true) : null]); }
     finally { busy('refresh-all', false); }
   }
   $('refresh-all').addEventListener('click', refreshAll);
+  $('refresh-job-sources').addEventListener('click', loadJobSources);
+  $('apply-job-source').addEventListener('click', () => {
+    const value = $('job-source').value;
+    if (value === '') changeJobSource(null);
+    else { const [source_id, revision] = JSON.parse(value); changeJobSource({source_id, revision}); }
+    loadJobs();
+  });
   $('refresh-runtime').addEventListener('click', () => loadNode(true));
   $('refresh-detail').addEventListener('click', () => { if (selected) selectJob(selected, true); });
   $('load-job-leases').addEventListener('click', loadJobLeases);
@@ -2791,7 +2897,7 @@
     $('submit-argv').focus();
   });
   $('request-lookup-form').addEventListener('submit', event => { event.preventDefault(); lookupRequest(); });
-  $('submit-open-job').addEventListener('click', () => { if (submittedJob) { selectJob(submittedJob); $('detail-heading').focus(); } });
+  $('submit-open-job').addEventListener('click', () => { if (submittedJob) { selectCurrentJob(submittedJob); $('detail-heading').focus(); } });
   $('submit-device-access').addEventListener('change', renderSubmission);
   $('submit-device-scope').addEventListener('change', () => { deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision; deviceBindingBusy = false; renderSubmission(); });
   $('read-device-registry').addEventListener('click', readDeviceRegistry);
@@ -2842,7 +2948,10 @@
       submissionMessage('有一条未确认的提交。请先按原请求 ID 查询；参数未保存在浏览器中。', true, id);
     }
   } catch (_) { /* Storage is optional; manual request lookup remains available. */ }
-  const initial = new URLSearchParams(location.hash.slice(1)).get('job');
+  const initialParams = new URLSearchParams(location.hash.slice(1));
+  if (initialParams.has('source')) historySource = {source_id: initialParams.get('source'), revision: initialParams.has('source_revision') ? Number(initialParams.get('source_revision')) : null};
+  renderJobSource();
+  const initial = initialParams.get('job');
   if (initial && /^[0-9a-f]{12}$/.test(initial)) selected = initial;
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);
   document.addEventListener('hgamey-target-change', () => { resetDirectoryExport(); ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); if (jobEventsBusy && HGTarget.problem(jobEventPosition?.target)) stopJobEvents('节点身份需要重新核对；原浏览位置保留。'); syncJobEventScope(); });

@@ -203,6 +203,13 @@
   <div class="jobs-layout">
     <section id="task-browser" class="task-browser" aria-labelledby="tasks-heading">
       <div class="section-heading"><h2 id="tasks-heading" tabindex="-1">任务列表</h2><span id="task-count" class="count-label" hidden></span></div>
+      <div class="job-source-picker">
+        <label for="job-source">记录来源</label>
+        <select id="job-source"><option value="">当前作业</option></select>
+        <div class="submission-actions"><button id="apply-job-source" class="ghost" type="button">读取所选来源</button><button id="refresh-job-sources" class="ghost" type="button">刷新来源目录</button></div>
+        <p id="job-source-message" class="note" role="status">当前作业；上方队列与提交始终属于当前节点的当前作业。</p>
+        <p id="job-source-root" class="read-time"></p>
+      </div>
       <form id="filters" class="task-filters">
         <label for="query">搜索任务</label>
         <div class="filter-query"><input id="query" type="search" maxlength="200" placeholder="ID、标签或命令"><button id="search-jobs" class="ghost primary" type="submit">搜索</button></div>
@@ -220,6 +227,11 @@
         <div class="job-heading"><h3 id="job-title"></h3><span id="job-state" class="task-state"></span></div>
         <p id="detail-updated" class="read-time"></p>
         <dl id="job-info" class="facts job-facts"></dl>
+        <section id="historical-detail" hidden>
+          <p class="evidence-note">只读历史记录。原状态与退出码不证明当前仍在运行、实验成功或设备已恢复；文件仍可能由外部程序修改。</p>
+          <details class="command-details"><summary>原始任务元信息</summary><pre id="historical-record" class="command-box"></pre></details>
+        </section>
+        <div id="live-job-detail">
         <details class="command-details committed-record">
           <summary id="committed-summary">Node 已提交状态</summary>
           <dl id="committed-info" class="facts"></dl>
@@ -402,15 +414,19 @@
           <ul id="job-leases-errors" class="lease-receipt-errors" hidden></ul>
           <ul id="job-leases-list" class="lease-receipt-list" aria-label="任务关联的 lease 收据"></ul>
         </section>
+        </div>
         <section id="artifacts" class="artifacts" aria-labelledby="artifacts-heading">
           <div class="section-heading"><h3 id="artifacts-heading">输出文件</h3><button id="refresh-artifacts" class="ghost" type="button">刷新目录</button></div>
           <p id="artifact-input-help" class="note"></p>
           <nav id="breadcrumbs" class="breadcrumbs" aria-label="输出目录"></nav>
+          <div id="directory-export-controls">
           <details class="command-details"><summary>目录下载限值</summary><p id="export-policy-message" class="note"></p><dl id="export-policy-info" class="facts"></dl><p class="note">仅限制本次目录缓存生成；不是全节点累计缓存配额或空间预留。目录预算不足时可选择较小子目录或下载原文件。</p></details>
           <div class="submission-actions"><button id="prepare-directory-export" class="ghost" type="button" disabled>准备当前目录下载</button><a id="directory-export-download" class="ghost" hidden>下载已准备的目录</a></div>
           <p id="directory-export-message" class="note" role="status">仅点击准备按钮才请求目录打包，不自动重试。</p>
           <dl id="directory-export-info" class="facts" hidden></dl>
           <pre id="directory-export-error" class="command-box" hidden></pre>
+          </div>
+          <p id="historical-file-help" class="note" hidden>历史来源只提供单文件下载与校验；不打包目录或生成输入引用。</p>
           <p id="artifact-message" class="note" role="status"></p>
           <ul id="artifact-list" class="artifact-list"></ul>
           <button id="more-artifacts" class="ghost more" type="button" hidden>加载更多文件</button>
