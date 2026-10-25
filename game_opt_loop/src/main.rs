@@ -578,13 +578,15 @@ struct HostInfo {
 struct HarnessInfo {
     phonefarm_binary: String,
     probe: String,
-    /// 设备是否在线且 phonefarm 可执行。
+    /// phonefarm 的设备枚举是否非空，不代表显式目标或 WDA 已就绪。
     device_online: bool,
     /// phonefarm 是否已实现算子评测的接收端。
     /// 设备在线 ≠ 真机链路已通, 这两件事必须分开记。
     operator_eval_subcommand: game_opt_loop::harness::SubcommandStatus,
-    /// 只有上面两条同时成立, 才拿得到真机数字。
+    /// gpu-op 目标后端和接收端前提成立；root、载体与实际测量仍须核验。
     can_evaluate_on_device: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gpu_op_device_reason: Option<String>,
     llm_provider: Option<String>,
     llm_error: Option<String>,
 }
@@ -730,14 +732,19 @@ fn main() -> Result<()> {
     println!("      {}", probe.describe());
     let subcommand = driver.probe_subcommand();
     println!("      {}", subcommand.describe());
-    let device_path_ready = probe.can_evaluate() && subcommand.is_supported();
+    let device_problem = probe.gpu_op_device_problem(cli.device.as_deref());
+    let device_path_ready = device_problem.is_none() && subcommand.is_supported();
+    if let Some(reason) = &device_problem {
+        println!("      gpu-op 设备资格不可用: {reason}");
+    }
 
     if !cli.dry_run && !device_path_ready && cli.campaign.campaign_mode != Some(Mode::Expert) {
         anyhow::bail!(
-            "真机模式拿不到实测数据。\n  底座: {}\n  接收端: {}\n\
+            "真机模式拿不到实测数据。\n  底座: {}\n  接收端: {}\n  gpu-op 设备: {}\n\
              如果只想验证本地闭环, 加 --dry-run。",
             probe.describe(),
-            subcommand.describe()
+            subcommand.describe(),
+            device_problem.as_deref().unwrap_or("枚举目标满足后端前提")
         );
     }
 
@@ -816,6 +823,7 @@ fn main() -> Result<()> {
                 device_online: probe.can_evaluate(),
                 operator_eval_subcommand: subcommand.clone(),
                 can_evaluate_on_device: device_path_ready,
+                gpu_op_device_reason: device_problem.clone(),
                 llm_provider: if evo.llm_available() {
                     Some("configured".to_string())
                 } else {

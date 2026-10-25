@@ -91,7 +91,7 @@ pub struct EvalRequest {
 /// 底座探活结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProbeStatus {
-    /// 二进制在, 且报告了至少一台在线设备。
+    /// 二进制在, 且枚举了至少一台设备；iOS USB 枚举不证明 WDA 就绪。
     Ready { devices: Vec<String> },
     /// 二进制在, 但没有在线设备。
     NoDevice,
@@ -102,14 +102,43 @@ pub enum ProbeStatus {
 }
 
 impl ProbeStatus {
+    /// 仅表示设备枚举非空，不授予某个评测命令的执行资格。
     pub fn can_evaluate(&self) -> bool {
         matches!(self, ProbeStatus::Ready { .. })
+    }
+
+    /// gpu-op 当前的 headless runner / refbench 都是 Android 载体。
+    /// 这里只核枚举中的后端与显式目标；root、载体与租约仍由执行端核验。
+    pub fn gpu_op_device_problem(&self, requested: Option<&str>) -> Option<String> {
+        let ProbeStatus::Ready { devices } = self else {
+            return Some(format!("gpu-op 设备枚举不可用: {}", self.describe()));
+        };
+        let android = |serial: &str| !serial.starts_with("hdc:") && !serial.starts_with("ios:");
+        if let Some(serial) = requested {
+            if !devices.iter().any(|device| device == serial) {
+                return Some(format!("指定设备 {serial} 在当前可用设备枚举中缺席"));
+            }
+            if !android(serial) {
+                return Some(format!(
+                    "指定设备 {serial} 不是 Android；当前 gpu-op 载体不支持该后端"
+                ));
+            }
+        } else if !devices.iter().any(|serial| android(serial)) {
+            return Some(
+                "没有枚举到在线 Android 设备；HDC/iOS 枚举不满足当前 gpu-op 载体前提".into(),
+            );
+        }
+        None
     }
 
     pub fn describe(&self) -> String {
         match self {
             ProbeStatus::Ready { devices } => {
-                format!("就绪 — {} 台在线设备: {}", devices.len(), devices.join(", "))
+                format!(
+                    "检测到 {} 个设备条目: {}",
+                    devices.len(),
+                    devices.join(", ")
+                )
             }
             ProbeStatus::NoDevice => "phonefarm 可用, 但没有在线设备".to_string(),
             ProbeStatus::BinaryUnusable { detail } => format!("phonefarm 无法执行: {detail}"),
@@ -149,8 +178,7 @@ impl SubcommandStatus {
 /// 一次子进程调用的结果。
 ///
 /// 把它从 `std::process::Output` 里抽出来, 是为了让「下发 → 收包 → 解析」
-/// 这条链路能在没有真机、也没有 phonefarm 接收端的情况下被完整测到。
-/// 目前 phonefarm 还不认算子评测子命令 (见 `probe_subcommand`),
+/// 这条链路能在没有真机的情况下被完整测到。
 /// 没有这层抽象的话, 本仓库这一侧的发送逻辑就只能靠肉眼看。
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
@@ -322,10 +350,8 @@ impl PhonefarmDriver {
 
     /// phonefarm 认不认我们要用的算子评测子命令。
     ///
-    /// 底座在线 ≠ 能评测算子。phonefarm 目前只有 `bench`(TFLite 模型) 与
-    /// `capture` 两个图形相关能力, 还没有「挂载 Compute Shader 到合成层插槽
-    /// 并做 A/B 回放」的接收端。不把这件事单独探出来的话, 报告里的
-    /// 「底座就绪」会被读成「真机链路已通」, 那是两回事。
+    /// 设备枚举、命令存在与实际载体资格是不同事实。
+    /// 当前 gpu-op 已实现，但其 Android 载体和单次测量依赖仍须单独核验。
     pub fn probe_subcommand(&self) -> SubcommandStatus {
         if !self.binary.is_file() {
             return SubcommandStatus::Unknown {
@@ -518,9 +544,24 @@ pub fn parse_device_list(stdout: &str) -> Vec<String> {
         {
             continue;
         }
-        let Some(token) = line.split_whitespace().next() else {
+        let mut fields = line.split_whitespace();
+        let Some(token) = fields.next() else {
             continue;
         };
+        let state = fields.next();
+        // PF preserves `adb devices` states and prefixes `hdc list targets` /
+        // `idevice_id -l` lines. A bare iOS entry is only USB enumeration.
+        if let Some(key) = token.strip_prefix("hdc:") {
+            if key.is_empty() || state.is_some_and(|s| !s.eq_ignore_ascii_case("device")) {
+                continue;
+            }
+        } else if let Some(udid) = token.strip_prefix("ios:") {
+            if udid.is_empty() || state.is_some() {
+                continue;
+            }
+        } else if state != Some("device") {
+            continue;
+        }
         // 序列号至少要像个序列号。
         if token.len() < 4
             || !token
@@ -598,18 +639,61 @@ mod tests {
     }
 
     #[test]
-    fn parses_device_serials_and_skips_headers() {
-        let out = "List of devices attached\nR5CT30ABCDE\tdevice\n127.0.0.1:5555 device\n\n";
+    fn device_list_preserves_current_backend_enumeration() {
+        let out = "List of devices attached\nR5CT30ABCDE\tdevice\n127.0.0.1:5555 device\n\
+                   hdc:OH12345678\nhdc:OH87654321 Device\nios:00008110-001234567890001E\n\n";
         assert_eq!(
             parse_device_list(out),
-            vec!["R5CT30ABCDE".to_string(), "127.0.0.1:5555".to_string()]
+            vec![
+                "R5CT30ABCDE",
+                "127.0.0.1:5555",
+                "hdc:OH12345678",
+                "hdc:OH87654321",
+                "ios:00008110-001234567890001E"
+            ]
         );
     }
 
     #[test]
-    fn empty_device_list_yields_nothing() {
+    fn device_list_rejects_unavailable_and_unidentified_entries() {
         assert!(parse_device_list("List of devices attached\n\n").is_empty());
         assert!(parse_device_list("").is_empty());
+        let out = "ANDROID1 unauthorized\nemulator-5554 offline\nANDROID2 recovery\n\
+                   missing-state\nhdc:OH12345678 Unauthorized\nhdc:OH87654321 offline\n\
+                   hdc:\nios:\nios:UDID Unauthorized\n[Empty]\n";
+        assert!(parse_device_list(out).is_empty());
+    }
+
+    #[test]
+    fn device_gpu_op_eligibility_matches_the_requested_android_target() {
+        let mixed = ProbeStatus::Ready {
+            devices: vec![
+                "ANDROID1".into(),
+                "hdc:OH12345678".into(),
+                "ios:UDID".into(),
+            ],
+        };
+        assert!(mixed.gpu_op_device_problem(None).is_none());
+        assert!(mixed.gpu_op_device_problem(Some("ANDROID1")).is_none());
+        assert!(mixed
+            .gpu_op_device_problem(Some("ANDROID2"))
+            .unwrap()
+            .contains("缺席"));
+        for serial in ["hdc:OH12345678", "ios:UDID"] {
+            assert!(mixed
+                .gpu_op_device_problem(Some(serial))
+                .unwrap()
+                .contains("不是 Android"));
+            let only = ProbeStatus::Ready {
+                devices: vec![serial.into()],
+            };
+            assert!(
+                only.can_evaluate(),
+                "enumeration is independent of gpu-op eligibility"
+            );
+            assert!(only.gpu_op_device_problem(None).is_some());
+        }
+        assert!(ProbeStatus::NoDevice.gpu_op_device_problem(None).is_some());
     }
 
     fn sample_report_json(source_claim: &str) -> String {
@@ -675,7 +759,7 @@ mod tests {
 
     // ---------- 下发 → 收包 → 解析 的整条链路 ----------
     //
-    // phonefarm 侧的接收端还没实现 (probe_subcommand 会如实报 Unsupported),
+    // 用替身检查请求与回包，不依赖实际 phonefarm 接收端或设备，
     // 所以这条链路用替身执行器测: 真机那一端是别人的职责,
     // 但**我们这一端**发什么、收到什么怎么解释, 必须现在就钉死。
 
