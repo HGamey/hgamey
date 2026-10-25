@@ -135,34 +135,35 @@ class _Decoded:
 
 
 def _tar_info(reader, limits):
-    # Standard TarInfo processes PAX/GNU recursively. Counting frombuf therefore
-    # includes extension headers which TarFile.next does not expose as members.
+    # _proc_member is shared by older public and newer private TarInfo
+    # readers. Check before dispatching to a PAX/GNU decoder on both paths.
     class CheckedInfo(tarfile.TarInfo):
         headers = 0
 
         @classmethod
-        def frombuf(cls, buf, encoding, errors):
+        def fromtarfile(cls, archive):
             try:
-                info = super().frombuf(buf, encoding, errors)
+                return super().fromtarfile(archive)
             except (tarfile.InvalidHeaderError, tarfile.TruncatedHeaderError):
                 # TarFile.next otherwise treats a bad non-first header as EOF.
                 raise _invalid("invalid tar header") from None
-            cls.headers += 1
-            _limit("headers", cls.headers, limits["entries"])
+
+        def _proc_member(self, archive):
+            type(self).headers += 1
+            _limit("headers", type(self).headers, limits["entries"])
             allowed = (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE,
                        tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
                        tarfile.GNUTYPE_LONGNAME)
-            if info.type not in allowed:
+            if self.type not in allowed:
                 raise _invalid("only ordinary files and directories are supported")
-            if info.size < 0:
+            if self.size < 0:
                 raise _invalid("negative tar member size")
-            if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE,
+            if self.type in (tarfile.XHDTYPE, tarfile.XGLTYPE,
                              tarfile.SOLARIS_XHDTYPE, tarfile.GNUTYPE_LONGNAME):
-                # tarfile reads one extension payload at once before parsing it.
-                _limit("metadata_bytes", info.size, limits["metadata_bytes"])
-            _limit("tar_stream_bytes", reader.count + info._block(info.size),
+                _limit("metadata_bytes", self.size, limits["metadata_bytes"])
+            _limit("tar_stream_bytes", reader.count + self._block(self.size),
                    limits["tar_stream_bytes"])
-            return info
+            return super()._proc_member(archive)
 
         def _apply_pax_info(self, headers, encoding, errors):
             if any(key.startswith("GNU.sparse.") for key in headers):
