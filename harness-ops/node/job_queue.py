@@ -5,6 +5,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import time
+from device_scope import conflicts, scope, device_access
 
 
 STATES = ("preparing", "queued", "claimed", "blocked", "done")
@@ -22,6 +23,15 @@ def recovery_reservations(row, owners):
         borrowed.add(target)
         target = blocked[target]["spec"].get("recovery_for")
     return borrowed
+
+
+def reservation_conflicts(row, owner):
+    return (bool(set(row["resources"]) & set(owner["resources"]))
+            or conflicts(scope(row["spec"]), scope(owner["spec"])))
+
+
+def global_waiter(row):
+    return device_access(row["spec"]) == "write" and scope(row["spec"])["scope"] == "global"
 
 
 class JobQueue:
@@ -110,15 +120,20 @@ class JobQueue:
             if sum(row["state"] == "claimed" for row in active) >= max_running:
                 return None
             # Insertion order survives wall-clock changes and equal timestamps.
+            global_waiting = False
             for row in db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY sequence"):
                 value = self._row(row)
+                later_device_write = (device_access(value["spec"]) == "write"
+                                      and scope(value["spec"])["scope"] == "device")
+                if global_waiting and later_device_write:
+                    continue
+                if global_waiter(value):
+                    global_waiting = True
                 if admit and not admit(value):
                     continue
                 borrowed = recovery_reservations(value, active)
-                held = {resource for owner in active
-                        if owner["job_id"] not in borrowed
-                        for resource in owner["resources"]}
-                if held.isdisjoint(value["resources"]):
+                if not any(reservation_conflicts(value, owner) for owner in active
+                           if owner["job_id"] not in borrowed):
                     db.execute("UPDATE jobs SET state='claimed' WHERE job_id=?", (value["job_id"],))
                     value["state"] = "claimed"
                     return value

@@ -5,6 +5,7 @@ import re
 import subprocess
 
 from artifact_io import relative_path
+from device_scope import binding, lease_problem
 
 MAX_REQUEST = 64 << 10
 HELPER_TIMEOUT = 5
@@ -59,10 +60,35 @@ def descriptor(value, jid):
 
 def _recovery_spec(jobs, source_id, bound, target_id):
     # Keep the first-attempt spec byte-for-byte compatible after normalization.
+    source = jobs.dispatch.queue.get(source_id)
+    original = _source_binding(source, bound)
     return {"bin": "phonefarm", "argv": ["gray-layer", "session-recover", "--session",
             jobs.path(source_id, "out", bound["session_path"]), "--serial", bound["serial"], "--json"],
             "label": "Recover session for " + target_id, "execution_policy": "process_group",
-            "device_access": "recovery", "recovery_for": target_id}
+            "device_access": "recovery", "recovery_for": target_id,
+            **({"device_binding": original} if original is not None else {})}
+
+
+def _source_binding(source, bound):
+    original = source["spec"].get("device_binding")
+    if "device_binding" not in source["spec"]:
+        if "device_binding" in bound or bound.get("lease_scope") == "device":
+            raise SessionError(409, "session_recovery_binding", "source command did not record this device scope")
+        return None
+    original = binding(original)
+    if (bound.get("device_binding") != original or bound.get("lease_scope") != "device"
+            or bound.get("serial") != original["serial"]):
+        raise SessionError(409, "session_recovery_binding", "source session scope differs from its frozen command")
+    return original
+
+
+def validate_recovery_spec(jobs, spec):
+    """A public spec cannot borrow a different device with a recovery flag."""
+    source, bound = _bound_recovery(jobs, spec.get("recovery_for"))
+    expected = {**_recovery_spec(jobs, source["job_id"], bound, spec["recovery_for"]),
+                "resources": source["resources"]}
+    if spec != expected:
+        raise SessionError(409, "session_recovery_binding", "bound recovery must inherit the exact original session and resources")
 
 
 def _check_attempt(jobs, source, bound, child):
@@ -97,6 +123,7 @@ def _bound_recovery(jobs, jid, rows=None):
             or raw.get("bin") != "phonefarm" or raw.get("argv") != spec["argv"]):
         raise SessionError(404, "not_found", "source is not a recorded phonefarm gray control session")
     bound = descriptor(jobs._read_root.read_json(current + "/out/session-control.json", maximum=MAX_REQUEST), current)
+    _source_binding(source, bound)
     for child in reversed(chain[:-1]):
         _check_attempt(jobs, source, bound, child)
     return source, bound
@@ -145,6 +172,8 @@ def recovery_plan(jobs, jid):
             "supported": "phonefarm" in jobs.bins, "eligible": False, "reason": None,
             "source_job_id": source_id, "session_id": bound["session_id"], "serial": bound["serial"],
             "session_path": bound["session_path"], "target_job_id": source_id, "attempts": []}
+    if "device_binding" in source["spec"]:
+        plan.update(device_binding=source["spec"]["device_binding"], lease_scope="device")
     current, visited = source, {source_id}
     while True:
         children = [row for row in rows if row["spec"].get("recovery_for") == current["job_id"]
@@ -186,7 +215,11 @@ def recovery_plan(jobs, jid):
             plan["reason"] = ("original session is closed; review recovery receipts and explicitly release attempts from leaf to source"
                               if fresh.get("phase") == "closed" else "session must require recovery and have no live owner")
         else:
-            plan["eligible"] = True
+            problem = (lease_problem({**source["spec"], "device_access": "recovery"},
+                                     jobs.leases.snapshot(refresh=True), "recovery")
+                       if "device_binding" in source["spec"] else None)
+            plan["reason"] = problem
+            plan["eligible"] = problem is None
     except (OSError, ValueError, KeyError, SessionError) as error:
         plan["reason"] = "original session observation is unavailable: " + str(error)
     return plan

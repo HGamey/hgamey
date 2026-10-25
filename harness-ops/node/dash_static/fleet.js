@@ -160,7 +160,7 @@
     $('device-registry-refresh').setAttribute('aria-busy', String(registryBusy));
     $('device-registry-refresh').textContent = registryBusy ? '正在读取登记…' : '读取设备登记';
     $('device-registry-create').disabled = !writable || !!deviceEditor;
-    $('device-registry-scope').textContent = local ? '设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。当前仍使用全域排他执行。' : '目录快照不包含此处的权威设备登记。请到源节点读取和编辑；本页不会将远端设备写入当前后台。登记也不等于物理同机核验、设备在线或并发资格。';
+    $('device-registry-scope').textContent = local ? '设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。登记原件的 execution_scope 是当时记录；当前执行范围以任务绑定与 lease 协议事实为准。' : '目录快照不包含此处的权威设备登记。请到源节点读取和编辑；本页不会将远端设备写入当前后台。登记也不等于物理同机核验、设备在线或并发资格。';
     const source = local ? null : nodePageURL('fleet');
     $('device-registry-source').hidden = !source;
     if (source) { $('device-registry-source').href = source; $('device-registry-source').target = '_blank'; $('device-registry-source').rel = 'noopener noreferrer'; }

@@ -212,6 +212,50 @@ class JobCLI(unittest.TestCase):
             call.assert_called_once_with("GET", "/node", attempts=1, raise_4xx=True)
             pack.assert_not_called()
 
+    def test_registered_device_binding_file_is_node_bound_and_not_argv(self):
+        main = self.load_cli()["main"]
+        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "devices.lanes-v1"],
+                        execution={"bins": ["phonefarm"]})
+        binding = {"schema": "phonefarm/device-binding@1", "domain_id": "a" * 32,
+                   "registry_revision": 3, "device_id": "phone-A", "serial": "USB-A"}
+        envelope = {"node_id": NODE_ID, "binding": binding}
+        output = io.StringIO()
+        call = mock.Mock(side_effect=[json.dumps(node).encode(), json.dumps(envelope).encode()])
+        with mock.patch.dict(main.__globals__, call=call), mock.patch.object(sys, "argv", [str(CLI), "devices-resolve", "USB-A"]), \
+                contextlib.redirect_stdout(output):
+            main()
+        self.assertEqual(json.loads(output.getvalue()), envelope)
+        self.assertEqual([item.args[:2] for item in call.call_args_list],
+                         [("GET", "/node"), ("GET", "/node/devices/resolve?serial=USB-A")])
+        argv = ["gray-layer", "session", "--serial", "USB-A", "--out", "@out"]
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "binding.json"
+            source.write_text(json.dumps(envelope))
+            for declared in (True, False):
+                pack = mock.Mock(side_effect=lambda values: (values, b"packed"))
+                submit = mock.Mock(return_value={"id": JOB, "phase": "queued"})
+                command = [str(CLI), *(["--device-binding", str(source)] if declared else []), "--detach", "phonefarm", *argv]
+                with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(node).encode()), pack=pack, submit_job=submit), \
+                        mock.patch.object(sys, "argv", command), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    main()
+                spec = submit.call_args.args[0]
+                self.assertEqual(spec["argv"], argv)
+                self.assertNotIn("--device-binding", spec["argv"])
+                if declared:
+                    self.assertEqual(spec["device_binding"], binding)
+                else:
+                    self.assertNotIn("device_binding", spec)
+            for response, saved in [(identity(capabilities=["node.target-v1", "jobs.idempotency-v1"]), envelope),
+                                    (node, {"node_id": "2" * 32, "binding": binding})]:
+                source.write_text(json.dumps(saved))
+                pack, submit = mock.Mock(), mock.Mock()
+                with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(response).encode()), pack=pack, submit_job=submit), \
+                        mock.patch.object(sys, "argv", [str(CLI), "--device-binding", str(source), "--detach", "phonefarm", *argv]), \
+                        self.assertRaises(SystemExit):
+                    main()
+                pack.assert_not_called()
+                submit.assert_not_called()
+
     def test_submission_refuses_old_nodes_and_reports_conflict_or_unknown_result(self):
         mode, posts = ["old"], []
 

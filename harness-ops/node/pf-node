@@ -28,6 +28,8 @@
   pf-node node [--refresh-runtime]        # 服务启动观察、配置程序身份；显式刷新不改历史job
   pf-node devices                       # 本节点人工登记的稳定设备ID/连接别名；不探测设备
   pf-node devices-set FILE|-             # CAS登记/更新；写入未知先读devices，不自动重发
+  pf-node devices-resolve SERIAL         # 纯宿主核对精确别名，输出 {node_id,binding} 可保存为文件
+  pf-node --device-binding binding.json --detach phonefarm gray-layer session --serial SERIAL ...
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
   pf-node artifacts <id> [--path DIR] [--limit N] [--cursor C]
@@ -79,6 +81,9 @@
   修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
 - --device-access none|write|recovery 显式声明设备访问；recovery 必须配 --recovery-for 原资源保留任务 ID，
   资源由父任务继承，不能同时传 --resource。恢复任务不自动解除原屏障；核查后另行 release。
+- --device-binding FILE 只读 devices-resolve 保存的 JSON 文件，核其 node_id 与当前目标；只将 binding 放入 job spec，
+  不自行给 argv 注入参数。仅配置 phonefarm 的 gray-layer session 支持，禁止 --exe 和 none/recovery 覆盖；
+  缺省不发送字段，保持兼容全域。登记/布局变化明确拒绝，不换 alias、不自动降级；typed 恢复继承原绑定。
 - 当前场景采样沿 session-action：动作 JSON 的 action="sample"、params={"seconds":30}（整数1–120）；
   需会话 allowed_actions 提供 sample，匹配 controller/epoch。accepted 不是采集完成，用原 ID 查询回执。
   params 可选 render_comm（1–64 UTF-8 字节、无控制字符）；不选线程仍收集原件，帧相关指标保持未知。
@@ -196,7 +201,23 @@ def valid_request_id(value):
     return value
 
 
-def require_idempotent_jobs(require_recovery=False, execution_policy=None, inputs=None):
+def device_binding_envelope(value, node_id):
+    if not isinstance(node_id, str) or not node_id or not isinstance(value, dict) or value.get("node_id") != node_id:
+        raise ValueError("设备绑定文件 node_id 与当前固定节点不一致")
+    binding = value.get("binding")
+    if (not isinstance(binding, dict) or set(binding) != {"schema", "domain_id", "registry_revision", "device_id", "serial"}
+            or binding.get("schema") != "phonefarm/device-binding@1"
+            or not isinstance(binding.get("domain_id"), str) or not re.fullmatch(r"[0-9a-f]{32}", binding["domain_id"])
+            or type(binding.get("registry_revision")) is not int or not 0 < binding["registry_revision"] <= 2**53 - 1
+            or not isinstance(binding.get("device_id"), str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", binding["device_id"])
+            or not isinstance(binding.get("serial"), str) or not binding["serial"]
+            or len(binding["serial"].encode()) > 256 or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in binding["serial"])
+            or len(json.dumps(binding).encode()) > 4096):
+        raise ValueError("设备绑定须为 devices-resolve 返回的完整 device-binding@1 对象")
+    return binding
+
+
+def require_idempotent_jobs(require_recovery=False, execution_policy=None, inputs=None, device_binding=None):
     TARGET.require_write()
     try:
         node = json.loads(call("GET", "/node", attempts=1, raise_4xx=True))
@@ -222,6 +243,13 @@ def require_idempotent_jobs(require_recovery=False, execution_policy=None, input
             validate(inputs, node.get("node_id"))
         except ValueError as error:
             sys.exit(f"pf-node: 输入清单无效：{error}；未打包或提交")
+    if device_binding is not None:
+        if "devices.lanes-v1" not in node.get("capabilities", []):
+            sys.exit("pf-node: 节点缺少 devices.lanes-v1；未打包或提交，不降级全域")
+        try:
+            device_binding_envelope(device_binding, node.get("node_id"))
+        except ValueError as error:
+            sys.exit(f"pf-node: {error}；未打包或提交")
     return node
 
 
@@ -687,6 +715,7 @@ def main():
     request_id, resources = None, []
     device_access, recovery_for, execution_policy = None, None, None
     inputs_path, inputs, submission_node = None, None, None
+    binding_path, binding_envelope = None, None
     while args and args[0].startswith("-"):
         a = args.pop(0)
         if a in ("--url", "--node-id", "--token-file"):
@@ -711,6 +740,10 @@ def main():
             if not args or inputs_path is not None:
                 sys.exit("pf-node: --inputs 需要且只能指定一个清单文件")
             inputs_path = args.pop(0)
+        elif a == "--device-binding":
+            if not args or binding_path is not None:
+                sys.exit("pf-node: --device-binding 需要且只能指定一个 devices-resolve JSON 文件")
+            binding_path = args.pop(0)
         elif a == "--request-id":
             if not args:
                 sys.exit("pf-node: --request-id 需要一个 ID")
@@ -762,6 +795,24 @@ def main():
         return
     TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     URL, TOKEN = TARGET.url, TARGET.token
+    if binding_path is not None and (args[:3] != ["phonefarm", "gray-layer", "session"] or exe is not None or device_access in ("none", "recovery")):
+        sys.exit("pf-node: --device-binding 仅用于配置 phonefarm 的 gray-layer session，不能替换 --exe 或覆盖恢复/无设备模式；未提交")
+    if args[0] == "devices-resolve":
+        if len(args) != 2 or not args[1] or (request_id is not None or inputs_path is not None or resources or device_access is not None
+                or recovery_for is not None or execution_policy is not None or exe or detach or outdir):
+            sys.exit("用法: pf-node devices-resolve SERIAL；不接收作业选项")
+        try:
+            node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
+            if "devices.lanes-v1" not in node.get("capabilities", []):
+                sys.exit("pf-node: 节点缺少 devices.lanes-v1；未解析或提交")
+            value = json.loads(call("GET", "/node/devices/resolve?" + urllib.parse.urlencode({"serial": args[1]}), attempts=1, raise_errors=True))
+            binding = device_binding_envelope(value, node.get("node_id"))
+            if binding["serial"] != args[1]:
+                raise ValueError("返回绑定与请求的精确 serial 不一致")
+        except (ClientError, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as error:
+            sys.exit(f"pf-node: 设备绑定读取未确认：{error}；未自动重试或选择其他别名")
+        print(json.dumps(value, ensure_ascii=False))
+        return
     if args[0] in ("devices", "devices-set"):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or exe or detach or outdir):
@@ -815,6 +866,17 @@ def main():
             sys.exit("pf-node: 恢复任务继承父任务资源，不能同时使用 --resource")
     elif recovery_for is not None:
         sys.exit("pf-node: --recovery-for 必须与 --device-access recovery 一起使用")
+    if binding_path is not None:
+        try:
+            with open(binding_path, "rb") as source:
+                raw = source.read((8 << 10) + 1)
+            if len(raw) > 8 << 10:
+                raise ValueError("绑定文件不能超过 8 KiB")
+            binding_envelope = json.loads(raw)
+            if not isinstance(binding_envelope, dict):
+                raise ValueError("绑定文件必须是含 node_id 和 binding 的 JSON 对象")
+        except (OSError, ValueError) as error:
+            sys.exit(f"pf-node: 无法读取设备绑定文件：{error}；只接受文件路径，不接受直接 JSON")
     if inputs_path is not None:
         try:
             with open(inputs_path, "rb") as source:
@@ -827,7 +889,7 @@ def main():
         except (OSError, ValueError) as error:
             sys.exit(f"pf-node: 无法读取输入清单：{error}")
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
-                                                 execution_policy=execution_policy, inputs=inputs)
+                                                 execution_policy=execution_policy, inputs=inputs, device_binding=binding_envelope)
         if args[0] not in submission_node.get("execution", {}).get("bins", []):
             sys.exit("pf-node: --inputs 仅用于节点提供的程序作业；未提交")
     if args[0] == "games":
@@ -966,10 +1028,12 @@ def main():
         return
     binname, argv = args[0], args[1:]
     if submission_node is None:
-        require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy)
+        submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope)
     request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
+    if binding_envelope is not None:
+        spec["device_binding"] = device_binding_envelope(binding_envelope, submission_node.get("node_id"))
     if inputs is not None:
         spec["inputs"] = inputs
     if exe:

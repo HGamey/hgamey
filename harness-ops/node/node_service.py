@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
+from device_scope import DeviceScope, validate_job as validate_device_job, resource as device_resource, scope as job_scope, lease_problem
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
@@ -221,6 +222,7 @@ class Jobs:
             if "jobs.execution-reconcile-v1" in config.get("capabilities", []):
                 self.worker_entry = os.path.join(worker_prefix, "phonefarm-worker")
         self.leases = LeaseState(bins, env=self.pf_env)
+        self.device_scopes = DeviceScope(self)
         self.dispatch = JobDispatch(self, max_running)
         self._out_guard, self._out_locks, self._sha_cache = threading.Lock(), {}, {}
 
@@ -258,22 +260,30 @@ class Jobs:
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
         if binname == "fetch_apk" and (len(argv) != 4 or any(a.startswith("--cache-root") for a in argv)):
             raise ValueError("fetch_apk requires source, byte size, explicit serial and sha256; cache root is node-owned")
-        resources = spec.get("resources", ["legacy-device"] if binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"} else [])
         access = device_access(spec)
         if access not in {"none", "write", "recovery"}:
             raise ValueError("device_access must be none, write or recovery")
         recovery_for = spec.get("recovery_for")
+        device_binding = validate_device_job(spec, typed_recovery=access == "recovery" and "device_binding" in spec)
+        resources = spec.get("resources", [] if device_binding else
+                             ["legacy-device"] if binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"} else [])
         if access == "recovery":
             self.path(recovery_for)
             parent = self.dispatch.queue.get(recovery_for)
             if not parent:
                 raise KeyError(recovery_for)
+            if parent["spec"].get("device_binding") != device_binding:
+                raise ValueError("recovery must inherit the original device binding")
             resources = parent["resources"]
         elif recovery_for is not None:
             raise ValueError("recovery_for requires device_access=recovery")
         if not isinstance(resources, list) or len(resources) > 32 or any(
                 not isinstance(r, str) or not r or len(r) > 160 or any(ord(c) < 32 for c in r) for r in resources):
             raise ValueError("resources must be at most 32 nonempty resource names")
+        if device_binding:
+            resources = sorted(set(resources) | {device_resource(device_binding)})
+            if len(resources) > 32:
+                raise ValueError("resources including the required device reservation must fit within 32 names")
         inputs = (job_inputs.validate(spec["inputs"], getattr(self, "node_id", None))
                   if "inputs" in spec else None)
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"), "resources": sorted(set(resources)),
@@ -281,7 +291,17 @@ class Jobs:
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
+                **({"device_binding": device_binding} if device_binding else {}),
                 **({"exe": spec["exe"]} if spec.get("exe") else {})}
+        if device_binding and access == "recovery":
+            from node_session import validate_recovery_spec
+            validate_recovery_spec(self, spec)
+        if device_binding and access == "write":
+            original_admit = admit
+            def admit():
+                self.device_scopes.admit(device_binding)
+                if original_admit is not None:
+                    original_admit()
         return self.dispatch.submit(spec, body, request_id, admit=admit)
 
     def _prepare(self, row, body):
@@ -322,6 +342,11 @@ class Jobs:
                 raise ValueError("exe 只能是本任务上传的文件 @in/...")
             os.chmod(exe, 0o755)
         command = [exe] + [sub(a) for a in effective_argv]
+        if "device_binding" in spec and spec["argv"][:2] == ["gray-layer", "session"]:
+            # Binding is opaque JSON, not an @in/@out template. Check serial
+            # after ordinary argument expansion before adding the owned flag.
+            validate_device_job({**spec, "argv": command[1:]})
+            command += ["--device-binding", json.dumps(spec["device_binding"], separators=(",", ":"))]
         if binname == "fetch_apk":
             command = [exe, "--cache-root", os.path.join(self.data_root, "_games", "cache")] + command[1:]
         if external_lock:
@@ -335,6 +360,25 @@ class Jobs:
         self._read_root.sync(jid + "/out", directory=True)
         self._read_root.sync(jid, directory=True)
         self._read_root.sync("", directory=True)
+
+    def validate_prepared_scope(self, row, prepared):
+        spec, jid = row["spec"], row["job_id"]
+        if "device_binding" not in spec:
+            return
+        exe, cwd = self.bins["phonefarm"]
+        if spec.get("inputs", {}).get("cwd") == "input":
+            if not os.path.isabs(exe) and os.sep in exe:
+                exe = os.path.abspath(os.path.join(cwd, exe))
+            cwd = self.path(jid, "in")
+        argv = [re.sub(r"@in/", self.path(jid, "in") + "/", arg.replace("@out", self.path(jid, "out")))
+                for arg in _job_lock_args(spec["argv"], f"job-{jid}")]
+        if spec["argv"][:2] == ["gray-layer", "session"]:
+            argv += ["--device-binding", json.dumps(spec["device_binding"], separators=(",", ":"))]
+        else:
+            from node_session import validate_recovery_spec
+            validate_recovery_spec(self, spec)
+        if prepared["command"] != [exe, *argv] or prepared["cwd"] != cwd:
+            raise ValueError("prepared scoped command differs from its frozen job binding")
 
     def status(self, jid):
         row = self.dispatch.queue.get(jid)
@@ -618,19 +662,11 @@ class Jobs:
                 raise KeyError(jid)
             if row["state"] != "blocked":
                 raise RequestConflict("only a blocked reservation can be released")
-            if (row.get("state_reason") or {}).get("kind") == "durability":
-                raise RequestConflict("retry-finalize must commit the result before releasing resources")
-            self._check_recovery_children(jid)
             status = self.status(jid)
-            execution = status.get("execution") or {}
-            if (row["spec"].get("execution_policy") == "contained"
-                    or (execution.get("process_management") or {}).get("policy") == "contained"):
-                problem = self.host_completion_problem(jid, status)
-                if problem:
-                    raise RequestConflict(problem + "; reconcile the execution domain before releasing resources")
             lease = self.leases.snapshot(refresh=True, force=True) if device_access(row["spec"]) != "none" else None
-            if lease and lease["status"] != "clear":
-                raise RequestConflict("device lease is " + lease["status"] + "; reconcile the actual lease before releasing the queue reservation")
+            eligibility = self.queue_release_eligibility(row, status, lease=lease)
+            if not eligibility["eligible"]:
+                raise RequestConflict(eligibility["reason"])
             try:
                 self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease})
                 self._read_root.sync(jid, directory=True)
@@ -641,6 +677,27 @@ class Jobs:
             self.dispatch.queue.set_state(jid, "done")
         self.dispatch.start()
         return {"released": True, "job": self.status(jid)}
+
+    def queue_release_eligibility(self, row, meta, *, lease=None):
+        """Same advisory decision shown by GET and rechecked fresh by release."""
+        reason = None
+        if row["state"] != "blocked":
+            reason = "only a blocked reservation can be released"
+        elif (row.get("state_reason") or {}).get("kind") == "durability":
+            reason = "retry-finalize must commit the result before releasing resources"
+        else:
+            try:
+                self._check_recovery_children(row["job_id"])
+            except RequestConflict as error:
+                reason = str(error)
+        execution = meta.get("execution") or {}
+        if reason is None and (row["spec"].get("execution_policy") == "contained"
+                               or (execution.get("process_management") or {}).get("policy") == "contained"):
+            reason = self.host_completion_problem(row["job_id"], meta)
+        if reason is None and device_access(row["spec"]) != "none":
+            observation = self.leases.snapshot() if lease is None else lease
+            reason = lease_problem(row["spec"], observation, "release")
+        return {"eligible": reason is None, "reason": reason, "scope": job_scope(row["spec"])}
 
     def kill(self, jid):
         """Compatibility: true means escalation was requested, not completed."""
@@ -801,6 +858,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, node.identity())
                 if parts == ["node", "devices"]:
                     return self._send(200, device_registry.read())
+                if parts == ["node", "devices", "resolve"]:
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "device resolution requires an explicit node identity"})
+                    if set(q) - {"serial", "expected_node_id"} or len(q.get("serial", [])) != 1:
+                        raise ValueError("device resolution requires exactly one serial")
+                    return self._send(200, {"node_id": node.node_id,
+                                            "binding": jobs.device_scopes.resolve(q["serial"][0])})
                 if parts[:1] == ["research-state"]:
                     if len(parts) == 4 and parts[1] == "research" and parts[3] == "assessment":
                         if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
@@ -1305,6 +1369,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     try:
                         spec = json.loads(self.headers.get("X-Job", "{}"))
                         require_policy(spec)
+                        validate_device_job(spec, typed_recovery=device_access(spec) == "recovery" and "device_binding" in spec)
+                        if "device_binding" in spec and not (self.headers.get("X-Expected-Node-ID") or
+                                parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                            self.close_connection = True
+                            return self._send(400, {"code": "target_required", "error": "bound jobs require an explicit node identity"})
                         if "inputs" in spec:
                             job_inputs.validate(spec["inputs"], node.node_id)
                     except ValueError:
@@ -1338,6 +1407,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if not isinstance(data, dict):
                         raise ValueError("release body must be an object")
                     return self._send(200, jobs.release_queue(parts[1], data.get("note")))
+            except RegistryError as e:
+                return self._send(e.status, e.payload)
             except (DirectoryError, GameError) as e:
                 return self._send(e.status, {"error": str(e)})
             except sqlite3.Error as e:

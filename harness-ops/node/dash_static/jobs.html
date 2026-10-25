@@ -72,6 +72,23 @@
   <details id="submit-panel" class="submit-panel">
     <summary>提交任务 / 按请求 ID 找回</summary>
     <p class="note">运行节点已有命令，可显式引用本节点的小型输出工件。大型游戏文件请使用<a href="/dash/games">游戏与资源</a>入口。</p>
+    <section class="device-binding-panel" aria-labelledby="device-binding-heading">
+      <h3 id="device-binding-heading">本次设备范围</h3>
+      <div class="submit-fields">
+        <label class="wide-field">范围<select id="submit-device-scope"><option value="global">兼容全域 · 不声明设备绑定</option><option value="device">已登记设备 · 显式绑定</option></select></label>
+        <div id="device-binding-picker" class="wide-field" hidden>
+          <div class="submission-actions"><button id="read-device-registry" class="ghost" type="button">读取设备登记</button><a id="device-registry-link" href="/dash/fleet">管理本节点登记</a></div>
+          <div class="submit-fields">
+            <label>登记设备<select id="submit-device-id" disabled><option value="">请先读取登记</option></select></label>
+            <label>连接别名（精确 serial）<select id="submit-device-alias" disabled><option value="">请选择设备与别名</option></select></label>
+          </div>
+          <button id="resolve-device-binding" class="ghost" type="button" disabled>核对并固定绑定</button>
+        </div>
+      </div>
+      <p id="device-binding-message" class="note" role="status"></p>
+      <dl id="device-binding-info" class="facts" hidden></dl>
+      <p class="note">登记是维护者声明，不等于物理同机核验、在线或已取得 lease。首批仅支持配置的 phonefarm gray-layer session；恢复任务沿原记录继承，不在此更换设备。</p>
+    </section>
     <details class="session-template">
       <summary>新建灰层会话模板</summary>
       <p class="note">只填入下方任务参数，不立即启动。模板不修改已有会话；功能支持以 producer 的任务返回为准，旧版本可能拒绝新参数。</p>
@@ -135,7 +152,7 @@
     <form id="request-lookup-form" class="request-lookup-form">
       <label for="request-id">按请求 ID 找回</label>
       <div class="lookup-input"><input id="request-id" type="text" autocomplete="off" spellcheck="false" required placeholder="请求 ID"><button id="request-lookup" class="ghost" type="submit">查询请求</button></div>
-      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页只保存未确认的请求 ID，不保存参数或掌舵密码；刷新后可继续查询。</p>
+      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页保存原 ID、节点与设备绑定声明，不保存完整参数或掌舵密码；刷新后可继续查询。</p>
     </form>
   </details>
   <div class="jobs-layout">
@@ -310,7 +327,7 @@
         </section>
         <details id="queue-release-panel" class="queue-release-panel" hidden>
           <summary>解除资源保留…</summary>
-          <p class="note">此任务仍保留独占资源。恢复任务结束不会自动解除保留；管理员需核查证据后明确放行。设备写入或恢复任务还要求实际 lease 屏障已清除。</p>
+          <p class="note">此任务仍保留独占资源。恢复任务结束不会自动解除保留；管理员需核查证据后明确放行。设备写入或恢复任务还要求对应设备范围的实际 lease 屏障已清除。</p>
           <form id="queue-release-form">
             <label for="queue-release-note">核查说明 <span class="field-optional">必填</span></label>
             <textarea id="queue-release-note" rows="3" required placeholder="记录已核查的进程、设备状态和恢复证据"></textarea>

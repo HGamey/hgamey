@@ -17,6 +17,7 @@
   const reconciling = new Set(), reconcileReceipts = new Map();
   let nodeInfo = null, leaseSnapshot = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
   let runtimeBusy = false;
+  let deviceRegistry = null, deviceBinding = null, deviceBindingBusy = false, deviceBindingRevision = 0, deviceBindingError = '';
   const REQUEST_STORAGE = 'hgamey.pending-job-request';
   const PHASES = {preparing: '准备中', queued: '排队中', blocked: '资源保留 · 待核查', starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finalizing: '正在保存结束记录', storage_blocked: '结果保存失败 · 资源保留', finished: '已结束', interrupted: '执行中断'};
 
@@ -244,7 +245,10 @@
     const blocked = currentJob.queue?.state === 'blocked';
     $('queue-release-panel').hidden = !blocked;
     const releaseBusy = releasing.has(currentJob.id);
-    const leaseBlocked = ['write', 'recovery'].includes(currentJob.device_access) && (leaseSnapshot?.status !== 'clear' || leaseStorageBlocked(leaseSnapshot));
+    const eligibility = currentJob.queue?.release_eligibility;
+    const releaseProblem = eligibility ? eligibility.eligible === true ? '' : eligibility.reason || '节点未确认此任务的释放资格。' : currentJob.device_binding ? '节点未返回此绑定任务的释放资格，请刷新任务；不会用全域摘要推断设备范围。' :
+      ['write', 'recovery'].includes(currentJob.device_access) && (leaseSnapshot?.status !== 'clear' || leaseStorageBlocked(leaseSnapshot)) ? '兼容全域任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。' : '';
+    const leaseBlocked = !!releaseProblem;
     const hostProblem = hostCompletionProblem(currentJob);
     $('recovery-prepare-panel').hidden = !blocked;
     $('prepare-recovery').disabled = !blocked || saving || !access?.steer || !HGTarget.canWrite() || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
@@ -253,7 +257,7 @@
     $('queue-release-submit').disabled = !blocked || !access?.steer || !HGTarget.canWrite() || accessBusy || releaseBusy || saving || !!hostProblem || leaseBlocked || !$('queue-release-note').value.trim();
     $('queue-release-submit').setAttribute('aria-busy', String(releaseBusy));
     $('queue-release-submit').textContent = releaseBusy ? '提交中…' : '确认解除资源保留';
-    message('queue-release-help', saving ? '结束记录尚未保存，不能通过解除资源保留绕过。请先处理存储问题并重试保存结果。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : hostProblem || (leaseBlocked ? '设备写入或恢复任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。请核查屏障与存储状态后刷新队列；仅填写说明不能放行。' : '请填写核查说明；解除后，等待同一资源的任务可以继续调度。'));
+    message('queue-release-help', saving ? '结束记录尚未保存，不能通过解除资源保留绕过。请先处理存储问题并重试保存结果。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : hostProblem || (releaseProblem ? `${releaseProblem} 请核查后刷新任务；填写说明不能绕过屏障。` : '节点已返回当前任务的释放资格，提交时仍会重新核查。请填写说明；解除只影响此任务保留的资源。'));
     const released = releaseReceipts.get(currentJob.id);
     $('queue-release-result').hidden = !released;
     if (released) message('queue-release-result', released.message, released.error);
@@ -380,7 +384,8 @@
       ['实际执行策略（worker）', management?.policy || '未提供，不能由请求策略推断'], ['实际进程后端（worker）', management?.backend || '未提供'],
       ['实际完成范围（worker）', management?.completion_scope === 'original_process_group' ? '原进程组（original_process_group）' : management?.completion_scope || '未提供'],
       ['脱组后代', management?.detached_descendants === 'unverified' ? '未验证；不能据原进程组结束判断整棵进程树已结束。' : management?.detached_descendants || '未提供'],
-      ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
+      ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['声明设备范围', scopeText(job.queue?.device_scope || {scope: job.device_binding ? 'device' : job.device_access === 'none' ? 'none' : 'global', binding: job.device_binding})],
+      ...(job.device_binding ? bindingFacts(job.device_binding) : []), ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
       ['命令退出码', job.exit], ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
       ['停止方式', ({graceful: '柔性停止（SIGINT）', escalate: '升级终止'})[cancellation?.mode] || '未记录'],
@@ -413,7 +418,11 @@
 
   function waitingText(waiting) {
     const label = ({capacity: '等待执行名额', resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待核查并解除资源保留', durability: '等待保存结束记录', device_lease: '等待实际设备 lease'})[waiting?.kind] || '无等待原因';
-    return `${label}${waiting?.reason ? `：${waiting.reason}` : ''}${waiting?.lease_status ? `（${waiting.lease_status}）` : ''}`;
+    return `${label}${waiting?.reason ? `：${waiting.reason}` : ''}${waiting?.lease_status ? `（${waiting.lease_status}）` : ''}${waiting?.scope ? ` · ${scopeText(waiting.scope)}` : ''}`;
+  }
+  function scopeText(value) {
+    const scope = typeof value === 'string' ? value : value?.scope;
+    return scope === 'device' ? `已登记设备 ${value?.binding?.device_id || 'ID 未提供'}${value?.binding?.serial ? ` · ${value.binding.serial}` : ''}` : scope === 'global' ? '兼容全域（未声明设备绑定）' : scope === 'none' ? '宿主任务 · 无设备范围' : '设备范围未提供或未知';
   }
   function openJobButton(id, label = '查看任务') {
     const button = el('button', label, 'ghost');
@@ -430,9 +439,9 @@
     $('lease-storage-state').className = `task-state ${state[1]}`;
     $('lease-storage-mode').textContent = storage ? `模式：${({default: '默认（default）', custom: '自定义（custom）'})[storage.mode] || text(storage.mode)}` : '';
     const description = !storage ? '节点未提供存储位置与准备状态，持久根尚未确认。' : storage.readiness === 'migration_required' ? '设备写入暂不可调度。迁移需先协调停止旧 worker；此页面不会初始化或迁移目录。' : storage.readiness === 'unavailable' ? '设备写入暂不可调度。请先处理存储错误，再刷新状态。' : '存储就绪只表示记录目录可用；设备占用与恢复仍以实际 lease 状态为准。';
-    message('lease-storage-message', `${description}${storage ? ' DEVLOCK_DIR 对应锁域根，与队列目录分别记录；当前布局仍为全域排他，队列目录不能作为新的执行锁域。' : ''}${storage?.error ? ` 错误：${storage.error}` : ''}`, !!storage?.error || (!!storage && storage.readiness !== 'ready'));
+    message('lease-storage-message', `${description}${storage ? ' DEVLOCK_DIR 对应锁域根，与队列目录分别记录；布局版本不等于并发资格，实际范围以冻结绑定和 lease 记录为准。队列目录不能作为新的执行锁域。' : ''}${storage?.error ? ` 错误：${storage.error}` : ''}`, !!storage?.error || (!!storage && storage.readiness !== 'ready'));
     $('lease-storage-details').hidden = !storage;
-    const layout = storage?.layout_version === 1 ? '1 · 旧全域布局' : storage?.layout_version === 2 ? '2 · 版本化全域布局' : '未报告或未知；不从目录名称推断';
+    const layout = storage?.layout_version === 1 ? '1 · 旧全域布局' : storage?.layout_version === 2 ? '2 · 版本化单根布局' : '未报告或未知；不从目录名称推断';
     facts('lease-storage-paths', storage ? [['状态根', storage.state_dir], ['锁域根', storage.devlock_dir],
       ['当前全局队列目录', storage.queue_dir || '未报告；不从锁域根推导路径'], ['布局版本', layout],
       ['锁域 ID（domain_id）', storage.domain_id || (storage.layout_version === 1 ? '未登记（旧布局）' : '未报告')], ['设备 lease 根', storage.device_lease_dir]] : []);
@@ -450,7 +459,7 @@
     const state = storageBlocked ? [lease.storage.readiness === 'migration_required' ? '等待存储迁移' : '存储不可用', 'unknown'] : ({clear: ['屏障已清除', 'finished'], held: ['设备占用', 'unknown'], blocked: ['需要恢复', 'unknown'], unknown: ['状态未知', 'unknown']})[lease?.status] || ['尚未取得状态', 'unknown'];
     $('lease-state').textContent = state[0];
     $('lease-state').className = `task-state ${state[1]}`;
-    message('lease-message', error || (storageBlocked ? '存储尚未就绪，不能据此判断设备空闲或放行设备任务。' : !lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。`), !!error || !!lease?.error || storageBlocked);
+    message('lease-message', error || (storageBlocked ? '存储尚未就绪，不能据此判断设备空闲或放行设备任务。' : !lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。${lease.device_scopes ? ' 此为聚合状态；单设备等待与释放资格以节点针对任务的判断为准。' : ''}`), !!error || !!lease?.error || storageBlocked);
     renderLeaseStorage(lease?.storage);
     $('lease-sampled').textContent = lease ? `采样于 ${time(lease.sampled_at)}` : '';
     $('lease-list').replaceChildren(...(lease?.entries || []).map(entry => {
@@ -460,12 +469,21 @@
       details.append(el('summary', `${role}${entry.serial ? ` · ${entry.serial}` : ''} · ${label}`));
       const info = el('dl', null, 'facts');
       const holder = entry.holder_verified === true ? '已核验' : entry.holder_verified === false ? '核验未通过' : entry.role === 'device_lease' ? '不适用（设备租约）' : '未知';
-      for (const [name, value] of [['标签（仅展示）', entry.label], ['实例 ID', entry.instance_id], ['关联外层实例', entry.outer_instance_id], ['外层持有者核验', holder], ...hostProcessFacts(entry), ['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
+      for (const [name, value] of [['标签（仅展示）', entry.label], ['实际 lease 范围', scopeText({scope: entry.lease_scope || entry.scope, binding: entry.device_binding})], ...(entry.device_binding ? bindingFacts(entry.device_binding) : []), ['实例 ID', entry.instance_id], ['关联外层实例', entry.outer_instance_id], ['外层持有者核验', holder], ...hostProcessFacts(entry), ['原因', entry.reason || '未记录'], ['记录位置', entry.directory]]) info.append(el('dt', name), el('dd', text(value)));
       details.append(info);
       if (entry.job_id) details.append(openJobButton(entry.job_id, `关联任务 ${entry.job_id}`));
       if (entry.recovery_context != null) details.append(el('pre', typeof entry.recovery_context === 'string' ? entry.recovery_context : JSON.stringify(entry.recovery_context, null, 2), 'lease-context'));
       item.append(details); return item;
     }));
+    if (lease?.device_scopes) {
+      const scopes = lease.device_scopes, item = el('li'), details = el('details'), info = el('dl', null, 'facts');
+      const state = value => ({clear: '无屏障', held: '占用', blocked: '需要恢复', unknown: '未知'})[value] || '未提供';
+      details.append(el('summary', '全域与各设备范围快照'));
+      const rows = [['锁域 ID', scopes.domain_id], ['登记 revision', scopes.registry_revision], ['全域状态', state(scopes.global?.status)], ['全域原因', scopes.global?.error || '未报告'],
+        ['全域排队', scopes.queue_waiting === true ? '有等待者' : scopes.queue_waiting === false ? '无等待者' : '未知'], ['不可归属记录', scopes.unknown === true ? '存在，保守阻断' : scopes.unknown === false ? '未报告' : '未知'],
+        ...(scopes.devices || []).map(device => [`设备 ${device.device_id}`, `${state(device.status)}${device.error ? ` · ${device.error}` : ''}`])];
+      info.append(...rows.flatMap(([name, value]) => [el('dt', name), el('dd', text(value))])); details.append(info); item.append(details); $('lease-list').prepend(item);
+    }
     renderControls();
   }
   async function loadQueue() {
@@ -492,6 +510,7 @@
         identity.append(el('p', job.job_id, 'task-item-id'), el('span', job.state_reason?.kind === 'durability' ? PHASES.storage_blocked : PHASES[job.phase] || job.phase, `task-state ${job.phase === 'blocked' || job.state_reason?.kind === 'durability' ? 'unknown' : ''}`));
         const wait = el('div');
         wait.append(el('p', waitingText(job.waiting)), el('p', job.resources.length ? `独占：${job.resources.join('、')}` : '未声明独占资源', 'queue-resource'));
+        wait.append(el('p', scopeText(job.device_scope || {scope: 'global'}), 'note'));
         if (job.state_reason?.kind === 'durability') wait.append(el('p', `保存失败：${text(job.state_reason.stage)} · ${text(job.state_reason.message)}`, 'note'));
         if (job.waiting?.blocking_jobs?.length) {
           const blockers = el('div', null, 'queue-blockers');
@@ -511,8 +530,96 @@
     }
   }
   function savePending() {
-    try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, JSON.stringify({id: pendingRequest.id, target: pendingRequest.target})); else sessionStorage.removeItem(REQUEST_STORAGE); }
+    try { if (pendingRequest) sessionStorage.setItem(REQUEST_STORAGE, JSON.stringify({id: pendingRequest.id, target: pendingRequest.target,
+      ...(pendingRequest.binding_recorded ? {binding_recorded: true, device_binding: pendingRequest.device_binding} : {})})); else sessionStorage.removeItem(REQUEST_STORAGE); }
     catch (_) { /* The visible request ID remains available if browser storage is unavailable. */ }
+  }
+  const deviceLanesSupported = () => nodeInfo?.capabilities?.includes('devices.lanes-v1') === true;
+  function validDeviceBinding(binding) {
+    return binding?.schema === 'phonefarm/device-binding@1' && Object.keys(binding).sort().join(',') === 'device_id,domain_id,registry_revision,schema,serial' &&
+      typeof binding.domain_id === 'string' && /^[0-9a-f]{32}$/.test(binding.domain_id) && Number.isSafeInteger(binding.registry_revision) && binding.registry_revision > 0 &&
+      typeof binding.device_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(binding.device_id) &&
+      typeof binding.serial === 'string' && !!binding.serial && new TextEncoder().encode(binding.serial).length <= 256 && !/[\s\x00-\x1f\x7f]/.test(binding.serial);
+  }
+  function bindingFacts(binding) {
+    return binding ? [['登记设备 ID', binding.device_id], ['连接别名（serial）', binding.serial], ['冻结登记 revision', binding.registry_revision], ['冻结锁域 ID', binding.domain_id]] : [['设备范围', '兼容全域（未声明设备绑定）']];
+  }
+  function submissionBinding() {
+    if (pendingRequest) return pendingRequest.body?.device_binding || pendingRequest.device_binding || null;
+    return $('submit-device-scope').value === 'device' ? deviceBinding : null;
+  }
+  function deviceBindingProblem() {
+    const binding = submissionBinding(), wantsDevice = pendingRequest ? !!binding : $('submit-device-scope').value === 'device';
+    if (!wantsDevice) return '';
+    if (!deviceLanesSupported()) return '节点未声明 devices.lanes-v1，不能提交设备绑定；不会降级为全域请求。';
+    if (!binding) return deviceBindingError || '请读取登记、选择精确别名并核对绑定。';
+    if (!validDeviceBinding(binding)) return '原设备绑定格式未确认，请先按请求 ID 找回，不能重新选择目标。';
+    if (deviceBindingBusy && !pendingRequest) return '正在核对设备绑定，请等待结果。';
+    const body = pendingRequest?.body;
+    let argv = body?.argv;
+    if (!argv) { try { argv = JSON.parse($('submit-argv').value); } catch (_) { return '绑定仅支持 phonefarm gray-layer session；请先填写有效参数。'; } }
+    if ((body?.bin || $('submit-bin').value) !== 'phonefarm' || !Array.isArray(argv) || argv[0] !== 'gray-layer' || argv[1] !== 'session') return '本批设备绑定仅支持 phonefarm gray-layer session；其他命令仍使用兼容全域。';
+    if (['none', 'recovery'].includes(body?.device_access || $('submit-device-access').value)) return '创建绑定会话不能选择宿主无设备或恢复模式；typed 恢复入口会继承原绑定。';
+    return '';
+  }
+  function renderDeviceBinding(allowed) {
+    const fixed = !!pendingRequest, locked = fixed || submissionBusy || deviceBindingBusy;
+    const binding = submissionBinding();
+    if (fixed) $('submit-device-scope').value = binding ? 'device' : 'global';
+    const scoped = $('submit-device-scope').value === 'device';
+    $('submit-device-scope').disabled = !allowed || locked;
+    $('submit-device-scope').querySelector('[value="device"]').disabled = !deviceLanesSupported();
+    $('device-binding-picker').hidden = !scoped;
+    $('read-device-registry').disabled = locked || !deviceLanesSupported() || !!HGTarget.problem();
+    $('read-device-registry').setAttribute('aria-busy', String(deviceBindingBusy));
+    $('submit-device-id').disabled = !allowed || locked || !deviceRegistry || !!deviceBindingError;
+    $('submit-device-alias').disabled = !allowed || locked || !$('submit-device-id').value || !!deviceBindingError;
+    $('resolve-device-binding').disabled = !allowed || locked || !deviceLanesSupported() || !deviceRegistry || !$('submit-device-alias').value || !!deviceBindingError;
+    $('resolve-device-binding').setAttribute('aria-busy', String(deviceBindingBusy));
+    $('device-registry-link').href = HGTarget.url('/dash/fleet');
+    const problem = deviceBindingProblem();
+    const detail = fixed ? pendingRequest.binding_recorded ? '原请求设备声明已冻结，刷新登记不会改投；先按原 ID 查询。' : '旧未决记录未保存设备声明，不能补入当前登记；先按原 ID 查询。' : deviceBindingBusy ? '正在读取宿主登记或核对绑定，不采设备…' : deviceBindingError || !scoped ? deviceBindingError || '不发送 device_binding 字段，沿兼容全域执行。' : binding ? '绑定已核对；提交时随原请求固定。登记或启动条件变化仍可能被节点拒绝。' : '读取本节点登记后，显式选择设备和精确别名，再核对绑定。';
+    message('device-binding-message', `${detail}${scoped && problem ? ` ${problem}` : ''}`, !!deviceBindingError || !!problem);
+    $('device-binding-info').hidden = !binding && !deviceRegistry;
+    facts('device-binding-info', binding ? bindingFacts(binding) : deviceRegistry ? [['登记节点', deviceRegistry.node_id], ['登记 revision', deviceRegistry.revision], ['启用的登记', deviceRegistry.devices.filter(device => device.enabled).length]] : []);
+  }
+  function selectDeviceAliases() {
+    deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision;
+    const device = deviceRegistry?.devices.find(item => item.device_id === $('submit-device-id').value);
+    $('submit-device-alias').replaceChildren(el('option', '请选择精确别名'));
+    $('submit-device-alias').firstChild.value = '';
+    for (const alias of device?.aliases || []) { const option = el('option', alias); option.value = alias; $('submit-device-alias').append(option); }
+    renderSubmission();
+  }
+  async function readDeviceRegistry() {
+    if ($('read-device-registry').disabled) return;
+    const revision = ++deviceBindingRevision, target = HGTarget.binding();
+    deviceBindingBusy = true; deviceBinding = null; deviceBindingError = ''; renderSubmission();
+    try {
+      const value = await json(`${API}/node/devices`, target);
+      if (revision !== deviceBindingRevision) return;
+      HGTarget.assert(target);
+      if (value.node_id !== target.node_id || !Array.isArray(value.devices) || !Number.isSafeInteger(value.revision)) throw new Error('登记身份或格式未确认。');
+      deviceRegistry = value;
+      const placeholder = el('option', value.devices.some(device => device.enabled) ? '请选择已启用设备' : '没有已启用的登记'); placeholder.value = '';
+      $('submit-device-id').replaceChildren(placeholder);
+      for (const device of value.devices.filter(item => item.enabled)) { const option = el('option', `${device.label} · ${device.device_id}`); option.value = device.device_id; $('submit-device-id').append(option); }
+      $('submit-device-alias').replaceChildren(el('option', '请选择设备与别名')); $('submit-device-alias').firstChild.value = '';
+    } catch (error) { if (revision === deviceBindingRevision) deviceBindingError = `${errorText(error)} 未核对绑定，不会降级或重试。`; }
+    finally { if (revision === deviceBindingRevision) { deviceBindingBusy = false; renderSubmission(); } }
+  }
+  async function resolveDeviceBinding() {
+    if ($('resolve-device-binding').disabled) return;
+    const revision = ++deviceBindingRevision, target = HGTarget.binding(), serial = $('submit-device-alias').value, deviceId = $('submit-device-id').value;
+    deviceBindingBusy = true; deviceBinding = null; deviceBindingError = ''; renderSubmission();
+    try {
+      const value = await json(`${API}/node/devices/resolve?serial=${encodeURIComponent(serial)}`, target);
+      if (revision !== deviceBindingRevision) return;
+      HGTarget.assert(target);
+      if (value.node_id !== target.node_id || !validDeviceBinding(value.binding) || value.binding.serial !== serial || value.binding.device_id !== deviceId || value.binding.registry_revision !== deviceRegistry?.revision) throw new Error('返回绑定与选择/登记版本不一致，请显式重读登记后选择；当前没有绑定。');
+      deviceBinding = value.binding; $('template-serial').value = serial;
+    } catch (error) { if (revision === deviceBindingRevision) deviceBindingError = `${errorText(error)} 未固定绑定，不会自动重试。`; }
+    finally { if (revision === deviceBindingRevision) { deviceBindingBusy = false; renderSubmission(); } }
   }
   function processPolicyFacts(node) {
     if (!node?.capabilities?.includes('jobs.execution-policy-v1')) return [['进程执行策略能力', '未提供，执行范围未知']];
@@ -550,6 +657,7 @@
     const policyProblem = executionPolicyProblem(policy);
     const hasInputs = pendingRequest?.body ? !!pendingRequest.body.inputs : !!$('submit-inputs').value.trim();
     const inputsProblem = hasInputs && !inputsSupported();
+    const bindingProblem = deviceBindingProblem();
     for (const id of ['submit-bin', 'submit-label', 'submit-argv']) $(id).disabled = !allowed || locked;
     $('submit-inputs').disabled = !allowed || locked || !inputsSupported();
     $('clear-inputs').disabled = !allowed || locked || !$('submit-inputs').value.trim();
@@ -562,8 +670,8 @@
     $('submit-recovery-for').required = recovery;
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
-    $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || !!targetIssue || locked || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : submissionBinding() ? '节点自动保存绑定设备的必要资源；自由资源不能删除设备范围冲突，也不授予设备权限。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
+    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。'));
@@ -575,7 +683,8 @@
     $('submit-refill').hidden = !pendingRequest || !!pendingRequest.body || refilling;
     $('submit-refill').disabled = !allowed || !!targetIssue || submissionBusy;
     $('submit-retry').hidden = !pendingRequest?.body || pendingRequest.conflict;
-    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!policyProblem || inputsProblem;
+    $('submit-retry').disabled = !allowed || !!targetIssue || submissionBusy || !!bindingProblem || !!policyProblem || inputsProblem;
+    renderDeviceBinding(allowed);
     renderSessionTemplate(allowed);
     renderRefbenchTemplate(allowed);
     renderControls();
@@ -583,12 +692,13 @@
   function renderSessionTemplate(allowed) {
     const unavailable = !allowed || !!pendingRequest || submissionBusy || !nodeInfo?.execution?.bins?.includes('phonefarm');
     for (const id of ['template-serial', 'template-package', 'template-mode', 'template-seconds', 'template-power', 'template-so', 'template-apply']) $(id).disabled = unavailable;
+    if ($('submit-device-scope').value === 'device') { $('template-serial').disabled = true; $('template-apply').disabled = unavailable || !deviceBinding || deviceBindingBusy; }
     message('template-power-help', $('template-power').value === 'battery' ? '首次采样准备电池条件，跨轮保持；会话停止或同上下文恢复时还原所绑定的充电控制。已实测放电时可能无需修改控制。' : '只观察当前供电状态，不请求修改充电控制。功耗是否可用仍以每轮观测和采样窗口为准。');
     message('template-status', pendingRequest ? '存在未确认提交，先按原请求 ID 找回；模板不会覆盖该请求。' : unavailable ? '需解锁任务操作，且节点提供 phonefarm 命令，才能填入模板。' : '模板只填入参数；核对下方命令后，再点击“提交任务”。');
   }
   function applySessionTemplate() {
     if ($('template-apply').disabled || pendingRequest || submissionBusy) return;
-    const serial = $('template-serial').value.trim(), pkg = $('template-package').value.trim();
+    const serial = submissionBinding()?.serial || $('template-serial').value.trim(), pkg = $('template-package').value.trim();
     const mode = $('template-mode').value, seconds = Number($('template-seconds').value), policy = $('template-power').value;
     if (!serial || !pkg || !['frameaudit', 'frameaudit-ts', 'probe', 'target', 'passdump', 'loadop'].includes(mode) ||
         !Number.isInteger(seconds) || seconds < 1 || seconds > 3600 || !['observe', 'battery'].includes(policy)) {
@@ -606,9 +716,9 @@
     message('template-status', `已填入 ${policy} 策略的新会话参数，尚未提交。请核对下方 argv；运行中的会话不受影响。`);
   }
   function renderRefbenchTemplate(allowed) {
-    const unavailable = !allowed || !!pendingRequest || submissionBusy || !nodeInfo?.execution?.bins?.includes('phonefarm');
+    const unavailable = !allowed || !!pendingRequest || submissionBusy || !nodeInfo?.execution?.bins?.includes('phonefarm') || $('submit-device-scope').value === 'device';
     for (const id of ['refbench-serial', 'refbench-frames', 'refbench-intensity', 'refbench-timeout', 'refbench-so', 'refbench-apply']) $(id).disabled = unavailable;
-    message('refbench-status', pendingRequest ? '存在未确认提交，先按原请求 ID 找回；模板不会覆盖该请求。' : unavailable ? '需解锁任务操作，且节点提供 phonefarm 命令，才能填入模板。' : '模板只填入参数；核对下方命令后，再点击“提交任务”。');
+    message('refbench-status', pendingRequest ? '存在未确认提交，先按原请求 ID 找回；模板不会覆盖该请求。' : $('submit-device-scope').value === 'device' ? 'refbench 尚未支持设备 lane；如需此模板，请显式选择兼容全域。' : unavailable ? '需解锁任务操作，且节点提供 phonefarm 命令，才能填入模板。' : '模板只填入参数；核对下方命令后，再点击“提交任务”。');
   }
   function applyRefbenchTemplate() {
     if ($('refbench-apply').disabled || pendingRequest || submissionBusy) return;
@@ -669,7 +779,12 @@
         }
         const resources = $('submit-resources').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
         if (resources.length && mode !== 'recovery') body.resources = [...new Set(resources)];
-        pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), target: pendingRequest ? pendingRequest.target : HGTarget.binding(), body};
+        const bindingProblem = deviceBindingProblem();
+        if (bindingProblem) throw new Error(bindingProblem);
+        const binding = submissionBinding();
+        if (binding) body.device_binding = binding;
+        pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), target: pendingRequest ? pendingRequest.target : HGTarget.binding(), body,
+          binding_recorded: true, device_binding: binding};
         savePending();
       } catch (error) { submissionMessage(error instanceof SyntaxError ? '参数不是有效的 JSON，请填写字符串数组。' : error.message, true); return; }
     }
@@ -1028,7 +1143,8 @@
       const value = el('dd'); value.append(isSessionJobID(id) ? recoveryJobLink(id, sessionPlanTarget) : el('span', '未确认'));
       $('session-recovery-plan-info').append(el('dt', label), value);
     }
-    for (const [label, value] of [['会话 ID', plan.session_id], ['设备', plan.serial], ['原来源内的相对路径', plan.session_path]])
+    for (const [label, value] of [['会话 ID', plan.session_id], ['设备', plan.serial], ['继承设备范围', scopeText({scope: plan.device_binding ? 'device' : 'global', binding: plan.device_binding})],
+      ...(plan.device_binding ? bindingFacts(plan.device_binding) : []), ['原来源内的相对路径', plan.session_path]])
       $('session-recovery-plan-info').append(el('dt', label), el('dd', text(value)));
     for (const attempt of plan.attempts) {
       const item = el('li', null, 'lease-receipt');
@@ -1258,6 +1374,7 @@
     $('session-updated').textContent = `状态更新 ${time(s.updated_at)} · ${readTime()}`;
     const c = s.controller || {};
     facts('session-info', [['会话', s.session_id], ['设备 / 模式', `${text(s.serial)} · ${text(s.mode)}`], ['目标', s.package],
+      ['实际 lease 范围', scopeText({scope: s.lease_scope || (s.device_binding ? 'device' : 'global'), binding: s.device_binding})], ...(s.device_binding ? bindingFacts(s.device_binding) : []),
       ['当前控制者', `${text(c.actor_id)} · ${text(c.kind)} · epoch ${text(c.epoch)}`], ['接管到期', time(c.expires_at)], ['资源预算截止', time(s.deadline_at)], ['owner 存活', s.live_owner ? '是（宿主锁核验）' : '否']]);
     const recovery = s.recovery || {};
     const recoveryState = ({not_reported: '尚未报告恢复', required: '需要继续恢复', reported_complete: '已报告限定范围恢复；仍需核查任务资源保留'})[recovery.status] || text(recovery.status);
@@ -1752,7 +1869,8 @@
     const report = ({not_reported: '尚未报告恢复完成。', required: '报告要求继续恢复。', reported_complete: '调用者报告局部完成；仅覆盖下述范围。'})[recovery.status] || '恢复报告状态未知。';
     item.append(heading, el('p', `${report}${recovery.evidence_origin === 'synthetic' ? ' 模拟证据（synthetic），不是真机恢复证明。' : ''}`, 'lease-report'));
     const info = el('dl', null, 'facts');
-    for (const [key, value] of [['标签', entry.label], ['原因', recovery.reason || '未记录'], ['报告范围', structuredText(recovery.scope)], ['证据来源', recovery.evidence_origin || '未记录'], ['记录更新', time(entry.updated_at)]]) info.append(el('dt', key), el('dd', text(value)));
+    for (const [key, value] of [['标签', entry.label], ['实际 lease 范围', scopeText({scope: entry.lease_scope || (entry.device_binding ? 'device' : 'global'), binding: entry.device_binding})],
+      ...(entry.device_binding ? bindingFacts(entry.device_binding) : []), ['原因', recovery.reason || '未记录'], ['恢复报告范围', structuredText(recovery.scope)], ['证据来源', recovery.evidence_origin || '未记录'], ['记录更新', time(entry.updated_at)]]) info.append(el('dt', key), el('dd', text(value)));
     item.append(info);
     const details = el('details');
     details.append(el('summary', '恢复上下文与证据引用'), el('pre', `上下文：\n${structuredText(recovery.context)}`, 'lease-context'), el('p', '已有证据路径（仅展示，不直接打开）', 'note'));
@@ -2185,10 +2303,20 @@
   $('request-lookup-form').addEventListener('submit', event => { event.preventDefault(); lookupRequest(); });
   $('submit-open-job').addEventListener('click', () => { if (submittedJob) { selectJob(submittedJob); $('detail-heading').focus(); } });
   $('submit-device-access').addEventListener('change', renderSubmission);
+  $('submit-device-scope').addEventListener('change', () => { deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision; deviceBindingBusy = false; renderSubmission(); });
+  $('read-device-registry').addEventListener('click', readDeviceRegistry);
+  $('submit-device-id').addEventListener('change', selectDeviceAliases);
+  $('submit-device-alias').addEventListener('change', () => { deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision; renderSubmission(); });
+  $('resolve-device-binding').addEventListener('click', resolveDeviceBinding);
+  for (const id of ['submit-bin', 'submit-argv']) $(id).addEventListener('input', () => {
+    if (!pendingRequest && deviceBinding) { deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision; }
+    renderSubmission();
+  });
   $('submit-execution-policy').addEventListener('change', renderSubmission);
   $('prepare-recovery').addEventListener('click', () => {
     if ($('prepare-recovery').disabled || !currentJob) return;
     $('submit-device-access').value = 'recovery';
+    $('submit-device-scope').value = 'global'; deviceBinding = null; deviceBindingError = '';
     $('submit-recovery-for').value = currentJob.id;
     $('submit-label').value = `恢复 ${currentJob.id}`;
     $('submit-bin').value = '';
@@ -2207,7 +2335,8 @@
     const raw = sessionStorage.getItem(REQUEST_STORAGE);
     if (raw) {
       let saved; try { saved = JSON.parse(raw); } catch (_) { saved = {id: raw}; }
-      pendingRequest = {id: saved.id, target: saved.target || null};
+      pendingRequest = {id: saved.id, target: saved.target || null, binding_recorded: saved.binding_recorded === true,
+        device_binding: saved.binding_recorded === true ? saved.device_binding : null};
       const id = pendingRequest.id;
       $('submit-panel').open = true;
       submissionMessage('有一条未确认的提交。请先按原请求 ID 查询；参数未保存在浏览器中。', true, id);
@@ -2216,6 +2345,6 @@
   const initial = new URLSearchParams(location.hash.slice(1)).get('job');
   if (initial && /^[0-9a-f]{12}$/.test(initial)) selected = initial;
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);
-  document.addEventListener('hgamey-target-change', () => { renderAccess(); });
+  document.addEventListener('hgamey-target-change', () => { ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); });
   refreshAll();
 })();

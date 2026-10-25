@@ -61,6 +61,19 @@ class DeviceRegistry:
             raise RegistryError("unavailable", "device registry response unavailable; read the registry before any explicit retry") from None
 
     def _invoke(self, body):
+        arguments = ["lease", "devices", "--json"] if body is None else [
+            "lease", "devices-set", "--request", "-", "--json"]
+        code, value = self._run(arguments, body)
+        if code == 2 and isinstance(value, dict) and value.get("schema") == ERROR_SCHEMA:
+            reason, message = value.get("code"), value.get("error")
+            if isinstance(reason, str) and reason in STATUS and isinstance(message, str) and 0 < len(message) <= 2048:
+                raise RegistryError(reason, message)
+        if code != 0 or not _record(value):
+            raise RegistryError("unavailable", "phonefarm registry protocol unavailable; upgrade or check the configured program")
+        return {**value, "node_id": self.node_id}
+
+    def _run(self, arguments, body=None):
+        """One bounded configured host helper, shared by registry and scope reads."""
         configured = self.jobs.bins.get("phonefarm")
         if not configured:
             raise RegistryError("unavailable", "phonefarm is not configured for this node")
@@ -70,8 +83,7 @@ class DeviceRegistry:
             if key.startswith("PF_JOB_") or key in (
                     "PF_RUNTIME_REPORT", "PF_RECOVERY_OUT", "DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"):
                 environment.pop(key)
-        argv = [executable, "lease", "devices", "--json"] if body is None else [
-            executable, "lease", "devices-set", "--request", "-", "--json"]
+        argv = [executable, *arguments]
         unknown = "device registry response unavailable; read the registry before any explicit retry"
         with tempfile.TemporaryFile() as source, tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
             if body is not None:
@@ -103,10 +115,4 @@ class DeviceRegistry:
                 value = json.loads(output.read(LIMIT + 1), parse_constant=_reject_constant)
             except (ValueError, RecursionError):
                 raise RegistryError("unavailable", "phonefarm registry protocol unavailable; upgrade or check the configured program") from None
-        if code == 2 and isinstance(value, dict) and value.get("schema") == ERROR_SCHEMA:
-            reason, message = value.get("code"), value.get("error")
-            if isinstance(reason, str) and reason in STATUS and isinstance(message, str) and 0 < len(message) <= 2048:
-                raise RegistryError(reason, message)
-        if code != 0 or not _record(value):
-            raise RegistryError("unavailable", "phonefarm registry protocol unavailable; upgrade or check the configured program")
-        return {**value, "node_id": self.node_id}
+        return code, value

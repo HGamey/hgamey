@@ -332,3 +332,8 @@
 .session-reference legend { padding: 0; color: var(--ink2); font-size: 12px; }
 .session-reference textarea { margin-bottom: 12px; }
 #reference-message { overflow-wrap: anywhere; }
+/* The registered target is shared by templates and the normal job form. */
+.device-binding-panel { margin: 20px 0; padding: 16px; border: 1px solid var(--line); border-radius: 10px; }
+.device-binding-panel h3 { margin: 0 0 12px; }
+.device-binding-panel .submit-fields { margin-bottom: 12px; }
+.device-binding-panel select { max-width: 100%; }

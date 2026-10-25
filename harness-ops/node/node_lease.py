@@ -5,13 +5,7 @@ import re
 import subprocess
 import threading
 import time
-
-
-DEVICE_BINS = {"phonefarm", "game_opt_loop", "adb", "fetch_apk"}
-
-
-def device_access(spec):
-    return spec.get("device_access", "write" if spec.get("bin") in DEVICE_BINS else "none")
+from device_scope import device_access, scopes
 
 
 def prepare_receipt_directory(store, jid, shared_gid=None):
@@ -63,6 +57,17 @@ def job_lease_receipts(store, jid):
                     "schema", "job_id", "lease_id", "serial", "label", "state", "updated_at")}
                 public["recovery"] = {key: recovery.get(key) for key in (
                     "status", "reason", "context", "scope", "evidence_origin", "evidence")}
+                if "device_binding" in value:
+                    from device_scope import binding
+                    public["device_binding"] = binding(value["device_binding"])
+                    if (value.get("lease_scope") != "device"
+                            or public["device_binding"]["serial"] != value["serial"]):
+                        raise ValueError("bound lease receipt must declare its device scope")
+                if "lease_scope" in value:
+                    if (value["lease_scope"] not in ("global", "device")
+                            or value["lease_scope"] == "device" and "device_binding" not in value):
+                        raise ValueError("invalid lease receipt scope")
+                    public["lease_scope"] = value["lease_scope"]
                 evidence = recovery.get("evidence")
                 if evidence is not None and (not isinstance(evidence, list) or any(
                         not isinstance(path, str) or not path for path in evidence)):
@@ -147,8 +152,11 @@ class LeaseState:
                     raise ValueError("incompatible lease status; upgrade phonefarm")
                 try:
                     queue_directory(value)
+                    if "device_scopes" in value:
+                        scopes(value)
                 except ValueError as error:
                     value.update(status="unknown", error=str(error))
+                    value.pop("device_scopes", None)
             except (OSError, subprocess.SubprocessError, ValueError) as error:
                 value = {"schema_version": 1, "status": "unknown", "bridge_held": None,
                          "entries": [], "error": f"lease status unavailable: {type(error).__name__}: {error}"}

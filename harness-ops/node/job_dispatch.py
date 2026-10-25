@@ -10,7 +10,8 @@ import tarfile
 import time
 import uuid
 
-from job_queue import JobQueue, RequestConflict, recovery_reservations
+from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, global_waiter
+from device_scope import scope, lease_problem
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
 from node_session import recovery_source_out, SessionError
@@ -62,6 +63,7 @@ class JobDispatch:
                 **request_facts(spec),
                 "request_id": row["request_id"], "started": row["submitted_at"],
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
+                **({"device_binding": spec["device_binding"]} if "device_binding" in spec else {}),
                 "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1"},
                 "lock_label": None if name == "devlock" else f"job-{jid}",
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
@@ -230,10 +232,11 @@ class JobDispatch:
                 if current["state"] == "claimed":
                     self.finalize(current)
         lease = self.jobs.leases.snapshot(refresh=True) if any(
-            device_access(r["spec"]) == "write" for r in self.queue.rows(("queued",))) else None
+            device_access(r["spec"]) == "write" or "device_binding" in r["spec"]
+            for r in self.queue.rows(("queued",))) else {}
         while True:
             row = self.queue.claim_next(self.max_running, admit=lambda r:
-                device_access(r["spec"]) != "write" or lease is not None and lease["status"] == "clear")
+                lease_problem(r["spec"], lease) is None)
             if row is None:
                 break
             if self.launch(row) is False:
@@ -250,13 +253,17 @@ class JobDispatch:
         except ValueError as error:
             self.finish_unstarted(row, "failed", f"execution policy unavailable: {error}")
             return
-        if device_access(row["spec"]) == "write" and self.jobs.leases.snapshot(refresh=True)["status"] != "clear":
+        spec = row["spec"]
+        observation = (self.jobs.leases.snapshot(refresh=True) if
+                       device_access(spec) == "write" or "device_binding" in spec else {})
+        if lease_problem(spec, observation) is not None:
             self.queue.set_state(jid, "queued")
             return False
         try:
             prepared = self.jobs._read_root.read_json(jid + "/prepared.json")
             if not isinstance(prepared.get("command"), list) or not prepared["command"] or not isinstance(prepared.get("cwd"), str):
                 raise ValueError("invalid prepared command")
+            self.jobs.validate_prepared_scope(row, prepared)
             if policy == "process_group":
                 shared_gid = (int(self.jobs.pf_env["PHONEFARM_SHARED_GID"])
                               if self.jobs.pf_env is not None else None)
@@ -278,6 +285,8 @@ class JobDispatch:
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
         env.pop("PF_RECOVERY_OUT", None)
+        if "device_binding" in spec:
+            env.pop("DEVLOCK_INSTANCE_ID", None)
         if recovery_out is not None:
             env["PF_RECOVERY_OUT"] = recovery_out
         if "phonefarm" in self.jobs.bins:
@@ -301,13 +310,34 @@ class JobDispatch:
             return {"kind": None, "blocking_jobs": []}
         borrowed = recovery_reservations(row, rows)
         owners = [r for r in rows if r["state"] in ("claimed", "blocked") and r["job_id"] not in borrowed]
-        collisions = [r["job_id"] for r in owners if set(row["resources"]) & set(r["resources"])]
+        declared = scope(row["spec"])
+        resources = set(row["resources"])
+        collisions = [r["job_id"] for r in owners if resources.intersection(r["resources"])]
         if collisions:
-            return {"kind": "resource", "blocking_jobs": collisions}
+            return {"kind": "resource", "blocking_jobs": collisions, "scope": declared,
+                    "reason": "declared resources overlap an active reservation"}
+        scope_collisions = [r["job_id"] for r in owners if reservation_conflicts(row, r)]
+        if scope_collisions:
+            # A global/device scope barrier is not an overlap in user-named
+            # resources. Keep that distinction for legacy queue consumers.
+            return {"kind": "device_lease", "blocking_jobs": scope_collisions, "scope": declared,
+                    "lease_status": self.jobs.leases.snapshot()["status"],
+                    "reason": "device scope overlaps an active reservation"}
+        if device_access(row["spec"]) == "write" and declared["scope"] == "device":
+            earlier = []
+            for prior in rows:
+                if prior["job_id"] == row["job_id"]:
+                    break
+                if prior["state"] == "queued" and global_waiter(prior):
+                    earlier.append(prior["job_id"])
+            if earlier:
+                return {"kind": "device_lease", "blocking_jobs": earlier, "scope": declared,
+                        "reason": "an earlier global device job is waiting"}
         lease = self.jobs.leases.snapshot()
-        if device_access(row["spec"]) == "write" and lease["status"] != "clear":
+        problem = lease_problem(row["spec"], lease)
+        if problem:
             return {"kind": "device_lease", "blocking_jobs": [], "lease_status": lease["status"],
-                    "reason": lease.get("error") or "device lease is " + lease["status"]}
+                    "scope": declared, "reason": problem}
         running = [r for r in owners if r["state"] == "claimed"]
         if len(running) >= self.max_running:
             return {"kind": "capacity", "blocking_jobs": [r["job_id"] for r in running]}
@@ -318,8 +348,12 @@ class JobDispatch:
             meta["request_id"] = row["request_id"]
             meta["device_access"] = device_access(row["spec"])
             meta["recovery_for"] = row["spec"].get("recovery_for")
+            if "device_binding" in row["spec"]:
+                meta["device_binding"] = row["spec"]["device_binding"]
             meta["queue"] = {"state": row["state"], "submitted_at": row["submitted_at"],
                              "resources": row["resources"], "waiting": self.waiting(row),
+                             "device_scope": scope(row["spec"]),
+                             "release_eligibility": self.jobs.queue_release_eligibility(row, meta),
                              "state_reason": row.get("state_reason"),
                              "recovery_for": row["spec"].get("recovery_for")}
             if row["state"] == "done":
@@ -338,6 +372,7 @@ class JobDispatch:
             phase = self.jobs.status(row["job_id"])["phase"] if state == "claimed" else state
             items.append({"job_id": row["job_id"], "request_id": row["request_id"], "phase": phase,
                           "recovery_for": row["spec"].get("recovery_for"),
+                          "device_scope": scope(row["spec"]),
                           "submitted_at": row["submitted_at"], "resources": row["resources"],
                           "waiting": self.waiting(row, rows), "state_reason": row.get("state_reason")})
         return {"schema_version": 1, "max_running": self.max_running, "lease": lease,
