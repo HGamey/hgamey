@@ -20,6 +20,8 @@
 
 ## 作业结束范围
 
+新灰层session要求配置PF声明gray-control-gateway@1，沿唯一启动/显式刷新程序缓存核兼容、拒新exe替换并在dispatch复核。旧ID优先找回，旧status/receipt/stop/recovery不受新建门禁影响；声明不授予owner动作或设备资格。Web/CLI同级，合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/BUSINESS-COMPATIBILITY.md 。
+
 results.cross-compare-v1从冻结目录目标有界读取详情，沿共享四槽/8秒截止，不代理原件。新schema显式每列node与基线，按(node_id,result_id)去重，复用原登记值算术；字段一致不等于同实验，旧比较/研究revision不升级。Web/CLI同级，合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/RESULT-CROSS-COMPARE.md 。
 
 可选 host_slots 与管理员 --host-capacity 在原队列 SQLite 中原子计账；CPU/GPU/IO 是声明调度容量，不是操作系统硬限制。未知宿主执行保留占位，已有宿主完成收据持久提交后才归还；设备恢复屏障独立。旧请求省略保持原内容并按 cpu1/gpu0/io0 计账，恢复任务不借祖先计算容量。Web/CLI同级，合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-HOST-CAPACITY.md 。

@@ -245,6 +245,35 @@
     return [['程序自报名称', identity?.program || '未记录'], ['程序包版本', identity?.package_version || '未记录'], ['构建来源 revision 声明', identity?.build?.source_revision || '未记录'],
       ['构建来源修改声明', sourceDirty(identity?.build?.source_dirty)], ['构建 target', identity?.build?.target || '未记录'], ['构建 profile', identity?.build?.profile || '未记录'], ['自报支持协议', identity?.supported_protocols?.join('、') || '未记录']];
   }
+  function grayCompatibilityFacts(record) {
+    const value = record?.compatibility?.gray_control;
+    return [['灰层网关兼容', ({compatible: '兼容新建灰层会话', incompatible: '不兼容新建灰层会话', unknown: '兼容性未知'})[value?.status] || '未提供'],
+      ['网关所需声明', value?.required?.join('、') || '未提供'], ['缺失声明', Array.isArray(value?.missing) ? value.missing.join('、') || '无缺项（仅此网关）' : '未知'],
+      ['兼容性原因', value?.reason || '未报告'], ['兼容性边界', '仅当前配置 helper 的网关声明；旧 owner 能力、实际执行与设备恢复另行核查。']];
+  }
+  function isGraySession(body) {
+    const argv = body?.argv;
+    if (body?.bin !== 'phonefarm' || !Array.isArray(argv) || argv[0] !== 'gray-layer') return false;
+    for (let i = 1; i < argv.length;) {
+      if (argv[i] === '--lock-label' || argv[i] === '--lock-wait') i += 2;
+      else if (argv[i] === '--no-devlock' || typeof argv[i] === 'string' && argv[i].startsWith('--lock-label=')) i++;
+      else return argv[i] === 'session';
+    }
+    return false;
+  }
+  function graySessionProblem(body) {
+    if (!isGraySession(body)) return '';
+    if (body.exe != null) return 'program_override_unsupported：新灰层会话仅使用配置 PF，不能替换 exe。';
+    if (!nodeInfo?.capabilities?.includes('node.protocol-compat-v1')) return '节点未提供 node.protocol-compat-v1，不能确认新灰层会话网关兼容性。旧任务查询、停止和恢复入口仍可用。';
+    const compatibility = nodeInfo.execution?.programs?.phonefarm?.compatibility?.gray_control;
+    if (compatibility?.status === 'compatible') return '';
+    if (compatibility?.status === 'incompatible') return `program_protocol_unsupported：新灰层会话网关不兼容。缺失：${compatibility.missing?.join('、') || '未提供'}。${compatibility.reason || ''}`;
+    return `program_identity_unavailable：配置 PF 身份或网关兼容性未知。${compatibility?.reason || ''} 请在运行身份区显式重新观察，不会自动刷新或换程序。`;
+  }
+  function submissionCommand() {
+    if (pendingRequest?.body) return pendingRequest.body;
+    try { return {bin: $('submit-bin').value, argv: JSON.parse($('submit-argv').value)}; } catch (_) { return null; }
+  }
   function renderPrograms(node) {
     const entries = Object.entries(node?.execution?.programs || {});
     $('node-programs').replaceChildren(...entries.map(([name, record]) => {
@@ -253,7 +282,7 @@
       detail.append(el('summary', `${name} · ${state}${record?.identity?.package_version ? ' · ' + record.identity.package_version : ''}`));
       const rows = [['缓存状态', state], ['观察时间', time(record?.observed_at)], ['配置解析路径', record?.resolved_path || '未记录'], ['原因', record?.reason || '未报告原因'],
         ['声明适用范围', record?.state === 'observed' ? '此次配置入口观察；不等于某次作业实际执行身份。' : '如保留声明，仅是上次观察，当前入口身份未知。'],
-        ...programFacts(record?.identity), ['文件观察（stat）', record?.file ? JSON.stringify(record.file) : '未记录']];
+        ...programFacts(record?.identity), ...(name === 'phonefarm' ? grayCompatibilityFacts(record) : []), ['文件观察（stat）', record?.file ? JSON.stringify(record.file) : '未记录']];
       info.append(...rows.flatMap(([key, value]) => [el('dt', key), el('dd', text(value))])); detail.append(info); return detail;
     }));
     if (!entries.length) $('node-programs').append(el('p', '未记录配置程序观察；不能由命令名或相邻源码推断实际版本。', 'note'));
@@ -1011,6 +1040,9 @@
     const budgetProblem = timeBudgetProblem();
     const guardProblem = diskGuardProblem();
     const slotsProblem = hostSlotsProblem();
+    const gatewayProblem = graySessionProblem(submissionCommand());
+    message('gray-gateway-help', isGraySession(submissionCommand()) ? pendingRequest ? `原请求优先查回；只有明确未找到时才按当前兼容性核准同 ID 新建。${gatewayProblem}` : gatewayProblem || '当前配置 PF 声明兼容此网关；创建和实际启动前仍由节点复核，不代表设备就绪。' : '', !!gatewayProblem);
+    $('gray-gateway-help').hidden = !isGraySession(submissionCommand());
     renderTimeBudget(allowed);
     renderDiskGuard(allowed);
     renderHostSlots(allowed);
@@ -1027,7 +1059,7 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : submissionBinding() ? '节点自动保存绑定设备的必要资源；自由资源不能删除设备范围冲突，也不授予设备权限。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || !!targetIssue || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!guardProblem || !!slotsProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || !!targetIssue || (!pendingRequest && !!gatewayProblem) || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!guardProblem || !!slotsProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
     message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。'));
@@ -1112,6 +1144,7 @@
   }
   async function submitJob(retry = false) {
     if (submissionBusy || (retry ? $('submit-retry').disabled : $('submit-job').disabled)) return;
+    const originalPending = !!pendingRequest;
     if (!retry) {
       try {
         const argv = JSON.parse($('submit-argv').value);
@@ -1162,15 +1195,37 @@
     }
     const attempt = pendingRequest;
     const selectionVersion = detailRevision;
+    let originalLookup = false;
     submissionBusy = true;
     submittedJob = '';
     $('submit-open-job').hidden = true;
     submissionMessage('正在提交；本次请求 ID 已固定。', false, attempt.id);
     renderSubmission();
     try {
+      if (isGraySession(attempt.body)) {
+        let alreadyRecorded = false;
+        if (originalPending) {
+          originalLookup = true;
+          let existing;
+          try { existing = await json(`${API}/requests/${encodeURIComponent(attempt.id)}`, attempt.target || null); }
+          catch (error) { if (error.status !== 404 || error.payload?.error !== 'no such job') throw error; }
+          if (existing) {
+            if (existing.request_id !== attempt.id) throw new Error('返回任务未绑定原请求 ID；保留原请求，不继续提交。');
+            alreadyRecorded = true;
+          }
+          originalLookup = false;
+        }
+        const problem = alreadyRecorded ? '' : graySessionProblem(attempt.body);
+        if (problem) { submissionMessage(`${problem} 本次未发送创建请求；保留原参数和 ID。`, true, attempt.id); return; }
+      }
       const job = await post(`${API}/jobs`, attempt.body, {'X-Request-ID': attempt.id}, attempt.target || null);
       await submissionFound(job, attempt.id, selectionVersion);
     } catch (error) {
+      if (originalLookup) { submissionMessage(`原请求查询未确认：${errorText(error)} 保留原 ID 和输入，没有发送创建请求。`, true, attempt.id); return; }
+      const gatewayRejection = ['program_protocol_unsupported', 'program_identity_unavailable', 'program_override_unsupported', 'program_configuration_changed'].includes(error.payload?.code);
+      if (gatewayRejection) {
+        submissionMessage(`${error.payload.code}：${error.payload.error || error.message}。${error.payload.command_started === false ? '本次新 producer 未启动；' : ''}保留原请求 ID 和输入，先查询原任务。不会自动刷新或重试。`, true, attempt.id); return;
+      }
       if (error.status >= 400 && error.status < 500 && error.status !== 409) { pendingRequest = null; savePending(); }
       else if (error.status === 409) attempt.conflict = true;
       const capacityIssue = error.payload?.code === 'host_capacity_exceeded' ? `宿主 slots 请求超过节点配置，未被准入。${shortageText(error.payload.shortages)}。请修改明确需求后提交，不会自动缩减。` : '';

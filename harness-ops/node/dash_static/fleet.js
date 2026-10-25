@@ -38,6 +38,12 @@
       ['入口路径', runtime?.entry_path], ['Python 版本', runtime?.python_version], ['宿主运行身份观察时间', time(runtime?.observed_at)],
       ['安装构建仓库声明', runtime?.build?.repository], ['安装构建 revision 声明', runtime?.build?.revision], ['安装构建修改声明', sourceDirty(runtime?.build?.dirty)]];
   }
+  function grayCompatibilityFacts(record) {
+    const value = record?.compatibility?.gray_control;
+    return [['灰层网关兼容', ({compatible: '兼容新建灰层会话', incompatible: '不兼容新建灰层会话', unknown: '兼容性未知'})[value?.status] || '未提供'],
+      ['网关所需声明', value?.required?.join('、') || '未提供'], ['缺失声明', Array.isArray(value?.missing) ? value.missing.join('、') || '无缺项（仅此网关）' : '未知'],
+      ['兼容性原因', value?.reason || '未报告'], ['兼容性边界', '仅此次配置 helper 观察；目录快照不是当前准入，旧 owner 和设备恢复另行核查。']];
+  }
   function renderPrograms(node) {
     const entries = Object.entries(node?.execution?.programs || {});
     $('node-programs').replaceChildren(...entries.map(([name, record]) => {
@@ -47,7 +53,7 @@
       facts(info, [['缓存状态', state], ['观察时间', time(record?.observed_at)], ['配置解析路径', record?.resolved_path], ['原因', record?.reason || '未报告原因'],
         ['声明适用范围', record?.state === 'observed' ? '此次配置入口观察；不等于某次作业实际执行身份。' : '如保留声明，仅是上次观察，当前入口身份未知。'],
         ['程序自报名称', identity?.program], ['程序包版本', identity?.package_version], ['构建来源 revision 声明', identity?.build?.source_revision], ['构建来源修改声明', sourceDirty(identity?.build?.source_dirty)],
-        ['构建 target', identity?.build?.target], ['构建 profile', identity?.build?.profile], ['自报支持协议', identity?.supported_protocols?.join('、')], ['文件观察（stat）', record?.file ? JSON.stringify(record.file) : '未记录']]);
+        ['构建 target', identity?.build?.target], ['构建 profile', identity?.build?.profile], ['自报支持协议', identity?.supported_protocols?.join('、')], ...(name === 'phonefarm' ? grayCompatibilityFacts(record) : []), ['文件观察（stat）', record?.file ? JSON.stringify(record.file) : '未记录']]);
       detail.append(info); return detail;
     }));
     if (!entries.length) $('node-programs').append(el('p', '未记录配置程序观察；不能由命令名或相邻源码推断实际版本。', 'note'));

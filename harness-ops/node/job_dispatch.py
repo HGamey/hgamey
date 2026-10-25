@@ -345,6 +345,7 @@ class JobDispatch:
             prepared = self.jobs._read_root.read_json(jid + "/prepared.json")
             if not isinstance(prepared.get("command"), list) or not prepared["command"] or not isinstance(prepared.get("cwd"), str):
                 raise ValueError("invalid prepared command")
+            self.jobs.programs.require_session(spec, prepared)
             self.jobs.validate_prepared_scope(row, prepared)
             if policy == "process_group":
                 shared_gid = (int(self.jobs.pf_env["PHONEFARM_SHARED_GID"])

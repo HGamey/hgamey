@@ -6,6 +6,7 @@ import subprocess
 
 from artifact_io import relative_path
 from device_scope import binding, lease_problem
+from runtime_identity import is_gray_session
 
 MAX_REQUEST = 64 << 10
 HELPER_TIMEOUT = 5
@@ -119,7 +120,7 @@ def _bound_recovery(jobs, jid, rows=None):
     source = chain[-1]
     spec = source["spec"]
     raw = jobs._read_meta(current)
-    if (spec.get("bin") != "phonefarm" or spec.get("argv", [])[:2] != ["gray-layer", "session"]
+    if (not is_gray_session(spec)
             or raw.get("bin") != "phonefarm" or raw.get("argv") != spec["argv"]):
         raise SessionError(404, "not_found", "source is not a recorded phonefarm gray control session")
     bound = descriptor(jobs._read_root.read_json(current + "/out/session-control.json", maximum=MAX_REQUEST), current)

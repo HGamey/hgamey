@@ -9,14 +9,13 @@ import re
 import socket
 import stat
 import subprocess
-import threading
 import time
 import uuid
 import job_input_archive
 from artifact_io import relative_path, EXPORT_LIMITS
 from game_assets import ASSET_WRITE_LIMITS
 from job_policy import process_policies
-from runtime_identity import PROGRAMS, observe_program, program_file, runtime_snapshot
+from runtime_identity import runtime_snapshot
 
 
 def page_size(query, default=50):
@@ -78,40 +77,14 @@ class NodeRead:
         except (OSError, subprocess.SubprocessError):
             pass
         jobs.service_at_launch = {"node_id": self.node_id, "service": copy.deepcopy(self.service)}
-        self._program_guard, self._refresh_guard = threading.Lock(), threading.Lock()
-        self._programs = {}
-        self.refresh_runtime()
 
     def refresh_runtime(self):
         """Explicit host observation; never replace this service's startup facts."""
-        with self._refresh_guard:
-            observed = {
-                name: observe_program(name, executable, cwd, self.jobs.pf_env)
-                for name, (executable, cwd) in list(self.jobs.bins.items()) if name in PROGRAMS
-            }
-            with self._program_guard:
-                self._programs = observed
+        self.jobs.programs.refresh()
         return self.identity()
 
     def _program_observations(self):
-        with self._program_guard:
-            cached = copy.deepcopy(self._programs)
-        result = {}
-        for name, (executable, cwd) in list(self.jobs.bins.items()):
-            if name not in PROGRAMS:
-                continue
-            path, current = program_file(executable, cwd, self.jobs.pf_env)
-            record = cached.get(name)
-            if record is None:
-                record = {"state": "unknown", "resolved_path": path, "observed_at": None,
-                          "file": None, "identity": None,
-                          "reason": "configured program has not been observed; refresh explicitly"}
-            elif (path, current) != (record["resolved_path"], record["file"]):
-                # Keep the dated declaration as history; do not present it as
-                # the identity of a replacement or probe on a readonly GET.
-                record.update(state="stale", reason="configured program changed since observation; refresh explicitly")
-            result[name] = record
-        return result
+        return self.jobs.programs.snapshot()
 
     def identity(self):
         return {"schema_version": 1, "node_id": self.node_id,
@@ -126,7 +99,7 @@ class NodeRead:
                               "asset_write_limits": dict(ASSET_WRITE_LIMITS)},
                 "target_binding": {"header": "X-Expected-Node-ID", "query": "expected_node_id",
                                    "unbound_legacy_requests": "accepted_without_target_guarantee"},
-                "capabilities": ["node.target-v1", "node.runtime-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "results.cross-compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
+                "capabilities": ["node.target-v1", "node.runtime-v1", "node.protocol-compat-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "results.cross-compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.input-limits-v1", "jobs.export-limits-v1", "jobs.time-budget-v1", "jobs.disk-guard-v1", "jobs.host-capacity-v1", "jobs.state-events-v1",

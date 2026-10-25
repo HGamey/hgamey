@@ -1,4 +1,5 @@
 """Bounded host runtime observations, separate from execution or recovery proof."""
+import copy
 import json
 import os
 import platform
@@ -7,12 +8,106 @@ import signal
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 
 from artifact_io import SafeRoot
 
 LIMIT = 64 << 10
 PROGRAMS = {"phonefarm", "game_opt_loop"}
+GRAY_GATEWAY = "phonefarm/gray-control-gateway@1"
+
+
+def is_gray_session(spec):
+    """Match PF's first mode after queue flags, consuming flag values exactly."""
+    argv = spec.get("argv") or []
+    if spec.get("bin") != "phonefarm" or not isinstance(argv, list) or argv[:1] != ["gray-layer"]:
+        return False
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
+        if arg in {"--lock-label", "--lock-wait"}:
+            index += 2
+        elif arg == "--no-devlock" or isinstance(arg, str) and arg.startswith("--lock-label="):
+            index += 1
+        else:
+            return arg == "session"
+    return False
+
+
+class ProgramCompatibilityError(ValueError):
+    def __init__(self, status, code, reason, compatibility):
+        super().__init__(code + ": " + reason)
+        self.status = status
+        self.payload = {"code": code, "error": reason, "program": "phonefarm",
+                        "compatibility": compatibility, "command_started": False}
+
+
+def gray_compatibility(record):
+    required = [GRAY_GATEWAY]
+    if not record or record.get("state") != "observed":
+        return {"status": "unknown", "required": required, "missing": None,
+                "reason": (record or {}).get("reason") or "configured phonefarm is not observed; refresh runtime explicitly"}
+    missing = [item for item in required if item not in record["identity"]["supported_protocols"]]
+    return {"status": "incompatible" if missing else "compatible", "required": required, "missing": missing,
+            "reason": "configured phonefarm does not declare " + ", ".join(missing) if missing else
+                      "observed program declares the gateway; owner actions and device eligibility remain separate"}
+
+
+class ConfiguredPrograms:
+    """One startup/explicit-refresh cache shared by reads and new-job admission."""
+    def __init__(self, bins, env=None):
+        self.bins, self.env = bins, env
+        self._guard, self._refresh_guard = threading.Lock(), threading.Lock()
+        self._records = {}
+        self.refresh()
+
+    def refresh(self):
+        with self._refresh_guard:
+            records = {name: observe_program(name, executable, cwd, self.env)
+                       for name, (executable, cwd) in list(self.bins.items()) if name in PROGRAMS}
+            with self._guard:
+                self._records = records
+
+    def snapshot(self):
+        with self._guard:
+            cached = copy.deepcopy(self._records)
+        result = {}
+        for name, (executable, cwd) in list(self.bins.items()):
+            if name not in PROGRAMS:
+                continue
+            path, current = program_file(executable, cwd, self.env)
+            record = cached.get(name)
+            if record is None:
+                record = {"state": "unknown", "resolved_path": path, "observed_at": None,
+                          "file": None, "identity": None,
+                          "reason": "configured program has not been observed; refresh explicitly"}
+            elif (path, current) != (record["resolved_path"], record["file"]):
+                record.update(state="stale", reason="configured program changed since observation; refresh explicitly")
+            if name == "phonefarm":
+                record["compatibility"] = {"gray_control": gray_compatibility(record)}
+            result[name] = record
+        return result
+
+    def require_session(self, spec, prepared=None):
+        if not is_gray_session(spec):
+            return
+        record = self.snapshot().get("phonefarm")
+        compatibility = gray_compatibility(record)
+        if spec.get("exe"):
+            raise ProgramCompatibilityError(400, "program_override_unsupported",
+                "new gray sessions require the configured phonefarm for both owner and control helper", compatibility)
+        if compatibility["status"] != "compatible":
+            known = compatibility["status"] == "incompatible"
+            raise ProgramCompatibilityError(409 if known else 503,
+                "program_protocol_unsupported" if known else "program_identity_unavailable",
+                compatibility["reason"], compatibility)
+        if prepared is not None:
+            path, _ = program_file(prepared["command"][0], prepared["cwd"], self.env)
+            if path != record["resolved_path"]:
+                raise ProgramCompatibilityError(409, "program_configuration_changed",
+                    "prepared session executable differs from the currently observed phonefarm; submit a new request",
+                    compatibility)
 
 
 def _text(value, nullable=False):

@@ -89,6 +89,9 @@
   修正输入后显式新请求。服务端权威检查；客户端不额外改归档字节/指纹或据当前限值阻断旧ID查询。
 - 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 只请求柔性 SIGINT 并停止本地跟随（130）；
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
+- 新建 phonefarm gray-layer session 需 node.protocol-compat-v1 且配置 PF 的 gray_control compatible；禁止 --exe。
+  不按 SHA 猜兼容，不自动刷新程序或重试。已给 request_id 时先单次查回，再以原 ID 提交核同内容；不同内容仍冲突。
+  已记录请求不受当前新建兼容门禁影响；旧 status/action/stop/recovery 不受此门禁影响。
 - 每次提交生成 request_id；同一次重试保持请求内容和 id 不变。--request-id 可手动指定，--resource 可重复声明独占资源。
   preparing/queued 只代表准备或排队；提交前需节点支持幂等请求，结果未知时用 request 查询，不要换 id 重投。
 - --host-slots FILE 读取最多4KiB闭合三键JSON：cpu=1..65535、gpu/io=0..65535整数。
@@ -153,6 +156,7 @@ import gzip, hashlib, http.client, io, json, math, os, re, sys, tarfile, time, u
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from target_client import Target, TargetError
+from runtime_identity import is_gray_session
 
 URL = TOKEN = TARGET = None
 CHUNK = 2 << 20
@@ -307,16 +311,56 @@ def require_idempotent_jobs(require_recovery=False, execution_policy=None, input
     return node
 
 
+def require_gray_session_compatibility(node, exe):
+    if exe is not None:
+        sys.exit("pf-node: program_override_unsupported：新灰层会话仅使用配置 PF，禁止 --exe；未打包或提交")
+    if "node.protocol-compat-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 node.protocol-compat-v1，无法确认新灰层会话网关；未打包或提交。旧任务查询、停止和恢复入口仍可用")
+    compatibility = node.get("execution", {}).get("programs", {}).get("phonefarm", {}).get("compatibility", {}).get("gray_control")
+    if isinstance(compatibility, dict) and compatibility.get("status") == "compatible":
+        return
+    code = "program_protocol_unsupported" if isinstance(compatibility, dict) and compatibility.get("status") == "incompatible" else "program_identity_unavailable"
+    sys.exit(f"pf-node: {code}：配置 PF 未确认兼容新灰层会话；未打包或提交。"
+             + json.dumps(compatibility, ensure_ascii=False)
+             + f"；需要时显式用 {continuation()} node --refresh-runtime 重新观察，不自动刷新或换程序")
+
+
+def find_gray_session_request(request_id):
+    """A supplied ID is queried before applying new-producer admission or packing."""
+    try:
+        value = json.loads(call("GET", "/requests/" + urllib.parse.quote(request_id, safe=""),
+                                attempts=1, raise_errors=True))
+        if (not isinstance(value, dict) or value.get("request_id") != request_id
+                or not isinstance(value.get("id"), str) or not re.fullmatch(r"[0-9a-f]{12}", value["id"])):
+            raise ValueError("回包未绑定原请求 ID 与任务")
+        return value
+    except ClientError as error:
+        try:
+            absent = error.code == 404 and json.loads(error.body).get("error") == "no such job"
+        except (ValueError, AttributeError):
+            absent = False
+        if absent:
+            return None
+        sys.exit(f"pf-node: 原请求 {request_id} 查回未确认（HTTP {error.code}）；未打包或提交。用 {continuation()} request {request_id} 核对，不换 ID")
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as error:
+        sys.exit(f"pf-node: 原请求 {request_id} 查回未确认；未打包或提交，不自动重试。用 {continuation()} request {request_id} 核对")
+
+
 def submit_job(spec, body, request_id):
     print(f"pf-node: 提交 request_id={request_id}；结果未知时用 {continuation()} request {request_id} 找回任务。",
           file=sys.stderr, flush=True)
     headers = {"X-Job": json.dumps(spec, ensure_ascii=True), "X-Request-ID": request_id,
                "Content-Type": "application/gzip"}
+    gray_session = is_gray_session(spec)
     try:
-        meta = json.loads(call("POST", "/jobs", body, headers, timeout=600, raise_4xx=True))
+        meta = json.loads(call("POST", "/jobs", body, headers, timeout=600, raise_4xx=True,
+                               **({"attempts": 1, "raise_errors": True} if gray_session else {})))
         meta["id"]  # A malformed response cannot confirm which job was accepted.
         return meta
     except ClientError as e:
+        if gray_session and response_error_code(e.body) in {"program_protocol_unsupported", "program_identity_unavailable", "program_override_unsupported", "program_configuration_changed"}:
+            payload = json.loads(e.body)
+            sys.exit(f"pf-node: 新灰层会话准入被拒绝，request_id={request_id}；保留原 ID 核对，不自动刷新或重试：" + json.dumps(payload, ensure_ascii=False))
         if e.code == 422:
             try:
                 payload = json.loads(e.body)
@@ -330,7 +374,7 @@ def submit_job(spec, body, request_id):
                      f"请用 {continuation()} request {request_id} 核对原节点已有任务，"
                      "并检查恢复目标条件；不要换 request_id 盲目重投。")
         sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{e}")
-    except (SystemExit, ValueError, KeyError, KeyboardInterrupt) as e:
+    except (SystemExit, ValueError, KeyError, KeyboardInterrupt, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         print(f"pf-node: 提交结果未知，request_id={request_id}：{e}；"
               f"请用 {continuation()} request {request_id} 查询；不要换 request_id 重复提交。", file=sys.stderr)
         raise SystemExit(130 if isinstance(e, KeyboardInterrupt) else 1)
@@ -978,6 +1022,8 @@ def main():
         return
     TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     URL, TOKEN = TARGET.url, TARGET.token
+    gray_session = is_gray_session({"bin": args[0], "argv": args[1:]})
+    existing_gray_request = find_gray_session_request(request_id) if gray_session and request_id is not None else None
     if args[0] == "job-events":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None
@@ -1246,6 +1292,8 @@ def main():
     binname, argv = args[0], args[1:]
     if submission_node is None:
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard)
+    if gray_session and existing_gray_request is None:
+        require_gray_session_compatibility(submission_node, exe)
     request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}

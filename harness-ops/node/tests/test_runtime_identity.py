@@ -249,6 +249,7 @@ class RuntimeIdentityTests(unittest.TestCase):
             self.assertEqual(Path(self.jobs.path(first["id"], *name.split("/"))).read_bytes(), value)
         self.assertEqual((legacy_path / "meta.json").read_bytes(), legacy_bytes)
 
+        before_reader_restart = self.counter.read_text()
         restarted = NodeRead(self.jobs, self.jobs.data_root, str(self.root))
         self.assertEqual(restarted.node_id, self.node.node_id)
         self.assertNotEqual(restarted.service["instance_id"], self.node.service["instance_id"])
@@ -256,7 +257,8 @@ class RuntimeIdentityTests(unittest.TestCase):
                          first["execution"]["program_identity"])
         self.assertNotIn("execution", self.get("/jobs/" + legacy_id))
         self.assertEqual((legacy_path / "meta.json").read_bytes(), legacy_bytes)
-        self.assertEqual(self.counter.read_text().splitlines()[-2:], ["probe B", "probe B"])
+        self.assertEqual(self.counter.read_text(), before_reader_restart,
+                         "NodeRead must reuse Jobs' program cache without another runtime probe")
 
 
 if __name__ == "__main__":

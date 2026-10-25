@@ -297,8 +297,9 @@ class JobCLI(unittest.TestCase):
 
     def test_registered_device_binding_file_is_node_bound_and_not_argv(self):
         main = self.load_cli()["main"]
-        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "devices.lanes-v1"],
-                        execution={"bins": ["phonefarm"]})
+        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "devices.lanes-v1", "node.protocol-compat-v1"],
+                        execution={"bins": ["phonefarm"], "programs": {"phonefarm": {
+                            "compatibility": {"gray_control": {"status": "compatible"}}}}})
         binding = {"schema": "phonefarm/device-binding@1", "domain_id": "a" * 32,
                    "registry_revision": 3, "device_id": "phone-A", "serial": "USB-A"}
         envelope = {"node_id": NODE_ID, "binding": binding}
@@ -353,7 +354,10 @@ class JobCLI(unittest.TestCase):
             def do_GET(self):
                 self.reply(404 if mode[0] == "404" else 200,
                            identity(capabilities=["node.target-v1"] + ([] if mode[0] == "old" else ["jobs.idempotency-v1"] +
-                            (["jobs.recovery-v1"] if mode[0] in ("modern", "parent-conflict") else []))))
+                            (["jobs.recovery-v1"] if mode[0] in ("modern", "parent-conflict") else []) +
+                            (["node.protocol-compat-v1"] if mode[0] == "ok" else [])),
+                            execution={"programs": {"phonefarm": {"compatibility": {
+                                "gray_control": {"status": "compatible"}}}}}))
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))

@@ -52,6 +52,7 @@ import job_inputs
 import job_preparation
 import job_budget
 from job_capacity import normalize_slots, check_fit, CapacityExceeded
+from runtime_identity import ConfiguredPrograms, ProgramCompatibilityError
 from job_events import NodeJobEvents, JobEventError
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict
@@ -268,6 +269,7 @@ class Jobs:
             self.pf_env = phonefarm_environment(config)
             if "jobs.execution-reconcile-v1" in config.get("capabilities", []):
                 self.worker_entry = os.path.join(worker_prefix, "phonefarm-worker")
+        self.programs = ConfiguredPrograms(bins, self.pf_env)
         self.leases = LeaseState(bins, env=self.pf_env)
         self.device_scopes = DeviceScope(self)
         self.dispatch = JobDispatch(self, max_running, host_capacity=host_capacity)
@@ -353,6 +355,7 @@ class Jobs:
         def admit():
             # submit() calls this only for a new request while holding intake.
             check_fit(spec, self.dispatch.queue.capacity())
+            self.programs.require_session(spec)
             if device_binding and access == "write":
                 self.device_scopes.admit(device_binding)
             if original_admit is not None:
@@ -1525,6 +1528,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                             key = jobs.dispatch.request_key(key)
                         if key is None or jobs.dispatch.queue.by_request(key) is None:
                             check_fit(spec, jobs.dispatch.queue.capacity())
+                            jobs.programs.require_session(spec)
                     except (ValueError, CapacityExceeded):
                         self.close_connection = True
                         raise
@@ -1571,7 +1575,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(409, {"error": str(e)})
             except PolicyUnavailable as e:
                 return self._send(422, e.payload)
-            except CapacityExceeded as e:
+            except (CapacityExceeded, ProgramCompatibilityError) as e:
                 return self._send(e.status, e.payload)
             except (ValueError, tarfile.TarError) as e:
                 return self._send(400, {"error": str(e)})

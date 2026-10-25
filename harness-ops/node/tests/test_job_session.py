@@ -11,6 +11,7 @@ from unittest import TestCase, mock
 import test_node_read as read_fixture
 from node_session import SessionError
 from job_dispatch import request_fingerprint
+from runtime_identity import is_gray_session
 
 
 SESSION_ARGV = ["gray-layer", "session", "--mode", "probe", "--package", "com.example.fixture",
@@ -23,6 +24,12 @@ a = sys.argv[1:]
 root = pathlib.Path(__file__).parent
 def save(path, value):
     path.write_text(json.dumps(value))
+if a == ['runtime-info', '--json']:
+    print(json.dumps({'schema':'phonefarm/runtime-identity@1','program':'phonefarm',
+      'package_version':'host-fixture','build':{'source_revision':None,'source_dirty':False,
+      'target':'host-fixture','profile':'test'},
+      'supported_protocols':['phonefarm/runtime-identity@1','phonefarm/gray-control-gateway@1']}))
+    sys.exit(0)
 if a[:2] == ['gray-layer', 'session-status']:
     out = pathlib.Path(a[a.index('--out') + 1])
     print(json.dumps(dict(json.loads((out / 'session-control.json').read_text()), live_owner=False)))
@@ -105,6 +112,9 @@ class JobSessionTests(TestCase):
         helper = self.root / "phonefarm-fake"
         helper.write_text("#!" + sys.executable + "\n" + '''import json, pathlib, sys
 args = sys.argv[1:]
+if args == ['runtime-info', '--json']:
+    print(pathlib.Path(__file__).with_suffix('.identity.json').read_text())
+    sys.exit(0)
 out = pathlib.Path(args[args.index('--out') + 1])
 with (out / 'helper-calls').open('a') as f: f.write(json.dumps(args) + '\\n')
 d = json.loads((out / 'session-control.json').read_text())
@@ -126,6 +136,141 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
         action = {"schema": "phonefarm/gray-control-action@1", "request_id": "capture-1", "session_id": "fixture",
                   "actor_id": "agent", "control_epoch": 1, "action": "capture", "params": {}}
         return jid, out, action
+
+    def test_configured_gateway_admission_refresh_and_old_session_continuity(self):
+        old, out, action = self.prepare()
+        helper = Path(self.jobs.bins["phonefarm"][0])
+        identity = {"schema": "phonefarm/runtime-identity@1", "program": "phonefarm",
+                    "package_version": "host-fixture", "build": {"source_revision": None,
+                    "source_dirty": False, "target": "host-fixture", "profile": "test"},
+                    "supported_protocols": ["phonefarm/runtime-identity@1"]}
+        helper.with_suffix(".identity.json").write_text(json.dumps(identity))
+        self.jobs.programs.refresh()
+        # Only existing host helpers execute. New producer jobs remain queued
+        # until an explicit tick exercises the real unstarted finalization path.
+        self.jobs.dispatch.start = lambda: None
+        spec = {"bin": "phonefarm", "argv": SESSION_ARGV}
+        pin = {"X-Expected-Node-ID": self.node.node_id}
+        lease = {"schema_version": 1, "status": "clear", "bridge_held": False, "entries": [], "error": None}
+
+        def cli(*args, ok=True):
+            env = {**os.environ, "PF_NODE_TOKEN": self.admin, "HOME": str(self.root)}
+            for name in ("PF_NODE_TOKEN_FILE", "PF_NODE_URL", "PF_NODE_ID"):
+                env.pop(name, None)
+            result = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "pf-node"),
+                "--url", "http://%s:%s" % self.server.server_address, "--node-id", self.node.node_id, *args],
+                env=env, capture_output=True, text=True, timeout=10)
+            if ok:
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            else:
+                self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            return result
+
+        def post(key, value=spec, body=b""):
+            code, _, raw = self.request("/jobs", method="POST", token=self.admin, body=body,
+                headers={**pin, "X-Request-ID": key, "X-Job": json.dumps(value),
+                         "Content-Type": "application/octet-stream"})
+            return code, json.loads(raw)
+
+        def rejected(key, code, error, value=spec):
+            with mock.patch.object(self.server.RequestHandlerClass, "_body",
+                                   side_effect=AssertionError("admission must precede reading the upload")):
+                status, receipt = post(key, value, b"unread upload")
+            self.assertEqual((status, receipt["code"]), (code, error), receipt)
+            self.assertEqual(receipt["program"], "phonefarm")
+            self.assertFalse(receipt["command_started"])
+            self.assertIsNone(self.jobs.dispatch.queue.by_request(key))
+            return receipt
+
+        def unstarted(jid, code):
+            self.jobs.dispatch.tick()
+            status = self.get_json("/jobs/" + jid)
+            self.assertEqual((status["state"], status["outcome"], status["queue"]["state"]),
+                             ("finished", "failed", "done"))
+            self.assertIn(code, status["note"])
+            self.assertIsNone(status["exit"])
+            self.assertEqual(status["execution"]["owned_process_group"]["status"], "not_started")
+            self.assertFalse(Path(self.jobs.path(jid, "launch.json")).exists())
+            self.assertEqual(self.jobs.dispatch.queue.get(jid)["host_capacity_release"]["basis"], "not_started")
+
+        with mock.patch.object(self.jobs, "_prepare", wraps=self.jobs._prepare) as prepare, \
+                mock.patch.object(self.jobs.leases, "snapshot", return_value=lease), \
+                mock.patch("job_runtime.launch", side_effect=AssertionError("new producer must never launch")) as launch:
+            node = self.get_json("/node")
+            self.assertIn("node.protocol-compat-v1", node["capabilities"])
+            missing = rejected("gateway-missing", 409, "program_protocol_unsupported")
+            self.assertEqual(missing["compatibility"]["missing"], ["phonefarm/gray-control-gateway@1"])
+            rejected("gateway-prefixed-exe", 400, "program_override_unsupported", {
+                **spec, "argv": ["gray-layer", "--lock-wait", "0", *SESSION_ARGV[1:]],
+                "exe": "@in/replacement"})
+            self.assertFalse(is_gray_session({"bin": "phonefarm",
+                "argv": ["gray-layer", "--lock-label", "session", "eval"]}),
+                "a queue flag value must not be mistaken for the PF mode")
+            refused = cli("--detach", "phonefarm", *SESSION_ARGV, ok=False)
+            self.assertIn("program_protocol_unsupported", refused.stderr)
+            prepare.assert_not_called()
+            self.assertEqual(self.jobs.dispatch.queue.rows(), [])
+
+            identity["supported_protocols"].append("phonefarm/gray-control-gateway@1")
+            helper.with_suffix(".identity.json").write_text(json.dumps(identity))
+            # Changing the declared value alone does not silently refresh the cache.
+            self.assertEqual(self.get_json("/node")["execution"]["programs"]["phonefarm"]
+                             ["compatibility"]["gray_control"]["status"], "incompatible")
+            refreshed = json.loads(cli("node", "--refresh-runtime").stdout)
+            self.assertEqual(refreshed["execution"]["programs"]["phonefarm"]
+                             ["compatibility"]["gray_control"]["status"], "compatible")
+            submitted = cli("--request-id", "gateway-original", "--detach", "phonefarm", *SESSION_ARGV)
+            jid = submitted.stdout.strip()
+            original = self.jobs.dispatch.queue.get(jid)
+            self.assertEqual(original["state"], "queued")
+            prepared = Path(self.jobs.path(jid, "prepared.json")).read_bytes()
+            self.assertEqual(prepare.call_count, 1)
+
+            replacement = helper.with_suffix(".replacement")
+            replacement.write_bytes(helper.read_bytes() + b"\n# replaced at the same configured path\n")
+            replacement.chmod(0o755)
+            os.replace(replacement, helper)
+            stale = self.get_json("/node")["execution"]["programs"]["phonefarm"]
+            self.assertEqual((stale["state"], stale["compatibility"]["gray_control"]["status"]),
+                             ("stale", "unknown"))
+            rejected("gateway-stale", 503, "program_identity_unavailable")
+            same = cli("--request-id", "gateway-original", "--detach", "phonefarm", *SESSION_ARGV)
+            self.assertEqual(same.stdout.strip(), jid)
+            changed = cli("--request-id", "gateway-original", "--detach", "phonefarm",
+                          *SESSION_ARGV[:-1], "31", ok=False)
+            self.assertIn("409", changed.stderr)
+            self.assertEqual(self.jobs.dispatch.queue.get(jid)["fingerprint"], original["fingerprint"])
+            self.assertEqual(Path(self.jobs.path(jid, "prepared.json")).read_bytes(), prepared)
+            self.assertEqual(prepare.call_count, 1, "old IDs must not reprepare, even when admission is stale")
+            unstarted(jid, "program_identity_unavailable")
+
+            cli("node", "--refresh-runtime")
+            code, queued = post("gateway-config-change")
+            self.assertEqual(code, 200, queued)
+            other = self.root / "other-phonefarm"
+            other.write_bytes(helper.read_bytes())
+            other.chmod(0o755)
+            other.with_suffix(".identity.json").write_text(json.dumps(identity))
+            self.jobs.bins["phonefarm"] = (str(other), str(self.root))
+            cli("node", "--refresh-runtime")
+            unstarted(queued["id"], "program_configuration_changed")
+
+            identity["supported_protocols"].remove("phonefarm/gray-control-gateway@1")
+            other.with_suffix(".identity.json").write_text(json.dumps(identity))
+            cli("node", "--refresh-runtime")
+            rejected("gateway-exe", 400, "program_override_unsupported", {**spec, "exe": "@in/replacement"})
+            self.assertTrue(self.get_json(f"/jobs/{old}/session")["live_owner"])
+            receipt = json.loads(cli("session-status", old, "--request-id", action["request_id"]).stdout)
+            self.assertEqual(receipt["request_id"], action["request_id"])
+            stop = {**action, "request_id": "stop-old-owner", "action": "stop"}
+            stop_file = self.root / "stop.json"
+            stop_file.write_text(json.dumps(stop))
+            stopped = json.loads(cli("session-action", old, "--request", str(stop_file)).stdout)
+            self.assertEqual((stopped["request_id"], stopped["status"]), (stop["request_id"], "accepted"))
+            self.assertEqual(json.loads((out / "helper-input.json").read_text()), stop)
+            self.assertEqual(prepare.call_count, 2)
+            self.assertEqual(len(self.jobs.dispatch.queue.rows()), 2)
+            launch.assert_not_called()
 
     def test_session_recovery_derives_source_and_reuses_request_after_close(self):
         self.jobs.dispatch.start = lambda: None
@@ -200,6 +345,7 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
         helper.write_text("#!" + sys.executable + "\n" + RECOVERY_HELPER)
         helper.chmod(0o700)
         self.jobs.bins.update(phonefarm=(str(helper), str(self.root)), host=(sys.executable, str(self.root)))
+        self.jobs.programs.refresh()
         pin = {"X-Expected-Node-ID": self.node.node_id}
         lease = {"schema_version": 1, "status": "clear", "bridge_held": False, "entries": [], "error": None}
 

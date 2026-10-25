@@ -27,6 +27,12 @@ PROGRAM = r'''
 import json, os, pathlib, sys, time
 root = pathlib.Path(__file__).parent
 args = sys.argv[1:]
+if args == ['runtime-info', '--json']:
+    print(json.dumps({'schema':'phonefarm/runtime-identity@1','program':'phonefarm',
+        'package_version':'host-fixture','build':{'source_revision':None,'source_dirty':False,
+        'target':'host-fixture','profile':'test'},
+        'supported_protocols':['phonefarm/runtime-identity@1','phonefarm/gray-control-gateway@1']}))
+    sys.exit(0)
 with (root/'calls.jsonl').open('a') as log:
     log.write(json.dumps({'argv':args,'pid':os.getpid()})+'\n')
 if args[:2] == ['lease','resolve']:
@@ -99,6 +105,7 @@ class DeviceScopeTests(unittest.TestCase):
         program.write_text("#!" + sys.executable + "\n" + PROGRAM)
         program.chmod(0o755)
         env.jobs.bins["phonefarm"] = (str(program), str(env.root))
+        env.jobs.programs.refresh()
         registry = env.root / "registry.json"
         registry.write_text(json.dumps({"revision": 1, "aliases": {"usb-a": "A", "wifi-a": "A", "usb-b": "B"}}))
         current = {"schema_version": 1, "status": "clear", "bridge_held": False, "entries": [], "error": None,
