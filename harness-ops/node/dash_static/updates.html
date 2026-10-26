@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>节点更新 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/jobs.css">
+<link rel="stylesheet" href="/dash/static/updates.css">
+</head>
+<body class="jobs-view updates-view">
+<a class="skip-link" href="#updates-heading">跳到节点更新</a>
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a><span class="brand-name">HGamey</span>
+    <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/doctor">环境诊断</a><a href="/dash/updates" aria-current="page">节点更新</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right"><form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form></div>
+</header>
+<main class="jobs-page updates-page">
+  <div class="page-heading">
+    <div><p class="eyebrow">此后台的宿主安装</p><h1 id="updates-heading" tabindex="-1">节点更新</h1><p class="page-description">核对安装位置，提交指定版本更新，或按原运行记录回滚。</p></div>
+    <button id="refresh-status" class="ghost primary" type="button">刷新状态</button>
+  </div>
+  <p id="status-message" class="note" role="status" aria-live="polite">正在读取安装与维护状态…</p>
+  <a id="status-login" class="access-login" href="/dash/login" hidden>重新登录</a>
+  <section class="update-card" aria-labelledby="installation-heading">
+    <div class="section-heading"><h2 id="installation-heading">1. 当前安装</h2><span id="observed-at" class="read-time">尚未读取</span></div>
+    <p id="updater-message" class="note">尚未确认安全更新入口，操作保持禁用。</p>
+    <dl id="installation-info" class="facts"></dl>
+    <details class="update-details"><summary>安装状态原始记录</summary><pre id="status-json" tabindex="0">尚未读取</pre></details>
+  </section>
+  <section class="update-card" aria-labelledby="maintenance-heading">
+    <div class="section-heading"><h2 id="maintenance-heading">2. 安装维护记录</h2><span id="maintenance-state" class="task-state unknown">尚未读取</span></div>
+    <p id="maintenance-message" class="note">先读取状态，再选择更新或回滚。</p>
+    <dl id="maintenance-info" class="facts"></dl>
+    <p class="note">没有维护记录仅表示未读到已记录的维护义务，不证明其他参与者已停止。此页不检查设备或取得 lease。</p>
+  </section>
+  <section class="submit-panel" aria-labelledby="actions-heading">
+    <h2 id="actions-heading">3. 提交更新任务</h2>
+    <div class="access-panel">
+      <div class="access-row"><div><h3>任务操作权限</h3><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁任务操作</button></div>
+      <form id="unlock-form" class="unlock-form" autocomplete="off" hidden>
+        <label for="steer-password">掌舵密码</label>
+        <div class="unlock-input"><input id="steer-password" type="password" autocomplete="off" required><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-dismiss" class="ghost" type="button">收起</button></div>
+        <p id="unlock-message" class="note" role="status"></p>
+      </form>
+      <a id="access-login" class="access-login" href="/dash/login" hidden>重新登录查看页面</a>
+    </div>
+    <p id="action-message" class="note" role="status"></p>
+    <div class="update-forms">
+      <form id="update-form">
+        <h3>更新一个组件</h3>
+        <div class="submit-fields">
+          <label>组件<select id="update-component"><option value="phonefarm">phonefarm</option><option value="game_opt_loop">game_opt_loop</option><option value="harness-ops">harness-ops</option></select></label>
+          <label>明确版本 / Git ref<input id="update-ref" required autocomplete="off" spellcheck="false" placeholder="提交 SHA、tag 或明确分支"></label>
+        </div>
+        <p class="note">每次只更新一个组件。填写目标版本后，核对下方实际参数。</p>
+        <pre id="update-preview" class="update-preview" tabindex="0"></pre>
+        <button id="update-submit" class="ghost primary" type="submit" disabled>提交更新任务</button>
+      </form>
+      <form id="rollback-form">
+        <h3>回滚原更新</h3>
+        <label for="rollback-run">原更新 run ID（32 位，不是任务 ID）</label>
+        <input id="rollback-run" required pattern="[0-9a-f]{32}" autocomplete="off" spellcheck="false" placeholder="完整的原更新 run ID">
+        <p id="rollback-help" class="note">请从更新记录核对原 run ID；不会从任务 ID 推断。</p>
+        <pre id="rollback-preview" class="update-preview" tabindex="0"></pre>
+        <button id="rollback-submit" class="ghost" type="submit" disabled>提交原 run 回滚任务</button>
+      </form>
+    </div>
+    <p class="note">请求通过已有宿主任务队列执行，无设备访问。接受任务、更新完成、回滚完成和服务重启是不同事实；此页不会自动重启服务。</p>
+  </section>
+  <section class="submit-panel" aria-labelledby="request-heading">
+    <h2 id="request-heading">4. 原请求与任务</h2>
+    <p id="pending-message" class="note" role="status"></p>
+    <dl id="pending-info" class="facts"></dl>
+    <details id="pending-details" class="update-details" hidden><summary>保留的原请求参数</summary><pre id="pending-json" tabindex="0"></pre></details>
+    <p id="request-message" class="note" role="status" aria-live="polite"></p>
+    <a id="open-job" class="update-job-link" hidden>查看任务进度、日志与结果 →</a>
+    <form id="lookup-form" class="request-lookup-form">
+      <label for="lookup-id">按原 request ID 查询（只读可用）</label>
+      <div class="lookup-input"><input id="lookup-id" required maxlength="128" autocomplete="off" spellcheck="false" placeholder="原 request ID"><button id="lookup-submit" class="ghost" type="submit">查询原请求</button></div>
+    </form>
+    <p class="note">未确认的请求保存在当前浏览器的此入口下，含原 ID、节点与完整参数，不含凭据。跨标签页保存与解除需要 Web Locks；不支持时可只读查回，新的操作请使用 CLI。页面不会自动重发；查询暂未找到也不能证明此前未执行。</p>
+  </section>
+  <details class="update-details update-limits"><summary>本页的检查范围</summary><ul id="limitations"></ul></details>
+</main>
+<footer class="foot">状态按需读取。需要更新其他节点时，请进入该节点自己的后台并核对绑定身份。</footer>
+<script src="/dash/static/target.js"></script>
+<script src="/dash/static/updates.js"></script>
+</body>
+</html>

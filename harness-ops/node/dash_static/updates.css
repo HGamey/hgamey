@@ -1,0 +1,33 @@
+.updates-view .nav { flex-wrap: wrap; }
+.updates-page { max-width: 1200px; }
+.update-card { margin: 20px 0 24px; padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.update-card .facts, .updates-page #pending-info { margin: 16px 0; }
+.updates-page .note { line-height: 1.8; overflow-wrap: anywhere; }
+.updates-page .note:empty { display: none; }
+.updates-page .note.error { color: var(--bad-ink); }
+.updates-page .access-panel { margin: 16px 0; background: var(--panel); }
+.update-forms { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 24px; margin: 20px 0; }
+.update-forms form { min-width: 0; }
+.update-forms form + form { border-left: 1px solid var(--line); padding-left: 24px; }
+.update-forms h3 { margin-bottom: 16px; font-size: 14px; }
+.update-forms .submit-fields { grid-template-columns: minmax(0,1fr); gap: 12px; }
+.update-forms label { display: block; font-size: 13px; color: var(--ink2); }
+.updates-page pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel); padding: 12px; border: 1px solid var(--line); border-radius: 6px; max-height: 360px; overflow: auto; }
+.update-preview { min-height: 140px; margin: 14px 0; }
+.update-details { margin-top: 16px; font-size: 13px; }
+.update-details summary { cursor: pointer; color: var(--ink2); padding: 6px 0; }
+.update-limits { margin-bottom: 32px; color: var(--muted); }
+.update-limits li { overflow-wrap: anywhere; margin: 6px 0; }
+.update-job-link { display: inline-block; color: var(--blue-ink); padding: 8px 0; font-size: 14px; overflow-wrap: anywhere; }
+.updates-page button:disabled { cursor: not-allowed; }
+.updates-page[data-stale="true"] #observed-at::before { content: "上次记录 · "; color: var(--amber-ink); }
+@media (max-width: 780px) {
+  .update-forms { grid-template-columns: minmax(0,1fr); }
+  .update-forms form + form { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 24px; }
+  .update-preview { min-height: 0; }
+}
+@media (max-width: 480px) {
+  .update-card { padding: 16px; }
+  .updates-page .page-heading { align-items: flex-start; }
+  .updates-page .unlock-input input { flex-basis: 100%; }
+}

@@ -32,6 +32,7 @@ import sqlite3
 import shutil
 import node_doctor
 import node_update
+from node_updates import NodeUpdates
 import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
@@ -276,6 +277,7 @@ class Jobs:
         # Share recovery/serialization across data-root changes for one installed
         # component set; never hide an unfinished update behind a new jobs path.
         self.update_layout["state_dir"] = str(node_update.state_directory(self.update_layout))
+        self.updates = NodeUpdates(self.update_layout, bins.get("update_node", (None,))[0], os.path.dirname(__file__))
         validate_export_cache_root(export_cache_root, self.dir, self.history_sources)
         os.makedirs(self.dir, exist_ok=True)
         self._read_root = SafeRoot(self.dir)
@@ -932,7 +934,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 # subsequent API/media requests carry the pin and are checked.
                 page = parsed.path.rstrip("/") in {
                     "/dash", "/dash/jobs", "/dash/games", "/dash/fleet",
-                    "/dash/control", "/dash/doctor", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/login",
+                    "/dash/control", "/dash/doctor", "/dash/updates", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/login",
                 }
                 if (page and self.command == "GET" and not headers
                         or parsed.path == "/dash/login" and not headers
@@ -1000,7 +1002,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node-updates"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -1018,6 +1020,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["node-updates"]:
+                    q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "update status requires an explicit node identity"})
+                    if set(q) - {"expected_node_id"}:
+                        return self._send(400, {"code": "invalid_query", "error": "update status accepts only expected_node_id"})
+                    return self._send(200, node.update_status())
                 if parts == ["doctor"]:
                     q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
