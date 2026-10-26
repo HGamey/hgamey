@@ -311,7 +311,8 @@ class Dash:
                           (os.path.join(self.pf_root, "phonefarm"), self.pf_root))
         live_backend = dash_live.PFBackend(self.monitor, pf_exe, pf_cwd,
             lease_reader.env if lease_reader else None, os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "live"))
-        self.live = dash_live.LiveHub(lambda: self.monitor.snapshot()["lock"], live_backend)
+        self.live = dash_live.LiveHub(lambda: self.monitor.snapshot()["lock"], live_backend,
+                                     device_scopes=jobs.device_scopes if jobs else None)
         threading.Thread(target=self._scanner, daemon=True, name="dash-scan").start()
 
     # ── 认证 ──

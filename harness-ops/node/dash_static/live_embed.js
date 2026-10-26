@@ -13,7 +13,10 @@
     return -1;
   }
 
-  function attach(wrap, serial, devSize) {
+  function attach(wrap, serial, devSize, options = {}) {
+    const deviceBinding = options.device_binding ? Object.freeze({...options.device_binding}) : null;
+    let target = options.target || null;
+    const liveURL = (kind, extra = {}) => `/dash/api/live/${kind}?` + new URLSearchParams({...extra, serial, ...(deviceBinding ? {device_binding:JSON.stringify(deviceBinding)} : {})});
     const img = document.createElement("img");
     img.className = "hg-live-img"; img.alt = "设备最近一次采集的画面"; img.draggable = false;
     const badge = document.createElement("div");
@@ -21,14 +24,14 @@
     badge.style.right = "8px"; badge.style.whiteSpace = "pre-wrap"; badge.style.overflowWrap = "anywhere"; badge.style.pointerEvents = "none";
     wrap.appendChild(img); wrap.appendChild(badge);
     const st = { ctl: null, statusCtl: null, url: null, poll: false, w: 0, h: 0, frameKey: null, frameAt: null,
-      device: null, statusError: "尚未取得采集状态", connection: "", detached: false, timer: 0 };
+      device: null, bindingAvailable: false, statusError: "尚未取得采集状态", connection: "", detached: false, timer: 0 };
 
     function render() {
       const mode = st.statusError || !MODE[st.device?.mode] ? "unknown" : st.device.mode;
       const age = st.frameAt == null ? null : Math.max(0, Math.floor(Date.now() / 1000 - st.frameAt));
       const frame = !st.url ? "尚无画面" : age == null ? "当前画面未提供采集时间" : `原帧 ${new Date(st.frameAt * 1000).toLocaleTimeString()} · 约 ${age} 秒前`;
       const state = !st.ctl ? "本页已断开观看；保留旧图，其他订阅由节点管理。" : MODE[mode];
-      badge.textContent = [state, frame, st.statusError || st.device?.label || "", st.connection || st.device?.error || ""].filter(Boolean).join("\n");
+      badge.textContent = [state, deviceBinding ? `登记设备 ${deviceBinding.device_id} · revision ${deviceBinding.registry_revision}` : "兼容全域观看", frame, st.statusError || st.device?.label || "", st.connection || st.device?.error || ""].filter(Boolean).join("\n");
       badge.hidden = false;
       img.style.filter = st.url && (!st.ctl || mode !== "live" || !!st.connection || age == null || age > 3) ? "grayscale(.5) opacity(.8)" : "";
     }
@@ -44,7 +47,7 @@
     }
 
     async function stream(signal) {
-      const r = await HGTarget.fetch(`/dash/api/live/stream?serial=${encodeURIComponent(serial)}`, { signal, credentials: "same-origin", cache: "no-store" });
+      const r = await HGTarget.fetch(liveURL("stream"), { signal, credentials: "same-origin", cache: "no-store" }, {target});
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const reader = r.body.getReader();
       let buf = new Uint8Array(0), got = false;
@@ -72,7 +75,7 @@
     async function poll(signal) {
       let after = 0;
       for (;;) {
-        const r = await HGTarget.fetch(`/dash/api/live/frame?serial=${encodeURIComponent(serial)}&after=${after}`, { signal, credentials: "same-origin", cache: "no-store" });
+        const r = await HGTarget.fetch(liveURL("frame", {after}), { signal, credentials: "same-origin", cache: "no-store" }, {target});
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         after = +(r.headers.get("X-Frame-Seq") || after);
         show(new Uint8Array(await r.arrayBuffer()), r.headers.get("X-Frame-Seq"), r.headers.get("X-Frame-At"), signal);
@@ -81,8 +84,11 @@
     }
     function stop() { const ctl = st.ctl; st.ctl = null; if (ctl) ctl.abort(); }
     async function play() {
-      if (st.detached || document.visibilityState !== "visible" || st.ctl) return;
+      if (st.detached || document.visibilityState !== "visible" || st.ctl || deviceBinding && !st.bindingAvailable) return;
       const ctl = new AbortController(); st.ctl = ctl;
+      try { await HGTarget.ready(); } catch (error) { if (st.ctl === ctl) { st.connection = error.message; stop(); render(); } return; }
+      if (st.ctl !== ctl || st.detached) return;
+      target ||= HGTarget.binding();
       st.connection = "正在连接；是否可采样以节点当前状态为准。"; render();
       let fails = 0;
       while (st.ctl === ctl && !st.detached) {
@@ -101,15 +107,18 @@
       const ctl = new AbortController(); st.statusCtl = ctl;
       const timeout = setTimeout(() => ctl.abort(), 10000);
       try {
-        const r = await HGTarget.fetch("/dash/api/live/status", { signal: ctl.signal, credentials: "same-origin", cache: "no-store" });
+        const r = await HGTarget.fetch(liveURL("status"), { signal: ctl.signal, credentials: "same-origin", cache: "no-store" }, target ? {target} : {});
         if (!r.ok) throw new Error(r.status === 401 ? "查看登录已失效" : `HTTP ${r.status}`);
         const result = await r.json();
         if (st.statusCtl !== ctl || st.detached) return;
         if (!Array.isArray(result.devices)) throw new Error("设备目录格式不正确");
+        target ||= HGTarget.binding();
+        st.bindingAvailable = result.policy?.device_binding_v1 === true;
         st.device = result.devices.find(d => d.serial === serial) || null;
-        st.statusError = st.device ? "" : "当前目录未确认此设备";
+        st.statusError = deviceBinding && !st.bindingAvailable ? "节点未声明按登记设备观看能力；不会改为全域。" : st.device ? "" : "当前目录未确认此设备";
+        if (deviceBinding && !st.bindingAvailable) stop();
       } catch (e) { if (st.statusCtl === ctl) st.statusError = e.name === "AbortError" ? "状态读取超时" : e.message; }
-      finally { clearTimeout(timeout); if (st.statusCtl === ctl) { st.statusCtl = null; render(); } }
+      finally { clearTimeout(timeout); if (st.statusCtl === ctl) { st.statusCtl = null; render(); if (deviceBinding && st.bindingAvailable) play(); } }
     }
     function disconnect() {
       stop();

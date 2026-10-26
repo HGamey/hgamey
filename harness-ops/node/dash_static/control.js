@@ -225,8 +225,10 @@
   function startView() {
     dropLive();
     if (!state.serial || state.frame) return;
+    const deviceBinding = state.binding?.device_binding || state.session?.device_binding || null;
+    state.liveScope = JSON.stringify(deviceBinding);
     if (window.HGLive?.attach) {
-      try { state.live = window.HGLive.attach($("hg-screen-wrap"), state.serial, () => null); }
+      try { state.live = window.HGLive.attach($("hg-screen-wrap"), state.serial, () => null, {device_binding:deviceBinding, target:state.binding?.target || HGTarget.binding()}); }
       catch (_) { state.live = null; }
     }
     $("screen-empty").hidden = !!state.live;
@@ -253,6 +255,7 @@
     if (acquisition) { acquisition.session_id = s.session_id; acquisition.status = acquisitionStatus(s); acquisition.receipt = s; acquisition.error = s.error || null; }
     if (s.phase !== "ready" || s.live_owner !== true || s.recovery?.required !== false) invalidateFrame();
     if (s.phase === "closed") { state.binding = null; invalidateFrame(); msg(s.not_started === true ? "本次接管明确未启动，节点已关闭此尝试。" + (s.error || "") : sessionText(s) + "；关闭记录不代表游戏或设备状态已恢复。"); }
+    if (!state.frame && JSON.stringify(state.binding?.device_binding || s.device_binding || null) !== state.liveScope) startView();
     save();
   }
   async function readSession(binding, signal) {

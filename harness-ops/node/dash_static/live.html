@@ -22,6 +22,12 @@
 <main class="live-page">
   <section class="live-devs" aria-label="设备">
     <h2 class="sec-title">选择手机</h2>
+    <form id="live-selection" class="live-selection">
+      <label for="live-serial">明确设备序列号</label><input id="live-serial" autocomplete="off" placeholder="USB 或已登记连接序列号">
+      <label for="live-scope">观看范围</label><select id="live-scope"><option value="global">兼容全域（默认）</option><option value="device">按已登记设备</option></select>
+      <button id="live-resolve" type="button" class="ghost">读取设备登记</button><button id="live-watch" type="submit">观看此设备</button>
+      <p id="live-binding-info" class="note" role="status"></p><pre id="live-binding-json" class="note" hidden></pre>
+    </form>
     <div id="devs" class="devs"><p class="muted">读取设备…</p></div>
     <p class="note" id="policy"></p>
   </section>

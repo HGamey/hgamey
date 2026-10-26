@@ -1037,6 +1037,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def _read_get(self, parts, q):
             try:
+                if parts[:1] == ["live"]:
+                    if len(parts) != 2 or parts[1] not in {"status", "frame", "stream"}:
+                        return self._send(404, {"error": "no such live observation operation"})
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "live observation requires an explicit node identity"})
+                    if board is None or getattr(board, "live", None) is None:
+                        return self._send(503, {"error": "live observation is not configured on this node"})
+                    return dash.dash_live.handle(board, self, ["api", *parts], urlparse(self.path).query)
                 if parts == ["node"]:
                     return self._send(200, node.identity())
                 if parts == ["node-updates"]:

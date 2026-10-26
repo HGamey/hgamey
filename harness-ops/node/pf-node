@@ -36,6 +36,8 @@
   pf-node devices-resolve SERIAL         # 纯宿主核对精确别名，输出 {node_id,binding} 可保存为文件
   pf-node --device-binding binding.json --detach phonefarm gray-layer session --serial SERIAL ...
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
+  pf-node live status SERIAL [--device-binding FILE] # 单次读取看屏状态
+  pf-node live frame SERIAL --output FILE [--device-binding FILE] # 单次JPEG；原绑定、显式新文件、不重试
   pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
   pf-node job-sources                     # 管理员登记的只读历史来源与 revision
   pf-node jobs --source old-local --source-revision 1 [--query TEXT] [--limit N] [--cursor C]
@@ -1114,6 +1116,9 @@ def main():
     if not args:
         print(__doc__)
         return
+    if args[0] == "live" and (len(args) == 1 or any(arg in ("--help", "-h") for arg in args[1:])):
+        from live_client import main as live_main
+        return live_main(None, ["--help"])
     if args == ["games", "--help"] or args == ["games", "-h"]:
         from game_client import HELP
         print(HELP)
@@ -1147,6 +1152,13 @@ def main():
         else:
             from update_client import main as read_status
         return read_status(TARGET, args[1:])
+    if args[0] == "live":
+        if (request_id is not None or inputs_path is not None or resources or device_access is not None
+                or recovery_for is not None or execution_policy is not None or time_budget is not None
+                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach or outdir):
+            sys.exit("pf-node: live 不接收作业选项；--device-binding 放在 live 子命令后")
+        from live_client import main as live_main
+        return live_main(TARGET, args[1:])
     history_commands = ("jobs", "status", "log", "artifacts", "out", "wait", "kill", "cancel", "release", "session-recover", "retry-finalize")
     if args[0] == "job-sources" or (args[0] in history_commands and any(value in ("--source", "--source-revision") for value in args[1:])):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None

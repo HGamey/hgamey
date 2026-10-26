@@ -1,5 +1,8 @@
 .live-page { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
 .sec-title { font-size: 16px; margin: 0 0 8px; }
+.live-selection { display: grid; gap: 8px; margin-bottom: 16px; }
+.live-selection input, .live-selection select { width: 100%; min-width: 0; }
+#live-binding-json { white-space: pre-wrap; overflow-wrap: anywhere; }
 .devs { display: flex; flex-direction: column; gap: 8px; }
 .dev { text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; font: inherit; }
 .dev:hover { background: var(--wash); }

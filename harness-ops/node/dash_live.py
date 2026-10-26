@@ -16,6 +16,9 @@ import threading
 import time
 from urllib.parse import parse_qs
 
+from device_scope import binding, lease_problem
+from device_registry import RegistryError
+
 
 def _env_num(name, default, lo, hi):
     try:
@@ -41,10 +44,13 @@ STREAM_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosnif
 Frame = collections.namedtuple("Frame", "seq jpeg at mode")
 
 
-def lock_for(serial, lock):
-    """Advisory only. PF takes the actual domain-wide lease after this check."""
+def lock_for(serial, lock, device_binding=None):
+    """Advisory only. PF takes the actual declared lease after this check."""
     if not isinstance(lock, dict):
         return True, "设备锁状态未知"
+    if device_binding is not None:
+        reason = lease_problem({"device_access": "write", "device_binding": device_binding}, lock.get("lease") or {})
+        return reason is not None, reason
     lease = lock.get("lease") or {}
     if lock.get("status") == "unknown" or lease.get("status") not in ("clear", "held", "blocked"):
         return True, "设备锁状态未知"
@@ -70,12 +76,14 @@ class PFBackend:
                                                if not k.startswith("PF_JOB_") and k not in ("DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID")}
         self.root = Path(root)
         self.available, self.reason = False, "configured PF lacks observation capture_v1"
+        self.device_binding_available = False
         try:
             result = subprocess.run([executable, "screen", "capabilities", "--json"], cwd=cwd, env=self.env,
                                     stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
             cap = json.loads(result.stdout) if len(result.stdout) <= 8192 else {}
             self.available = (result.returncode == 0 and cap.get("schema") == "phonefarm/screen-capabilities@1"
                               and cap.get("capture_v1") is True and cap.get("ownership") == "observation-v1")
+            self.device_binding_available = self.available and cap.get("device_binding_v1") is True
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
 
@@ -88,16 +96,21 @@ class PFBackend:
                  "sampled_at": snapshot.get("sampled_at"), "stale": snapshot.get("stale", True)} for item in items
                 if isinstance(item, dict) and isinstance(item.get("serial"), str)]
 
-    def snapshot(self, serial):
+    def snapshot(self, serial, device_binding=None):
         if not self.available:
             raise CaptureError("unavailable", self.reason)
+        if device_binding is not None and not self.device_binding_available:
+            raise CaptureError("unavailable", "configured PF screen capture does not support device binding; no global fallback")
         self.root.mkdir(parents=True, exist_ok=True)
         work = Path(tempfile.mkdtemp(prefix="frame-", dir=self.root)).resolve()
         retain = False
         try:
             with (work / "stdout").open("w+b") as stdout, (work / "stderr").open("w+b") as stderr:
-                process = subprocess.Popen([self.executable, "screen", "capture", "--serial", serial,
-                    "--out", str(work / "capture"), "--json"], cwd=self.cwd, env=self.env,
+                argv = [self.executable, "screen", "capture", "--serial", serial,
+                        "--out", str(work / "capture"), "--json"]
+                if device_binding is not None:
+                    argv += ["--device-binding", json.dumps(device_binding, separators=(",", ":"))]
+                process = subprocess.Popen(argv, cwd=self.cwd, env=self.env,
                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
                 deadline = time.monotonic() + 25
                 while process.poll() is None:
@@ -123,6 +136,9 @@ class PFBackend:
             if (value.get("serial") != serial or value.get("ownership") != "observation-v1"
                     or value.get("jpeg_path") != str(path) or type(at) is not int or at <= 0):
                 raise CaptureError("error", "PF capture identity or time is missing", retain=True)
+            if device_binding is not None and (value.get("device_binding") != device_binding
+                                              or value.get("lease_scope") != "device"):
+                raise CaptureError("error", "PF capture did not preserve the original device binding", retain=True)
             with path.open("rb") as stream:
                 jpeg = stream.read(MAX_FRAME + 1)
             if len(jpeg) > MAX_FRAME or not jpeg.startswith(b"\xff\xd8"):
@@ -144,8 +160,8 @@ class LiveBusy(Exception):
 
 
 class DeviceStream:
-    def __init__(self, hub, serial):
-        self.hub, self.serial = hub, serial
+    def __init__(self, hub, serial, device_binding=None):
+        self.hub, self.serial, self.device_binding = hub, serial, device_binding
         self.cond = threading.Condition()
         self.viewers, self.seq = 0, 0
         self.left_at = time.monotonic()
@@ -189,10 +205,12 @@ class DeviceStream:
                     "running": self.thread is not None, "error": self.error,
                     "fps": round(sum(t >= now - 3 for t in self.stamps) / 3, 1),
                     "frame_at": self.frame.at if self.frame else None, "frame_seq": self.seq,
-                    "policy": self.hub.policy()}
+                    "policy": self.hub.policy(),
+                    **({"device_binding": self.device_binding, "lease_scope": "device"}
+                       if self.device_binding is not None else {})}
 
     def _decide(self, now):
-        held, label = self.hub.held(self.serial)
+        held, label = self.hub.held(self.serial, self.device_binding)
         if held:
             self.held_seen_at = now
             return "deferred", label
@@ -222,7 +240,8 @@ class DeviceStream:
                             if self.viewers <= 0:
                                 continue
                             self.mode, self.label = "starting", None
-                        jpeg, at = self.hub.backend.snapshot(self.serial)
+                        jpeg, at = (self.hub.backend.snapshot(self.serial, self.device_binding)
+                                    if self.device_binding is not None else self.hub.backend.snapshot(self.serial))
                         self.publish(jpeg, at)
                         next_sample = time.monotonic() + self.hub.interval_s
                 except CaptureError as error:
@@ -246,18 +265,20 @@ class DeviceStream:
 
 class LiveHub:
     def __init__(self, lock_fn, backend, *, free_grace_s=FREE_GRACE_S,
-                 linger_s=LINGER_S, policy_every_s=POLICY_EVERY_S, interval_s=None):
-        self.lock_fn, self.backend = lock_fn, backend
+                 linger_s=LINGER_S, policy_every_s=POLICY_EVERY_S, interval_s=None, device_scopes=None):
+        self.lock_fn, self.backend, self.device_scopes = lock_fn, backend, device_scopes
         self.free_grace_s, self.linger_s, self.policy_every_s = free_grace_s, linger_s, policy_every_s
         self.interval_s = 1 / LIVE_FPS if interval_s is None else interval_s
         self.streams, self.lock = {}, threading.Lock()
 
     def policy(self):
         return {"live_fps": 1 / self.interval_s, "held_fps": 0, "free_grace_s": self.free_grace_s,
-                "stream_max_s": STREAM_MAX_S, "backend": "pf-observation", "video": False}
+                "stream_max_s": STREAM_MAX_S, "backend": "pf-observation", "video": False,
+                "device_binding_v1": bool(getattr(self.backend, "device_binding_available", False)
+                                          and self.device_scopes is not None)}
 
-    def held(self, serial):
-        return lock_for(serial, self.lock_fn())
+    def held(self, serial, device_binding=None):
+        return lock_for(serial, self.lock_fn(), device_binding)
 
     def devices(self):
         return self.backend.devices()
@@ -266,23 +287,43 @@ class LiveHub:
         return bool(SERIAL_RE.fullmatch(serial or "")) and any(
             d["serial"] == serial and d["state"] == "device" for d in self.devices())
 
-    def open(self, serial):
+    @staticmethod
+    def key(serial, device_binding=None):
+        return (serial, json.dumps(device_binding, sort_keys=True)) if device_binding is not None else serial
+
+    def open(self, serial, device_binding=None):
+        if device_binding is not None:
+            device_binding = binding(device_binding)
+            if device_binding["serial"] != serial:
+                raise ValueError("serial must match the original device binding")
+        key = self.key(serial, device_binding)
         with self.lock:
-            stream = self.streams.get(serial)
-            if sum(s.viewers for s in self.streams.values()) >= MAX_VIEWERS or (stream and stream.viewers >= MAX_VIEWERS_PER_DEVICE):
+            stream = self.streams.get(key)
+            if (sum(s.viewers for s in self.streams.values()) >= MAX_VIEWERS
+                    or sum(s.viewers for s in self.streams.values() if s.serial == serial) >= MAX_VIEWERS_PER_DEVICE):
                 raise LiveBusy("观看人数已满")
             if stream is None:
-                stream = self.streams[serial] = DeviceStream(self, serial)
+                if device_binding is not None:
+                    if not self.policy()["device_binding_v1"]:
+                        raise CaptureError("unavailable", "configured PF screen capture does not support device binding; no global fallback")
+                    self.device_scopes.admit(device_binding)
+                stream = self.streams[key] = DeviceStream(self, serial, device_binding)
             stream.join()
             return stream
 
-    def status(self):
+    def status(self, serial="", device_binding=None):
         with self.lock:
             streams = dict(self.streams)
         result = []
-        for device in self.devices():
-            state = (streams[device["serial"]].status() if device["serial"] in streams else
-                     {"mode": "idle", "viewers": 0, "running": False})
+        devices = self.devices()
+        if device_binding is not None and not any(d["serial"] == serial for d in devices):
+            devices.append({"serial": serial, "state": "unknown", "stale": True, "sampled_at": None})
+        for device in devices:
+            value = device_binding if device["serial"] == serial else None
+            key = self.key(device["serial"], value)
+            state = (streams[key].status() if key in streams else
+                     {"mode": "idle", "viewers": 0, "running": False,
+                      **({"device_binding": value, "lease_scope": "device"} if value is not None else {})})
             result.append({**device, **state})
         return {"devices": result, "policy": self.policy()}
 
@@ -297,21 +338,35 @@ def handle(dash, h, sub, query):
     if sub[:2] != ["api", "live"]:
         return False
     hub = dash.live
-    q = parse_qs(query)
+    q = parse_qs(query, keep_blank_values=True)
     serial = (q.get("serial") or [""])[0]
+    try:
+        value = None
+        if "device_binding" in q:
+            if len(q["device_binding"]) != 1:
+                raise ValueError("device_binding requires one original binding")
+            value = binding(json.loads(q["device_binding"][0]))
+            if value["serial"] != serial:
+                raise ValueError("serial must match the original device binding")
+    except ValueError as error:
+        dash._send(h, 400, {"error": str(error)})
+        return True
     if sub == ["api", "live", "status"]:
-        dash._send(h, 200, hub.status())
+        dash._send(h, 200, hub.status(serial, value))
         return True
     if sub[2:] not in (["stream"], ["frame"]):
         dash._send(h, 404, {"error": "not found"})
         return True
-    if not hub.known(serial):
+    if value is None and not hub.known(serial):
         dash._send(h, 404, {"error": "没有这台在线设备"})
         return True
     try:
-        s = hub.open(serial)
+        s = hub.open(serial, value)
     except LiveBusy as e:
         dash._send(h, 503, {"error": str(e)})
+        return True
+    except (CaptureError, RegistryError) as error:
+        dash._send(h, error.status if isinstance(error, RegistryError) else 503, {"error": str(error)})
         return True
     try:
         if sub[2] == "frame":
