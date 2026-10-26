@@ -137,6 +137,37 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                   "actor_id": "agent", "control_epoch": 1, "action": "capture", "params": {}}
         return jid, out, action
 
+    def test_receipt_read_during_shared_output_handback(self):
+        jid, out, action = self.prepare()
+        meta = self.jobs._read_meta(jid)
+        meta.update(state="running", execution_policy="contained")
+        self.jobs._write_meta(jid, meta)
+        self.jobs.pf_env = {"PATH": os.defpath, "PHONEFARM_SHARED_GID": str(os.getegid())}
+        out.chmod(0o2770)
+        helper = Path(self.jobs.bins["phonefarm"][0])
+        helper.write_text(helper.read_text().replace(
+            "with (out / 'helper-calls').open('a') as f:",
+            "import os, stat\n"
+            "if os.getenv('PHONEFARM_SHARED_GID') and stat.S_IMODE(out.stat().st_mode) != 0o2770:\n"
+            "    print(json.dumps({'schema':'phonefarm/gray-control-error@1','code':'io_error',"
+            "'error':'existing PF shared object has incompatible group/permissions'})); sys.exit(2)\n"
+            "with (out / 'helper-calls').open('a') as f:"))
+        run = subprocess.run
+        def handback_before_helper(*args, **kwargs):
+            # The actual worker returns output before writing terminal metadata.
+            # Make that ordering deterministic without creating a privileged UID.
+            if "session-action" in args[0]:
+                self.assertIn("PHONEFARM_SHARED_GID", kwargs["env"])
+            else:
+                out.chmod(0o700)
+                self.assertEqual(self.jobs._read_meta(jid)["state"], "running")
+            return run(*args, **kwargs)
+        with mock.patch("node_session.subprocess.run", side_effect=handback_before_helper) as called:
+            self.assertEqual(self.jobs.session(jid, action=action)["status"], "accepted")
+            receipt = self.jobs.session(jid, request_id=action["request_id"])
+        self.assertEqual(receipt["request_id"], action["request_id"])
+        self.assertEqual(called.call_count, 2, "query must not replay the action or retry the helper")
+
     def test_configured_gateway_admission_refresh_and_old_session_continuity(self):
         old, out, action = self.prepare()
         helper = Path(self.jobs.bins["phonefarm"][0])
