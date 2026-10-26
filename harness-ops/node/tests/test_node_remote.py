@@ -51,12 +51,14 @@ class FakePF:
         self.calls.append(("load",))
         return copy.deepcopy(self.data["refs"])
 
-    def start(self, serial, op, ip, max_seconds, acquisition_id):
+    def start(self, serial, op, ip, max_seconds, acquisition_id, device_binding=None):
         self.calls.append(("start", serial, acquisition_id))
         ident = "ref-" + str(len(self.data["refs"]) + 1)
         ref = {"schema": "hgamey/remote-owner-ref@1", "id": ident, "serial": serial,
                "operator": op, "ip": ip, "created_at": time.time(), "max_seconds": max_seconds,
                "acquisition_id": acquisition_id}
+        if device_binding is not None:
+            ref["device_binding"] = copy.deepcopy(device_binding)
         self.data["refs"].append(ref)
         self.data["descriptors"][ident] = {
             "schema": "phonefarm/remote-control@1", "session_id": "session-" + ident,
@@ -64,6 +66,8 @@ class FakePF:
             "capabilities": self.actions, "input_contract": self.input_contract,
             "input_frame_id": None, "frame_max_age_seconds": 30,
             "recovery": {"required": False}}
+        if device_binding is not None:
+            self.data["descriptors"][ident].update(device_binding=device_binding, lease_scope="device")
         self.save()
         return copy.deepcopy(ref)
 
@@ -355,6 +359,56 @@ class RemoteHttpTests(Base):
         self.assertEqual(self.backend.mutations(), before)
         self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
         self.assertIn("hgremote_logcat", node_remote.MCP_ACTION)
+
+    def test_remote_device_lanes_keep_original_binding_and_scope(self):
+        from test_device_scope import bound, DOMAIN
+
+        self.backend.device_binding_available = True
+        a, alias, b = bound("A", SERIAL), bound("A", "emulator-alias"), bound("B", "fixture-phone")
+        resolver = mock.Mock(side_effect=lambda serial: {a["serial"]: a, alias["serial"]: alias, b["serial"]: b}[serial])
+        self.remote.device_scopes = mock.Mock(resolve=resolver)
+        current = {"status": "held", "storage": {"readiness": "ready", "layout_version": 2, "domain_id": DOMAIN},
+            "device_scopes": {"schema": "phonefarm/device-scopes@1", "domain_id": DOMAIN,
+                "registry_revision": 1, "global": {"status": "clear", "error": None},
+                "queue_waiting": False, "unknown": False,
+                "devices": [{"device_id": key, "status": "clear", "error": None} for key in ("A", "B")]}}
+        self.remote.leases = mock.Mock(snapshot=lambda **kw: copy.deepcopy(current))
+        self.remote.policy.enable(b["serial"])
+        policy = self.remote.policy.load(); policy["aliases"] = [[SERIAL, alias["serial"]]]
+        self.remote.policy.save(policy)
+        auth = {**self.bearer(self.alice_token), "X-Expected-Node-ID": self.jobs.node_id}
+        path = "/remote/devices/"
+        code, _, raw = self.req("GET", path + "resolve?serial=" + SERIAL, headers=auth)
+        self.assertEqual((code, json.loads(raw)), (200, {"node_id": self.jobs.node_id, "binding": a}))
+
+        def acquire(key, value, serial=None):
+            body = {"request_id": key, **({"device_binding": value} if value else {})}
+            code, _, raw = self.req("POST", path + (serial or value["serial"]) + "/session", body, auth)
+            return code, json.loads(raw)
+
+        code, first = acquire("lane-a", a); self.assertEqual(code, 200, first)
+        current["device_scopes"]["devices"][0]["status"] = "held"
+        code, second = acquire("lane-b", b); self.assertEqual(code, 200, second)
+        self.assertEqual(acquire("alias-a", alias)[0], 409)
+        self.assertEqual(acquire("global", None, b["serial"])[0], 409)
+        code, _, raw = self.req("GET", path.rstrip("/"), headers=auth)
+        devices = {d["serial"]: d for d in json.loads(raw)["devices"]}
+        self.assertEqual(devices[SERIAL]["holder"]["device_scope"], {"scope": "device", "binding": a})
+        self.assertEqual(devices[b["serial"]]["holder"]["session_id"], second["session_id"])
+        self.assertNotEqual(first["session_id"], second["session_id"])
+        self.backend.device_binding_available = False
+        resolver.side_effect = AssertionError("old acquisition must not re-resolve")
+        self.assertEqual(acquire("lane-a", a)[1]["session_id"], first["session_id"])
+        self.assertEqual(acquire("lane-a", {**a, "registry_revision": 2})[0], 409)
+        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 2)
+        # A saved binding also survives a gateway restart and missing new capability.
+        restarted = self.new_remote(self.backend)
+        self.assertEqual(restarted.query(self.alice, SERIAL, acquisition_id="lane-a")["device_binding"], a)
+        for descriptor in self.backend.data["descriptors"].values():
+            descriptor["phase"] = "closed"
+        code, legacy = acquire("legacy-global", None, SERIAL)
+        self.assertEqual(code, 200, legacy)
+        self.assertNotIn("device_binding", self.backend.data["refs"][-1])
 
     def test_frame_bound_http_cli_preserves_metadata_and_never_retries_unknown_input(self):
         auth = self.bearer(self.alice_token)

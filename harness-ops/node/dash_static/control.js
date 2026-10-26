@@ -11,7 +11,8 @@
   const state = { op: undefined, devices: [], capabilities: null, devicesFresh: false, devicesError: "尚未读取状态",
     serial: null, binding: null, session: null, sessionFresh: false, sessionError: "", live: null, frame: null, url: null,
     requests: [], selectedRequest: null, posting: false, querying: false, authBusy: false, refreshing: false,
-    revision: 0, imageRevision: 0, refreshCtl: null, timer: 0 };
+    revision: 0, imageRevision: 0, refreshCtl: null, timer: 0,
+    acquireScope: "global", acquireBinding: null, bindingBusy: false, bindingError: "", bindingRevision: 0 };
 
   function message(value) { return typeof value === "string" ? value : value?.message || value?.error || "请求失败"; }
   function msg(text, err) { $("msg").textContent = text || ""; $("msg").classList.toggle("err", !!err); }
@@ -19,7 +20,7 @@
   const query = (values) => "?" + new URLSearchParams(values).toString();
   function save() {
     try { sessionStorage.setItem(STORAGE, JSON.stringify({ serial: state.serial, binding: state.binding,
-      requests: state.requests.map(({ id, serial, session_id, action, status, at, target, input }) => ({ id, serial, session_id, action, status, at, target, ...(input ? {input} : {}) })), selectedRequest: state.selectedRequest })); }
+      requests: state.requests.map(({ id, serial, session_id, action, status, at, target, input, binding_recorded, device_binding }) => ({ id, serial, session_id, action, status, at, target, ...(input ? {input} : {}), ...(binding_recorded ? {binding_recorded:true} : {}), ...(device_binding!==undefined ? {device_binding} : {}) })), selectedRequest: state.selectedRequest })); }
     catch (_) { /* 页面仍保留原 ID，回执区可手工记录。 */ }
   }
   try {
@@ -64,6 +65,34 @@
     $("op-name").textContent = name ? "操作员：" + name : "";
   }
   function selectedDevice() { return state.devices.find(d => d.serial === state.serial); }
+  function validDeviceBinding(value) {
+    return value?.schema === "phonefarm/device-binding@1" && Object.keys(value).sort().join(",") === "device_id,domain_id,registry_revision,schema,serial" &&
+      typeof value.domain_id === "string" && /^[0-9a-f]{32}$/.test(value.domain_id) && Number.isSafeInteger(value.registry_revision) && value.registry_revision > 0 &&
+      typeof value.device_id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.device_id) &&
+      typeof value.serial === "string" && !!value.serial && new TextEncoder().encode(value.serial).length <= 256 && !/[\s\x00-\x1f\x7f]/.test(value.serial);
+  }
+  function acquireBindingProblem() {
+    if (state.acquireScope !== "device") return "";
+    if (state.capabilities?.device_binding_v1 !== true) return "节点未声明按登记设备接管能力，不会改为全域请求。";
+    if (state.bindingBusy) return "正在读取设备登记…";
+    return validDeviceBinding(state.acquireBinding) && state.acquireBinding.serial === state.serial ? "" : state.bindingError || "先显式读取当前设备的登记绑定。";
+  }
+  function clearAcquireBinding() { state.acquireBinding = null; state.bindingError = ""; state.bindingBusy = false; state.bindingRevision++; }
+  function scopeText(session) {
+    if (session?.lease_scope === "device") return `登记设备 ${session.device_binding?.device_id || "未提供"} · revision ${session.device_binding?.registry_revision ?? "未知"}`;
+    return session?.device_binding ? "实际 lease 范围未确认" : "兼容全域";
+  }
+  async function resolveAcquireBinding() {
+    if ($("resolve-take-binding").disabled) return;
+    clearAcquireBinding(); const revision = state.bindingRevision, serial = state.serial, target = HGTarget.binding(); state.bindingBusy = true; render();
+    try {
+      const value = await call("GET", "/devices/resolve" + query({serial}), null, {target});
+      if (revision !== state.bindingRevision) return;
+      if (HGTarget.problem(target) || value.node_id !== target.node_id || !validDeviceBinding(value.binding) || value.binding.serial !== serial) throw new Error("登记绑定与固定节点或当前设备不一致");
+      state.acquireBinding = value.binding;
+    } catch (error) { if (revision === state.bindingRevision) state.bindingError = error.message; }
+    finally { if (revision === state.bindingRevision) { state.bindingBusy = false; render(); } }
+  }
   function actionSupported(action) {
     const d = selectedDevice();
     return state.capabilities?.available === true && Array.isArray(state.capabilities.actions) && state.capabilities.actions.includes(action)
@@ -95,7 +124,7 @@
     const h = d.holder;
     if (!state.devicesFresh) return "上次观测；当前状态未知";
     if (!h) return d.enabled ? "当前目录未报告占用" : "未对远程开放";
-    if (h.kind === "remote") return `${h.operator || "操作员"} · ${PHASE[h.phase] || PHASE.unknown}`;
+    if (h.kind === "remote") return `${h.operator || "操作员"} · ${PHASE[h.phase] || PHASE.unknown}${h.serial && h.serial !== d.serial ? " · 全域占用来自 " + h.serial : ""}`;
     if (h.kind === "experiment") return "实验占用：" + (h.label || "未知");
     return "设备 lease 占用或待核查";
   }
@@ -164,9 +193,18 @@
     }));
     if (!state.devices.length) { const p = document.createElement("li"); p.className = "note"; p.textContent = state.devicesFresh ? "当前目录没有设备" : "设备目录尚未确认"; $("devices").append(p); }
     const d = selectedDevice(), reason = sessionReason(), h = d?.holder;
-    const reconnect = !state.binding && h?.kind === "remote" && h.session_id;
+    const reconnect = !state.binding && h?.kind === "remote" && h.serial === state.serial && h.session_id;
     const canTake = HGTarget.canWrite() && state.op && state.devicesFresh && d?.enabled && actionSupported("acquire") && !state.posting && !state.authBusy
-      && !state.binding && (!h || reconnect);
+      && !state.binding && (!h || reconnect) && (reconnect || !acquireBindingProblem());
+    const fixed = state.binding, fixedScope = fixed ? (fixed.device_binding ? "device" : "global") : state.acquireScope;
+    $("take-scope").value = fixedScope; $("take-scope").disabled = !!fixed || !!reconnect || !state.op || state.posting || state.authBusy || state.bindingBusy;
+    $("take-scope").querySelector('[value="device"]').disabled = state.capabilities?.device_binding_v1 !== true;
+    $("resolve-take-binding").hidden = fixedScope !== "device" || !!fixed || !!reconnect;
+    $("resolve-take-binding").disabled = !!fixed || !!reconnect || !state.op || !state.serial || !HGTarget.canWrite() || state.capabilities?.device_binding_v1 !== true || state.posting || state.authBusy || state.bindingBusy;
+    $("resolve-take-binding").setAttribute("aria-busy", String(state.bindingBusy));
+    const chosen = fixed?.device_binding || (!fixed && state.acquireScope === "device" ? state.acquireBinding : null);
+    $("take-binding-json").hidden = !chosen; $("take-binding-json").textContent = chosen ? JSON.stringify(chosen, null, 2) : "";
+    $("take-binding-info").textContent = fixed ? "原接管或会话身份已固定，查询不会重新选择设备绑定。实际范围以下方会话回执为准。" : reconnect ? "将连接已有会话并读取其原范围，不创建新接管。" : acquireBindingProblem() || (chosen ? "登记绑定已读取，新接管将固定此范围；可与其他已绑定设备并行，全域操作仍会互斥。" : "默认保持兼容全域。显式按登记设备接管前只读核对宿主登记，不采样手机。");
     $("cur-serial").textContent = state.serial || "";
     $("take").textContent = reconnect ? "连接已有会话" : "接管设备"; $("take").disabled = !canTake;
     $("release").disabled = !canAction("release"); $("renew").disabled = !canAction("renew");
@@ -175,6 +213,7 @@
     $("ops").disabled = !!reason || state.posting || state.authBusy || unresolved();
     document.querySelectorAll("[data-action], [data-key]").forEach(b => { const action = b.dataset.action || "key"; b.disabled = !canAction(action); b.title = action === "logcat" && !state.session?.capabilities?.includes("logcat") ? "当前 owner 未声明支持读取日志；新程序不会自动升级已有会话。" : actionSupported(action) ? reason || (unresolved() ? "先查询未决动作" : "") : "当前设备未声明支持此动作"; });
     $("lease-info").textContent = state.session ? `${sessionText(state.session)} · ${state.session.session_id || "身份未知"}${state.sessionFresh ? "" : "（上次观测，当前未确认）"}${state.session.deadline ? " · 最晚 " + state.session.deadline : ""}` : state.binding?.acquisition_id ? "接管请求待确认 · " + state.binding.acquisition_id : d ? holderText(d) : "先选择设备";
+    $("session-scope").textContent = state.session ? `会话报告的 lease 范围：${scopeText(state.session)}${state.sessionFresh ? "" : "（历史记录）"}。` : "尚无当前会话范围回执。";
     $("operation-info").textContent = reason || (unresolved() ? "存在未决动作；先查询原请求，或显式请求交回等待收尾。" : "会话已确认；每次操作只提交一次。交回和恢复完成是不同事实。");
     $("capability-info").textContent = state.capabilities?.available === true ? "当前支持：" + (state.capabilities.actions || []).map(a => ACTION[a] || a).join("、") : state.capabilities?.reason || "远程能力尚未确认";
     $("op-logout").disabled = state.authBusy || state.posting;
@@ -195,7 +234,7 @@
   function select(serial) {
     if (serial === state.serial) return;
     if (state.binding || state.posting) { msg("当前会话或接管结果尚未关闭；请先查询并完成交回再切换设备。", true); return; }
-    state.revision++; state.serial = serial; state.session = null; state.sessionFresh = false; state.frame = null;
+    clearAcquireBinding(); state.revision++; state.serial = serial; state.session = null; state.sessionFresh = false; state.frame = null;
     if (state.url) URL.revokeObjectURL(state.url); state.url = null;
     $("hg-screen").hidden = true; $("hg-screen").removeAttribute("src");
     startView(); save(); render();
@@ -205,6 +244,7 @@
     if (!s || (typeof s.session_id !== "string" && !unavailable) || s.serial !== binding.serial
       || (binding.session_id && s.session_id !== binding.session_id && !(unavailable && s.phase === "unknown"))
       || (binding.acquisition_id && s.acquisition_id !== binding.acquisition_id)) throw new Error("会话回包身份不匹配，未获得操作资格");
+    if (binding.binding_recorded && (binding.device_binding ? s.lease_scope !== "device" || !validDeviceBinding(s.device_binding) || Object.keys(binding.device_binding).some(key => s.device_binding[key] !== binding.device_binding[key]) : s.device_binding || s.lease_scope === "device")) throw new Error("会话设备范围与原接管声明不一致，请保留原请求查询");
   }
   function applySession(s, binding) {
     validateSession(s, binding);
@@ -325,13 +365,15 @@
   async function acquire() {
     if ($("take").disabled) return;
     const holder = selectedDevice()?.holder;
-    if (holder?.kind === "remote" && holder.session_id) {
+    if (holder?.kind === "remote" && holder.serial === state.serial && holder.session_id) {
       await connectExisting(holder); return;
     }
     supersedeRead();
-    const r = addRequest("acquire", null), binding = { serial: state.serial, acquisition_id: r.id, target:r.target };
+    const r = addRequest("acquire", null); r.binding_recorded = true;
+    if (state.acquireScope === "device") r.device_binding = {...state.acquireBinding};
+    const binding = { serial: state.serial, acquisition_id: r.id, target:r.target, binding_recorded:true, ...(r.device_binding ? {device_binding:r.device_binding} : {}) };
     state.binding = binding; state.posting = true; state.sessionFresh = false; save(); render();
-    try { const s = await call("POST", dev(r.serial, "session"), { request_id: r.id }, {target:r.target || null}); applySession(s, binding); msg(sessionText(s)); }
+    try { const s = await call("POST", dev(r.serial, "session"), { request_id: r.id, ...(r.device_binding ? {device_binding:r.device_binding} : {}) }, {target:r.target || null}); applySession(s, binding); msg(sessionText(s)); }
     catch (e) {
       unknownRequest(r, e);
       if (r.status === "failed") { state.binding = null; save(); }
@@ -352,7 +394,7 @@
     state.querying = true; render();
     try {
       if (r.action === "acquire") {
-        const binding = { serial: r.serial, acquisition_id: r.id, target:r.target || null }, s = await readSession(binding);
+        const binding = { serial: r.serial, acquisition_id: r.id, target:r.target || null, ...(r.binding_recorded ? {binding_recorded:true} : {}), ...(Object.hasOwn(r,"device_binding") ? {device_binding:r.device_binding} : {}) }, s = await readSession(binding);
         validateSession(s, binding);
         if (revision === state.revision && state.serial === r.serial && (!state.binding || state.binding.acquisition_id === r.id || state.binding.session_id === s.session_id)) applySession(s, binding);
         r.status = acquisitionStatus(s); r.session_id = s.session_id; r.receipt = s; r.error = s.error || null;
@@ -413,6 +455,8 @@
     finally { state.authBusy = false; render(); }
   });
   $("take").addEventListener("click", acquire);
+  $("take-scope").addEventListener("change", () => { if ($("take-scope").disabled) return; clearAcquireBinding(); state.acquireScope = $("take-scope").value; render(); });
+  $("resolve-take-binding").addEventListener("click", resolveAcquireBinding);
   $("renew").addEventListener("click", () => act("renew"));
   $("release").addEventListener("click", () => act("release"));
   $("check-session").addEventListener("click", () => {

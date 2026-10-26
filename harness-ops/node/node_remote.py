@@ -9,6 +9,8 @@ import base64, fnmatch, hashlib, hmac, json, os, re, secrets, subprocess, sys, t
 import threading, time, uuid
 from urllib.parse import parse_qs, unquote
 from remote_owner import OwnerError
+from device_scope import binding, conflicts, scope, lease_problem
+from device_registry import RegistryError
 
 CONFIG_DIR = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
 TOKEN_RE = re.compile(r"hgop_([0-9a-f]{8})_([A-Za-z0-9_-]{32,64})\Z")
@@ -401,6 +403,10 @@ class Session:
                 'heartbeat_ttl_s': SESSION_TTL,
                 'screen_size': (self.descriptor.get('latest_image') or {}).get('original_size')}
 
+    def scope(self):
+        return scope({'device_access': 'write',
+                      **({'device_binding': self.ref['device_binding']} if 'device_binding' in self.ref else {})})
+
 
 class Remote:
     def __init__(self, storage, adb='adb', hdc=None, config_dir=None, reaper=True, backend=None):
@@ -410,6 +416,7 @@ class Remote:
         self.audit = Audit(os.path.join(cfg, 'remote.audit.jsonl'))
         self.occupancy = Occupancy(storage)
         self.adb, self.hdc, self.backend = adb, hdc, backend
+        self.device_scopes, self.leases = None, None
         self.rate = RateLimit()
         self.sessions, self._lock = {}, threading.RLock()
         self.web, self.fails = {}, {}
@@ -429,7 +436,17 @@ class Remote:
                            if self.backend and self.backend.available else [],
                 'ownership': 'strong-lease-v1',
                 'input_contract': getattr(self.backend, 'input_contract', None),
+                'device_binding_v1': bool(getattr(self.backend, 'device_binding_available', False)
+                                          and self.device_scopes is not None),
                 'unsupported': sorted(UNSUPPORTED)}
+
+    def resolve(self, serial):
+        if self.device_scopes is None:
+            raise RemoteError(503, 'configured device registry is unavailable')
+        try:
+            return self.device_scopes.resolve(serial)
+        except RegistryError as error:
+            raise RemoteError(error.status, str(error), code=error.payload['code']) from error
 
     def _enumerate(self):
         # These commands enumerate the host transport server; they do not probe
@@ -467,7 +484,7 @@ class Remote:
             holders, occ_err = [], error.payload['error']
         with self._lock:
             sessions = list(self.sessions.values())
-        active = [self._refresh(s) for s in sessions]
+        active = [{**self._refresh(s), 'device_scope': s.scope()} for s in sessions]
         active = [s for s in active if s.get('phase') != 'closed']
         out = []
         for d in self._enumerate():
@@ -477,7 +494,7 @@ class Remote:
                     'aliases': [n for n in names if n != serial], 'ignore_global_lock': False,
                     'capabilities': caps['actions'] if caps['available'] and d['transport'] == 'adb' else [],
                     'holder': None}
-            matches = [s for s in active if s['serial'] in names]
+            matches = [s for s in active if s['device_scope']['scope'] == 'global' or s['serial'] in names]
             if matches:
                 item['holder'] = {'kind': 'remote', **matches[-1]}
             elif holders:
@@ -503,18 +520,28 @@ class Remote:
         minutes = params.get('max_minutes', MAX_MINUTES_DEFAULT)
         if type(minutes) is not int or not 1 <= minutes <= MAX_MINUTES_CAP:
             raise RemoteError(400, f'max_minutes requires 1..{MAX_MINUTES_CAP}')
+        value = binding(params['device_binding']) if 'device_binding' in params else None
+        if value is not None and value['serial'] != serial:
+            raise RemoteError(400, 'acquisition serial must match device_binding')
+        requested_scope = scope({'device_access': 'write', **({'device_binding': value} if value else {})})
         self._require_backend()
         with self._lock:
             for sess in self.sessions.values():
                 if sess.operator['id'] == op['id'] and sess.ref['acquisition_id'] == acquisition:
-                    if sess.serial != serial or sess.ref['max_seconds'] != minutes * 60:
+                    if (sess.serial != serial or sess.ref['max_seconds'] != minutes * 60
+                            or sess.ref.get('device_binding') != value):
                         raise RemoteError(409, 'acquisition request ID already has different content')
                     return {'reused': True, **self._refresh(sess)}
             if not self.policy.enabled(serial):
                 raise RemoteError(403, f'设备 {serial} 未开放远程控制')
+            if value is not None:
+                if not self.capabilities()['device_binding_v1']:
+                    raise RemoteError(503, 'configured PF remote owner does not support device binding; no global fallback')
+                if self.resolve(serial) != value:
+                    raise RemoteError(409, 'device registration no longer matches the frozen binding')
             for sess in self.sessions.values():
                 state = self._refresh(sess)
-                if state.get('phase') != 'closed':
+                if state.get('phase') != 'closed' and conflicts(requested_scope, sess.scope()):
                     raise RemoteError(409, f"设备域由 {sess.operator['name']} 的会话占用或等待恢复", holder=state)
             device = next((d for d in self._enumerate() if d['serial'] == serial), None)
             if not device or device['state'] != 'device':
@@ -523,10 +550,17 @@ class Remote:
                 raise RemoteError(501, '此 PF remote owner 尚未支持 HDC；未发出设备动作')
             # Advisory records explain refusal. Only PF's Lease, acquired inside
             # start(), can actually grant ownership; labels never bypass it.
-            holders = self.occupancy.holders()
-            if holders:
-                raise RemoteError(409, describe_holders(serial, holders), holders=holders)
-            ref = self.backend.start(serial, op, ip, minutes * 60, acquisition)
+            if value is not None:
+                problem = lease_problem({'device_access': 'write', 'device_binding': value},
+                                        self.leases.snapshot(refresh=True) if self.leases else {})
+                if problem:
+                    raise RemoteError(409, problem)
+            else:
+                holders = self.occupancy.holders()
+                if holders:
+                    raise RemoteError(409, describe_holders(serial, holders), holders=holders)
+            ref = self.backend.start(serial, op, ip, minutes * 60, acquisition,
+                                     **({'device_binding': value} if value else {}))
             sess = Session(ref, self.backend.status(ref))
             self.sessions[ref['id']] = sess
             return {'reused': False, **sess.public()}
@@ -699,7 +733,8 @@ _S = {'serial': {'type': 'string'}, 'session_id': {'type': 'string'}, 'request_i
 MCP_TOOLS = [
     ('hgremote_devices', 'List device policy, PF ownership and capabilities.', _schema({})),
     ('hgremote_acquire', 'Acquire a PF owner. Keep request_id; after a timeout query acquisition_id, never create a new attempt.',
-     _schema({'serial': _S['serial'], 'request_id': _S['request_id'], 'max_minutes': {'type': 'integer'}}, ['serial', 'request_id'])),
+     _schema({'serial': _S['serial'], 'request_id': _S['request_id'], 'max_minutes': {'type': 'integer'},
+              'device_binding': {'type': 'object'}}, ['serial', 'request_id'])),
     ('hgremote_status', 'Query a session or the original action receipt without device I/O.',
      _schema({**_S, 'acquisition_id': {'type': 'string'}}, ['serial'])),
 ]
@@ -897,6 +932,12 @@ def handle(remote, h, method, parts, query, board=None, node=None):
             return _send(h, 200, out, extra=extra) or True
         if sub == ["devices"] and method == "GET":
             return _send(h, 200, remote.devices()) or True
+        if sub == ["devices", "resolve"] and method == "GET":
+            if node is None or not (h.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                raise RemoteError(400, "device resolution requires an explicit node identity", code="target_required")
+            if set(q) - {"serial", "expected_node_id"} or not q.get("serial"):
+                raise RemoteError(400, "device resolution requires one serial")
+            return _send(h, 200, {"node_id": node.node_id, "binding": remote.resolve(q["serial"])}) or True
         if method == "GET" and len(sub) == 4 and sub[0] == "devices" and sub[2] == "requests":
             out = remote.query(op, unquote(sub[1]), session_id=q.get("session_id"),
                                request_id=unquote(sub[3]), image=q.get("image") == "1")

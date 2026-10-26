@@ -884,6 +884,8 @@ class Jobs:
 # ═════════════ HTTP ═════════════
 
 def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=None):
+    if remote is not None:
+        remote.device_scopes, remote.leases = jobs.device_scopes, jobs.leases
     jobs.dispatch.start()
     ro_token = readonly_token(token)
     node = node or NodeRead(jobs, jobs.data_root, os.path.dirname(os.path.abspath(__file__)))

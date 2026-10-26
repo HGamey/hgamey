@@ -42,6 +42,8 @@
   </section>
   <section id="ctl-panel" class="ctl-panel" aria-labelledby="ops-h">
     <h2 id="ops-h">操作</h2>
+    <div class="row"><label for="take-scope">新接管执行范围</label><select id="take-scope"><option value="global">兼容全域（默认）</option><option value="device">按已登记设备</option></select><button id="resolve-take-binding" class="ghost" type="button" disabled>读取当前设备登记</button></div>
+    <p id="take-binding-info" class="note"></p><pre id="take-binding-json" class="out" hidden aria-label="接管的登记设备绑定"></pre>
     <div class="lease">
       <div id="lease-info" class="lease-info">未接管</div>
       <button id="take" type="button" disabled>接管设备</button>
@@ -50,6 +52,7 @@
       <button id="check-session" type="button" class="ghost" disabled>查询会话</button>
     </div>
     <p class="note" id="operation-info"></p>
+    <p class="note" id="session-scope"></p>
     <section class="request-receipt" aria-labelledby="receipt-h">
       <h3 id="receipt-h">动作回执</h3>
       <div class="row"><select id="request-select" aria-label="选择动作请求" disabled></select><button id="check-request" type="button" class="ghost" disabled>查询原请求</button></div>

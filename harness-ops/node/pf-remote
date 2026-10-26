@@ -9,6 +9,7 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from target_client import Target, TargetError
+from device_scope import binding as validated_device_binding
 
 
 def main(argv=None):
@@ -18,11 +19,14 @@ def main(argv=None):
     ap.add_argument('--token-file', help='explicit operator credential file, takes precedence over PF_NODE_TOKEN(_FILE)')
     subs = ap.add_subparsers(dest='command', required=True)
     subs.add_parser('devices')
+    resolve = subs.add_parser('devices-resolve', help='read a pinned node device binding; save the JSON for acquire')
+    resolve.add_argument('serial')
     subs.add_parser('node', help='read-only discovery using the operator credential')
     acquire = subs.add_parser('acquire')
     acquire.add_argument('serial')
     acquire.add_argument('--request-id', required=True)
     acquire.add_argument('--max-minutes', type=int, default=60)
+    acquire.add_argument('--device-binding', metavar='FILE', help='devices-resolve {node_id,binding} JSON; omit for legacy global scope; retain the original file for the request')
     session = subs.add_parser('session')
     session.add_argument('serial')
     identity = session.add_mutually_exclusive_group(required=True)
@@ -55,12 +59,34 @@ def main(argv=None):
         return 0
     method, path, body = 'GET', '/remote/devices', None
     query_context = {}
-    if args.command != 'devices':
+    if args.command == 'devices-resolve':
+        if not target.expected_node_id:
+            ap.error('devices-resolve requires --node-id or PF_NODE_ID')
+        path += '/resolve?' + urlencode({'serial': args.serial})
+    elif args.command != 'devices':
         path += '/' + quote(args.serial, safe='')
         if args.command == 'acquire':
             method, path = 'POST', path + '/session'
             body = {'request_id': args.request_id, 'max_minutes': args.max_minutes}
             query_context = {'acquisition_id': args.request_id, 'serial': args.serial}
+            if args.device_binding:
+                target.require_write()
+                with Path(args.device_binding).open('rb') as source:
+                    raw = source.read((8 << 10) + 1)
+                if len(raw) > 8 << 10:
+                    ap.error('device binding file exceeds 8 KiB')
+                envelope = json.loads(raw)
+                if not isinstance(envelope, dict) or envelope.get('node_id') != target.expected_node_id:
+                    ap.error('device binding file node_id must match the pinned node')
+                binding = validated_device_binding(envelope.get('binding'))
+                if binding['serial'] != args.serial:
+                    ap.error('device binding serial must exactly match acquire serial')
+                with target.opener.open(target.request('GET', '/remote/devices'), timeout=30) as response:
+                    capabilities = json.loads(response.read((1 << 20) + 1)).get('capabilities', {})
+                if capabilities.get('device_binding_v1') is not True:
+                    ap.error('node does not support device-bound remote acquisition; use session to query the original acquisition')
+                body['device_binding'] = binding
+                query_context['device_binding'] = binding
         elif args.command == 'session':
             query = {'session_id': args.session_id} if args.session_id else {'acquisition_id': args.acquisition_id}
             path += '/session?' + urlencode(query)

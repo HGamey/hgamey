@@ -24,6 +24,7 @@ class PFRemote:
         self.store = SafeRoot(str(self.root))
         self.processes = {}
         self.available, self.actions = False, []
+        self.device_binding_available = False
         self.input_contract = None
         self.reason = "configured PF lacks strong remote owner; raw device fallback disabled"
         try:
@@ -33,6 +34,7 @@ class PFRemote:
             if self.available:
                 self.actions = cap["actions"]
                 self.input_contract = cap.get("input_contract")
+                self.device_binding_available = cap.get("device_binding_v1") is True
                 self.reason = None
         except (OwnerError, KeyError):
             pass
@@ -81,12 +83,14 @@ class PFRemote:
     def _path(self, ref):
         return self.root / ref["id"] / "owner"
 
-    def start(self, serial, operator, ip, max_seconds, acquisition_id):
+    def start(self, serial, operator, ip, max_seconds, acquisition_id, device_binding=None):
         if not self.available:
             raise OwnerError(self.reason)
         ref = {"schema": "hgamey/remote-owner-ref@1", "id": uuid.uuid4().hex, "serial": serial,
                "operator": operator, "ip": ip, "created_at": time.time(), "max_seconds": max_seconds,
                "acquisition_id": acquisition_id}
+        if device_binding is not None:
+            ref["device_binding"] = device_binding
         work = self.root / ref["id"]
         self.store.mkdir(ref["id"])
         self.store.write_json(ref["id"] + "/ref.json", ref)
@@ -94,9 +98,12 @@ class PFRemote:
         # cannot erase the location of a possibly running owner.
         with (work / "stdout").open("wb") as output, (work / "stderr").open("wb") as error:
             try:
-                proc = subprocess.Popen([self.executable, "remote-control", "owner", "--serial", serial,
+                command = [self.executable, "remote-control", "owner", "--serial", serial,
                     "--out", str(work / "owner"), "--ttl-seconds", "300", "--max-seconds", str(max_seconds),
-                    "--json"], cwd=self.cwd, env=self.env, stdin=subprocess.PIPE,
+                    "--json"]
+                if device_binding is not None:
+                    command += ["--device-binding", json.dumps(device_binding, separators=(",", ":"))]
+                proc = subprocess.Popen(command, cwd=self.cwd, env=self.env, stdin=subprocess.PIPE,
                     stdout=output, stderr=error, start_new_session=True)
             except OSError as exc:
                 ref["not_started"] = str(exc)
@@ -113,11 +120,13 @@ class PFRemote:
         return ref
 
     def status(self, ref):
+        scoped = ({"device_binding": ref["device_binding"], "lease_scope": "device"}
+                  if "device_binding" in ref else {})
         if ref.get("not_started"):
             return {"schema": "phonefarm/remote-control@1", "session_id": None,
                     "serial": ref["serial"], "phase": "closed", "live_owner": False,
                     "not_started": True,
-                    "capabilities": [], "error": ref["not_started"], "recovery": {"required": False}}
+                    "capabilities": [], "error": ref["not_started"], "recovery": {"required": False}, **scoped}
         try:
             value = self._call(["status", "--session", str(self._path(ref)), "--json"])
             if (value.get("schema") == "phonefarm/remote-control-startup@1"
@@ -136,12 +145,14 @@ class PFRemote:
                         self.processes.pop(ref["id"], None)
                     return self.status(ref)
             if (value.get("schema") != "phonefarm/remote-control@1"
-                    or value.get("serial") != ref["serial"]):
+                    or value.get("serial") != ref["serial"]
+                    or value.get("device_binding") != ref.get("device_binding")
+                    or (value.get("lease_scope") == "device") != bool(scoped)):
                 raise OwnerError("PF session identity/descriptor unavailable")
         except OwnerError as exc:
             return {"schema": "phonefarm/remote-control@1", "session_id": None,
                     "serial": ref["serial"], "phase": "unknown", "live_owner": None,
-                    "capabilities": [], "error": str(exc), "recovery": {"required": True}}
+                    "capabilities": [], "error": str(exc), "recovery": {"required": True}, **scoped}
         proc = self.processes.get(ref["id"])
         if proc is not None and proc.poll() is not None:
             if proc.stdin:
