@@ -7,7 +7,7 @@
 #   目标与凭据沿 pf-node：显式 PF_NODE_URL、PF_NODE_ID 和 PF_NODE_TOKEN / PF_NODE_TOKEN_FILE。
 set -eu
 restart=0; [[ ${1:-} == --restart ]] && { restart=1; shift; }
-${0:A:h}/pf-node --label deploy update_node --git "$@"
+${0:A:h}/pf-node --device-access none --label deploy update_node --git "$@"
 if (( restart )); then
   # The same explicit URL/ID is rechecked; an unknown restart is never retried.
   ${0:A:h}/pf-node admin-restart

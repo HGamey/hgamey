@@ -138,7 +138,7 @@ sys.exit(int(os.environ.get('FIXTURE_UPDATE_EXIT','0')) if 'update_node' in sys.
             self.assertEqual(result.returncode, 1)  # The restart substitute reports unknown.
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertEqual([call["argv"] for call in calls], [
-                ["--label", "deploy", "update_node", "--git", "harness-ops@fixture"], ["admin-restart"]])
+                ["--device-access", "none", "--label", "deploy", "update_node", "--git", "harness-ops@fixture"], ["admin-restart"]])
             self.assertTrue(all(call["url"] == env["PF_NODE_URL"] and call["node_id"] == NODE_ID for call in calls))
             log.unlink()
             failed = subprocess.run(["/bin/zsh", str(wrapper), "--restart"],
