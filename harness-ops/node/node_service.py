@@ -1364,6 +1364,34 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except ValueError as error:
                 return self._send(400, {"error": str(error)})
 
+        def _export_quota_enforce(self, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "quota enforcement requires an explicit node identity"})
+                if set(q) - {"expected_node_id"}:
+                    raise ValueError("quota enforcement has no source or path override")
+                length = self._upload_length(1024, 2)
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("quota enforcement requires application/json")
+                self.connection.settimeout(10)
+                body = self.rfile.read(length)
+                request = json.loads(body) if len(body) == length else None
+                if (not isinstance(request, dict) or request.get("schema") != "phonefarm/export-cache-quota@1"
+                        or type(request.get("quota_bytes")) is not int
+                        or request.get("quota_bytes", 0) <= 0 or set(request) != {"schema", "quota_bytes"}):
+                    raise ValueError("quota enforcement requires phonefarm/export-cache-quota@1 and a positive quota_bytes")
+                report = jobs.export_cache.enforce_quota(request["quota_bytes"])
+                report["node_id"] = node.node_id
+                return self._send(200, report)
+            except (ExportError, AssetUploadError) as error:
+                return self._send(error.status, error.payload)
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
+
         def _export_cache_post(self, jid, dashboard):
             self.close_connection = True
             if not self._upload_write_auth(dashboard):
@@ -1636,6 +1664,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._export_cache_post(parts[1], False)
             if parts == ["export-caches", "clear"]:
                 return self._export_cache_clear_all(False)
+            if parts == ["export-caches", "enforce-quota"]:
+                return self._export_quota_enforce(False)
             if board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"] and parts[4] == "export-cache":
                 return self._export_cache_post(parts[3], True)
             if parts[:1] == ["research-state"]:

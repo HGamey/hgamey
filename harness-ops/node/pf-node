@@ -18,6 +18,7 @@
   pf-node queue                              # 只读持久队列快照
   pf-node export-cache JOB_ID [--clear]       # 查看/显式清理该任务可再生成的目录导出缓存
   pf-node export-caches [--clear]             # 聚合查看/显式清理全部可再生成的目录导出缓存（只动缓存文件）
+  pf-node export-caches --enforce-quota N     # 显式按字节配额逐出最旧缓存（可审计报告）
   pf-node admin-restart                      # 核原节点后仅发送一次服务重启请求
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
   pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
@@ -519,12 +520,19 @@ def export_cache(jid, clear=False):
     return 0 if value.get("complete") is True else 2
 
 
-def export_caches(clear=False):
+def export_caches(clear=False, quota_bytes=None):
     if not TARGET.expected_node_id:
         sys.exit("pf-node: export-caches 需要 --node-id / PF_NODE_ID")
     try:
         if "jobs.export-cache-cleanup-v1" not in TARGET.identity().get("capabilities", []):
             sys.exit("pf-node: 节点未提供 jobs.export-cache-cleanup-v1；未执行")
+        if quota_bytes is not None:
+            body = json.dumps({"schema": "phonefarm/export-cache-quota@1",
+                               "quota_bytes": quota_bytes}).encode()
+            value = json.loads(call("POST", "/export-caches/enforce-quota", body,
+                                    {"Content-Type": "application/json"}, attempts=1, raise_errors=True))
+            print(json.dumps(value, ensure_ascii=False))
+            return 0 if value.get("errors") == [] else 2
         body = json.dumps({"schema": "phonefarm/export-cache-clear@1",
                            "confirm": "regenerable-only"}).encode() if clear else None
         value = json.loads(call("POST" if clear else "GET", "/export-caches", body,
@@ -1406,9 +1414,14 @@ def main():
             sys.exit("用法: pf-node export-cache JOB_ID [--clear]")
         raise SystemExit(export_cache(args[1], clear=len(args) == 3))
     if args[0] == "export-caches":
-        if len(args) > 2 or (len(args) == 2 and args[1] != "--clear"):
-            sys.exit("用法: pf-node export-caches [--clear]   # 聚合查看/显式清理可再生成的目录导出缓存")
-        raise SystemExit(export_caches(clear=len(args) == 2))
+        quota = None
+        if len(args) == 3 and args[1] == "--enforce-quota":
+            if not args[2].isdigit() or int(args[2]) <= 0:
+                sys.exit("pf-node: --enforce-quota 需要正整数字节数")
+            quota = int(args[2])
+        elif len(args) > 2 or (len(args) == 2 and args[1] != "--clear"):
+            sys.exit("用法: pf-node export-caches [--clear] [--enforce-quota BYTES]")
+        raise SystemExit(export_caches(clear=len(args) == 2 and quota is None, quota_bytes=quota))
     if args[0] == "queue":
         if len(args) != 1:
             sys.exit("用法: pf-node queue")
