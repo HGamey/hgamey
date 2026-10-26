@@ -1434,6 +1434,19 @@ def main():
         result = cancel_job(args[1], force=len(args) == 3)
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("accepted") is True else 1)
+    if args[0] in ("pause", "resume"):
+        if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
+            sys.exit(f"用法: pf-node {args[0]} <12 位任务 id>   # 仅排队中任务；运行中命令不支持暂停")
+        try:
+            result = json.loads(call("POST", f"/jobs/{args[1]}/{args[0]}", b"",
+                                     {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
+        except ClientError as e:
+            if e.code == 409:
+                detail = response_error_code(e.body) or "pause_unsupported"
+                sys.exit(f"pf-node: {args[0]} 被拒绝（{detail}）；只有未启动的排队任务可以暂停，运行中请用 cancel")
+            sys.exit(f"pf-node: {args[0]} 请求被拒绝：{e}")
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get("paused") == (args[0] == "pause") else 1)
     if args[0] == "fleet":
         if len(args) == 1:
             wait = 5.0

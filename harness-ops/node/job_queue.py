@@ -65,7 +65,8 @@ class JobQueue:
             if "host_capacity_release" not in columns:
                 db.execute("ALTER TABLE jobs ADD COLUMN host_capacity_release TEXT")
             for column, declaration in (("status_revision", "INTEGER NOT NULL DEFAULT 0"),
-                                        ("status_projection", "TEXT"), ("status_committed_at", "REAL")):
+                                        ("status_projection", "TEXT"), ("status_committed_at", "REAL"),
+                                        ("paused", "INTEGER NOT NULL DEFAULT 0")):
                 if column not in columns:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {declaration}")
             db.execute("CREATE TABLE IF NOT EXISTS job_event_stream (id INTEGER PRIMARY KEY CHECK(id=1), stream_id TEXT NOT NULL)")
@@ -133,6 +134,7 @@ class JobQueue:
         value["state_reason"] = json.loads(value["state_reason"]) if value["state_reason"] else None
         value["host_capacity_release"] = json.loads(value["host_capacity_release"]) if value["host_capacity_release"] else None
         value["status_projection"] = json.loads(value["status_projection"]) if value["status_projection"] else None
+        value["paused"] = bool(value.get("paused"))
         return value
 
     def _publish(self, db, jid, kind="queue_transition", observation=None):
@@ -189,6 +191,19 @@ class JobQueue:
             db.execute("UPDATE jobs SET state='queued' WHERE job_id=? AND state='preparing'", (jid,))
             return self._publish(db, jid)
 
+    def set_paused(self, jid, paused):
+        """Hold or release a queued job from claim eligibility; other states are refused."""
+        with self._transaction(write=True) as db:
+            row = db.execute("SELECT state, paused FROM jobs WHERE job_id=?", (jid,)).fetchone()
+            if row is None:
+                return None
+            if row["state"] != "queued":
+                raise ValueError("pause applies only to queued jobs; a started command cannot be paused")
+            if bool(row["paused"]) == paused:
+                return self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+            db.execute("UPDATE jobs SET paused=? WHERE job_id=?", (1 if paused else 0, jid))
+            return self._publish(db, jid, observation={"paused": bool(paused)})
+
     def cancel_pending(self, jid):
         """Win cancellation only before a dispatcher has claimed the job."""
         with self._transaction(write=True) as db:
@@ -211,6 +226,8 @@ class JobQueue:
             candidates = []
             for row in db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY sequence"):
                 value = self._row(row)
+                if value["paused"]:
+                    continue
                 later_device_write = (device_access(value["spec"]) == "write"
                                       and scope(value["spec"])["scope"] == "device")
                 if global_waiting and later_device_write:

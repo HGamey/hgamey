@@ -217,6 +217,38 @@ class JobQueueTests(unittest.TestCase):
         self.assertEqual(smaller.claim_next(4)["job_id"], pending)
         self.assertEqual(JobQueue(self.path).capacity(), enlarged.capacity())
 
+    def test_paused_queued_jobs_skip_claim_until_resumed_and_started_refuse_pause(self):
+        from node_service import Jobs
+
+        root = self.path.parent / "pause-node"
+        jobs = Jobs(str(root), {"fixture": (sys.executable, str(root))}, data_dir=str(root))
+        self.addCleanup(jobs._read_root.close)
+        jobs.dispatch.start = lambda: None  # SQL-level pause contract; never launch a worker.
+        jobs.leases.snapshot = lambda **kw: {"status": "clear", "error": None}
+        queue = jobs.dispatch.queue
+        base = {"bin": "fixture", "argv": ["-c", "pass"], "resources": []}
+
+        target = jobs.start(base, b"", "pause-target")["id"]
+        self.assertFalse(queue.get(target)["paused"])
+        row = queue.set_paused(target, True)
+        self.assertTrue(row["paused"])
+        self.assertIsNone(queue.claim_next(2), "a paused queued job must not be claimed")
+        self.assertEqual(queue.set_paused(target, True)["paused"], True, "pause is idempotent")
+        row = queue.set_paused(target, False)
+        self.assertFalse(row["paused"])
+        self.assertEqual(queue.claim_next(2)["job_id"], target)
+
+        # Claimed (started) and terminal jobs refuse pause instead of pretending.
+        with self.assertRaises(ValueError):
+            queue.set_paused(target, True)
+        finished = jobs.start(base, b"", "pause-finished")["id"]
+        queue.set_paused(finished, True)
+        queue.cancel_pending(finished)
+        with self.assertRaises(ValueError):
+            queue.set_paused(finished, False)
+        status = jobs.status(finished)
+        self.assertEqual(status["outcome"], "cancelled")
+
 
 if __name__ == "__main__":
     unittest.main()

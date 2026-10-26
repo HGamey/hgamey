@@ -496,7 +496,10 @@ class Jobs:
         elif row and row["state"] in {"preparing", "queued"}:
             meta = self.dispatch.base_meta(row)
             meta["phase"] = row["state"]
-            meta["controls"] = {"cancel_supported": True, "force_supported": False, "reason": None}
+            meta["paused"] = bool(row["paused"])
+            meta["controls"] = {"cancel_supported": True, "force_supported": False,
+                                "pause_supported": row["state"] == "queued" and not row["paused"],
+                                "resume_supported": bool(row["paused"]), "reason": None}
         else:
             raw = self._read_meta(jid) if row and row["state"] == "done" else None
             if raw and raw.get("phase") in {"preparing", "queued"}:
@@ -1756,6 +1759,15 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         receipt["killed"] = receipt["accepted"]
                     code = 409 if not receipt["accepted"] and receipt["job"]["state"] == "running" else 200
                     return self._send(code, receipt)
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"pause", "resume"}:
+                    try:
+                        row = jobs.dispatch.queue.set_paused(parts[1], parts[2] == "pause")
+                    except ValueError as error:
+                        return self._send(409, {"code": "pause_unsupported", "error": str(error)})
+                    if row is None:
+                        return self._send(404, {"error": "no such job"})
+                    return self._send(200, {"node_id": node.node_id, "job_id": parts[1],
+                                            "paused": bool(row["paused"]), "state": row["state"]})
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "retry-finalize":
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):
