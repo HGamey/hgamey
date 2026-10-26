@@ -118,7 +118,10 @@ def close_children(children):
 
 
 def supervise(service_args, token, workdir, env, no_tunnel):
-    service = Path(__file__).resolve().with_name("node_service.py")
+    # Keep the symlinked install path (e.g. ~/node/harness-ops -> releases/<run>/…):
+    # every supervised restart re-reads through the cursor, so an overlay switch is
+    # picked up by a plain service restart instead of pinning the old release.
+    service = Path(__file__).with_name("node_service.py")
     commands = {"service": [sys.executable, str(service), *service_args]}
     if not no_tunnel:
         commands["tunnel"] = [str(workdir / "bin/cloudflared"), "tunnel", "--no-autoupdate",
