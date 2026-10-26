@@ -54,7 +54,7 @@ STEER_FILE = os.path.join(CONFIG_DIR, "steer.pass")   # 掌舵密码：改 human
 STEER_COOKIE = "hg_steer"
 STEER_MAX_AGE = 12 * 3600
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash_static")
-STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+STATIC_TYPES = {".json": "application/json; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
 TARGET_PAGES = {"/dash", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/doctor", "/dash/updates"}
 COOKIE = "hg_dash"
@@ -402,7 +402,7 @@ class Dash:
             return
         if sub in (["jobs"], ["fleet"], ["games"], ["results"], ["research"], ["doctor"], ["updates"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("updates.js", "updates.css", "doctor.js", "doctor.css", "target.js", "research.js", "research-evaluation.js", "research-criteria.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("updates.js", "updates.css", "doctor.js", "doctor.css", "target.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()

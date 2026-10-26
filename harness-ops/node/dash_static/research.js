@@ -48,7 +48,7 @@
   let eventPosition = null, eventsBusy = false, eventsListening = false, eventsEpoch = 0, eventsController = null;
   let eventsDeadline = 0, eventsBudgetTimer = null, eventsNextTimer = null, eventsPages = 0, eventsTrimmed = 0, eventsStorageError = '';
   let draft = null, pending = null, writeBusy = false, lookupBusy = false, conflictLatest = null, relatedBusy = false;
-  let criteriaTransfer = null, assistanceTransfer = null;
+  let criteriaTransfer = null, assistanceTransfer = null, planTemplates = null;
   const validID = value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(value) && !['.', '..'].includes(value);
   const capable = () => node?.capabilities?.includes('research.state-v1') === true;
   const writable = () => capable() && access?.steer === true && !accessBusy && HGTarget.canWrite();
@@ -116,6 +116,8 @@
     $('edit-id').disabled = locked || !!draft?.base_revision || !!pending;
     $('edit-actor').disabled = locked; $('edit-reason').disabled = locked;
     for (const field of $('edit-fields').querySelectorAll('input,textarea,select')) field.disabled = locked || field.dataset.immutable === 'true';
+    const templateButton = $('plan-template-apply');
+    if (templateButton) templateButton.disabled = locked || !allowed || !planTemplates;
     HGResearchEvaluation.setLocked(locked || !allowed);
     HGResearchCriteria.setLocked(locked || !allowed);
     $('editor-close').disabled = writeBusy || !draft;
@@ -324,7 +326,7 @@
       field.required = !!required; field.autocomplete = 'off';
       field.value = type === 'json' ? JSON.stringify(draft.data[key] ?? null, null, 2) : type === 'lines' ? (draft.data[key] || []).join('\n') : draft.data[key] ?? '';
       field.dataset.immutable = String(!!draft.base_revision && (draft.kind === 'request' && !['state', 'close_reason'].includes(key) || key === 'research_id'));
-      wrapper.append(field); if (help) wrapper.append(el('span', help, 'field-note')); $('edit-fields').append(wrapper);
+      wrapper.append(field); if (key === 'next_experiment') mountPlanTemplates(wrapper, field); if (help) wrapper.append(el('span', help, 'field-note')); $('edit-fields').append(wrapper);
     }
     const target = draft.target;
     HGResearchCriteria.mountEditor($('criteria-editor'), {kind: draft.kind, data: draft.data, node, target});
@@ -334,6 +336,27 @@
         return checkedObject(await request(`${objectPath('request', id)}?revision=${revision}`, {target}), 'request', id, target, revision);
       }});
     $('edit-reason').required = draft.base_revision != null; renderControls();
+  }
+  function mountPlanTemplates(wrapper, field) {
+    const row = el('div'), mode = el('select'), revision = el('input'), apply = el('button', '填入计划模板'), note = el('p', '替换方括号内容后保存；模板只填写当前草稿。', 'field-note');
+    mode.append(new Option('探索：筛选方向', 'exploration'), new Option('确认：独立复测', 'confirmation'));
+    mode.setAttribute('aria-label', '实验阶段'); revision.type = 'number'; revision.min = '1'; revision.step = '1';
+    revision.placeholder = '所属研究版本'; revision.setAttribute('aria-label', '所属研究版本');
+    revision.value = draft.data.next_experiment?.research_revision || '';
+    apply.type = 'button'; apply.id = 'plan-template-apply'; apply.disabled = true;
+    row.append(mode, revision, apply); wrapper.append(row, note);
+    apply.addEventListener('click', () => {
+      const rev = Number(revision.value);
+      if (!Number.isSafeInteger(rev) || rev < 1) { note.textContent = '请填写本计划依据的所属研究版本。'; return; }
+      preserveDraft();
+      field.value = JSON.stringify({...planTemplates[mode.value], research_revision: rev}, null, 2);
+      wrapper.open = true; note.textContent = '模板已填入；替换方括号后保存。原草稿可从上方保留记录找回。';
+    });
+    if (planTemplates) { renderControls(); return; }
+    fetch('/dash/static/research-plans.json', {credentials: 'same-origin'})
+      .then(response => { if (!response.ok) throw new Error('模板读取失败'); return response.json(); })
+      .then(value => { planTemplates = value; renderControls(); })
+      .catch(() => { note.textContent = '模板暂不可读，可直接编辑计划。'; });
   }
   function openDraft(kind, data = {}, record = null) {
     if (!writable() || writeBusy || pending) return;

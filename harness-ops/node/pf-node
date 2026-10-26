@@ -1126,6 +1126,9 @@ def main():
         from research_client import HELP
         print(HELP)
         return
+    if args[:2] == ["research", "plan-template"]:
+        from research_client import main as research_main
+        return research_main(args[1:], target=None)
     try:
         TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     except TargetError as error:
