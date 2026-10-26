@@ -261,7 +261,7 @@ def read_host_capacity(path):
 
 class Jobs:
     def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None,
-                 history_sources=None, export_cache_root=None):
+                 history_sources=None, export_cache_root=None, export_cache_quota=None):
         self.root, self.bins = root, bins
         self.history_sources = history_sources if history_sources is not None else []
         self.data_root = os.path.abspath(data_dir or root)
@@ -281,7 +281,8 @@ class Jobs:
         validate_export_cache_root(export_cache_root, self.dir, self.history_sources)
         os.makedirs(self.dir, exist_ok=True)
         self._read_root = SafeRoot(self.dir)
-        self.export_cache = ExportCache(self._read_root, self.dir, export_cache_root, self.history_sources)
+        self.export_cache = ExportCache(self._read_root, self.dir, export_cache_root, self.history_sources,
+                                        quota_bytes=export_cache_quota)
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
         self.pf_env, self.worker_entry = None, None
@@ -907,6 +908,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     research = jobs.research
     if not hasattr(jobs, "directory"):
         jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
+    if jobs.export_cache.quota_bytes:
+        try:
+            report = jobs.export_cache.startup_enforcement()
+        except Exception as error:  # noqa: BLE001 - quota GC must never block startup
+            report = {"error": repr(error)}
+        if report:
+            log(f"export cache quota: {json.dumps(report, ensure_ascii=False)[:500]}")
     directory = jobs.directory
     if not hasattr(jobs, "result_search"):
         jobs.result_search = NodeResultSearch(directory, node.node_id)
@@ -1871,6 +1879,7 @@ def argument_parser():
     ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
     ap.add_argument("--history-roots", type=history_path, help="旧作业只读来源的绝对配置路径（hgamey/job-history@1，最多64KiB）")
     ap.add_argument("--export-cache-root", help="当前作业目录导出的独立绝对缓存根；省略保留旧布局，不迁移原件或游戏资源")
+    ap.add_argument("--export-cache-quota", type=bounded_int(1, 1 << 40), help="外部缓存根的字节配额；启动时显式逐出最旧缓存并写审计报告")
     return ap
 
 
@@ -1900,7 +1909,8 @@ def main():
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
-                host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root)
+                host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root,
+                export_cache_quota=a.export_cache_quota)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:

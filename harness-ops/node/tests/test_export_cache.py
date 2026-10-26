@@ -270,7 +270,8 @@ class ExportCacheTests(unittest.TestCase):
                 self.assertEqual(identity["storage"]["export_cache"], {
                     "scope": "directory_export", "mode": "external", "configured_root": str(cache_root),
                     "effective_root": str(destination.parent), "availability": "available",
-                    "reason": None, "legacy_entries_migrated": False})
+                    "reason": None, "legacy_entries_migrated": False,
+                    "configured_quota_bytes": None})
                 with patch.object(node_service, "archive_directory", side_effect=AssertionError("reopened cache rebuilt")):
                     status, _, raw = get(f"/jobs/{JID}/out?meta=1")
                     self.assertEqual((status, json.loads(raw)), (200, info_a))
@@ -335,7 +336,41 @@ class ExportCacheTests(unittest.TestCase):
             self.assertEqual(files(destination.glob(".outcache-*")), external_cache)
 
 
-    def test_quota_enforcement_evicts_oldest_and_is_auditable(self):
+    def test_startup_quota_enforcement_writes_an_auditable_report(self):
+        with tempfile.TemporaryDirectory(prefix="export-startup-quota-") as temporary, ExitStack() as cleanup:
+            root = Path(temporary).resolve()
+            jobs = Jobs(str(root / "node"), {}, export_cache_root=str(root / "cache"),
+                        export_cache_quota=1)
+            cleanup.callback(jobs._read_root.close)
+            cleanup.callback(jobs.export_cache.close)
+            jid = "0123456789ab"
+            job = Path(jobs.path(jid))
+            (job / "out").mkdir(parents=True)
+            (job / "out" / "result.bin").write_bytes(b"original result")
+            jobs._write_meta(jid, {"id": jid, "bin": "fixture", "started": 1, "exit": 0})
+            opened, _ = jobs.out_blob(jid)
+            opened.read()
+            opened.close()
+            handler = make_handler(None, jobs, "export-cache-fixture-admin-not-production")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            def close_server():
+                server.shutdown()
+                server.server_close()
+                thread.join(5)
+
+            cleanup.callback(close_server)
+            reports = list((root / "cache").glob("quota-report-*.json"))
+            self.assertEqual(len(reports), 1, "startup enforcement leaves exactly one report")
+            report = json.loads(reports[0].read_text())
+            self.assertEqual(report["schema"], "phonefarm/export-cache-quota@1")
+            self.assertEqual(report["evicted"][0]["job_id"], jid)
+            self.assertEqual(report["after"]["bytes"], 0)
+            self.assertEqual((job / "out" / "result.bin").read_bytes(), b"original result")
+
+    def test_running_jobs_prevent_deployment_unless_forced(self):
         with tempfile.TemporaryDirectory(prefix="export-quota-") as temporary, ExitStack() as cleanup:
             root = Path(temporary).resolve()
             jobs = Jobs(str(root / "node"), {}, export_cache_root=str(root / "cache"))
