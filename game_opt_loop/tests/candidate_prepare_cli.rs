@@ -265,7 +265,8 @@ fn wall_and_whole_budget_exhaustion_do_not_repeat_unknown_execution() {
         let begin = Instant::now();
         let o = f.run(&args);
         assert!(!o.status.success());
-        assert!(begin.elapsed() < Duration::from_secs(10));
+        // 粗 runaway 上限，非性能断言：高并行负载宿主上 500ms 预算路径也可能被调度拖慢。
+        assert!(begin.elapsed() < Duration::from_secs(30));
         let v = parse(&o);
         assert!(v["status"] == "FAILED" || v["status"] == "UNKNOWN");
         let count = f.calls();
