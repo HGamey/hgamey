@@ -101,6 +101,8 @@ class FakePF:
             # emulated by this gateway fixture.
             receipt["result"] = {"input_issued": True, "frame_id": request["params"]["frame_id"]}
             descriptor["input_frame_id"] = None
+        elif request["action"] == "logcat":
+            receipt["result"] = {"stdout": "fixture log excerpt", "stdout_truncated": True}
         if rid in self.lose_reply:
             receipt.update(status="unknown", result=None, error="owner completion unknown")
             descriptor.update(phase="recovery_required", live_owner=False, recovery={"required": True})
@@ -328,6 +330,31 @@ class RemoteHttpTests(Base):
 
     def bearer(self, token):
         return {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+
+    def test_logcat_mapping_preserves_receipt_and_owner_capability(self):
+        self.backend.actions = [*self.backend.actions, "logcat"]
+        sid = self.acquire()["session_id"]
+        auth = self.bearer(self.alice_token)
+        path = f"/remote/devices/{SERIAL}"
+        status, _, raw = self.req("GET", path + f"/logcat?session_id={sid}&request_id=logs&lines=80&pid=42", headers=auth)
+        receipt = json.loads(raw)
+        self.assertEqual((status, receipt["result"]),
+                         (200, {"stdout": "fixture log excerpt", "stdout_truncated": True}))
+        self.assertEqual(self.backend.data["requests"]["ref-1:logs"]["params"], {"lines": 80, "pid": 42})
+        status, _, _ = self.req("POST", path + "/logcat", {"session_id": sid, "request_id": "default-logs"}, auth)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.backend.data["requests"]["ref-1:default-logs"]["params"], {"lines": 200})
+        before = self.backend.mutations()
+        status, _, raw = self.req("GET", path + f"/requests/logs?session_id={sid}", headers=auth)
+        self.assertEqual((status, json.loads(raw)), (200, receipt))
+        self.assertEqual(self.req("POST", path + "/logcat", {
+            "session_id": sid, "request_id": "bad-logs", "lines": 0}, auth)[0], 400)
+        self.backend.data["descriptors"]["ref-1"]["capabilities"] = []
+        status, _, raw = self.req("POST", path + "/logcat", {"session_id": sid, "request_id": "old-owner"}, auth)
+        self.assertEqual((status, json.loads(raw)["code"]), (409, "action_unavailable"))
+        self.assertEqual(self.backend.mutations(), before)
+        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
+        self.assertIn("hgremote_logcat", node_remote.MCP_ACTION)
 
     def test_frame_bound_http_cli_preserves_metadata_and_never_retries_unknown_input(self):
         auth = self.bearer(self.alice_token)

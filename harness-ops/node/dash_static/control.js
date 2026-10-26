@@ -5,7 +5,7 @@
   const $ = (id) => document.getElementById(id);
   const PHASE = { ready: "可操作", starting: "正在建立会话", closing: "正在交回，等待当前动作收尾", closed: "会话已关闭", recovery_required: "需要恢复核查", unknown: "会话状态未知" };
   const STATUS = { accepted: "已接受，尚未完成", started: "已开始，尚未完成", completed: "已完成", failed: "失败", unknown: "结果未知", not_executed: "未执行" };
-  const ACTION = { acquire: "接管", release: "交回", renew: "续期", screenshot: "截图", tap: "点击", swipe: "滑动", text: "输入文本", key: "按键", app_start: "启动应用", app_stop: "强停应用" };
+  const ACTION = { acquire: "接管", release: "交回", renew: "续期", screenshot: "截图", logcat: "读取日志", tap: "点击", swipe: "滑动", text: "输入文本", key: "按键", app_start: "启动应用", app_stop: "强停应用" };
   const FRAME_ERROR = { input_contract_unavailable: "此会话未提供截图绑定输入", frame_unavailable: "来源截图已不可输入，请显式采集新图", frame_stale: "来源截图已过期，请显式采集新图", frame_orientation_unknown: "截图方向未确认，不能输入", coordinate_out_of_bounds: "坐标超出原图范围", frame_geometry_changed: "设备尺寸或方向已变化，请显式采集新图" };
   const TERMINAL = new Set(["completed", "failed", "not_executed"]);
   const state = { op: undefined, devices: [], capabilities: null, devicesFresh: false, devicesError: "尚未读取状态",
@@ -90,7 +90,7 @@
     return "";
   }
   const coordinateAction = action => action === "tap" || action === "swipe";
-  function canAction(action) { return !sessionReason() && !state.posting && !state.authBusy && actionSupported(action) && (action === "release" ? !unresolved("release") : !unresolved()) && (!coordinateAction(action) || !frameReason()); }
+  function canAction(action) { return !sessionReason() && !state.posting && !state.authBusy && actionSupported(action) && (action !== "logcat" || state.session?.capabilities?.includes("logcat")) && (action === "release" ? !unresolved("release") : !unresolved()) && (!coordinateAction(action) || !frameReason()); }
   function holderText(d) {
     const h = d.holder;
     if (!state.devicesFresh) return "上次观测；当前状态未知";
@@ -150,6 +150,10 @@
     const result = r?.receipt?.result?.input_issued === false ? "动作已开始核验，但未发出坐标输入。" : r?.receipt?.result?.input_issued === true ? "已发出输入命令；不证明应用已响应。" : "";
     $("request-info").textContent = (r && HGTarget.problem(r.target || null)) || (r ? `${ACTION[r.action]}：${requestStatus(r)}。请求 ID ${r.id}${r.session_id ? "；会话 " + r.session_id : "；按接管请求 ID 查询会话"}。${source}${result}${code ? (FRAME_ERROR[code] || code) + "。" : ""}${r.action === "release" ? "交回须以会话 closed 为准；接受请求不代表已释放。" : "未决或网络错误只查询原 ID，不自动重发动作。"}${r.error ? " " + r.error : ""}` : "尚无动作。接受请求只表示已记录，须查询实际完成状态。");
     $("out").textContent = r?.receipt ? JSON.stringify(r.receipt, null, 2) : r?.error || "";
+    const logs = r?.action === "logcat" ? r.receipt?.result : null;
+    $("logcat-result").hidden = typeof logs?.stdout !== "string";
+    $("logcat-output").textContent = typeof logs?.stdout === "string" ? logs.stdout : "";
+    $("logcat-result-info").textContent = !logs ? "" : logs.stdout_truncated === true ? "输出已截断；这里只显示本次快照保留下来的内容。" : logs.stdout_truncated === false ? "本次返回未截断；范围限于请求的行数和 PID，不代表完整日志历史。" : "此回执未声明输出是否截断。";
   }
   function render() {
     $("devices").replaceChildren(...state.devices.map(d => {
@@ -169,7 +173,7 @@
     $("check-session").disabled = !!(state.binding && HGTarget.problem(state.binding.target || null)) || !state.op || !state.serial || state.refreshing || state.authBusy || state.posting || !(state.binding || reconnect);
     $("check-session").textContent = state.refreshing ? "查询中…" : "查询会话";
     $("ops").disabled = !!reason || state.posting || state.authBusy || unresolved();
-    document.querySelectorAll("[data-action], [data-key]").forEach(b => { const action = b.dataset.action || "key"; b.disabled = !canAction(action); b.title = actionSupported(action) ? reason || (unresolved() ? "先查询未决动作" : "") : "当前设备未声明支持此动作"; });
+    document.querySelectorAll("[data-action], [data-key]").forEach(b => { const action = b.dataset.action || "key"; b.disabled = !canAction(action); b.title = action === "logcat" && !state.session?.capabilities?.includes("logcat") ? "当前 owner 未声明支持读取日志；新程序不会自动升级已有会话。" : actionSupported(action) ? reason || (unresolved() ? "先查询未决动作" : "") : "当前设备未声明支持此动作"; });
     $("lease-info").textContent = state.session ? `${sessionText(state.session)} · ${state.session.session_id || "身份未知"}${state.sessionFresh ? "" : "（上次观测，当前未确认）"}${state.session.deadline ? " · 最晚 " + state.session.deadline : ""}` : state.binding?.acquisition_id ? "接管请求待确认 · " + state.binding.acquisition_id : d ? holderText(d) : "先选择设备";
     $("operation-info").textContent = reason || (unresolved() ? "存在未决动作；先查询原请求，或显式请求交回等待收尾。" : "会话已确认；每次操作只提交一次。交回和恢复完成是不同事实。");
     $("capability-info").textContent = state.capabilities?.available === true ? "当前支持：" + (state.capabilities.actions || []).map(a => ACTION[a] || a).join("、") : state.capabilities?.reason || "远程能力尚未确认";
@@ -303,7 +307,7 @@
     supersedeRead();
     const r = addRequest(action, state.binding.session_id, coordinateAction(action) ? body : null), revision = state.revision;
     state.posting = true;
-    if (action !== "renew") { invalidateFrame(); state.sessionFresh = false; state.sessionError = "动作提交后须重新读取 owner 的截图资格。"; }
+    if (!["renew", "logcat"].includes(action)) { invalidateFrame(); state.sessionFresh = false; state.sessionError = "动作提交后须重新读取 owner 的截图资格。"; }
     render();
     try {
       const path = dev(r.serial, action === "release" ? "session" : action);
@@ -422,6 +426,11 @@
   $("text-form").addEventListener("submit", async ev => { ev.preventDefault(); const value = $("text").value; if (!value) return; const r = await act("text", { text: value }); if (r?.status === "completed" && $("text").value === value) $("text").value = ""; });
   $("app-form").addEventListener("submit", ev => { ev.preventDefault(); const pkg = $("pkg").value.trim(); if (pkg) act("app_start", { package: pkg }); });
   $("app-stop").addEventListener("click", () => { const pkg = $("pkg").value.trim(); if (pkg) act("app_stop", { package: pkg }); });
+  $("logcat-form").addEventListener("submit", ev => {
+    ev.preventDefault(); const lines = Number($("logcat-lines").value), rawPID = $("logcat-pid").value.trim(), pid = Number(rawPID);
+    if (!Number.isInteger(lines) || lines < 1 || lines > 2000 || rawPID && (!Number.isInteger(pid) || pid < 1 || pid > 2147483647)) { msg("日志行数须为 1–2000 的整数，PID 留空或填写 1–2147483647 的整数。", true); return; }
+    act("logcat", {lines, ...(rawPID ? {pid} : {})});
+  });
   $("shell-form").addEventListener("submit", ev => ev.preventDefault());
   function pause() {
     state.refreshCtl?.abort(); state.sessionFresh = false; state.devicesFresh = false; state.devicesError = "页面已暂停，需重新读取"; invalidateFrame(); render();

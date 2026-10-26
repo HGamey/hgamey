@@ -30,11 +30,13 @@ def main(argv=None):
     identity.add_argument('--acquisition-id')
     action = subs.add_parser('action')
     action.add_argument('serial')
-    action.add_argument('action', choices=['tap','swipe','text','key','screenshot','app_start','app_stop','renew','release'])
+    action.add_argument('action', choices=['tap','swipe','text','key','screenshot','logcat','app_start','app_stop','renew','release'])
     action.add_argument('--session-id', required=True)
     action.add_argument('--request-id', required=True)
     action.add_argument('--params', default='{}', help='typed JSON action parameters')
     action.add_argument('--frame-id', help='source screenshot request ID for tap/swipe; coordinates use original image pixels')
+    action.add_argument('--lines', type=int, help='logcat snapshot lines, 1..2000 (default 200); does not clear logs')
+    action.add_argument('--pid', type=int, help='optional logcat process ID, 1..2147483647')
     action.add_argument('--out', help='new output file for a completed screenshot')
     receipt = subs.add_parser('receipt')
     receipt.add_argument('serial')
@@ -66,6 +68,21 @@ def main(argv=None):
             params = json.loads(args.params)
             if not isinstance(params, dict) or {'session_id','request_id'} & params.keys():
                 ap.error('--params must be an object without session_id/request_id')
+            if args.action == 'logcat':
+                if set(params) - {'lines', 'pid'}:
+                    ap.error('logcat accepts only lines and pid parameters')
+                for key, value in (('lines', args.lines), ('pid', args.pid)):
+                    if value is not None:
+                        if key in params and params[key] != value:
+                            ap.error('--' + key + ' conflicts with params.' + key)
+                        params[key] = value
+                params.setdefault('lines', 200)
+                if type(params['lines']) is not int or not 1 <= params['lines'] <= 2000:
+                    ap.error('logcat lines must be an integer from 1 to 2000')
+                if 'pid' in params and (type(params['pid']) is not int or not 1 <= params['pid'] <= 2147483647):
+                    ap.error('logcat pid must be an integer from 1 to 2147483647')
+            elif args.lines is not None or args.pid is not None:
+                ap.error('--lines and --pid are only supported for logcat')
             if args.frame_id is not None:
                 if args.action not in ('tap', 'swipe'):
                     ap.error('--frame-id is only supported for tap/swipe')

@@ -54,6 +54,7 @@
       <h3 id="receipt-h">动作回执</h3>
       <div class="row"><select id="request-select" aria-label="选择动作请求" disabled></select><button id="check-request" type="button" class="ghost" disabled>查询原请求</button></div>
       <p id="request-info" class="note">尚无动作。接受请求只表示已记录，须查询实际完成状态。</p>
+      <details id="logcat-result" hidden open><summary>本次日志快照</summary><p id="logcat-result-info" class="note"></p><pre id="logcat-output" class="out" tabindex="0" aria-label="本次 logcat 输出"></pre></details>
       <pre id="out" class="out" tabindex="0" aria-label="动作回执与输出"></pre>
     </section>
     <fieldset id="ops" disabled>
@@ -69,12 +70,14 @@
       </div>
       <form id="text-form" class="row"><input id="text" maxlength="1000" placeholder="输入文本（ASCII）" autocomplete="off"><button type="submit" data-action="text">发送</button></form>
       <form id="app-form" class="row"><input id="pkg" placeholder="包名 com.example.app" autocomplete="off" spellcheck="false"><button type="submit" data-action="app_start">启动</button><button type="button" id="app-stop" class="ghost" data-action="app_stop">强停</button></form>
+      <form id="logcat-form" class="row"><label for="logcat-lines">日志行数</label><input id="logcat-lines" type="number" min="1" max="2000" step="1" value="200" required><label for="logcat-pid">PID（可选）</label><input id="logcat-pid" type="number" min="1" max="2147483647" step="1" placeholder="全部进程"><button type="submit" data-action="logcat">读取日志</button></form>
+      <p class="note">读取当前 owner 的一次 logcat 快照，不清空日志或持续采集。结果未知时查询原请求，不重发采集。</p>
     </fieldset>
     <details class="future-operations"><summary>尚未支持的操作</summary>
-      <p class="note">当前 PF 会话尚未提供 shell、文件传输、安装/卸载、logcat 或 HDC 操作。入口保留，不能绕过当前会话能力。</p>
+      <p class="note">当前 PF 会话尚未提供 shell、文件传输、安装/卸载或 HDC 操作。入口保留，不能绕过当前会话能力。</p>
       <fieldset disabled aria-label="尚未支持的操作">
         <form id="shell-form" class="row"><input id="shell" placeholder="shell 命令（当前不可用）" autocomplete="off" spellcheck="false"><button type="submit">执行</button></form>
-        <div class="row"><button type="button" id="logcat" class="ghost">logcat</button><label class="file">安装 APK/HAP <input id="apk" type="file" accept=".apk,.hap"></label></div>
+        <div class="row"><label class="file">安装 APK/HAP <input id="apk" type="file" accept=".apk,.hap"></label></div>
         <div class="row"><button type="button" class="ghost">上传文件</button><button type="button" class="ghost">下载文件</button><button type="button" class="ghost">卸载应用</button></div>
       </fieldset>
     </details>
