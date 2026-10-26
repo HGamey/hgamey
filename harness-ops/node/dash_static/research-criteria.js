@@ -139,7 +139,20 @@
       for(const item of candidate.axes){const axis=axes.get(item.axis_id)||{},row=el('div',null,'criteria-axis-result');row.append(el('strong',`${axis.label||item.axis_id} · ${STATUS[item.status]||item.status}`),facts([['原登记值',`${number(item.value)} ${item.unit||'（单位未知）'}`],['所设规则',ruleText(axis,item.rule)],['规则使用的数',`${number(item.observed)} ${item.rule?.kind==='relative_improvement_percent_min'?'%':item.unit||''}`],['偏好 / 范围',`${PREFER[axis.prefer]||display(axis.prefer)} / ${SCOPES[axis.scope]||display(axis.scope)}`],['原因',REASONS[item.reason]||item.reason||'无额外原因']]));card.append(row);}
       const result=column?.result;if(result){const link=el('a','查看此列原结果与来源');link.href=HGTarget.url(`/dash/results#result=${encodeURIComponent(column.result_id)}`,target);card.append(link,note(`本次读到登记序号 ${display(result.sequence)}；原报告结论：${display(result.manifest?.outcome)}。`));for(const source of result.current?.sources||[])card.append(note(`当前来源 ${source.name}：${{available:'可读',unavailable:'不可读',changed:'已变化',external:'外部声明'}[source.status]||source.status}${source.reason?' · '+source.reason:''}`));if(result.current?.job)card.append(note(`原任务：${display(result.current.job.record?.phase||result.current.job.status)} · 恢复：${display(result.current.job.record?.recovery?.status)}；与数值判据独立。`));}output.append(card);
     }
-    output.append(bindingView(value.criteria_bindings),jsonView('完整只读判断回包',value));
+    output.append(renderSuggestions(value,columns,axes),bindingView(value.criteria_bindings),jsonView('完整只读判断回包',value));
+  }
+  function renderSuggestions(value,columns,axes) {
+    const panel=el('section',null,'research-section');panel.append(el('h4','下一实验建议'),note('以下选项基于此研究版本的登记证据；顺序不代表优先级，由外部 Agent 判断。不会自动提交实验、解除依赖或修改判据。'));
+    if(!Array.isArray(value.suggestions)){panel.append(note('此回包未提供下一实验建议；原判断与未知项仍保留。'));return panel;}
+    if(!value.suggestions.length){panel.append(note('本次未生成建议，不表示证据完整或研究已完成。'));return panel;}
+    for(const suggestion of value.suggestions){
+      const card=el('section',null,'criteria-candidate'),message=note(''),copyButton=button('复制此建议'),payload={node_id:value.node_id,research_id:value.research_id,revision:value.revision,suggestion:copy(suggestion)};
+      card.append(el('h4',suggestion.title),facts([['适用原因',suggestion.reason],['可做的下一步',suggestion.next_experiment]]));
+      if(suggestion.affected?.length){const affected=el('ul',null,'research-evidence');for(const item of suggestion.affected){const column=columns.get(item.column_id),axis=axes.get(item.axis_id);affected.append(el('li',`${column?.label||item.column_id} / ${item.axis_id==null?'整列结果':axis?.label||item.axis_id}：${REASONS[item.reason]||item.reason}`));}card.append(affected);}
+      copyButton.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(JSON.stringify(payload,null,2));status(message,'已复制原建议及节点、研究版本；尚未创建方向或保存计划。');}catch(_){status(message,'剪贴板不可用，请展开下方原建议 JSON 手动复制。',true);}});
+      card.append(copyButton,message,jsonView('原建议与固定研究版本',payload));panel.append(card);
+    }
+    return panel;
   }
   function setLocked(value){locked=value;editor?.refresh?.();}
   function importComparison(spec){if(!editor||locked)throw new Error('请先打开可编辑的研究草稿。');editor.use(parseComparison(JSON.stringify(spec),editor.context.target));}

@@ -320,6 +320,8 @@ class NodeResearchTests(unittest.TestCase):
         self.assertEqual(code, 200, pending)
         self.assertEqual(pending["comparison"]["columns"][1]["error"]["code"], "result_not_found")
         self.assertEqual(pending["candidates"][1]["requirements"]["status"], "undetermined")
+        missing_result = next(item for item in pending["suggestions"] if item["kind"] == "verify_measurement")
+        self.assertIn({"column_id": "low", "axis_id": None, "reason": "result_not_found"}, missing_result["affected"])
 
         # Registration is later than the criteria commit; reading does not rewrite
         # the declaration into evidence that the candidate was known in advance.
@@ -341,6 +343,15 @@ class NodeResearchTests(unittest.TestCase):
                          (38, 2, "satisfied"))
         self.assertEqual((axes["power"]["status"], axes["power"]["reason"], axes["power"]["observed"]),
                          ("unknown", "value_unavailable", None))
+        suggestions = {item["kind"]: item for item in assessed["suggestions"]}
+        self.assertEqual(set(suggestions), {"reuse_baseline", "module_timing", "matched_images",
+                                           "aligned_power", "asynchronous_assistance"})
+        self.assertIn({"column_id": "low", "axis_id": "power", "reason": "value_unavailable"},
+                      suggestions["aligned_power"]["affected"])
+        self.assertIn({"column_id": "low", "axis_id": "image", "reason": "image_domain:unrecorded"},
+                      suggestions["matched_images"]["affected"])
+        self.assertTrue(all(isinstance(item["next_experiment"], str) for item in suggestions.values()))
+        self.assertEqual(self.read("direction", "planned"), planned, "suggestions must not rewrite or unblock a direction")
         self.assertEqual(low["requirements"], {"status": "satisfied", "required_axes": ["time", "image"],
                                               "unknown_axes": [], "failed_axes": []})
         self.assertEqual((assessed["pareto"]["status"], assessed["pareto"]["scope"]),
