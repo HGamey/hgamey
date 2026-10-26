@@ -84,10 +84,18 @@ def report(node):
             add(name + ".format", "runtime", "unknown", name + " 宿主格式", "无法读取文件头；不执行该文件进行探测。")
 
     entry_path = runtime.get("entry_path") or ""
-    try:
-        root = Path(entry_path).parents[2] if entry_path else None
-    except (OSError, ValueError, IndexError):
-        root = None
+    root = None
+    if entry_path:
+        # Walk past the release subtree: the install root is the first ancestor
+        # holding both the release pool and the deployment state.
+        candidate = Path(entry_path).parent
+        for _ in range(6):
+            if (candidate / "releases").is_dir() and (candidate / "deploy-state").is_dir():
+                root = candidate
+                break
+            candidate = candidate.parent
+        else:
+            root = Path(entry_path).parents[2] if len(Path(entry_path).parents) >= 3 else None
     if not entry_path or root is None:
         add("deploy.overlay", "deployment", "unknown", "overlay 部署布局",
             "无法从运行入口推断安装根；不猜测。", {"entry_path": entry_path or None},
