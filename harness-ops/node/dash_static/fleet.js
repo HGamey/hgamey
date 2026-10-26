@@ -422,6 +422,9 @@
       return [`${label}（${key}）`, `${description}${policy?.reason ? `。${policy.reason}` : ''}`];
     })];
   }
+  function hostSlotsText(slots) {
+    return ['cpu', 'gpu', 'io'].map(key => `${key.toUpperCase()} ${Number.isSafeInteger(slots?.[key]) && slots[key] >= 0 ? slots[key] : '未知'}`).join(' / ');
+  }
   function renderNode(node, entry = null) {
     $('node-summary').textContent = `${entry ? `${entry.name} · ` : '本节点 · '}${text(node?.node_id || entry?.node_id)}${node?.host?.hostname ? ` · ${node.host.hostname}` : ''}`;
     $('node-updated').textContent = entry ? `目录快照：${time(entry.snapshot?.at)}` : `读取于 ${new Date().toLocaleTimeString()}`;
@@ -430,7 +433,10 @@
     facts($('node-info'), [...(entry ? [['登记名', entry.name], ['配置版本', entry.revision], ['配置入口', entry.url], ['快照来源', entry.snapshot?.url], ['远端凭据', entry.credential_present ? '已保存（不回显）' : '未配置'], ['标签', entry.tags?.join('、')], ['备注', entry.note], ['SSH 元数据', entry.ssh], ['Goals 目录元数据', entry.goals_dir]] : []),
       ['节点 ID', node?.node_id || entry?.node_id], ['访问入口', entry ? entry.snapshot?.url : location.origin], ['宿主系统', node?.host?.platform],
       ...serviceFacts(node?.service), ['服务启动', time(node?.started_at)],
-      ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root], ...exportCacheFacts(node), ...processPolicyFacts(node)]);
+      ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root],
+      ['宿主调度容量（身份快照）', hostSlotsText(node?.execution?.host_capacity?.slots)],
+      ['槽位含义', '配置声明的并发调度容量，不代表硬件数量、性能或手机存在；设备采样状态单独显示。'],
+      ...exportCacheFacts(node), ...processPolicyFacts(node)]);
     renderPrograms(node);
   }
   function hostProcessFacts(entry) {
@@ -492,7 +498,7 @@
   }
   function renderQueue(queue, historical = false) {
     $('node-queue-summary').textContent = historical ? '节点任务队列 · 上次快照' : '节点任务队列';
-    message('node-queue-message', !queue ? '尚未取得节点任务队列。' : `${text(queue.active_count)} 项执行中 / ${text(queue.max_running)} 个名额，${text(queue.queued_count)} 项排队，${text(queue.blocked_count)} 项保留资源。${historical ? ' 当前调度状态未知。' : ''}${queue.dispatcher_error ? ` 调度异常：${queue.dispatcher_error}` : ''}`, !!queue?.dispatcher_error);
+    message('node-queue-message', !queue ? '尚未取得节点任务队列。' : `${text(queue.active_count)} 项执行中 / ${text(queue.max_running)} 个名额，${text(queue.queued_count)} 项排队，${text(queue.blocked_count)} 项保留资源。宿主调度槽位（本次队列快照）：声明 ${hostSlotsText(queue.host_capacity?.slots)}；已保留 ${hostSlotsText(queue.host_capacity?.reserved)}；可调度 ${hostSlotsText(queue.host_capacity?.available)}。${historical ? ' 当前调度状态未知。' : ''}${queue.dispatcher_error ? ` 调度异常：${queue.dispatcher_error}` : ''}`, !!queue?.dispatcher_error);
     $('node-job-queue').replaceChildren(...(queue?.items || []).map(job => {
       const item = el('li'); item.append(jobLink(job.job_id), el('span', ` · ${text(job.phase)}`));
       if (job.waiting?.kind) item.append(el('p', `等待：${({capacity: '执行名额', resource: '独占资源', recovery: '恢复核查', device_lease: '设备租约', durability: '保存结果', preparing: '准备任务'})[job.waiting.kind] || job.waiting.kind}${job.waiting.reason ? ` · ${job.waiting.reason}` : ''}`, 'note'));

@@ -239,6 +239,12 @@ def clean(value):
     return "".join(c if ord(c) >= 32 and ord(c) != 127 else "?" for c in str(value))
 
 
+def host_slots_text(slots):
+    slots = slots if isinstance(slots, dict) else {}
+    return " / ".join(f"{key.upper()} {slots[key] if type(slots.get(key)) is int and slots[key] >= 0 else '未知'}"
+                      for key in ("cpu", "gpu", "io"))
+
+
 def entry_text(entry, detail=False):
     connection = entry.get("connection") or {}
     snapshot = entry.get("snapshot") or {}
@@ -265,6 +271,12 @@ def entry_text(entry, detail=False):
           f"  jobs_root={clean(storage.get('jobs_root', '未知'))}")
     print(f"  queue active={queue.get('active_count', '未知')} queued={queue.get('queued_count', '未知')}"
           f" blocked={queue.get('blocked_count', '未知')}  max_running={queue.get('max_running', '未知')}")
+    declared_capacity = (identity.get("execution") or {}).get("host_capacity") or {}
+    current_capacity = queue.get("host_capacity") or {}
+    print(f"  宿主调度容量（身份快照）：{host_slots_text(declared_capacity.get('slots'))}")
+    print(f"  宿主调度槽位（队列快照）：声明 {host_slots_text(current_capacity.get('slots'))}；"
+          f"已保留 {host_slots_text(current_capacity.get('reserved'))}；可调度 {host_slots_text(current_capacity.get('available'))}")
+    print("  槽位是配置声明的并发调度容量，不代表硬件数量、性能或手机存在；设备采样状态单独显示。")
     print(f"  lease={clean(lease_status)}  bridge_held={lease.get('bridge_held')}"
           f"  error={clean(lease.get('error') or '无')}  sampled_at={fleet.get('sampled_at')}")
     for record in lease.get("entries") or []:
