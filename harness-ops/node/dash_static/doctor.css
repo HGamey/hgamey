@@ -1,0 +1,42 @@
+.doctor-page { max-width: 1180px; }
+.doctor-view .nav { flex-wrap: wrap; }
+.doctor-scope { padding: 14px 16px; margin: 0 0 20px; border-left: 3px solid var(--line); background: var(--panel); color: var(--ink2); font-size: 13px; }
+.doctor-message { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+.doctor-error { background: var(--bad-soft); color: var(--bad-ink); border: 1px solid var(--line); border-radius: 7px; padding: 14px 16px; font-size: 13px; overflow-wrap: anywhere; margin: 0 0 16px; }
+.doctor-link { color: var(--blue-ink); display: inline-block; font-size: 13px; margin-bottom: 16px; }
+.doctor-summary { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 20px; }
+.doctor-summary .read-time { margin: 0; }
+.doctor-summary .note { overflow-wrap: anywhere; }
+.doctor-counts { display: flex; flex-wrap: wrap; gap: 8px 20px; list-style: none; padding: 0; margin: 18px 0 12px; }
+.doctor-counts li { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--ink2); }
+.doctor-counts strong { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.doctor-state { display: inline-block; flex: none; border-radius: 4px; padding: 2px 7px; background: var(--wash); color: var(--ink2); font-size: 12px; font-weight: 500; }
+.doctor-state.ok { background: var(--blue-soft); color: var(--blue-ink); }
+.doctor-state.warning, .doctor-state.unknown { background: var(--amber-soft); color: var(--amber-ink); }
+.doctor-state.error { background: var(--bad-soft); color: var(--bad-ink); }
+.doctor-groups { display: grid; gap: 24px; margin-top: 28px; }
+.doctor-group > h2 { margin: 0 0 12px; }
+.doctor-checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0,1fr)); align-items: start; }
+.doctor-check { padding: 20px; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.doctor-check-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; }
+.doctor-check-heading h3 { font-size: 15px; overflow-wrap: anywhere; min-width: 0; }
+.doctor-check p { margin: 10px 0 0; font-size: 13px; color: var(--ink2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.doctor-check .read-time { color: var(--muted); font-size: 12px; }
+.doctor-check details { margin-top: 14px; font-size: 12px; }
+.doctor-check summary, .doctor-raw summary { color: var(--ink2); cursor: pointer; padding: 5px 0; width: fit-content; }
+.doctor-check pre, .doctor-raw pre { background: var(--panel); border: 1px solid var(--grid); border-radius: 5px; padding: 12px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; white-space: pre-wrap; margin: 8px 0 0; max-height: 380px; overflow: auto; }
+.doctor-remediation { border-top: 1px solid var(--grid); margin-top: 16px; padding-top: 14px; }
+.doctor-remediation h4 { margin: 0 0 8px; font-size: 12px; color: var(--ink2); }
+.doctor-remediation ul { padding-left: 18px; margin: 0; font-size: 13px; color: var(--ink2); }
+.doctor-remediation li { overflow-wrap: anywhere; white-space: pre-wrap; }
+.doctor-remediation li + li { margin-top: 10px; }
+.doctor-remediation pre { max-height: 180px; }
+.doctor-limitations { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px; }
+.doctor-limitations ul { color: var(--ink2); font-size: 13px; padding-left: 20px; margin: 12px 0 0; }
+.doctor-limitations li { overflow-wrap: anywhere; }
+.doctor-limitations li + li { margin-top: 8px; }
+.doctor-raw { margin-top: 20px; font-size: 13px; }
+.doctor-page[aria-busy="true"] #doctor-report { opacity: .7; }
+.doctor-report-stale .doctor-summary { border-color: var(--amber-ink); }
+@media (max-width: 780px) { .doctor-checks { grid-template-columns: minmax(0,1fr); } .doctor-view .page-heading { align-items: flex-start; } }
+@media (max-width: 480px) { .doctor-view .page-heading { flex-wrap: wrap; gap: 14px; } .doctor-summary, .doctor-check { padding: 16px; } .doctor-counts { column-gap: 16px; } }

@@ -12,6 +12,7 @@
   pf-node --host-slots slots.json --detach phonefarm ... # {"cpu":2,"gpu":1,"io":0}
   pf-node --disk-guard guard.json --detach phonefarm ... # {"max_log_bytes":67108864,"min_free_bytes":1073741824,"stop_action":"graceful"}
   pf-node request <request_id>               # 断网后找回同一次提交的任务
+  pf-node doctor [--json]                    # 绑定节点的只读宿主诊断；不探测设备
   pf-node queue                              # 只读持久队列快照
   pf-node admin-restart                      # 核原节点后仅发送一次服务重启请求
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
@@ -1120,6 +1121,13 @@ def main():
         return
     TARGET = Target.resolve(connection_url, expected_node_id, explicit_file)
     URL, TOKEN = TARGET.url, TARGET.token
+    if args[0] == "doctor":
+        if (request_id is not None or inputs_path is not None or resources or device_access is not None
+                or recovery_for is not None or execution_policy is not None or time_budget is not None
+                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach or outdir):
+            sys.exit("pf-node: doctor 不接收作业选项；这是单次只读请求")
+        from doctor_client import main as doctor_main
+        return doctor_main(TARGET, args[1:])
     history_commands = ("jobs", "status", "log", "artifacts", "out", "wait", "kill", "cancel", "release", "session-recover", "retry-finalize")
     if args[0] == "job-sources" or (args[0] in history_commands and any(value in ("--source", "--source-revision") for value in args[1:])):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None

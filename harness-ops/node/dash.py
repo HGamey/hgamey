@@ -400,9 +400,9 @@ class Dash:
             return self._login_redirect(h)
         if dash_live.handle(self, h, sub, query):  # /dash/live 与 /dash/api/live/*
             return
-        if sub in (["jobs"], ["fleet"], ["games"], ["results"], ["research"]):
+        if sub in (["jobs"], ["fleet"], ["games"], ["results"], ["research"], ["doctor"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("target.js", "research.js", "research-evaluation.js", "research-criteria.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("doctor.js", "doctor.css", "target.js", "research.js", "research-evaluation.js", "research-criteria.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()

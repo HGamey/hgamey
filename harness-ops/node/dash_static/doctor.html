@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>环境诊断 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/jobs.css">
+<link rel="stylesheet" href="/dash/static/doctor.css">
+</head>
+<body class="jobs-view doctor-view">
+<a class="skip-link" href="#doctor-heading">跳到环境诊断</a>
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a><span class="brand-name">HGamey</span>
+    <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/doctor" aria-current="page">环境诊断</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right"><form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form></div>
+</header>
+<main class="jobs-page doctor-page">
+  <div class="page-heading">
+    <div><p class="eyebrow">此后台的宿主环境</p><h1 id="doctor-heading" tabindex="-1">环境诊断</h1><p class="page-description">核对程序、工具、磁盘和目录权限，找到下一步需要修复的项目。</p></div>
+    <button id="doctor-refresh" class="ghost primary" type="button">重新诊断</button>
+  </div>
+  <p class="doctor-scope">只读宿主检查与已有程序观察，不刷新程序缓存、不启动设备采样、不取得租约。修复建议需由维护者明确执行。</p>
+  <p id="doctor-message" class="doctor-message" role="status" aria-live="polite">正在读取环境诊断…</p>
+  <div id="doctor-error" class="doctor-error" role="alert" hidden></div>
+  <a id="doctor-login" class="doctor-link" href="/dash/login" hidden>重新登录</a>
+  <section id="doctor-report" aria-labelledby="report-heading" hidden>
+    <div class="doctor-summary">
+      <div class="section-heading"><h2 id="report-heading">检查结果</h2><span id="doctor-time" class="read-time"></span></div>
+      <p id="doctor-node" class="note"></p>
+      <ul id="doctor-counts" class="doctor-counts" aria-label="各状态检查项数量"></ul>
+      <p class="note">数量仅统计本次检查项；宿主检查通过不代表设备已授权或实验可运行。</p>
+    </div>
+    <div id="doctor-groups" class="doctor-groups"></div>
+    <section class="doctor-limitations" aria-labelledby="limits-heading"><h2 id="limits-heading">本次检查范围</h2><ul id="doctor-limitations"></ul></section>
+    <details class="doctor-raw"><summary>查看本次诊断 JSON</summary><pre id="doctor-json" tabindex="0"></pre></details>
+  </section>
+</main>
+<footer class="foot">网页与 CLI 读取同一诊断记录结构。若需要诊断另一节点，请进入该节点自己的后台并核对身份。</footer>
+<script src="/dash/static/target.js"></script>
+<script src="/dash/static/doctor.js"></script>
+</body>
+</html>

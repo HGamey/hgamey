@@ -801,6 +801,11 @@
   }
   function waitingText(waiting) {
     const reason = waiting?.reason;
+    if (waiting?.kind === 'node_update') {
+      const runs = Array.isArray(waiting.blocking_runs) ? waiting.blocking_runs.filter(id => typeof id === 'string' && id) : [];
+      const label = runs.length ? '节点更新未完成，等待核查或回滚' : '节点更新状态未知，需先核查维护记录';
+      return `${label}${reason ? `：${reason}` : ''}${runs.length ? `；原更新 run：${runs.join('、')}。核对记录后，使用对应 run ID 显式 --rollback；不会自动恢复。` : '；未取得可用的原更新 run ID，不能据此执行回滚。'}`;
+    }
     const capacityReason = ({max_running: '等待作业执行名额', slots_unavailable: '等待宿主 slots', request_exceeds_current_total: '原请求超过当前宿主容量'})[reason];
     const label = waiting?.kind === 'capacity' ? capacityReason || '等待执行名额' : ({resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待核查并解除资源保留', durability: '等待保存结束记录', device_lease: '等待实际设备 lease'})[waiting?.kind] || '无等待原因';
     const shortage = shortageText(waiting?.shortages);

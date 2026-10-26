@@ -29,6 +29,9 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 显式 devlock 管理命令的 acquire/renew/release 等身份仍可跨请求，不改写其位置参数。
 """
 import sqlite3
+import shutil
+import node_doctor
+import node_update
 import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
@@ -265,6 +268,14 @@ class Jobs:
         if not os.path.isabs(self.update_config_dir):
             self.update_config_dir = os.path.join(os.path.expanduser("~/node"), self.update_config_dir)
         self.dir = os.path.join(self.data_root, "jobs" if data_dir else "_jobs")
+        self.update_layout = {
+            "phonefarm": os.path.abspath(bins.get("phonefarm", (None, root))[1]),
+            "game_opt_loop": os.path.abspath(bins.get("game_opt_loop", (None, os.path.join(os.path.dirname(root), "game_opt_loop")))[1]),
+            "harness_ops": os.path.dirname(os.path.realpath(bins.get("update_node", (__file__,))[0])),
+        }
+        # Share recovery/serialization across data-root changes for one installed
+        # component set; never hide an unfinished update behind a new jobs path.
+        self.update_layout["state_dir"] = str(node_update.state_directory(self.update_layout))
         validate_export_cache_root(export_cache_root, self.dir, self.history_sources)
         os.makedirs(self.dir, exist_ok=True)
         self._read_root = SafeRoot(self.dir)
@@ -921,7 +932,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 # subsequent API/media requests carry the pin and are checked.
                 page = parsed.path.rstrip("/") in {
                     "/dash", "/dash/jobs", "/dash/games", "/dash/fleet",
-                    "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/login",
+                    "/dash/control", "/dash/doctor", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/login",
                 }
                 if (page and self.command == "GET" and not headers
                         or parsed.path == "/dash/login" and not headers
@@ -989,7 +1000,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -1007,6 +1018,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["doctor"]:
+                    q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "doctor requires an explicit node identity"})
+                    if set(q) - {"expected_node_id"}:
+                        return self._send(400, {"code": "invalid_query", "error": "doctor accepts only expected_node_id"})
+                    return self._send(200, node_doctor.report(node))
                 if parts[:1] == ["job-sources"]:
                     q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
                     if len(parts) == 1:
@@ -1712,8 +1730,8 @@ def main():
     gol = os.path.abspath(a.game_opt_loop)
     bins = {"phonefarm": (os.path.join(root, "phonefarm"), root),  # 名字 → (可执行, 工作目录)
             "game_opt_loop": (os.path.join(gol, "game_opt_loop"), gol),
-            "adb": ("/opt/homebrew/bin/adb", root), "devlock": (os.path.join(root, "tools", "devlock"), root),
-            # 更新节点上的 phonefarm / game_opt_loop：上传的 tar 覆盖到对应目录（保留 runs 等数据）
+            "adb": (os.environ.get("ADB_BIN") or shutil.which("adb") or "adb", root), "devlock": (os.path.join(root, "tools", "devlock"), root),
+            # 管理更新先准备产物，再在调度屏障内按配置目录发布；保留数据及回滚记录。
             "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root)),
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
@@ -1729,7 +1747,6 @@ def main():
     remote = None
     if node_remote:
         try:
-            import shutil
             from remote_owner import PFRemote
             pf_exe, pf_cwd = jobs.leases.bins["phonefarm"]
             owner_backend = PFRemote(pf_exe, pf_cwd, jobs.leases.env,
