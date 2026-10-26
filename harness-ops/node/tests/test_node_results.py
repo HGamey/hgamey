@@ -356,6 +356,57 @@ class NodeResultTests(unittest.TestCase):
         self.assertEqual(len(self.workers), 1, "metadata operations must not create execution jobs")
         self.assertEqual(len(self.jobs.dispatch.queue.rows()), 1)
 
+    def test_readonly_share_discovery_boundaries_and_no_credential_leak(self):
+        """只读分享链：发现→详情→下载原件；越界/符号链接来源不可读、不泄漏；凭据不出现在响应。"""
+        raw = b'{ "timing": {"gpu_ms": 2.413}, "power_w": null }\n'
+        code = "from pathlib import Path; import os; Path(os.environ['PF_JOB_OUT'],'report.json').write_bytes(" + repr(raw) + ")"
+        _, job = self.env.call("POST", "/jobs", headers={"X-Request-ID": "share-source",
+            "X-Job": json.dumps({"bin": "fixture", "argv": ["-c", code], "device_access": "none", "resources": []})})
+        self.assertEqual(self.env.finish(job["id"])["exit"], 0)
+        manifest = registration("share-target", job["id"])
+        self.assertEqual(self.api("POST", "/results", manifest)[0], 201)
+        self.assertEqual(self.api("POST", "/results", manifest, token=self.ro)[0], 401)
+
+        # 只读访问者：列表发现、详情查看、原件下载（含 Range）。
+        listed = self.api("GET", "/results?game_id=fixture-game", token=self.ro)[1]
+        self.assertIn("share-target", [item["result_id"] for item in listed["items"]])
+        details = self.api("GET", "/results/share-target", token=self.ro)[1]
+        self.assertEqual(details["manifest"]["result_id"], "share-target")
+        status, _, body = self.request("GET", "/results/share-target/sources/report", token=self.ro)
+        self.assertEqual((status, body), (200, raw))
+        status, headers, body = self.request("GET", "/results/share-target/sources/report", token=self.ro,
+                                             headers={"Range": "bytes=4-9"})
+        self.assertEqual((status, body), (206, raw[4:10]))
+
+        # 越界相对路径：登记校验直接拒绝；符号链接来源：登记为 unavailable（从不读出外部字节），下载被拒。
+        outside = self.root / "outside-secret.json"
+        outside.write_text('{"secret": "outside"}')
+        Path(self.jobs.path(job["id"], "out", "link.json")).symlink_to(outside)
+        escape = registration("share-escape", job["id"])
+        escape["sources"][0]["path"] = "../../outside-secret.json"
+        status, reply = self.api("POST", "/results", escape)
+        self.assertEqual((status, reply["code"]), (400, "invalid_result"), reply)
+        self.assertEqual(self.api("GET", "/results/share-escape")[0], 404)
+        attempt = registration("share-symlink", job["id"])
+        attempt["sources"][0]["path"] = "link.json"
+        status, reply = self.api("POST", "/results", attempt)
+        self.assertEqual(status, 201, reply)
+        self.assertEqual(reply["source_observations"][0]["status"], "unavailable", reply)
+        self.assertEqual(reply["metric_evidence"][0]["status"], "unverified")
+        status, _, body = self.request("GET", "/results/share-symlink/sources/report", token=self.ro)
+        self.assertIn(status, (404, 409), body)
+        self.assertNotIn(b"outside-secret", body)
+        self.assertNotIn(b'"secret"', body)
+        self.assertEqual(self.api("GET", "/results/share-symlink", token=self.ro)[1]
+                         ["current"]["sources"][0]["status"], "unavailable")
+
+        # 凭据与管理 token 不出现在任何结果响应里。
+        for path in ("/results", "/results/share-target", "/results/share-target/sources/report",
+                     "/dash/api/results"):
+            _, _, body = self.request("GET", path, token=self.ro)
+            self.assertNotIn(self.env.admin.encode(), body)
+            self.assertNotIn(self.ro.encode(), body)
+
     def test_small_imports_preserve_original_text_all_candidates_and_unknown_metrics(self):
         original = json.dumps(doom_report(), ensure_ascii=False, indent=3) + "\n\n"
         source = self.root / "doom-result.json"
