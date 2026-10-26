@@ -38,7 +38,7 @@ FILE_MAX = 16 << 20
 MCP_MAX = JSON_MAX          # Only typed short requests; files use the game distribution API.
 TEXT_MAX = 1000
 RATE_CAPACITY, RATE_REFILL = 60.0, 10.0
-COST = {"shell": 3, "screenshot": 2, "install": 20, "push": 5, "pull": 5, "logcat": 3, "uninstall": 5}
+COST = {"shell": 3, "screenshot": 2, "install": 20, "push": 5, "pull": 5, "logcat": 3, "diagnostics": 3, "uninstall": 5}
 INFLIGHT_MAX = 3
 AUTH_FAILS_MAX, AUTH_FAIL_WINDOW = 20, 600
 ANDROID_KEYS = {"back": 4, "home": 3, "recents": 187, "app_switch": 187, "menu": 82, "enter": 66, "del": 67,
@@ -332,7 +332,7 @@ def _run(argv, timeout, cap=OUTPUT_CAP, env=None):
         return {'exit': None if limited else proc.returncode, 'stdout': out.read(cap), 'stderr': err.read(cap)}
 
 
-ACTIONS = {'screenshot', 'tap', 'swipe', 'text', 'key', 'app_start', 'app_stop', 'logcat'}
+ACTIONS = {'screenshot', 'tap', 'swipe', 'text', 'key', 'app_start', 'app_stop', 'logcat', 'diagnostics'}
 INPUT_CONTRACT = 'frame-bound-v1'
 UNSUPPORTED = {'shell', 'install', 'uninstall', 'push', 'pull'}
 BINARY_UPLOAD = {}  # Legacy uploads are refused before reading their body.
@@ -347,7 +347,8 @@ def valid_request_id(value, field='request_id'):
 def validate_action(action, params):
     fields = {'tap': {'frame_id', 'x', 'y'}, 'swipe': {'frame_id', 'x1', 'y1', 'x2', 'y2', 'ms'},
               'text': {'text'}, 'key': {'key'}, 'screenshot': {'max', 'max_side'}, 'logcat': {'lines', 'pid'},
-              'app_start': {'package', 'activity'}, 'app_stop': {'package'}, 'renew': set(), 'release': set()}
+              'app_start': {'package', 'activity'}, 'app_stop': {'package'}, 'diagnostics': {'package'},
+              'renew': set(), 'release': set()}
     if set(params) - fields[action]:
         raise RemoteError(400, 'unsupported action parameters')
     p = dict(params)
@@ -382,7 +383,7 @@ def validate_action(action, params):
         if type(key) is not int or not 0 <= key <= 400:
             raise RemoteError(400, 'unknown key or keycode outside 0..400')
         p['key'] = key
-    elif action in ('app_start', 'app_stop'):
+    elif action in ('app_start', 'app_stop') or action == 'diagnostics' and 'package' in p:
         if not isinstance(p.get('package'), str) or not PACKAGE_RE.fullmatch(p['package']):
             raise RemoteError(400, 'invalid package')
         if 'activity' in p and (not isinstance(p['activity'], str) or not ACTIVITY_RE.fullmatch(p['activity'])):
@@ -666,10 +667,10 @@ class Remote:
                         raise RemoteError(409, 'session does not support frame-bound input; query the original request ID to retrieve an existing receipt',
                             code='input_contract_unavailable', request_id=rid,
                             session_id=params.get('session_id'), required_input_contract=INPUT_CONTRACT)
-                if action == 'logcat':
+                if action in ('logcat', 'diagnostics'):
                     self._refresh(sess)
-                    if 'logcat' not in sess.descriptor.get('capabilities', []):
-                        raise RemoteError(409, 'session does not support logcat; query an existing receipt by request ID',
+                    if action not in sess.descriptor.get('capabilities', []):
+                        raise RemoteError(409, f'session does not support {action}; query an existing receipt by request ID',
                                           code='action_unavailable', request_id=rid, session_id=params.get('session_id'))
                 cleaned = {k: v for k, v in params.items() if k not in ('request_id', 'session_id')}
                 normalized = validate_action(action, cleaned)
@@ -747,6 +748,7 @@ for _action, _props in {
     'app_stop': {'package': {'type': 'string'}},
     'logcat': {'lines': {'type': 'integer', 'minimum': 1, 'maximum': 2000, 'default': 200},
                'pid': {'type': 'integer', 'minimum': 1, 'maximum': 2147483647}},
+    'diagnostics': {'package': {'type': 'string', 'pattern': r'^[A-Za-z0-9_.]{1,200}$'}},
 }.items():
     _required = ['serial', 'session_id', 'request_id']
     _input_hint = ''
@@ -961,7 +963,7 @@ def handle(remote, h, method, parts, query, board=None, node=None):
                     raise RemoteError(400, "请求格式不对")
                 body = _read_body(h, BINARY_UPLOAD[action])
                 params = dict(q)
-            elif method == "GET" and action in ("screenshot", "pull", "logcat"):
+            elif method == "GET" and action in ("screenshot", "pull", "logcat", "diagnostics"):
                 params, body = dict(q), None
                 for key in ("lines", "pid"):
                     if key in params and params[key].isdigit():

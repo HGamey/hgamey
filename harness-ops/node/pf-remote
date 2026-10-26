@@ -34,13 +34,14 @@ def main(argv=None):
     identity.add_argument('--acquisition-id')
     action = subs.add_parser('action')
     action.add_argument('serial')
-    action.add_argument('action', choices=['tap','swipe','text','key','screenshot','logcat','app_start','app_stop','renew','release'])
+    action.add_argument('action', choices=['tap','swipe','text','key','screenshot','logcat','diagnostics','app_start','app_stop','renew','release'])
     action.add_argument('--session-id', required=True)
     action.add_argument('--request-id', required=True)
     action.add_argument('--params', default='{}', help='typed JSON action parameters')
     action.add_argument('--frame-id', help='source screenshot request ID for tap/swipe; coordinates use original image pixels')
     action.add_argument('--lines', type=int, help='logcat snapshot lines, 1..2000 (default 200); does not clear logs')
     action.add_argument('--pid', type=int, help='optional logcat process ID, 1..2147483647')
+    action.add_argument('--package', help='optional Android package for diagnostics; omit for basic system and shell identity facts')
     action.add_argument('--out', help='new output file for a completed screenshot')
     receipt = subs.add_parser('receipt')
     receipt.add_argument('serial')
@@ -109,6 +110,17 @@ def main(argv=None):
                     ap.error('logcat pid must be an integer from 1 to 2147483647')
             elif args.lines is not None or args.pid is not None:
                 ap.error('--lines and --pid are only supported for logcat')
+            if args.action == 'diagnostics':
+                if set(params) - {'package'}:
+                    ap.error('diagnostics accepts only an optional package')
+                if args.package is not None:
+                    if 'package' in params and params['package'] != args.package:
+                        ap.error('--package conflicts with params.package')
+                    params['package'] = args.package
+                if 'package' in params and (not isinstance(params['package'], str) or not re.fullmatch(r'[A-Za-z0-9_.]{1,200}', params['package'])):
+                    ap.error('diagnostics package must be a valid Android package name')
+            elif args.package is not None:
+                ap.error('--package is only supported for diagnostics; use --params for application actions')
             if args.frame_id is not None:
                 if args.action not in ('tap', 'swipe'):
                     ap.error('--frame-id is only supported for tap/swipe')
@@ -139,9 +151,17 @@ def main(argv=None):
         with response:
             if response.status >= 300:
                 unknown = bool(body) and (response.status < 400 or response.status >= 500)
+                detail = {}
+                if args.command == 'action' and args.action == 'diagnostics' and response.status == 409:
+                    try:
+                        rejected = json.loads(response.read((64 << 10) + 1))
+                        if rejected.get('code') == 'action_unavailable':
+                            detail = {'code': 'action_unavailable', 'error': 'current owner does not support diagnostics; query existing receipts by their original IDs'}
+                    except (ValueError, AttributeError):
+                        pass
                 print(json.dumps({'status': 'unknown' if unknown else 'rejected', 'http_status': response.status,
                                   'error': 'request refused; redirects are not followed',
-                                  'query_required': bool(body), **query_context}, ensure_ascii=False))
+                                  'query_required': bool(body), **query_context, **detail}, ensure_ascii=False))
                 return 4 if unknown else 1
             data = response.read((8 << 20) + 1)
             if len(data) > 8 << 20:

@@ -58,6 +58,7 @@
       <div class="row"><select id="request-select" aria-label="选择动作请求" disabled></select><button id="check-request" type="button" class="ghost" disabled>查询原请求</button></div>
       <p id="request-info" class="note">尚无动作。接受请求只表示已记录，须查询实际完成状态。</p>
       <details id="logcat-result" hidden open><summary>本次日志快照</summary><p id="logcat-result-info" class="note"></p><pre id="logcat-output" class="out" tabindex="0" aria-label="本次 logcat 输出"></pre></details>
+      <details id="diagnostics-result" hidden open><summary>本次诊断：系统、应用与 shell 身份</summary><p id="diagnostics-result-info" class="note"></p><pre id="diagnostics-output" class="out" tabindex="0" aria-label="本次设备诊断输出"></pre></details>
       <pre id="out" class="out" tabindex="0" aria-label="动作回执与输出"></pre>
     </section>
     <fieldset id="ops" disabled>
@@ -72,7 +73,8 @@
         <button type="button" id="shot-now" class="ghost" data-action="screenshot">采集本会话截图</button>
       </div>
       <form id="text-form" class="row"><input id="text" maxlength="1000" placeholder="输入文本（ASCII）" autocomplete="off"><button type="submit" data-action="text">发送</button></form>
-      <form id="app-form" class="row"><input id="pkg" placeholder="包名 com.example.app" autocomplete="off" spellcheck="false"><button type="submit" data-action="app_start">启动</button><button type="button" id="app-stop" class="ghost" data-action="app_stop">强停</button></form>
+      <form id="app-form" class="row"><input id="pkg" placeholder="包名 com.example.app（诊断可留空）" autocomplete="off" spellcheck="false"><button type="submit" data-action="app_start">启动</button><button type="button" id="app-stop" class="ghost" data-action="app_stop">强停</button><button type="button" id="diagnostics-now" class="ghost" data-action="diagnostics">读取诊断</button></form>
+      <p class="note">诊断读取系统、屏幕和当前 shell 身份；填写包名可附带包路径、版本与 UID。未取得的事实保持未知，不执行提权或据 shell 身份判断 root 能力。</p>
       <form id="logcat-form" class="row"><label for="logcat-lines">日志行数</label><input id="logcat-lines" type="number" min="1" max="2000" step="1" value="200" required><label for="logcat-pid">PID（可选）</label><input id="logcat-pid" type="number" min="1" max="2147483647" step="1" placeholder="全部进程"><button type="submit" data-action="logcat">读取日志</button></form>
       <p class="note">读取当前 owner 的一次 logcat 快照，不清空日志或持续采集。结果未知时查询原请求，不重发采集。</p>
     </fieldset>

@@ -107,6 +107,8 @@ class FakePF:
             descriptor["input_frame_id"] = None
         elif request["action"] == "logcat":
             receipt["result"] = {"stdout": "fixture log excerpt", "stdout_truncated": True}
+        elif request["action"] == "diagnostics":
+            receipt["result"] = {"exit": 0, "stdout": "fixture diagnostic excerpt", "stdout_truncated": True}
         if rid in self.lose_reply:
             receipt.update(status="unknown", result=None, error="owner completion unknown")
             descriptor.update(phase="recovery_required", live_owner=False, recovery={"required": True})
@@ -359,6 +361,32 @@ class RemoteHttpTests(Base):
         self.assertEqual(self.backend.mutations(), before)
         self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
         self.assertIn("hgremote_logcat", node_remote.MCP_ACTION)
+
+    def test_diagnostics_mapping_preserves_owner_receipt_and_parameters(self):
+        self.backend.actions = [*self.backend.actions, "diagnostics"]
+        sid = self.acquire()["session_id"]
+        auth = self.bearer(self.alice_token)
+        path = f"/remote/devices/{SERIAL}"
+        status, _, raw = self.req("GET", path + f"/diagnostics?session_id={sid}&request_id=base", headers=auth)
+        receipt = json.loads(raw)
+        self.assertEqual((status, receipt["result"]),
+                         (200, {"exit": 0, "stdout": "fixture diagnostic excerpt", "stdout_truncated": True}))
+        self.assertEqual(self.backend.data["requests"]["ref-1:base"]["params"], {})
+        status, _, _ = self.req("POST", path + "/diagnostics", {
+            "session_id": sid, "request_id": "app", "package": "org.example.game"}, auth)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.backend.data["requests"]["ref-1:app"]["params"], {"package": "org.example.game"})
+        before = self.backend.mutations()
+        self.assertEqual(self.req("POST", path + "/diagnostics", {
+            "session_id": sid, "request_id": "bad", "package": "org.example;id"}, auth)[0], 400)
+        self.backend.data["descriptors"]["ref-1"]["capabilities"] = []
+        status, _, raw = self.req("POST", path + "/diagnostics", {"session_id": sid, "request_id": "old-owner"}, auth)
+        self.assertEqual((status, json.loads(raw)["code"]), (409, "action_unavailable"))
+        status, _, raw = self.req("GET", path + f"/requests/base?session_id={sid}", headers=auth)
+        self.assertEqual((status, json.loads(raw)), (200, receipt))
+        self.assertEqual(self.backend.mutations(), before)
+        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
+        self.assertIn("hgremote_diagnostics", node_remote.MCP_ACTION)
 
     def test_remote_device_lanes_keep_original_binding_and_scope(self):
         from test_device_scope import bound, DOMAIN
