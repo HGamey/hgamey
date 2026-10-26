@@ -151,6 +151,27 @@ def smoke(source):
         raise DeployError(400, "smoke compile failed:\n" + "\n".join(failures[:5]))
 
 
+def admission(args):
+    """Cross-participant coordination: refuse to switch while jobs are running
+    or another intake holder is mid-launch, unless the administrator forces it."""
+    if not args.jobs_root:
+        return {"kind": "administrator_asserted_quiet", "managed_jobs_checked": False}
+    jobs_root = Path(args.jobs_root).expanduser().resolve()
+    from node_update import locked
+    import sqlite3
+    with locked(jobs_root / ".intake.lock", existing=True, wait_seconds=5):
+        db = sqlite3.connect((jobs_root / ".queue.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=1)
+        try:
+            db.execute("PRAGMA query_only=ON")
+            rows = db.execute("SELECT job_id FROM jobs WHERE state IN ('claimed','preparing')").fetchall()
+        finally:
+            db.close()
+    if rows and not args.force:
+        raise DeployError(409, f"{len(rows)} running/preparing job(s) prevent deployment; use --force to override")
+    return {"kind": "node_intake", "jobs_root": str(jobs_root),
+            "running": len(rows), "forced": bool(args.force)}
+
+
 def cmd_activate(args):
     root = Path(args.root).expanduser().resolve()
     source = source_tree(Path(args.source).expanduser().resolve())
@@ -160,6 +181,7 @@ def cmd_activate(args):
     if args.check_only:
         digest, files = tree_digest(source)
         return {"schema": SCHEMA, "status": "checked", "digest": digest, "files": files}
+    admission_fact = admission(args)
     ensure_layout(root)
     run_id = time.strftime("%Y%m%dT%H%M%S") + "-" + hashlib.sha1(os.urandom(8)).hexdigest()[:8]
     release = root / "releases" / run_id
@@ -168,7 +190,8 @@ def cmd_activate(args):
     digest, files = tree_digest(release / COMPONENT)
     receipt = {"schema": SCHEMA, "run_id": run_id, "created_at": time.time(),
                "status": "staged", "source": str(source), "digest": digest, "files": files,
-               "components": [COMPONENT], "previous": current_run(root)}
+               "components": [COMPONENT], "previous": current_run(root),
+               "admission": admission_fact}
     run_dir = root / "deploy-state" / run_id
     run_dir.mkdir()
     record(run_dir, receipt, "staged")
@@ -177,7 +200,7 @@ def cmd_activate(args):
     # Keep the last N releases; never delete the one the cursor points at.
     prune(root, keep=args.keep)
     return {"schema": SCHEMA, "run_id": run_id, "status": "active", "digest": digest,
-            "files": files, "previous": receipt["previous"]}
+            "files": files, "previous": receipt["previous"], "admission": admission_fact}
 
 
 def prune(root, keep=5):
@@ -245,6 +268,8 @@ def parser():
             one.add_argument("--source", required=True, help="staged harness-ops tree to deploy")
             one.add_argument("--check-only", action="store_true", help="validate and digest without switching")
             one.add_argument("--keep", type=int, default=5, help="releases to retain (default 5)")
+            one.add_argument("--jobs-root", help="node jobs root; refuse switching while jobs run")
+            one.add_argument("--force", action="store_true", help="switch despite running jobs (administrator override)")
         if name == "rollback":
             one.add_argument("--run", help="specific release to roll back to (default: previous)")
     return ap

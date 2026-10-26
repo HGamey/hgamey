@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -9,7 +10,6 @@ import unittest
 
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
-import deploy_overlay
 
 
 def run(args):
@@ -35,11 +35,15 @@ class DeployOverlayTests(unittest.TestCase):
 
     def stage(self, version):
         staged = Path(self.temp.name) / f"stage-{version}"
+        shutil.rmtree(staged, ignore_errors=True)
         (staged / "node").mkdir(parents=True)
         (staged / "node" / "node_service.py").write_text(f"print('service {version}')\n")
         (staged / "node" / "helper.py").write_text(f"VALUE = {version}\n")
         (staged / "README.md").write_text(f"readme {version}\n")
         return staged
+
+    def active_run(self):
+        return os.readlink(self.root / "harness-ops").split("/")[1]
 
     def test_activate_switches_atomically_rolls_back_and_prunes(self):
         code, out = run(["activate", "--root", str(self.root), "--source", str(self.stage(2))])
@@ -60,14 +64,11 @@ class DeployOverlayTests(unittest.TestCase):
         self.assertEqual((cursor / "node" / "helper.py").read_text(), "VALUE = 2\n")
         code, out = run(["rollback", "--root", str(self.root)])
         self.assertEqual(code, 0, out)
-        self.assertEqual((self.root / "harness-ops" / "node" / "helper.py").read_text(), "VALUE = 1\n",
+        self.assertEqual((cursor / "node" / "helper.py").read_text(), "VALUE = 1\n",
                          "chain rollback reaches the baseline release")
         code, error = run(["rollback", "--root", str(self.root)])
         self.assertEqual((code, error["error"]["status"]), (1, 404),
                          "baseline has no previous; rollback is refused instead of guessing")
-
-    def active_run(self):
-        return os.readlink(self.root / "harness-ops").split("/")[1]
 
     def test_smoke_failure_and_check_only_never_switch(self):
         plain_before = (self.root / "harness-ops").is_symlink()
@@ -84,6 +85,43 @@ class DeployOverlayTests(unittest.TestCase):
         self.assertEqual((code, out["status"]), (0, "checked"))
         self.assertEqual((self.root / "harness-ops" / "node" / "helper.py").read_text(), "VALUE = 1\n",
                          "failed smoke and check-only must not change the installation")
+
+    def test_running_jobs_prevent_deployment_unless_forced(self):
+        from job_queue import JobQueue
+
+        jobs_root = self.root / "phonefarm" / "_jobs"
+        jobs_root.mkdir(parents=True)
+        (jobs_root / ".intake.lock").write_bytes(b"")
+        queue = JobQueue(str(jobs_root / ".queue.sqlite3"))
+        row, _ = queue.reserve("coordination-target", "content:x",
+                               {"bin": "fixture", "argv": ["-c", "pass"], "resources": []}, [])
+        queue.ready(row["job_id"])
+        self.assertEqual(queue.claim_next(2)["job_id"], row["job_id"])
+        code, error = run(["activate", "--root", str(self.root), "--source", str(self.stage(6)),
+                           "--jobs-root", str(jobs_root)])
+        self.assertEqual((code, error["error"]["status"]), (1, 409))
+        self.assertIn("running/preparing", error["error"]["message"])
+        self.assertFalse((self.root / "harness-ops").is_symlink(),
+                         "refused deployment must not adopt or switch the cursor")
+        code, out = run(["activate", "--root", str(self.root), "--source", str(self.stage(6)),
+                         "--jobs-root", str(jobs_root), "--force"])
+        self.assertEqual((code, out["status"], out["admission"]["forced"]), (0, "active", True))
+        self.assertEqual(out["admission"]["running"], 1)
+
+    def test_quiet_jobs_root_and_missing_flag_paths(self):
+        from job_queue import JobQueue
+
+        jobs_root = self.root / "phonefarm" / "_jobs"
+        jobs_root.mkdir(parents=True)
+        (jobs_root / ".intake.lock").write_bytes(b"")
+        JobQueue(str(jobs_root / ".queue.sqlite3"))
+        code, out = run(["activate", "--root", str(self.root), "--source", str(self.stage(6)),
+                         "--jobs-root", str(jobs_root)])
+        self.assertEqual((code, out["admission"]["kind"]), (0, "node_intake"))
+        self.assertEqual(out["admission"]["running"], 0)
+        # 缺省不传 --jobs-root：管理员自担静默声明，回执如实记录未核。
+        code, out = run(["activate", "--root", str(self.root), "--source", str(self.stage(6))])
+        self.assertEqual(out["admission"]["kind"], "administrator_asserted_quiet")
 
     def test_non_harness_source_is_rejected(self):
         empty = Path(self.temp.name) / "not-harness"
