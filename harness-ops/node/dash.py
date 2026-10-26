@@ -531,6 +531,19 @@ class Dash:
                 return self._send(h, 200, self.job_service.retry_finalize(sub[2]))
             if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "queue-release":
                 return self._send(h, 200, self.job_service.release_queue(sub[2], data.get("note")))
+            if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] in ("pause", "resume"):
+                if not self.job_service:
+                    return self._send(h, 503, {"error": "作业服务不可用"})
+                from job_queue import JobQueue
+                try:
+                    row = self.job_service.dispatch.queue.set_paused(sub[2], sub[3] == "pause")
+                except ValueError as error:
+                    return self._send(h, 409, {"code": "pause_unsupported", "error": str(error)})
+                if row is None:
+                    return self._send(h, 404, {"error": "no such job"})
+                log_err(f"dash job {sub[3]} {sub[2]} paused={bool(row['paused'])} 来自 {ip}")
+                return self._send(h, 200, {"node_id": self.job_service.node_id, "job_id": sub[2],
+                                           "paused": bool(row["paused"]), "state": row["state"]})
             if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "cancel":
                 if not self.job_service:
                     return self._send(h, 503, {"error": "作业服务不可用"})
