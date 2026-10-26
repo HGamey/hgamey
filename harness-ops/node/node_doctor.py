@@ -1,5 +1,6 @@
 """Host observations only: no program refresh, phone probes or repair writes."""
 import os
+from pathlib import Path
 import platform
 import shutil
 import stat
@@ -82,6 +83,39 @@ def report(node):
         except OSError:
             add(name + ".format", "runtime", "unknown", name + " 宿主格式", "无法读取文件头；不执行该文件进行探测。")
 
+    entry_path = runtime.get("entry_path") or ""
+    try:
+        root = Path(entry_path).parents[2] if entry_path else None
+    except (OSError, ValueError, IndexError):
+        root = None
+    if not entry_path or root is None:
+        add("deploy.overlay", "deployment", "unknown", "overlay 部署布局",
+            "无法从运行入口推断安装根；不猜测。", {"entry_path": entry_path or None},
+            "核对服务启动入口后手动运行 deploy_overlay.py status。")
+    else:
+        link = root / "harness-ops"
+        releases = root / "releases"
+        if link.is_symlink():
+            target = os.path.realpath(link)
+            if os.path.isdir(target):
+                count = len(os.listdir(releases)) if os.path.isdir(releases) else 0
+                add("deploy.overlay", "deployment", "ok", "overlay 部署游标",
+                    "安装目录由符号链接游标指向完整 release；升级与回滚都是单步原子切换。",
+                    {"cursor": os.readlink(link), "target": target, "releases": count},
+                    "升级/回滚继续走 deploy_overlay.py；不要直接改写游标目录或 rsync 覆盖安装根。")
+            else:
+                add("deploy.overlay", "deployment", "error", "overlay 部署游标",
+                    "游标指向的目标不存在（悬空链接）；运行中的服务仍在用旧 inode，但重启会失败。",
+                    {"cursor": os.readlink(link)},
+                    "用 deploy_overlay.py rollback 回到最后一个完好 release，再核对 releases 目录。")
+        elif link.is_dir():
+            add("deploy.overlay", "deployment", "warning", "overlay 部署布局",
+                "安装目录仍是普通目录（旧布局）；无法原子切换，也不能按 release 回滚。",
+                {"root": str(root)},
+                "用 deploy_overlay.py activate 完成首次迁移；迁移会把当前目录整体转为 baseline release。")
+        else:
+            add("deploy.overlay", "deployment", "not_applicable", "overlay 部署布局",
+                "未发现可管理的安装目录；本诊断不创建目录。")
     for name, variable in (("adb", "ADB_BIN"), ("hdc", "HDC_BIN"), ("devlock", "DEVLOCK_BIN")):
         configured = jobs.bins.get(name)
         executable = env.get(variable) or (configured[0] if configured else name)

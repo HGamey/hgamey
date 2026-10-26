@@ -1,5 +1,9 @@
 import base64
 import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
@@ -112,6 +116,40 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn("设备所有权快照", result.stdout)
         self.assertNotIn(f.ro, result.stdout)
+
+    def test_overlay_layout_visibility_covers_dangling_and_legacy(self):
+        f = self.fixture
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "node"
+        install = root / "harness-ops" / "node"
+        install.mkdir(parents=True)
+        (install / "node_service.py").write_text("# fixture entry\n")
+        entry = str(install / "node_service.py")
+
+        def doctor_with(entry_path, mutate=None):
+            f.node.service = {**f.node.service, "runtime": {**f.node.service.get("runtime", {}),
+                                                            "entry_path": entry_path}}
+            if mutate:
+                mutate()
+            return {item["id"]: item for item in f.get_json("/doctor", headers=self.pin)["checks"]}
+
+        link = root / "harness-ops"
+        if link.is_symlink() or link.exists():
+            shutil.rmtree(link, ignore_errors=link.is_symlink())
+        os.symlink("releases/r1/harness-ops", link)
+        checks = doctor_with(entry)
+        self.assertEqual(checks["deploy.overlay"]["status"], "error")
+        self.assertIn("悬空", checks["deploy.overlay"]["message"])
+        (root / "releases/r1/harness-ops").mkdir(parents=True)
+        checks = doctor_with(entry)
+        self.assertEqual(checks["deploy.overlay"]["status"], "ok")
+        self.assertEqual(checks["deploy.overlay"]["evidence"]["releases"], 1)
+        link.unlink()
+        (root / "harness-ops").mkdir()
+        checks = doctor_with(entry)
+        self.assertEqual(checks["deploy.overlay"]["status"], "warning")
+        self.assertIn("deploy_overlay.py activate", checks["deploy.overlay"]["remediation"][0]["text"])
 
     def test_device_lease_clear_and_unreadable_snapshot_stay_explicit(self):
         f = self.fixture
