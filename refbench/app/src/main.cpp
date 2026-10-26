@@ -36,6 +36,7 @@
 #include "gen/tri_vert.h"
 #include "gen/tri_frag.h"
 #include "paired_capture.h"
+#include "output_json.h"
 
 #define TAG "refbench"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -181,14 +182,6 @@ static State g;
 
 // ── JSON 输出 (退出前唯一一次落盘) ─────────────────────────────────────
 
-static void json_escape_into(std::string& o, const std::string& s) {
-    for (char c : s) {
-        if (c == '"' || c == '\\') { o += '\\'; o += c; }
-        else if ((unsigned char)c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); o += b; }
-        else o += c;
-    }
-}
-
 static const char* present_mode_name(VkPresentModeKHR m) {
     switch (m) {
         case VK_PRESENT_MODE_FIFO_KHR: return "FIFO";
@@ -210,14 +203,6 @@ static const char* format_name(VkFormat f) {
     }
 }
 
-static const char* declared_bottleneck() {
-    if (g.cfg.scene == "bw_pingpong") return "bandwidth";
-    if (g.cfg.scene == "frag_alu") return "fragment";
-    // sr_pipeline: 低分辨率场景 pass (fragment) + 管线尾部 compute 后处理
-    if (g.cfg.scene == "sr_pipeline") return "fragment+compute";
-    return "none";  // idle_cap
-}
-
 static void mkdirs(const std::string& path) {
     std::string p;
     for (size_t i = 0; i < path.size(); i++) {
@@ -228,66 +213,9 @@ static void mkdirs(const std::string& path) {
 }
 
 static std::string output_json() {
-    std::string j;
-    j.reserve(4096);
-    j += "{\n";
-    j += " \"contract_version\": 1,\n";
-    j += " \"app_version\": \""; j += APP_VERSION; j += "\",\n";
-    j += " \"run_id\": \""; json_escape_into(j, g.cfg.run_id); j += "\",\n";
-    j += " \"scene\": \""; json_escape_into(j, g.cfg.scene); j += "\",\n";
-    j += " \"declared_bottleneck\": \""; j += declared_bottleneck(); j += "\",\n";
-    j += " \"effective_knobs\": {";
-    if (g.cfg.scene == "bw_pingpong") { j += "\"loadop\": \""; j += g.cfg.knob_loadop; j += "\""; }
-    if (g.cfg.scene == "sr_pipeline") { j += "\"postfx\": \""; j += g.cfg.knob_postfx; j += "\""; }
-    j += "},\n";
-    if (g.cfg.capture_native_pairs == "on") {
-        j += " \"capture_mode\": \"quality_only\",\n \"performance_eligible\": false,\n";
-    }
-    // postfx 的配置事实。只记"装了什么、几字节、进出多大", 不含任何时间量 ——
-    // 测量与判定是 phonefarm 侧的事 (https://github.com/HGamey/docs/blob/main/repos/refbench/DESIGN.md §1 跑测分离)。
-    if (g.cfg.scene == "sr_pipeline") {
-        char pb[512];
-        std::string esc;
-        json_escape_into(esc, g.cfg.postfx_shader);
-        snprintf(pb, sizeof pb,
-                 " \"postfx\": {\"active\": %s, \"shader_path\": \"%s\", \"shader_bytes\": %ld, "
-                 "\"lo\": [%u, %u], \"hi\": [%u, %u], \"workgroup\": [16, 16, 1]},\n",
-                 g.postfx_active ? "true" : "false", esc.c_str(), g.postfx_bytes,
-                 State::SR_LO_W, State::SR_LO_H, State::SR_HI_W, State::SR_HI_H);
-        j += pb;
-    }
-    char buf[256];
-    snprintf(buf, sizeof buf, " \"params\": {\"frames\": %d, \"intensity\": %d, \"rt_width\": %u, \"rt_height\": %u},\n",
-             g.cfg.frames, g.cfg.intensity,
-             g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : (g.cfg.scene == "sr_pipeline" ? State::SR_LO_W : 0)),
-             g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : (g.cfg.scene == "sr_pipeline" ? State::SR_LO_H : 0)));
-    j += buf;
-    j += " \"render_thread_name\": \""; j += RENDER_THREAD_NAME; j += "\",\n";
-    j += " \"driver_submit_thread_name\": \""; j += DRIVER_THREAD_NAME; j += "\",\n";
-    snprintf(buf, sizeof buf, " \"renamed_driver_threads\": %d,\n", g.renamed_driver_threads);
-    j += buf;
-    j += " \"gpu_name\": \""; json_escape_into(j, g.gpu_name); j += "\",\n";
-    snprintf(buf, sizeof buf,
-             " \"swapchain\": {\"present_mode\": \"%s\", \"format\": \"%s\", \"width\": %u, \"height\": %u, \"image_count\": %u, \"pre_transform\": \"0x%x\"},\n",
-             present_mode_name(g.present_mode), format_name(g.swap_format),
-             g.swap_extent.width, g.swap_extent.height, (unsigned)g.swap_images.size(),
-             (unsigned)g.pre_transform);
-    j += buf;
-    j += " \"passes\": [\n";
-    for (size_t i = 0; i < g.passes.size(); i++) {
-        const PassInfo& p = g.passes[i];
-        snprintf(buf, sizeof buf,
-                 "  {\"name\": \"%s\", \"target\": \"%s\", \"load_op\": \"%s\", \"store_op\": \"%s\", \"width\": %u, \"height\": %u, \"format\": \"%s\"}%s\n",
-                 p.name.c_str(), p.target.c_str(), p.load_op.c_str(), p.store_op.c_str(),
-                 p.w, p.h, p.format.c_str(), i + 1 < g.passes.size() ? "," : "");
-        j += buf;
-    }
-    j += " ],\n";
-    snprintf(buf, sizeof buf, " \"debug_labels_supported\": %s,\n \"frames_submitted\": %d,\n \"clean_exit\": %s\n}\n",
-             g.debug_labels ? "true" : "false", g.frames_submitted, g.clean_exit ? "true" : "false");
-    j += buf;
-
-    return j;
+    return refbench_output::serialize(g, APP_VERSION, RENDER_THREAD_NAME,
+                                     DRIVER_THREAD_NAME, present_mode_name(g.present_mode),
+                                     format_name(g.swap_format));
 }
 
 static void write_output_json() {

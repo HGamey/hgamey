@@ -157,8 +157,10 @@
             "enum": [
               "LOAD",
               "CLEAR",
-              "DONT_CARE"
-            ]
+              "DONT_CARE",
+              "NONE"
+            ],
+            "description": "NONE denotes a compute pass with no attachment load operation."
           },
           "store_op": {
             "enum": [
