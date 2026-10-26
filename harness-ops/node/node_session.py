@@ -87,14 +87,16 @@ def validate_recovery_spec(jobs, spec):
     """A public spec cannot borrow a different device with a recovery flag."""
     source, bound = _bound_recovery(jobs, spec.get("recovery_for"))
     expected = {**_recovery_spec(jobs, source["job_id"], bound, spec["recovery_for"]),
-                "resources": source["resources"]}
+                "resources": source["resources"],
+                **({"priority": spec["priority"]} if "priority" in spec else {})}
     if spec != expected:
         raise SessionError(409, "session_recovery_binding", "bound recovery must inherit the exact original session and resources")
 
 
 def _check_attempt(jobs, source, bound, child):
     expected = {**_recovery_spec(jobs, source["job_id"], bound, child["spec"]["recovery_for"]),
-                "resources": source["resources"]}
+                "resources": source["resources"],
+                **({"priority": child["spec"]["priority"]} if "priority" in child["spec"] else {})}
     if child["spec"] != expected or child["resources"] != source["resources"]:
         raise SessionError(409, "session_recovery_binding", "recovery command does not match its original session binding")
 

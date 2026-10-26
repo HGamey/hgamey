@@ -9,6 +9,7 @@
   pf-node --request-id study-001 --resource device:oneplus phonefarm eval ...
   pf-node --execution-policy process_group --detach phonefarm ...
   pf-node --max-runtime-seconds 900 --timeout-action graceful --detach phonefarm ...
+  pf-node --priority 5 --detach phonefarm ... # -10..10，越高越先；同级FIFO，不抢占运行任务
   pf-node --host-slots slots.json --detach phonefarm ... # {"cpu":2,"gpu":1,"io":0}
   pf-node --disk-guard guard.json --detach phonefarm ... # {"max_log_bytes":67108864,"min_free_bytes":1073741824,"stop_action":"graceful"}
   pf-node request <request_id>               # 断网后找回同一次提交的任务
@@ -289,7 +290,7 @@ def device_binding_envelope(value, node_id):
     return binding
 
 
-def require_idempotent_jobs(require_recovery=False, execution_policy=None, inputs=None, device_binding=None, time_budget=None, host_slots=None, disk_guard=None):
+def require_idempotent_jobs(require_recovery=False, execution_policy=None, inputs=None, device_binding=None, time_budget=None, host_slots=None, disk_guard=None, priority=None):
     TARGET.require_write()
     try:
         node = json.loads(call("GET", "/node", attempts=1, raise_4xx=True))
@@ -307,6 +308,8 @@ def require_idempotent_jobs(require_recovery=False, execution_policy=None, input
         capability = node.get("execution", {}).get("process_policies", {}).get(execution_policy, {})
         if capability.get("available") is not True:
             sys.exit(f"pf-node: 执行策略 {execution_policy} 不可用：{capability.get('reason') or '节点未提供能力证据'}；未打包或提交")
+    if priority is not None and "jobs.priority-v1" not in node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 jobs.priority-v1；未提交，不丢弃显式优先级")
     if host_slots is not None and "jobs.host-capacity-v1" not in node.get("capabilities", []):
         sys.exit("pf-node: 节点缺少 jobs.host-capacity-v1；未打包或提交，不删除显式需求降级")
     if time_budget is not None and "jobs.time-budget-v1" not in node.get("capabilities", []):
@@ -1013,6 +1016,7 @@ def main():
     args, outdir, detach, label, exe = sys.argv[1:], None, False, os.environ.get("DEVLOCK_LABEL"), None
     connection_url = expected_node_id = explicit_file = None
     request_id, resources = None, []
+    priority = None
     device_access, recovery_for, execution_policy = None, None, None
     inputs_path, inputs, submission_node = None, None, None
     binding_path, binding_envelope = None, None
@@ -1059,6 +1063,10 @@ def main():
             if not args:
                 sys.exit("pf-node: --request-id 需要一个 ID")
             request_id = valid_request_id(args.pop(0))
+        elif a == "--priority":
+            if not args or priority is not None or not re.fullmatch(r"-?[0-9]{1,2}", args[0]) or not -10 <= int(args[0]) <= 10:
+                sys.exit("pf-node: --priority 需要一个 -10..10 的整数")
+            priority = int(args.pop(0))
         elif a == "--resource":
             if not args or not args[0].strip():
                 sys.exit("pf-node: --resource 需要一个独占资源名称")
@@ -1145,7 +1153,7 @@ def main():
     if args[0] in ("doctor", "update-status"):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None
-                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach or outdir):
+                or host_slots_path is not None or disk_guard_path is not None or priority is not None or binding_path is not None or exe or detach or outdir):
             sys.exit("pf-node: " + args[0] + " 不接收作业选项；这是单次只读请求")
         if args[0] == "doctor":
             from doctor_client import main as read_status
@@ -1155,7 +1163,7 @@ def main():
     if args[0] == "live":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None
-                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach or outdir):
+                or host_slots_path is not None or disk_guard_path is not None or priority is not None or binding_path is not None or exe or detach or outdir):
             sys.exit("pf-node: live 不接收作业选项；--device-binding 放在 live 子命令后")
         from live_client import main as live_main
         return live_main(TARGET, args[1:])
@@ -1163,7 +1171,7 @@ def main():
     if args[0] == "job-sources" or (args[0] in history_commands and any(value in ("--source", "--source-revision") for value in args[1:])):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None
-                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach):
+                or host_slots_path is not None or disk_guard_path is not None or priority is not None or binding_path is not None or exe or detach):
             sys.exit("pf-node: 历史来源读取不接收作业提交/控制选项")
         CHUNK = int(os.environ.get("PF_NODE_CHUNK", 2 << 20))
         return history_command(args, outdir)
@@ -1172,7 +1180,7 @@ def main():
     if args[0] == "job-events":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None
-                or host_slots_path is not None or disk_guard_path is not None or binding_path is not None or exe or detach or outdir):
+                or host_slots_path is not None or disk_guard_path is not None or priority is not None or binding_path is not None or exe or detach or outdir):
             sys.exit("pf-node: job-events 不接收作业选项；这是单次只读请求")
         job_events_command(args[1:])
         return
@@ -1180,7 +1188,7 @@ def main():
         sys.exit("pf-node: --device-binding 仅用于配置 phonefarm 的 gray-layer session，不能替换 --exe 或覆盖恢复/无设备模式；未提交")
     if args[0] == "devices-resolve":
         if len(args) != 2 or not args[1] or (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or priority is not None or exe or detach or outdir):
             sys.exit("用法: pf-node devices-resolve SERIAL；不接收作业选项")
         try:
             node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
@@ -1196,7 +1204,7 @@ def main():
         return
     if args[0] in ("devices", "devices-set"):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or priority is not None or exe or detach or outdir):
             sys.exit("pf-node: devices/devices-set 不接收作业选项；登记不会创建作业")
         if args == ["devices"]:
             try:
@@ -1229,13 +1237,13 @@ def main():
         return
     if args[0] == "results":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or priority is not None or exe or detach or outdir):
             sys.exit("pf-node: results 不接收作业选项；使用清单 result_id 或 --import-id")
         from result_client import main as results_main
         raise SystemExit(results_main(args[1:], target=TARGET))
     if args[0] == "research":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
-                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or exe or detach or outdir):
+                or recovery_for is not None or execution_policy is not None or time_budget is not None or host_slots_path is not None or disk_guard_path is not None or priority is not None or exe or detach or outdir):
             sys.exit("pf-node: research 不接收作业选项；写入使用 --operation-id")
         from research_client import main as research_main
         raise SystemExit(research_main(args[1:], target=TARGET))
@@ -1290,16 +1298,16 @@ def main():
         except (OSError, ValueError) as error:
             sys.exit(f"pf-node: 无法读取输入清单：{error}")
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
-                                                 execution_policy=execution_policy, inputs=inputs, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard)
+                                                 execution_policy=execution_policy, inputs=inputs, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
         if args[0] not in submission_node.get("execution", {}).get("bins", []):
             sys.exit("pf-node: --inputs 仅用于节点提供的程序作业；未提交")
-    if time_budget is not None or host_slots is not None or disk_guard is not None:
+    if time_budget is not None or host_slots is not None or disk_guard is not None or priority is not None:
         if submission_node is None:
             submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
                                                      execution_policy=execution_policy, device_binding=binding_envelope,
-                                                     time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard)
+                                                     time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
         if args[0] not in submission_node.get("execution", {}).get("bins", []):
-            sys.exit("pf-node: 运行预算、磁盘软保护和显式宿主 slots 仅用于普通程序作业；不用于管理/内部准备/typed recovery，未提交")
+            sys.exit("pf-node: 优先级、运行预算、磁盘软保护和显式宿主 slots 仅用于普通程序作业；不用于管理/内部准备/typed recovery，未提交")
     if args[0] == "games":
         from game_client import main as games_main
         raise SystemExit(games_main(args[1:], url=URL, token=TOKEN, request_id=request_id, target=TARGET))
@@ -1436,7 +1444,7 @@ def main():
         return
     binname, argv = args[0], args[1:]
     if submission_node is None:
-        submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard)
+        submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
     if gray_session and existing_gray_request is None:
         require_gray_session_compatibility(submission_node, exe)
     request_id = request_id or str(uuid.uuid4())
@@ -1450,6 +1458,8 @@ def main():
         spec["exe"] = argv[0]
     if resources:
         spec["resources"] = resources
+    if priority is not None:
+        spec["priority"] = priority
     if host_slots is not None:
         spec["host_slots"] = host_slots
     if time_budget is not None:

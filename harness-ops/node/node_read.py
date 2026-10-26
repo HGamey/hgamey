@@ -140,7 +140,7 @@ class NodeRead:
                                    "unbound_legacy_requests": "accepted_without_target_guarantee"},
                 "capabilities": ["node.target-v1", "node.doctor-v1", "node.updates-v1", "node.runtime-v1", "node.protocol-compat-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "results.cross-compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range", "jobs.history-read-v1",
-                                 "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.durability-v1",
+                                 "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.priority-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.input-limits-v1", "jobs.export-limits-v1", "jobs.export-cache-root-v1", "jobs.time-budget-v1", "jobs.disk-guard-v1", "jobs.host-capacity-v1", "jobs.state-events-v1",
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
                                  "jobs.session-recovery-v1", "jobs.session-recovery-chain-v1"] +

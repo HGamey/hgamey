@@ -17,6 +17,13 @@ class RequestConflict(ValueError):
     """Request content or resource state conflicts with an existing operation."""
 
 
+def job_priority(spec):
+    value = spec.get("priority", 0)
+    if type(value) is not int or not -10 <= value <= 10:
+        raise ValueError("priority must be an integer between -10 and 10")
+    return value
+
+
 def recovery_reservations(row, owners):
     """Borrow the blocked target's ancestor chain, never a sibling's reservation."""
     blocked = {r["job_id"]: r for r in owners if r["state"] == "blocked"}
@@ -166,6 +173,7 @@ class JobQueue:
                 return self._row(prior), False
             # Configuration may change between the HTTP preflight and this
             # transaction. Existing IDs above retain their original admission.
+            job_priority(spec)
             job_capacity.check_fit(spec, self._capacity(db))
             job_id = secrets.token_hex(6)
             db.execute("""INSERT INTO jobs
@@ -197,8 +205,10 @@ class JobQueue:
             if sum(row["state"] == "claimed" for row in active) >= max_running:
                 return None
             capacity = job_capacity.snapshot(self._capacity(db), active)
-            # Insertion order survives wall-clock changes and equal timestamps.
+            # Preserve the original global FIFO fence before ranking candidates.
+            # Priority never allows a later device lane to bypass that barrier.
             global_waiting = False
+            candidates = []
             for row in db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY sequence"):
                 value = self._row(row)
                 later_device_write = (device_access(value["spec"]) == "write"
@@ -207,6 +217,10 @@ class JobQueue:
                     continue
                 if global_waiter(value):
                     global_waiting = True
+                candidates.append(value)
+            # Stable sorting keeps SQL insertion order within each priority,
+            # including legacy requests that omit the field (effective zero).
+            for value in sorted(candidates, key=lambda row: -job_priority(row["spec"])):
                 if admit and not admit(value):
                     continue
                 if job_capacity.waiting(value["spec"], capacity, active):

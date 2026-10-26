@@ -219,6 +219,8 @@ class NodeDeployments:
         parent, request = self._bound(spec["recovery_for"])
         original = parent["spec"].get("device_binding")
         expected = self._spec(request, parent["job_id"], device_binding=original)
+        if "priority" in spec:
+            expected["priority"] = spec["priority"]
         report, _ = self._report(parent["job_id"], request, original)
         if spec != expected or report is None:
             raise DeploymentError(409, "deployment_binding_changed",
@@ -246,8 +248,10 @@ class NodeDeployments:
             if (self.jobs._read_root.read_json(parent + "/in/manifest.json", maximum=MAX_MANIFEST) != request
                     or not source or source["spec"].get("device_binding") != original):
                 raise DeploymentError(409, "deployment_binding_changed", "recovery inputs differ from its source transaction")
-        if request != expected or row["fingerprint"] != request_fingerprint(
-                self._spec(request, parent, inputs, original), snapshot_body(request)):
+        expected_spec = self._spec(request, parent, inputs, original)
+        if "priority" in row["spec"]:
+            expected_spec["priority"] = row["spec"]["priority"]
+        if request != expected or row["fingerprint"] != request_fingerprint(expected_spec, snapshot_body(request)):
             raise DeploymentError(409, "deployment_binding_changed", "deployment input or queue binding does not match the registered version")
         return row, request
 

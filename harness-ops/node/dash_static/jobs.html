@@ -174,6 +174,8 @@
         <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主任务 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复任务</option></select></label>
         <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留任务的 12 位 ID" autocomplete="off" spellcheck="false"></label>
         <p id="device-access-help" class="field-help wide-field"></p>
+        <label class="wide-field">调度优先级 <span class="field-optional">可选，-10 至 10</span><input id="submit-priority" type="number" min="-10" max="10" step="1" placeholder="留空不声明；显式 0 会发送" aria-describedby="priority-help" disabled><span id="priority-help" class="field-help" role="status"></span></label>
+        <p class="note wide-field">数值越高，在满足资源、设备 lease 与原全域排队约束的候选中越先执行；同级保持提交顺序。不会抢占运行中的任务，恢复任务也可声明优先级。</p>
         <details class="input-manifest wide-field" id="host-slots-fields">
           <summary>宿主调度声明 <span class="field-optional">可选</span></summary>
           <label class="host-slots-choice"><input id="submit-host-slots" type="checkbox" disabled> 显式声明 CPU / GPU / I/O slots</label>
@@ -197,7 +199,7 @@
     <form id="request-lookup-form" class="request-lookup-form">
       <label for="request-id">按请求 ID 找回</label>
       <div class="lookup-input"><input id="request-id" type="text" autocomplete="off" spellcheck="false" required placeholder="请求 ID"><button id="request-lookup" class="ghost" type="submit">查询请求</button></div>
-      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页保存原 ID、节点、设备绑定、预算与宿主 slots 声明，不保存完整参数或掌舵密码；刷新后可继续查询。</p>
+      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页保存原 ID、节点、设备绑定、预算、宿主 slots 与优先级声明，不保存完整参数或掌舵密码；刷新后可继续查询。</p>
     </form>
   </details>
   <div class="jobs-layout">

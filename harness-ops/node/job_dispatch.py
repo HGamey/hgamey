@@ -11,7 +11,7 @@ import time
 import uuid
 import node_update
 
-from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, global_waiter
+from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, global_waiter, job_priority
 from device_scope import scope, lease_problem
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
@@ -72,6 +72,7 @@ class JobDispatch:
                 **({"time_budget": dict(spec["time_budget"])} if "time_budget" in spec else {}),
                 **({"disk_guard": dict(spec["disk_guard"])} if "disk_guard" in spec else {}),
                 **({"host_slots": dict(spec["host_slots"])} if "host_slots" in spec else {}),
+                **({"priority": spec["priority"]} if "priority" in spec else {}),
                 "state": "running", "phase": "preparing", "execution": {"kind": "supervised-v1",
                     **({"time_budget": job_budget.initial(spec["time_budget"])} if "time_budget" in spec else {}),
                     **({"disk_guard": job_budget.initial_disk_guard(spec["disk_guard"])} if "disk_guard" in spec else {})},
@@ -463,7 +464,10 @@ class JobDispatch:
             meta["recovery_for"] = row["spec"].get("recovery_for")
             if "device_binding" in row["spec"]:
                 meta["device_binding"] = row["spec"]["device_binding"]
+            if "priority" in row["spec"]:
+                meta["priority"] = row["spec"]["priority"]
             meta["queue"] = {"state": row["state"], "submitted_at": row["submitted_at"],
+                             "priority": job_priority(row["spec"]),
                              "resources": row["resources"], "waiting": self.waiting(row),
                              "device_scope": scope(row["spec"]),
                              "host_capacity": job_capacity.job_facts(row),
@@ -485,6 +489,7 @@ class JobDispatch:
             state = row["state"]
             phase = self.jobs.status(row["job_id"])["phase"] if state == "claimed" else state
             items.append({"job_id": row["job_id"], "request_id": row["request_id"], "phase": phase,
+                          "priority": job_priority(row["spec"]),
                           **job_events.public_fields(row),
                           "recovery_for": row["spec"].get("recovery_for"),
                           "device_scope": scope(row["spec"]),

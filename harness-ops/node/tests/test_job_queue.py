@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from job_queue import JobQueue, RequestConflict
@@ -36,6 +37,54 @@ class JobQueueTests(unittest.TestCase):
         # than teaching the queue that every blocked row has stopped executing.
         self.queue.record_unstarted(jid, "failed", "SQL fixture never executed a command")
         self.queue.set_state(jid, state)
+
+    def test_priority_ranks_eligible_jobs_without_rewriting_requests(self):
+        from node_service import Jobs
+
+        root = self.path.parent / "priority-node"
+        jobs = Jobs(str(root), {"fixture": (sys.executable, str(root))}, data_dir=str(root))
+        self.addCleanup(jobs._read_root.close)
+        jobs.dispatch.start = lambda: None  # Exercise preparation, never launch a worker.
+        jobs.leases.snapshot = lambda **kw: {"status": "clear", "error": None}
+        queue = jobs.dispatch.queue
+        base = {"bin": "fixture", "argv": ["-c", "pass"], "resources": []}
+
+        owner = jobs.start({**base, "resources": ["busy"]}, b"", "priority-owner")
+        self.assertEqual(queue.claim_next(2)["job_id"], owner["id"])
+        legacy = jobs.start(base, b"", "priority-legacy")
+        blocked = jobs.start({**base, "resources": ["busy"], "priority": 10}, b"", "priority-blocked")
+        first = jobs.start({**base, "priority": 5}, b"", "priority-first")
+        second = jobs.start({**base, "priority": 5}, b"", "priority-second")
+        self.assertNotIn("priority", queue.get(legacy["id"])["spec"])
+        self.assertNotIn("priority", legacy)
+        self.assertEqual(legacy["queue"]["priority"], 0)
+        self.assertEqual((first["priority"], first["queue"]["priority"]), (5, 5))
+        self.assertEqual({row["job_id"]: row["priority"] for row in jobs.dispatch.snapshot()["items"]},
+                         {owner["id"]: 0, legacy["id"]: 0, blocked["id"]: 10,
+                          first["id"]: 5, second["id"]: 5})
+        with patch.object(jobs, "_prepare", wraps=jobs._prepare) as prepare:
+            self.assertEqual(jobs.start({**base, "priority": 5}, b"", "priority-first")["id"], first["id"])
+            self.assertEqual(jobs.start(base, b"", "priority-legacy")["id"], legacy["id"])
+            for request_id, spec in (("priority-first", {**base, "priority": 6}),
+                                     ("priority-legacy", {**base, "priority": 0})):
+                with self.assertRaises(RequestConflict):
+                    jobs.start(spec, b"", request_id)
+            for invalid in (True, None, 11):
+                with self.assertRaisesRegex(ValueError, "priority"):
+                    jobs.start({**base, "priority": invalid}, b"", "priority-invalid")
+            prepare.assert_not_called()
+        self.assertEqual(len(queue.rows()), 5)
+
+        # Reopening preserves priorities and submission order; the occupied
+        # resource beats priority, and the existing owner is never preempted.
+        queue = JobQueue(queue.path)
+        self.assertEqual(queue.claim_next(2)["job_id"], first["id"])
+        self.assertIsNone(queue.claim_next(2))
+        self.assertEqual(queue.get(owner["id"])["state"], "claimed")
+        for finished, expected in ((first, second), (second, legacy), (owner, blocked)):
+            queue.record_unstarted(finished["id"], "cancelled", "SQL fixture never launched")
+            queue.set_state(finished["id"], "done")
+            self.assertEqual(queue.claim_next(2)["job_id"], expected["id"])
 
     def test_concurrent_same_request_is_one_job_and_changed_content_conflicts(self):
         def reserve(_):

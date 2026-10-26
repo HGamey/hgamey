@@ -61,7 +61,7 @@ from job_capacity import normalize_slots, check_fit, CapacityExceeded
 from runtime_identity import ConfiguredPrograms, ProgramCompatibilityError
 from job_events import NodeJobEvents, JobEventError
 from job_dispatch import JobDispatch, file_lock
-from job_queue import RequestConflict
+from job_queue import RequestConflict, job_priority
 from job_policy import PolicyUnavailable, require_policy
 from node_lease import LeaseState, device_access, job_lease_receipts
 from node_session import session_call, recover_session, recovery_plan, SessionError, MAX_REQUEST
@@ -337,6 +337,7 @@ class Jobs:
         time_budget = _job_time_budget(spec)
         disk_guard = _job_disk_guard(spec)
         host_slots = _job_host_slots(spec)
+        priority = job_priority(spec)
         recovery_for = spec.get("recovery_for")
         device_binding = validate_device_job(spec, typed_recovery=access == "recovery" and "device_binding" in spec)
         legacy_device_bin = binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"}
@@ -369,6 +370,7 @@ class Jobs:
                 **({"time_budget": time_budget} if time_budget is not None else {}),
                 **({"disk_guard": disk_guard} if disk_guard is not None else {}),
                 **({"host_slots": host_slots} if host_slots is not None else {}),
+                **({"priority": priority} if "priority" in spec else {}),
                 **({"device_access": access} if "device_access" in spec else {}),
                 **({"recovery_for": recovery_for} if recovery_for else {}),
                 **({"device_binding": device_binding} if device_binding else {}),
@@ -1644,6 +1646,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         _job_time_budget(spec)
                         _job_disk_guard(spec)
                         _job_host_slots(spec)
+                        job_priority(spec)
                         validate_device_job(spec, typed_recovery=device_access(spec) == "recovery" and "device_binding" in spec)
                         if "device_binding" in spec and not (self.headers.get("X-Expected-Node-ID") or
                                 parse_qs(urlparse(self.path).query).get("expected_node_id")):
