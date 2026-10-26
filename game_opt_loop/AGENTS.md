@@ -31,3 +31,7 @@ https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/GOL-DEV
 ## 外层队列身份（源码与隔离宿主已验，未部署）
 
 PF/devlock需与本客户端同版升级。队列借用、续期和释放依 DEVLOCK_INSTANCE_ID 与宿主进程身份，label只显示与排队。继承实例失效即拒绝，不换ID重试。源码/宿主验证状态及恢复限制见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/LEASE-IDENTITY.md 。
+
+## stable 发布约定
+
+开发继续在 main；每批完成相关验收且同一 SHA 的必需 CI 通过后，才将 stable 非强制快进到该提交。phonefarm 还须等待该 SHA 的 node-build 成功。三个运行仓库记录配套 SHA；推进分支不表示远端已部署或真机已验收。用户维护 stable 自动更新脚本，不从 mutable node-build 最新资产猜测 stable 版本。详见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/STABLE-RELEASE.md 。
