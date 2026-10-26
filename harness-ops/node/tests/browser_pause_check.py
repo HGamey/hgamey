@@ -120,6 +120,11 @@ with sync_playwright() as p:
         page.screenshot(path=str(OUT / "jobs-resumed-1440.png"), full_page=True)
     page.set_viewport_size({"width": 390, "height": 844})
     page.screenshot(path=str(OUT / "jobs-390.png"), full_page=True)
+    page.emulate_media(color_scheme="dark")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.wait_for_timeout(500)
+    page.screenshot(path=str(OUT / "jobs-paused-dark-1440.png"), full_page=True)
+    notes.append("dark scheme screenshot captured")
     notes.append(f"pageerrors: {errors or 'none'}")
     browser.close()
 
