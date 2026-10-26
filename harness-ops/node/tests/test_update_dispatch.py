@@ -46,6 +46,22 @@ class UpdateDispatchTests(unittest.TestCase):
             def tracked(*args, **kwargs):
                 process = launch(*args, **kwargs)
                 workers.append(process)
+                if len(workers) == 1:
+                    # The production dispatcher holds intake across launch and
+                    # its first status observation. Keep that real lock until
+                    # the child reaches publication, making the former CI race
+                    # deterministic without making it publish under the lock.
+                    log = Path(args[2]) / 'log'
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        if log.exists() and 'waiting for node intake before checking publication' in log.read_text():
+                            break
+                        if process.poll() is not None:
+                            self.fail('updater exited while its launcher still held intake: ' + log.read_text())
+                        time.sleep(.01)
+                    else:
+                        self.fail('updater did not reach the held publication gate')
+                    self.assertEqual(installed.read_text(), 'original\n')
                 return process
 
             with patch.dict(os.environ, env, clear=True), patch('job_dispatch.job_runtime.launch', side_effect=tracked):

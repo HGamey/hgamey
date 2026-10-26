@@ -122,7 +122,7 @@ def jobs_root_for(args):
 
 
 @contextmanager
-def locked(path, *, existing=False):
+def locked(path, *, existing=False, wait_seconds=0):
     flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
     if not existing:
         flags |= os.O_CREAT
@@ -130,10 +130,20 @@ def locked(path, *, existing=False):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise UpdateError("update lock is not a regular file")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise UpdateError("another update or node intake operation is in progress; retry explicitly") from None
+        deadline = time.monotonic() + wait_seconds
+        announced = False
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UpdateError("another update or node intake operation is in progress; retry explicitly") from None
+                if not announced:
+                    print("node-update: waiting for node intake before checking publication", file=sys.stderr, flush=True)
+                    announced = True
+                time.sleep(min(0.025, remaining))
         yield
     finally:
         os.close(fd)
@@ -147,7 +157,10 @@ def publication_guard(jobs_root):
         return
     # Same stable intake lock used around every actual node worker launch. No
     # database writes or schema creation, and no PID-based guesses about old jobs.
-    with locked(jobs_root / ".intake.lock", existing=True):
+    # The dispatcher still holds intake briefly after launching this very worker.
+    # Wait only for lock admission, before checking jobs or publishing anything;
+    # never replay the update or wait indefinitely for another operation.
+    with locked(jobs_root / ".intake.lock", existing=True, wait_seconds=5):
         jid = os.environ.get("PF_JOB_ID")
         db = sqlite3.connect((jobs_root / ".queue.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=1)
         try:
