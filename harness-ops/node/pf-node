@@ -50,9 +50,11 @@
   pf-node games register FILE             # 仅登记 JSON 清单，不上传其中引用的大文件
   pf-node games prepare ID VERSION [--request-id ID] # 异步准备宿主资源，不安装或启动游戏
   pf-node games request REQUEST_ID        # 找回同一次准备任务，不自动重发
-  pf-node games deploy ID VERSION --serial S [--check] [--request-id ID] # 新目录资源部署；check只读设备前提
-  pf-node games install ID VERSION --serial S [--check] [--request-id ID] # 明确缺席的单APK新装；check只读
-  pf-node games initialize ID VERSION --serial S [--check] [--request-id ID] # 有界Launcher初始化尝试与停止；check只读
+  pf-node games deploy ID VERSION --serial S [--device-binding FILE] [--check] [--request-id ID] # 新目录资源部署；check只读设备前提
+  pf-node games install ID VERSION --serial S [--device-binding FILE] [--check] [--request-id ID] # 明确缺席的单APK新装；check只读
+  pf-node games initialize ID VERSION --serial S [--device-binding FILE] [--check] [--request-id ID] # 有界Launcher初始化尝试与停止；check只读
+  pf-node games scene ID VERSION --serial S --deployment-inputs FILE [--device-binding FILE] [--check] [--request-id ID]
+  # games 的 --device-binding 放在子命令后，读取 devices-resolve 的 {node_id,binding} 文件；缺省全域，恢复继承原范围。
   pf-node games deployment JOB_ID         # 原部署报告、事实与恢复范围
   pf-node games assistance-draft JOB --research ID --direction ID # 只读起草现有协助请求 data
   pf-node games deployment-recover JOB_ID --request-id ID # 接续原上下文，不重放部署

@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from target_client import Target, NoRedirect
+from device_scope import binding as validated_device_binding
 
 
 HELP = """用法:
@@ -19,10 +20,10 @@ HELP = """用法:
   pf-node games register FILE
   pf-node games prepare ID VERSION [--request-id ID]
   pf-node games request REQUEST_ID
-  pf-node games deploy ID VERSION --serial S [--check] [--request-id ID]
-  pf-node games install ID VERSION --serial S [--check] [--request-id ID]
-  pf-node games initialize ID VERSION --serial S [--check] [--request-id ID]
-  pf-node games scene ID VERSION --serial S --deployment-inputs FILE [--check] [--request-id ID]
+  pf-node games deploy ID VERSION --serial S [--device-binding FILE] [--check] [--request-id ID]
+  pf-node games install ID VERSION --serial S [--device-binding FILE] [--check] [--request-id ID]
+  pf-node games initialize ID VERSION --serial S [--device-binding FILE] [--check] [--request-id ID]
+  pf-node games scene ID VERSION --serial S --deployment-inputs FILE [--device-binding FILE] [--check] [--request-id ID]
   pf-node games deployment JOB_ID
   pf-node games assistance-draft JOB_ID --research ID --direction ID
   pf-node games deployment-recover JOB_ID --request-id ID
@@ -45,6 +46,9 @@ install 仅对明确缺席的包新装单个 APK；--check 核元数据和设备
 initialize 显式有界尝试 Launcher 初始化并停止本次目标；目录已就绪时不启动，首次配置保留，场景仍需核验。
 scene 冻结两份原部署 input-reference 的 source，放入独立运行目录并有界启动/观察/停止；不代表冷启同状态或性能资格。
 新建 deploy/install/initialize/scene（含 --check）仅接受 Android serial，不支持 hdc:/ios: 目标。
+这些命令可在 games 子命令后附 --device-binding FILE，读取 devices-resolve 的 {node_id,binding} 原文件；
+绑定 serial 必须与 --serial 完全一致。显式按登记设备执行可与其他设备并行，仍受全域任务和实际资源约束。
+省略时保持兼容全域。恢复任务继承原绑定，不接受重新指定绑定；原请求重试应保留原文件与请求 ID。
 原请求、事务报告与恢复资格仍可使用 games request/deployment/deployment-recover 接续，不按新目标规则改写。
 部署、应用读取、登录和场景状态分别报告。恢复接续原任务，不重放部署，不自动释放队列保留。
 assistance-draft 只读原报告，输出可交给 research create request 的 data；需要显式节点身份。
@@ -207,12 +211,14 @@ def prepare(client, path, request_id):
     return submit_job(client, path + "/prepare", b"{}", request_id, "准备")
 
 
-def deployment_node(client, operation="deploy"):
+def deployment_node(client, operation="deploy", *, binding_required=False):
     node = client.request("GET", "/node")
     capabilities = node.get("capabilities")
     capability = "games." + operation + "-v1"
     if not isinstance(capabilities, list) or capability not in capabilities:
         raise ValueError(f"节点缺少 {capability}；未提交，请核节点服务、phonefarm 和固定工具配置")
+    if binding_required and not {"devices.lanes-v1", "games.device-lanes-v1"}.issubset(capabilities):
+        raise ValueError("节点未声明 games.device-lanes-v1 和 devices.lanes-v1；未提交，不改为全域任务")
     if not isinstance(node.get("node_id"), str) or not node["node_id"]:
         raise RequestError("节点未提供持久 node_id；未提交")
     return node["node_id"]
@@ -225,10 +231,10 @@ def deployment_job_id(value):
 
 
 def deployment_arguments(args, request_id, *, recovery=False):
-    serial, mode, index = None, "apply", 0
+    serial, mode, index, binding_path = None, "apply", 0, None
     while index < len(args):
         option = args[index]
-        if option in ("--serial", "--request-id") and index + 1 < len(args):
+        if option in ("--serial", "--request-id", "--device-binding") and index + 1 < len(args):
             value = args[index + 1]
             if option == "--serial" and not recovery:
                 if value.lower().startswith(("hdc:", "ios:")):
@@ -238,6 +244,10 @@ def deployment_arguments(args, request_id, *, recovery=False):
                     raise ValueError("--serial 需要有效 Android serial：1–128 位，字母或数字开头，"
                                      "仅含字母、数字、下划线、点、冒号或横线")
                 serial = value
+            elif option == "--device-binding" and not recovery:
+                if binding_path is not None:
+                    raise ValueError("--device-binding 只能指定一个 devices-resolve JSON 文件")
+                binding_path = value
             elif option == "--request-id":
                 value = request_identifier(value)
                 if request_id is not None and request_id != value:
@@ -254,7 +264,24 @@ def deployment_arguments(args, request_id, *, recovery=False):
         raise ValueError("deployment-recover 必须显式指定 --request-id ID")
     if not recovery and serial is None:
         raise ValueError("deploy/install/initialize/scene 必须显式指定 --serial S")
-    return serial, mode, request_id or str(uuid.uuid4())
+    return serial, mode, request_id or str(uuid.uuid4()), binding_path
+
+
+def deployment_binding(path, node_id, serial):
+    try:
+        with open(path, "rb") as source:
+            raw = source.read((8 << 10) + 1)
+    except OSError:
+        raise ValueError("无法读取设备绑定文件；请提供 devices-resolve JSON 文件路径") from None
+    if len(raw) > 8 << 10:
+        raise ValueError("设备绑定文件不能超过 8 KiB")
+    envelope = json.loads(raw)
+    if not isinstance(envelope, dict) or envelope.get("node_id") != node_id:
+        raise ValueError("设备绑定文件的 node_id 与当前固定节点不一致")
+    value = validated_device_binding(envelope.get("binding"))
+    if value["serial"] != serial:
+        raise ValueError("设备绑定的精确 serial 与 --serial 不一致；未提交")
+    return value
 
 
 def scene_arguments(args, request_id):
@@ -477,10 +504,12 @@ def main(args, *, url, token, request_id=None, target=None):
         elif command in ("deploy", "install", "initialize", "scene") and len(args) >= 3:
             path = f"/games/{identifier(args[1])}/versions/{identifier(args[2])}/{command}"
             if command == "scene":
-                serial, mode, key, sources = scene_arguments(args[3:], request_id)
+                serial, mode, key, binding_path, sources = scene_arguments(args[3:], request_id)
             else:
-                serial, mode, key = deployment_arguments(args[3:], request_id)
-            payload = {"node_id": deployment_node(client, command), "serial": serial, "mode": mode}
+                serial, mode, key, binding_path = deployment_arguments(args[3:], request_id)
+            payload = {"node_id": deployment_node(client, command, binding_required=binding_path is not None), "serial": serial, "mode": mode}
+            if binding_path is not None:
+                payload["device_binding"] = deployment_binding(binding_path, payload["node_id"], serial)
             if command == "scene":
                 payload["deployment"] = sources
             body = json.dumps(payload).encode()
@@ -507,7 +536,7 @@ def main(args, *, url, token, request_id=None, target=None):
             return 0
         elif command == "deployment-recover" and len(args) >= 2:
             path = f"/jobs/{deployment_job_id(args[1])}/deployment/recover"
-            _, _, key = deployment_arguments(args[2:], request_id, recovery=True)
+            _, _, key, _ = deployment_arguments(args[2:], request_id, recovery=True)
             original = client.request("GET", path.removesuffix("/recover"))
             operation = original.get("operation", "deploy")
             if operation not in ("deploy", "install", "initialize", "scene"):

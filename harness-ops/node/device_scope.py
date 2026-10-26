@@ -49,7 +49,11 @@ def validate_job(spec, *, typed_recovery=False):
     if not scoped and spec.get("bin") != "phonefarm":
         return None
     values = SESSION_VALUES | LOCK_VALUES | {"--request", "--request-id", "--session"}
-    serials, i = [], 2 if argv[:1] == ["gray-layer"] else 0
+    game = argv[:1] == ["game-deploy"]
+    recovering = argv[:2] in (["gray-layer", "session-recover"], ["game-deploy", "recover"])
+    if scoped and game:
+        values = LOCK_VALUES | {"--request", "--session", "--serial", "--out"}
+    serials, i = [], 2 if argv[:1] == ["gray-layer"] or game and recovering else 1 if game else 0
     while i < len(argv):
         key = argv[i]
         if key == "--device-binding" or key.startswith("--device-binding="):
@@ -64,20 +68,20 @@ def validate_job(spec, *, typed_recovery=False):
             i += 2
         else:
             if scoped and key not in {"--json", "--keep-prop"}:
-                raise ValueError("unsupported scoped session argument: " + key)
+                raise ValueError("unsupported scoped device argument: " + key)
             i += 1
     if not scoped:
         return None
     value = binding(spec["device_binding"])
     if typed_recovery:
         if (spec.get("bin") != "phonefarm" or spec.get("exe") is not None
-                or device_access(spec) != "recovery" or argv[:2] != ["gray-layer", "session-recover"]):
-            raise ValueError("bound recovery requires the original typed gray session recovery command")
-        return value  # node_session also verifies the complete source/attempt spec.
+                or device_access(spec) != "recovery" or not recovering):
+            raise ValueError("bound recovery requires the original typed session or game recovery command")
+        return value  # The typed producer also verifies the complete source/attempt spec.
     if (spec.get("bin") != "phonefarm" or spec.get("exe") is not None
             or device_access(spec) != "write" or spec.get("recovery_for") is not None
-            or argv[:2] != ["gray-layer", "session"]):
-        raise ValueError("device_binding requires the configured phonefarm gray-layer session with write access and no exe")
+            or not (argv[:2] == ["gray-layer", "session"] or game and not recovering)):
+        raise ValueError("device_binding requires a configured phonefarm session or game-deploy with write access and no exe")
     if serials != [value["serial"]]:
         raise ValueError("scoped session requires exactly one explicit serial matching device_binding")
     return value

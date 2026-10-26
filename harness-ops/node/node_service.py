@@ -374,8 +374,7 @@ class Jobs:
                 **({"device_binding": device_binding} if device_binding else {}),
                 **({"exe": spec["exe"]} if spec.get("exe") else {})}
         if device_binding and access == "recovery":
-            from node_session import validate_recovery_spec
-            validate_recovery_spec(self, spec)
+            self.validate_bound_recovery(spec)
         # Old explicit host-only requests persisted the bin's device default.
         # This candidate may find an existing request; it must never admit one.
         legacy_resource_spec = {**spec, "resources": ["legacy-device"]} if legacy_host_default else None
@@ -385,6 +384,8 @@ class Jobs:
             check_fit(spec, self.dispatch.queue.capacity())
             self.programs.require_session(spec)
             if device_binding and access == "write":
+                if spec["argv"][:1] == ["game-deploy"]:
+                    self.deployments.require_device_binding()
                 self.device_scopes.admit(device_binding)
             if original_admit is not None:
                 original_admit()
@@ -425,7 +426,7 @@ class Jobs:
                 raise ValueError("exe 只能是本任务上传的文件 @in/...")
             os.chmod(exe, 0o755)
         command = [exe] + [sub(a) for a in effective_argv]
-        if "device_binding" in spec and spec["argv"][:2] == ["gray-layer", "session"]:
+        if "device_binding" in spec and spec.get("device_access") != "recovery":
             # Binding is opaque JSON, not an @in/@out template. Check serial
             # after ordinary argument expansion before adding the owned flag.
             validate_device_job({**spec, "argv": command[1:]})
@@ -455,13 +456,22 @@ class Jobs:
             cwd = self.path(jid, "in")
         argv = [re.sub(r"@in/", self.path(jid, "in") + "/", arg.replace("@out", self.path(jid, "out")))
                 for arg in _job_lock_args(spec["argv"], f"job-{jid}")]
-        if spec["argv"][:2] == ["gray-layer", "session"]:
+        if spec.get("device_access") != "recovery":
             argv += ["--device-binding", json.dumps(spec["device_binding"], separators=(",", ":"))]
+        else:
+            try:
+                self.validate_bound_recovery(spec)
+            except DeploymentError as error:
+                raise ValueError(str(error)) from error
+        if prepared["command"] != [exe, *argv] or prepared["cwd"] != cwd:
+            raise ValueError("prepared scoped command differs from its frozen job binding")
+
+    def validate_bound_recovery(self, spec):
+        if spec["argv"][:2] == ["game-deploy", "recover"]:
+            self.deployments.validate_recovery_spec(spec)
         else:
             from node_session import validate_recovery_spec
             validate_recovery_spec(self, spec)
-        if prepared["command"] != [exe, *argv] or prepared["cwd"] != cwd:
-            raise ValueError("prepared scoped command differs from its frozen job binding")
 
     def status(self, jid):
         row = self.dispatch.queue.get(jid)

@@ -9,6 +9,7 @@ from job_inputs import validate as validate_inputs
 from job_dispatch import request_fingerprint
 from job_queue import RequestConflict
 from node_games import MAX_MANIFEST, snapshot_body
+from device_scope import binding, resource as device_resource
 
 CAPABILITY = "games.deploy-v1"
 INSTALL_CAPABILITY = "games.install-v1"
@@ -35,6 +36,7 @@ class DeploymentError(Exception):
 class NodeDeployments:
     def __init__(self, jobs, games):
         self.jobs, self.games = jobs, games
+        self.device_binding_available = False
         self.support = {"available": False, "capability": CAPABILITY,
                         "error": "configured phonefarm does not support resource deployment"}
         self.installation_support = {"available": False, "recovery_available": False, "capability": INSTALL_CAPABILITY,
@@ -55,6 +57,7 @@ class NodeDeployments:
             value = json.loads(result.stdout) if len(result.stdout) <= MAX_MANIFEST else None
             if (result.returncode == 0 and isinstance(value, dict)
                     and value.get("schema") == "phonefarm/game-deploy-capabilities@1"):
+                self.device_binding_available = value.get("device_binding_v1") is True
                 if value.get("resources_v1") is True:
                     self.support.update(available=True, error=None)
                 if value.get("launcher_initialization_v1") is True:
@@ -121,7 +124,7 @@ class NodeDeployments:
 
     def _request(self, game_id, version, body, kind="deploy"):
         fields = {"node_id", "serial", "mode"} | ({"deployment"} if kind == "scene" else set())
-        if not isinstance(body, dict) or set(body) != fields:
+        if not isinstance(body, dict) or set(body) not in (fields, fields | {"device_binding"}):
             raise ValueError("deployment requires node_id, serial and mode; scene also requires its deployment input sources")
         if body["node_id"] != self.games.node_id:
             raise DeploymentError(409, "node_mismatch", "select the current node before deploying")
@@ -131,6 +134,8 @@ class NodeDeployments:
             raise ValueError("deployment requires an explicit Android serial")
         if body["mode"] not in {"check", "apply"}:
             raise ValueError("deployment mode must be check or apply")
+        if "device_binding" in body and binding(body["device_binding"])["serial"] != serial:
+            raise ValueError("deployment serial must match device_binding")
         if kind == "scene":
             self._scene_inputs(body["deployment"])
         entry = self.games.store.read_json(self.games._path(game_id, version))
@@ -154,13 +159,15 @@ class NodeDeployments:
             raise ValueError("frozen deployment request exceeds 64 KiB")
         return request, assets
 
-    def _spec(self, request, recovery_for=None, inputs=None):
+    def _spec(self, request, recovery_for=None, inputs=None, device_binding=None):
         serial = request["serial"]
         spec = {"bin": "phonefarm", "argv": ["game-deploy", "--request", "@in/manifest.json",
                 "--serial", serial, "--out", "@out", "--json"],
                 "label": f"{request['mode'].title()} {OPERATIONS[operation(request)][3]} {request['game_id']} {request['version']}",
                 "device_access": "write", "resources": sorted(["device:" + serial,
                     self.games._resource(request["game_id"], request["version"])])}
+        if device_binding is not None:
+            spec.update(device_binding=binding(device_binding), resources=[device_resource(device_binding)])
         if recovery_for:
             spec.update(argv=["game-deploy", "recover", "--session",
                               self._source_session(recovery_for),
@@ -194,7 +201,7 @@ class NodeDeployments:
             raise ValueError("X-Request-ID is required; query the same request after an uncertain response")
         request, assets = self._request(game_id, version, body, kind)
         inputs = self._scene_inputs(body["deployment"]) if kind == "scene" else None
-        spec, payload = self._spec(request, inputs=inputs), snapshot_body(request)
+        spec, payload = self._spec(request, inputs=inputs, device_binding=body.get("device_binding")), snapshot_body(request)
         # A retry still returns the original job after its cache has disappeared.
         if not self.jobs.dispatch.queue.by_request(key):
             self._require_support(kind)
@@ -203,6 +210,20 @@ class NodeDeployments:
                 raise DeploymentError(409, "assets_unavailable", "verify selected resources before deployment: " + ", ".join(missing))
         return self.jobs.start(spec, payload, request_id=key)
 
+    def require_device_binding(self):
+        if not self.device_binding_available:
+            raise DeploymentError(503, "deployment_binding_unavailable",
+                                  "configured phonefarm does not support game device binding; no global fallback")
+
+    def validate_recovery_spec(self, spec):
+        parent, request = self._bound(spec["recovery_for"])
+        original = parent["spec"].get("device_binding")
+        expected = self._spec(request, parent["job_id"], device_binding=original)
+        report, _ = self._report(parent["job_id"], request, original)
+        if spec != expected or report is None:
+            raise DeploymentError(409, "deployment_binding_changed",
+                                  "bound recovery must inherit the original game transaction, report and device binding")
+
     def _bound(self, jid):
         self.jobs.path(jid)
         row = self.jobs.dispatch.queue.get(jid)
@@ -210,6 +231,9 @@ class NodeDeployments:
             raise DeploymentError(404, "deployment_not_found", "this job is not a typed resource deployment")
         request = self.jobs._read_root.read_json(jid + "/in/manifest.json", maximum=MAX_MANIFEST)
         body = {k: request[k] for k in ("node_id", "serial", "mode")}
+        original = row["spec"].get("device_binding")
+        if original is not None:
+            body["device_binding"] = original
         inputs = None
         if operation(request) == "scene":
             body["deployment"] = self._scene_sources(row)
@@ -217,14 +241,17 @@ class NodeDeployments:
         expected, _ = self._request(request["game_id"], request["version"],
                                      body, operation(request))
         parent = row["spec"].get("recovery_for")
-        if parent and self.jobs._read_root.read_json(parent + "/in/manifest.json", maximum=MAX_MANIFEST) != request:
-            raise DeploymentError(409, "deployment_binding_changed", "recovery inputs differ from its source transaction")
+        if parent:
+            source = self.jobs.dispatch.queue.get(parent)
+            if (self.jobs._read_root.read_json(parent + "/in/manifest.json", maximum=MAX_MANIFEST) != request
+                    or not source or source["spec"].get("device_binding") != original):
+                raise DeploymentError(409, "deployment_binding_changed", "recovery inputs differ from its source transaction")
         if request != expected or row["fingerprint"] != request_fingerprint(
-                self._spec(request, row["spec"].get("recovery_for"), inputs), snapshot_body(request)):
+                self._spec(request, parent, inputs, original), snapshot_body(request)):
             raise DeploymentError(409, "deployment_binding_changed", "deployment input or queue binding does not match the registered version")
         return row, request
 
-    def _report(self, jid, request):
+    def _report(self, jid, request, device_binding=None):
         try:
             value = self.jobs._read_root.read_json(jid + "/out/deployment.json", maximum=1 << 20)
             schema = OPERATIONS[operation(request)][2]
@@ -238,6 +265,9 @@ class NodeDeployments:
                     or value.get("session_path") not in (None, "game-deploy")
                     or any(not isinstance(value.get(k), dict) for k in facts)):
                 raise ValueError("deployment report identity mismatch")
+            if (value.get("device_binding") != device_binding
+                    or (value.get("lease_scope") == "device") != (device_binding is not None)):
+                raise ValueError("deployment report device binding mismatch")
             return value, None
         except FileNotFoundError:
             return None, None
@@ -291,7 +321,7 @@ class NodeDeployments:
             try:
                 status = self.jobs.status(target)
                 row, request = self._bound(target)
-                report, _ = self._report(target, request)
+                report, _ = self._report(target, request, row["spec"].get("device_binding"))
             except (OSError, ValueError, KeyError, DeploymentError):
                 return {"supported": supported, "eligible": False, "target_job_id": target,
                         "reason": "blocked recovery context is unavailable; inspect that attempt"}
@@ -304,10 +334,11 @@ class NodeDeployments:
         # Finalization may commit while status is read. Do not qualify that
         # finished status against a queue row captured before the read.
         row, request = self._bound(jid)
-        report, error = self._report(jid, request)
+        report, error = self._report(jid, request, row["spec"].get("device_binding"))
         kind = operation(request)
         return {"schema_version": 1, "job": job,
-                "target": {"node_id": request["node_id"], "serial": request["serial"]},
+                "target": {"node_id": request["node_id"], "serial": request["serial"],
+                           **({"device_binding": row["spec"]["device_binding"]} if "device_binding" in row["spec"] else {})},
                 "game_id": request["game_id"], "version": request["version"], "operation": kind,
                 "mode": "recover" if row["spec"].get("recovery_for") else request["mode"],
                 "report": report, "report_error": error, "job_url": "/dash/jobs#job=" + jid,
@@ -318,8 +349,8 @@ class NodeDeployments:
         """Draft existing research metadata from saved facts; never refresh execution."""
         from node_research import normalize
 
-        _, request = self._bound(jid)
-        report, error = self._report(jid, request)
+        row, request = self._bound(jid)
+        report, error = self._report(jid, request, row["spec"].get("device_binding"))
         if report is None:
             raise DeploymentError(409, "deployment_report_unavailable",
                                   error or "a saved deployment report is required to draft assistance")
@@ -369,12 +400,24 @@ class NodeDeployments:
         resource = self.games._resource(entry["game_id"], entry["version"])
         result = []
         for row in reversed(rows):
-            if resource not in row["resources"] or row["spec"].get("argv", [])[:1] != ["game-deploy"]:
+            if row["spec"].get("argv", [])[:1] != ["game-deploy"]:
                 continue
+            belongs = resource in row["resources"]
             try:
+                if not belongs:
+                    # Scoped jobs reserve the device only. The frozen input
+                    # retains game identity without serializing other phones.
+                    if "device_binding" not in row["spec"]:
+                        continue
+                    request = self.jobs._read_root.read_json(row["job_id"] + "/in/manifest.json", maximum=MAX_MANIFEST)
+                    if (request.get("game_id"), request.get("version")) != (entry["game_id"], entry["version"]):
+                        continue
+                    belongs = True
                 record = self.get(row["job_id"], rows)
                 result.append({**record["job"], **record})
             except (OSError, ValueError, KeyError, DeploymentError):
+                if not belongs:
+                    continue  # Missing input cannot establish which game owns this job.
                 result.append({"id": row["job_id"], "operation": "unknown", "state": "unknown", "report": None,
                                "report_error": "deployment input is unavailable; inspect the original job",
                                "job_url": "/dash/jobs#job=" + row["job_id"]})
@@ -385,7 +428,7 @@ class NodeDeployments:
             raise ValueError("recovery requires an empty JSON object and X-Request-ID; the node derives paths and serial")
         key = self.jobs.dispatch.request_key(request_id)
         row, request = self._bound(jid)
-        spec, payload = self._spec(request, jid), snapshot_body(request)
+        spec, payload = self._spec(request, jid, device_binding=row["spec"].get("device_binding")), snapshot_body(request)
         def admit():
             self._require_support(operation(request), recovery=True)
             current = self.get(jid)

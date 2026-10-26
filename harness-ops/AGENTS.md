@@ -31,7 +31,7 @@ results.cross-compare-v1从冻结目录目标有界读取详情，沿共享四�
 
 活跃owner在管理记录读写失败后保留内存停止意图与原信号时钟；已有取消模式不因保存失败增强，无已知意图时以owner_record_error/escalate停止。execution.stop_intent仅为最近成功保存观察，实际信号仍看cancel.signals；最终保存/域空/设备恢复边界不变，旧固定prefix需新安装。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-OWNER-RECORD-FAILURE.md 。
 
-显式 device_binding 仅支持固定 PF 灰层 session，来源为已 pin 节点的 devices-resolve。
+显式 device_binding 支持固定 PF 灰层 session 和声明该能力的 typed game-deploy，来源为已 pin 节点的 devices-resolve。
 省略字段的旧请求仍 global，不自动回填当前登记。设备范围、排队、恢复与 review release
 共用 PF 的缓存 device_scopes；不同设备并行，同机别名与全域仍冲突。恢复沿原绑定，
 不从新登记选另一连接。网页与 CLI 同级；隔离宿主验证不能写成真机或部署已完成。
