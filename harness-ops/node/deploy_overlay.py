@@ -97,9 +97,14 @@ def ensure_layout(root):
         # First adoption: move the existing plain directory into releases as the
         # baseline release so rollback always has somewhere to go.
         run_id = time.strftime("baseline-%Y%m%dT%H%M%S")
-        destination = root / "releases" / run_id
-        os.rename(cursor(root), destination)
-        digest, files = tree_digest(destination / COMPONENT)
+        destination = root / "releases" / run_id / COMPONENT
+        destination.mkdir(parents=True)
+        # Move the existing tree into the standard release layout so rollback
+        # always has somewhere to go.
+        for entry in os.listdir(cursor(root)):
+            os.rename(cursor(root) / entry, destination / entry)
+        os.rmdir(cursor(root))
+        digest, files = tree_digest(destination)
         receipt = {"schema": SCHEMA, "run_id": run_id, "created_at": time.time(),
                    "status": "baseline", "source": "existing directory", "digest": digest,
                    "files": files, "components": [COMPONENT]}

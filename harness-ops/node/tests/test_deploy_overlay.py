@@ -58,8 +58,13 @@ class DeployOverlayTests(unittest.TestCase):
         code, out = run(["rollback", "--root", str(self.root)])
         self.assertEqual(code, 0)
         self.assertEqual((cursor / "node" / "helper.py").read_text(), "VALUE = 2\n")
+        code, out = run(["rollback", "--root", str(self.root)])
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.root / "harness-ops" / "node" / "helper.py").read_text(), "VALUE = 1\n",
+                         "chain rollback reaches the baseline release")
         code, error = run(["rollback", "--root", str(self.root)])
-        self.assertEqual((code, error["error"]["status"]), (1, 404) if False else (1, 404))
+        self.assertEqual((code, error["error"]["status"]), (1, 404),
+                         "baseline has no previous; rollback is refused instead of guessing")
 
     def active_run(self):
         return os.readlink(self.root / "harness-ops").split("/")[1]
