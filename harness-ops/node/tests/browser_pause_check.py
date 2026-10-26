@@ -5,6 +5,7 @@ Run manually on rhodes1 with the node service on 127.0.0.1:8765:
 Needs playwright plus the local dash passwords; not part of unittest discovery.
 """
 import json
+import os
 import sys
 import time
 import urllib.request
