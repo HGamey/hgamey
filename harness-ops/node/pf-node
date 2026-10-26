@@ -1131,7 +1131,7 @@ def main():
         from research_client import HELP
         print(HELP)
         return
-    if args[:2] == ["research", "plan-template"]:
+    if len(args) >= 2 and args[0] == "research" and args[1] in ("plan-template", "recipes"):
         from research_client import main as research_main
         return research_main(args[1:], target=None)
     try:

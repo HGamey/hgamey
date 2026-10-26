@@ -338,24 +338,41 @@
     $('edit-reason').required = draft.base_revision != null; renderControls();
   }
   function mountPlanTemplates(wrapper, field) {
-    const row = el('div'), mode = el('select'), revision = el('input'), apply = el('button', '填入计划模板'), note = el('p', '替换方括号内容后保存；模板只填写当前草稿。', 'field-note');
+    const row = el('div'), mode = el('select'), recipe = el('select'), revision = el('input'), apply = el('button', '填入计划模板'), note = el('p', '选择阶段与可选路线，填写实际条件后保存；模板只填写当前草稿。', 'field-note');
+    const preview = el('pre', '', 'field-note'); preview.style.whiteSpace = 'pre-wrap';
     mode.append(new Option('探索：筛选方向', 'exploration'), new Option('确认：独立复测', 'confirmation'));
-    mode.setAttribute('aria-label', '实验阶段'); revision.type = 'number'; revision.min = '1'; revision.step = '1';
+    mode.setAttribute('aria-label', '实验阶段'); recipe.setAttribute('aria-label', '优化路线');
+    revision.type = 'number'; revision.min = '1'; revision.step = '1';
     revision.placeholder = '所属研究版本'; revision.setAttribute('aria-label', '所属研究版本');
     revision.value = draft.data.next_experiment?.research_revision || '';
     apply.type = 'button'; apply.id = 'plan-template-apply'; apply.disabled = true;
-    row.append(mode, revision, apply); wrapper.append(row, note);
+    row.append(mode, recipe, revision, apply); wrapper.append(row, preview, note);
+    function showRecipe() {
+      preview.textContent = planTemplates?.recipes?.[recipe.value]?.plan || '';
+      preview.hidden = !preview.textContent;
+    }
+    function fillRecipes() {
+      recipe.replaceChildren(new Option('通用计划（不指定路线）', ''));
+      for (const [id, value] of Object.entries(planTemplates.recipes || {})) recipe.append(new Option(value.title, id));
+      showRecipe(); renderControls();
+    }
+    recipe.addEventListener('change', showRecipe);
     apply.addEventListener('click', () => {
       const rev = Number(revision.value);
       if (!Number.isSafeInteger(rev) || rev < 1) { note.textContent = '请填写本计划依据的所属研究版本。'; return; }
       preserveDraft();
-      field.value = JSON.stringify({...planTemplates[mode.value], research_revision: rev}, null, 2);
-      wrapper.open = true; note.textContent = '模板已填入；替换方括号后保存。原草稿可从上方保留记录找回。';
+      const result = {...planTemplates[mode.value], research_revision: rev}, selected = planTemplates.recipes?.[recipe.value];
+      if (selected) {
+        result.title = selected.title + ' · ' + result.title;
+        result.plan += '\n\n路线建议（适配实际游戏/设备后执行）：\n' + selected.plan;
+      }
+      field.value = JSON.stringify(result, null, 2);
+      wrapper.open = true; note.textContent = '模板已填入；填写实际条件后保存。原草稿可从上方保留记录找回。';
     });
-    if (planTemplates) { renderControls(); return; }
+    if (planTemplates) { fillRecipes(); return; }
     fetch('/dash/static/research-plans.json', {credentials: 'same-origin'})
       .then(response => { if (!response.ok) throw new Error('模板读取失败'); return response.json(); })
-      .then(value => { planTemplates = value; renderControls(); })
+      .then(value => { planTemplates = value; fillRecipes(); })
       .catch(() => { note.textContent = '模板暂不可读，可直接编辑计划。'; });
   }
   function openDraft(kind, data = {}, record = null) {

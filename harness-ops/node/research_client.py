@@ -16,7 +16,8 @@ import uuid
 
 
 HELP = """用法:
-  pf-node research plan-template exploration|confirmation --research-revision N
+  pf-node research recipes [ID]
+  pf-node research plan-template exploration|confirmation --research-revision N [--recipe ID]
   pf-node research list KIND [--research-id ID] [--state STATE] [--request-id ID]
       [--limit 1..100] [--cursor CURSOR]
   pf-node research show KIND ID [--revision N]
@@ -29,7 +30,8 @@ HELP = """用法:
       [--wait-seconds 0..15]
   pf-node research media REQUEST A|B --revision N --output FILE
 
-plan-template 离线输出 next_experiment JSON 草稿；替换方括号后放入方向 data，不提交任务。
+recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
+plan-template 离线输出 next_experiment JSON 草稿，可带路线；填写实际条件后放入方向 data，不提交任务。
 KIND 为 research/direction/request/feedback。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
@@ -75,6 +77,10 @@ def integer(value, minimum=1, maximum=None):
     return number
 
 
+def plan_templates():
+    return json.loads((Path(__file__).parent / "dash_static/research-plans.json").read_text())
+
+
 def parser():
     root = argparse.ArgumentParser(prog="pf-node research", description=HELP,
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -82,6 +88,10 @@ def parser():
     template = commands.add_parser("plan-template")
     template.add_argument("mode", choices=("exploration", "confirmation"))
     template.add_argument("--research-revision", type=integer, required=True)
+    recipe_ids = tuple(plan_templates()["recipes"])
+    template.add_argument("--recipe", choices=recipe_ids)
+    recipes = commands.add_parser("recipes")
+    recipes.add_argument("id", nargs="?", choices=recipe_ids)
     listing = commands.add_parser("list")
     listing.add_argument("kind", choices=KINDS)
     listing.add_argument("--research-id", type=identifier)
@@ -455,9 +465,17 @@ def main(argv, *, target):
         print(HELP)
         return 0
     args = parser().parse_args(argv)
-    if args.command == "plan-template":
-        templates = json.loads((Path(__file__).parent / "dash_static/research-plans.json").read_text())
-        print(json.dumps({**templates[args.mode], "research_revision": args.research_revision}, ensure_ascii=False))
+    if args.command in ("plan-template", "recipes"):
+        templates = plan_templates()
+        if args.command == "recipes":
+            print(json.dumps(templates["recipes"][args.id] if args.id else templates["recipes"], ensure_ascii=False))
+            return 0
+        result = {**templates[args.mode], "research_revision": args.research_revision}
+        if args.recipe:
+            recipe = templates["recipes"][args.recipe]
+            result["title"] = recipe["title"] + " · " + result["title"]
+            result["plan"] += "\n\n路线建议（适配实际游戏/设备后执行）：\n" + recipe["plan"]
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     client = Client(target)
     try:
