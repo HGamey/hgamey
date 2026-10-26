@@ -89,7 +89,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: HGamey/phonefarm
-          ref: a99366dff722e58cafd5197dc0f9285d49a270f2
+          ref: 1a730dd86a402d63c1b866422b7df8f9a2425556
           path: pf-runtime
           sparse-checkout-cone-mode: false
           sparse-checkout: |
