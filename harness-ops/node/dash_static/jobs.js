@@ -16,7 +16,7 @@
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
   let activeFilters = {query: '', state: ''};
   let currentJob = null, access = null, accessRevision = 0, accessBusy = false, accessError = '';
-  const cancelling = new Set(), cancelReceipts = new Map(), releasing = new Set(), releaseReceipts = new Map();
+  const cancelling = new Set(), cancelReceipts = new Map(), pauseReceipts = new Map(), releasing = new Set(), releaseReceipts = new Map();
   const finalizing = new Set(), finalizeReceipts = new Map();
   const reconciling = new Set(), reconcileReceipts = new Map();
   let nodeInfo = null, leaseSnapshot = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
@@ -531,6 +531,10 @@
     const stopping = currentJob.phase === 'cancelling' && currentJob.cancel?.status !== 'not_applied';
     $('cancel-job').disabled = !allowed || !currentJob.controls?.cancel_supported || stopping;
     $('force-open').disabled = !allowed || !currentJob.controls?.force_supported;
+    const paused = !!currentJob.paused;
+    $('pause-job').disabled = !allowed || !currentJob.controls?.pause_supported;
+    $('resume-job').disabled = !allowed || !currentJob.controls?.resume_supported;
+    $('pause-job').textContent = paused ? '已暂停排队' : '暂停排队';
     $('force-submit').disabled = $('force-open').disabled || !$('force-confirm').checked;
     $('cancel-job').setAttribute('aria-busy', String(pending));
     $('cancel-job').textContent = pending ? '提交中…' : queued ? '撤销排队' : '请求停止';
@@ -545,6 +549,9 @@
     const receipt = cancelReceipts.get(currentJob.id);
     $('cancel-result').hidden = !receipt;
     if (receipt) message('cancel-result', receipt.message, receipt.error);
+    const pauseReceipt = pauseReceipts.get(currentJob.id);
+    $('pause-result').hidden = !pauseReceipt;
+    if (pauseReceipt) message('pause-result', pauseReceipt.message, pauseReceipt.error);
     const blocked = currentJob.queue?.state === 'blocked';
     $('queue-release-panel').hidden = !blocked;
     const releaseBusy = releasing.has(currentJob.id);
@@ -3007,7 +3014,26 @@
   });
   $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess(true); });
   $('unlock-dismiss').addEventListener('click', closeUnlock);
+  async function pauseResume(target) {
+    const job = currentJob;
+    if (!job) return;
+    const id = job.id;
+    try {
+      const result = await post(`${API}/jobs/${encodeURIComponent(id)}/${target}`, {});
+      pauseReceipts.set(id, {message: result.paused === (target === 'pause')
+        ? (target === 'pause' ? '任务已暂停排队；在恢复前不会被领取，也不占用执行名额。' : '任务已恢复排队。')
+        : `请求未生效：${JSON.stringify(result)}`, error: result.paused !== (target === 'pause')});
+    } catch (error) {
+      const uncertain = !error.status;
+      pauseReceipts.set(id, {message: uncertain ? '请求结果未确认，请刷新任务核对后再决定是否重试。' : errorText(error), error: true});
+      if (error.status === 401 || error.status === 403) await loadAccess();
+    } finally {
+      await Promise.all([loadQueue(), !historical() && selected === id ? selectJob(id, true) : null]);
+    }
+  }
   $('cancel-job').addEventListener('click', () => cancelJob(false));
+  $('pause-job').addEventListener('click', () => pauseResume('pause'));
+  $('resume-job').addEventListener('click', () => pauseResume('resume'));
   $('retry-finalize').addEventListener('click', retryFinalize);
   $('execution-reconcile-check').addEventListener('click', () => reconcileExecution(false));
   $('execution-reconcile-refresh').addEventListener('click', () => { if (selected && !$('execution-reconcile-refresh').disabled) selectJob(selected, true); });
