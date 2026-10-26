@@ -16,6 +16,7 @@
 #include <dirent.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <cerrno>
 #include <cmath>
@@ -57,6 +58,7 @@ struct Cfg {
     std::string run_id = "unset";
     int frames = 3600;
     int intensity = 8;
+    int fps_cap = 0;  // >0: present 后按绝对时刻睡到下一帧, 把送显钉在该帧率 (给 GPU 留余量, 测插帧用)
     std::string knob_loadop = "off";  // 只作用于 bw_pingpong
     // 只作用于 sr_pipeline: 管线尾部的 compute 后处理算子
     //   off = 不挂算子, present blit 直接采样低分辨率 RT (驱动双线性放大) —— A 臂
@@ -257,8 +259,8 @@ static std::string output_json() {
         j += pb;
     }
     char buf[256];
-    snprintf(buf, sizeof buf, " \"params\": {\"frames\": %d, \"intensity\": %d, \"rt_width\": %u, \"rt_height\": %u},\n",
-             g.cfg.frames, g.cfg.intensity,
+    snprintf(buf, sizeof buf, " \"params\": {\"frames\": %d, \"intensity\": %d, \"fps_cap\": %d, \"rt_width\": %u, \"rt_height\": %u},\n",
+             g.cfg.frames, g.cfg.intensity, g.cfg.fps_cap,
              g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : (g.cfg.scene == "sr_pipeline" ? State::SR_LO_W : 0)),
              g.cfg.scene == "frag_alu" ? State::ALU_RT : (g.cfg.scene == "bw_pingpong" ? State::BW_RT : (g.cfg.scene == "sr_pipeline" ? State::SR_LO_H : 0)));
     j += buf;
@@ -405,6 +407,8 @@ static void read_cfg_from_intent(android_app* app) {
         std::string fr = getS("frames", ""), in = getS("intensity", "");
         if (!fr.empty()) g.cfg.frames = atoi(fr.c_str());
         if (!in.empty()) g.cfg.intensity = atoi(in.c_str());
+        std::string fc = getS("fps_cap", "");
+        if (!fc.empty()) g.cfg.fps_cap = atoi(fc.c_str());
         g.cfg.knob_loadop = getS("knob.loadop", g.cfg.knob_loadop);
         g.cfg.knob_postfx = getS("knob.postfx", g.cfg.knob_postfx);
         g.cfg.postfx_shader = getS("postfx.shader", g.cfg.postfx_shader);
@@ -1563,6 +1567,16 @@ static void render_all_frames() {
             finish_and_exit(2);
         }
         g.frames_submitted++;
+        if (g.cfg.fps_cap > 0) {
+            static timespec next{};
+            const long period = 1000000000L / g.cfg.fps_cap;
+            if (next.tv_sec == 0) clock_gettime(CLOCK_MONOTONIC, &next);
+            next.tv_nsec += period;
+            while (next.tv_nsec >= 1000000000L) { next.tv_nsec -= 1000000000L; next.tv_sec++; }
+            timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+            if (now.tv_sec > next.tv_sec || (now.tv_sec == next.tv_sec && now.tv_nsec > next.tv_nsec)) next = now;  // 落后就不追
+            else clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, nullptr);
+        }
         if(g.capture_initialized && g.capture_sink.selected(frame)){
             VkResult capture_wait=vkWaitForFences(g.dev,1,&g.fence[f],VK_TRUE,CAPTURE_SUBMISSION_WAIT_NS);
             if(capture_wait!=VK_SUCCESS){

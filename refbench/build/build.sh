@@ -59,7 +59,7 @@ CFLAGS_COMMON=(-O2 -Wall -fPIC -DVK_USE_PLATFORM_ANDROID_KHR=1
 echo "librefbench.so ok ($(wc -c < "$STAGE/lib/arm64-v8a/librefbench.so" | tr -d ' ') B)"
 
 # ── 3. aapt2 打包 + 塞 so + 对齐 + 签名 ──
-"$BT/aapt2" link --manifest "$ROOT/app/AndroidManifest.xml" -I "$PLATFORM_JAR" \
+"$BT/aapt2" link --manifest "$ROOT/app/AndroidManifest.xml" -I "$PLATFORM_JAR" ${REFBENCH_DEBUGGABLE:+--debug-mode} \
     -o "$OUT/base.apk"
 (cd "$STAGE" && zip -q -X -r "$OUT/base.apk" lib)
 "$BT/zipalign" -f 4 "$OUT/base.apk" "$OUT/aligned.apk"
