@@ -84,5 +84,51 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(checks["devices.qualification"]["status"], "unknown")
 
 
+    def test_device_lease_snapshot_and_platform_remediation_stay_host_only(self):
+        f = self.fixture
+        with patch.object(f.jobs.programs, "refresh", side_effect=AssertionError("must not run configured programs")), \
+             patch.object(f.jobs.leases, "snapshot", return_value={
+                 "schema_version": 1, "status": "blocked",
+                 "entries": [{"label": "gray-session-1"}, {"label": "recovery-2"}], "error": None}):
+            value = f.get_json("/doctor", headers=self.pin)
+        checks = {item["id"]: item for item in value["checks"]}
+        lease = checks["devices.lease"]
+        self.assertEqual(lease["status"], "warning")
+        self.assertEqual(lease["evidence"]["status"], "blocked")
+        self.assertEqual(lease["evidence"]["entries"], 2)
+        self.assertEqual(lease["evidence"]["labels"], ["gray-session-1", "recovery-2"])
+        self.assertTrue(any("恢复" in action["text"] for action in lease["remediation"]))
+        advice = " ".join(action["text"] for action in checks["devices.qualification"]["remediation"])
+        for keyword in ("USB 调试授权", "HDC", "devices-resolve"):
+            self.assertIn(keyword, advice)
+        # CLI text output renders every remediation line once per check.
+        token = f.root / "readonly-token"
+        token.write_text(f.ro)
+        token.chmod(0o600)
+        command = [sys.executable, str(Path(__file__).resolve().parents[1] / "pf-node"),
+                   "--url", "http://127.0.0.1:" + str(f.server.server_port), "--node-id", f.node.node_id,
+                   "--token-file", str(token), "doctor"]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("设备所有权快照", result.stdout)
+        self.assertNotIn(f.ro, result.stdout)
+
+    def test_device_lease_clear_and_unreadable_snapshot_stay_explicit(self):
+        f = self.fixture
+        for snapshot, expected in (({"schema_version": 1, "status": "clear", "entries": [], "error": None}, "ok"),
+                                   ({"schema_version": 1, "status": "held",
+                                     "entries": [{"label": "owner-a"}], "error": None}, "warning"),
+                                   (None, "unknown")):
+            with self.subTest(expected=expected):
+                with patch.object(f.jobs.leases, "snapshot", return_value=snapshot):
+                    value = f.get_json("/doctor", headers=self.pin)
+                lease = next(item for item in value["checks"] if item["id"] == "devices.lease")
+                self.assertEqual(lease["status"], expected)
+                if snapshot is not None:
+                    self.assertEqual(lease["evidence"]["status"], snapshot["status"])
+                else:
+                    self.assertIn("error", lease["evidence"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,9 +20,10 @@ def report(node):
     jobs, checked_at, checks = node.jobs, time.time(), []
 
     def add(id, category, status, title, message, evidence=None, remedy=None, observed_at=_UNSET):
+        actions = remedy if isinstance(remedy, list) else [remedy] if remedy else []
         checks.append(dict(id=id, category=category, status=status, title=title, message=message,
                            observed_at=checked_at if observed_at is _UNSET else observed_at,
-                           evidence=evidence or {}, remediation=[{"text": remedy}] if remedy else []))
+                           evidence=evidence or {}, remediation=[{"text": text} for text in actions]))
 
     add("node.connection", "connection", "ok", "节点连接", "已在明确绑定的节点读取诊断。",
         {"node_id": node.node_id, "instance_id": node.service["instance_id"], "platform": platform.system()})
@@ -117,7 +118,33 @@ def report(node):
             "核对独立缓存根的权限与路径约束后重新启动服务。")
     add("devices.qualification", "devices", "unknown", "设备授权与实测资格",
         "未枚举或连接手机；授权、root、平台功能与恢复状态尚未在此诊断中验证。",
-        {"status": "not_probed"}, "需要设备功能时，从设备工作流获取 owner/lease 后核查；缺 hdc 不代表 Android 不可用。")
+        {"status": "not_probed"},
+        ["需要设备功能时，从设备工作流获取 owner/lease 后核查；缺 hdc 不代表 Android 不可用。",
+         "Android：设备首次连接需在手机端确认 USB 调试授权；显示 unauthorized 时重新插拔并在设备端允许，不要重试强制命令。",
+         "Harmony：需要 HDC 与对应驱动；Linux 安装 hdc 后配置 HDC_BIN，再用只读清单核连接。",
+         "登记与身份核对走只读入口（devices / devices-resolve）；登记不构成实测资格。"])
+    try:
+        lease = jobs.leases.snapshot()
+        if not isinstance(lease, dict):
+            raise ValueError("lease snapshot has an unexpected shape")
+        entries = lease.get("entries") if isinstance(lease.get("entries"), list) else []
+        status = lease.get("status") if lease.get("status") in ("clear", "held", "blocked", "unknown") else "unknown"
+        add("devices.lease", "devices",
+            "ok" if status == "clear" else "warning" if status in ("held", "blocked") else "unknown",
+            "设备所有权快照",
+            {"clear": "当前无活动设备 owner 或恢复屏障。",
+             "held": "存在活动 owner/lease；这是唯一所有权事实，不代表可以接管或设备已恢复。",
+             "blocked": "存在未完成的恢复屏障；在核查前会阻止新的设备任务。",
+             "unknown": "所有权快照缺失或不可读；不据此推断空闲。"}.get(status, "所有权快照状态未知。"),
+            {"status": status, "entries": len(entries),
+             "labels": [entry.get("label") for entry in entries if isinstance(entry, dict)][:8],
+             "error": lease.get("error")},
+            {"held": "接管前先按合同停止/归还当前 owner；不要凭快照过期判断空闲。",
+             "blocked": "沿 session-recovery/release 显式核查并留恢复回执；不要删除记录来解锁。"}.get(status))
+    except (OSError, ValueError) as error:
+        add("devices.lease", "devices", "unknown", "设备所有权快照",
+            "读取缓存的 lease 快照失败；不执行程序重试。",
+            {"error": str(error)}, "核对 phonefarm 身份与锁根后重启服务再诊断。")
     return {"schema": SCHEMA, "node_id": node.node_id, "checked_at": checked_at, "scope": "host-only",
             "summary": {state: sum(check["status"] == state for check in checks) for state in STATUSES}, "checks": checks,
             "limitations": ["这是宿主时间点观察，不是设备资格或部署验收。", "路径和签名可能随后改变；不会自动刷新程序身份或执行修复。",
