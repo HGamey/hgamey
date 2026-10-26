@@ -140,7 +140,7 @@
   例如 seconds=3、input=[{"action":"sleep","ms":6000},{"action":"tap","x":80,"y":100},{"action":"sleep","ms":7000}]。
   frame_id 须引用最新且30秒内、方向已知的原图；不自动截图。声明计划至少 seconds+10 秒、最多600秒。
   输入自然完成、采集完成和设备恢复分别核对；结果未知仍用原请求 ID 查询，不自动重发。
-  GPU submit proxy 不是显示 FPS；此批不计算每帧能耗。
+  GPU submit proxy 不是显示 FPS；游戏 energy_per_frame_mj 仍为 null。
 - session-status --json 成功仍输出原始 JSON；失败非0，stdout JSON 含 error.code、error.message 与 http_status（整数或null）。
   只查询一次，保留服务端错误码；泛404不是 not_found，网络错误为 network_error，不代表请求未提交。
 - session-recover 由节点绑定原会话与设备，不接收路径。提交前打印 request_id；超时后用 request 查询，
@@ -161,6 +161,9 @@
   battery 在首次 sample 准备，跨轮保持，最终 stop/recover 还原绑定原值；选择策略不代表已经放电或功耗合格。
   whole-sampler 平均功率与 trace 窗口积分估计分别记录；后者可用性由同期电池样本与窗口资格决定，缺失为未知。
   trace_energy_j/trace_power_w_mean 是采样积分估计，不是游戏每帧能耗；旧 producer 可能在设备操作前拒绝新参数。
+  新 producer 的 gpu_submit_group_window_energy_j / gpu_submit_group_window_power_w_mean 取完整提交组同窗积分，
+  battery_energy_per_gpu_submit_group_mj 是整机电池窗口平均每组估计，非逐组测量或游戏每帧能耗。
+  原 JSON 的 metric_provenance.submit_group_energy 给出窗口、组数、供电/时钟/损失资格；旧记录缺字段保持未知。
 - 目标须显式 --url URL / PF_NODE_URL；写入须 --node-id ID / PF_NODE_ID，可先用 node 只读取得。
 - 凭据只用 --token-file FILE 或 PF_NODE_TOKEN / PF_NODE_TOKEN_FILE；显式文件优先，两种环境凭据冲突即拒绝。
 """

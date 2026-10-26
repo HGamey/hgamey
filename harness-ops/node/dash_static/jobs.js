@@ -2034,6 +2034,49 @@
     const battery = value.battery || value; // Initial battery facts are flat; later observations wrap them.
     return `${value.on_battery === true ? '已观测电池放电' : value.on_battery === false ? '未观测为电池放电' : '放电状态未知'} · ${battery.status || '电池状态未知'} · 电流 ${battery.current_ua ?? '未知'} μA · 电量 ${battery.capacity_pct ?? '未知'}% · ${time(value.observed_at)}`;
   }
+  function renderSubmitGroupEnergy(result) {
+    const value = result.metric_provenance?.submit_group_energy, metrics = result.metrics || {}, window = value?.window;
+    const grouping = {existing_parser_inferred:'既有解析器推断', existing_parser_fixed:'既有解析器固定分组'};
+    const filtering = {render_comm:'渲染线程 comm', render_comm_and_recorded_target_tids:'渲染线程 comm 与记录的 target TIDs',
+      truncated_names_fallback:'线程名截断 fallback', caller_provided_contexts:'调用者提供的 contexts'};
+    const nonnegative = number => typeof number === 'number' && Number.isFinite(number) && number >= 0;
+    const count = number => Number.isInteger(number) && number >= 0;
+    const declaration = (labels, key) => Object.hasOwn(labels, key) ? labels[key] : '未记录';
+    const metricFields = [['gpu_submit_group_window_energy_j', 'energy_j'], ['gpu_submit_group_window_power_w_mean', 'power_w_mean'],
+      ['battery_energy_per_gpu_submit_group_mj', 'energy_per_group_mj']];
+    const qualified = value?.available === true && value.reason === null && value.estimated === true && value.rail === 'battery' &&
+      value.scope === 'whole_device_battery_over_gpu_submit_group_window' && typeof value.method === 'string' && !!value.method &&
+      value.target_ownership_verified === false && value.display_verified === false &&
+      typeof value.render_comm === 'string' && !!value.render_comm &&
+      value.trace_clock === 'boot' && value.loss_observation === 'per_cpu_overrun_zero' &&
+      window?.clock === 'uptime' && nonnegative(window.start) && nonnegative(window.end) && window.end > window.start &&
+      count(value.group_count) && value.group_count > 0 && count(value.submits_per_group) && value.submits_per_group > 0 &&
+      ['discarded_head_groups', 'discarded_tail_groups', 'trailing_incomplete_intervals'].every(key => count(value[key])) &&
+      count(value.samples) && value.samples >= 2 && Object.hasOwn(grouping, value.grouping) && Object.hasOwn(filtering, value.filtering_basis) &&
+      metricFields.every(([key, provenance]) => nonnegative(metrics[key]) && metrics[key] === value[provenance]);
+    const reason = !value ? '未测 / 不适用：此记录没有完整 GPU-submit 组窗能量字段。' : value.available === false ?
+      '完整组窗估计不可用：' + (typeof value.reason === 'string' && value.reason ? value.reason : '未提供原因。') :
+      '完整组窗资格或指标记录不完整 / 不一致，数值未采用；请核对原始报告。';
+    message('session-sample-group-energy-status', qualified ? '完整组窗估计可用：整机电池窗口平均每组估计，目标进程归属与显示帧仍未核验。' : reason, !!value && !qualified);
+    const measured = (key, unit) => qualified ? `${metrics[key].toFixed(3)} ${unit}（整机估计）` : '未测 / 不适用';
+    const recordedCount = number => count(number) ? String(number) : '未记录';
+    facts('session-sample-group-energy', [
+      ['完整组窗电池能量', measured('gpu_submit_group_window_energy_j', 'J')],
+      ['完整组窗平均功率', measured('gpu_submit_group_window_power_w_mean', 'W')],
+      ['窗口平均每组电池能量', measured('battery_energy_per_gpu_submit_group_mj', 'mJ/组')],
+      ['完整组数 / 每组 submits', `${recordedCount(value?.group_count)} / ${recordedCount(value?.submits_per_group)}`],
+      ['原记录时间窗', window?.clock === 'uptime' && nonnegative(window.start) && nonnegative(window.end) && window.end > window.start ?
+        `uptime ${window.start}–${window.end} 秒` : '未记录'],
+      ['裁掉的完整组', `头部 ${recordedCount(value?.discarded_head_groups)} · 尾部 ${recordedCount(value?.discarded_tail_groups)}`],
+      ['末尾不足一组的间隔', recordedCount(value?.trailing_incomplete_intervals)],
+      ['完整合格电池序列点数', recordedCount(value?.samples)],
+      ['分组 / 筛选声明', `${declaration(grouping, value?.grouping)} / ${declaration(filtering, value?.filtering_basis)}`],
+      ['渲染线程 comm 声明', typeof value?.render_comm === 'string' && value.render_comm ? value.render_comm : '未记录'],
+      ['原记录方法 / rail', `${typeof value?.method === 'string' ? value.method : '未记录'} / ${typeof value?.rail === 'string' ? value.rail : '未记录'}`],
+      ['原记录时钟 / 损失观察', `${typeof value?.trace_clock === 'string' ? value.trace_clock : '未记录'} / ${typeof value?.loss_observation === 'string' ? value.loss_observation : '未记录'}`],
+      ['目标归属 / 显示帧', '本指标不提供核验；不能作为游戏每帧能耗']
+    ]);
+  }
   function renderSampleResult(receipt, fromCache = false) {
     const result = receipt.result;
     $('session-sample-result').hidden = !result?.collection;
@@ -2056,6 +2099,7 @@
     facts('session-sample-power', [['本轮策略', powerPolicy(power.policy)], ['采样前观测', powerObservation(power.before)], ['采样后观测', powerObservation(power.after)], ['供电条件错误', power.error || (result.power ? '无记录错误' : '未知')],
       ['trace 窗口能量', traceMetric(metrics.trace_energy_j, 'J')], ['trace 窗口平均功率', traceMetric(metrics.trace_power_w_mean, 'W')],
       ['估计方法 / rail', `${trace.method || '未知'} / ${trace.rail || '未知'}`], ['trace 时间窗', window.clock === 'uptime' && Number.isFinite(window.start) && Number.isFinite(window.end) ? `uptime ${window.start}–${window.end} 秒` : '未知']]);
+    renderSubmitGroupEnergy(result);
     const limitations = Array.isArray(result.limitations) ? result.limitations.filter(v => typeof v === 'string') : [];
     $('session-sample-limitations').replaceChildren(...limitations.map(value => el('li', value)));
     $('session-sample-limitations').hidden = !limitations.length;

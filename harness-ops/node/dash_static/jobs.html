@@ -358,6 +358,10 @@
             <h4 id="session-sample-result-heading">采样结果</h4><p id="session-sample-status" class="note" role="status"></p>
             <dl id="session-sample-info" class="facts"></dl><ul id="session-sample-limitations" class="session-sample-limitations"></ul><ul id="session-sample-artifacts" class="session-sample-artifacts"></ul>
             <details class="session-tools"><summary>供电与 trace 窗口估计</summary><p id="session-sample-power-status" class="note"></p><dl id="session-sample-power" class="facts"></dl></details>
+            <details class="session-tools"><summary>完整 GPU-submit 组窗电池估计</summary>
+              <p id="session-sample-group-energy-status" class="note" role="status"></p><dl id="session-sample-group-energy" class="facts"></dl>
+              <p class="note">这是完整提交组时间窗内的整机电池 V×I 积分，以及窗口平均每组估计；不是 GPU rail、游戏每帧能耗或逐组能量分布。完整组只表示提交间隔有起止边界，不证明 GPU 工作已完成。分组与线程筛选不能证明目标进程归属或显示帧。电池序列点数包含窗外夹逼点，不代表每组采样次数或时间分辨率。</p>
+            </details>
             <p class="note">GPU submit proxy 不能当作显示 FPS。环境采样全窗功率与 trace 窗口估计分开记录，采样积分不是游戏每帧能耗；缺资格时保持未知，不自动判定性能收益。</p>
           </section>
           <details id="session-receipt-detail" class="session-tools" hidden><summary>完整动作回执</summary><pre id="session-receipt" class="command-box"></pre></details>
