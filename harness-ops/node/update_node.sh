@@ -23,26 +23,38 @@ PF_WAIT=${PF_WAIT:-600}   # CI 还没出这个提交的产物时最多等多少�
 
 json_get() {  # fixed fields from a bounded CI manifest; no executable expressions
   python3 - "$@" <<'PYJSON'
-import json, pathlib, re, sys
+import hashlib, json, pathlib, re, sys
 with pathlib.Path(sys.argv[1]).open("rb") as stream:
     raw = stream.read(65537)
 if len(raw) > 65536:
     raise SystemExit("build manifest too large")
 j = json.loads(raw)
-files = j.get("files")
+files = j.get("files") if isinstance(j, dict) else None
 allowed = {"phonefarm", "libVkLayer_refknobs.so", "VkLayer_refknobs.json"}
 if (not isinstance(files, dict) or "phonefarm" not in files or not set(files) <= allowed
-        or not re.fullmatch(r"[0-9a-f]{40}", j.get("sha", ""))):
+        or not isinstance(j.get("sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", j["sha"])):
     raise SystemExit("invalid CI build manifest")
 for name, entry in files.items():
-    if (not isinstance(entry, dict) or not re.fullmatch(r"[0-9a-f]{64}", entry.get("sha256", ""))
-            or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", entry.get("asset", name))):
+    if (not isinstance(entry, dict) or not isinstance(entry.get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
+            or not isinstance(entry.get("asset", name), str)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", entry.get("asset", name))
+            or ("size" in entry and (type(entry["size"]) is not int or entry["size"] < 0))):
         raise SystemExit("invalid CI asset metadata")
 op = sys.argv[2]
 if op == "sha": print(j["sha"])
 elif op == "files": print(" ".join(files))
 elif op == "asset": print(files[sys.argv[3]].get("asset", sys.argv[3]))
 elif op == "sha256": print(files[sys.argv[3]]["sha256"])
+elif op == "verify":
+    entry = files[sys.argv[3]]
+    digest, size = hashlib.sha256(), 0
+    with pathlib.Path(sys.argv[4]).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            size += len(chunk)
+            digest.update(chunk)
+    if digest.hexdigest() != entry["sha256"] or ("size" in entry and size != entry["size"]):
+        raise SystemExit("CI asset size/sha256 mismatch")
 elif op == "provenance": print(str(j.get("built_at", "unknown")) + " " + str(j.get("run_url", "unknown")))
 else: raise SystemExit("invalid manifest field")
 PYJSON
@@ -51,26 +63,35 @@ PYJSON
 # 节点到 GitHub 的网络会断：失败自动重试、断点续传（-C -），30 秒低于 10KB/s 算卡住重来
 CURL=(curl -fsSL --connect-timeout 20 --retry 5 --retry-all-errors --retry-delay 3 --speed-limit 10240 --speed-time 30)
 
-fetch_prebuilt() {  # $1 提交 sha $2 下载目录。0=下好且校验过 1=release 上不是这个 sha 2=下载/校验失败（可重试）
-  local sha=$1 d=$2 f asset want got
-  mkdir -p $d && rm -f $d/build.json
-  $CURL --max-time 60 -o $d/build.json "$PF_REL/build.json?t=$(date +%s)" || { echo "  取 build.json 失败"; return 2; }
-  [[ $(json_get $d/build.json sha) == $sha ]] || return 1
-  for f in $(json_get $d/build.json files); do
+fetch_prebuilt() {  # $1 提交 sha $2 下载目录。0=已核验 1=版本尚无 2=下载/校验失败
+  local sha=$1 d=$2 f asset reported http rc=0 legacy=0
+  mkdir -p "$d" && rm -f "$d/build.json"
+  # 精确版本优先；仅明确 404 允许旧 manifest 兼容，网络/格式失败不改取 latest。
+  http=$($CURL --retry 0 --max-time 60 -w '%{http_code}' -o "$d/build.json" "$PF_REL/$sha-build.json") || rc=$?
+  if (( rc == 22 )) && [[ $http == 404 ]]; then
+    legacy=1; rc=0
+    http=$($CURL --retry 0 --max-time 60 -w '%{http_code}' -o "$d/build.json" "$PF_REL/build.json?t=$(date +%s)") || rc=$?
+    (( rc == 22 )) && [[ $http == 404 ]] && return 1
+  fi
+  (( rc == 0 )) && [[ $http == 200 ]] || { echo "  取所选构建 manifest 失败"; return 2; }
+  reported=$(json_get "$d/build.json" sha) || return 2
+  if [[ $reported != $sha ]]; then
+    (( legacy )) && return 1
+    echo "  精确版本 manifest SHA 不符"; return 2
+  fi
+  for f in $(json_get "$d/build.json" files); do
     # 新版 CI 给每个文件一个带提交号的资产名（永不覆盖，不会撞上 CI 覆盖时的 404）；老 build.json 没有就用原名
-    asset=$(json_get $d/build.json asset "$f")
-    want=$(json_get $d/build.json sha256 "$f")
-    [[ -f $d/$f && $(shasum -a 256 $d/$f | cut -d' ' -f1) == $want ]] && continue   # 上一轮已下好
+    asset=$(json_get "$d/build.json" asset "$f")
+    [[ -f $d/$f ]] && json_get "$d/build.json" verify "$f" "$d/$f" 2>/dev/null && continue
     # 下到 .part.<资产名>，断了下一轮接着续；资产名带提交号，不会把两个版本续到一起
-    $CURL -C - --max-time 600 -o $d/.part.$asset "$PF_REL/$asset" || { echo "  下载 $asset 失败（已下 $(stat -f %z $d/.part.$asset 2>/dev/null || echo 0) 字节，下一轮续传）"; return 2; }
-    got=$(shasum -a 256 $d/.part.$asset | cut -d' ' -f1)
-    if [[ $got != $want ]]; then
-      rm -f $d/.part.$asset
+    $CURL -C - --max-time 600 -o "$d/.part.$asset" "$PF_REL/$asset" || { echo "  下载 $asset 失败（已下 $(stat -f %z "$d/.part.$asset" 2>/dev/null || echo 0) 字节，下一轮续传）"; return 2; }
+    if ! json_get "$d/build.json" verify "$f" "$d/.part.$asset"; then
+      rm -f "$d/.part.$asset"
       # 老 build.json（无 asset 字段）时同名文件可能正被 CI 覆盖：等新 build.json
       [[ $asset == $f ]] && { echo "  $f sha256 对不上（CI 正在覆盖？）"; return 1; }
-      echo "  $asset sha256 对不上，删掉重下"; return 2
+      echo "  $asset size/sha256 对不上，删掉重下"; return 2
     fi
-    mv -f $d/.part.$asset $d/$f
+    mv -f "$d/.part.$asset" "$d/$f"
   done
   return 0
 }
@@ -78,7 +99,7 @@ fetch_prebuilt() {  # $1 提交 sha $2 下载目录。0=下好且校验过 1=rel
 fetch_prebuilt_git() {  # 同 fetch_prebuilt，但走 git：CI 把产物做成孤立提交推到 refs/node-build/sha/<提交>。
   # 节点访问 release 资产要跳到 release-assets.githubusercontent.com（Fastly），国内时好时坏（同网段的
   # raw.githubusercontent.com 直接被重置）；拉源码用的 ssh github.com 一直稳，所以优先走它。
-  local sha=$1 d=$2 g=$2/.git-mirror ref=refs/node-build/sha/$1 f want lrc=0
+  local sha=$1 d=$2 g=$2/.git-mirror ref=refs/node-build/sha/$1 f lrc=0
   mkdir -p $d
   git ls-remote --exit-code ${REPO[phonefarm]} $ref >/dev/null 2>&1 || lrc=$?
   (( lrc == 2 )) && return 1                       # 没有这个 ref：CI 还没推（或是老构建）
@@ -88,9 +109,8 @@ fetch_prebuilt_git() {  # 同 fetch_prebuilt，但走 git：CI 把产物做成�
   git -C $g cat-file blob refs/b:build.json > $d/build.json
   [[ $(json_get $d/build.json sha) == $sha ]] || { echo "  git 产物里的 sha 不对"; rm -rf $g; return 2; }
   for f in $(json_get $d/build.json files); do
-    want=$(json_get $d/build.json sha256 "$f")
     git -C $g cat-file blob refs/b:$f > $d/$f
-    [[ $(shasum -a 256 $d/$f | cut -d' ' -f1) == $want ]] || { echo "  git 产物 $f sha256 不对"; rm -rf $g; return 2; }
+    json_get "$d/build.json" verify "$f" "$d/$f" || { echo "  git 产物 $f size/sha256 不对"; rm -rf $g; return 2; }
   done
   rm -rf $g
   return 0
