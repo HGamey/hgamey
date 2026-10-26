@@ -34,7 +34,13 @@ cursor 不作为授权凭据，也不由客户端拆解、修改或重新签发�
 
 ## A 等待具体协助
 
-例如 `request-data.json`（替换 study/A 及版本）：
+以目录初始化未达标、报告为 `needs_assistance` 的任务为例，网页可从原报告起草协助并选择研究和 A 方向；CLI 使用同一草稿：
+
+```bash
+pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" games assistance-draft "$PREP_JOB_ID" --research "$RESEARCH_ID" --direction "$DIR_A" > request-data.json
+```
+
+输出已是可交给 `research create` 的 data，包含原 job 证据、游戏/设备上下文与当前研究/方向 revision。按实际需要细化 need/why/resume_hint，保留这些引用。起草只读；保存请求后仍须单独给 A 挂依赖。没有对应游戏报告的协助可手写同形状，例如（替换 study/A 及版本）：
 
 ```json
 {
@@ -134,19 +140,34 @@ pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" result
 
 ## 另一客户端处理反馈
 
-从原 target/research 读事件、feedback 和原 request revision，再读 A 当前版本。`feedback_decisions` 示例：
+人通过研究页回复后，外部 Agent 从原 target/research 读事件、feedback、原 request revision 和 A 当前版本。对上面的游戏目录协助，先读原准备报告，沿其中的 node/game_id/version/serial 复核；把新的固定检查 request ID 与范围写进 A 的 next_experiment，再提交：
+
+```bash
+pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" games deployment "$PREP_JOB_ID"
+pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" games initialize "$GAME_ID" "$GAME_VERSION" --serial "$SERIAL" --check --request-id "$CHECK_REQUEST"
+pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" games request "$CHECK_REQUEST"
+pf-node --url "$NODE_URL" --node-id "$NODE_ID" --token-file "$TOKEN_FILE" games deployment "$CHECK_JOB_ID"
+```
+
+`CHECK_JOB_ID` 取自本次回执；任务未完成时继续 B，稍后读同一任务。将新检查的引用追加到 A 最新完整 data 的 evidence_refs；需固定报告原件时，沿前节登记结果，source 指向该 job 的 `deployment.json`：
 
 ```json
-{"feedback_id":"reply-a-1","decision":"adopt","reason":"已核对应原问题，材料满足本方向当前前提"}
+{"kind":"job","node_id":"<原node_id>","job_id":"<本次CHECK_JOB_ID>"}
+```
+
+本例只有新的 `storage_initialization.status=verified` 覆盖目录前提后，才记录采用并显式解除该依赖。`feedback_decisions` 示例：
+
+```json
+{"feedback_id":"reply-a-1","decision":"adopt","reason":"原目标的新检查已验证目录前提，检查 job 证据已追加"}
 ```
 
 确实满足依赖时，在原 dependency 的 resolution 中另存：
 
 ```json
-{"decision":"satisfied","reason":"已核材料可读取且范围满足实验计划","feedback_ids":["reply-a-1"]}
+{"decision":"satisfied","reason":"新检查报告的目录事实满足 A 的当前前提","feedback_ids":["reply-a-1"]}
 ```
 
-若尚缺材料，保留 resolution=null，decision 可 defer 并写原因。反馈改变了方法时冻结新的计划版本，旧实验仍按其原 research_revision 解释。当前授权不允许的建议只登记，不能通过 adopt 扩权。
+用 `research update direction --revision N --reason ...` 保存 A 的完整 data 与以上决定。仍未达标则保留 resolution=null、记录 defer 并继续其他方向。登录/授权协助用其实际适用的核验方法；初始化检查不证明已登录或场景就绪。反馈改变方法时冻结新计划，旧实验仍按原 research_revision 解释。
 
 ## 可携带交接块
 

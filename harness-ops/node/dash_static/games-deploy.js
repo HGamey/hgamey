@@ -89,7 +89,9 @@
         if(report && reportMatches(report,v)) { row.append(el('p',`报告：${phaseName(report.phase,v.operation)} · 历史观测 ${time(report.observed_at)}`,'note')); if(report.error)row.append(el('p',text(report.error),'asset-error')); }
         else row.append(el('p',report?'报告身份与目标不符，未作为设备事实展示。':'尚无可读事务报告；接受任务不代表设备准备或恢复已完成。','note'));
         if(value.report_error)row.append(el('p',`报告读取：${text(value.report_error)}`,'asset-error'));
-        const links=el('div',null,'preparation-links');links.append(link('任务、日志与队列恢复',item.job_url)||link('任务、日志与队列恢复',jobURL(item)));const original=link(`${operationName(v.operation)}报告原件`,value.report_url||item.report_url);if(original)links.append(original);row.append(links);
+        const links=el('div',null,'preparation-links');links.append(link('任务、日志与队列恢复',item.job_url)||link('任务、日志与队列恢复',jobURL(item)));const original=link(`${operationName(v.operation)}报告原件`,value.report_url||item.report_url);if(original)links.append(original);
+        if(reportMatches(report,v)&&report.phase==='needs_assistance')links.append(link('起草协助',HGTarget.url(`/dash/research?assistance_job=${encodeURIComponent(item.id)}`,HGTarget.binding())));
+        row.append(links);
         const box=el('details',null,'deploy-history-detail');box.open=expanded.has(item.id);box.addEventListener('toggle',()=>box.open?expanded.add(item.id):expanded.delete(item.id));box.append(el('summary','读取回执与恢复资格'));
         const read=el('button',reading.has(item.id)?'正在读取…':'读取最新回执','ghost');read.type='button';read.disabled=reading.has(item.id);read.setAttribute('aria-busy',String(reading.has(item.id)));read.addEventListener('click',()=>readDeployment(v,item));box.append(read);
         if(report && reportMatches(report,v))box.append(factRows(report),evidence(report));

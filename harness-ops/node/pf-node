@@ -54,6 +54,7 @@
   pf-node games install ID VERSION --serial S [--check] [--request-id ID] # 明确缺席的单APK新装；check只读
   pf-node games initialize ID VERSION --serial S [--check] [--request-id ID] # 有界Launcher初始化尝试与停止；check只读
   pf-node games deployment JOB_ID         # 原部署报告、事实与恢复范围
+  pf-node games assistance-draft JOB --research ID --direction ID # 只读起草现有协助请求 data
   pf-node games deployment-recover JOB_ID --request-id ID # 接续原上下文，不重放部署
   pf-node games upload ID VERSION ASSET FILE [--upload-id ID] # 分块上传；原ID显式续传，不打包/本机hash
   pf-node games upload-status ID          # 原上传的持久offset、缓存事实与校验任务

@@ -1193,6 +1193,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, job_lease_receipts(jobs._read_root, parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "deployment":
                     return self._send(200, jobs.deployments.get(parts[1]))
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["deployment", "assistance-draft"]:
+                    q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        return self._send(400, {"code": "target_required", "error": "assistance drafts require an explicit node identity"})
+                    if (set(q) - {"research_id", "direction_id", "expected_node_id"}
+                            or any(len(q.get(key, [])) != 1 or not q[key][0] for key in ("research_id", "direction_id"))):
+                        raise ValueError("assistance draft requires one research_id and one direction_id")
+                    return self._send(200, jobs.deployments.assistance_draft(parts[1], q["research_id"][0], q["direction_id"][0]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "session":
                     return self._send(200, jobs.session(parts[1]))
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["session", "recovery"]:

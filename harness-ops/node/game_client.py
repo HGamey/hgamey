@@ -24,6 +24,7 @@ HELP = """用法:
   pf-node games initialize ID VERSION --serial S [--check] [--request-id ID]
   pf-node games scene ID VERSION --serial S --deployment-inputs FILE [--check] [--request-id ID]
   pf-node games deployment JOB_ID
+  pf-node games assistance-draft JOB_ID --research ID --direction ID
   pf-node games deployment-recover JOB_ID --request-id ID
   pf-node games upload ID VERSION ASSET FILE [--upload-id ID]
   pf-node games upload-status ID
@@ -46,6 +47,8 @@ scene 冻结两份原部署 input-reference 的 source，放入独立运行目�
 新建 deploy/install/initialize/scene（含 --check）仅接受 Android serial，不支持 hdc:/ios: 目标。
 原请求、事务报告与恢复资格仍可使用 games request/deployment/deployment-recover 接续，不按新目标规则改写。
 部署、应用读取、登录和场景状态分别报告。恢复接续原任务，不重放部署，不自动释放队列保留。
+assistance-draft 只读原报告，输出可交给 research create request 的 data；需要显式节点身份。
+保存协助请求与给方向添加依赖仍为两个显式操作；回复后需新核验，不自动运行设备或解除依赖。
 """
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -485,6 +488,23 @@ def main(args, *, url, token, request_id=None, target=None):
             return submit_job(client, path, body, key, f"检查{action}前提" if mode == "check" else action)
         elif command == "deployment" and len(args) == 2:
             path = f"/jobs/{deployment_job_id(args[1])}/deployment"
+        elif command == "assistance-draft" and len(args) == 6:
+            job_id = deployment_job_id(args[1])
+            options = {}
+            for index in (2, 4):
+                if args[index] not in ("--research", "--direction") or args[index] in options:
+                    raise ValueError("assistance-draft 需要 --research ID 和 --direction ID")
+                options[args[index]] = args[index + 1]
+            if not client.target.expected_node_id:
+                raise ValueError("assistance-draft 需要 --node-id 或 PF_NODE_ID")
+            query = urllib.parse.urlencode({"research_id": options["--research"], "direction_id": options["--direction"]})
+            result = client.request("GET", f"/jobs/{job_id}/deployment/assistance-draft?{query}")
+            if (result.get("schema") != "hgamey/game-assistance-draft@1" or result.get("node_id") != client.target.expected_node_id
+                    or result.get("job_id") != job_id or not isinstance(result.get("data"), dict)):
+                raise RequestError("协助草稿回包身份或格式不符")
+            print(json.dumps(result["data"], ensure_ascii=False))
+            print("pf-node: 仅生成协助 data；未保存请求、添加方向依赖或执行设备复核。", file=sys.stderr)
+            return 0
         elif command == "deployment-recover" and len(args) >= 2:
             path = f"/jobs/{deployment_job_id(args[1])}/deployment/recover"
             _, _, key = deployment_arguments(args[2:], request_id, recovery=True)

@@ -314,6 +314,57 @@ class NodeDeployments:
                 "report_url": "/dash/api/jobs/" + jid + "/out?path=deployment.json",
                 "recovery": self._recovery(row, job, report, self.jobs.dispatch.queue.rows() if rows is None else rows, kind)}
 
+    def assistance_draft(self, jid, research_id, direction_id):
+        """Draft existing research metadata from saved facts; never refresh execution."""
+        from node_research import normalize
+
+        _, request = self._bound(jid)
+        report, error = self._report(jid, request)
+        if report is None:
+            raise DeploymentError(409, "deployment_report_unavailable",
+                                  error or "a saved deployment report is required to draft assistance")
+        study = self.jobs.research.get("research", research_id)
+        direction = self.jobs.research.get("direction", direction_id)
+        if direction["research_id"] != research_id:
+            raise DeploymentError(409, "assistance_context_mismatch", "direction belongs to another research")
+        declared_game = study["data"].get("game") or {}
+        if declared_game.get("game_id") not in (None, request["game_id"]):
+            raise DeploymentError(409, "assistance_context_mismatch", "research declares a different game")
+        kind = operation(request)
+        facts = {}
+        for field in ("installed", "resources_deployed", "application_access", "login", "scene_ready",
+                      "storage_initialization", "runtime_seed", "scene_observation", "launch", "stop", "recovery"):
+            if field in report:
+                value = report[field].get("status") if isinstance(report[field], dict) else None
+                facts[field] = value if isinstance(value, str) else "unknown"
+        missing = {key: value for key, value in facts.items()
+                   if value not in ("verified", "ready", "prepared", "confirmed", "matched",
+                                    "not_needed", "not_required", "not_applicable")}
+        target = f"node={request['node_id']}，game={request['game_id']}，version={request['version']}，serial={request['serial']}"
+        data = normalize("request", {
+            "research_id": research_id, "type": "assistance", "state": "open",
+            "title": f"协助核对 {request['game_id']} {request['version']} 的准备前提",
+            "need": "请确认所需现场操作或补充材料；不要在回复中填写账号密码、令牌。原报告未验证/未完成事项："
+                    + (json.dumps(missing, ensure_ascii=False) if missing else "原报告未指明；请明确实际需要协助的条件。"),
+            "why": f"原任务 {jid}；{target}；operation={kind}，phase={report.get('phase', 'unknown')}，"
+                   f"observed_at={report.get('observed_at', 'unknown')}。这些是历史观察，不保证当前仍缺失。",
+            "resume_hint": f"收到反馈后，先读取原任务 {jid} 的 deployment 报告并核对 {target} 和未完成恢复义务。"
+                           f"若需要设备复核，沿原 {kind} 配方/源输入显式提交新的 games {kind} --check 任务并使用新的 request ID；"
+                           "不重放旧请求。保存新任务证据，只认可该检查覆盖的安装/资源/目录前提；"
+                           "登录、授权、场景及同状态没有专门验证时仍为 unknown。"
+                           "反馈和关闭请求不自动解除依赖或恢复屏障；外部 Agent 再显式决定方向的 resolution。",
+            "context": {"research_revision": study["revision"],
+                        "directions": [{"id": direction_id, "revision": direction["revision"]}]},
+            "evidence_refs": [{"kind": "job", "node_id": request["node_id"], "job_id": jid}],
+        })
+        return {"schema": "hgamey/game-assistance-draft@1", "node_id": request["node_id"], "job_id": jid,
+                "source": {"game_id": request["game_id"], "version": request["version"],
+                           "serial": request["serial"], "operation": kind, "phase": report.get("phase")},
+                "data": data,
+                "limitations": ["只生成草稿，未创建请求、方向依赖或设备任务。",
+                                "原任务引用不是报告内容哈希；缺失事实来自保存的历史报告。",
+                                "人工反馈不证明登录、场景就绪或恢复完成。"]}
+
     def history(self, entry, rows):
         resource = self.games._resource(entry["game_id"], entry["version"])
         result = []

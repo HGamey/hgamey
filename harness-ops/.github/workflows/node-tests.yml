@@ -1,8 +1,9 @@
 name: node-tests
 on:
   push:
-    branches: [main, 'verify/**']
+    branches: ['verify/**']
   pull_request:
+  workflow_dispatch:
 jobs:
   protocol:
     runs-on: ubuntu-latest

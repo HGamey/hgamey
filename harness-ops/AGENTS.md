@@ -15,7 +15,8 @@
 - 产品准则与计划：https://github.com/HGamey/docs/tree/main/plans/2026-10-22-agent-platform 。维护者接续时先读准则、讨论、todo，并持续记录决定与验证范围。
 - 用户已授权直接 commit/push，不新开 PR。每批围绕一个可验收变化；提交前核对当前 main，保留同事改动，不 force push。
 - main 保留必需的 `code-only` 检查。先推同一提交到 `verify/<批次>` 等 CI 通过，再直接推 main；若 rebase 改变提交需重验。不关闭必需检查或强推保护。
-- 修改节点协议后运行 `python3 -m unittest discover -s node/tests -v`。模拟节点通过不能写成真机验证通过。
+- 用户于2026-10-26要求快速交付、减少校验和防御编程：只运行直接相关的最小检查，不默认本地全套或重复CI；共享协议的必要回归交由必需CI。模拟节点通过不能写成真机验证通过。
+- node-tests在verify分支、PR或手动触发时运行；同SHA推进main/stable复用已有检查，不重复整套CI。若直接main的新提交尚无检查，发布stable前手动触发。
 - 测试聚焦关键合同和已发生故障，避免镜像实现或重复覆盖。优先简化状态与资源所有权；哈希用于传输完整性/内容标识，不对每层对象重复计算。
 
 ## 作业结束范围

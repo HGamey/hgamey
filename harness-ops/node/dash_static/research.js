@@ -48,7 +48,7 @@
   let eventPosition = null, eventsBusy = false, eventsListening = false, eventsEpoch = 0, eventsController = null;
   let eventsDeadline = 0, eventsBudgetTimer = null, eventsNextTimer = null, eventsPages = 0, eventsTrimmed = 0, eventsStorageError = '';
   let draft = null, pending = null, writeBusy = false, lookupBusy = false, conflictLatest = null, relatedBusy = false;
-  let criteriaTransfer = null;
+  let criteriaTransfer = null, assistanceTransfer = null;
   const validID = value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(value) && !['.', '..'].includes(value);
   const capable = () => node?.capabilities?.includes('research.state-v1') === true;
   const writable = () => capable() && access?.steer === true && !accessBusy && HGTarget.canWrite();
@@ -137,7 +137,7 @@
       for (const id of ['pending-retry', 'pending-refill', 'conflict-restart']) $(id).disabled = !allowed || writeBusy || !!issue;
       $('conflict-refresh').disabled = writeBusy || !!issue;
     }
-    renderEvents(); renderCriteriaTransfer();
+    renderEvents(); renderCriteriaTransfer(); renderAssistanceTransfer();
   }
   async function loadAccess() {
     accessBusy = true; renderControls();
@@ -625,6 +625,38 @@
     catch (error) { criteriaTransfer = {error: error.message, target}; }
     renderCriteriaTransfer();
   }
+  function renderAssistanceTransfer() {
+    if (!assistanceTransfer) return;
+    const targetIssue = HGTarget.problem(assistanceTransfer.target), issue = assistanceTransfer.error || targetIssue;
+    const direction = detailFresh && detail?.kind === 'direction' ? detail : null;
+    $('game-assistance').hidden = false;
+    $('game-assistance-job').href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(assistanceTransfer.job)}`, assistanceTransfer.target);
+    $('game-assistance-draft').disabled = !!targetIssue || !/^[0-9a-f]{12}$/.test(assistanceTransfer.job) || !direction || !writable() || !!pending || writeBusy || relatedBusy;
+    $('game-assistance-draft').textContent = assistanceTransfer.loading ? '正在读取原报告与当前方向…' : '按所选方向填入协助草稿';
+    $('game-assistance-draft').setAttribute('aria-busy', String(!!assistanceTransfer.loading));
+    message('game-assistance-message', issue || (assistanceTransfer.loading ? '正在只读生成草稿…' : pending ? '先核对原未决操作；带入的任务不会替换它。' : !writable() ? '原任务已带入；解锁研究操作后可填入草稿。' : !direction ? `原任务 ${assistanceTransfer.job}。请选择已有研究方向，或先建立研究与方向。` : `原任务 ${assistanceTransfer.job} → ${direction.research_id} / ${direction.id}。将读取当前研究与方向版本；原报告是历史观测。`), !!issue);
+  }
+  function loadAssistanceTransfer(job) {
+    if (!job) return;
+    assistanceTransfer = {job, target: HGTarget.binding(), error: /^[0-9a-f]{12}$/.test(job) ? '' : '原任务 ID 无效，请从游戏准备报告重新进入。'};
+    renderAssistanceTransfer();
+  }
+  async function draftGameAssistance() {
+    if (!assistanceTransfer || !/^[0-9a-f]{12}$/.test(assistanceTransfer.job) || !detailFresh || detail?.kind !== 'direction' || !writable() || pending || writeBusy || relatedBusy || HGTarget.problem(assistanceTransfer.target)) return;
+    const current = detail, epoch = detailEpoch, transfer = assistanceTransfer, target = transfer.target;
+    const query = new URLSearchParams({research_id: current.research_id, direction_id: current.id});
+    relatedBusy = transfer.loading = true; transfer.error = ''; renderControls();
+    try {
+      const value = await request(`${API}/jobs/${encodeURIComponent(transfer.job)}/deployment/assistance-draft?${query}`, {target});
+      if (disposed || epoch !== detailEpoch || HGTarget.problem(target)) return;
+      if (value.schema !== 'hgamey/game-assistance-draft@1' || value.node_id !== target.node_id || value.job_id !== transfer.job || value.data?.type !== 'assistance' || value.data.research_id !== current.research_id || value.data.context?.directions?.[0]?.id !== current.id) throw new Error('协助草稿与原任务、节点或所选方向不匹配。');
+      $('game-assistance-source-json').textContent = JSON.stringify({job_id: value.job_id, source: value.source, context: value.data.context, limitations: value.limitations}, null, 2);
+      $('game-assistance-source').hidden = false;
+      openDraft('request', value.data);
+      message('write-message', '已填入协助草稿，尚未保存。创建请求后，如需局部阻断，请另行编辑原方向的 dependencies；收到答复后仍须按原目标重新核验。');
+    } catch (error) { transfer.error = failText(error); }
+    finally { relatedBusy = transfer.loading = false; renderControls(); }
+  }
   function capabilityMessage() { message('capability-message', capable() ? '当前后台保存独立研究状态；只读记录不会探测手机。声明状态与任务运行、设备恢复分别核对。' : '此节点未提供 research.state-v1，研究记录不可用；旧目标客户端仍可从概览进入。', !capable()); renderControls(); }
   async function refresh() {
     $('refresh-all').disabled = true;
@@ -636,6 +668,7 @@
     if (!criteriaTransfer?.spec || pending || !writable() || writeBusy || HGTarget.problem(criteriaTransfer.target) || !HGResearchCriteria.supported(node)) return;
     openDraft('research'); HGResearchCriteria.importComparison(criteriaTransfer.spec); $('edit-form').hidden = false;
   });
+  $('game-assistance-draft').addEventListener('click', draftGameAssistance);
   $('filters').addEventListener('submit', event => { event.preventDefault(); loadList(); });
   $('filter-kind').addEventListener('change', changeKind);
   $('filter-research').addEventListener('input', syncEventScope);
@@ -692,7 +725,7 @@
   if (pending) { $('editor').hidden = false; $('edit-form').hidden = true; }
   loadAccess();
   HGTarget.ready().then(value => {
-    node = value; capabilityMessage(); loadCriteriaTransfer(query.get('criteria_compare')); if (!capable()) return; loadList();
+    node = value; capabilityMessage(); loadCriteriaTransfer(query.get('criteria_compare')); loadAssistanceTransfer(query.get('assistance_job')); if (!capable()) return; loadList();
     if (KINDS[query.get('kind')] && validID(query.get('id'))) { const revision = Number(query.get('revision')); selectObject(query.get('kind'), query.get('id'), Number.isInteger(revision) && revision > 0 ? revision : null); }
   }).catch(error => { message('capability-message', failText(error), true); renderControls(); });
 })();
