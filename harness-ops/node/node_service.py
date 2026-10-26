@@ -1212,6 +1212,15 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         raise ValueError("export cache reads have no source or path override")
                     jobs._read_meta(parts[1])
                     return self._send(200, {"node_id": node.node_id, **jobs.export_cache.inspect(parts[1])})
+                if parts == ["export-caches"]:
+                    q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if set(q) - {"expected_node_id", "limit"}:
+                        raise ValueError("export cache overview accepts only expected_node_id and limit")
+                    limit = int(q["limit"][0]) if q.get("limit") else 512
+                    if not 1 <= limit <= 512:
+                        raise ValueError("export cache overview limit must be 1 to 512")
+                    return self._send(200, {"node_id": node.node_id,
+                                            **jobs.export_cache.overview(limit=limit)})
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "input-reference":
                     if set(q) != {"path"} or len(q["path"]) != 1:
                         raise ValueError("input reference requires exactly one artifact path")
@@ -1325,6 +1334,32 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(error.status, error.payload)
             except (ValueError, OSError) as error:
                 return self._send(400, {"code": "invalid_runtime_refresh", "error": str(error)})
+
+        def _export_cache_clear_all(self, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "export cache cleanup requires an explicit node identity"})
+                if set(q) - {"expected_node_id"}:
+                    raise ValueError("export cache cleanup has no source or path override")
+                length = self._upload_length(1024, 2)
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("export cache cleanup requires application/json")
+                self.connection.settimeout(10)
+                body = self.rfile.read(length)
+                request = json.loads(body) if len(body) == length else None
+                if (not isinstance(request, dict) or request.get("schema") != "phonefarm/export-cache-clear@1"
+                        or request.get("confirm") != "regenerable-only" or set(request) != {"schema", "confirm"}):
+                    raise ValueError("export cache cleanup requires the explicit regenerable-only confirmation")
+                return self._send(200, {"node_id": node.node_id,
+                                        **jobs.export_cache.overview(clear=True)})
+            except (ExportError, AssetUploadError) as error:
+                return self._send(error.status, error.payload)
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
 
         def _export_cache_post(self, jid, dashboard):
             self.close_connection = True
@@ -1596,6 +1631,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._runtime_refresh(True)
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "export-cache":
                 return self._export_cache_post(parts[1], False)
+            if parts == ["export-caches", "clear"]:
+                return self._export_cache_clear_all(False)
             if board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"] and parts[4] == "export-cache":
                 return self._export_cache_post(parts[3], True)
             if parts[:1] == ["research-state"]:

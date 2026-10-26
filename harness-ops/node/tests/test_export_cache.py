@@ -57,6 +57,69 @@ def endpoint(jobs):
 
 
 class ExportCacheTests(unittest.TestCase):
+    def test_overview_and_clear_all_are_bounded_and_regenerable_only(self):
+        with tempfile.TemporaryDirectory(prefix="export-overview-") as temporary, ExitStack() as cleanup:
+            root = Path(temporary).resolve()
+            jobs = Jobs(str(root / "node"), {}, export_cache_root=str(root / "cache"))
+            cleanup.callback(jobs._read_root.close)
+            cleanup.callback(jobs.export_cache.close)
+            second = "ba9876543210"
+            for jid in (JID, second):
+                job = Path(jobs.path(jid))
+                (job / "out").mkdir(parents=True)
+                (job / "out" / "result.bin").write_bytes(("original " + jid).encode())
+                jobs._write_meta(jid, {"id": jid, "bin": "fixture", "started": 1, "exit": 0})
+            originals = {jid: (Path(jobs.path(jid)) / "out/result.bin").read_bytes() for jid in (JID, second)}
+            for jid in (JID, second):
+                opened, _ = jobs.out_blob(jid)
+                opened.read()
+                opened.close()
+            cache = root / "cache" / jobs.export_cache.namespace
+            seeded = {jid: len(list((cache / jid).glob("*.tar.gz*"))) for jid in (JID, second)}
+            self.assertTrue(all(count >= 1 for count in seeded.values()), "fixture expects cache entries per job")
+            (cache / "not-a-job").mkdir()
+            (cache / "not-a-job" / ".outcache-0123456789.tar.gz").write_bytes(b"untracked place")
+
+            with endpoint(jobs) as (url, request):
+                identity = json.loads(request("/node")[2])
+                read_headers = {"X-Expected-Node-ID": identity["node_id"]}
+                write_headers = {**read_headers, "Content-Type": "application/json",
+                                 "Authorization": "Bearer export-cache-fixture-admin-not-production"}
+                code, _, raw = request("/export-caches", read_headers)
+                value = json.loads(raw)
+                self.assertEqual(code, 200)
+                self.assertEqual(value["schema"], "phonefarm/export-cache-overview@1")
+                self.assertEqual([item["job_id"] for item in value["jobs"]], [JID, second],
+                                 "only real job namespaces are enumerated")
+                self.assertEqual(value["totals"]["count"], sum(seeded.values()))
+                self.assertTrue(value["complete"])
+                # 只读 token 可以查看聚合，但清理需要管理员写授权与显式确认体。
+                self.assertEqual(request("/export-caches/clear", read_headers, method="POST",
+                                         body=json.dumps({"schema": "phonefarm/export-cache-clear@1",
+                                                          "confirm": "regenerable-only"}).encode())[0], 401)
+                bad = request("/export-caches/clear", write_headers, method="POST", body=b"{}")
+                self.assertEqual(bad[0], 400)
+                wrong = request("/export-caches/clear", write_headers, method="POST",
+                                body=json.dumps({"schema": "phonefarm/export-cache-clear@1",
+                                                 "confirm": "everything"}).encode())
+                self.assertEqual(wrong[0], 400)
+                code, _, raw = request("/export-caches/clear", write_headers, method="POST",
+                                       body=json.dumps({"schema": "phonefarm/export-cache-clear@1",
+                                                        "confirm": "regenerable-only"}).encode())
+                value = json.loads(raw)
+                self.assertEqual(code, 200)
+                self.assertEqual(value["deleted"]["count"], sum(seeded.values()))
+                self.assertEqual(value["totals"]["count"], 0)
+                self.assertTrue(value["complete"])
+                for jid in (JID, second):
+                    self.assertEqual(list((cache / jid).glob("*.tar.gz*")), [])
+                    self.assertEqual((Path(jobs.path(jid)) / "out/result.bin").read_bytes(), originals[jid])
+                self.assertTrue((cache / "not-a-job" / ".outcache-0123456789.tar.gz").exists(),
+                                "non-job namespaces must not be touched")
+                # 清理后聚合回到零，且不创建任何新目录。
+                code, _, raw = request("/export-caches", read_headers)
+                self.assertEqual(json.loads(raw)["totals"]["count"], 0)
+
     def test_explicit_cleanup_uses_export_lock_and_preserves_open_download_and_originals(self):
         with tempfile.TemporaryDirectory(prefix="export-cleanup-") as temporary, ExitStack() as cleanup:
             root = Path(temporary).resolve()

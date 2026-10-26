@@ -17,6 +17,7 @@
   pf-node doctor [--json]                    # 绑定节点的只读宿主诊断；不探测设备
   pf-node queue                              # 只读持久队列快照
   pf-node export-cache JOB_ID [--clear]       # 查看/显式清理该任务可再生成的目录导出缓存
+  pf-node export-caches [--clear]             # 聚合查看/显式清理全部可再生成的目录导出缓存（只动缓存文件）
   pf-node admin-restart                      # 核原节点后仅发送一次服务重启请求
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
   pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
@@ -513,6 +514,29 @@ def export_cache(jid, clear=False):
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError):
         print(json.dumps({"job_id": jid, "retried": False, "error": "result_unconfirmed",
                           "next": "query export-cache for this job before another clear"}))
+        return 1
+    print(json.dumps(value, ensure_ascii=False))
+    return 0 if value.get("complete") is True else 2
+
+
+def export_caches(clear=False):
+    if not TARGET.expected_node_id:
+        sys.exit("pf-node: export-caches 需要 --node-id / PF_NODE_ID")
+    try:
+        if "jobs.export-cache-cleanup-v1" not in TARGET.identity().get("capabilities", []):
+            sys.exit("pf-node: 节点未提供 jobs.export-cache-cleanup-v1；未执行")
+        body = json.dumps({"schema": "phonefarm/export-cache-clear@1",
+                           "confirm": "regenerable-only"}).encode() if clear else None
+        value = json.loads(call("POST" if clear else "GET", "/export-caches", body,
+                                {"Content-Type": "application/json"} if clear else None,
+                                attempts=1, raise_errors=True))
+    except ClientError as error:
+        print(json.dumps({"http_status": error.code, "retried": False,
+                          "error": response_error_code(error.body) or "request_refused"}))
+        return 1
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError):
+        print(json.dumps({"retried": False, "error": "request_unconfirmed",
+                          "next": clear and "重新查看 export-caches 核对清理结果" or "重试查看"}))
         return 1
     print(json.dumps(value, ensure_ascii=False))
     return 0 if value.get("complete") is True else 2
@@ -1381,6 +1405,10 @@ def main():
                 or len(args) == 3 and args[2] != "--clear"):
             sys.exit("用法: pf-node export-cache JOB_ID [--clear]")
         raise SystemExit(export_cache(args[1], clear=len(args) == 3))
+    if args[0] == "export-caches":
+        if len(args) > 2 or (len(args) == 2 and args[1] != "--clear"):
+            sys.exit("用法: pf-node export-caches [--clear]   # 聚合查看/显式清理可再生成的目录导出缓存")
+        raise SystemExit(export_caches(clear=len(args) == 2))
     if args[0] == "queue":
         if len(args) != 1:
             sys.exit("用法: pf-node queue")

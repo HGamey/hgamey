@@ -79,6 +79,61 @@ class ExportCache:
                 return self._inspect(jid, clear=True)
         return self._inspect(jid)
 
+    OVERVIEW_LIMIT = 512
+
+    def _known_jobs(self):
+        """Enumerate job namespaces that already hold a cache directory; newest names are untracked order."""
+        prefix = self.namespace if self.configured_root is not None else ""
+        try:
+            directory = self.store.open_fd(prefix, directory=True)
+        except (FileNotFoundError, NotADirectoryError):
+            return []
+        except (OSError, ValueError) as error:
+            raise ExportError(503, "export_storage_unavailable",
+                              "export cache root is unavailable: " + str(error)) from error
+        try:
+            names = os.listdir(directory)
+        except OSError as error:
+            raise ExportError(503, "export_storage_unavailable",
+                              "export cache root could not be listed: " + str(error)) from error
+        finally:
+            os.close(directory)
+        return sorted(name for name in names if re.fullmatch(r"[0-9a-f]{12}", name))
+
+    def overview(self, job_ids=None, *, clear=False, limit=OVERVIEW_LIMIT):
+        """Bounded aggregate over regenerable caches; never touches originals or assets."""
+        if self.error:
+            raise self.error
+        if not isinstance(limit, int) or not 1 <= limit <= self.OVERVIEW_LIMIT:
+            raise ValueError("overview limit must be 1 to 512")
+        ids = (self._known_jobs() if job_ids is None else list(job_ids))[:limit]
+        items, totals = [], {"count": 0, "bytes": 0}
+        deleted = {"count": 0, "bytes": 0}
+        for jid in ids:
+            try:
+                row = self.inspect(jid, clear=clear)
+            except ExportError as error:
+                items.append({"job_id": jid, "scope": "directory_export_cache",
+                              "count": None, "bytes": None, "complete": False,
+                              "errors": [{"code": error.payload.get("code"), "error": error.payload.get("error")}]}
+                             if isinstance(error.payload, dict) else
+                             {"job_id": jid, "count": None, "bytes": None, "complete": False,
+                              "errors": [{"error": str(error)}]})
+                continue
+            items.append(row)
+            totals["count"] += row["count"]
+            totals["bytes"] += row["bytes"]
+            if clear and row.get("deleted"):
+                deleted["count"] += row["deleted"]["count"]
+                deleted["bytes"] += row["deleted"]["bytes"]
+        result = {"schema": "phonefarm/export-cache-overview@1", "mode": self.public()["mode"],
+                  "byte_basis": "logical_file_sizes", "jobs": items,
+                  "totals": {**totals, "jobs": len(items)},
+                  "complete": all(item.get("complete", False) for item in items)}
+        if clear:
+            result["deleted"] = deleted
+        return result
+
     def _inspect(self, jid, *, clear=False):
         placement = self.public()
         prefix = self.namespace + "/" + jid if self.configured_root is not None else jid
