@@ -79,13 +79,19 @@ class JobDispatch:
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
                 "recovery": {"status": "not_needed", "reason": "command has not started"}}
 
-    def submit(self, spec, body, request_id, *, admit=None):
+    def submit(self, spec, body, request_id, *, admit=None, legacy_resource_spec=None):
         key = self.request_key(uuid.uuid4().hex if request_id is None else request_id)
         fingerprint = request_fingerprint(spec, body)
         with file_lock(self.intake_path):
-            if admit is not None and not self.queue.by_request(key):
+            prior = self.queue.by_request(key)
+            if prior and prior["fingerprint"] != fingerprint and legacy_resource_spec is not None:
+                # Full historical content, including upload bytes, must match.
+                # Keep its original spec/reservation; new IDs use today's default.
+                if request_fingerprint(legacy_resource_spec, body) == prior["fingerprint"]:
+                    spec, fingerprint = prior["spec"], prior["fingerprint"]
+            if admit is not None and not prior:
                 admit()
-            if spec.get("recovery_for") and not self.queue.by_request(key):
+            if spec.get("recovery_for") and not prior:
                 parent = self.queue.get(spec["recovery_for"])
                 if not parent or parent["state"] != "blocked":
                     raise RequestConflict("recovery_for must name a blocked reservation")

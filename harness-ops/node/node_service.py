@@ -339,8 +339,11 @@ class Jobs:
         host_slots = _job_host_slots(spec)
         recovery_for = spec.get("recovery_for")
         device_binding = validate_device_job(spec, typed_recovery=access == "recovery" and "device_binding" in spec)
-        resources = spec.get("resources", [] if device_binding else
-                             ["legacy-device"] if binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"} else [])
+        legacy_device_bin = binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"}
+        legacy_host_default = (legacy_device_bin and spec.get("device_access") == "none"
+                               and "resources" not in spec and not device_binding and recovery_for is None)
+        resources = spec.get("resources", [] if device_binding or access == "none" else
+                             ["legacy-device"] if legacy_device_bin else [])
         if access == "recovery":
             self.path(recovery_for)
             parent = self.dispatch.queue.get(recovery_for)
@@ -373,6 +376,9 @@ class Jobs:
         if device_binding and access == "recovery":
             from node_session import validate_recovery_spec
             validate_recovery_spec(self, spec)
+        # Old explicit host-only requests persisted the bin's device default.
+        # This candidate may find an existing request; it must never admit one.
+        legacy_resource_spec = {**spec, "resources": ["legacy-device"]} if legacy_host_default else None
         original_admit = admit
         def admit():
             # submit() calls this only for a new request while holding intake.
@@ -382,7 +388,8 @@ class Jobs:
                 self.device_scopes.admit(device_binding)
             if original_admit is not None:
                 original_admit()
-        return self.dispatch.submit(spec, body, request_id, admit=admit)
+        return self.dispatch.submit(spec, body, request_id, admit=admit,
+                                    legacy_resource_spec=legacy_resource_spec)
 
     def _prepare(self, row, body):
         spec, jid = row["spec"], row["job_id"]
