@@ -19,6 +19,7 @@ from unittest.mock import patch
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
 import artifact_io
+import job_export_cache
 import node_service
 from node_service import Jobs, make_handler, readonly_token
 
@@ -33,10 +34,11 @@ def endpoint(jobs):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-    def get(path, headers=None):
+    def get(path, headers=None, *, method="GET", body=None):
         connection = http.client.HTTPConnection(*server.server_address, timeout=3)
         try:
-            connection.request("GET", path, headers={"Authorization": "Bearer " + TOKEN, **(headers or {})})
+            connection.request(method, path, body=body,
+                               headers={"Authorization": "Bearer " + TOKEN, **(headers or {})})
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
@@ -55,6 +57,77 @@ def endpoint(jobs):
 
 
 class ExportCacheTests(unittest.TestCase):
+    def test_explicit_cleanup_uses_export_lock_and_preserves_open_download_and_originals(self):
+        with tempfile.TemporaryDirectory(prefix="export-cleanup-") as temporary, ExitStack() as cleanup:
+            root = Path(temporary).resolve()
+            jobs = Jobs(str(root / "node"), {}, export_cache_root=str(root / "cache"))
+            cleanup.callback(jobs._read_root.close)
+            cleanup.callback(jobs.export_cache.close)
+            job = Path(jobs.path(JID))
+            (job / "out").mkdir(parents=True)
+            (job / "in").mkdir()
+            (job / "out" / "result.bin").write_bytes(b"original result")
+            (job / "in" / "input.bin").write_bytes(b"original input")
+            jobs._write_meta(JID, {"id": JID, "bin": "fixture", "started": 1, "exit": 0})
+            originals = {path: path.read_bytes() for path in (job / "meta.json", job / "in/input.bin", job / "out/result.bin")}
+            path = f"/jobs/{JID}/export-cache"
+            destination = root / "cache" / jobs.export_cache.namespace / JID
+            with endpoint(jobs) as (url, request):
+                identity = json.loads(request("/node")[2])
+                self.assertIn("jobs.export-cache-cleanup-v1", identity["capabilities"])
+                read_headers = {"X-Expected-Node-ID": identity["node_id"]}
+                write_headers = {**read_headers, "Content-Type": "application/json",
+                                 "Authorization": "Bearer export-cache-fixture-admin-not-production"}
+                code, _, raw = request(path, read_headers)
+                self.assertEqual((code, json.loads(raw)["count"], json.loads(raw)["bytes"]), (200, 0, 0))
+                self.assertFalse(destination.parent.exists())
+                self.assertFalse((job / ".out-export.lock").exists())
+                self.assertEqual(request(path, {**read_headers, "Content-Type": "application/json"},
+                                         method="POST", body=b"{}")[0], 401)
+                self.assertEqual(request(path, {"Authorization": write_headers["Authorization"], "Content-Type": "application/json"},
+                                         method="POST", body=b"{}")[0], 400)
+                opened, _ = jobs.out_blob(JID)
+                cleanup.callback(opened.close)
+                expected = opened.read(); opened.seek(0)
+                archives = list(destination.glob("*.tar.gz"))
+                metadata = Path(str(archives[0]) + ".json")
+                kept = destination / ".outcache-0123456789.tar.gz.tmp"
+                kept.write_bytes(b"retained partial")
+                link = destination / ".outcache-aaaaaaaaaa.tar.gz"
+                link.symlink_to(job / "out/result.bin")
+                with artifact_io.export_lock(jobs._read_root, JID):
+                    code, _, raw = request(path, write_headers, method="POST", body=b"{}")
+                    self.assertEqual((code, json.loads(raw)["code"]), (409, "export_busy"))
+                real_unlink = os.unlink
+                def deny_metadata(name, *args, **kwargs):
+                    if name == metadata.name:
+                        raise PermissionError("fixture metadata removal denied")
+                    return real_unlink(name, *args, **kwargs)
+                with patch.object(job_export_cache.os, "unlink", side_effect=deny_metadata):
+                    code, _, raw = request(path, write_headers, method="POST", body=b"{}")
+                value = json.loads(raw)
+                self.assertEqual((code, value["deleted"], value["count"], value["bytes"], value["complete"]),
+                                 (200, {"count": 1, "bytes": len(expected)}, 1, metadata.stat().st_size, False))
+                self.assertEqual({error["operation"] for error in value["errors"]}, {"inspect", "unlink"})
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(opened.read(), expected, "unlink must allow the original download FD to finish")
+                link.unlink()  # Remove only the intentionally invalid fixture entry before the successful CLI pass.
+                process = subprocess.run([sys.executable, str(NODE / "pf-node"), "--url", url,
+                    "--node-id", identity["node_id"], "export-cache", JID, "--clear"],
+                    env={"PATH": os.defpath, "HOME": str(root), "PF_NODE_TOKEN": "export-cache-fixture-admin-not-production",
+                         "NO_PROXY": "*", "no_proxy": "*", "PYTHONDONTWRITEBYTECODE": "1"},
+                    cwd=root, capture_output=True, text=True, timeout=10)
+                self.assertEqual(process.returncode, 0, process.stderr + process.stdout)
+                cleared = json.loads(process.stdout)
+                self.assertEqual((cleared["deleted"]["count"], cleared["count"], cleared["complete"]), (1, 0, True))
+                code, _, raw = request(path, write_headers, method="POST", body=b"{}")
+                self.assertEqual((code, json.loads(raw)["deleted"]), (200, {"count": 0, "bytes": 0}))
+                self.assertEqual(kept.read_bytes(), b"retained partial")
+                self.assertEqual({path: path.read_bytes() for path in originals}, originals)
+                self.assertTrue((job / ".out-export.lock").is_file())
+                self.assertEqual(request(f"/jobs/{JID}/out?meta=1")[0], 200)
+                self.assertEqual(json.loads(request(path)[2])["count"], 2)
+
     def test_external_cache_isolates_sources_reopens_and_never_falls_back(self):
         with tempfile.TemporaryDirectory(prefix="export-cache-") as temporary, ExitStack() as cleanup:
             root = Path(temporary).resolve()

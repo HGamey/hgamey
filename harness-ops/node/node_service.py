@@ -1206,6 +1206,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, node.artifacts(parts[1], q))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "inputs":
                     return self._send(200, job_inputs.record(jobs, parts[1]))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "export-cache":
+                    q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                    if set(q) - {"expected_node_id"}:
+                        raise ValueError("export cache reads have no source or path override")
+                    jobs._read_meta(parts[1])
+                    return self._send(200, {"node_id": node.node_id, **jobs.export_cache.inspect(parts[1])})
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "input-reference":
                     if set(q) != {"path"} or len(q["path"]) != 1:
                         raise ValueError("input reference requires exactly one artifact path")
@@ -1319,6 +1325,34 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(error.status, error.payload)
             except (ValueError, OSError) as error:
                 return self._send(400, {"code": "invalid_runtime_refresh", "error": str(error)})
+
+        def _export_cache_post(self, jid, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+                if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "export cache cleanup requires an explicit node identity"})
+                if set(q) - {"expected_node_id"}:
+                    raise ValueError("export cache cleanup has no source or path override")
+                length = self._upload_length(1024, 2)
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("export cache cleanup requires application/json")
+                self.connection.settimeout(10)
+                body = self.rfile.read(length)
+                if len(body) != length or json.loads(body) != {}:
+                    raise ValueError("export cache cleanup requires an empty JSON object")
+                jobs._read_meta(jid)
+                return self._send(200, {"node_id": node.node_id, **jobs.export_cache.inspect(jid, clear=True)})
+            except (ExportError, AssetUploadError) as error:
+                return self._send(error.status, error.payload)
+            except (KeyError, FileNotFoundError):
+                return self._send(404, {"error": "no such job"})
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
+            except OSError as error:
+                return self._send(503, {"code": "export_storage_unavailable", "error": str(error)})
 
         def _research_post(self, parts, dashboard):
             self.close_connection = True
@@ -1560,6 +1594,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._runtime_refresh(False)
             if board and parts == ["dash", "api", "node", "runtime", "refresh"]:
                 return self._runtime_refresh(True)
+            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "export-cache":
+                return self._export_cache_post(parts[1], False)
+            if board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"] and parts[4] == "export-cache":
+                return self._export_cache_post(parts[3], True)
             if parts[:1] == ["research-state"]:
                 return self._research_post(parts, False)
             if board and parts[:3] == ["dash", "api", "research-state"]:

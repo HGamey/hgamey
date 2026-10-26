@@ -16,6 +16,7 @@
   pf-node update-status [--json]             # 只读维护状态；不提交更新或重启
   pf-node doctor [--json]                    # 绑定节点的只读宿主诊断；不探测设备
   pf-node queue                              # 只读持久队列快照
+  pf-node export-cache JOB_ID [--clear]       # 查看/显式清理该任务可再生成的目录导出缓存
   pf-node admin-restart                      # 核原节点后仅发送一次服务重启请求
   pf-node leases [id]                        # 只读全局屏障或指定任务的 lease 收据
   pf-node session-status <id> [--request-id ID] [--json] # 只读灰层会话或动作回执
@@ -490,6 +491,28 @@ def terminal_exit(jid, status):
         print("pf-node: 原命令 exit=0，但 worker 已触发已知日志/空间软阈值；CLI 返回 124，不代表设备已恢复。", file=sys.stderr)
         return 124
     return rc
+
+
+def export_cache(jid, clear=False):
+    if not TARGET.expected_node_id:
+        sys.exit("pf-node: export-cache 需要 --node-id / PF_NODE_ID")
+    try:
+        if "jobs.export-cache-cleanup-v1" not in TARGET.identity().get("capabilities", []):
+            sys.exit("pf-node: 节点未提供 jobs.export-cache-cleanup-v1；未清理")
+        value = json.loads(call("POST" if clear else "GET", f"/jobs/{jid}/export-cache",
+                                b"{}" if clear else None,
+                                {"Content-Type": "application/json"} if clear else None,
+                                attempts=1, raise_errors=True))
+    except ClientError as error:
+        print(json.dumps({"http_status": error.code, "job_id": jid, "retried": False,
+                          "error": response_error_code(error.body) or "request_refused"}))
+        return 1
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError):
+        print(json.dumps({"job_id": jid, "retried": False, "error": "result_unconfirmed",
+                          "next": "query export-cache for this job before another clear"}))
+        return 1
+    print(json.dumps(value, ensure_ascii=False))
+    return 0 if value.get("complete") is True else 2
 
 
 def retry_finalize(jid):
@@ -1350,6 +1373,11 @@ def main():
                 sys.exit("pf-node: 任务不存在或节点未提供该 lease 证据入口（HTTP 404）；不能据此判断设备恢复状态")
             sys.exit(f"pf-node: lease 证据读取失败：{e}")
         return
+    if args[0] == "export-cache":
+        if (len(args) not in (2, 3) or not re.fullmatch(r"[0-9a-f]{12}", args[1])
+                or len(args) == 3 and args[2] != "--clear"):
+            sys.exit("用法: pf-node export-cache JOB_ID [--clear]")
+        raise SystemExit(export_cache(args[1], clear=len(args) == 3))
     if args[0] == "queue":
         if len(args) != 1:
             sys.exit("用法: pf-node queue")

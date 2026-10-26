@@ -431,6 +431,16 @@
           <p id="directory-export-message" class="note" role="status">仅点击准备按钮才请求目录打包，不自动重试。</p>
           <dl id="directory-export-info" class="facts" hidden></dl>
           <pre id="directory-export-error" class="command-box" hidden></pre>
+          <details class="command-details">
+            <summary>本任务的目录导出缓存</summary>
+            <p class="note">仅清理当前任务可重新生成的目录下载压缩包及其元数据。原 out、in 和结果记录不删除；不清理历史来源或其他缓存位置。</p>
+            <div class="submission-actions"><button id="read-export-cache" class="ghost" type="button" disabled>读取导出缓存</button><button id="clean-export-cache" class="ghost danger" type="button" disabled>清理导出缓存</button></div>
+            <p id="export-cache-access" class="note"></p>
+            <p id="export-cache-message" class="note" role="status">尚未读取；不会自动清理。</p>
+            <dl id="export-cache-info" class="facts" hidden></dl>
+            <pre id="export-cache-errors" class="command-box" hidden></pre>
+            <p class="note">数量分别计压缩包和 JSON 文件；字节数为文件逻辑大小。已有下载可能仍打开文件，删除量不等于立即归还的磁盘空间。</p>
+          </details>
           </div>
           <p id="historical-file-help" class="note" hidden>历史来源只提供单文件下载与校验；不打包目录或生成输入引用。</p>
           <p id="artifact-message" class="note" role="status"></p>

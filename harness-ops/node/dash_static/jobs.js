@@ -12,6 +12,7 @@
   let historySource = null, jobSources = [], jobSourcesRevision = 0, jobSourcesError = '';
   const historical = () => historySource !== null;
   let exportRevision = 0, exportController = null;
+  let exportCacheRevision = 0, exportCacheBusy = false;
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
   let activeFilters = {query: '', state: ''};
   let currentJob = null, access = null, accessRevision = 0, accessBusy = false, accessError = '';
@@ -245,7 +246,7 @@
     return [['导出缓存模式', ({legacy_job_directory: '作业目录内（legacy_job_directory）', external: '独立缓存根（external）'})[cache.mode] || '未知'],
       ['导出缓存启动观察', ({available: '启动时已打开；不保证当前可写空间', unavailable: '不可用；不会退回作业目录'})[cache.availability] || '未知'],
       ['配置缓存根', cache.configured_root === null ? '未显式配置' : cache.configured_root], ['有效缓存根', cache.effective_root ?? '未取得'],
-      ['缓存位置原因', cache.reason ?? '未报告错误'], ['旧导出缓存迁移', cache.legacy_entries_migrated === false ? '未迁移；本页不迁移或清理旧缓存' : '未提供'],
+      ['缓存位置原因', cache.reason ?? '未报告错误'], ['旧导出缓存迁移', cache.legacy_entries_migrated === false ? '未迁移；清理仅覆盖当前配置的缓存位置' : '未提供'],
       ['缓存适用范围', cache.scope === 'directory_export' ? '仅当前作业的目录导出派生件；单文件下载与历史来源不依赖此缓存。实际请求仍需核对导出错误。' : cache.scope || '未知']];
   }
   function serviceFacts(service) {
@@ -404,7 +405,7 @@
   function changeJobSource(source) {
     historySource = source; selected = ''; currentJob = null; directory = ''; jobsCursor = filesCursor = null;
     ++detailRevision; ++listRevision; ++artifactRevision; ++metadataRevision; ++logRevision;
-    resetSession(); resetJobInputs(); resetJobLeases(); resetInputReference(); resetDirectoryExport(); resetLog();
+    resetSession(); resetJobInputs(); resetJobLeases(); resetInputReference(); resetDirectoryExport(); resetExportCache(); resetLog();
     stopJobEvents(); syncJobEventScope();
     $('task-list').replaceChildren(); $('artifact-list').replaceChildren();
     $('detail-content').hidden = true; $('detail-placeholder').hidden = false; $('refresh-detail').hidden = true;
@@ -479,6 +480,7 @@
     renderSubmission();
     renderSessionControls();
     renderRuntimeRefresh();
+    renderExportCacheControls();
   }
   async function loadAccess() {
     const revision = ++accessRevision;
@@ -1434,7 +1436,7 @@
     } catch (error) {
       if (revision === nodeRevision) message('node-message', refreshRuntime ? `程序观察结果未取得：${error.message || '连接中断'}。下方保留上次观察，当前身份尚未确认；请读取节点缓存核对，不会自动重试。` : errorText(error), true);
       if (refreshRuntime && [401, 403].includes(error.status)) await loadAccess();
-    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); renderJobEvents(); renderInputLimits(); renderExportLimits(); } }
+    } finally { if (refreshRuntime) runtimeBusy = false; if (revision === nodeRevision) { regionBusy('node-card', false); renderSubmission(); updateJobLeaseAccess(); updateJobInputAccess(); renderSessionControls(); renderRuntimeRefresh(); renderJobEvents(); renderInputLimits(); renderExportLimits(); renderExportCacheControls(); } }
   }
   function highlight() {
     for (const button of $('task-list').querySelectorAll('button')) {
@@ -1516,6 +1518,7 @@
     resetInputReference();
     resetSession();
     resetDirectoryExport();
+    resetExportCache();
     const revision = ++detailRevision;
     ++artifactRevision;
     ++metadataRevision;
@@ -1553,6 +1556,7 @@
         resetLog(); await Promise.all([loadArtifacts(), loadLog()]); return;
       }
       currentJob = job;
+      renderExportCacheControls();
       if (reconcileReceipts.get(id)?.unconfirmed) reconcileReceipts.set(id, {message: '已重新读取原任务状态。请核对宿主核查与输出交还记录，再决定是否操作。', error: false});
       updateJobLeaseAccess();
       updateJobInputAccess();
@@ -2562,6 +2566,54 @@
       ['目录与文件总条目上限', policy.entries], ['目录深度上限', policy.max_depth], ['写入时最低保留空间', inputBytes(policy.min_free_bytes)],
       ['限值范围', policy.scope === 'directory_export_cache_generation' ? '目录导出缓存生成（含根目录；压缩输出含格式头尾和填充）' : text(policy.scope)]] : [])]);
   }
+  function renderExportCacheControls() {
+    const problem = historical() ? '历史来源不提供缓存清理。' : !currentJob || currentJob.id !== selected ? '请先读取当前任务。' : HGTarget.problem() ||
+      (!nodeInfo?.capabilities?.includes('jobs.export-cache-cleanup-v1') ? '此节点未提供导出缓存查看与清理能力。' : '');
+    $('read-export-cache').disabled = !!problem || exportCacheBusy;
+    $('clean-export-cache').disabled = !!problem || exportCacheBusy || !access?.steer || accessBusy || !HGTarget.canWrite();
+    message('export-cache-access', problem || (accessBusy ? '正在核对操作权限；可只读查看缓存。' : access?.steer && HGTarget.canWrite() ? '已解锁；清理只针对当前任务的导出缓存。' : '当前只读；解锁任务操作后可清理缓存。'));
+  }
+  function resetExportCache() {
+    ++exportCacheRevision; exportCacheBusy = false;
+    busy('read-export-cache', false); busy('clean-export-cache', false);
+    $('export-cache-info').hidden = true; $('export-cache-info').replaceChildren();
+    $('export-cache-errors').hidden = true; $('export-cache-errors').textContent = '';
+    message('export-cache-message', '尚未读取；不会自动清理。');
+    renderExportCacheControls();
+  }
+  async function inspectExportCache(clean = false) {
+    if ($(clean ? 'clean-export-cache' : 'read-export-cache').disabled || exportCacheBusy) return;
+    const id = selected, target = HGTarget.binding(), revision = ++exportCacheRevision;
+    exportCacheBusy = true;
+    busy(clean ? 'clean-export-cache' : 'read-export-cache', true, clean ? '正在清理…' : '正在读取…');
+    renderExportCacheControls();
+    message('export-cache-message', clean ? '正在清理本任务的导出缓存；只发送一次请求。' : '正在读取本任务缓存；不会生成目录压缩包。');
+    $('export-cache-errors').hidden = true;
+    try {
+      const url = `${API}/jobs/${encodeURIComponent(id)}/export-cache`;
+      const value = clean ? await post(url, {}, {}, target) : await json(url, target);
+      if (revision !== exportCacheRevision || selected !== id || HGTarget.problem(target)) return;
+      if (value.node_id !== target.node_id || value.job_id !== id || value.scope !== 'directory_export_cache') throw new Error('缓存回包的节点、任务或范围不匹配。');
+      facts('export-cache-info', [['任务 ID', id], ['缓存模式', ({external: '独立缓存根（external）', legacy_job_directory: '作业目录内（legacy_job_directory）'})[value.mode] || '未知'],
+        ['缓存位置', value.cache_path], [clean ? '剩余文件数' : '缓存文件数', value.count], [clean ? '剩余逻辑字节' : '缓存逻辑字节', inputBytes(value.bytes)],
+        ...(clean ? [['实际删除文件数', value.deleted?.count], ['实际删除逻辑字节', inputBytes(value.deleted?.bytes)]] : []),
+        ['扫描是否完整', value.complete === true ? '完整' : '不完整，请核对错误'], ['本页收到回包', new Date().toLocaleString()]]);
+      $('export-cache-info').hidden = false;
+      if (value.errors?.length) { $('export-cache-errors').textContent = JSON.stringify(value.errors, null, 2); $('export-cache-errors').hidden = false; }
+      if (clean) resetDirectoryExport();
+      message('export-cache-message', value.complete === true ? (clean ? '清理请求已完成，实际删除量和剩余量见下方；需要目录下载时可重新准备。' : '已取得当前缓存观察；之后的目录导出可能改变缓存。') : '请求已返回，但扫描或清理不完整；下方仅为已知数量，请核对错误。未自动重试。', value.complete !== true);
+    } catch (error) {
+      if (revision !== exportCacheRevision || selected !== id || HGTarget.problem(target)) return;
+      const hint = error.payload?.code === 'export_busy' ? '此任务的目录导出缓存正在使用；稍后可手动读取或清理。' : clean ? '清理结果未确认；可读取缓存核对当前剩余，不能将旧观察当作本次结果。' : '缓存观察未取得；下方如有数据仍为上次观察。';
+      message('export-cache-message', `${hint} ${error.message || ''} 未自动重试。`, true);
+      if (error.payload) { $('export-cache-errors').textContent = JSON.stringify(error.payload, null, 2); $('export-cache-errors').hidden = false; }
+      if ([401, 403].includes(error.status)) await loadAccess();
+    } finally {
+      if (revision === exportCacheRevision) {
+        exportCacheBusy = false; busy('read-export-cache', false); busy('clean-export-cache', false); renderExportCacheControls();
+      }
+    }
+  }
   function resetDirectoryExport() {
     ++exportRevision;
     exportController?.abort(); exportController = null;
@@ -2936,6 +2988,8 @@
   $('copy-input-manifest').addEventListener('click', copyInputManifest);
   $('refresh-artifacts').addEventListener('click', () => loadArtifacts());
   $('prepare-directory-export').addEventListener('click', prepareDirectoryExport);
+  $('read-export-cache').addEventListener('click', () => inspectExportCache());
+  $('clean-export-cache').addEventListener('click', () => inspectExportCache(true));
   $('more-artifacts').addEventListener('click', () => loadArtifacts(true));
   $('log-next').addEventListener('click', loadLog);
   $('log-reset').addEventListener('click', () => { resetLog(); loadLog(); });
@@ -3046,7 +3100,7 @@
   const initial = initialParams.get('job');
   if (initial && /^[0-9a-f]{12}$/.test(initial)) selected = initial;
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);
-  document.addEventListener('hgamey-target-change', () => { resetDirectoryExport(); ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); if (jobEventsBusy && HGTarget.problem(jobEventPosition?.target)) stopJobEvents('节点身份需要重新核对；原浏览位置保留。'); syncJobEventScope(); });
+  document.addEventListener('hgamey-target-change', () => { resetDirectoryExport(); resetExportCache(); ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); if (jobEventsBusy && HGTarget.problem(jobEventPosition?.target)) stopJobEvents('节点身份需要重新核对；原浏览位置保留。'); syncJobEventScope(); });
   window.addEventListener('pagehide', resetDirectoryExport);
   refreshAll();
 })();
