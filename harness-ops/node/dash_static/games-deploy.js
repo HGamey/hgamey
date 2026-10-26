@@ -16,6 +16,10 @@
   const time = v => { const date = typeof v === 'number' ? new Date(v * 1000) : typeof v === 'string' ? new Date(v) : null; return date && Number.isFinite(date.getTime()) ? date.toLocaleString() : '未记录'; };
   const keyOf = v => JSON.stringify([v.node_id,v.game_id,v.version]);
   const serialOK = v => typeof v === 'string' && v.length > 0 && v.length <= 256 && !/[\x00-\x1f\x7f]/.test(v);
+  const androidSerialProblem = v => typeof v === 'string' && /^(hdc|ios):/i.test(v) ?
+    '此准备流程仅支持 Android，不能对 hdc: / ios: 目标新建预检、安装、部署、初始化或场景任务；原请求与恢复记录仍可查询。' :
+    serialOK(v) && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(v) ? '' :
+    '请填写有效 Android serial：1–128 位，字母或数字开头，仅含字母、数字、下划线、点、冒号或横线。';
   const modeName = (mode,operation='deploy') => mode==='apply'?({install:'新装',deploy:'部署到新目录',initialize:'初始化尝试',scene:'有界场景尝试'})[operation]||text(mode):({check:'只读预检',recover:'接续事务恢复'})[mode]||text(mode);
   const phaseName = (phase,operation) => ({install:{applying:'新装执行中',committed:'新装已提交 · 保留应用',failed:'新装失败'},initialize:{initialized:'存储目录已就绪',needs_assistance:'目录未达标 · 需要协助',recovery_required:'本次启动/停止义务待结算'},scene:{observed:'本次诊断已观察',needs_assistance:'场景未达标 · 需要协助',recovery_required:'本次场景尝试待恢复'}})[operation]?.[phase]||PHASE[phase]||text(phase);
   const sourceOK = (source,job,path) => source?.job_id===job && /^[0-9a-f]{12}$/.test(job) && source.path===path && Number.isSafeInteger(source.size) && source.size>0 && /^[0-9a-f]{64}$/.test(source.sha256);
@@ -50,7 +54,7 @@
     function current(v) { return !stopped && !context().disposed && currentView===v && context().selected===`${v.record.game_id}/${v.record.version}`; }
     function canManage(v) { return current(v) && context().canWrite && context().detailFresh && context().node?.node_id===v.record.node_id; }
     function canWrite(v,operation=v.operation) { return canManage(v) && support(v,operation); }
-    function canSubmit(v,p) { return !!p && !HGTarget.problem(p.target || null) && (p.kind==='recover' ? canManage(v) : canWrite(v,p.operation) && (p.operation!=='scene'||deploymentOK(p.deployment))); }
+    function canSubmit(v,p) { return !!p && !HGTarget.problem(p.target || null) && (p.kind==='recover' ? canManage(v) : !androidSerialProblem(p.serial) && canWrite(v,p.operation) && (p.operation!=='scene'||deploymentOK(p.deployment))); }
     function sceneReady(v) { return v.sceneSerial===v.serial && v.sceneDeployment?.report.job_id===v.sceneJob && deploymentOK(v.sceneDeployment); }
     function invalidateScene(v) { if(!v)return;v.sceneController?.abort();v.sceneController=null;v.sceneRevision=(v.sceneRevision||0)+1;v.sceneDeployment=null;v.sceneReading=false;v.sceneError='';v.sceneAt=null; }
     function setMessage(v,value,error=false) { v.message=value;v.error=error; }
@@ -99,7 +103,7 @@
       panel.hidden=false;panel.setAttribute('aria-busy',String(v.busy));
       if(serial.value!==v.serial)serial.value=v.serial;
       device.replaceChildren(el('option','选择已采样设备（也可手填）'));device.children[0].value='';
-      for(const d of fleet?.devices||[]) { if(typeof d.serial!=='string')continue; const option=el('option',`${d.model||d.serial} · ${d.serial} · ${d.transport||'传输未知'}${d.online===false?' · 离线快照':''}`);option.value=d.serial;device.append(option); }device.value='';
+      for(const d of fleet?.devices||[]) { if(typeof d.serial!=='string')continue; const unsupported=androidSerialProblem(d.serial);const option=el('option',`${d.model||d.serial} · ${d.serial} · ${d.transport||'传输未知'}${d.online===false?' · 离线快照':''}${unsupported?' · 不支持新准备任务':''}`);option.value=d.serial;option.disabled=!!unsupported;option.title=unsupported;device.append(option); }device.value='';
       fleetButton.disabled=fleetBusy;fleetButton.textContent=fleetBusy?'正在读取设备…':'刷新设备列表';fleetButton.setAttribute('aria-busy',String(fleetBusy));
       fleetNote.textContent=fleetError || (!fleet?'尚未读取设备列表。手填或点击刷新；普通版本刷新不会采样手机。':`设备快照：${time(fleet.sampled_at)} · ${fleet.devices===null?'尚无成功采样':`${fleet.devices?.length||0} 台记录`}${fleet.stale?' · 过期':''}${fleet.error?` · 错误：${fleet.error}`:''}${fleet.deferred?` · 暂缓：${fleet.deferred}`:''}。旧快照不证明当前可用，设备任务会重新核查。`);
       const config=OPERATIONS[v.operation], plan=v.record.manifest?.[config.recipe];operation.value=v.operation;operationHelp.textContent=config.scope;check.textContent=config.check;apply.textContent=config.apply;
@@ -109,12 +113,12 @@
       sceneSource.hidden=v.operation!=='scene';sourceJob.value=v.sceneJob||'';sourceJob.disabled=v.busy||!!p;sourceRead.disabled=v.busy||!!p||!!v.sceneReading||!support(v)||!plan||!context().detailFresh||context().node?.node_id!==v.record.node_id||!serialOK(v.serial)||!/^[0-9a-f]{12}$/.test(v.sceneJob||'');sourceRead.textContent=v.sceneReading?'正在读取两份引用…':'读取部署引用';sourceRead.setAttribute('aria-busy',String(!!v.sceneReading));
       sourceNote.textContent=v.sceneError||(v.sceneReading?'正在只读获取 deployment.json 与 game-deploy/session.json。':sceneReady(v)?`已读取 ${time(v.sceneAt)} · 原任务 ${v.sceneJob} · 当前目标 ${v.serial}。仅核对来源身份；提交后由任务核对原部署、设备和应用。`:'填写原资源部署任务 ID 并显式读取两份引用。允许同游戏旧版本的部署；变更目标或来源后需重新读取。');sourceNote.classList.toggle('task-error',!!v.sceneError);
       sourceFacts.replaceChildren();sourceFacts.hidden=!sceneReady(v);if(sceneReady(v)){sourceFacts.append(el('summary','已冻结的部署引用'),el('pre',JSON.stringify(v.sceneDeployment,null,2),'command-box'));const original=link('查看原资源部署任务',jobURL({id:v.sceneJob}));if(original)sourceFacts.append(original);}
-      const problem=!support(v)?v.record[config.support]?.error||`此节点未提供${config.label}能力。`:!plan?`当前清单无${config.label}配方。`:!context().detailFresh?'当前版本尚未成功刷新，保留历史记录。':!context().canWrite?'请先解锁操作权限。':!serialOK(v.serial)?'选择目标设备，或填写有效的序列号。':p?'有未确认请求；先按原 ID 查询，不创建另一请求。':active?'该目标已有未结束或保留资源的任务，请先打开原任务核查。':v.operation==='scene'&&!sceneReady(v)?'先读取并核对原资源部署的两份引用。':!globalThis.crypto?.randomUUID?'请通过 HTTPS 或本机地址提交。':'';
+      const problem=!support(v)?v.record[config.support]?.error||`此节点未提供${config.label}能力。`:!plan?`当前清单无${config.label}配方。`:!context().detailFresh?'当前版本尚未成功刷新，保留历史记录。':!context().canWrite?'请先解锁操作权限。':androidSerialProblem(v.serial)|| (p?'有未确认请求；先按原 ID 查询，不创建另一请求。':active?'该目标已有未结束或保留资源的任务，请先打开原任务核查。':v.operation==='scene'&&!sceneReady(v)?'先读取并核对原资源部署的两份引用。':!globalThis.crypto?.randomUUID?'请通过 HTTPS 或本机地址提交。':'');
       check.disabled=apply.disabled=!!problem||v.busy||!canWrite(v);check.setAttribute('aria-busy',String(v.busy&&v.busyOperation===v.operation&&v.busyMode==='check'));apply.setAttribute('aria-busy',String(v.busy&&v.busyOperation===v.operation&&v.busyMode==='apply'));
       help.textContent=(problem||({install:'预检只读；新装会再次确认包明确缺席与禁止替换能力。成功保留应用，资源部署与场景核验需另行提交。',initialize:'预检只读；初始化仅在目录未就绪且原应用已停止时尝试启动，之后确认停止。目录仍未达标但停止已确认时需要后续协助；停止义务未结算则先恢复。队列保留仍需显式核查。',scene:'预检只读，不创建运行目录或启动应用；场景尝试会放入小种子、有界启动并停止。场景未达标但停止已确认时需要协助，未知启动或停止结果须先恢复。不会自动进入性能测量。',deploy:'预检与部署都经设备队列执行。预检只读；部署会再次核对引擎与缓存，并创建新资源目录。'})[v.operation])+(v.operation==='install'&&!support(v)&&v.record.installation_support?.recovery_available===true?' 旧安装事务仍可读取恢复资格，是否允许提交以对应回执为准。':'');
       status.replaceChildren();const latest=items.map(item=>details.get(item.id)||item).find(item=>reportMatches(item.report,v));
       if(!v.serial)status.append(el('p','选择目标后显示当前准备动作的设备事实与原件。','note'));
-      else if(!latest)status.append(el('p',`此目标尚无匹配的${config.label}观测；可先提交只读预检。`,'note'));
+      else if(!latest)status.append(el('p',`此目标尚无匹配的${config.label}观测；${androidSerialProblem(v.serial)?'新准备操作不可用，已有事务仍可读取。':'可先提交只读预检。'}`,'note'));
       else { status.append(el('p',`最近有据记录 · ${config.label} · ${modeName(latest.mode,v.operation)}${['initialize','scene'].includes(v.operation)?` · ${phaseName(latest.report.phase,v.operation)}`:''} · ${time(latest.report.observed_at)} · ${latest.job?.id||latest.id}`,'read-time'),factRows(latest.report),evidence(latest.report)); }
       message.textContent=(p&&HGTarget.problem(p.target||null))||v.message||'';message.classList.toggle('task-error',!!v.error);
       requestPanel.hidden=!p;requestText.textContent=p?`未确认 ${operationName(p.operation)} · ${modeName(p.mode,p.operation)} · 节点 ${p.node_id} · ${p.game_id}/${p.version} · 设备 ${p.serial}\n请求 ID：${p.request_id}${p.source_job_id?` · 原任务 ${p.source_job_id}`:''}${p.operation==='scene'&&p.kind!=='recover'?deploymentOK(p.deployment)?` · 资源来源 ${p.deployment.report.job_id}`:' · 原部署引用不完整，只能查询，不能重构请求':''}`:'';
@@ -159,7 +163,7 @@
       } finally {v.busy=false;render(v);}
     }
     async function start(v,mode,source) {
-      if(!(mode==='recover'?canManage(v):canWrite(v))||v.busy||pending(v)||!serialOK(v.serial)||!globalThis.crypto?.randomUUID)return;
+      if(!(mode==='recover'?canManage(v)&&serialOK(v.serial):canWrite(v)&&!androidSerialProblem(v.serial))||v.busy||pending(v)||!globalThis.crypto?.randomUUID)return;
       if(mode==='recover') {const value=details.get(source);if(!value?.recovery?.eligible||!value.recovery.supported||!recordMatches(value,v)||!/^[0-9a-f]{12}$/.test(value.recovery.target_job_id))return;source=value.recovery.target_job_id;}
       if(mode!=='recover'&&v.operation==='scene'&&!sceneReady(v))return;
       const p={kind:mode==='recover'?'recover':'deploy',operation:v.operation,node_id:v.record.node_id,game_id:v.record.game_id,version:v.record.version,serial:v.serial,mode,request_id:crypto.randomUUID(),target:HGTarget.binding(),...(source?{source_job_id:source}:{}),...(mode!=='recover'&&v.operation==='scene'?{deployment:{report:{...v.sceneDeployment.report},state:{...v.sceneDeployment.state}}}:{}),queried:false};saved.set(v.key,p);persist();await submit(v,p);

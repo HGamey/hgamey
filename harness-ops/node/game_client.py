@@ -43,6 +43,8 @@ deploy 仅部署配方选中的资源到已安装引擎的新目录；--check �
 install 仅对明确缺席的包新装单个 APK；--check 核元数据和设备前提，不升级、不启动应用。
 initialize 显式有界尝试 Launcher 初始化并停止本次目标；目录已就绪时不启动，首次配置保留，场景仍需核验。
 scene 冻结两份原部署 input-reference 的 source，放入独立运行目录并有界启动/观察/停止；不代表冷启同状态或性能资格。
+新建 deploy/install/initialize/scene（含 --check）仅接受 Android serial，不支持 hdc:/ios: 目标。
+原请求、事务报告与恢复资格仍可使用 games request/deployment/deployment-recover 接续，不按新目标规则改写。
 部署、应用读取、登录和场景状态分别报告。恢复接续原任务，不重放部署，不自动释放队列保留。
 """
 IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
@@ -226,9 +228,12 @@ def deployment_arguments(args, request_id, *, recovery=False):
         if option in ("--serial", "--request-id") and index + 1 < len(args):
             value = args[index + 1]
             if option == "--serial" and not recovery:
-                if (not value.strip() or len(value) > 256
-                        or any(ord(c) < 32 or ord(c) == 127 for c in value)):
-                    raise ValueError("--serial 需要显式有效设备序列号")
+                if value.lower().startswith(("hdc:", "ios:")):
+                    raise ValueError("此准备流程仅支持 Android，不支持 hdc:/ios: 新目标；"
+                                     "原请求或事务请用 games request/deployment 查询")
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value):
+                    raise ValueError("--serial 需要有效 Android serial：1–128 位，字母或数字开头，"
+                                     "仅含字母、数字、下划线、点、冒号或横线")
                 serial = value
             elif option == "--request-id":
                 value = request_identifier(value)
