@@ -188,6 +188,112 @@ class JobInputsTests(unittest.TestCase):
         self.assertEqual((value["schema"], value["job_id"]), ("phonefarm/job-input-status@1", jid))
         return value
 
+    def peer_node(self, label):
+        """A second isolated node as a registered cross-node source."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        peer = Jobs(str(Path(temp.name)), {"fixture": (sys.executable, str(Path(temp.name)))})
+        admin = label + "-peer-fixture-not-production"
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(None, peer, admin))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def close_peer():
+            server.shutdown()
+            server.server_close()
+            thread.join()
+            peer.directory.close()
+            peer._read_root.close()
+
+        self.addCleanup(close_peer)
+
+        def call(method, path, *, body=None, headers=None, use_admin=True):
+            connection = http.client.HTTPConnection(*server.server_address, timeout=10)
+            values = {"Authorization": "Bearer " + (admin if use_admin else readonly_token(admin)),
+                      **(headers or {})}
+            try:
+                connection.request(method, path, body=body, headers=values)
+                response = connection.getresponse()
+                return response.status, json.loads(response.read())
+            finally:
+                connection.close()
+
+        def submit(request_id, spec, body=b""):
+            status, value = call("POST", "/jobs", body=body, headers={
+                "X-Job": json.dumps(spec), "X-Request-ID": request_id,
+                "Content-Type": "application/gzip"})
+            self.assertEqual(status, 200, value)
+            return value
+
+        return peer, admin, f"http://127.0.0.1:{server.server_port}", call, submit
+
+    def test_cross_node_input_reference_prepares_from_registered_source(self):
+        original = b'{ "cross": {"node": "source-of-truth", "value": 7}}\n'
+        peer, peer_admin, peer_url, peer_call, peer_submit = self.peer_node("lab-b")
+        self.assertNotEqual(peer.games.node_id, self.jobs.games.node_id)
+        code = ("import os; from pathlib import Path; "
+                f"(Path(os.environ['PF_JOB_OUT']) / 'report.json').write_bytes({original!r})")
+        job = peer_submit("peer-source-job", {"bin": "fixture", "argv": ["-c", code], "device_access": "none"})
+        deadline = time.monotonic() + 10
+        while peer.status(job["id"])["state"] != "finished" and time.monotonic() < deadline:
+            time.sleep(.03)
+        self.assertEqual(peer.status(job["id"])["exit"], 0, peer.status(job["id"]))
+        status, reference = peer_call("GET", f"/jobs/{job['id']}/input-reference?path=report.json")
+        self.assertEqual(status, 200, reference)
+
+        # 登记带凭据的只读来源；来源 node_id 与消费节点不同。
+        entry = self.jobs.directory.create({"name": "lab-b", "url": peer_url,
+                                            "token": readonly_token(peer_admin)})
+        self.assertTrue(self.jobs.directory._pin(entry, peer.games.node_id))
+        node = self.call("GET", "/node")[1]
+        self.assertIn("jobs.cross-node-inputs-v1", node["capabilities"])
+
+        manifest = {"schema": "phonefarm/job-inputs@1", "node_id": self.jobs.games.node_id,
+                    "cwd": "default", "files": [
+                        {"name": "report", "target": "originals/report.json",
+                         "source": {**reference["source"], "node": "lab-b"}}],
+                    "bindings": []}
+        consumer = ("import os; from pathlib import Path; inp=os.environ['PF_JOB_IN']; "
+                    "out=Path(os.environ['PF_JOB_OUT']); "
+                    "out.joinpath('copy.json').write_bytes(Path(inp,'originals/report.json').read_bytes())")
+        submitted = self.submit("cross-node-consumer", {"bin": "fixture", "argv": ["-c", consumer],
+                                                        "device_access": "none", "inputs": manifest})
+        terminal = self.finished(submitted["id"])
+        self.assertEqual(terminal["exit"], 0, terminal)
+        self.assertEqual(Path(self.jobs.path(submitted["id"], "out", "copy.json")).read_bytes(), original)
+        receipt = self.input_status(submitted["id"])["preparation"]
+        self.assertEqual(receipt["status"], "ready", receipt)
+        self.assertEqual(receipt["files"][0]["source"]["node"], "lab-b")
+        self.assertNotIn(peer_admin, json.dumps(receipt))
+        # 同节点原件不被触碰。
+        self.assertEqual(Path(peer.path(job["id"], "out", "report.json")).read_bytes(), original)
+
+        def refused(name, declaration, error_code):
+            bad = self.submit("cross-refused-" + name, {"bin": "fixture", "argv": ["-c", "import sys; sys.exit(2)"],
+                                                        "device_access": "none", "inputs": declaration})
+            terminal = self.finished(bad["id"])
+            self.assertEqual(terminal["outcome"], "failed", terminal)
+            self.assertIsNone(terminal["execution"].get("child_pid"))
+            self.assertFalse(Path(self.jobs.path(bad["id"], "launch.json")).exists())
+            budget = terminal["input_preparation"]
+            self.assertEqual(budget["status"], "failed", budget)
+            self.assertEqual(budget["error"]["code"], error_code, budget)
+            self.assertEqual(self.input_status(bad["id"])["preparation"]["status"], "failed")
+
+        wrong_hash = copy.deepcopy(manifest)
+        wrong_hash["files"][0]["source"]["sha256"] = "0" * 64
+        refused("hash", wrong_hash, "input_mismatch")
+        wrong_size = copy.deepcopy(manifest)
+        wrong_size["files"][0]["source"]["size"] += 1
+        refused("size", wrong_size, "input_mismatch")
+        unknown_entry = copy.deepcopy(manifest)
+        unknown_entry["files"][0]["source"]["node"] = "no-such-entry"
+        refused("entry", unknown_entry, "source_not_found")
+
+        # 移除凭据：准备期拒绝，消费命令不执行。
+        self.jobs.directory.update("lab-b", {"revision": entry["revision"], "token": None})
+        refused("credential", manifest, "source_unavailable")
+
     def test_reference_cli_binding_and_repeated_request_execute_once(self):
         status, node = self.call("GET", "/node")
         self.assertEqual(status, 200)

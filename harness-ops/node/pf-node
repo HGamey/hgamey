@@ -325,6 +325,9 @@ def require_idempotent_jobs(require_recovery=False, execution_policy=None, input
             validate(inputs, node.get("node_id"))
         except ValueError as error:
             sys.exit(f"pf-node: 输入清单无效：{error}；未打包或提交")
+        if any("node" in item["source"] for item in inputs["files"]):
+            if "jobs.cross-node-inputs-v1" not in node.get("capabilities", []):
+                sys.exit("pf-node: 节点缺少 jobs.cross-node-inputs-v1，不接受跨节点输入来源；未打包或提交")
     if device_binding is not None:
         if "devices.lanes-v1" not in node.get("capabilities", []):
             sys.exit("pf-node: 节点缺少 devices.lanes-v1；未打包或提交，不降级全域")

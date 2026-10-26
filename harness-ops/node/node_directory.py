@@ -10,7 +10,7 @@ import socket
 import stat
 import threading
 import time
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from artifact_io import SafeRoot
 from job_dispatch import file_lock
@@ -177,6 +177,60 @@ class NodeDirectory:
         _name(name)
         with self._locked() as state:
             return self._public(self._find(state, name))
+
+    def download_input(self, name, job_id, remote_path, limit):
+        """One bounded credential-bearing artifact fetch for an explicit cross-node input.
+
+        Returns at most `limit` bytes; the caller compares size and hash. The
+        entry credential never leaves this method.
+        """
+        _name(name)
+        from job_inputs import _job_id, _path
+        _job_id(job_id)
+        _path(remote_path)
+        if type(limit) is not int or not 0 <= limit <= (16 << 20):
+            raise DirectoryError(400, "download limit must be a small nonnegative integer")
+        with self._locked() as state:
+            entry = self._find(state, name)
+            if not entry["enabled"]:
+                raise DirectoryError(409, "registered node is disabled")
+            if not entry.get("token"):
+                raise DirectoryError(409, "registered node has no read credential")
+            frozen = {key: entry[key] for key in ("url", "token", "node_id")}
+        endpoint = urlsplit(frozen["url"])
+        cls = http.client.HTTPSConnection if endpoint.scheme == "https" else http.client.HTTPConnection
+        connection = cls(endpoint.hostname, endpoint.port, timeout=DEADLINE_S)
+        try:
+            connection.connect()
+            connection.sock.settimeout(DEADLINE_S)
+            headers = {"Authorization": "Bearer " + frozen["token"], "User-Agent": "pf-directory/1"}
+            if frozen["node_id"]:
+                headers["X-Expected-Node-ID"] = frozen["node_id"]
+            path = "/jobs/" + job_id + "/out?path=" + quote(remote_path, safe="")
+            connection.request("GET", endpoint.path + path, headers=headers)
+            response = connection.getresponse()
+            if response.status in (401, 403):
+                raise DirectoryError(409, "remote node rejected the registered credential")
+            if response.status == 404:
+                raise DirectoryError(404, "remote source output is missing")
+            if response.status != 200:
+                raise DirectoryError(502, "remote node returned an unsuccessful status for the input source")
+            chunks, size = [], 0
+            while True:
+                chunk = response.read1(min(64 << 10, limit + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > limit:
+                    break
+            return b"".join(chunks)
+        except DirectoryError:
+            raise
+        except (OSError, http.client.HTTPException) as error:
+            raise DirectoryError(502, "remote input source could not be read: " + str(error)) from error
+        finally:
+            connection.close()
 
     def read_target(self, name, node_id, revision):
         """Private frozen read configuration; never expose its credential to clients."""

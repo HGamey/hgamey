@@ -145,6 +145,7 @@ class NodeRead:
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
                                  "jobs.session-recovery-v1", "jobs.session-recovery-chain-v1"] +
                                 (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +
+                                (["jobs.cross-node-inputs-v1"] if getattr(self.jobs, "directory", None) is not None else []) +
                                 (["games.device-lanes-v1"] if getattr(self.jobs, "deployments", None)
                                  and self.jobs.deployments.device_binding_available else []) +
                                 (["games.deploy-v1"] if getattr(self.jobs, "deployments", None)

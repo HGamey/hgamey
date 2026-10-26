@@ -8,6 +8,7 @@ import re
 import time
 
 from artifact_io import stamp
+from node_directory import DirectoryError
 
 
 SCHEMA = "phonefarm/job-inputs@1"
@@ -73,9 +74,15 @@ def validate(value, node_id):
         names.add(name)
         targets.append(_path(item["target"]))
         source = item["source"]
-        _exact(source, ("job_id", "path", "size", "sha256"), "input source")
+        extra = set(source) - {"job_id", "path", "size", "sha256"}
+        if extra not in (set(), {"node"}):
+            raise ValueError("input source allows job_id, path, size, sha256 and an optional node name")
         _job_id(source["job_id"])
         _path(source["path"])
+        if "node" in source and (not isinstance(source["node"], str)
+                                 or not re.fullmatch(r"[a-z0-9_-]{1,64}", source["node"])
+                                 or source["node"] == "local"):
+            raise ValueError("input source node must name a shared directory entry (1-64 lowercase letters, digits, _ or -)")
         if type(source["size"]) is not int or not 0 <= source["size"] <= MAX_FILE:
             raise ValueError("each input size must be an integer from 0 to 8 MiB")
         if not isinstance(source["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
@@ -201,9 +208,29 @@ def _parents(store, rel):
         store.mkdir("/".join(parts[:count]))
 
 
+def _remote_snapshot(jobs, source):
+    """One bounded cross-node fetch; credentials stay inside the shared directory."""
+    directory = getattr(jobs, "directory", None)
+    if directory is None:
+        raise InputError(503, "source_unavailable", "cross-node inputs require a shared directory on this node")
+    try:
+        data = directory.download_input(source["node"], source["job_id"], source["path"],
+                                        source["size"] + 1)
+    except DirectoryError as error:
+        code = "source_not_found" if error.status == 404 else "source_unavailable"
+        raise InputError(409, code, "cross-node input source is unavailable: " + str(error)) from error
+    if len(data) != source["size"]:
+        raise InputError(409, "input_mismatch", "remote source size differs from its declared input reference")
+    if hashlib.sha256(data).hexdigest() != source["sha256"]:
+        raise InputError(409, "input_mismatch", "remote source SHA-256 does not match its input reference")
+    return data
+
+
 def _snapshot(jobs, item):
     """The typed-input budget bounds all retained originals and derived bytes."""
     source = item["source"]
+    if "node" in source:
+        return _remote_snapshot(jobs, source)
     with _source_file(jobs, source) as stream:
         before = os.fstat(stream.fileno())
         if before.st_size != source["size"]:
