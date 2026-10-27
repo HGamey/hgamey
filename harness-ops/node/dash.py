@@ -289,7 +289,8 @@ def signature(d):
 # ═════════════ 主体 ═════════════
 
 class Dash:
-    def __init__(self, phonefarm_root, gol_root, jobs_dir, jobs=None, fleet=None):
+    def __init__(self, phonefarm_root, gol_root, jobs_dir, jobs=None, fleet=None, lan_plain=False):
+        self._lan_plain = lan_plain
         self.pf_root, self.gol_root, self.jobs_dir = phonefarm_root, gol_root, jobs_dir
         self.job_service = jobs
         node_dir = os.path.dirname(os.path.dirname(jobs_dir.rstrip("/")))  # ~/node
@@ -322,6 +323,11 @@ class Dash:
             return p if len(p) >= 12 else None
         except OSError:
             return None
+
+    def _cookie_attrs(self, max_age=2592000):
+        # 显式非回环绑定（LAN 明文 HTTP）时去掉 Secure；HTTPS/隧道部署保持。
+        secure = "" if self._lan_plain else "; Secure"
+        return f"; Path=/dash; Max-Age={max_age}; HttpOnly{secure}; SameSite=Strict"
 
     def _cookie_val(self, pw, salt=b"hgamey-dash-v1"):
         return hmac.new(pw.encode(), salt, hashlib.sha256).hexdigest()
@@ -452,15 +458,15 @@ class Dash:
             pw = (parse_qs(body.decode(errors="replace")).get("pw") or [""])[0].strip()
             real = self._pass()
             if real and hmac.compare_digest(pw.encode(), real.encode()):
-                ck = f"{COOKIE}={self._cookie_val(real)}; Path=/dash; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict"
+                ck = f"{COOKIE}={self._cookie_val(real)}{self._cookie_attrs()}"
                 return self._redirect(h, self._login_destination(h), {"Set-Cookie": ck})
             self.fails[ip].append(now)
             time.sleep(1)
             return self._login_page(h, "密码不对", 401)
         if parts[1:] == ["logout"]:
             return self._redirect(h, "/dash/login", {"Set-Cookie": [
-                f"{COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict",
-                f"{STEER_COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict"]})
+                f"{COOKIE}={self._cookie_attrs(0)}",
+                f"{STEER_COOKIE}={self._cookie_attrs(0)}"]})
         sub = parts[1:]
         if not (sub and sub[0] == "api"):
             return self._send(h, 404, {"error": "not found"})
@@ -483,15 +489,14 @@ class Dash:
             if not real:
                 return self._send(h, 503, {"error": "节点上还没设置掌舵密码"})
             if hmac.compare_digest(str(data.get("pw", "")).strip().encode(), real.encode()):
-                ck = (f"{STEER_COOKIE}={self._cookie_val(real, b'hgamey-steer-v1')}; Path=/dash; Max-Age={STEER_MAX_AGE}; "
-                      "HttpOnly; Secure; SameSite=Strict")
+                ck = (f"{STEER_COOKIE}={self._cookie_val(real, b'hgamey-steer-v1')}" + self._cookie_attrs(STEER_MAX_AGE))
                 log_err(f"dash 掌舵解锁 来自 {ip}")
                 return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": ck})
             self.fails[ip].append(_now())
             time.sleep(1)
             return self._send(h, 403, {"error": "掌舵密码不对"})
         if sub == ["api", "steer", "lock"]:
-            return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": f"{STEER_COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict"})
+            return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": f"{STEER_COOKIE}={self._cookie_attrs(0)}"})
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
         try:

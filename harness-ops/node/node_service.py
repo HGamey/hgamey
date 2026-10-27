@@ -2011,7 +2011,8 @@ def main():
     board = None
     if dash:
         try:
-            board = dash.Dash(root, gol, jobs.dir, jobs=jobs, fleet=fleet)
+            board = dash.Dash(root, gol, jobs.dir, jobs=jobs, fleet=fleet,
+                              lan_plain=a.host not in ("127.0.0.1", "::1", "localhost"))
         except Exception as e:  # noqa: BLE001
             log(f"dash 起不来，/dash 不可用: {e!r}")
     remote = None
