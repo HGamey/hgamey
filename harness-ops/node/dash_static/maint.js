@@ -322,8 +322,8 @@
     const tick = async () => { if (!document.hidden) await fn(); timer = setTimeout(tick, ms); };
     tick();
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(timer); tick(); } });
+    return timer;
   }
-  every(6000, pollState);
-  every(4000, pollLog);
-  every(30000, pollExps);
+  const timers = [every(6000, pollState), every(4000, pollLog), every(30000, pollExps)];
+  window.addEventListener("pagehide", () => { for (const t of timers) clearTimeout(t); });
 })();
