@@ -1491,6 +1491,10 @@ def main():
             sys.exit(f"pf-node: {args[0]} 请求被拒绝：{e}")
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("paused") == (args[0] == "pause") else 1)
+    if args[0] == "nodes":
+        from fleet_client import main as fleet_main
+        argv = ["nodes"] + (["--json"] if "--json" in args else [])
+        raise SystemExit(fleet_main(URL, argv, expected_node_id=TARGET.expected_node_id, explicit_file=explicit_file))
     if args[0] == "fleet":
         if len(args) == 1:
             wait = 5.0
