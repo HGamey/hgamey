@@ -261,7 +261,8 @@ def read_host_capacity(path):
 
 class Jobs:
     def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None,
-                 history_sources=None, export_cache_root=None, export_cache_quota=None):
+                 history_sources=None, export_cache_root=None, export_cache_quota=None,
+                 require_device_binding=False):
         self.root, self.bins = root, bins
         self.history_sources = history_sources if history_sources is not None else []
         self.data_root = os.path.abspath(data_dir or root)
@@ -283,6 +284,7 @@ class Jobs:
         self._read_root = SafeRoot(self.dir)
         self.export_cache = ExportCache(self._read_root, self.dir, export_cache_root, self.history_sources,
                                         quota_bytes=export_cache_quota)
+        self.require_device_binding = bool(require_device_binding)
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
         self.pf_env, self.worker_entry = None, None
@@ -341,6 +343,10 @@ class Jobs:
         priority = job_priority(spec)
         recovery_for = spec.get("recovery_for")
         device_binding = validate_device_job(spec, typed_recovery=access == "recovery" and "device_binding" in spec)
+        if (self.require_device_binding and not device_binding
+                and access == "write"):
+            raise ValueError(
+                "this node requires device_binding for device-access jobs; resolve one via devices-resolve")
         legacy_device_bin = binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"}
         legacy_host_default = (legacy_device_bin and spec.get("device_access") == "none"
                                and "resources" not in spec and not device_binding and recovery_for is None)
@@ -1880,6 +1886,7 @@ def argument_parser():
     ap.add_argument("--history-roots", type=history_path, help="旧作业只读来源的绝对配置路径（hgamey/job-history@1，最多64KiB）")
     ap.add_argument("--export-cache-root", help="当前作业目录导出的独立绝对缓存根；省略保留旧布局，不迁移原件或游戏资源")
     ap.add_argument("--export-cache-quota", type=bounded_int(1, 1 << 40), help="外部缓存根的字节配额；启动时显式逐出最旧缓存并写审计报告")
+    ap.add_argument("--require-device-binding", action="store_true", help="拒绝缺少 device_binding 的设备访问任务（多设备纪律）")
     return ap
 
 
@@ -1910,7 +1917,7 @@ def main():
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
                 host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root,
-                export_cache_quota=a.export_cache_quota)
+                export_cache_quota=a.export_cache_quota, require_device_binding=a.require_device_binding)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:
