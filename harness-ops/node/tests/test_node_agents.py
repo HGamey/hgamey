@@ -17,6 +17,23 @@ from node_agents import AgentError, NodeAgents
 ADMIN = "agent-registry-fixture-not-production"
 
 
+class HostBindTests(unittest.TestCase):
+    """--host 参数：默认 127.0.0.1，显式 0.0.0.0 或内网地址对外。"""
+
+    def test_default_loopback_and_explicit_all_interfaces(self):
+        from node_service import argument_parser
+        ap = argument_parser()
+        # 默认回环
+        args = ap.parse_args([])
+        self.assertEqual(args.host, "127.0.0.1")
+        # 显式 0.0.0.0
+        args = ap.parse_args(["--host", "0.0.0.0"])
+        self.assertEqual(args.host, "0.0.0.0")
+        # 显式内网地址
+        args = ap.parse_args(["--host", "192.168.1.12"])
+        self.assertEqual(args.host, "192.168.1.12")
+
+
 class AgentRegistryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

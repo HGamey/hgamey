@@ -1966,6 +1966,7 @@ def argument_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phonefarm", default=os.path.expanduser("~/node/phonefarm"), help="phonefarm 根目录（含 phonefarm 可执行）")
     ap.add_argument("--game-opt-loop", default=os.path.expanduser("~/node/game_opt_loop"), help="game_opt_loop 仓库目录（含 game_opt_loop 可执行），与 phonefarm 同级")
+    ap.add_argument("--host", default="127.0.0.1", help="监听地址（默认 127.0.0.1 仅本机；0.0.0.0 或具体内网地址对外）")
     ap.add_argument("--port", type=bounded_int(0, 65535), default=8765)
     ap.add_argument("--data-dir", help="独立运行数据根；新任务写到其中jobs/，不自动搬迁旧_jobs")
     ap.add_argument("--max-running", type=bounded_int(1, 64), default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
@@ -2028,9 +2029,9 @@ def main():
                 backend=owner_backend)
         except Exception as e:  # noqa: BLE001
             log(f"node_remote 起不来，/remote 不可用: {e!r}")
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
+    srv = ThreadingHTTPServer((a.host, a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
                                                                   remote=remote))
-    log(f"节点服务 127.0.0.1:{srv.server_port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})"
+    log(f"节点服务 {a.host}:{srv.server_port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})"
         f"  entry={os.path.abspath(__file__)}  phonefarm={root}"
         f"  data_root={jobs.data_root}  jobs_root={jobs.dir}  node_id={jobs.node_id}")
     try:
