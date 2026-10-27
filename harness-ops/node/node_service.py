@@ -48,6 +48,7 @@ from node_result_cross_compare import cross_compare_query
 from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE
 from node_media import MediaError
 from node_fleet import FleetState
+from node_agents import AgentError, NodeAgents
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
 from node_uploads import NodeUploads
@@ -920,6 +921,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     research = jobs.research
     if not hasattr(jobs, "directory"):
         jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
+    if not hasattr(jobs, "agents"):
+        jobs.agents = NodeAgents(jobs.data_root, node.node_id)
     if jobs.export_cache.quota_bytes:
         try:
             report = jobs.export_cache.startup_enforcement()
@@ -1070,6 +1073,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if board is None or getattr(board, "live", None) is None:
                         return self._send(503, {"error": "live observation is not configured on this node"})
                     return dash.dash_live.handle(board, self, ["api", *parts], urlparse(self.path).query)
+                if parts == ["agents"]:
+                    return self._send(200, {"node_id": node.node_id, "agents": jobs.agents.list()})
+                if len(parts) == 2 and parts[0] == "agents":
+                    try:
+                        return self._send(200, jobs.agents.get(parts[1]))
+                    except AgentError as error:
+                        return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if parts == ["node"]:
                     return self._send(200, node.identity())
                 if parts == ["node-updates"]:
@@ -1439,6 +1449,44 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             return self._send(200, {"node_id": node.node_id, "job_id": jid,
                                     "session_pause_requested": pausing,
                                     "note": "takes effect at the next producer safe point; cancel still works"})
+
+        def _agents_post(self, dashboard, body):
+            self.close_connection = True
+            if not self._authed():
+                return
+            try:
+                got = self.headers.get("X-Expected-Node-ID")
+                if not (got or parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "agent registration requires an explicit node identity"})
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("agent registration requires application/json")
+                request = json.loads(body)
+                if not isinstance(request, dict) or "name" not in request:
+                    raise ValueError("agent registration requires a name")
+                return self._send(201, jobs.agents.create(request))
+            except (AgentError, AssetUploadError) as error:
+                return self._send(error.status, {"code": "agent_error", "error": str(error)})
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
+
+        def _agents_put(self, name, dashboard, body):
+            self.close_connection = True
+            if not self._authed():
+                return
+            try:
+                if not (self.headers.get("X-Expected-Node-ID") or
+                        parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "agent update requires an explicit node identity"})
+                if self.headers.get_content_type() != "application/json":
+                    raise ValueError("agent update requires application/json")
+                request = json.loads(body)
+                if not isinstance(request, dict) or "revision" not in request:
+                    raise ValueError("agent update requires a revision")
+                return self._send(200, jobs.agents.update(name, request))
+            except (AgentError, AssetUploadError) as error:
+                return self._send(error.status, {"code": "agent_error", "error": str(error)})
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
 
         def _export_cache_post(self, jid, dashboard):
             self.close_connection = True
@@ -1822,6 +1870,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 body = self._body()
                 if parts == ["mcp"]:
                     return self._mcp(body)
+                if parts == ["agents"]:
+                    return self._agents_post(False, body)
                 if parts == ["jobs"]:
                     return self._send(200, jobs.start(spec, body, request_id=self.headers.get("X-Request-ID")))
                 if parts == ["admin", "restart"]:  # 交给外层守护循环重新拉起（加载新代码）
@@ -1848,6 +1898,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(404, {"error": "no such job"})
                     return self._send(200, {"node_id": node.node_id, "job_id": parts[1],
                                             "paused": bool(row["paused"]), "state": row["state"]})
+                if len(parts) == 2 and parts[0] == "agents":
+                    return self._agents_put(parts[1], False, body)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "retry-finalize":
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):

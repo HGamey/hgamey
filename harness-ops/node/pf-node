@@ -1418,6 +1418,9 @@ def main():
                 or len(args) == 3 and args[2] != "--clear"):
             sys.exit("用法: pf-node export-cache JOB_ID [--clear]")
         raise SystemExit(export_cache(args[1], clear=len(args) == 3))
+    if args[0] == "agents":
+        from agent_client import main as agent_main
+        raise SystemExit(agent_main(args[1:], target=TARGET))
     if args[0] == "export-caches":
         quota = None
         if len(args) == 3 and args[1] == "--enforce-quota":
