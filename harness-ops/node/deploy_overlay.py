@@ -163,11 +163,11 @@ def admission(args):
         db = sqlite3.connect((jobs_root / ".queue.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=1)
         try:
             db.execute("PRAGMA query_only=ON")
-            rows = db.execute("SELECT job_id FROM jobs WHERE state IN ('claimed','preparing')").fetchall()
+            rows = db.execute("SELECT job_id FROM jobs WHERE state IN ('claimed','preparing','blocked')").fetchall()
         finally:
             db.close()
     if rows and not args.force:
-        raise DeployError(409, f"{len(rows)} running/preparing job(s) prevent deployment; use --force to override")
+        raise DeployError(409, f"{len(rows)} running/preparing/blocked job(s) prevent deployment; use --force to override")
     return {"kind": "node_intake", "jobs_root": str(jobs_root),
             "running": len(rows), "forced": bool(args.force)}
 

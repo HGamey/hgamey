@@ -97,6 +97,7 @@ class DeployOverlayTests(unittest.TestCase):
                                {"bin": "fixture", "argv": ["-c", "pass"], "resources": []}, [])
         queue.ready(row["job_id"])
         self.assertEqual(queue.claim_next(2)["job_id"], row["job_id"])
+        # blocked 状态（含恢复屏障）也应阻止部署
         code, error = run(["activate", "--root", str(self.root), "--source", str(self.stage(6)),
                            "--jobs-root", str(jobs_root)])
         self.assertEqual((code, error["error"]["status"]), (1, 409))
