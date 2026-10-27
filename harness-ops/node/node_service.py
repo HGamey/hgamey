@@ -1026,7 +1026,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 self.ro = True
                 return True
             log(f"401 {self.command} {self.path} 来自 {self.headers.get('CF-Connecting-IP', self.client_address[0])}")
-            self._send(401, {"error": "unauthorized"})
+            self._send(401, {"code": "unauthorized", "error": "unauthorized"})
             return False
 
         def _body(self):
@@ -1052,21 +1052,21 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(200, b"ok", "text/plain")
             if board and parts == ["dash", "api", "access"]:
                 if not board.authed(self):
-                    return self._send(401, {"error": "需要查看密码"})
+                    return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._send(200, {"steer": board.steered(self),
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
             if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node-updates"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"], ["agents"]):
                 if not board.authed(self):
-                    return self._send(401, {"error": "需要查看密码"})
+                    return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
             if board and parts[:1] == ["dash"]:  # 实时看板自己管认证（查看密码，不是管理 token）
                 try:
                     return board.handle_get(self, parts, u.query)
                 except Exception as e:  # noqa: BLE001
                     log(f"dash GET {u.path} 出错: {e!r}")
-                    return self._send(500, {"error": "dash 内部错误"})
+                    return self._send(500, {"code": "internal_error", "error": "dash 内部错误"})
             if not self._authed(allow_ro=True):
                 return
             return self._read_get(parts, parse_qs(u.query))
@@ -1075,11 +1075,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             try:
                 if parts[:1] == ["live"]:
                     if len(parts) != 2 or parts[1] not in {"status", "frame", "stream"}:
-                        return self._send(404, {"error": "no such live observation operation"})
+                        return self._send(404, {"code": "live_operation_not_found", "error": "no such live observation operation"})
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
                         return self._send(400, {"code": "target_required", "error": "live observation requires an explicit node identity"})
                     if board is None or getattr(board, "live", None) is None:
-                        return self._send(503, {"error": "live observation is not configured on this node"})
+                        return self._send(503, {"code": "live_unavailable", "error": "live observation is not configured on this node"})
                     return dash.dash_live.handle(board, self, ["api", *parts], urlparse(self.path).query)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "discuss":
                     return self._discuss_get(parts[1])
@@ -1306,14 +1306,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except (SessionError, DeploymentError) as e:
                 return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
-                return self._send(404, {"error": "no such job"})
+                return self._send(404, {"code": "job_not_found", "error": "no such job"})
             except ExportError as e:
                 return self._send(e.status, e.payload)
             except ArtifactChanged as e:
-                return self._send(409, {"error": str(e)})
+                return self._send(409, {"code": "conflict", "error": str(e)})
             except ValueError as e:
-                return self._send(400, {"error": str(e)})
-            self._send(404, {"error": "not found"})
+                return self._send(400, {"code": "invalid_request", "error": str(e)})
+            self._send(404, {"code": "not_found", "error": "not found"})
 
         def _out(self, jid, q):
             rel = (q.get("path") or [""])[0] or None
@@ -1402,7 +1402,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except (ExportError, AssetUploadError) as error:
                 return self._send(error.status, error.payload)
             except ValueError as error:
-                return self._send(400, {"error": str(error)})
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
 
         def _export_quota_enforce(self, dashboard):
             self.close_connection = True
@@ -1430,7 +1430,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except (ExportError, AssetUploadError) as error:
                 return self._send(error.status, error.payload)
             except ValueError as error:
-                return self._send(400, {"error": str(error)})
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
 
         def _session_pause_post(self, jid, pausing):
             self.close_connection = True
@@ -1438,7 +1438,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return
             row = jobs.dispatch.queue.get(jid)
             if row is None:
-                return self._send(404, {"error": "no such job"})
+                return self._send(404, {"code": "job_not_found", "error": "no such job"})
             if row["state"] != "claimed":
                 return self._send(409, {"code": "session_pause_unavailable",
                                         "error": "session pause applies only to a running job; queue states use pause/resume"})
@@ -1466,7 +1466,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return
             row = jobs.dispatch.queue.get(jid)
             if row is None:
-                return self._send(404, {"error": "no such job"})
+                return self._send(404, {"code": "job_not_found", "error": "no such job"})
             entries = []
             try:
                 with jobs._read_root.open_file(jid + "/discuss.jsonl") as stream:
@@ -1489,7 +1489,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return
             row = jobs.dispatch.queue.get(jid)
             if row is None:
-                return self._send(404, {"error": "no such job"})
+                return self._send(404, {"code": "job_not_found", "error": "no such job"})
             try:
                 request = json.loads(body)
                 if not isinstance(request, dict) or not isinstance(request.get("text"), str):
@@ -1505,7 +1505,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     stream.write(json.dumps(entry, ensure_ascii=False).encode() + b"\n")
                 return self._send(201, {"node_id": node.node_id, "job_id": jid, "entry": entry})
             except ValueError as error:
-                return self._send(400, {"error": str(error)})
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
             except (OSError, KeyError) as error:
                 return self._send(503, {"code": "discuss_unavailable", "error": str(error)})
 
@@ -1526,7 +1526,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except (AgentError, AssetUploadError) as error:
                 return self._send(error.status, {"code": "agent_error", "error": str(error)})
             except ValueError as error:
-                return self._send(400, {"error": str(error)})
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
 
         def _agents_put(self, name, dashboard, body):
             self.close_connection = True
@@ -1545,7 +1545,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except (AgentError, AssetUploadError) as error:
                 return self._send(error.status, {"code": "agent_error", "error": str(error)})
             except ValueError as error:
-                return self._send(400, {"error": str(error)})
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
 
         def _agents_status(self, name, body):
             self.close_connection = True
@@ -1560,7 +1560,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except AgentError as error:
                 return self._send(error.status, {"code": "agent_error", "error": str(error)})
             except ValueError as error:
-                return self._send(400, {"error": str(error)})
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
 
         def _export_cache_post(self, jid, dashboard):
             self.close_connection = True
@@ -1584,9 +1584,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except (ExportError, AssetUploadError) as error:
                 return self._send(error.status, error.payload)
             except (KeyError, FileNotFoundError):
-                return self._send(404, {"error": "no such job"})
+                return self._send(404, {"code": "job_not_found", "error": "no such job"})
             except ValueError as error:
-                return self._send(400, {"error": str(error)})
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
             except OSError as error:
                 return self._send(503, {"code": "export_storage_unavailable", "error": str(error)})
 
@@ -1655,16 +1655,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(200, info)
             size, etag = info["size"], info["etag"]
             if "etag" in q and q["etag"][0] != etag:
-                return self._send(409, {"error": "输出内容变了，从头下载", **info})
+                return self._send(409, {"code": "output_changed", "error": "输出内容变了，从头下载", **info})
             start, end, status = 0, size, 200
             if "offset" in q:  # 分块接口（走 Cloudflare 稳妥，不依赖 Range 头被透传）
                 start = int(q["offset"][0])
                 length = int((q.get("length") or [OUT_CHUNK_MAX])[0])
                 if length < 1:
-                    return self._send(416, {"error": "length must be positive"})
+                    return self._send(416, {"code": "invalid_range", "error": "length must be positive"})
                 end = min(size, start + min(length, OUT_CHUNK_MAX))
                 if not 0 <= start <= size:
-                    return self._send(416, {"error": "offset 越界", **info})
+                    return self._send(416, {"code": "invalid_range", "error": "offset 越界", **info})
             else:
                 m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
                 ifr = self.headers.get("If-Range", "").strip('" ')
@@ -1722,7 +1722,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             self.close_connection = True
             if dashboard:
                 if not board or not board.authed(self):
-                    self._send(401, {"error": "需要查看密码"})
+                    self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                     return True
             elif not self._authed(allow_ro=True):
                 return True
@@ -1734,11 +1734,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if not dashboard:
                 return self._authed()
             if not board.authed(self):
-                self._send(401, {"error": "需要查看密码"})
+                self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
             elif self.headers.get("X-HG") != "1":
-                self._send(400, {"error": "请求格式不对"})
+                self._send(400, {"code": "invalid_request", "error": "请求格式不对"})
             elif not board.steered(self):
-                self._send(403, {"error": "需要掌舵密码", "need_steer": True})
+                self._send(403, {"code": "steer_required", "error": "需要掌舵密码", "need_steer": True})
             else:
                 return True
             return False
@@ -1771,7 +1771,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except GameError as e:
                 return self._send(e.status, {"error": str(e)})
             except RequestConflict as e:
-                return self._send(409, {"error": str(e)})
+                return self._send(409, {"code": "conflict", "error": str(e)})
             except (OSError, sqlite3.Error):
                 return self._send(503, {"code": "upload_storage_error", "error": "upload could not be confirmed; query the same ID"})
             except ValueError:
@@ -1854,31 +1854,31 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 n = int(self.headers.get("Content-Length", 0))
                 if n > (256 << 10):
                     self.close_connection = True
-                    return self._send(413, {"error": "太大"})
+                    return self._send(413, {"code": "request_too_large", "error": "太大"})
                 try:
                     return board.handle_post(self, parts, self.rfile.read(n) if n else b"")
                 except Exception as e:  # noqa: BLE001
                     log(f"dash POST {self.path} 出错: {e!r}")
-                    return self._send(500, {"error": "dash 内部错误"})
+                    return self._send(500, {"code": "internal_error", "error": "dash 内部错误"})
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
                 if parts[:1] == ["games"]:
                     if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_MANIFEST:
                         self.close_connection = True
-                        return self._send(413, {"error": "game request exceeds 64 KiB"})
+                        return self._send(413, {"code": "request_too_large", "error": "game request exceeds 64 KiB"})
                     if "application/json" not in self.headers.get("Content-Type", ""):
                         self.close_connection = True
-                        return self._send(400, {"error": "game request requires application/json"})
+                        return self._send(400, {"code": "invalid_request", "error": "game request requires application/json"})
                     code, result = games.write([unquote(p) for p in parts], json.loads(self._body() or b"{}"),
                                                self.headers.get("X-Request-ID"))
                     return self._send(code, result)
                 if parts[:1] == ["nodes"] and len(parts) <= 2:
                     if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_REQUEST:
                         self.close_connection = True
-                        return self._send(413, {"error": "node registration exceeds 64 KiB"})
+                        return self._send(413, {"code": "request_too_large", "error": "node registration exceeds 64 KiB"})
                     if "application/json" not in self.headers.get("Content-Type", ""):
-                        return self._send(400, {"error": "node registration requires application/json"})
+                        return self._send(400, {"code": "invalid_request", "error": "node registration requires application/json"})
                     data = json.loads(self._body() or b"{}")
                     if len(parts) == 1:
                         return self._send(201, directory.create(data))
@@ -1886,9 +1886,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["execution", "reconcile"]:
                     if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
                         self.close_connection = True
-                        return self._send(413, {"error": "execution reconciliation exceeds 64 KiB"})
+                        return self._send(413, {"code": "request_too_large", "error": "execution reconciliation exceeds 64 KiB"})
                     if "application/json" not in self.headers.get("Content-Type", ""):
-                        return self._send(400, {"error": "execution reconciliation requires application/json"})
+                        return self._send(400, {"code": "invalid_request", "error": "execution reconciliation requires application/json"})
                     data = json.loads(self._body() or b"{}")
                     if not isinstance(data, dict) or set(data) - {"force"}:
                         raise ValueError("execution reconciliation accepts only a force boolean")
@@ -1896,18 +1896,18 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["deployment", "recover"]:
                     if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_REQUEST:
                         self.close_connection = True
-                        return self._send(413, {"error": "deployment recovery request exceeds 64 KiB"})
+                        return self._send(413, {"code": "request_too_large", "error": "deployment recovery request exceeds 64 KiB"})
                     if "application/json" not in self.headers.get("Content-Type", ""):
                         self.close_connection = True
-                        return self._send(400, {"error": "deployment recovery requires application/json"})
+                        return self._send(400, {"code": "invalid_request", "error": "deployment recovery requires application/json"})
                     return self._send(200, jobs.deployments.recover(parts[1], json.loads(self._body() or b"{}"),
                                                                    self.headers.get("X-Request-ID")))
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "session" and parts[3] in {"actions", "recover"}:
                     if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
                         self.close_connection = True
-                        return self._send(413, {"error": "session action exceeds 64 KiB"})
+                        return self._send(413, {"code": "request_too_large", "error": "session action exceeds 64 KiB"})
                     if "application/json" not in self.headers.get("Content-Type", ""):
-                        return self._send(400, {"error": "session action requires application/json"})
+                        return self._send(400, {"code": "invalid_request", "error": "session action requires application/json"})
                     action = json.loads(self._body())
                     if not isinstance(action, dict):
                         raise ValueError("session action must be a JSON object")
@@ -1971,7 +1971,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     except ValueError as error:
                         return self._send(409, {"code": "pause_unsupported", "error": str(error)})
                     if row is None:
-                        return self._send(404, {"error": "no such job"})
+                        return self._send(404, {"code": "job_not_found", "error": "no such job"})
                     return self._send(200, {"node_id": node.node_id, "job_id": parts[1],
                                             "paused": bool(row["paused"]), "state": row["state"]})
                 if len(parts) == 3 and parts[0] == "agents" and parts[2] == "status":
@@ -1994,20 +1994,20 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(e.status, {"error": str(e)})
             except sqlite3.Error as e:
                 jobs.dispatch.last_error = f"{type(e).__name__}: {e}"
-                return self._send(503, {"error": "job storage commit could not be confirmed; query job and queue before retrying"})
+                return self._send(503, {"code": "storage_commit_unconfirmed", "error": "job storage commit could not be confirmed; query job and queue before retrying"})
             except (SessionError, DeploymentError) as e:
                 return self._send(e.status, e.payload)
             except (KeyError, FileNotFoundError):
-                return self._send(404, {"error": "no such job"})
+                return self._send(404, {"code": "job_not_found", "error": "no such job"})
             except RequestConflict as e:
-                return self._send(409, {"error": str(e)})
+                return self._send(409, {"code": "conflict", "error": str(e)})
             except PolicyUnavailable as e:
                 return self._send(422, e.payload)
             except (CapacityExceeded, ProgramCompatibilityError) as e:
                 return self._send(e.status, e.payload)
             except (ValueError, tarfile.TarError) as e:
-                return self._send(400, {"error": str(e)})
-            self._send(404, {"error": "not found"})
+                return self._send(400, {"code": "invalid_request", "error": str(e)})
+            self._send(404, {"code": "not_found", "error": "not found"})
 
         def _mcp(self, body):
             try:
