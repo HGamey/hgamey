@@ -9,7 +9,7 @@ pf-node agents update NAME FILE --revision N  # 并发更新（CAS）"""
 
 
 def main(args, target=None):
-    if not args or args[0] in ("--help", "-h"):
+    if args and args[0] in ("--help", "-h"):
         print(HELP)
         return 0
     if target is None:
@@ -24,6 +24,9 @@ def main(args, target=None):
         with target.opener.open(request, timeout=30) as response:
             return json.loads(response.read())
 
+    if not args:
+        print(json.dumps(call("GET", "/agents"), ensure_ascii=False, indent=1))
+        return 0
     if args[0] == "show" and len(args) == 2:
         print(json.dumps(call("GET", f"/agents/{args[1]}"), ensure_ascii=False, indent=1))
         return 0
