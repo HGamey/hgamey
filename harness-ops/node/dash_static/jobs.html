@@ -243,6 +243,16 @@
         </details>
         <p class="note"><a id="job-results-link">查看此任务已登记结果</a> · <a id="job-register-result">登记此任务结果</a>。原件仍在下方输出目录；登记不代表实验有效或恢复完成。</p>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
+        <section id="discuss-panel" class="discuss-panel" aria-labelledby="discuss-heading">
+          <div class="section-heading"><h3 id="discuss-heading">讨论</h3><span id="discuss-count" class="muted"></span></div>
+          <p class="note">任务级讨论：人工和 agent 都在这里说，不影响任务执行。</p>
+          <div id="discuss-list" class="discuss-list"></div>
+          <form id="discuss-form" hidden>
+            <input id="discuss-text" maxlength="4096" placeholder="输入讨论内容…" autocomplete="off">
+            <button id="discuss-submit" class="ghost primary" type="submit">发送</button>
+          </form>
+          <p id="discuss-message" class="note" role="status"></p>
+        </section>
         <details class="command-details"><summary id="job-runtime-summary">本次运行入口身份</summary><p class="note">仅展示此任务保留的服务启动快照、worker 身份和主程序自报；不使用当前配置补齐历史。身份记录不改变命令结果，也不证明设备恢复。</p><h4>启动任务的服务</h4><dl id="job-service-identity" class="facts"></dl><h4>实际 worker</h4><dl id="job-worker-identity" class="facts"></dl><h4>主程序入口自报</h4><dl id="job-program-identity" class="facts"></dl></details>
         <section id="job-inputs" class="job-inputs" aria-labelledby="job-inputs-heading">
           <div class="section-heading"><h3 id="job-inputs-heading">输入工件与准备记录</h3><button id="load-job-inputs" class="ghost" type="button" disabled>读取输入记录</button></div>
@@ -482,6 +492,7 @@
 <footer class="foot">文件保存在当前节点。读取记录不启动设备采样；显式会话采集与输入由原 owner 执行，需掌舵权限。提交、停止和资源释放也需掌舵权限；运行中的日志和输出可能仍在更新。</footer>
 <script src="/dash/static/target.js"></script>
 <script src="/dash/static/jobs.js"></script>
+<script src="/dash/static/discuss.js"></script>
 <script src="/dash/static/shell.js"></script>
 </body>
 </html>

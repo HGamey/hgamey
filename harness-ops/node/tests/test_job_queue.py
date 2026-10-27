@@ -285,6 +285,79 @@ class ActorIdTests(unittest.TestCase):
         self.assertEqual(status.get("actor_id"), "test-agent-1")
 
 
+class DiscussRouteTests(unittest.TestCase):
+    """任务级 discuss：人工和 agent 的讨论；agent 有问题想问人，其他 agent 可参与。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "_node" / "job-queue.sqlite3"
+
+    def test_discuss_read_write_and_errors(self):
+        from http.server import ThreadingHTTPServer
+        import threading
+        from node_service import Jobs, make_handler
+
+        root = self.path.parent / "discuss"
+        jobs = Jobs(str(root), {"fixture": (sys.executable, str(root))}, data_dir=str(root))
+        self.addCleanup(jobs._read_root.close)
+        jobs.dispatch.start = lambda: None
+        jobs.leases.snapshot = lambda **kw: {"status": "clear", "error": None}
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(None, jobs, "discuss-fixture-admin"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def close_server():
+            server.shutdown(); server.server_close(); thread.join(5)
+        self.addCleanup(close_server)
+
+        import http.client
+
+        def call(method, path, body=None):
+            connection = http.client.HTTPConnection(*server.server_address, timeout=5)
+            headers = {"Authorization": "Bearer discuss-fixture-admin",
+                       "X-Expected-Node-ID": jobs.games.node_id}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            value = json.loads(response.read())
+            connection.close()
+            return response.status, value
+
+        submitted = jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                          "resources": []}, b"", "discuss-target")
+        jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+
+        # 读空列表
+        status, value = call("GET", f"/jobs/{jid}/discuss")
+        self.assertEqual((status, value["entries"]), (200, []))
+
+        # 人工发言
+        status, value = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": "这个方向可行吗？"}).encode())
+        self.assertEqual(status, 201)
+        self.assertEqual(value["entry"]["from"], "human")
+
+        # agent 发言
+        status, value = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": "我测了，可行", "from": "test-agent"}).encode())
+        self.assertEqual(status, 201)
+        self.assertEqual(value["entry"]["from"], "test-agent")
+
+        # 读取包含两条
+        status, value = call("GET", f"/jobs/{jid}/discuss")
+        self.assertEqual(len(value["entries"]), 2)
+        self.assertEqual(value["entries"][0]["from"], "human")
+        self.assertEqual(value["entries"][1]["from"], "test-agent")
+
+        # 不存在任务 404
+        status, _ = call("GET", "/jobs/no-such-job/discuss")
+        self.assertEqual(status, 404)
+
+        # 空文本 400
+        status, _ = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": ""}).encode())
+        self.assertEqual(status, 400)
+
+
 class SessionPauseRouteTests(unittest.TestCase):
     """session-pause/resume routes: running jobs only; flag file persists the request."""
 

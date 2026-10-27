@@ -253,6 +253,13 @@ class SafeRoot:
         finally:
             os.close(src)
 
+    def append_file(self, rel):
+        """Open for appending (creating the file if needed); caller owns the file."""
+        parent, name = self._parent(rel)
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600, dir_fd=parent)
+        os.close(parent)
+        return os.fdopen(fd, "ab")
+
     def unlink(self, rel):
         parent, name = self._parent(rel)
         try:

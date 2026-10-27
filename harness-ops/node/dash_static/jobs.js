@@ -1528,6 +1528,7 @@
     resetExportCache();
     const revision = ++detailRevision;
     ++artifactRevision;
+    document.dispatchEvent(new CustomEvent('hgamey-job-selected', { detail: { id } }));
     ++metadataRevision;
     ++logRevision;
     if (!keepDirectory) directory = '';

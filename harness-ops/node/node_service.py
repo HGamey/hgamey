@@ -1073,6 +1073,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if board is None or getattr(board, "live", None) is None:
                         return self._send(503, {"error": "live observation is not configured on this node"})
                     return dash.dash_live.handle(board, self, ["api", *parts], urlparse(self.path).query)
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "discuss":
+                    return self._discuss_get(parts[1])
                 if parts == ["agents"]:
                     return self._send(200, {"node_id": node.node_id, "agents": jobs.agents.list()})
                 if len(parts) == 2 and parts[0] == "agents":
@@ -1449,6 +1451,55 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             return self._send(200, {"node_id": node.node_id, "job_id": jid,
                                     "session_pause_requested": pausing,
                                     "note": "takes effect at the next producer safe point; cancel still works"})
+
+        def _discuss_get(self, jid):
+            self.close_connection = True
+            if not self._authed(allow_ro=True):
+                return
+            row = jobs.dispatch.queue.get(jid)
+            if row is None:
+                return self._send(404, {"error": "no such job"})
+            entries = []
+            try:
+                with jobs._read_root.open_file(jid + "/discuss.jsonl") as stream:
+                    for line in stream.read().decode().splitlines():
+                        line = line.strip()
+                        if line:
+                            try:
+                                entries.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                entries.append({"at": None, "from": "unknown", "text": line})
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as error:
+                return self._send(503, {"code": "discuss_unavailable", "error": str(error)})
+            return self._send(200, {"node_id": node.node_id, "job_id": jid, "entries": entries})
+
+        def _discuss_post(self, jid, body):
+            self.close_connection = True
+            if not self._authed():
+                return
+            row = jobs.dispatch.queue.get(jid)
+            if row is None:
+                return self._send(404, {"error": "no such job"})
+            try:
+                request = json.loads(body)
+                if not isinstance(request, dict) or not isinstance(request.get("text"), str):
+                    raise ValueError("discuss requires a text field")
+                text = request["text"].strip()
+                if not text or len(text) > 4096:
+                    raise ValueError("discuss text must be 1-4096 characters")
+                actor = request.get("from")
+                if actor is not None and (not isinstance(actor, str) or not actor.strip() or len(actor) > 64):
+                    raise ValueError("from must be 1-64 characters")
+                entry = {"at": time.time(), "from": (actor or "human").strip() if actor else "human", "text": text}
+                with jobs._read_root.append_file(jid + "/discuss.jsonl") as stream:
+                    stream.write(json.dumps(entry, ensure_ascii=False).encode() + b"\n")
+                return self._send(201, {"node_id": node.node_id, "job_id": jid, "entry": entry})
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
+            except (OSError, KeyError) as error:
+                return self._send(503, {"code": "discuss_unavailable", "error": str(error)})
 
         def _agents_post(self, dashboard, body):
             self.close_connection = True
@@ -1893,6 +1944,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     self._send(200, {"restarting": True})
                     threading.Timer(0.5, lambda: os._exit(0)).start()
                     return
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "discuss":
+                    return self._discuss_post(parts[1], body)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):

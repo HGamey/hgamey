@@ -1455,6 +1455,19 @@ def main():
         result = cancel_job(args[1], force=len(args) == 3)
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("accepted") is True else 1)
+    if args[0] == "discuss":
+        if len(args) < 2:
+            sys.exit("用法: pf-node discuss <id> [text]   # 读任务讨论 / 发言")
+        jid = args[1]
+        if len(args) == 2:
+            result = json.loads(call("GET", f"/jobs/{jid}/discuss", attempts=1, raise_4xx=True))
+            for e in result.get("entries", []):
+                print(f"[{e.get('at', '?')}] {e.get('from', '?')}: {e.get('text', '')}")
+            sys.exit(0)
+        body = json.dumps({"text": args[2], "from": os.environ.get("PF_AGENT", "cli")}).encode()
+        result = json.loads(call("POST", f"/jobs/{jid}/discuss", body, {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0)
     if args[0] in ("session-pause", "session-resume"):
         if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
             sys.exit(f"用法: pf-node {args[0]} <12 位任务 id>   # 运行中任务的生产者安全点暂停/恢复")
