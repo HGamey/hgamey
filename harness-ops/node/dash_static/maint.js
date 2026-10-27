@@ -24,7 +24,7 @@
       S.state = st; S.fails = 0;
       renderState(st);
       setLive(true, st);
-    } catch (e) { S.fails++; setLive(false); }
+    } catch (e) { S.fails++; console.error("pollState", e); setLive(false); }
   }
 
   function setLive(ok, st) {
@@ -44,7 +44,7 @@
     const pill = $("lock-pill");
     pill.className = "pill " + (free ? "free" : "held");
     pill.textContent = blocked ? "设备租约需要恢复" : held ? (L.stale ? "心跳已过期，需核查租约状态" : "设备锁占用") : free ? "锁记录空闲" : "设备锁身份或状态未知";
-    $("dev-name").textContent = d ? `${d.brand || ""} ${d.model || d.serial}`.trim() : "没有设备";
+    { const el = $("dev-name"); if (el) el.textContent = d ? `${d.brand || ""} ${d.model || d.serial}`.trim() : "没有设备"; }
 
     // 手机
     if (d) {
