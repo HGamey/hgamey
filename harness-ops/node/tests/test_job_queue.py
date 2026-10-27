@@ -252,3 +252,64 @@ class JobQueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SessionPauseRouteTests(unittest.TestCase):
+    """session-pause/resume routes: running jobs only; flag file persists the request."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "_node" / "job-queue.sqlite3"
+
+    def test_routes_manage_flag_only_for_running_jobs(self):
+        from http.server import ThreadingHTTPServer
+        import threading
+        from node_service import Jobs, make_handler
+
+        root = self.path.parent / "pause-routes"
+        jobs = Jobs(str(root), {"fixture": (sys.executable, str(root))}, data_dir=str(root))
+        self.addCleanup(jobs._read_root.close)
+        jobs.dispatch.start = lambda: None
+        jobs.leases.snapshot = lambda **kw: {"status": "clear", "error": None}
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(None, jobs, "pause-fixture-admin-not-production"))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def close_server():
+            server.shutdown(); server.server_close(); thread.join(5)
+        self.addCleanup(close_server)
+
+        import http.client
+
+        def call(method, path):
+            connection = http.client.HTTPConnection(*server.server_address, timeout=5)
+            connection.request(method, path, body=b"", headers={
+                "Authorization": "Bearer pause-fixture-admin-not-production",
+                "X-Expected-Node-ID": jobs.games.node_id})
+            response = connection.getresponse()
+            value = json.loads(response.read())
+            connection.close()
+            return response.status, value
+
+        submitted = jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                          "resources": []}, b"", "session-pause-target")
+        jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+        # 排队态：session 暂停不适用（409），队列级暂停仍可用。
+        status, value = call("POST", f"/jobs/{jid}/session-pause")
+        self.assertEqual((status, value["code"]), (409, "session_pause_unavailable"))
+        # 领取（模拟运行中）后：写标志文件。
+        queue = jobs.dispatch.queue
+        row = queue.claim_next(2)
+        self.assertEqual(row["job_id"], jid)
+        status, value = call("POST", f"/jobs/{jid}/session-pause")
+        self.assertEqual((status, value["session_pause_requested"]), (200, True))
+        self.assertTrue((jobs._read_root.open_file(jid + "/pause.requested").read() == b""))
+        # 幂等：重复暂停不报错。
+        status, value = call("POST", f"/jobs/{jid}/session-pause")
+        self.assertEqual(status, 200)
+        # 恢复：删除标志。
+        status, value = call("POST", f"/jobs/{jid}/session-resume")
+        self.assertEqual((status, value["session_pause_requested"]), (200, False))
+        import os
+        with self.assertRaises(FileNotFoundError):
+            jobs._read_root.open_file(jid + "/pause.requested")

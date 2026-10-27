@@ -1406,6 +1406,34 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except ValueError as error:
                 return self._send(400, {"error": str(error)})
 
+        def _session_pause_post(self, jid, pausing):
+            self.close_connection = True
+            if not self._authed():
+                return
+            row = jobs.dispatch.queue.get(jid)
+            if row is None:
+                return self._send(404, {"error": "no such job"})
+            if row["state"] != "claimed":
+                return self._send(409, {"code": "session_pause_unavailable",
+                                        "error": "session pause applies only to a running job; queue states use pause/resume"})
+            flag = jid + "/pause.requested"
+            try:
+                if pausing:
+                    try:
+                        jobs._read_root.create_file(flag).close()
+                    except (FileExistsError, ValueError):
+                        pass  # already paused is idempotent
+                else:
+                    try:
+                        jobs._read_root.unlink(flag)
+                    except FileNotFoundError:
+                        pass
+            except (OSError, ValueError) as error:
+                return self._send(503, {"code": "session_pause_unavailable", "error": str(error)})
+            return self._send(200, {"node_id": node.node_id, "job_id": jid,
+                                    "session_pause_requested": pausing,
+                                    "note": "takes effect at the next producer safe point; cancel still works"})
+
         def _export_cache_post(self, jid, dashboard):
             self.close_connection = True
             if not self._upload_write_auth(dashboard):
@@ -1803,6 +1831,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         receipt["killed"] = receipt["accepted"]
                     code = 409 if not receipt["accepted"] and receipt["job"]["state"] == "running" else 200
                     return self._send(code, receipt)
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"session-pause", "session-resume"}:
+                    return self._session_pause_post(parts[1], parts[2] == "session-pause")
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"pause", "resume"}:
                     try:
                         row = jobs.dispatch.queue.set_paused(parts[1], parts[2] == "pause")

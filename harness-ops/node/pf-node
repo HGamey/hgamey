@@ -1447,6 +1447,16 @@ def main():
         result = cancel_job(args[1], force=len(args) == 3)
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("accepted") is True else 1)
+    if args[0] in ("session-pause", "session-resume"):
+        if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
+            sys.exit(f"用法: pf-node {args[0]} <12 位任务 id>   # 运行中任务的生产者安全点暂停/恢复")
+        try:
+            result = json.loads(call("POST", f"/jobs/{args[1]}/{args[0]}", b"",
+                                     {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
+        except ClientError as e:
+            sys.exit(f"pf-node: {args[0]} 被拒绝（{response_error_code(e.body) or e.code}）；session 暂停只对运行中任务有效")
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get("session_pause_requested") == (args[0] == "session-pause") else 1)
     if args[0] in ("pause", "resume"):
         if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
             sys.exit(f"用法: pf-node {args[0]} <12 位任务 id>   # 仅排队中任务；运行中命令不支持暂停")
