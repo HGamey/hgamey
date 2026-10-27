@@ -22,13 +22,38 @@
     list.innerHTML = items.length
       ? `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中任务</th><th>注册时间</th></tr></thead><tbody>${
           items.map(a => `<tr>
-            <td class="mono">${esc(a.name)}</td>
+            <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button></td>
             <td>${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(" ") || "–"}</td>
             <td class="num">${runningByAgent[a.name] || 0}</td>
             <td>${a.status ? esc(a.status.text) : "–"}${a.status ? `<div class="muted" style="font-size:12px">${new Date(a.status.at * 1000).toLocaleString("zh-CN", { hour12: false })}</div>` : ""}</td>
           </tr>`).join("")}</tbody></table>`
       : `<div class="empty"><b>还没有注册 Agent</b>用 pf-node agents register 注册；任务提交时带 --actor-id 关联</div>`;
   }
+  // 点击 agent 名展开详情
+  document.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest(".agent-name");
+    if (!btn) return;
+    const name = btn.dataset.agent;
+    const card = document.getElementById("agent-detail");
+    if (!card) return;
+    card.hidden = false;
+    document.getElementById("agent-detail-name").textContent = name;
+    // 加载详情：状态历史 + 当前任务
+    const [agent, jobs] = await Promise.all([
+      api(`/dash/api/agents/${name}`).catch(() => null),
+      api("/dash/api/jobs?limit=50").catch(() => ({ items: [] })),
+    ]);
+    const running = (jobs.items || []).filter(j => j.state === "running" && j.actor_id === name);
+    const history = (agent && agent.status_history) || [];
+    document.getElementById("agent-detail-status").textContent = agent && agent.status ? agent.status.text : "–";
+    document.getElementById("agent-detail-tasks").innerHTML = running.length
+      ? running.map(j => `<div class="row"><span class="mono">${esc(j.id)}</span> ${esc(j.label || j.bin)}</div>`).join("")
+      : '<div class="empty">没有运行中的任务</div>';
+    document.getElementById("agent-detail-history").innerHTML = history.length
+      ? history.slice(-10).reverse().map(h => `<div class="row"><span class="muted">${new Date(h.at * 1000).toLocaleString("zh-CN", { hour12: false })}</span> ${esc(h.text)}</div>`).join("")
+      : '<div class="empty">暂无状态历史</div>';
+  });
+
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => load().catch(e => console.error(e)));
   else load().catch(e => console.error(e));
 })();
