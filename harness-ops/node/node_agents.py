@@ -135,5 +135,29 @@ class NodeAgents:
             self._store.write_json("registry.json", state)
             return self._public(entry)
 
+    def post_status(self, name, body):
+        """Agent 定期上传目的/方向/在做什么——声明式，不认证。"""
+        _name(name)
+        if not isinstance(body, dict) or "text" not in body:
+            raise AgentError(400, "status requires a text field")
+        text = body["text"]
+        if not isinstance(text, str) or not text.strip() or len(text) > 1024:
+            raise AgentError(400, "status text must be 1-1024 characters")
+        text = text.strip()
+        detail = body.get("detail")
+        if detail is not None and (not isinstance(detail, str) or len(detail) > 4096):
+            raise AgentError(400, "status detail must be a string of at most 4096 characters")
+        now = time.time()
+        with self._locked() as state:
+            entry = next((e for e in state["agents"] if e["name"] == name), None)
+            if entry is None:
+                raise AgentError(404, "registered agent was not found")
+            entry["status"] = {"text": text, "at": now, **({"detail": detail} if detail else {})}
+            entry.setdefault("status_history", []).append({"text": text, "at": now})
+            entry["status_history"] = entry["status_history"][-50:]
+            entry["updated_at"] = now
+            self._store.write_json("registry.json", state)
+            return self._public(entry)
+
     def close(self):
         self._store.close()

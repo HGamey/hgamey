@@ -36,6 +36,11 @@ def main(args, target=None):
             sys.exit("pf-node agents register: FILE 须含 name")
         print(json.dumps(call("POST", "/agents", json.dumps(data).encode()), ensure_ascii=False, indent=1))
         return 0
+    if args[0] == "status" and len(args) == 3:
+        # agents status NAME "在做什么"
+        print(json.dumps(call("POST", f"/agents/{args[1]}/status",
+                              json.dumps({"text": args[2]}).encode()), ensure_ascii=False, indent=1))
+        return 0
     if args[0] == "update" and len(args) == 5 and args[3] == "--revision":
         data = json.loads(open(args[2], "rb").read())
         data["revision"] = int(args[4])

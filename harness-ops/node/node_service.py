@@ -1488,6 +1488,21 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except ValueError as error:
                 return self._send(400, {"error": str(error)})
 
+        def _agents_status(self, name, body):
+            self.close_connection = True
+            if not self._authed():
+                return
+            try:
+                if not (self.headers.get("X-Expected-Node-ID") or
+                        parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    return self._send(400, {"code": "target_required", "error": "agent status requires an explicit node identity"})
+                request = json.loads(body)
+                return self._send(200, jobs.agents.post_status(name, request))
+            except AgentError as error:
+                return self._send(error.status, {"code": "agent_error", "error": str(error)})
+            except ValueError as error:
+                return self._send(400, {"error": str(error)})
+
         def _export_cache_post(self, jid, dashboard):
             self.close_connection = True
             if not self._upload_write_auth(dashboard):
@@ -1898,6 +1913,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(404, {"error": "no such job"})
                     return self._send(200, {"node_id": node.node_id, "job_id": parts[1],
                                             "paused": bool(row["paused"]), "state": row["state"]})
+                if len(parts) == 3 and parts[0] == "agents" and parts[2] == "status":
+                    return self._agents_status(parts[1], body)
                 if len(parts) == 2 and parts[0] == "agents":
                     return self._agents_put(parts[1], False, body)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "retry-finalize":

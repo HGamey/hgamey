@@ -25,7 +25,7 @@
             <td class="mono">${esc(a.name)}</td>
             <td>${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(" ") || "–"}</td>
             <td class="num">${runningByAgent[a.name] || 0}</td>
-            <td class="num">${new Date(a.created_at * 1000).toLocaleString("zh-CN", { hour12: false })}</td>
+            <td>${a.status ? esc(a.status.text) : "–"}${a.status ? `<div class="muted" style="font-size:12px">${new Date(a.status.at * 1000).toLocaleString("zh-CN", { hour12: false })}</div>` : ""}</td>
           </tr>`).join("")}</tbody></table>`
       : `<div class="empty"><b>还没有注册 Agent</b>用 pf-node agents register 注册；任务提交时带 --actor-id 关联</div>`;
   }

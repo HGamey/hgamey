@@ -110,6 +110,25 @@ class AgentRegistryTests(unittest.TestCase):
             status, error = self.call("POST", "/agents", body=json.dumps({"name": bad}).encode())
             self.assertEqual(status, 400, f"expected 400 for {bad!r}")
 
+    def test_status_post_and_history(self):
+        # 注册后上报状态
+        self.call("POST", "/agents", body=json.dumps({"name": "status-agent"}).encode())
+        status, value = self.call("POST", "/agents/status-agent/status", body=json.dumps({
+            "text": "正在优化原神省电", "detail": "第 3 代：测大核封顶"}).encode())
+        self.assertEqual(status, 200)
+        self.assertEqual(value["status"]["text"], "正在优化原神省电")
+        # 再上报一条，历史累积
+        self.call("POST", "/agents/status-agent/status", body=json.dumps({"text": "等待人工确认"}).encode())
+        _, got = self.call("GET", "/agents/status-agent")
+        self.assertEqual(got["status"]["text"], "等待人工确认")
+        self.assertEqual(len(got["status_history"]), 2)
+        # 未注册 agent 上报 404
+        status, error = self.call("POST", "/agents/no-such/status", body=json.dumps({"text": "x"}).encode())
+        self.assertEqual((status, error["code"]), (404, "agent_error"))
+        # 空文本 400
+        status, _ = self.call("POST", "/agents/status-agent/status", body=json.dumps({"text": ""}).encode())
+        self.assertEqual(status, 400)
+
     def test_persistence_across_restart(self):
         # 注册后关闭再开，注册表保留
         self.call("POST", "/agents", body=json.dumps({"name": "persistent-agent"}).encode())
