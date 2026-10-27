@@ -148,6 +148,11 @@ class NodeDeployments:
                     {item["asset_name"] for item in recipe["files"]} if kind == "deploy" else
                     {recipe["demo_asset_name"], recipe["compat_asset_name"]} if kind == "scene" else set())
         assets = [asset for asset in manifest["assets"] if asset["name"] in selected]
+        # DIST-09：记录本任务引用的资产 sha256（供清理时检查）
+        asset_refs = [a["sha256"] for a in assets if isinstance(a, dict) and "sha256" in a]
+        if asset_refs:
+            body = dict(body)
+            body["asset_refs"] = sorted(set(asset_refs))
         request = {"schema": f"phonefarm/game-{kind}-request@1",
                    "node_id": self.games.node_id,
                    "game_id": game_id, "version": version, "serial": serial, "mode": body["mode"],

@@ -330,6 +330,13 @@ class Jobs:
             raise ValueError("argv 必须是字符串数组")
         if spec.get("label") is not None and not isinstance(spec["label"], str):
             raise ValueError("label 必须是字符串")
+        asset_refs = spec.get("asset_refs")
+        if asset_refs is not None:
+            import re as _re
+            if (not isinstance(asset_refs, list) or len(asset_refs) > 256
+                    or any(not isinstance(r, str) or not _re.fullmatch(r"[0-9a-f]{64}", r) for r in asset_refs)):
+                raise ValueError("asset_refs must be a list of up to 256 sha256 hex strings")
+            asset_refs = sorted(set(asset_refs))
         actor_id = spec.get("actor_id")
         if actor_id is not None:
             if not isinstance(actor_id, str) or not actor_id.strip() or len(actor_id) > 64:
@@ -378,7 +385,8 @@ class Jobs:
         inputs = (job_inputs.validate(spec["inputs"], getattr(self, "node_id", None))
                   if "inputs" in spec else None)
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"),
-                **({"actor_id": actor_id} if actor_id else {}), "resources": sorted(set(resources)),
+                **({"actor_id": actor_id} if actor_id else {}),
+                **({"asset_refs": asset_refs} if asset_refs else {}), "resources": sorted(set(resources)),
                 **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
                 **({"time_budget": time_budget} if time_budget is not None else {}),
