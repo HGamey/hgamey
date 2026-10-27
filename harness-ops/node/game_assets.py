@@ -379,6 +379,41 @@ class AssetCache:
                 os.fsync(stream.fileno())
                 store.sync("partial", directory=True)
 
+    def cleanup(self, active_refs, *, dry_run=False):
+        """引用计数清理：只逐出活跃任务不引用的缓存。active_refs 是活跃任务的 asset_refs 集合。"""
+        if not isinstance(active_refs, (set, frozenset)):
+            raise AssetError("active_refs must be a set of sha256 strings")
+        report = {"schema": "phonefarm/asset-cleanup@1", "dry_run": dry_run,
+                  "checked": 0, "evicted": [], "kept": [], "errors": []}
+        with self._storage() as store:
+            if store is None:
+                return report
+            try:
+                blobs = store.open_fd("blobs", directory=True)
+            except (OSError, ValueError):
+                return report
+            try:
+                for entry in os.listdir(blobs):
+                    if not re.fullmatch(r"[0-9a-f]{64}", entry):
+                        continue
+                    report["checked"] += 1
+                    if entry in active_refs:
+                        report["kept"].append({"sha256": entry, "reason": "referenced"})
+                        continue
+                    try:
+                        path = os.path.join("blobs", entry)
+                        info = self._info(store, path)
+                        if info is None:
+                            continue
+                        if not dry_run:
+                            store.unlink(path)
+                        report["evicted"].append({"sha256": entry, "size": info.st_size})
+                    except (OSError, ValueError) as error:
+                        report["errors"].append({"sha256": entry, "error": str(error)})
+            finally:
+                os.close(blobs)
+        return report
+
     @staticmethod
     def _read_upload(store, asset):
         try:

@@ -256,5 +256,33 @@ class GameAssetTests(unittest.TestCase):
                                                    self.cache.object_path(imported["sha256"])])
 
 
+class AssetCleanupTests(unittest.TestCase):
+    """DIST-09 引用计数清理：只逐出活跃任务不引用的缓存。"""
+
+    def test_cleanup_respects_active_refs(self):
+        import tempfile
+        from game_assets import AssetCache
+        root = tempfile.mkdtemp()
+        cache = AssetCache(root)
+        with cache._storage(create=True) as store:
+            # 写两个 blob
+            sha_a = "a" * 64
+            sha_b = "b" * 64
+            with store.create_file("blobs/" + sha_a) as f: f.write(b"asset-a")
+            with store.create_file("blobs/" + sha_b) as f: f.write(b"asset-b")
+        # 只引用 a——清理应逐出 b
+        report = cache.cleanup({sha_a}, dry_run=False)
+        self.assertEqual(report["checked"], 2)
+        self.assertEqual(len(report["evicted"]), 1)
+        self.assertEqual(report["evicted"][0]["sha256"], sha_b)
+        self.assertEqual(report["kept"][0]["reason"], "referenced")
+        # dry-run 不实际删除
+        report2 = cache.cleanup(set(), dry_run=True)
+        self.assertEqual(len(report2["evicted"]), 1)  # a 还在（刚才没删）
+        # 全部引用——不删
+        report3 = cache.cleanup({sha_a}, dry_run=False)
+        self.assertEqual(report3["evicted"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
