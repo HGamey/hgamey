@@ -1077,6 +1077,7 @@ def main():
     priority = None
     device_access, recovery_for, execution_policy = None, None, None
     inputs_path, inputs, submission_node = None, None, None
+    actor_id = None
     binding_path, binding_envelope = None, None
     host_slots_path, host_slots = None, None
     disk_guard_path, disk_guard = None, None
@@ -1101,6 +1102,10 @@ def main():
             exe = args.pop(0)
         elif a == "--label":
             label = args.pop(0)
+        elif a == "--actor-id":
+            if not args or actor_id is not None:
+                sys.exit("pf-node: --actor-id 需要且只能指定一次")
+            actor_id = args.pop(0)
         elif a == "--inputs":
             if not args or inputs_path is not None:
                 sys.exit("pf-node: --inputs 需要且只能指定一个清单文件")
@@ -1545,6 +1550,8 @@ def main():
     request_id = request_id or str(uuid.uuid4())
     argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
+    if actor_id is not None:
+        spec["actor_id"] = actor_id
     if binding_envelope is not None:
         spec["device_binding"] = device_binding_envelope(binding_envelope, submission_node.get("node_id"))
     if inputs is not None:

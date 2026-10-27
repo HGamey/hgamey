@@ -253,6 +253,38 @@ class JobQueueTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+class ActorIdTests(unittest.TestCase):
+    """actor_id: declared submitter identity, carried through spec and status."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "_node" / "job-queue.sqlite3"
+
+    def test_actor_id_validation_and_status_output(self):
+        from node_service import Jobs
+        root = self.path.parent / "actor-id"
+        jobs = Jobs(str(root), {"fixture": (sys.executable, str(root))}, data_dir=str(root))
+        self.addCleanup(jobs._read_root.close)
+        jobs.dispatch.start = lambda: None
+        jobs.leases.snapshot = lambda **kw: {"status": "clear", "error": None}
+
+        base = {"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none", "resources": []}
+        # 无 actor_id：正常
+        job = jobs.dispatch.submit(base, b"", "no-actor")
+        self.assertNotIn("actor_id", job)
+        # 带 actor_id：保留
+        job = jobs.dispatch.submit({**base, "actor_id": "test-agent-1"}, b"", "with-actor")
+        self.assertEqual(job.get("actor_id"), "test-agent-1")
+        # 空字符串/超长/非字符串：拒绝
+        for bad in ["", "x" * 65, 123]:
+            with self.assertRaises(ValueError, msg=str(bad)):
+                jobs.start({**base, "actor_id": bad}, b"", f"bad-{type(bad).__name__}")
+        # status 输出包含 actor_id
+        status = jobs.status(job["id"])
+        self.assertEqual(status.get("actor_id"), "test-agent-1")
+
+
 class SessionPauseRouteTests(unittest.TestCase):
     """session-pause/resume routes: running jobs only; flag file persists the request."""
 

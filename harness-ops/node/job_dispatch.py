@@ -65,6 +65,7 @@ class JobDispatch:
         spec, jid = row["spec"], row["job_id"]
         name = spec["bin"]
         return {"id": jid, "bin": name, "argv": spec.get("argv", []), "label": spec.get("label"),
+                **({"actor_id": spec["actor_id"]} if "actor_id" in spec else {}),
                 **request_facts(spec),
                 "request_id": row["request_id"], "started": row["submitted_at"],
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),

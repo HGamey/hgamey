@@ -329,6 +329,11 @@ class Jobs:
             raise ValueError("argv 必须是字符串数组")
         if spec.get("label") is not None and not isinstance(spec["label"], str):
             raise ValueError("label 必须是字符串")
+        actor_id = spec.get("actor_id")
+        if actor_id is not None:
+            if not isinstance(actor_id, str) or not actor_id.strip() or len(actor_id) > 64:
+                raise ValueError("actor_id 必须是 1-64 字符的非空字符串")
+            actor_id = actor_id.strip()
         external_lock = binname in {"adb", "fetch_apk"}
         if external_lock and spec.get("exe"):
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
@@ -371,7 +376,8 @@ class Jobs:
                 raise ValueError("resources including the required device reservation must fit within 32 names")
         inputs = (job_inputs.validate(spec["inputs"], getattr(self, "node_id", None))
                   if "inputs" in spec else None)
-        spec = {"bin": binname, "argv": argv, "label": spec.get("label"), "resources": sorted(set(resources)),
+        spec = {"bin": binname, "argv": argv, "label": spec.get("label"),
+                **({"actor_id": actor_id} if actor_id else {}), "resources": sorted(set(resources)),
                 **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
                 **({"time_budget": time_budget} if time_budget is not None else {}),
