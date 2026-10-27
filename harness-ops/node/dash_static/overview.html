@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>总览 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/shell.css">
+<link rel="stylesheet" href="/dash/static/overview.css">
+</head>
+<body>
+<div class="canvas">
+  <div class="page-head">
+    <h1 class="page-title">总览</h1>
+    <span class="page-sub" id="read-at"></span>
+    <div class="page-actions"><button class="btn sm" id="refresh" type="button">刷新</button></div>
+  </div>
+
+  <div class="card" id="kpis-card">
+    <div class="card-body kpis" id="kpis"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-head"><h2 class="card-title">正在运行</h2><span class="card-sub" id="running-sub"></span></div>
+      <div class="card-body" id="running"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2 class="card-title">待人处理</h2><span class="card-sub" id="waiting-sub"></span></div>
+      <div class="card-body" id="waiting"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2 class="card-title">设备</h2><span class="card-sub" id="devices-sub"></span></div>
+    <div class="card-body" id="devices"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2 class="card-title">最近事件</h2></div>
+    <div class="card-body" id="events"></div>
+  </div>
+</div>
+<script src="/dash/static/shell.js"></script>
+<script src="/dash/static/overview.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+/* 总览页（FRONT-02）：KPI 是字不是卡片；卡内列表；诚实状态。 */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; padding-top: 16px; }
+@media (max-width: 900px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+.row { display: flex; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--grid); }
+.row:last-child { border-bottom: none; }
+.row .what { flex: 1; min-width: 0; }
+.row .what b { font-weight: 600; font-size: 14px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .what span { font-size: 13px; color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .num { font-family: var(--mono); font-size: 13px; color: var(--ink2); font-variant-numeric: tabular-nums; }
