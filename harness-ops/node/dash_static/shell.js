@@ -16,6 +16,9 @@
   function build() {
     const old = document.querySelector("header.top");
     const sub = old?.querySelector(".brand .sub")?.textContent || "";
+    // 收割旧顶栏动作区（如 home 的 live/干预/新目标），并入外壳右侧
+    const actions = old ? Array.from(old.querySelector(".top-right")?.children || [])
+        .filter(el => el.tagName !== "FORM" || !el.querySelector('form[action="/dash/logout"]')) : [];
     const top = document.createElement("header");
     top.className = "shell-top";
     const brand = document.createElement("a");
@@ -36,15 +39,25 @@
     }
     const right = document.createElement("div");
     right.className = "shell-right";
-    right.innerHTML = `<span class="shell-clock" id="shell-clock"></span>
+    const hasLive = actions.some(el => el.id === "live");
+    right.innerHTML = `${hasLive ? "" : '<span class="shell-clock" id="shell-clock"></span>'}
       <a class="shell-tab" id="shell-logout" href="/dash/logout" style="min-width:0">退出</a>`;
-    top.append(brand, tabs, right);
+    const actBox = document.createElement("div");
+    actBox.className = "shell-right";
+    actBox.style.marginRight = "-4px";
+    for (const el of actions) {
+      if (el.matches('form[action="/dash/logout"]')) continue;
+      actBox.append(el);
+    }
+    top.append(brand, tabs, actBox, right);
     if (old) old.replaceWith(top); else document.body.prepend(top);
     // 时钟（每 30s 刷新）
     const clock = top.querySelector("#shell-clock");
-    const tick = () => { const d = new Date(); clock.textContent =
-      `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
-    tick(); setInterval(tick, 30000);
+    if (clock) {
+      const tick = () => { const d = new Date(); clock.textContent =
+        `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+      tick(); setInterval(tick, 30000);
+    }
     // 节点名（异步，不阻塞渲染）
     fetch("/dash/api/node").then(r => r.ok ? r.json() : null).then(d => {
       if (d && d.host) top.querySelector("#shell-node").textContent = "· " + d.host.hostname;

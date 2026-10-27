@@ -418,7 +418,7 @@ class Dash:
             self.monitor.request(observe=True)
         q = parse_qs(query)
         if not sub:
-            return self._static(h, "overview.html")
+            return self._static(h, "home.html")
         if sub == ["maint"]:
             return self._static(h, "maint.html")
         if sub == ["api", "home"]:
