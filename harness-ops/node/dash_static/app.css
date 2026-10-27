@@ -358,3 +358,5 @@ details.gm pre { margin: 8px 0 0; background: var(--panel); border-radius: 10px;
 .connection-target summary { cursor: pointer; }
 .connection-target .target-error { color: var(--bad-ink); }
 @media (max-width: 600px) { .connection-target { padding: 12px; } .target-facts { grid-template-columns: 64px minmax(0,1fr); gap: 6px 8px; } }
+/* target.js 注入的目标卡：在网格布局里占满整行 */
+.grid > #connection-target { grid-column: 1 / -1; }
