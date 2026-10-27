@@ -41,7 +41,7 @@
     right.className = "shell-right";
     const hasLive = actions.some(el => el.id === "live");
     right.innerHTML = `${hasLive ? "" : '<span class="shell-clock" id="shell-clock"></span>'}
-      <a class="shell-tab" id="shell-logout" href="/dash/logout" style="min-width:0">退出</a>`;
+      <a class="shell-exit" id="shell-logout" href="/dash/logout" style="min-width:0">退出</a>`;
     const actBox = document.createElement("div");
     actBox.className = "shell-right";
     actBox.style.marginRight = "-4px";

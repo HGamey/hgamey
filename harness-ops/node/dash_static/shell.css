@@ -130,3 +130,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .sep { border: none; border-top: 1px solid var(--line); margin: 0; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
 .dot.ok { background: var(--good); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.shell-exit { display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border-radius: 7px;
+  color: var(--muted); text-decoration: none; font-size: 13px; }
+.shell-exit:hover { background: var(--wash); color: var(--ink); }
