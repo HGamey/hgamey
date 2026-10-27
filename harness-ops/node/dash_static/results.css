@@ -23,7 +23,7 @@
 .result-list > li+li { border-top:1px solid var(--grid); }
 .result-choice { width:100%; padding:14px 12px; margin:3px 0; border:1px solid transparent; border-radius:6px; text-align:left; font:inherit; background:transparent; color:var(--ink); cursor:pointer; }
 .result-choice:hover { background:var(--panel); }
-.result-choice[aria-current="true"] { border-color:var(--blue); background:var(--blue-soft); box-shadow:inset 3px 0 0 var(--blue); }
+.result-choice[aria-current="true"] { border-color:var(--line); background:var(--wash); box-shadow:inset 3px 0 0 var(--ink2); }
 .result-choice strong { display:block; font-size:14px; overflow-wrap:anywhere; }
 .result-meta { display:block; margin-top:6px; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
 .result-choice .task-state { margin-top:8px; }

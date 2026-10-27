@@ -7,6 +7,11 @@
 <header class="top"><div class="brand-row"><a class="logo" href="/dash" aria-label="HGamey 首页">HG</a><span class="brand-name">HGamey</span><nav class="nav" aria-label="此后台导航"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/research" aria-current="page">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/maint">维护</a></nav></div><div class="top-right"><button id="refresh-all" class="ghost" type="button">刷新记录</button><form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form></div></header>
 <main class="jobs-page research-page">
   <div class="page-heading"><div><p class="eyebrow">研究工作台</p><h1>研究与协助</h1><p class="page-description">共享目标、方向和异步答复。外部 Agent 决定下一步；等待人的方向只保留自己的依赖，其他方向可继续。</p></div><button id="new-object" class="ghost primary" type="button" disabled>新建研究</button></div>
+  <section class="card" id="agents-card" style="margin-bottom:16px">
+    <div class="card-h"><h2>已注册 Agent</h2><span id="agents-count" class="muted"></span></div>
+    <div id="agents-list"></div>
+    <p class="note">Agent 在此注册身份；任务提交时带 actor_id 关联。</p>
+  </section>
   <p id="capability-message" class="note" role="status">正在核对研究状态能力…</p>
   <section id="criteria-transfer" class="research-editor" hidden><h2>带入比较选择</h2><p id="criteria-transfer-message" class="note" role="status"></p><button id="criteria-create-draft" class="ghost" type="button" disabled>以此建立研究草稿</button><p class="note">只填入本页草稿，不保存、不启动任务。请明确声明原游戏基线，并自行配置目标、容忍值与判据。</p></section>
   <section id="game-assistance" class="research-editor" hidden><h2>从游戏报告起草协助</h2><p id="game-assistance-message" class="note" role="status"></p><p class="note">在下方选择已有研究，点击“查看研究方向”，再选择需要协助的方向。草稿会带入原任务证据、缺失状态和重新检查提示。</p><div class="research-actions"><a id="game-assistance-job">查看原任务与恢复</a><button id="game-assistance-draft" class="ghost" type="button" disabled>按所选方向填入协助草稿</button></div><details id="game-assistance-source" class="research-json" hidden><summary>已读取的原目标与范围</summary><pre id="game-assistance-source-json" class="command-box"></pre></details><p class="note">请在表单中显式创建请求；需要阻断该方向时，再编辑方向的局部依赖。人的答复不会自动解除依赖或启动新检查，原任务的恢复义务仍需单独处理。</p></section>
@@ -47,5 +52,6 @@
 </main>
 <footer class="foot">共享研究状态独立于聊天工具。方向的声明状态、执行任务、设备恢复和研究证据各有自己的依据。</footer>
 <script src="/dash/static/target.js"></script><script src="/dash/static/research-evaluation.js"></script><script src="/dash/static/research-criteria.js"></script><script src="/dash/static/research.js"></script>
+<script src="/dash/static/agents-panel.js"></script>
 <script src="/dash/static/shell.js"></script>
 </body></html>

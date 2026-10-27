@@ -1049,7 +1049,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node-updates"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node-updates"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"], ["agents"]):
                 if not board.authed(self):
                     return self._send(401, {"error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
