@@ -491,6 +491,22 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("esc(job.label || job.job_id)", research_branch,
                       "a research-linked phone must retain the job label as well as the research and agent")
 
+    def test_home_tasks_keep_public_job_phase_with_queue_state(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-phase", self.write(
+            "create-phase", {"title": "状态口径", "objective": "queued 不被误报为运行中"}))[0], 201)
+        submitted = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                               "resources": [], "actor_id": "agent-a", "research_id": "sr-phase"},
+                                              b"", "phase-job")
+        jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+        self.jobs.dispatch.queue.claim_next(4, admit=lambda row: row["job_id"] == jid)
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        item = board._tasks()[0]["jobs"][0]
+        self.assertEqual(item["state"], "claimed")
+        self.assertEqual(item["public"]["state"], "running")
+        self.assertEqual(item["public"]["phase"], "queued")
+        self.assertEqual(item["public"]["queue"]["state"], "claimed")
+
     def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")

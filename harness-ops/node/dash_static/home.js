@@ -190,9 +190,8 @@
   }
 
   // ───────── 任务：进行中的研究和为它们跑的任务 ─────────
-  const QUEUE_STATE = {queued: "排队", claimed: "运行中", blocked: "待核查"};
   const taskLink = (t) => `<a href="${esc(HGTarget.url(t.report_url || `/dash/research?kind=research&id=${encodeURIComponent(t.id)}`))}">${esc(t.title || t.id)}</a>`;
-  const taskJobs = (t) => t.jobs.map((j) => `${esc(j.label || j.job_id)}（${esc(QUEUE_STATE[j.state] || j.state)}）`).join("、");
+  const taskJobs = (t) => t.jobs.map((j) => `${esc(j.label || j.job_id)}（${esc(HGJobState.label(j.public || j))}）`).join("、");
   function renderTasks(h) {
     const tasks = h.tasks || [];
     $("tasks").innerHTML = tasks.map((t) => `<li data-task="${esc(t.id)}">${taskLink(t)}${t.state === "delivered" ? " · 已交付" : ""} · ${esc(t.owner || "无人负责")}${t.jobs.length ? " · " + taskJobs(t) : ""} · ${esc(hm(t.updated_at))}</li>`).join("")

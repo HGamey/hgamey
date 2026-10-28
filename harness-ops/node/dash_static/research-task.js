@@ -163,7 +163,6 @@
     return section;
   }
 
-  const JOB_STATE = {running: '运行中', finished: '已结束', lost: '丢失'};
   async function runsSection(record, section) {
     const list = el('ul', null, 'research-evidence');
     section.append(el('h3', '运行'), list);
@@ -172,7 +171,7 @@
       list.replaceChildren(...(value.items.length ? value.items.map(job => {
         const item = el('li'), link = el('a', job.label || `${job.bin} ${(job.argv || [])[0] || ''}`.trim());
         link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.id)}`);
-        const state = job.outcome && job.state === 'finished' ? job.outcome : JOB_STATE[job.state] || job.state;
+        const state = HGJobState.label(job);
         item.dataset.job = job.id;
         const facts = [state, job.actor_id, job.started && when(job.started)].filter(Boolean);
         item.append(link, el('span', facts.length ? ' · ' + facts.join(' · ') : '', 'muted'));

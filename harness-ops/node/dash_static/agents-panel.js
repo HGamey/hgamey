@@ -7,9 +7,7 @@
     if (!r.ok) throw new Error(path + " → HTTP " + r.status);
     return r.json();
   }
-  // 与任务页同一口径：排队/准备/资源保留/中断/收尾都还没在跑（API 对它们也返回 state:"running"）。
-  const NOT_RUNNING = ["preparing", "queued", "blocked", "interrupted", "finalizing", "storage_blocked"];
-  const active = j => j.state === "running" && !NOT_RUNNING.includes(j.phase) && j.queue?.state !== "blocked" && !j.lost;
+  const active = HGJobState.active;
   async function load() {
     const list = document.getElementById("agents-list");
     if (!list) return;
