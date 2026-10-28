@@ -4,7 +4,7 @@
 
 | 旧分支（作者） | 旧提交 | 本仓库分支 | 状态 |
 |---|---|---|---|
-| phonefarm `feat/selfsr`（BH3GEI，64 个提交） | b70637f | `phonefarm/feat/selfsr` | 已合上 main，可直接接着开发 |
+| phonefarm `feat/selfsr`（BH3GEI，64 个提交） | b70637f | `phonefarm/feat/selfsr` | 实验部分连同历史移到 [HGamey/experiments](https://github.com/HGamey/experiments)，今后在那里开发；两处平台修复进了 main（0eeba04） |
 | phonefarm `docs/stable-cd`（BH3GEI） | 2057d6f | `phonefarm/docs/stable-cd` | 已合上 main |
 | game_opt_loop `fix/caps-battery-dumpsys-fallback`（BH3GEI） | 9a50c14 | `game_opt_loop/fix/caps-battery-dumpsys-fallback` | 已合上 main |
 | refbench `feat/fps-cap`（BH3GEI） | 16f3c81 | `archive/refbench/feat/fps-cap` | 与 main 在 `refbench/app/src/main.cpp` 冲突，未合并；需作者 rebase |
