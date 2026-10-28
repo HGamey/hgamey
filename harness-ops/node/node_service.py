@@ -1076,7 +1076,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 # A page shell must load to explain a changed backend. Its
                 # subsequent API/media requests carry the pin and are checked.
                 page = parsed.path.rstrip("/") in {
-                    "/dash", "/dash/jobs", "/dash/games", "/dash/fleet",
+                    "/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet",
                     "/dash/control", "/dash/doctor", "/dash/updates", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/login",
                 }
                 if (page and self.command == "GET" and not headers

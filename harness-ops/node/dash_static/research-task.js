@@ -163,6 +163,39 @@
     return section;
   }
 
+  const DIRECTION_STATE = {proposed: '待探索', preparing: '准备中', ready: '可开展', running: '进行中', waiting_device: '等待设备',
+    waiting_human: '等待协助', waiting_material: '等待素材', awaiting_evaluation: '等待评价', verified: '已验证', no_gain: '无收益', rejected: '已排除', deferred: '已暂缓'};
+  async function directionsSection(record, section) {
+    const list = el('div', null, 'research-directions');
+    section.id = 'task-directions'; section.append(el('h3', '探索过程'), list);
+    try {
+      const [directions, jobs, results] = await Promise.all([
+        api(`/research-state/direction?research_id=${encodeURIComponent(record.id)}&limit=100`),
+        api(`/jobs?research=${encodeURIComponent(record.id)}&limit=50`),
+        api(`/results?research_id=${encodeURIComponent(record.id)}&limit=100`)]);
+      const entries = directions.items.slice().reverse();
+      list.replaceChildren(...(entries.length ? entries.map(direction => {
+        const item = el('article', null, 'research-direction'), head = el('div', null, 'research-actions');
+        item.dataset.direction = direction.id;
+        const link = el('a', direction.title || direction.id);
+        link.href = HGTarget.url(`/dash/research?kind=direction&id=${encodeURIComponent(direction.id)}`);
+        head.append(link, el('span', DIRECTION_STATE[direction.state] || direction.state, 'task-state unknown'));
+        item.append(head, el('p', direction.hypothesis));
+        const related = el('div', null, 'research-actions');
+        for (const job of jobs.items.filter(job => results.items.some(result => result.labels?.direction_id === direction.id && result.job_id === job.id))) {
+          const link = el('a', `${job.label || job.id} · ${HGJobState.label(job)}`);
+          link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.id)}`); related.append(link);
+        }
+        for (const result of results.items.filter(result => result.labels?.direction_id === direction.id)) {
+          const link = el('a', `${result.title || result.result_id} · ${result.outcome}`);
+          link.href = HGTarget.url(`/dash/results#result=${encodeURIComponent(result.result_id)}`); related.append(link);
+        }
+        if (related.childElementCount) item.append(related);
+        return item;
+      }) : [el('p', '还没有方向', 'empty')]));
+    } catch (error) { list.replaceChildren(el('p', '读取方向失败：' + failure(error), 'note')); }
+  }
+
   async function runsSection(record, section) {
     const list = el('ul', null, 'research-evidence');
     section.append(el('h3', '运行'), list);
@@ -216,7 +249,6 @@
         }
         return entry;
       }
-      clearImages();
       list.replaceChildren(...(roots.length ? roots.map(paint) : [el('div', '暂无留言', 'empty')]));
       if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'center'});
     }
@@ -256,10 +288,10 @@
     if (record.kind !== 'research') return;
     if (agents === null) agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
     if (shown !== record) return;
-    const runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
+    const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
-    container.append(...[ownerSection(record, ctx), deliverableSection(record), runs, thread].filter(Boolean));
-    await Promise.all([runsSection(record, runs), threadSection(record, ctx, thread)]);
+    container.append(...[ownerSection(record, ctx), directions, runs, thread, deliverableSection(record)].filter(Boolean));
+    await Promise.all([directionsSection(record, directions), runsSection(record, runs), threadSection(record, ctx, thread)]);
   }
 
   window.HGResearchTask = {renderDetail, clearDetail: container => { shown = null; clearImages(); container.replaceChildren(); }};

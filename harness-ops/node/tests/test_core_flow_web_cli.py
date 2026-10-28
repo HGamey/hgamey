@@ -507,12 +507,34 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(item["public"]["phase"], "queued")
         self.assertEqual(item["public"]["queue"]["state"], "claimed")
 
-    def test_live_research_supersedes_demo_and_phone_copy_has_no_review_gate(self):
+    def test_home_has_no_gol_or_demo_panels_and_reports_are_separate(self):
+        page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
-        self.assertIn("r && !r.demo && r.status === \"running\"", script,
-                      "a real research job must supersede a demo GOL run in the now line")
+        server = (NODE / "dash.py").read_text(encoding="utf-8")
+        for element in ('id="now-text"', 'id="human"', 'id="goalmd"', 'id="dlg-new"'):
+            self.assertNotIn(element, page, "GOL panels belong on the GOL page, not the home page")
+        self.assertIn('href="/dash/gol"', page)
+        self.assertIn('id="reports"', page)
+        self.assertIn('not r.get("demo")', server, "demo runs must not reach either page")
         for text in ("占用或待核查", "占用或状态待核查"):
             self.assertNotIn(text, script, "phone copy must follow the post-release state machine")
+
+    def test_direction_list_exposes_hypothesis_for_task_page(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-direction-view", self.write(
+            "create-direction-view", {"title": "方向展示", "objective": "任务页直接看到探索假设"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-view", self.write(
+            "create-d-view", {"research_id": "sr-direction-view", "title": "低渲染分辨率",
+                               "hypothesis": "降低内部渲染分辨率可提高帧率"}))[0], 201)
+        status, listing = self.web("GET", "/research-state/direction?research_id=sr-direction-view&limit=20")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["items"][0]["hypothesis"], "降低内部渲染分辨率可提高帧率")
+
+    def test_research_detail_puts_objective_directions_runs_thread_then_report(self):
+        page = (NODE / "dash_static/research.html").read_text(encoding="utf-8")
+        script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
+        self.assertLess(page.index('id="object-body"'), page.index('id="task-detail"'))
+        self.assertIn('directionsSection', script)
+        self.assertIn('container.append(...[ownerSection(record, ctx), directions, runs, thread, deliverableSection(record)]', script)
 
     def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")

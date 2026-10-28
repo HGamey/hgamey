@@ -823,6 +823,7 @@ class NodeResearch:
                                 unanswered=row["id"] in guidance[rid] if audit.get("auth_channel") == "dashboard_steer" else None,
                                 question_unanswered=row["id"] in questions[rid] if data.get("ask") is True else None)
                 if kind == "direction":
+                    item["hypothesis"] = data["hypothesis"]
                     item["metadata_blocked"] = any(dep["blocking"] and dep["resolution"] is None for dep in data["dependencies"])
                 elif kind == "request":
                     item["feedback_count"] = db.execute("SELECT COUNT(*) FROM revisions WHERE kind='feedback' AND request_id=? AND sequence<=?", (row["id"], upper)).fetchone()[0]
