@@ -228,6 +228,22 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual([(item["reply_to"], item["text"], item["unread"]) for item in answered["question_answers"]],
                          [(question_id, "先测 1080p", True)])
 
+    def test_cli_times_are_utc_and_checkin_declares_timezone(self):
+        from agent_client import render_checkin
+        value = {"agent": "agent-a", "at": 1700000000, "previous_checkin_at": 1700000001,
+                 "duties": [], "waiting_on_human": [],
+                 "jobs": {"active": [], "blocked": [], "finished_since_last_checkin": []},
+                 "research": {"mine": [], "unclaimed": []}, "loop": []}
+        first = render_checkin(value).splitlines()[0]
+        self.assertEqual(first, "agent-a · 节点时区 UTC · 当前时间 2023-11-14T22:13:20Z · 上次签到 2023-11-14T22:13:21Z")
+        self.assertEqual(self.web("POST", "/research-state/research/sr-time", self.write(
+            "create-time", {"title": "时间口径", "objective": "CLI 一律 UTC Z"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/note/n-time", self.write(
+            "note-time", {"research_id": "sr-time", "text": "检查时间", "reply_to": None, "decision": None}))[0], 201)
+        code, out, err = self.pf(ADMIN, "research", "thread", "sr-time")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out.split()[0], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
     def test_agent_own_token_carries_its_identity(self):
         for name in ("agent-a", "agent-b"):
             self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)

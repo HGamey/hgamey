@@ -1,7 +1,7 @@
 """Agent registry CLI: register, list, show, update, token — same contract as the API — and the check-in view."""
 import json
 import sys
-import time
+from cli_time import utc
 
 HELP = """pf-node agents                              # 注册 agent 列表
 pf-node agents show NAME                    # 单个详情
@@ -65,8 +65,8 @@ def main(args, target=None):
 def render_checkin(value):
     """The check-in as an agent reads it at the start of a loop."""
     def when(at):
-        return time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "从未"
-    lines = [f"{value['agent']} · 本次签到 {when(value['at'])} · 上次 {when(value['previous_checkin_at'])}"]
+        return utc(at) if at else "从未"
+    lines = [f"{value['agent']} · 节点时区 UTC · 当前时间 {when(value['at'])} · 上次签到 {when(value['previous_checkin_at'])}"]
     duties = value["duties"]
     lines.append(f"待办 {len(duties)} 项：" if duties else "待办：无，按计划推进实验。")
     for index, duty in enumerate(duties, 1):

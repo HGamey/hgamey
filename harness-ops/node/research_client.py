@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import uuid
+from cli_time import utc
 
 
 HELP = """用法:
@@ -571,7 +572,7 @@ def _task(client, args):
             speaker = "human" if item["auth_channel"] == "dashboard_steer" else item["actor_label"] or item["auth_channel"]
             answer = f" ↳{item['reply_to']}" + (f" [{item['decision']}]" if item["decision"] else "") if item["reply_to"] else ""
             ask = " [问人]" + ("[待回复]" if item.get("question_unanswered") else "") if item.get("ask") else ""
-            stamp = time.strftime("%m-%d %H:%M", time.localtime(item["updated_at"]))
+            stamp = utc(item["updated_at"])
             print(f"{stamp} {speaker} {item['id']}{ask}{answer}: {item['text']}")
         return 0
     client.require_capability(write=True)
