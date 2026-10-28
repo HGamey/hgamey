@@ -147,6 +147,21 @@ class TargetClient(unittest.TestCase):
         self.assertTrue(all(c["method"] == "GET" for c in calls))
         self.assertNotIn("hgop_fixture-operator", discovery.stderr + action.stderr)
 
+    def test_export_caches_clear_posts_to_the_clear_route(self):
+        def route(call):
+            if call["path"] == "/node":
+                return 200, {}, self.identity(capabilities=["node.target-v1", "jobs.export-cache-cleanup-v1"])
+            return 200, {}, {"complete": True}
+
+        endpoint, calls = self.server(route)
+        env = {"PF_NODE_URL": endpoint, "PF_NODE_ID": ID, "PF_NODE_TOKEN_FILE": str(self.credential)}
+        result = self.cli("pf-node", ["export-caches", "--clear"], env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[-1]["method"], "POST")
+        self.assertEqual(calls[-1]["path"], "/export-caches/clear")
+        self.assertEqual(json.loads(calls[-1]["body"]), {
+            "schema": "phonefarm/export-cache-clear@1", "confirm": "regenerable-only"})
+
     def test_legacy_fleet_freezes_probe_identity_and_clears_ambient_token(self):
         fleet = runpy.run_path(str(NODE / "pf-fleet"))
         snapshot = {"schema_version": 1, "node_id": ID, "lock": {"status": "free", "queue": [],

@@ -552,7 +552,8 @@ def export_caches(clear=False, quota_bytes=None):
             return 0 if value.get("errors") == [] else 2
         body = json.dumps({"schema": "phonefarm/export-cache-clear@1",
                            "confirm": "regenerable-only"}).encode() if clear else None
-        value = json.loads(call("POST" if clear else "GET", "/export-caches", body,
+        value = json.loads(call("POST" if clear else "GET",
+                                "/export-caches/clear" if clear else "/export-caches", body,
                                 {"Content-Type": "application/json"} if clear else None,
                                 attempts=1, raise_errors=True))
     except ClientError as error:
