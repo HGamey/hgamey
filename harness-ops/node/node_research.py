@@ -55,6 +55,10 @@ def strings(value):
     return [text(item, 16384, True) for item in array(value)]
 
 
+def field_names(names):
+    return ", ".join(json.dumps(name, ensure_ascii=True) for name in sorted(names))
+
+
 def refs(value):
     for ref in array(value):
         if not isinstance(ref, dict):
@@ -135,15 +139,31 @@ def normalize(kind, data):
     }
     if kind not in fields:
         raise ValueError("unsupported research object kind")
-    value = copy.deepcopy(object_fields(data, fields[kind] | common))
+    if not isinstance(data, dict):
+        raise ValueError(f"{kind} data must be a JSON object")
+    allowed = fields[kind] | common
+    unknown = set(data) - allowed
+    if unknown:
+        raise ValueError(f"{kind} data contains unsupported field(s): {field_names(unknown)}")
+    if kind == "direction":
+        missing = {name for name in ("research_id", "title", "hypothesis") if data.get(name) is None}
+        if missing:
+            raise ValueError(f"direction data is missing required field(s): {field_names(missing)}")
+    value = copy.deepcopy(object_fields(data, allowed))
     value["evidence_refs"] = refs(value.get("evidence_refs", []))
     if kind not in ("feedback", "note"):
-        value["title"] = text(value.get("title"), 240, True)
+        try:
+            value["title"] = text(value.get("title"), 240, True)
+        except ValueError as error:
+            raise ValueError(f"{kind} data.title: {error}") from None
         value.setdefault("state", {"research": "active", "direction": "proposed", "request": "open"}[kind])
         if value["state"] not in STATES[kind]:
             raise ValueError("unsupported declared object state")
     if kind in ("direction", "request", "note"):
-        identifier(value.get("research_id"))
+        try:
+            identifier(value.get("research_id"))
+        except ValueError as error:
+            raise ValueError(f"{kind} data.research_id: {error}") from None
     if kind in ("research", "direction"):
         value["state_reason"] = text(value.get("state_reason"), 16384)
         needs_reason = (kind == "research" and value["state"] not in {"active", "delivered"} or kind == "direction"
@@ -192,7 +212,10 @@ def normalize(kind, data):
         if value["state"] == "delivered" and deliverable is None:
             raise ValueError("delivered research needs a deliverable: summary, artifacts and where it applies")
     elif kind == "direction":
-        value["hypothesis"] = text(value.get("hypothesis"), 16384, True)
+        try:
+            value["hypothesis"] = text(value.get("hypothesis"), 16384, True)
+        except ValueError as error:
+            raise ValueError(f"direction data.hypothesis: {error}") from None
         for key in ("priority_reason", "cost_expectation", "expected_benefit"):
             value[key] = text(value.get(key), 16384)
         value.setdefault("priority", None)
@@ -201,9 +224,26 @@ def normalize(kind, data):
         value["prerequisites"] = strings(value.get("prerequisites", []))
         value.setdefault("next_experiment", None)
         if value["next_experiment"] is not None:
-            exp = object_fields(value["next_experiment"], {"title", "plan", "research_revision"})
-            exp["title"], exp["plan"] = text(exp.get("title"), 240, True), text(exp.get("plan"), 16384, True)
-            positive(exp.get("research_revision"))
+            exp = value["next_experiment"]
+            if not isinstance(exp, dict):
+                raise ValueError("direction data.next_experiment must be an object")
+            allowed_exp = {"title", "plan", "research_revision"}
+            unknown = set(exp) - allowed_exp
+            if unknown:
+                raise ValueError("direction data.next_experiment contains unsupported field(s): " + field_names(unknown))
+            missing = allowed_exp - set(exp)
+            if missing:
+                raise ValueError("direction data.next_experiment is missing required field(s): " + field_names(missing))
+            for key, maximum in (("title", 240), ("plan", 16384)):
+                try:
+                    exp[key] = text(exp.get(key), maximum, True)
+                except ValueError:
+                    raise ValueError(f"direction data.next_experiment.{key} must be a non-empty string "
+                                     f"of at most {maximum} characters") from None
+            try:
+                positive(exp.get("research_revision"))
+            except ValueError:
+                raise ValueError("direction data.next_experiment.research_revision must be a positive integer") from None
         value["dependencies"] = array(value.get("dependencies", []))
         for dep in value["dependencies"]:
             object_fields(dep, {"id", "kind", "target_id", "target_revision", "blocking", "reason", "resolution"})

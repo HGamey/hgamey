@@ -166,6 +166,41 @@ class NodeResearchTests(unittest.TestCase):
         self.assertEqual(self.events(), before_cycle)
         self.assertEqual(self.env.jobs.dispatch.queue.rows(), [])
 
+    def test_invalid_direction_cli_reports_validation_fields_and_template_usage(self):
+        self.create("research", "study", {"title": "Fixture study", "objective": "Exercise direction validation"})
+        help_result = self.cli("--help")
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        self.assertIn("research_id、title、hypothesis", help_result.stdout)
+        self.assertIn("next_experiment.plan", help_result.stdout)
+        self.assertIn("title、plan、research_revision", help_result.stdout)
+
+        template = self.cli("plan-template", "exploration", "--research-revision", "1")
+        self.assertEqual(template.returncode, 0, template.stderr)
+        draft = json.loads(template.stdout)
+        source = self.env.root / "direction-data.json"
+        cases = [
+            ("missing", {"title": "Missing references"}, ("research_id", "hypothesis")),
+            ("unknown", {**self.direction("Unknown field"), "plan": draft["plan"]}, ("plan",)),
+            ("nested", {**self.direction("Nested template"),
+                        "next_experiment": {**draft, "plan": draft}}, ("next_experiment.plan",)),
+        ]
+        for name, data, fields in cases:
+            with self.subTest(case=name):
+                source.write_text(json.dumps(data), encoding="utf-8")
+                rejected = self.cli("create", "direction", name, str(source), "--operation-id", "invalid-" + name)
+                self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                payload = json.loads(rejected.stdout)
+                self.assertEqual((payload["http_status"], payload["code"]), (400, "invalid_research"))
+                for field in fields:
+                    self.assertIn(field, payload["error"])
+                    self.assertIn(field, rejected.stderr)
+                self.assertEqual(self.call("GET", "/research-operations/invalid-" + name)[0], 404)
+
+        source.write_text(json.dumps({**self.direction("Template usage"), "next_experiment": draft}), encoding="utf-8")
+        created = self.cli("create", "direction", "templated", str(source), "--operation-id", "valid-template")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        self.assertEqual(self.read("direction", "templated")["data"]["next_experiment"], draft)
+
     def test_feedback_preserves_context_until_explicit_direction_resolution(self):
         self.create("research", "study", {"title": "Fixture study", "objective": "Original evaluation criteria"})
         self.create("direction", "a", self.direction("Waiting direction"))

@@ -38,12 +38,16 @@ HELP = """用法:
       [--game-version V] [--device D ...]          # 交付：总结、产物、适用范围；状态变为 delivered
 
 recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
-plan-template 离线输出 next_experiment JSON 草稿，可带路线；填写实际条件后放入方向 data，不提交任务。
+plan-template 离线输出 next_experiment JSON 草稿（title、plan、research_revision），可带路线，不提交任务。
+把完整输出作为方向 data.next_experiment；不要嵌套进 next_experiment.plan，plan 只收字符串。
+方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
+最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
-输出与网页同一 API JSON；错误仅保安全错误码、HTTP 状态与 current_revision，不回显源正文。
+输出与网页同一 API JSON；错误保安全错误码、HTTP 状态与 current_revision，不回显源正文。
+400 invalid_research 还显示服务端生成的校验信息，按字段修正后用新 operation ID 显式提交。
 events 使用 cursor 或 wait>0 时需显式 node-id 与 research.watch-v1；只发一次事件 GET，
 空等成功退出，不自动重试、翻页或保存/确认消费位置。429 仅提示安全 retry_after_seconds。
 next_cursor 是本批读取位置；处理并保存相应决定后才可作为自己的 checkpoint，head 不是进度。
@@ -253,6 +257,7 @@ class Client:
 
     def http_error(self, error):
         status, code, revision, retry_after = error.code, None, None, None
+        validation = None
         try:
             raw = error.read(MAX_DATA + 1)
             value = _json(raw) if len(raw) <= MAX_DATA else None
@@ -266,12 +271,18 @@ class Client:
             candidate = value.get("retry_after_seconds") if isinstance(value, dict) else None
             if status == 429 and type(candidate) is int and 0 <= candidate <= 86400:
                 retry_after = candidate
+            candidate = value.get("error") if isinstance(value, dict) else None
+            if (status == 400 and code == "invalid_research" and isinstance(candidate, str)
+                    and 0 < len(candidate) <= 4096 and all(32 <= ord(char) != 127 for char in candidate)):
+                validation = candidate
         except (ValueError, UnicodeError, OSError, http.client.HTTPException, RecursionError):
             pass
         finally:
             error.close()
         if code in CODE_MESSAGES:
             message = CODE_MESSAGES[code]
+        elif validation is not None:
+            message = "研究数据校验失败：" + validation
         elif status == 409:
             message = "操作内容、对象版本、原目标或原件状态冲突；保留原 ID，先读取当前状态"
         elif 300 <= status < 400:
@@ -484,8 +495,11 @@ def _write(client, args):
             raise RequestError("回执未绑定原操作或对象；结果未确认")
     except RequestError as error:
         _error(error, operation_id=operation_id, kind=args.kind, identity=args.id)
-        print(f"pf-node: 保留原 operation_id={operation_id}；仅用 {lookup} 查询。"
-              "不换 ID、不重发 POST、不自动合并草稿。", file=sys.stderr)
+        if error.status == 400 and error.code == "invalid_research":
+            print("pf-node: 本次校验未写入；按字段修正后可换新 operation_id 显式提交；未自动重试。", file=sys.stderr)
+        else:
+            print(f"pf-node: 保留原 operation_id={operation_id}；仅用 {lookup} 查询。"
+                  "不换 ID、不重发 POST、不自动合并草稿。", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print(f"pf-node: 写入回执未确认；保留原 operation_id={operation_id}，用 {lookup} 查询，未自动重试。",
