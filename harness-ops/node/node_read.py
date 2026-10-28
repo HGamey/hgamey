@@ -201,7 +201,9 @@ class NodeRead:
                     continue
                 if state == "lost" and not meta.get("lost"):
                     continue
-                if state in ("running", "finished") and meta["state"] != state:
+                if state == "running" and meta["state"] not in ("running", "preparing", "queued"):
+                    continue
+                if state == "finished" and meta["state"] != "finished":
                     continue
                 if state in ("preparing", "queued") and meta.get("phase") != state:
                     continue

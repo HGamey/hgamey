@@ -677,7 +677,7 @@ class Dash:
                 state = "running"
             else:
                 state = "lost"
-            if state != "running" and len(out) >= limit:
+            if state not in ("running", "preparing", "queued") and len(out) >= limit:
                 continue
             logp = os.path.join(self.jobs_dir, m["id"], "log")
             argv = m.get("argv") or []

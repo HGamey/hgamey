@@ -298,6 +298,22 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(self.board.last_view, 0)
         self.assertFalse(self.board.wake.is_set())
 
+    def test_queued_job_state_is_not_running_and_running_filter_keeps_unfinished(self):
+        self.jobs.bins["phonefarm"] = (sys.executable, str(self.root))
+        auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}
+        write = {**auth, "X-HG": "1", "Content-Type": "application/json",
+                 "X-Request-ID": "web:queued-state", "Cookie": auth["Cookie"] + "; " +
+                 dash.STEER_COOKIE + "=" + self.board._cookie_val(self.board._steer_pass(), b"hgamey-steer-v1")}
+        with patch.object(self.jobs.dispatch, "start"):
+            job = self.get_json("/dash/api/jobs", method="POST", headers=write,
+                                body=b'{"bin":"phonefarm","argv":["-c","pass"]}')
+        jid = job["id"]
+        self.assertEqual(job["state"], "queued")
+        self.assertEqual(self.get_json("/jobs/" + jid)["state"], "queued")
+        # The existing filter remains an unfinished-job query, not a state-value alias.
+        self.assertIn(jid, {item["id"] for item in self.get_json("/jobs?state=running")["items"]})
+        self.assertEqual(self.get_json("/jobs?state=queued")["items"][0]["phase"], "queued")
+
     def test_queue_submission_lookup_and_recovery_release_share_permissions(self):
         self.jobs.bins["phonefarm"] = (sys.executable, str(self.root))
         auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}

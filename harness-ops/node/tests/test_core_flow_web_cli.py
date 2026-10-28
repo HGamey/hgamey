@@ -316,7 +316,7 @@ class CoreFlowTests(unittest.TestCase):
         by_lease = {"status": "held", "held_by": None, "lease": {"entries": [
             {"job_id": jid, "serial": "S1", "state": "active", "label": f"job-{jid}"}]}}
         expected = {"kind": "job", "job_id": jid, "label": "selfsr 1080p A/B", "actor_id": "agent-a",
-                    "research_id": "sr-genshin", "research_title": "优化原神超分方向", "state": "running"}
+                    "research_id": "sr-genshin", "research_title": "优化原神超分方向", "state": "queued"}
         self.assertEqual(board._holder("S1", by_lease), expected)
         self.assertIsNone(board._holder("S2", {**by_lease, "status": "free"}))
         self.assertEqual(board._holder("S2", {"status": "held", "held_by": f"job-{jid}", "lease": {"entries": []}}), expected)

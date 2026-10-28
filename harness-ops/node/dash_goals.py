@@ -260,7 +260,7 @@ class Goals:
             jm = self.jobs.status(jid)
         except (KeyError, OSError, ValueError):
             return False
-        return jm.get("state") == "running"
+        return jm.get("state") in {"running", "preparing", "queued"}
 
     def stop(self, run_id, ip):
         d, _ = self.find(run_id)

@@ -541,6 +541,8 @@ class Jobs:
                                 "reason": "retry-finalize to commit the job record; command is not replayed"}
         elif row and row["state"] in {"preparing", "queued"}:
             meta = self.dispatch.base_meta(row)
+            # Projection only: worker launch still requires the persisted running/preparing record.
+            meta["state"] = row["state"]
             meta["phase"] = row["state"]
             meta["paused"] = bool(row["paused"])
             meta["controls"] = {"cancel_supported": True, "force_supported": False,
