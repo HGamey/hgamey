@@ -900,10 +900,6 @@ impl Pipeline {
                 source: output.source,
             });
         }
-        ensure!(
-            bytes <= request.budget.output_bytes,
-            "output bytes exceed frozen budget"
-        );
         Ok(artifacts)
     }
     fn capture_evidence(

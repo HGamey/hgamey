@@ -585,11 +585,10 @@ fn receiver_render(root: &Path, p: &Profile, evidence: &mut Evidence) -> Result<
             && conditions["policy"]["cool_c"].is_null(),
         "receiver frozen thermal identities mismatch"
     );
-    let sampling: Value =
-        serde_json::from_slice(&read_path(&dir.join("sampling-contract.json"), JSON_CAP)?)?;
+    let sampling_bytes = read_path(&dir.join("sampling-contract.json"), JSON_CAP)?;
+    let sampling: Value = serde_json::from_slice(&sampling_bytes)?;
     ensure!(
-        conditions["sampling_contract_sha256"]
-            == sha(&read_path(&dir.join("sampling-contract.json"), JSON_CAP)?)
+        conditions["sampling_contract_sha256"] == sha(&sampling_bytes)
             && sampling["render_attribution_profile_id"] == PROFILE
             && sampling["render_reader_build_sha256"]
                 == sha(&read_path(
@@ -639,7 +638,7 @@ pub(super) fn receiver_samples(root: &Path, p: &Profile) -> Result<()> {
         pairs.len() == p.pairs && samples["frozen_plan_sha256"] == frozen["sha256"],
         "v2 exact frozen pairs required"
     );
-    let plan = json_file(&dir, "plan.json")?;
+    let plan = &current_plan;
     let mut raw_seen = plan["exploration_artifact_sha256"]
         .as_array()
         .context("missing exploration")?

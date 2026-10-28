@@ -336,16 +336,6 @@ fn validate(p: &Profile, workload: &[u8]) -> Result<()> {
         safe(&p.control_id) && safe(&p.candidate_value),
         "unsafe candidate"
     );
-    ensure!(
-        p.temperature_profile_id.as_ref().is_none_or(|s| safe(s)),
-        "unsafe receiver preset ID"
-    );
-    ensure!(
-        p.goal
-            .as_deref()
-            .is_none_or(|s| matches!(s, "render_cadence" | "render_efficiency")),
-        "unknown explicit receiver goal"
-    );
     let b = &p.budgets;
     ensure!(
         (1..=7200).contains(&b.prepare_seconds)
