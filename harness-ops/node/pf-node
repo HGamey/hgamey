@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
 """pf-node：在手机节点上跑 phonefarm / game_opt_loop / adb / devlock，用法和本地几乎一样。
 
-Agent 每轮从这里开始：
+Agent 每轮从这里开始（最短完整路径）：
+  1. pf-node checkin                         # 自有 token；先处理 duties
+  2. pf-node research claim <研究ID>
+  3. pf-node research plan-template exploration --research-revision N
+     pf-node research create direction <方向ID> <文件>  # 按草稿补全 data
+  4. pf-node --research <研究ID> --detach <命令>  # 或 --experiment <提交> experiment <脚本>
+  5. pf-node jobs --brief；pf-node status <job>
+  6. pf-node research note <研究> "<回复>" --reply-to <留言> --decision adopt|defer|reject
+  7. pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>
+  设备锁序列化实际设备操作；任务预留只在执行中占调度资源，终态自动释放。
+  宿主完成未知时仅由管理员用 reset 一步重置，不代表设备已恢复。
+
   pf-node checkin                            # 用你自己的 token：现在该做的事，以及每轮做法
   pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
@@ -146,7 +157,7 @@ Agent 每轮从这里开始：
   事件不是无损执行历史；head 不是已处理位置，消费者处理后自行保存 next_cursor。Ctrl-C 不取消任务。
 - --device-access none|write|recovery 显式声明设备访问；adb 未声明时按 none 提交，不预留整机，
   写设备必须显式 write；其他命令未声明保持原默认。recovery 必须配 --recovery-for 原资源保留任务 ID，
-  资源由父任务继承，不能同时传 --resource。恢复任务不自动解除原屏障；核查后另行 release。
+  资源由父任务继承，不能同时传 --resource。设备恢复由任务自身步骤负责并记录结果，终态自动释放；宿主完成未知时由管理员 reset。
 - --device-binding FILE 只读 devices-resolve 保存的 JSON 文件，核其 node_id 与当前目标；只将 binding 放入 job spec，
   不自行给 argv 注入参数。仅配置 phonefarm 的 gray-layer session 支持，禁止 --exe 和 none/recovery 覆盖；
   缺省不发送字段，保持兼容全域。登记/布局变化明确拒绝，不换 alias、不自动降级；typed 恢复继承原绑定。

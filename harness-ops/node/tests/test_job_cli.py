@@ -179,6 +179,23 @@ class JobCLI(unittest.TestCase):
                 cli["call"](method, "/fixture", attempts=1, **kwargs)
             self.assertIn(expected, str(stopped.exception))
 
+    def test_agent_quickstart_is_consistent_across_cli_loop_and_skill(self):
+        cli = self.load_cli()
+        from agent_duties import LOOP
+        sources = {
+            "cli": cli["__doc__"],
+            "checkin": "\n".join(LOOP),
+            "skill": (CLI.parent.parent / "skills/hgamey-research/SKILL.md").read_text(),
+        }
+        for name, text in sources.items():
+            self.assertIn("最短完整路径", text, name)
+            self.assertIn("research claim", text, name)
+            self.assertIn("jobs --brief", text, name)
+            self.assertIn("research deliver", text, name)
+            self.assertIn("设备锁", text, name)
+            self.assertIn("任务预留", text, name)
+            self.assertIn("终态自动释放", text, name)
+
     def test_submission_retries_same_request_and_recovers_without_another_job(self):
         posts, gets = [], []
         meta = {"id": JOB, "state": "running", "phase": "queued", "request_id": "study-001"}

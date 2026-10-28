@@ -8,6 +8,8 @@ STATUS_STALE_SECONDS = 30 * 60
 TERMINAL_DIRECTIONS = {"verified", "no_gain", "rejected", "deferred"}
 OPEN_RESEARCH = {"active", "idle", "paused"}
 LOOP = [
+    "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言 → research deliver。",
+    "设备锁序列化实际操作；任务预留只在执行中占调度资源，终态自动释放。宿主完成未知时由管理员 reset，不代表恢复。",
     "每轮开始先运行 pf-node checkin，按 duties 的顺序处理；duties 为空时再推进实验。",
     "人工在 research 里的留言要回应：pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject。没回应之前，这个研究不能交付，方向也不能下结论。",
     "需要人判断时发 request，然后继续做其他方向，不要停下来等人。",
