@@ -24,7 +24,7 @@
     $("discuss-count").textContent = entries.length ? entries.length + " 条" : "";
     list.innerHTML = entries.length
       ? entries.map(e => `<div class="discuss-entry">${speaker(e)}<span class="discuss-time">${e.at ? new Date(e.at * 1000).toLocaleString("zh-CN", { hour12: false }) : ""}</span><p>${esc(e.text)}</p></div>`).join("")
-      : `<div class="empty"><b>暂无讨论</b>人工和 agent 的留言会显示在这里</div>`;
+      : `<div class="empty">暂无讨论</div>`;
   }
 
   function showForm() {
