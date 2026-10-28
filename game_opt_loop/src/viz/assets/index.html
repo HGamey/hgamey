@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phonefarm · 任务与实验</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Phonefarm <span class="dim">任务与实验</span></div>
+  <nav id="nav">
+    <button data-page="tasks" class="on">任务</button>
+    <button data-page="overview">优化总览</button>
+    <button data-page="rounds">轮次</button>
+    <button data-page="cases">案例</button>
+    <button data-page="charts">图表</button>
+    <button data-page="device">设备记录</button>
+  </nav>
+  <div class="meta">
+    <span id="refresh-state" class="pill">读取中…</span>
+    <button id="refresh-now" class="ghost" title="立刻重新读盘">刷新</button>
+  </div>
+</header>
+
+<div id="notices"></div>
+
+<main>
+  <section id="page-tasks" class="page"></section>
+  <section id="page-overview" class="page hidden"></section>
+  <section id="page-rounds" class="page hidden"></section>
+  <section id="page-cases" class="page hidden"></section>
+  <section id="page-charts" class="page hidden"></section>
+  <section id="page-device" class="page hidden"></section>
+</main>
+
+<div id="filedrawer" class="drawer hidden">
+  <div class="drawer-head">
+    <span id="filedrawer-title"></span>
+    <button id="filedrawer-close" class="ghost">关闭</button>
+  </div>
+  <div id="filedrawer-body"></div>
+</div>
+
+<footer>
+  <span id="footer-paths" class="dim"></span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

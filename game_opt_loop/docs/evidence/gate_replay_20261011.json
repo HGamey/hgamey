@@ -1,0 +1,239 @@
+{
+ "generated_at": "2026-10-11T16:26:59-0700",
+ "model": "jev-latest",
+ "evidence": [
+  "~/projects/phonefarm/loop_v1/runs_sysparam/genshin1",
+  "~/projects/phonefarm/loop_v1/runs_sysparam/genshin2_run1",
+  "~/projects/phonefarm/loop_v1/runs_sysparam/genshin2_run2",
+  "~/projects/game_opt_loop/runs/optimize",
+  "node-job-56acc8e8347e/seg1_ext"
+ ],
+ "tokens": 66171,
+ "rows": [
+  {
+   "probe": "replay",
+   "src": "genshin1/cand1",
+   "change": "bus.DDR.boost_freq=5333000, bus.LLCC.boost_freq=1350000",
+   "why": "复现并确认已知的访存上限收益，把 DDR 与 LLCC 同时钉到上限做归因基线",
+   "status": "ABORT",
+   "valid": false,
+   "kept": false,
+   "reason": "knob 臂第 1 轮 SoC 结温 58.7C 超过上限 58.2C",
+   "p": [
+    0.43,
+    0.43,
+    0.46
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin1/cand2",
+   "change": "gpu.min_pwrlevel=0",
+   "why": "单独验证把 GPU 最低档位锁到最高档能否压低帧时，单参数便于归因功耗代价",
+   "status": "ABORT",
+   "valid": false,
+   "kept": false,
+   "reason": "旋钮未全部生效",
+   "p": [
+    0.54,
+    0.56,
+    0.56
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin1/cand3",
+   "change": "cpu.policy0.scaling_governor=performance, cpu.policy6.scaling_governor=performance",
+   "why": "验证小核与大核 governor 换成 performance 后调度响应性对 p95 帧时的影响",
+   "status": "ABORT",
+   "valid": false,
+   "kept": false,
+   "reason": "轮末设备快照与轮前不一致, 留痕",
+   "p": [
+    0.55,
+    0.55,
+    0.53
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin2_run1/cand1",
+   "change": "bus.DDR.boost_freq=1555000, bus.LLCC.boost_freq=533000",
+   "why": "单独抬高访存下限(不钉满,验证DDR/LLCC中高档是否已足够), 参数少便于与已知的钉满结果对比归因",
+   "status": "ABORT",
+   "valid": false,
+   "kept": false,
+   "reason": "轮末设备快照与轮前不一致, 留痕",
+   "p": [
+    0.53,
+    0.53,
+    0.53
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin2_run1/cand2",
+   "change": "cpu.policy6.scaling_governor=performance, cpu.policy6.scaling_min_freq=1497600",
+   "why": "保持小核现状, 只把中簇钉到 performance, 验证中簇调度延迟对 frame_p95 的贡献",
+   "status": "ABORT",
+   "valid": false,
+   "kept": false,
+   "reason": "旋钮未全部生效",
+   "p": [
+    0.48,
+    0.48,
+    0.48
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin2_run1/cand3",
+   "change": "gpu.min_pwrlevel=12",
+   "why": "只抬 GPU 最低档, 验证 GPU 频率下限被夹时的帧时抖动问题",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "存在显著退化: fps_mean",
+   "p": [
+    0.32,
+    0.37,
+    0.36
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin2_run2/cand1",
+   "change": "bus.DDR.boost_freq=5333000, bus.LLCC.boost_freq=1350000",
+   "why": "已知线索显示访存下限吃紧,只改两条总线频率验证单独抬总线是否复现 frame_p95 改善",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "存在显著退化: power_w_mean",
+   "p": [
+    0.16,
+    0.17,
+    0.17
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin2_run2/cand2",
+   "change": "gpu.min_pwrlevel=0",
+   "why": "测 GPU 侧:钉住 GPU 最低性能档防止降频,看对帧时尾部的独立贡献",
+   "status": "ABORT",
+   "valid": false,
+   "kept": false,
+   "reason": "旋钮未全部生效",
+   "p": [
+    0.25,
+    0.2,
+    0.26
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "genshin2_run2/cand3",
+   "change": "cpu.policy0.scaling_governor=performance, cpu.policy0.scaling_min_freq=1785600, cpu.policy6.scaling_governor=performance, cpu.policy6.scaling_min_freq=1382400",
+   "why": "测 CPU 调度侧:两簇改 performance 治理并抬小核下限,看调度器响应性对帧稳定性的影响",
+   "status": "ABORT",
+   "valid": false,
+   "kept": false,
+   "reason": "旋钮还原失败, 后续数据不可信",
+   "p": [
+    0.35,
+    0.38,
+    0.35
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "optimize/sys_g1c1",
+   "change": "gpu.min_pwrlevel=6",
+   "why": "本地变异器降级产出 (LLM 不可用)",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "没有任何指标显著改善",
+   "p": [
+    0.4,
+    0.39,
+    0.35
+   ]
+  },
+  {
+   "probe": "replay",
+   "src": "seg1_ext/sys_g1c1",
+   "change": "bus.DDR.boost_freq=3187000",
+   "why": "固定候选: 只改 bus.DDR.boost_freq (547000 -> 3187000), 用来验证外部出方案链路",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "确定性截断: 跑了 5/10 臂后, 剩余轮次无论量出什么都不可能有指标显著改善, 跑满也必然不保留 (已量部分: 没有任何指标显著改善)",
+   "p": [
+    0.29,
+    0.29,
+    0.29
+   ]
+  },
+  {
+   "probe": "duplicate_of_rejected",
+   "src": "genshin2_run1/cand3",
+   "change": "gpu.min_pwrlevel=12",
+   "why": "只抬 GPU 最低档, 验证 GPU 频率下限被夹时的帧时抖动问题",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "存在显著退化: fps_mean",
+   "p": [
+    0.07,
+    0.07,
+    0.07
+   ]
+  },
+  {
+   "probe": "duplicate_of_rejected",
+   "src": "genshin2_run2/cand1",
+   "change": "bus.DDR.boost_freq=5333000, bus.LLCC.boost_freq=1350000",
+   "why": "已知线索显示访存下限吃紧,只改两条总线频率验证单独抬总线是否复现 frame_p95 改善",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "存在显著退化: power_w_mean",
+   "p": [
+    0.07,
+    0.07,
+    0.07
+   ]
+  },
+  {
+   "probe": "duplicate_of_rejected",
+   "src": "optimize/sys_g1c1",
+   "change": "gpu.min_pwrlevel=6",
+   "why": "本地变异器降级产出 (LLM 不可用)",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "没有任何指标显著改善",
+   "p": [
+    0.06,
+    0.06,
+    0.06
+   ]
+  },
+  {
+   "probe": "duplicate_of_rejected",
+   "src": "seg1_ext/sys_g1c1",
+   "change": "bus.DDR.boost_freq=3187000",
+   "why": "固定候选: 只改 bus.DDR.boost_freq (547000 -> 3187000), 用来验证外部出方案链路",
+   "status": "REJECT",
+   "valid": true,
+   "kept": false,
+   "reason": "确定性截断: 跑了 5/10 臂后, 剩余轮次无论量出什么都不可能有指标显著改善, 跑满也必然不保留 (已量部分: 没有任何指标显著改善)",
+   "p": [
+    0.06,
+    0.06,
+    0.05
+   ]
+  }
+ ]
+}

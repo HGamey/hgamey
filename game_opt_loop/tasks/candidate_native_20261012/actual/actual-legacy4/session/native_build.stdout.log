@@ -1,0 +1,10 @@
+{
+  "artifact": "/private/tmp/gol-native-actual-ugppao8k/actual-legacy4/session/native/upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6",
+  "artifact_id": "upop-eb38e9db0982a7e358b9bdfd660d12ede23d8a18edab2f818a6aae36d81df8f6",
+  "deployable": false,
+  "device_validation": "not_run",
+  "outer_quiescence_verified": false,
+  "process_supervision": "inherited_group",
+  "requires_outer_quiescence": true,
+  "reused": false
+}

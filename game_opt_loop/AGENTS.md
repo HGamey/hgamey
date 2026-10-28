@@ -1,0 +1,37 @@
+# AGENTS.md
+
+## 代码仓库只放代码
+
+- 不要在本仓库新增或修改说明文档、图片、PPT、PDF、实验报告。
+- 这次改了什么、为什么改：写在 commit message 正文。
+- 一个功能或修复的说明、验证与限制：写在 commit 正文；完整报告和截图归 HGamey/docs 或本机证据目录。
+- 长期文档（设计、规格、架构图、进展汇报）：提交到 https://github.com/HGamey/docs ，本仓库的旧文档在那里的 `repos/<仓库名>/` 下。
+- 允许的例外：根目录 README.md（40 行以内）、AGENTS.md、skills/、许可证、程序或测试要读的数据。CI 检查 `code-only` 会拦下其他文档类文件。
+
+## 产品与验证
+
+整套平台服务于外部 Agent：使用远程真机系统性优化指定游戏/系统，探索多种方向，
+完成可复现实验并留下可审核结果。网页与 CLI/API 同等优先，人类异步参与；
+只阻断依赖其反馈的方向，优先级由外部 Agent 决定。
+GOL 提供可选的优化编排、候选与判定工具；不要求使用者把研究目标交给内置 Agent。
+设备枚举只说明连接条目；legacy gpu-op 单独检查显式目标与 Android 载体前提，
+不能借另一台在线设备的资格，也不能把此限制外推到所有 eval 路线。合同：
+https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/GOL-DEVICE-ELIGIBILITY.md 。
+产品准则与开发计划：https://github.com/HGamey/docs/tree/main/plans/2026-10-22-agent-platform 。
+运行受改动影响的关键验证，不为覆盖数堆测试或无用哈希；共享合同变化再扩大回归。
+
+## 直接提交与团队开发
+
+- 基于当前 main 分批开发，保留同事修改；用户授权直接 commit/push，不新开 PR、不 force push。
+- 先将同一提交推到 `verify/<批次>`，通过必需的 `code-only` 检查后直接推 main。
+- 有远端并发变更先 pull --rebase 并重验；不关闭必需检查、禁止强推或删除规则。
+- 主 Agent 聚焦系统结构、协议与整合；前端等独立模块可交具体 subagent，划分文件所有权。
+- 每批记录已做、未做、测试层级和恢复义务；部署与代码提交分开。
+
+## 外层队列身份（源码与隔离宿主已验，未部署）
+
+PF/devlock需与本客户端同版升级。队列借用、续期和释放依 DEVLOCK_INSTANCE_ID 与宿主进程身份，label只显示与排队。继承实例失效即拒绝，不换ID重试。源码/宿主验证状态及恢复限制见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/LEASE-IDENTITY.md 。
+
+## stable 发布约定
+
+开发继续在 main；每批完成相关验收且同一 SHA 的必需 CI 通过后，才将 stable 非强制快进到该提交。phonefarm 还须等待该 SHA 的 node-build 成功。三个运行仓库记录配套 SHA；推进分支不表示远端已部署或真机已验收。用户维护 stable 自动更新脚本，不从 mutable node-build 最新资产猜测 stable 版本。详见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/STABLE-RELEASE.md 。

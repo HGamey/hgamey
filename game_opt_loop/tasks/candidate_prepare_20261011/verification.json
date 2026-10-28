@@ -1,0 +1,41 @@
+{
+  "schema": "game_opt_loop/offline_prepare_verification@1",
+  "recorded_at_utc": "2026-10-11T14:53:16.452764+00:00",
+  "full_tests": {
+    "argv": [
+      "cargo",
+      "test",
+      "--offline",
+      "--locked",
+      "--",
+      "--test-threads=2"
+    ],
+    "exit_code": 0,
+    "passed": 355,
+    "actual_pf_opt_in": true,
+    "log_sha256": "283e7bc0e1210159cb0361d9bc62c723625c7eee3e97737d5db764683e686cba",
+    "log_trailing_blank_lines_normalized": true
+  },
+  "strict_clippy": {
+    "argv": [
+      "cargo",
+      "clippy",
+      "--offline",
+      "--locked",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "log_sha256": "313ab3cad9f955b56f4cee01f352c589bf7e8dc22052ccb3c3eb4bce9dca88ab"
+  },
+  "tested_gol_executable_sha256": "176e788e7f50e07a936f4b589d775642f0bcf44ae6e2c9bc5fcd1be553e18b34",
+  "actual_cli_summary_sha256": "11c959053fbb35257f2f3652e07f91fb3c10660679ded19c885b05b74173f43d",
+  "device_calls": 0,
+  "model_calls": 0,
+  "sdk_downloads": 0,
+  "gpu_acceptance": false,
+  "source_attestation": false,
+  "native_build_acceptance": false
+}

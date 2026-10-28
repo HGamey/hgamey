@@ -1,0 +1,84 @@
+# 云端出方案: 在 Actions runner 上用 pi + Kimi 跑一次 proposer@1 (tools/proposers/pi_kimi.py)。
+# 由 tools/proposers/cloud_actions.py 触发、取回; 设计见 https://github.com/HGamey/docs/blob/main/repos/game_opt_loop/docs/DESIGN_CLOUD_PROPOSER.md。
+#
+# 需要的 secrets (owner 配):
+#   KIMI_API_KEY   Kimi For Coding 的 key (必需)
+#   KIMI_API_KEY_2, KIMI_API_KEY_3  备用账号 (可选)。按顺序用, 遇到 403 额度用完 / 429 限流换下一个。
+#   PF_NODE_TOKEN  手机节点 /mcp 的 token (可选; 不配就不查设备现状, 只凭输入出方案)
+name: proposer
+run-name: proposer ${{ inputs.nonce }}
+on:
+  workflow_dispatch:
+    inputs:
+      nonce:
+        description: 这一次调用的唯一标识 (调用方据此找回结果)
+        required: true
+      input_b64:
+        description: gzip + base64 的 proposer@1 输入
+        required: true
+permissions:
+  contents: read
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 装 pi
+        run: npm install -g @earendil-works/pi-coding-agent
+      - name: 配 Kimi (多账号, 按顺序轮换)
+        env:
+          K1: ${{ secrets.KIMI_API_KEY }}
+          K2: ${{ secrets.KIMI_API_KEY_2 }}
+          K3: ${{ secrets.KIMI_API_KEY_3 }}
+        run: |
+          test -n "$K1" || { echo "缺 secrets.KIMI_API_KEY"; exit 1; }
+          mkdir -p ~/.pi/agent
+          python3 - <<'PY'
+          import json, os
+          m = {"id": "kimi-for-coding", "reasoning": True, "contextWindow": 262144,
+               "maxTokens": 32768, "input": ["text"]}
+          providers, models = {}, []
+          for i, name in enumerate(["K1", "K2", "K3"], 1):
+              k = os.environ.get(name, "").strip()
+              if not k:
+                  continue
+              providers[f"kimi{i}"] = {"baseUrl": "https://api.kimi.com/coding",
+                                       "api": "anthropic-messages", "apiKey": k, "models": [m]}
+              models.append(f"kimi{i}/kimi-for-coding")
+          p = os.path.expanduser("~/.pi/agent/models.json")
+          open(p, "w").write(json.dumps({"providers": providers}))
+          os.chmod(p, 0o600)
+          open(os.environ["GITHUB_ENV"], "a").write("PI_MODELS=" + ",".join(models) + "\n")
+          print(f"配了 {len(models)} 个 Kimi 账号")
+          PY
+      - name: 接节点 /mcp (只读工具)
+        env:
+          PF_NODE_TOKEN: ${{ secrets.PF_NODE_TOKEN }}
+        run: |
+          if [ -n "$PF_NODE_TOKEN" ]; then
+            pi mcp add pfnode --url https://phone.liyao.space/mcp --header User-Agent=pf-node/1 --bearer-token-env-var PF_NODE_TOKEN
+            python3 -c "import json,os;p=os.path.expanduser('~/.pi/agent/mcp.json');d=json.load(open(p));s=d.get('mcpServers',d)['pfnode'];s['exposure']='direct';json.dump(d,open(p,'w'))"
+            echo "PI_MCP_TOOLS=mcp__pfnode__phonefarm_devices" >> "$GITHUB_ENV"
+          fi
+      - name: 出方案
+        env:
+          INPUT_B64: ${{ inputs.input_b64 }}
+          PF_NODE_TOKEN: ${{ secrets.PF_NODE_TOKEN }}
+        run: |
+          mkdir -p out
+          echo "$INPUT_B64" | base64 -d | gunzip > out/input.json
+          rc=0; python3 tools/proposers/pi_kimi.py < out/input.json > out/output.json 2> out/stderr.txt || rc=$?
+          echo "$rc" > out/rc.txt
+          cat out/stderr.txt >&2
+          rm -f out/input.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proposer-${{ inputs.nonce }}
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 7

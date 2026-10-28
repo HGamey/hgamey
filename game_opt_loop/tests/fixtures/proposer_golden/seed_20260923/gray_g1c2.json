@@ -1,0 +1,65 @@
+{
+  "candidate_id": "gray_g1c2",
+  "conditions": {
+    "charging_suspend": {
+      "enabled": true,
+      "node": "/sys/class/qcom-battery/charging_enabled"
+    },
+    "cool_c": 48.0,
+    "fan": "unknown",
+    "require_discharging": true,
+    "require_root": true,
+    "temp_cap_c": 70.0
+  },
+  "kind": "gray",
+  "package": "com.miHoYo.Yuanshen",
+  "payload": {
+    "image_check": {
+      "min_psnr_db": 30.0
+    },
+    "require_hit": true,
+    "rewrites": [
+      {
+        "knob": "storeop_dont_care",
+        "scope": "9d0b4db80bf552b8:1"
+      }
+    ],
+    "side_effect_ack": "debug.vulkan.layers 是全局属性; 层加载成功后立刻清属性, 收尾还原",
+    "why": "本地降级产出: 单独去掉 9d0b4db80bf552b8:1 的写回 (pass rp71 256x256, 每帧约 262 KB)"
+  },
+  "protocol": {
+    "alternating": true,
+    "cool_c": 48.0,
+    "metrics": [
+      {
+        "better": "lower",
+        "id": "fps_p95_ms"
+      },
+      {
+        "better": "higher",
+        "id": "fps_mean"
+      },
+      {
+        "better": "lower",
+        "id": "power_watt"
+      },
+      {
+        "better": "higher",
+        "constraint": true,
+        "id": "psnr_db"
+      }
+    ],
+    "multiple_comparison": "bonferroni_on_wins",
+    "p_threshold": 0.05,
+    "replay_seconds": 36,
+    "rounds": 5,
+    "stat": "exact_permutation"
+  },
+  "serial": "91253241019A",
+  "version": 2,
+  "workload": {
+    "carrier": "game_replay",
+    "script": "../phonefarm/knobs/gray/workload_spin_touch_v1.json",
+    "seconds": 36
+  }
+}

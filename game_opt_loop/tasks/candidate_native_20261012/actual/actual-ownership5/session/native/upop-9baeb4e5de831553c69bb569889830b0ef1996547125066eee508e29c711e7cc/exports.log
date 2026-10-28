@@ -1,0 +1,6 @@
+000 T vkNegotiateLoaderLayerInterfaceVersion
+000 T vkGetInstanceProcAddr
+000 T vkGetDeviceProcAddr
+000 T vkEnumerateInstanceLayerProperties
+000 T vkEnumerateInstanceExtensionProperties
+

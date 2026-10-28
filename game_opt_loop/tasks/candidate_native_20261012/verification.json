@@ -1,0 +1,120 @@
+{
+  "source_commit": "70141d57dfe6238afa219d01604e191162353967",
+  "full_tests": {
+    "command": "cargo test --locked",
+    "exit_code": 0,
+    "passed": 367,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 0,
+    "native_cli_actual_opt_in_cases": 8,
+    "existing_preparation_cli_cases": 13,
+    "units": 284,
+    "log_sha256": "a17082af9c9d04527dc90e996f04ad2372af59fd9f15767e1d18f057186a1c85",
+    "explicit_consumers": {
+      "ownership5": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de",
+      "legacy4": "db1721a7779741367f974b27d57e398b1392cd08fb4c16972e95015a5fe65005"
+    }
+  },
+  "strict_clippy": {
+    "command": "cargo clippy --all-targets --all-features --locked -- -D warnings",
+    "exit_code": 0,
+    "log_sha256": "53d4778e2816d073de97102a3aaa45802aa2d9aa5d6ba65de8032bc7a4fdc4bf"
+  },
+  "actual_cli": {
+    "cases": [
+      {
+        "case": "actual-ownership5",
+        "live_session": "/private/tmp/gol-native-actual-ugppao8k/actual-ownership5/session",
+        "exit_code": 0,
+        "inspect_exit_code": 0,
+        "status": "PREPARED_OFFLINE_NATIVE",
+        "gol": {
+          "bytes": 46920192,
+          "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+        },
+        "phonefarm": {
+          "bytes": 36280200,
+          "sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+        },
+        "layer_contract": "ownership5",
+        "proof_flags": {
+          "deployable": false,
+          "gpu_validated": false,
+          "promotion_allowed": false,
+          "quality_verified": false,
+          "real_game_optimization_proven": false,
+          "semantic_equivalence_proven": false
+        }
+      },
+      {
+        "case": "actual-legacy4",
+        "live_session": "/private/tmp/gol-native-actual-ugppao8k/actual-legacy4/session",
+        "exit_code": 0,
+        "inspect_exit_code": 0,
+        "status": "PREPARED_OFFLINE_NATIVE",
+        "gol": {
+          "bytes": 46920192,
+          "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+        },
+        "phonefarm": {
+          "bytes": 32183608,
+          "sha256": "db1721a7779741367f974b27d57e398b1392cd08fb4c16972e95015a5fe65005"
+        },
+        "layer_contract": "legacy4",
+        "proof_flags": {
+          "deployable": false,
+          "gpu_validated": false,
+          "promotion_allowed": false,
+          "quality_verified": false,
+          "real_game_optimization_proven": false,
+          "semantic_equivalence_proven": false
+        }
+      },
+      {
+        "case": "actual-missing-sdk",
+        "live_session": "/private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session",
+        "exit_code": 1,
+        "inspect_exit_code": 1,
+        "status": "BLOCKED",
+        "gol": {
+          "bytes": 46920192,
+          "sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6"
+        },
+        "phonefarm": {
+          "bytes": 36280200,
+          "sha256": "2065e6dd948109f00be3e860b792267e6275f812523f24a4275f45e2a78219de"
+        },
+        "layer_contract": "not_selected",
+        "proof_flags": {
+          "deployable": false,
+          "gpu_validated": false,
+          "promotion_allowed": false,
+          "quality_verified": false,
+          "real_game_optimization_proven": false,
+          "semantic_equivalence_proven": false
+        }
+      }
+    ],
+    "scope": "actual local GOL/PF commands; controlled synthetic SDK only",
+    "real_ndk_execution": "NOT_RUN",
+    "GPU_device_API_calls": 0,
+    "SDK_downloads": 0
+  },
+  "independent_review": {
+    "binary_sha256": "0b6a45e5453d6d73f9184bf67d29aefb5de14c8041d8cad8c5720f51370943e6",
+    "ownership5_control": true,
+    "legacy4_control": true,
+    "rehashed_nested_receipt_rejected": true,
+    "closed_pipe_child_unknown": true,
+    "owned_host_group_final_ESRCH": true,
+    "repeat_full_suite": false
+  },
+  "claim_scope": "local_artifact_integrity_and_process_group_supervision_of_explicit_trusted_tools_not_real_Android_codegen_or_game_optimization",
+  "real_ndk_validation": "not_run",
+  "GPU_device_model_training_API_calls": 0,
+  "SDK_downloads": 0,
+  "all_proof_flags": false,
+  "deployable": false,
+  "promotion_allowed": false
+}

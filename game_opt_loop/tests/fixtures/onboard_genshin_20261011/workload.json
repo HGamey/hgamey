@@ -1,0 +1,26 @@
+[
+  {
+    "action": "sleep",
+    "ms": 3000
+  },
+  {
+    "action": "exec",
+    "cmd": "input swipe 1075 486 1882 486 10000"
+  },
+  {
+    "action": "exec",
+    "cmd": "input swipe 1882 486 1075 486 10000"
+  },
+  {
+    "action": "exec",
+    "cmd": "input swipe 1075 486 1882 486 10000"
+  },
+  {
+    "action": "exec",
+    "cmd": "input swipe 1882 486 1075 486 10000"
+  },
+  {
+    "action": "sleep",
+    "ms": 1000
+  }
+]

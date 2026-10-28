@@ -1,0 +1,97 @@
+{
+  "adapter_binding": {
+    "adaptation_id": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+    "compiler_binding_scope": "local_replayed_compilation_not_authenticated_attestation",
+    "descriptor_sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1",
+    "files": {
+      "adapted.spv": {
+        "bytes": 2800,
+        "sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325"
+      },
+      "descriptor.json": {
+        "bytes": 947,
+        "sha256": "01e67a5e92937da8b0369f19bbc6a38bea0be40e8c7f820af75883e60fc595a1"
+      },
+      "manifest.json": {
+        "bytes": 698,
+        "sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f"
+      },
+      "original.comp": {
+        "bytes": 673,
+        "sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0"
+      },
+      "original.spv": {
+        "bytes": 2688,
+        "sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03"
+      }
+    },
+    "local_compiler_export_bytes_equal": true,
+    "manifest_sha256": "73fd384316497fa249e00485af98063726436cfa262c75bd0599e11bc56dc81f",
+    "source_spirv_association": "caller_supplied_unverified"
+  },
+  "candidate_frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+  "candidate_json": {
+    "bytes": 1014,
+    "sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f"
+  },
+  "claim_scope": "offline_static_compilation_and_adapter_integrity_only_not_full_candidate_driver",
+  "compiler_receipt": {
+    "adapter_input": {
+      "candidate_json_sha256": "92897edec2fda7122d7790c33f240bc141422c670a10a67b3663b8cc4105244f",
+      "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+      "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+      "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+      "original_spirv_path": "original.spv",
+      "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+      "source_path": "original.comp",
+      "source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+      "source_spirv_association": "repository_gate_compiler_replayable",
+      "trust_scope": "local_integrity_not_authenticated_attestation"
+    },
+    "candidate_id": "actual-naga-sr-interface",
+    "claim_scope": "static_gate_and_local_compilation_only",
+    "descriptor_sha256": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+    "frozen_identity": "ae0096ebd5a8cd079b302ba885c7d5b1f949f292b5b2bd6e90c1b39510669584",
+    "gate_passed": true,
+    "manifest_sha256": "3e483bd5495efae11ed11df72130dc20e1f934af56cbd6f9705511a255df6392",
+    "proof_flags": {
+      "deployable": false,
+      "gpu_validated": false,
+      "promotion_allowed": false,
+      "quality_verified": false,
+      "real_game_optimization_proven": false,
+      "semantic_equivalence_proven": false
+    },
+    "schema": "game_opt_loop/candidate_compilation@1",
+    "state": "host_compiled_replay_match",
+    "track": "sr"
+  },
+  "frozen_inputs_sha256": "0f9ed477df80147d24bddbb16a5a96977b0e72c070b96e40feadd70c3a60f61e",
+  "gol_executable": {
+    "bytes": 46449312,
+    "sha256": "176e788e7f50e07a936f4b589d775642f0bcf44ae6e2c9bc5fcd1be553e18b34"
+  },
+  "native_build_reason": "MISSING_ANDROID_NDK",
+  "native_build_state": "BLOCKED",
+  "offline_compilation_adapter_complete": true,
+  "phonefarm_executable": {
+    "bytes": 32151832,
+    "sha256": "a8cc5f8fd3f9684db90b7302dc9cc2d05328f4f6a1ffdea7b4cd4c29c0ecc48d"
+  },
+  "preparation_chain_complete": false,
+  "proof_flags": {
+    "deployable": false,
+    "gpu_validated": false,
+    "promotion_allowed": false,
+    "quality_verified": false,
+    "real_game_optimization_proven": false,
+    "semantic_equivalence_proven": false
+  },
+  "provenance": "caller_supplied_local_candidate_not_real_game_attestation",
+  "rules": {
+    "bytes": 1817,
+    "sha256": "64bdee660bc9432bfa1cb9a6f1d890d4b9043d2e0548faf065d384980e737b6e"
+  },
+  "schema": "game_opt_loop/candidate_prepare@1",
+  "status": "BLOCKED"
+}

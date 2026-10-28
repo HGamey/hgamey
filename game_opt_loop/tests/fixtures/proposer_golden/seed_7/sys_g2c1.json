@@ -1,0 +1,161 @@
+{
+  "candidate_id": "sys_g2c1",
+  "conditions": {
+    "charging_suspend": {
+      "enabled": true,
+      "node": "/sys/class/qcom-battery/charging_enabled"
+    },
+    "cool_c": 48.0,
+    "fan": "unknown",
+    "require_discharging": true,
+    "require_root": true,
+    "temp_cap_c": 70.0
+  },
+  "kind": "sysparam",
+  "package": "com.miHoYo.Yuanshen",
+  "payload": {
+    "deny_keywords": [
+      "thermal",
+      "trip_point",
+      "cooling",
+      "fan",
+      "tsens",
+      "bcl",
+      "throttl"
+    ],
+    "params": {
+      "bus.DDR.boost_freq": "5333000",
+      "gpu.min_pwrlevel": "2"
+    },
+    "plan": [
+      {
+        "kind": "sysfs",
+        "path": "/sys/devices/system/cpu/bus_dcvs/DDR/boost_freq",
+        "value": "5333000"
+      },
+      {
+        "kind": "sysfs",
+        "path": "/sys/class/kgsl/kgsl-3d0/min_pwrlevel",
+        "value": "2"
+      }
+    ],
+    "whitelist": {
+      "bus.DDR.boost_freq": {
+        "current": "547000",
+        "effect": "live",
+        "kind": "sysfs",
+        "path": "/sys/devices/system/cpu/bus_dcvs/DDR/boost_freq",
+        "values": [
+          "547000",
+          "1555000",
+          "5333000"
+        ]
+      },
+      "cpu.policy0.scaling_max_freq": {
+        "current": "1200000",
+        "effect": "live",
+        "group": "cpu.policy0.freq",
+        "kind": "sysfs",
+        "path": "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq",
+        "values": [
+          "300000",
+          "700000",
+          "1200000"
+        ]
+      },
+      "cpu.policy0.scaling_min_freq": {
+        "current": "300000",
+        "effect": "live",
+        "group": "cpu.policy0.freq",
+        "kind": "sysfs",
+        "path": "/sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq",
+        "values": [
+          "300000",
+          "700000",
+          "1200000"
+        ]
+      },
+      "gpu.max_pwrlevel": {
+        "current": "0",
+        "effect": "live",
+        "group": "gpu.pwrlevel",
+        "kind": "sysfs",
+        "path": "/sys/class/kgsl/kgsl-3d0/max_pwrlevel",
+        "values": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4"
+        ]
+      },
+      "gpu.min_pwrlevel": {
+        "current": "4",
+        "effect": "live",
+        "group": "gpu.pwrlevel",
+        "kind": "sysfs",
+        "path": "/sys/class/kgsl/kgsl-3d0/min_pwrlevel",
+        "values": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4"
+        ]
+      },
+      "setting.system.min_refresh_rate": {
+        "current": "60",
+        "effect": "n/a(setting)",
+        "group": "refresh",
+        "kind": "setting",
+        "path": "system:min_refresh_rate",
+        "values": [
+          "60",
+          "120"
+        ]
+      },
+      "setting.system.peak_refresh_rate": {
+        "current": "120",
+        "effect": "n/a(setting)",
+        "group": "refresh",
+        "kind": "setting",
+        "path": "system:peak_refresh_rate",
+        "values": [
+          "60",
+          "120"
+        ]
+      }
+    },
+    "why": "本地变异器降级产出 (LLM 不可用)"
+  },
+  "protocol": {
+    "alternating": true,
+    "cool_c": 48.0,
+    "metrics": [
+      {
+        "better": "lower",
+        "id": "fps_p95_ms"
+      },
+      {
+        "better": "higher",
+        "id": "fps_mean"
+      },
+      {
+        "better": "lower",
+        "id": "power_watt"
+      }
+    ],
+    "multiple_comparison": "bonferroni_on_wins",
+    "p_threshold": 0.05,
+    "replay_seconds": 36,
+    "rounds": 5,
+    "stat": "exact_permutation"
+  },
+  "serial": "91253241019A",
+  "version": 2,
+  "workload": {
+    "carrier": "game_replay",
+    "script": "../phonefarm/knobs/gray/workload_spin_touch_v1.json",
+    "seconds": 36
+  }
+}

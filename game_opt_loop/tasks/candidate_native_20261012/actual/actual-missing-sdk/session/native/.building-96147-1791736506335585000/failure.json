@@ -1,0 +1,5 @@
+{
+  "device_validation": "not_run",
+  "error": "missing tool /private/tmp/gol-native-actual-ugppao8k/actual-missing-sdk/session/controlled-empty-sdk/shader-tools/linux-x86_64/glslc: No such file or directory (os error 2); install an Android NDK explicitly",
+  "state": "failed"
+}

@@ -1,0 +1,30 @@
+{
+  "protocol_version": 1,
+  "original_source_sha256": "f8563e4747bf005ea5da870bee66d5c18c021704597b9b708d9d40186f97cde0",
+  "original_spirv_sha256": "843f8435d5dd04c84dcc4c3ed5255e11c3dac408bf05763f1ad74f07a118ad03",
+  "adapted_spirv_sha256": "6f76f1c7649fcb10c82800b9c072df3777e669208878baee9b8039a4faa93325",
+  "source_spirv_association": "caller_supplied_unverified",
+  "transform": "direct_rgba8_storage_to_combined_fetch_lod0",
+  "changes": {
+    "input_variable": 33,
+    "output_variable": 35,
+    "original_image_type": 5,
+    "original_pointer_type": 34,
+    "output_shared_original_type": true,
+    "direct_loads": 2,
+    "unused_loads": 1,
+    "image_reads_to_fetch": 1,
+    "image_sizes_to_lod": 1
+  },
+  "adapted_abi": {
+    "version": 1,
+    "entry_point": "main",
+    "local_size": [
+      16,
+      16,
+      1
+    ],
+    "input": "set0/binding0:combined_sampler_2d_float32",
+    "output": "set0/binding1:writeonly_rgba8_2d"
+  }
+}

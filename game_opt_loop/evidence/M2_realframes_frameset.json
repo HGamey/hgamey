@@ -1,0 +1,108 @@
+{
+  "schema": "game_opt_loop/quality_reference_frames@1",
+  "purpose": "gpu-op 画质补测的真值帧集 (真机原神截帧)。大文件不入库, 这份清单负责让 dB 可追溯。",
+  "captured_at": "2026-09-23",
+  "device": "NX809J (91253241019A)",
+  "game": "com.miHoYo.Yuanshen CNRELAndroid7.1.0_R48379043_S48455349_D48474090",
+  "scene": "璃月港大世界探索态; phonefarm capture 巡航, 只保留 explore 态帧",
+  "native_resolution": "2688x1216",
+  "note": "gpu-op 中心裁剪到 1920x1080, 不缩放 (缩放会把缩放器特性混进 PSNR)。两批采集分别在夜间与黎明, 光照不同 —— 对画质真值是好事 (内容更多样), 对性能可重复性无关 (帧集只喂画质补测, 不参与 A/B 计时)。",
+  "frames": 19,
+  "sha256": [
+    {
+      "file": "ref_00.png",
+      "bytes": 5318215,
+      "sha256": "15551114a2b95300ab6d23c642dd20099642fb57e07e45dd132be8ecb83c3c22"
+    },
+    {
+      "file": "ref_01.png",
+      "bytes": 3637100,
+      "sha256": "11a52c72e12b4cda0a108419d8a648aae22c2ed2db43165d7ea2f025c3b79a13"
+    },
+    {
+      "file": "ref_02.png",
+      "bytes": 3615744,
+      "sha256": "bb73efe35aa0279fc46f231ce59fa5690cf7a6049b4ae695b2bffa555ba86b4b"
+    },
+    {
+      "file": "ref_03.png",
+      "bytes": 3661573,
+      "sha256": "4cafe0c255d4bfb80b37bd850ca2829b88d1a640b31ef935ae3acfb838650189"
+    },
+    {
+      "file": "ref_04.png",
+      "bytes": 3672022,
+      "sha256": "49e8a893ef2d0151a677bddd2d411ec0a4d9c4fffa4dd2087b176250d1dfac94"
+    },
+    {
+      "file": "ref_05.png",
+      "bytes": 3382207,
+      "sha256": "a94a6970eed072579cc843e1d0d982c90c3775df0611b8aa57bd0f05f69acd47"
+    },
+    {
+      "file": "ref_06.png",
+      "bytes": 3686548,
+      "sha256": "fafa66dbd5179c1dd4a33732d3d2c305e2d4d27c1dd07f0c34f9912240c26225"
+    },
+    {
+      "file": "ref_07.png",
+      "bytes": 3764942,
+      "sha256": "69278ecdf1bf4125f7cff514844e0f55499eb7a9d284298a851315551ec5e180"
+    },
+    {
+      "file": "ref_08.png",
+      "bytes": 3812381,
+      "sha256": "a172ef318e8ca33c425e0823e9f744377b5ff818fb4dc5b53d35383177f802d9"
+    },
+    {
+      "file": "ref_09.png",
+      "bytes": 3840583,
+      "sha256": "7a96bf4786b4c994b8ed744ba1e60e799cc841c107fcc79d0cb40bc3e2a27c26"
+    },
+    {
+      "file": "ref_10.png",
+      "bytes": 3873348,
+      "sha256": "b8153af40cc4a154e264a50592122335e36bdb03938c16aa1e65409d11cad3d9"
+    },
+    {
+      "file": "ref_11.png",
+      "bytes": 3753884,
+      "sha256": "8db8ea33ec3e83cbaf94bdebc58907ec46e6721a6fc84d55d1fd97a1bbe88def"
+    },
+    {
+      "file": "ref_12.png",
+      "bytes": 3886880,
+      "sha256": "d94521a5119e585f9f82b25ec6e70d793c86009e8a410f8db38c851a3e031acb"
+    },
+    {
+      "file": "ref_13.png",
+      "bytes": 3956282,
+      "sha256": "9f7a554c3a927b2d87b60918f53c0e141f9b7496eba6356117db9fa2accc429f"
+    },
+    {
+      "file": "ref_14.png",
+      "bytes": 3928553,
+      "sha256": "f698180a4e7125ee855917546019f891956fd55a014c88ea1a20e2016fb6c926"
+    },
+    {
+      "file": "ref_15.png",
+      "bytes": 3921111,
+      "sha256": "06e00c95641ee628b5ccbc4e59d99c5a6497756fb845a8a2afadc6559ff29f55"
+    },
+    {
+      "file": "ref_16.png",
+      "bytes": 3961874,
+      "sha256": "1b4915e8bf6da59f19457c9d906846e85e49cc395f6de03e212f8cc46a91e773"
+    },
+    {
+      "file": "ref_17.png",
+      "bytes": 3960942,
+      "sha256": "fe93ceb6307f0a516102e31d9b85f2e767d62b2b095e86252b72636a7d72eff3"
+    },
+    {
+      "file": "ref_18.png",
+      "bytes": 3974425,
+      "sha256": "a9d3e58fc02fcfc6198bfe69aae7235d2528f41990be34f5cb3518cf9c4bdf71"
+    }
+  ]
+}

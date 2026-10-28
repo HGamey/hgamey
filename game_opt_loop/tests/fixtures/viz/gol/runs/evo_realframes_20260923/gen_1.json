@@ -1,0 +1,259 @@
+{
+  "generation": 1,
+  "track": "sr",
+  "started_at": "2026-09-23T14:40:06.509238+00:00",
+  "origin_counts": {
+    "local_mutation": 3
+  },
+  "gate_rejections": {},
+  "outcomes": [
+    {
+      "id": "gen1_loc1",
+      "origin": "local_mutation",
+      "fingerprint": "be5819ff5139b052",
+      "notes": "2x2 tap / bilinear / sharpen=0.00 / adaptive / clamped",
+      "stage": "evaluated",
+      "gate": {
+        "passed": true,
+        "violations": [],
+        "features": {
+          "image_loads": 4,
+          "image_stores": 1,
+          "image_queries": 2,
+          "alu_ops": 111,
+          "transcendental_ops": 0,
+          "branches": 7,
+          "loops": 2,
+          "max_loop_trip": 2,
+          "workgroup_bytes": 0,
+          "workgroup_size": [
+            16,
+            16,
+            1
+          ],
+          "spirv_words": 1395,
+          "images_read": [
+            0
+          ]
+        },
+        "spirv_bytes": 5580,
+        "elapsed_us": 842
+      },
+      "report": {
+        "candidate_id": "gen1_loc1",
+        "status": "PASS",
+        "metrics": {
+          "operator_latency_ms": 0.53044045,
+          "fps_p95_ms": 8.341075,
+          "power_watt": 7.1994963,
+          "psnr_db": 37.79601
+        },
+        "verdict": {
+          "is_pareto_improvement": false,
+          "p_value": 0.000030226997276450387
+        },
+        "source": "phonefarm",
+        "quality_reference": {
+          "kind": "real_frames",
+          "source": "/Users/mac/projects/phonefarm/tasks/genshin_refframes_set",
+          "frames": 19,
+          "frame_files": [
+            "ref_00.png",
+            "ref_01.png",
+            "ref_02.png",
+            "ref_03.png",
+            "ref_04.png",
+            "ref_05.png",
+            "ref_06.png",
+            "ref_07.png",
+            "ref_08.png",
+            "ref_09.png",
+            "ref_10.png",
+            "ref_11.png",
+            "ref_12.png",
+            "ref_13.png",
+            "ref_14.png",
+            "ref_15.png",
+            "ref_16.png",
+            "ref_17.png",
+            "ref_18.png"
+          ],
+          "candidate_psnr_db": [
+            30.0239,
+            38.6592,
+            36.9625,
+            37.3515,
+            38.4958,
+            39.5052,
+            39.0534,
+            38.6849,
+            38.3331,
+            38.2595,
+            38.1072,
+            38.7812,
+            38.4891,
+            37.9027,
+            38.1435,
+            38.0921,
+            37.7796,
+            37.7774,
+            37.7224
+          ],
+          "baseline_psnr_db": [
+            29.6738,
+            35.2581,
+            33.983,
+            34.2695,
+            35.1364,
+            35.6825,
+            35.5388,
+            35.2652,
+            34.926,
+            34.8146,
+            34.6463,
+            35.2139,
+            34.9993,
+            34.4378,
+            34.6005,
+            34.5684,
+            34.3167,
+            34.3133,
+            34.2513
+          ]
+        }
+      }
+    },
+    {
+      "id": "gen1_loc2",
+      "origin": "local_mutation",
+      "fingerprint": "be5819ff5139b052",
+      "notes": "2x2 tap / bilinear / sharpen=0.00 / clamped",
+      "stage": "duplicate_skipped"
+    },
+    {
+      "id": "gen1_loc3",
+      "origin": "local_mutation",
+      "fingerprint": "b0d80e90eeabf92c",
+      "notes": "2x2 tap / bilinear / sharpen=0.00",
+      "stage": "evaluated",
+      "gate": {
+        "passed": true,
+        "violations": [],
+        "features": {
+          "image_loads": 4,
+          "image_stores": 1,
+          "image_queries": 2,
+          "alu_ops": 102,
+          "transcendental_ops": 0,
+          "branches": 7,
+          "loops": 2,
+          "max_loop_trip": 2,
+          "workgroup_bytes": 0,
+          "workgroup_size": [
+            16,
+            16,
+            1
+          ],
+          "spirv_words": 1319,
+          "images_read": [
+            0
+          ]
+        },
+        "spirv_bytes": 5276,
+        "elapsed_us": 782
+      },
+      "report": {
+        "candidate_id": "gen1_loc3",
+        "status": "PASS",
+        "metrics": {
+          "operator_latency_ms": 0.47899878,
+          "fps_p95_ms": 8.2627125,
+          "power_watt": 7.202689,
+          "psnr_db": 37.79601
+        },
+        "verdict": {
+          "is_pareto_improvement": false,
+          "p_value": 0.0002510478666035512
+        },
+        "source": "phonefarm",
+        "quality_reference": {
+          "kind": "real_frames",
+          "source": "/Users/mac/projects/phonefarm/tasks/genshin_refframes_set",
+          "frames": 19,
+          "frame_files": [
+            "ref_00.png",
+            "ref_01.png",
+            "ref_02.png",
+            "ref_03.png",
+            "ref_04.png",
+            "ref_05.png",
+            "ref_06.png",
+            "ref_07.png",
+            "ref_08.png",
+            "ref_09.png",
+            "ref_10.png",
+            "ref_11.png",
+            "ref_12.png",
+            "ref_13.png",
+            "ref_14.png",
+            "ref_15.png",
+            "ref_16.png",
+            "ref_17.png",
+            "ref_18.png"
+          ],
+          "candidate_psnr_db": [
+            30.0239,
+            38.6592,
+            36.9625,
+            37.3515,
+            38.4958,
+            39.5052,
+            39.0534,
+            38.6849,
+            38.3331,
+            38.2595,
+            38.1072,
+            38.7812,
+            38.4891,
+            37.9027,
+            38.1435,
+            38.0921,
+            37.7796,
+            37.7774,
+            37.7224
+          ],
+          "baseline_psnr_db": [
+            29.6738,
+            35.2581,
+            33.983,
+            34.2695,
+            35.1364,
+            35.6825,
+            35.5388,
+            35.2652,
+            34.926,
+            34.8146,
+            34.6463,
+            35.2139,
+            34.9993,
+            34.4378,
+            34.6005,
+            34.5684,
+            34.3167,
+            34.3133,
+            34.2513
+          ]
+        }
+      }
+    }
+  ],
+  "metric_source": "phonefarm",
+  "best_psnr_so_far": 37.79601,
+  "gen_best_psnr": 37.79601,
+  "best_latency_so_far": 0.26408854,
+  "front_size": 2,
+  "llm": {
+    "attempted": false,
+    "produced": 0
+  }
+}
