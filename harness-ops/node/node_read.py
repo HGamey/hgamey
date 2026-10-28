@@ -139,6 +139,7 @@ class NodeRead:
                               "host_capacity": self.jobs.dispatch.queue.capacity(),
                               "input_limits": dict(job_input_archive.POLICY),
                               "require_device_binding": bool(getattr(self.jobs, "require_device_binding", False)),
+                              "experiments": ({"url": self.jobs.experiment_url} if "experiment" in self.jobs.bins else None),
                               "export_limits": dict(EXPORT_LIMITS),
                               "asset_write_limits": dict(ASSET_WRITE_LIMITS)},
                 "target_binding": {"header": "X-Expected-Node-ID", "query": "expected_node_id",
@@ -152,6 +153,7 @@ class NodeRead:
                                 (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +
                                 (["jobs.require-device-binding-v1"] if getattr(self.jobs, "require_device_binding", False) else []) +
                                 (["jobs.cross-node-inputs-v1"] if getattr(self.jobs, "directory", None) is not None else []) +
+                                (["jobs.experiment-v1"] if "experiment" in self.jobs.bins else []) +
                                 (["games.device-lanes-v1"] if getattr(self.jobs, "deployments", None)
                                  and self.jobs.deployments.device_binding_available else []) +
                                 (["games.deploy-v1"] if getattr(self.jobs, "deployments", None)

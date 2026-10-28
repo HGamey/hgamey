@@ -6,6 +6,7 @@ Agent 每轮从这里开始：
   pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
   pf-node --research <研究> --detach phonefarm ... # 为研究跑的任务带上研究 ID：手机占用和任务页据此显示
+  pf-node --experiment <分支|提交> --research <研究> --detach experiment <脚本.py|.sh> ...  # 跑实验仓库里固定提交的脚本
 
   pf-node phonefarm eval --request r.json --json --lock-label judge
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
@@ -183,7 +184,7 @@ Agent 每轮从这里开始：
 - 目标须显式 --url URL / PF_NODE_URL；写入须 --node-id ID / PF_NODE_ID，可先用 node 只读取得。
 - 凭据只用 --token-file FILE 或 PF_NODE_TOKEN / PF_NODE_TOKEN_FILE；显式文件优先，两种环境凭据冲突即拒绝。
 """
-import gzip, hashlib, http.client, io, json, math, os, re, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
+import gzip, hashlib, http.client, io, json, math, os, re, subprocess, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from target_client import Target, TargetError
@@ -284,6 +285,22 @@ def pack(argv):
                 val = f"@in/{arc}"
             out.append(f"{flag}{sep}{val}" if sep else val)
     return out, (buf.getvalue() if n else b"")
+
+
+def resolve_experiment(url, ref):
+    """A branch, tag or full commit of the experiments repository → the full commit the node will run."""
+    if re.fullmatch(r"[0-9a-f]{40}", ref):
+        return ref
+    try:
+        # Ask for ref^{} too: only then does ls-remote report the commit an annotated tag points to.
+        done = subprocess.run(["git", "ls-remote", url, ref, ref + "^{}"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        sys.exit(f"pf-node: 读不到实验仓库 {url}：{error}")
+    refs = {name: sha for sha, _, name in (line.partition("\t") for line in done.stdout.splitlines())}
+    for name in (f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}"):
+        if not done.returncode and name in refs:
+            return refs[name]
+    sys.exit(f"pf-node: 实验仓库 {url} 里没有分支或标签 {ref}；用分支名、标签或完整提交号")
 
 
 def valid_request_id(value):
@@ -1095,7 +1112,7 @@ def main():
     priority = None
     device_access, recovery_for, execution_policy = None, None, None
     inputs_path, inputs, submission_node = None, None, None
-    actor_id = research_id = None
+    actor_id = research_id = experiment_ref = None
     binding_path, binding_envelope = None, None
     host_slots_path, host_slots = None, None
     disk_guard_path, disk_guard = None, None
@@ -1128,6 +1145,10 @@ def main():
             if not args or research_id is not None:
                 sys.exit("pf-node: --research 需要且只能指定一次研究 ID")
             research_id = args.pop(0)
+        elif a == "--experiment":
+            if not args or experiment_ref is not None:
+                sys.exit("pf-node: --experiment 需要且只能指定一次实验仓库的分支、标签或提交")
+            experiment_ref = args.pop(0)
         elif a == "--inputs":
             if not args or inputs_path is not None:
                 sys.exit("pf-node: --inputs 需要且只能指定一个清单文件")
@@ -1611,11 +1632,24 @@ def main():
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
     if research_id is not None and "jobs.research-link-v1" not in submission_node.get("capabilities", []):
         sys.exit("pf-node: 节点缺少 jobs.research-link-v1；未提交，不丢弃 --research")
+    experiment = None
+    if (experiment_ref is not None) != (binname == "experiment"):
+        sys.exit("pf-node: 实验任务写成 pf-node --experiment <分支|提交> experiment <脚本> ...；两者缺一不可")
+    if experiment_ref is not None:
+        if "jobs.experiment-v1" not in submission_node.get("capabilities", []):
+            sys.exit("pf-node: 节点缺少 jobs.experiment-v1；未提交")
+        experiment = {"commit": resolve_experiment(submission_node["execution"]["experiments"]["url"], experiment_ref)}
     if gray_session and existing_gray_request is None:
         require_gray_session_compatibility(submission_node, exe)
     request_id = request_id or str(uuid.uuid4())
-    argv, body = pack(([exe] if exe else []) + argv)
+    if experiment is not None:  # the entry is a path inside the experiments repository, never a local upload
+        rest, body = pack(argv[1:])
+        argv = argv[:1] + rest
+    else:
+        argv, body = pack(([exe] if exe else []) + argv)
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
+    if experiment is not None:
+        spec["experiment"] = experiment
     if actor_id is not None:
         spec["actor_id"] = actor_id
     if research_id is not None:

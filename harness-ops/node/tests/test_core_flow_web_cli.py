@@ -316,6 +316,10 @@ class CoreFlowTests(unittest.TestCase):
         aimed = aimed["job"]["id"] if "job" in aimed else aimed["id"]
         held = {"status": "held", "held_by": f"job-{aimed}", "lease": {"entries": []}}
         self.assertEqual((board._holder("S1", held)["kind"], board._holder("S2", held)["kind"]), ("job", "global"))
+        # An experiment locks under its job's label and names the phone after @.
+        nested = {"status": "held", "held_by": f"job-{jid}-selfsr-native-1@S2", "lease": {"entries": []}}
+        self.assertEqual((board._holder("S2", nested)["kind"], board._holder("S1", nested)["kind"]), ("job", "global"))
+        self.assertEqual(board._holder("S2", nested)["research_id"], "sr-genshin")
         outside = {"status": "held", "held_by": "selfsr@S2", "lease": {"entries": []}}
         self.assertEqual(board._holder("S2", outside), {"kind": "external", "label": "selfsr@S2"})
         self.assertIsNone(board._holder("S1", outside))

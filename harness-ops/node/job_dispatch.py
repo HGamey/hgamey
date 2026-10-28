@@ -67,6 +67,7 @@ class JobDispatch:
         return {"id": jid, "bin": name, "argv": spec.get("argv", []), "label": spec.get("label"),
                 **({"actor_id": spec["actor_id"]} if "actor_id" in spec else {}),
                 **({"research_id": spec["research_id"]} if "research_id" in spec else {}),
+                **({"experiment": dict(spec["experiment"])} if "experiment" in spec else {}),
                 **request_facts(spec),
                 "request_id": row["request_id"], "started": row["submitted_at"],
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
@@ -389,6 +390,16 @@ class JobDispatch:
             env["PF_JOB_ACTOR"] = spec["actor_id"]
         if spec.get("research_id"):
             env["PF_JOB_RESEARCH"] = spec["research_id"]
+        if spec["bin"] == "experiment":
+            # Experiments reach the node's programs through these, not through paths of their own checkout.
+            bins = self.jobs.bins
+            env["PF_EXPERIMENT_COMMIT"] = spec["experiment"]["commit"]
+            for key, name, part in (("PHONEFARM_BIN", "phonefarm", 0), ("PF_ROOT", "phonefarm", 1),
+                                    ("GAME_OPT_LOOP_BIN", "game_opt_loop", 0)):
+                if name in bins:
+                    env[key] = bins[name][part]
+            if os.environ.get("ANDROID_NDK_HOME"):
+                env.setdefault("ANDROID_NDK_HOME", os.environ["ANDROID_NDK_HOME"])
         if spec["bin"] == "update_node":
             # The fixed PF profile omits service credentials and ambient paths.
             # This admin updater needs only the selected config directory.

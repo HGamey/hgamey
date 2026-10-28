@@ -46,6 +46,7 @@ from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
 from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE
+import job_experiment
 from node_media import MediaError
 from node_fleet import FleetState
 from node_agents import AgentError, NodeAgents
@@ -264,10 +265,12 @@ def read_host_capacity(path):
 class Jobs:
     def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None,
                  history_sources=None, export_cache_root=None, export_cache_quota=None,
-                 require_device_binding=False):
+                 require_device_binding=False, experiment_url=None):
         self.root, self.bins = root, bins
         self.history_sources = history_sources if history_sources is not None else []
         self.data_root = os.path.abspath(data_dir or root)
+        self.experiment_url = experiment_url or job_experiment.DEFAULT_URL
+        self.experiment_mirror = os.path.join(self.data_root, "_experiments", "experiments.git")
         self.update_config_dir = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
         if not os.path.isabs(self.update_config_dir):
             self.update_config_dir = os.path.join(os.path.expanduser("~/node"), self.update_config_dir)
@@ -331,6 +334,9 @@ class Jobs:
             raise ValueError("argv 必须是字符串数组")
         if spec.get("label") is not None and not isinstance(spec["label"], str):
             raise ValueError("label 必须是字符串")
+        if (binname == "experiment") != ("experiment" in spec):
+            raise ValueError("bin experiment and the experiment field go together")
+        experiment = job_experiment.validate(spec) if binname == "experiment" else None
         asset_refs = spec.get("asset_refs")
         if asset_refs is not None:
             import re as _re
@@ -397,6 +403,7 @@ class Jobs:
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"),
                 **({"actor_id": actor_id} if actor_id else {}),
                 **({"research_id": research_id} if research_id is not None else {}),
+                **({"experiment": experiment} if experiment else {}),
                 **({"asset_refs": asset_refs} if asset_refs else {}), "resources": sorted(set(resources)),
                 **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),
@@ -410,6 +417,8 @@ class Jobs:
                 **({"exe": spec["exe"]} if spec.get("exe") else {})}
         if device_binding and access == "recovery":
             self.validate_bound_recovery(spec)
+        if experiment and device_binding:
+            raise ValueError("experiment jobs take device locks themselves; device_binding does not apply")
         # Old explicit host-only requests persisted the bin's device default.
         # This candidate may find an existing request; it must never admit one.
         legacy_resource_spec = {**spec, "resources": ["legacy-device"]} if legacy_host_default else None
@@ -461,6 +470,10 @@ class Jobs:
                 raise ValueError("exe 只能是本任务上传的文件 @in/...")
             os.chmod(exe, 0o755)
         command = [exe] + [sub(a) for a in effective_argv]
+        if binname == "experiment":  # the code is the pinned commit, unpacked under in/
+            checkout = os.path.join(jin, job_experiment.CHECKOUT)
+            job_experiment.materialize(self.experiment_mirror, self.experiment_url, spec["experiment"]["commit"], checkout)
+            command, cwd = job_experiment.command(checkout, [argv[0]] + [sub(a) for a in argv[1:]]), checkout
         if "device_binding" in spec and spec.get("device_access") != "recovery":
             # Binding is opaque JSON, not an @in/@out template. Check serial
             # after ordinary argument expansion before adding the owned flag.
@@ -2171,6 +2184,8 @@ def argument_parser():
     ap.add_argument("--export-cache-root", help="当前作业目录导出的独立绝对缓存根；省略保留旧布局，不迁移原件或游戏资源")
     ap.add_argument("--export-cache-quota", type=bounded_int(1, 1 << 40), help="外部缓存根的字节配额；启动时显式逐出最旧缓存并写审计报告")
     ap.add_argument("--require-device-binding", action="store_true", help="拒绝缺少 device_binding 的设备访问任务（多设备纪律）")
+    ap.add_argument("--experiments-url", default=os.environ.get("HGAMEY_EXPERIMENTS_URL") or job_experiment.DEFAULT_URL,
+                    help="实验仓库地址；bin experiment 的任务按提交号从这里取代码")
     return ap
 
 
@@ -2198,10 +2213,13 @@ def main():
             # 管理更新先准备产物，再在调度屏障内按配置目录发布；保留数据及回滚记录。
             "update_node": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "update_node.sh"), os.path.dirname(root)),
             # 节点自己下载 APK 并装到手机（大安装包不经开发机）
-            "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root))}
+            "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root)),
+            # 实验仓库里的脚本；解释器和工作目录在准备时按固定的提交确定
+            "experiment": (sys.executable, root)}
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
                 host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root,
-                export_cache_quota=a.export_cache_quota, require_device_binding=a.require_device_binding)
+                export_cache_quota=a.export_cache_quota, require_device_binding=a.require_device_binding,
+                experiment_url=a.experiments_url)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
     if dash:
