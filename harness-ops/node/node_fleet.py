@@ -158,23 +158,14 @@ class FleetState:
                 self._attempted_at = time.time()
                 lock = self._read_lock()
                 free_for = lock["free_for_s"]
-                reclaim = False
-                if lock["status"] != "free" or lock["stale"] or (lock["status"] == "free" and
-                        free_for is not None and free_for < FREE_GRACE_S):
-                    reclaim = self.leases is not None and abandoned_observation(lock.get("lease"))
-                    if not reclaim:
-                        self._deferred = ("设备锁已占用，暂缓采样" if lock["status"] == "held" and not lock["stale"] else
-                                          "设备锁状态未知或心跳过期，暂缓采样" if lock["status"] != "free" or lock["stale"] else
-                                          f"设备锁释放不足 {FREE_GRACE_S} 秒，暂缓采样")
-                        self._error = None
-                        self._next_at = now + 5
-                        self._attempt += 1
-                        self._condition.notify_all()
-                        continue
-                    self._refreshing = True
-                else:
-                    self._refreshing, self._deferred = True, None
-                    screenshots = lock["status"] == "free" and not lock["queue"] and now < self._shots_until
+                reclaim = ((lock["status"] != "free" or lock["stale"] or
+                            (lock["status"] == "free" and free_for is not None and free_for < FREE_GRACE_S))
+                           and self.leases is not None and abandoned_observation(lock.get("lease")))
+                self._refreshing, self._deferred = True, None
+                # PF chooses full versus light observation. Only screenshots
+                # require the node's stronger free/no-queue/grace qualification.
+                screenshots = (lock["status"] == "free" and not lock["stale"] and not lock["queue"]
+                               and (free_for is None or free_for >= FREE_GRACE_S) and now < self._shots_until)
             executable, cwd = (self.leases.bins["phonefarm"] if self.leases else
                                (os.path.join(self.root, "phonefarm"), self.root))
             configured = self.leases.env if self.leases and self.leases.env is not None else os.environ

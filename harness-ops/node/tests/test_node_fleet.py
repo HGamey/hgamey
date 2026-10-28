@@ -28,22 +28,23 @@ class FleetStateTests(unittest.TestCase):
             lock = read_lock(directory)
             self.assertEqual((lock["status"], lock["held_by"], lock["stale"]), ("held", "measuring", True))
 
-    def test_unknown_lock_defers_without_touching_phone_and_unknown_is_not_empty(self):
+    def test_unknown_lock_allows_bounded_light_sample(self):
         with tempfile.TemporaryDirectory() as directory:
             (Path(directory) / "devlock.d").mkdir()
             state = FleetState(directory, directory, str(Path(directory) / "shots"))
             try:
                 self.assertIsNone(state.snapshot()["devices"])
                 self.assertIsNone(state._thread)
-                with patch("node_fleet.subprocess.run") as run:
+                empty = subprocess.CompletedProcess([], 1, '{"schema":"phonefarm/fleet@1","devices": []}', "")
+                with patch("node_fleet.subprocess.run", return_value=empty) as run:
                     result = state.request(wait=1)
-                    run.assert_not_called()
-                    self.assertIsNone(result["devices"])
-                    self.assertTrue(result["deferred"])
+                    run.assert_called_once()
+                    self.assertEqual(result["devices"], [])
+                    self.assertIsNone(result["deferred"])
             finally:
                 state.close()
 
-    def test_storage_contract_blocks_sampling_and_uses_selected_phonefarm(self):
+    def test_storage_states_use_selected_phonefarm_for_light_and_full(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             leases = LeaseState({"phonefarm": (str(root / "selected-phonefarm"), directory)}, env={
@@ -56,14 +57,17 @@ class FleetStateTests(unittest.TestCase):
                                 "readiness": "migration_required", "error": "old participants must stop"}
             state = FleetState(directory, None, str(root / "shots"), lease_state=leases)
             try:
-                with patch("node_lease.subprocess.run", return_value=Mock(stdout=json.dumps(value))) as run:
+                def selected_run(command, **kwargs):
+                    if command[1:] == ["lease", "status", "--json"]:
+                        return Mock(stdout=json.dumps(value))
+                    return subprocess.CompletedProcess(command, 1, '{"schema":"phonefarm/fleet@1","devices": []}', "")
+                with patch("node_lease.subprocess.run", side_effect=selected_run) as run:
                     leases.snapshot(refresh=True, force=True)
                     result = state.request(wait=1, observe=True)
                     self.assertEqual(result["lock"]["status"], "unknown")
-                    self.assertIsNone(result["devices"])
-                    self.assertTrue(result["deferred"])
-                    self.assertTrue(all(call.args[0][1:] == ["lease", "status", "--json"]
-                                        for call in run.call_args_list))
+                    self.assertEqual(result["devices"], [])
+                    self.assertIsNone(result["deferred"])
+                    self.assertEqual(run.call_args.args[0][1:], ["fleet", "--json"])
                 self.assertFalse((root / "persistent").exists())
             finally:
                 state.close()
@@ -96,11 +100,13 @@ class FleetStateTests(unittest.TestCase):
                 leases.snapshot(refresh=True, force=True)
             state = FleetState(directory, None, str(root / "shots"), lease_state=leases)
             try:
-                with patch("node_fleet.subprocess.run") as run:
+                empty = Mock(returncode=1, stdout='{"schema":"phonefarm/fleet@1","devices": []}')
+                with patch("node_fleet.subprocess.run", return_value=empty) as run:
                     result = state.request(wait=1, observe=True)
                     self.assertEqual(result["lock"]["status"], "held")
-                    self.assertIn("占用", result["deferred"])
-                    run.assert_not_called()
+                    self.assertEqual(result["devices"], [])
+                    self.assertIsNone(result["deferred"])
+                    run.assert_called_once()
             finally:
                 state.close()
             value.update(status="clear", entries=[])
@@ -109,11 +115,13 @@ class FleetStateTests(unittest.TestCase):
                 self.assertEqual(leases.snapshot(refresh=True, force=True)["status"], "unknown")
             state = FleetState(directory, None, str(root / "shots"), lease_state=leases)
             try:
-                with patch("node_fleet.subprocess.run") as run:
+                empty = Mock(returncode=1, stdout='{"schema":"phonefarm/fleet@1","devices": []}')
+                with patch("node_fleet.subprocess.run", return_value=empty) as run:
                     result = state.request(wait=1)
                     self.assertEqual(result["lock"]["status"], "unknown")
                     self.assertIn("queue_dir", result["lock"]["error"])
-                    run.assert_not_called()
+                    self.assertEqual(result["devices"], [])
+                    run.assert_called_once()
             finally:
                 state.close()
 
@@ -213,8 +221,9 @@ class FleetStateTests(unittest.TestCase):
                     try:
                         with patch("node_fleet.subprocess.run", side_effect=node_run) as run:
                             result = state.request(wait=1)
-                            self.assertTrue(result["deferred"], other)
-                            self.assertEqual(calls(run), [])
+                            self.assertIsNone(result["deferred"], other)
+                            self.assertEqual(result["devices"], [])
+                            self.assertEqual([call.args[0][1] for call in calls(run)], ["fleet"])
                     finally:
                         state.close()
 
