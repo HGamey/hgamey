@@ -63,7 +63,7 @@ from runtime_identity import ConfiguredPrograms, ProgramCompatibilityError
 from job_events import NodeJobEvents, JobEventError
 from job_dispatch import JobDispatch, file_lock
 from job_queue import RequestConflict, job_priority
-from job_policy import PolicyUnavailable, require_policy
+from job_policy import require_policy
 from node_lease import LeaseState, device_access, job_lease_receipts
 from node_session import session_call, recover_session, recovery_plan, SessionError, MAX_REQUEST
 from artifact_io import (SafeRoot, ArtifactChanged, relative_path, describe_file, ensure_unchanged,
@@ -2108,8 +2108,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(404, {"code": "job_not_found", "error": "no such job"})
             except RequestConflict as e:
                 return self._send(409, {"code": "conflict", "error": str(e)})
-            except PolicyUnavailable as e:
-                return self._send(422, e.payload)
             except (CapacityExceeded, ProgramCompatibilityError) as e:
                 return self._send(e.status, e.payload)
             except (ValueError, tarfile.TarError) as e:

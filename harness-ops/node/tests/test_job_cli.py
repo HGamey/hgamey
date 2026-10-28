@@ -291,23 +291,6 @@ class JobCLI(unittest.TestCase):
                                "/node", "/jobs/ffffffffffff/leases"])
         self.assertEqual(len(posts), 2)
 
-    def test_execution_policy_refusal_precedes_packing_or_post(self):
-        main = self.load_cli()["main"]
-        for policy_capability in (False, True):
-            node = {"capabilities": ["jobs.idempotency-v1"]}
-            if policy_capability:
-                node["capabilities"].append("jobs.execution-policy-v1")
-                node["execution"] = {"process_policies": {"contained": {"available": False, "reason": "no contained backend"}}}
-            call = mock.Mock(return_value=json.dumps(node).encode())
-            pack = mock.Mock(side_effect=AssertionError("must not pack an unsupported job"))
-            with mock.patch.dict(main.__globals__, call=call, pack=pack), \
-                    mock.patch.object(sys, "argv", [str(CLI), "--execution-policy", "contained", "--detach", "phonefarm"]), \
-                    self.assertRaises(SystemExit) as error:
-                main()
-            self.assertIn("未打包或提交", str(error.exception))
-            call.assert_called_once_with("GET", "/node", attempts=1, raise_4xx=True)
-            pack.assert_not_called()
-
     def test_host_slots_file_is_opt_in_checked_before_pack_and_preserves_rejection(self):
         cli = self.load_cli(); main = cli["main"]
         slots = {"cpu": 2, "gpu": 1, "io": 0}

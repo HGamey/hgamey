@@ -7,16 +7,10 @@ def process_policies():
         "process_group": {"available": True, "backend": "posix_process_group",
                           "completion_scope": "original_process_group",
                           "reason": "Only the original process group is managed; detached descendants are unverified."},
+        # Historical records and administrator-only workers still use this fact.
         "contained": {"available": False, "backend": None, "completion_scope": None,
-                      "reason": "This node has no verified backend containing descendants across process-group changes."},
+                      "reason": "This node has no verified public backend containing descendants across process-group changes."},
     }
-
-
-class PolicyUnavailable(ValueError):
-    def __init__(self, policy, capability):
-        super().__init__(capability["reason"])
-        self.payload = {"error": str(self), "code": "execution_policy_unavailable",
-                        "execution_policy": policy, "capability": capability}
 
 
 def requested_policy(spec):
@@ -29,10 +23,10 @@ def requested_policy(spec):
 
 
 def require_policy(spec):
+    """Public admission; administrator workers use requested_policy directly."""
     policy = requested_policy(spec)
-    capability = process_policies()[policy]
-    if not capability["available"]:
-        raise PolicyUnavailable(policy, capability)
+    if policy != "process_group":
+        raise ValueError("public execution_policy must be process_group")
     return policy
 
 

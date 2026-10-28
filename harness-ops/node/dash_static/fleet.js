@@ -416,7 +416,7 @@
   }
   function processPolicyFacts(node) {
     if (!node?.capabilities?.includes('jobs.execution-policy-v1')) return [['进程执行策略能力', '未提供，执行范围未知']];
-    return [['进程执行策略协议', 'jobs.execution-policy-v1'], ...[['process_group', '原进程组策略'], ['contained', '约束域策略']].map(([key, label]) => {
+    return [['进程执行策略协议', 'jobs.execution-policy-v1'], ...[['process_group', '原进程组策略']].map(([key, label]) => {
       const policy = node.execution?.process_policies?.[key];
       const description = !policy ? '未提供' : policy.available === true ? `可选择 · 后端：${text(policy.backend)} · 完成范围：${text(policy.completion_scope)}` : '不可用';
       return [`${label}（${key}）`, `${description}${policy?.reason ? `。${policy.reason}` : ''}`];

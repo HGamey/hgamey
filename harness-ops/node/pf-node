@@ -143,8 +143,8 @@ Agent 每轮从这里开始（最短完整路径）：
 - status 的 execution.stop_intent 是 worker 最后成功保存的停止原因和管理记录错误历史，可能落后于实际执行。
   实际已发信号仍看 cancel.signals；这些记录不证明已停/已恢复，也不表示当前磁盘剩余量。
   owner_record_error 独立发起停止时，即使命令exit=0仍按interrupted返回125；期限124规则保持。
-- --execution-policy process_group|contained 显式要求进程管理范围；先核节点能力，不支持时不打包/提交。
-  process_group 只管理原进程组；contained 当前未提供。省略保留兼容默认，不替旧任务补全树结束证明。
+- --execution-policy process_group 显式要求原进程组管理；先核节点能力，不支持时不打包/提交。
+  省略保留兼容默认，不替旧任务补全树结束证明。
 - finalizing 表示结束记录尚在保存；storage_blocked 表示保存失败，wait/跟随以125退出并保留命令诊断。
   修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
 - 历史 --source 与 --source-revision 必须同时显式提供，只用于 jobs/status/log/artifacts/out；
@@ -1239,8 +1239,8 @@ def main():
                 sys.exit("pf-node: --timeout-action 不能声明互相矛盾的动作")
             timeout_action = value
         elif a == "--execution-policy":
-            if not args or args[0] not in ("process_group", "contained"):
-                sys.exit("pf-node: --execution-policy 必须为 process_group 或 contained")
+            if not args or args[0] != "process_group":
+                sys.exit("pf-node: --execution-policy 必须为 process_group")
             value = args.pop(0)
             if execution_policy is not None and execution_policy != value:
                 sys.exit("pf-node: --execution-policy 不能声明互相矛盾的策略")
