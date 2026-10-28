@@ -1,0 +1,43 @@
+# 代码仓库只放代码：推到 main 或 PR 的提交新增或修改了文档类文件（.md、图片、PPT、PDF、drawio 等）时失败。
+# 说明写进 commit message，长期文档放 https://github.com/HGamey/docs 。允许的例外见根目录 AGENTS.md。
+name: code-only
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  code-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 检查文档类文件
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          changed=$(git -c core.quotepath=off diff --name-only --diff-filter=AMR "$BASE"...HEAD)
+          bad=$(printf '%s\n' "$changed" \
+            | grep -iE '\.(md|png|jpe?g|gif|svg|pdf|pptx?|docx?|drawio|mp4|mov|xlsx?)$' \
+            | grep -vE '^([^/]+/)?README\.md$' \
+            | grep -vE '(^|/)(AGENTS|CLAUDE|SKILL|THIRD_PARTY_NOTICES|LICENSE)\.md$' \
+            | grep -vE '(^|/)(tests?|fixtures|testdata|skills|evidence|dash_demo|assets|static|dash_static|\.cursor|\.github)/' \
+            | grep -vE '^[^/]+/(tasks/|loop_v1/runs)' \
+            | grep -vE '^history/' || true)
+          status=0
+          if [ -n "$bad" ]; then
+            echo "::error::代码仓库只放代码。下列文件请改写进 commit message，或放到 HGamey/docs："
+            printf '%s\n' "$bad"
+            status=1
+          fi
+          for readme in $(printf '%s\n' "$changed" | grep -E '^([^/]+/)?README\.md$' || true); do
+            n=$(wc -l < "$readme")
+            if [ "$n" -gt 40 ]; then
+              echo "::error::$readme 有 $n 行，上限 40 行。详细说明放到 HGamey/docs。"
+              status=1
+            fi
+          done
+          exit $status

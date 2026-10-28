@@ -1,6 +1,6 @@
 # game_opt_loop
 
-外部 Agent 可选的游戏优化方法客户端（Rust）：候选生成、方法编排及与 [phonefarm](https://github.com/HGamey/phonefarm) 的实验对接。[harness-ops](https://github.com/HGamey/harness-ops) 的网页与 CLI/API 提供共享研究状态和异步人工协助；研究方向与优先级由外部 Agent 决定。
+外部 Agent 可选的游戏优化方法客户端（Rust）：候选生成、方法编排及与 [phonefarm](../phonefarm) 的实验对接。[harness-ops](../harness-ops) 的网页与 CLI/API 提供共享研究状态和异步人工协助；研究方向与优先级由外部 Agent 决定。
 
 ## 构建与运行
 

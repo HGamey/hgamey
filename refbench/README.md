@@ -1,6 +1,6 @@
 # refbench
 
-白盒测试载体：确定性的 Vulkan 渲染负载，每条优化路线一个外部开关，自带 render pass 标记，瓶颈类型可定向构造。本仓库只提供负载、开关和已知答案；由 [phonefarm](https://github.com/HGamey/phonefarm) 的方法与合同驱动，`loop_v1/refbench/` 保留既有方法入口；共享节点通过 [harness-ops](https://github.com/HGamey/harness-ops) 的作业入口执行。
+白盒测试载体：确定性的 Vulkan 渲染负载，每条优化路线一个外部开关，自带 render pass 标记，瓶颈类型可定向构造。本仓库只提供负载、开关和已知答案；由 [phonefarm](../phonefarm) 的方法与合同驱动，`loop_v1/refbench/` 保留既有方法入口；共享节点通过 [harness-ops](../harness-ops) 的作业入口执行。
 
 ## 构建
 

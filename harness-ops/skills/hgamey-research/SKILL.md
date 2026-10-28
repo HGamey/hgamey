@@ -5,6 +5,10 @@ description: 在 HGamey 节点上接续游戏或系统优化研究，消费人�
 
 # 接续共享研究
 
+## 每轮入口
+
+先用自己的 agent token：持有管理 token 时运行 `pf-node agents token <名字>`，把输出存进私有文件并设 `PF_NODE_TOKEN_FILE`，之后不再用管理 token 写入。每轮开始运行 `pf-node checkin`，它列出要回应的人工留言、要处理的反馈、卡住的任务、过期的状态、可认领与该交付的研究，以及每轮做法；先清 duties 再推进实验。研究就是任务：`pf-node research claim|note|thread|deliver`；回应人工留言带 `--reply-to <留言> --decision adopt|defer|reject`，交付带总结、产物和适用的游戏版本与设备。
+
 研究目标、方向、证据和人类反馈放在节点；推理、优先级和执行回合由外部 Agent 负责。网页 `/dash/research`、`/dash/jobs`、`/dash/results` 与 CLI/API 使用同一份状态。人无需同步在线。
 
 ## 取得足够上下文

@@ -22,4 +22,4 @@ python3 -m unittest discover -s harness-ops/node/tests
 (cd game_opt_loop && cargo test)
 ```
 
-旧仓库提交号与本仓库提交号的对应见 `history/*.commit-map`。设计、计划与实验记录仍在 HGamey/docs。
+旧仓库已归档只读；旧提交号与本仓库提交号的对应见 `history/*.commit-map`，导入的未合并分支见 `history/branches.md`。规则见 [AGENTS.md](AGENTS.md)。设计、计划与实验记录仍在 HGamey/docs。

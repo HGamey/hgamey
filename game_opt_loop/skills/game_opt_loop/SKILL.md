@@ -4,7 +4,7 @@ description: Optimize one game on one real Android/OpenHarmony phone, end to end
 license: MIT
 metadata:
   version: 1.1
-  source-repo: github.com/HGamey/game_opt_loop
+  source-repo: github.com/HGamey/hgamey (game_opt_loop/)
   requires: phonefarm (github.com/BH3GEI/phonefarm), optionally refbench
 ---
 
