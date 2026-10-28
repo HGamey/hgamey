@@ -158,6 +158,41 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual([(e["from"], e["auth_channel"]) for e in thread["entries"]],
                              [("human", "dashboard_steer"), ("agent-a", "admin_token")])
 
+    def test_guidance_response_status_matches_the_delivery_gate(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-guidance", self.write(
+            "web-guidance-task", {"title": "指导回应", "objective": "网页状态与交付闸门一致"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-guidance")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-guide", self.write(
+            "web-guide", {"research_id": "sr-guidance", "text": "先做 1080p", "reply_to": None, "decision": None}))[0], 201)
+
+        def notes():
+            status, value = self.web("GET", "/research-state/note?research_id=sr-guidance&limit=100")
+            self.assertEqual(status, 200)
+            return {item["id"]: item for item in value["items"]}
+
+        self.assertIs(notes()["n-guide"]["unanswered"], True)
+        code, _, err = self.pf(token, "research", "note", "sr-guidance", "采纳，先做 1080p",
+                               "--reply-to", "n-guide", "--decision", "adopt")
+        self.assertEqual(code, 0, err)
+        self.assertIs(notes()["n-guide"]["unanswered"], False)
+        self.assertEqual(self.web("POST", "/research-state/note/n-later", self.write(
+            "web-later", {"research_id": "sr-guidance", "text": "不要动 HUD", "reply_to": None, "decision": None}))[0], 201)
+        current = notes()
+        self.assertIs(current["n-guide"]["unanswered"], False)
+        self.assertIs(current["n-later"]["unanswered"], True)
+        code, _, err = self.pf(token, "research", "deliver", "sr-guidance", "--summary", "完成",
+                               "--artifact", f"job:{self.jid}")
+        self.assertNotEqual(code, 0)
+        self.assertIn("research_guidance_unanswered", err)
+        code, _, err = self.pf(token, "research", "note", "sr-guidance", "暂缓 HUD 改动",
+                               "--reply-to", "n-later", "--decision", "defer")
+        self.assertEqual(code, 0, err)
+        self.assertIs(notes()["n-later"]["unanswered"], False)
+        self.assertEqual(self.pf(token, "research", "deliver", "sr-guidance", "--summary", "完成",
+                                 "--artifact", f"job:{self.jid}")[0], 0)
+
     def test_agent_own_token_carries_its_identity(self):
         for name in ("agent-a", "agent-b"):
             self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)

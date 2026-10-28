@@ -36,6 +36,7 @@
 .research-artifact { margin:8px 0; }
 .research-artifact img { display:block; max-width:100%; max-height:520px; object-fit:contain; background:#151819; border-radius:4px; }
 .research-artifact figcaption { margin-top:6px; color:var(--muted); font-size:12px; }
+.discuss-replies { margin-left:24px; }
 .research-history button { margin-bottom:6px; }
 .research-page .command-box { max-height:360px; }
 .research-json,#previous-draft { margin-top:18px; font-size:13px; }

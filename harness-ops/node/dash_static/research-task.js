@@ -117,16 +117,30 @@
     section.append(el('h3', '留言'), list);
     async function load() {
       const value = await api(`/research-state/note?research_id=${encodeURIComponent(record.id)}&limit=100`);
-      const notes = value.items.slice().reverse();
-      list.replaceChildren(...(notes.length ? notes.map(note => {
+      const notes = value.items.slice().reverse(), ids = new Set(notes.map(note => note.id)), children = new Map(), roots = [];
+      for (const note of notes) {
+        if (note.reply_to && ids.has(note.reply_to)) {
+          if (!children.has(note.reply_to)) children.set(note.reply_to, []);
+          children.get(note.reply_to).push(note);
+        } else roots.push(note);
+      }
+      function paint(note) {
         const entry = el('div', null, 'discuss-entry'), head = el('div');
         head.append(el('span', speaker(note), 'discuss-from'), el('span', when(note.updated_at), 'discuss-time'));
-        if (note.reply_to) head.append(el('span', `回复 ${note.reply_to}${note.decision ? ` · ${{adopt: '采纳', defer: '暂缓', reject: '不采纳'}[note.decision]}` : ''}`, 'discuss-via'));
+        if (note.unanswered === true) head.append(el('span', '未回应', 'task-state unknown'));
+        if (note.reply_to) head.append(el('span', `回复 ${note.reply_to}${note.decision ? ` · ${{adopt: '采纳', defer: '暂缓', reject: '拒绝'}[note.decision]}` : ''}`, 'discuss-via'));
         entry.append(head, el('p', note.text));
         if (note.evidence_refs?.length) entry.append(evidenceList(note.evidence_refs));
         entry.dataset.note = note.id;
+        const replies = children.get(note.id) || [];
+        if (replies.length) {
+          const nested = el('div', null, 'discuss-replies');
+          nested.append(...replies.map(paint)); entry.append(nested);
+        }
         return entry;
-      }) : [el('div', '暂无留言', 'empty')]));
+      }
+      clearImages();
+      list.replaceChildren(...(roots.length ? roots.map(paint) : [el('div', '暂无留言', 'empty')]));
     }
     try { await load(); } catch (error) { status.textContent = '读取留言失败：' + failure(error); }
     if (ctx.writable()) {

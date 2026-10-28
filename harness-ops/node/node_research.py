@@ -373,7 +373,7 @@ class NodeResearch:
         human, answered = [], set()
         for row in rows:
             data, audit = json.loads(row["data"]), json.loads(row["audit"])
-            if audit.get("actor_label") == agent and data.get("reply_to"):
+            if agent is not None and audit.get("actor_label") == agent and data.get("reply_to"):
                 answered.add(data["reply_to"])
             elif audit.get("auth_channel") == "dashboard_steer":
                 human.append(row["id"])
@@ -763,7 +763,7 @@ class NodeResearch:
                 terms.append("r.sequence<?"); params.append(after)
             rows = db.execute("SELECT r.* FROM revisions r WHERE " + " AND ".join(terms) + " ORDER BY r.sequence DESC LIMIT ?",
                               (*params, limit + 1)).fetchall()
-            items = []
+            items, guidance = [], {}
             for row in rows[:limit]:
                 data = json.loads(row["data"])
                 item = {"kind": kind, "id": row["id"], "research_id": row["research_id"], "revision": row["revision"],
@@ -773,9 +773,15 @@ class NodeResearch:
                     item["owner"] = data.get("owner")
                 if kind == "note":
                     audit = json.loads(row["audit"])
+                    rid = row["research_id"]
+                    if rid not in guidance:
+                        research = self._latest(db, "research", rid)
+                        owner = json.loads(research["data"]).get("owner") if research else None
+                        guidance[rid] = set(self._unanswered_guidance(db, rid, owner))
                     item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"],
                                 evidence_refs=data["evidence_refs"], actor_label=audit.get("actor_label"),
-                                auth_channel=audit.get("auth_channel"))
+                                auth_channel=audit.get("auth_channel"),
+                                unanswered=row["id"] in guidance[rid] if audit.get("auth_channel") == "dashboard_steer" else None)
                 if kind == "direction":
                     item["metadata_blocked"] = any(dep["blocking"] and dep["resolution"] is None for dep in data["dependencies"])
                 elif kind == "request":
