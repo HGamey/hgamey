@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import subprocess
 import time
 import unittest
 from unittest.mock import patch
@@ -57,6 +58,34 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertEqual(read.call_count, 2)
         self.assertEqual(self.queue.get(retry["id"])["state"], "queued")
         self.assertFalse(Path(self.jobs.path(retry["id"], "launch.json")).exists())
+
+    def test_a_dead_fleet_observation_does_not_hold_back_device_jobs(self):
+        # phonefarm keeps the lease of a fleet observation whose observer died (a timeout, a node restart),
+        # and every device-write job waits behind it whether or not anyone opens the dashboard. Dispatch
+        # retires that lease through phonefarm's recovery command, then admits the job.
+        storage = {"schema_version": 1, "mode": "default", "devlock_dir": "/fixture/locks", "readiness": "ready",
+                   "error": None, "layout_version": 2, "domain_id": "d" * 32, "queue_dir": "/fixture/locks/v2/global"}
+        lease = {"schema_version": 1, "status": "blocked", "error": None, "storage": storage, "entries": [
+            {"directory": "devlock.d", "serial": "@observation", "label": "fleet", "state": "abandoned"}]}
+        commands, real = [], subprocess.run
+
+        def run(command, *args, **kwargs):
+            if command[1:2] != ["lease"]:
+                return real(command, *args, **kwargs)
+            commands.append(command[1:])
+            if command[1:3] == ["lease", "--recover-abandoned"]:
+                lease.update(status="clear", entries=[])
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(command, 0, json.dumps(lease), "")
+
+        jid = self.submit(device_access="write")
+        with patch("node_lease.subprocess.run", side_effect=run):
+            self.assertEqual(self.queue.get(jid)["state"], "queued")
+            self.jobs.dispatch.tick()
+        self.assertIn(["lease", "--recover-abandoned", "--confirm-device-idle", "--serial", "@observation",
+                       "--timeout-ms", "5000"], commands)
+        self.assertNotEqual(self.queue.get(jid)["state"], "queued")
+        self.assertTrue(self.jobs.leases.reclaimed["ok"])
 
     def test_lost_recovery_blocks_siblings_but_targeted_recovery_can_continue(self):
         parent = self.submit()

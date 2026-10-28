@@ -5,7 +5,7 @@ import os
 import subprocess
 import threading
 import time
-from node_lease import LeaseState, queue_directory
+from node_lease import LeaseState, abandoned_observation, queue_directory
 
 VIEW_IDLE_S = 90
 FLEET_EVERY_FREE_S = 30
@@ -115,6 +115,7 @@ class FleetState:
                     sampled_at=self._sampled_at, attempted_at=self._attempted_at, age_s=age,
                     stale=age is None or age > STALE_AFTER_S, refreshing=self._refreshing,
                     error=self._error, deferred=self._deferred,
+                    reclaimed=self.leases.reclaimed if self.leases is not None else None,
                     policy=dict(fleet_every_free_s=FLEET_EVERY_FREE_S,
                                 fleet_every_held_s=FLEET_EVERY_HELD_S,
                                 free_grace_s=FREE_GRACE_S, stale_after_s=STALE_AFTER_S))
@@ -157,30 +158,46 @@ class FleetState:
                 self._attempted_at = time.time()
                 lock = self._read_lock()
                 free_for = lock["free_for_s"]
+                reclaim = False
                 if lock["status"] != "free" or lock["stale"] or (lock["status"] == "free" and
                         free_for is not None and free_for < FREE_GRACE_S):
-                    self._deferred = ("设备锁已占用，暂缓采样" if lock["status"] == "held" and not lock["stale"] else
-                                      "设备锁状态未知或心跳过期，暂缓采样" if lock["status"] != "free" or lock["stale"] else
-                                      f"设备锁释放不足 {FREE_GRACE_S} 秒，暂缓采样")
-                    self._error = None
-                    self._next_at = now + 5
-                    self._attempt += 1
-                    self._condition.notify_all()
-                    continue
-                self._refreshing, self._deferred = True, None
-                screenshots = lock["status"] == "free" and not lock["queue"] and now < self._shots_until
+                    reclaim = self.leases is not None and abandoned_observation(lock.get("lease"))
+                    if not reclaim:
+                        self._deferred = ("设备锁已占用，暂缓采样" if lock["status"] == "held" and not lock["stale"] else
+                                          "设备锁状态未知或心跳过期，暂缓采样" if lock["status"] != "free" or lock["stale"] else
+                                          f"设备锁释放不足 {FREE_GRACE_S} 秒，暂缓采样")
+                        self._error = None
+                        self._next_at = now + 5
+                        self._attempt += 1
+                        self._condition.notify_all()
+                        continue
+                    self._refreshing = True
+                else:
+                    self._refreshing, self._deferred = True, None
+                    screenshots = lock["status"] == "free" and not lock["queue"] and now < self._shots_until
             executable, cwd = (self.leases.bins["phonefarm"] if self.leases else
                                (os.path.join(self.root, "phonefarm"), self.root))
+            configured = self.leases.env if self.leases and self.leases.env is not None else os.environ
+            env = {k: v for k, v in configured.items() if k not in {"DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"}}
+            if reclaim:
+                retired = self.leases.reclaim_observation(lock.get("lease"))
+                with self._condition:
+                    self._refreshing = False
+                    if not retired:
+                        self._deferred, self._error = "设备锁状态未知或心跳过期，暂缓采样", None
+                    self._next_at = time.monotonic() + (0 if retired else 5)
+                    self._attempt += 1
+                    self._condition.notify_all()
+                continue
             command = [executable, "fleet", "--json"]
             if self.leases is None:
                 command += ["--lock-dir", self.lock_dir]
             if screenshots:
                 command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
-            configured = self.leases.env if self.leases and self.leases.env is not None else os.environ
-            env = {k: v for k, v in configured.items() if k not in {"DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"}}
             fleet, error, deferred = None, None, None
             try:
-                result = subprocess.run(command, cwd=cwd, env=env, capture_output=True,
+                # Its own session: stopping the node (a deploy) must not kill an observation that holds the lock.
+                result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, start_new_session=True,
                                         timeout=40, stdin=subprocess.DEVNULL, check=False)
                 value = json.loads(result.stdout)
                 if not isinstance(value, dict) or value.get("schema") != "phonefarm/fleet@1":

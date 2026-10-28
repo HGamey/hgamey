@@ -124,12 +124,24 @@ def queue_directory(value):
     return directory
 
 
+RECLAIM_EVERY_S = 60
+
+
+def abandoned_observation(lease):
+    """Whether phonefarm keeps the lease of a fleet observation whose observer is gone."""
+    return any(entry.get("directory") == "devlock.d" and entry.get("serial") == "@observation"
+               and entry.get("label") == "fleet" and entry.get("state") == "abandoned"
+               for entry in (lease or {}).get("entries") or [])
+
+
 class LeaseState:
     def __init__(self, bins, env=None):
         self.bins = bins
         self.env = env
         self._lock = threading.Lock()
         self._next = 0
+        self._reclaim_after = 0.0
+        self.reclaimed = None
         self._snapshot = {"schema_version": 1, "status": "unknown", "bridge_held": None,
                           "entries": [], "error": "lease status has not been read", "sampled_at": None}
 
@@ -163,3 +175,31 @@ class LeaseState:
             self._snapshot = {**value, "sampled_at": time.time()}
             self._next = time.monotonic() + 1
             return dict(self._snapshot)
+
+    def reclaim_observation(self, lease):
+        """Retire the lease a fleet observation left when its observer died (a timeout, a node restart).
+
+        phonefarm keeps that lease for idle verification, and every device-write job waits behind it.
+        Fleet only reads the phones, so once phonefarm itself confirms the recorded owner and its process
+        group are gone, the phones are as idle as before; its recovery command checks that and records the
+        assertion. Only that lease qualifies, and an attempt is not repeated within RECLAIM_EVERY_S.
+        Returns None when nothing was attempted, else whether the lease was retired."""
+        with self._lock:
+            if (not abandoned_observation(lease) or "phonefarm" not in self.bins
+                    or time.monotonic() < self._reclaim_after):
+                return None
+            self._reclaim_after = time.monotonic() + RECLAIM_EVERY_S
+        executable, cwd = self.bins["phonefarm"]
+        env = {key: value for key, value in (os.environ if self.env is None else self.env).items()
+               if key not in {"DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"}}
+        try:
+            done = subprocess.run([executable, "lease", "--recover-abandoned", "--confirm-device-idle",
+                                   "--serial", "@observation", "--timeout-ms", "5000"], cwd=cwd, env=env,
+                                  capture_output=True, timeout=30, stdin=subprocess.DEVNULL, check=False)
+            retired = done.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            retired = False
+        self.reclaimed = {"at": time.time(), "ok": retired}
+        if retired:
+            self.snapshot(refresh=True, force=True)
+        return retired
