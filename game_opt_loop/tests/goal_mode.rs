@@ -111,20 +111,9 @@ fn scaffold(tag: &str, win: bool) -> PathBuf {
 
 /// 「明显更差」假机的脚手架（初筛集成测试用）。
 fn scaffold_worse(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("gol_goal_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let pf = root.join("phonefarm");
-    std::fs::create_dir_all(pf.join("knobs/gray/build")).unwrap();
-    std::fs::write(pf.join("knobs/gray/build/build_layer.sh"), "#!/bin/sh\n").unwrap();
-    std::fs::write(root.join("probe_out.txt"), ROOTED_NX809J).unwrap();
-    std::fs::write(root.join("probe.txt"), PROBE).unwrap();
-    let bin = pf.join("phonefarm");
+    let root = scaffold(tag, false);
+    let bin = root.join("phonefarm/phonefarm");
     std::fs::write(&bin, fake_phonefarm_worse(&root.join("probe_out.txt"))).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
     root
 }
 
@@ -283,9 +272,9 @@ fn a_human_stop_before_the_first_generation_stops_without_touching_the_device() 
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// 宕机/被杀后续跑：已完成的代保留（报告还在），状态、最优、档案都接着用。
+/// 连续两次宕机/被杀后续跑：已完成的代保留，只重跑没有报告的那一代。
 #[test]
-fn resume_after_crash_keeps_completed_generations() {
+fn resume_after_consecutive_crashes_keeps_completed_and_redoes_half_done() {
     let root = scaffold("resumekeep", true);
     let dir = root.join("goals/run4");
     goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
@@ -329,32 +318,14 @@ fn resume_after_crash_keeps_completed_generations() {
     let arch = std::fs::read_to_string(root.join("goals/archive.jsonl")).unwrap();
     assert!(arch.lines().count() >= 2, "{arch}");
     check_contracts(&dir);
-    std::fs::remove_dir_all(&root).ok();
-}
 
-/// 测到一半死的那一代重跑：report.json 不在的代不算完成。
-#[test]
-fn resume_redoes_the_half_done_generation() {
-    let root = scaffold("resumeredo", true);
-    let dir = root.join("goals/run5");
-    goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
-    confirm_with(&dir, |s| {
-        s.layers = vec!["sysparam".into()];
-        s.budget.max_generations = 2;
-        s.budget.min_generations = 1;
-        s.per_generation = 1;
-        s.stop_when = vec!["budget_exhausted".into()];
-    });
-    let st = goal::run(&dir, &opts(&root, None)).unwrap();
-    assert_eq!(st.generation, 2);
-    // 伪装成「第 2 代测到一半死了」：gen2 报告没了，目录残渣还在
+    // 第二次故障伪装成「第 2 代测到一半死了」：报告没了，目录残渣还在。
     std::fs::remove_file(dir.join("optimize/gen2/report.json")).unwrap();
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
     v["status"] = "running".into();
     v["stop_reason"] = Value::Null;
     std::fs::write(dir.join("state.json"), serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let ro = goal::RunOpts { resume: true, ..opts(&root, None) };
     let st = goal::run(&dir, &ro).unwrap();
     assert_eq!(st.status, "done");
     assert_eq!(st.generation, 2, "第 2 代重跑后按预算收尾");

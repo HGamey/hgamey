@@ -182,6 +182,8 @@ fn temperature_preset_is_forwarded_without_numeric_policy_override() {
 fn complete_crossprocess_chain_records_negative_without_promotion() {
     let f = F::new();
     f.plan();
+    f.write("workload.json", b"{}");
+    f.write("probe.txt", b"bad");
     let out = f.run("normal");
     assert!(
         out.status.success(),
@@ -193,6 +195,16 @@ fn complete_crossprocess_chain_records_negative_without_promotion() {
     assert_eq!(r["verdict"], "BLOCKED");
     assert_eq!(r["promotion_allowed"], false);
     assert_eq!(f.count(), 2);
+    let req = f.read("case/request.json");
+    assert!(req["workload"]
+        .as_str()
+        .unwrap()
+        .ends_with("case/workload.json"));
+    let b = std::fs::read(f.root.join("case/00-prepare.stdout")).unwrap();
+    assert_eq!(
+        f.read("case/00-prepare.result.json")["stdout_sha256"],
+        format!("{:x}", Sha256::digest(b))
+    );
     assert!(f
         .cmd(&["case", "inspect", "--case", "case"], "normal")
         .status
@@ -296,25 +308,6 @@ fn durable_inflight_without_completion_inspects_unknown() {
     assert!(!f.run("normal").status.success());
     assert_eq!(f.count(), 0);
 }
-#[test]
-fn snapshot_uses_copied_workload_and_candidate_not_mutable_caller() {
-    let f = F::new();
-    f.plan();
-    f.write("workload.json", b"{}");
-    f.write("probe.txt", b"bad");
-    assert!(f.run("normal").status.success());
-    let req = f.read("case/request.json");
-    assert!(req["workload"]
-        .as_str()
-        .unwrap()
-        .ends_with("case/workload.json"));
-    let b = std::fs::read(f.root.join("case/00-prepare.stdout")).unwrap();
-    assert_eq!(
-        f.read("case/00-prepare.result.json")["stdout_sha256"],
-        format!("{:x}", Sha256::digest(b))
-    );
-}
-
 #[test]
 fn explicit_cadence_goal_freezes_two_metrics_without_energy_claims() {
     let f = F::new();

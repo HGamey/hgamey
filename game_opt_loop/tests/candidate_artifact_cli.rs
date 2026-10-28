@@ -224,6 +224,8 @@ fn strict_candidate_rejects_missing_unknown_duplicate_and_wrong_fields() {
 
 #[test]
 fn missing_or_modified_artifacts_fail_closed() {
+    let f = Fixture::new();
+    let (dir, report) = f.success();
     for name in [
         "candidate.json",
         "original.comp",
@@ -232,24 +234,24 @@ fn missing_or_modified_artifacts_fail_closed() {
         "gate.json",
         "descriptor.json",
     ] {
-        let f = Fixture::new();
-        let (dir, report) = f.success();
-        let bytes = fs::read(dir.join(name)).unwrap();
-        fs::write(dir.join(name), b"modified").unwrap();
+        let path = dir.join(name);
+        let bytes = fs::read(&path).unwrap();
+        fs::write(&path, b"modified").unwrap();
         assert!(
             !verify(&dir, report["frozen_identity"].as_str().unwrap())
                 .status
                 .success(),
             "{name}"
         );
-        fs::write(dir.join(name), bytes).unwrap();
-        fs::remove_file(dir.join(name)).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        fs::remove_file(&path).unwrap();
         assert!(
             !verify(&dir, report["frozen_identity"].as_str().unwrap())
                 .status
                 .success(),
             "missing {name}"
         );
+        fs::write(path, bytes).unwrap();
     }
 }
 

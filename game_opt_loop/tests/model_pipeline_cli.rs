@@ -242,24 +242,33 @@ fn negative_and_protocol_failures_persist_without_retry() {
 
 #[test]
 fn byte_input_output_driver_receipt_tamper_blocks_before_any_new_side_effect() {
+    let f = Fixture::new("autonomous", "ok");
+    success(f.cli("start", &[]));
+    let journal = f.out.join("pipeline.json");
+    let pristine_journal = std::fs::read(&journal).unwrap();
     for target in ["data", "driver", "output", "receipt", "request", "plan"] {
-        let f = Fixture::new("autonomous", "ok");
-        success(f.cli("start", &[]));
-        match target {
-            "data" => std::fs::write(f.dir.join("data.json"), "changed").unwrap(),
-            "driver" => std::fs::write(&f.driver, "changed").unwrap(),
-            "output" => std::fs::write(f.out.join("0_design/design.json"), "changed").unwrap(),
-            "receipt" => std::fs::write(f.out.join("0_design/receipt.json"), "changed").unwrap(),
-            "request" => std::fs::write(f.out.join("0_design/request.json"), "changed").unwrap(),
-            "plan" => {
-                let mut j = f.journal();
-                j["frozen"]["plan"]["mode"] = json!("expert");
-                write(&f.out.join("pipeline.json"), &j);
-            }
+        // Reuse the successful driver chain without carrying a prior tamper forward.
+        std::fs::write(&journal, &pristine_journal).unwrap();
+        let path = match target {
+            "data" => f.dir.join("data.json"),
+            "driver" => f.driver.clone(),
+            "output" => f.out.join("0_design/design.json"),
+            "receipt" => f.out.join("0_design/receipt.json"),
+            "request" => f.out.join("0_design/request.json"),
+            "plan" => journal.clone(),
             _ => unreachable!(),
+        };
+        let pristine = std::fs::read(&path).unwrap();
+        if target == "plan" {
+            let mut j = f.journal();
+            j["frozen"]["plan"]["mode"] = json!("expert");
+            write(&path, &j);
+        } else {
+            std::fs::write(&path, "changed").unwrap();
         }
         assert!(!f.cli("resume", &[]).status.success(), "{target}");
         assert_eq!(f.calls(), 5, "{target}");
+        std::fs::write(path, pristine).unwrap();
     }
 }
 
@@ -562,11 +571,12 @@ fn driver_cannot_complete_using_mutated_inputs_and_role_is_frozen() {
 
 #[test]
 fn corrupted_future_ready_without_request_cannot_bypass_expert_review() {
+    let f = Fixture::new("expert", "ok");
+    success(f.cli("start", &[]));
+    success(f.decide("design", "accept"));
+    let pristine = f.journal();
     for state in ["ready", "in_flight", "unknown", "completed"] {
-        let f = Fixture::new("expert", "ok");
-        success(f.cli("start", &[]));
-        success(f.decide("design", "accept"));
-        let mut journal = f.journal();
+        let mut journal = pristine.clone();
         journal["entries"][1]["state"] = json!(state);
         assert!(journal["entries"][1]["request"].is_null());
         assert!(journal["entries"][1]["decisions"]

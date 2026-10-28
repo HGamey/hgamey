@@ -82,16 +82,6 @@ else:
 
    if role=='a' and run==p['schedule'][0]['a_run_id']:
     if mode=='missing_origin':gates.pop('target_command_origin_verified')
-    if mode=='spf_changed':record['submits_per_group']=1
-    if mode=='context_changed':record['active_contexts']=[13]
-    if mode=='caller_changed':record['caller_tids']=[43]
-    if mode=='epoch_changed':diag['scope']=dict(diag['scope'],process_start_ticks=91)
-    if mode=='claim_display':diag['display_verified']=True
-    if mode=='binding_changed':binding['render_contract_sha256']='0'*64
-    if mode=='witness_changed':(d/(run+'-render-before.raw.tsv')).write_bytes(b'changed')
-    if mode=='env_changed':(d/(run+'-sampler.log')).write_bytes(b'changed')
-    if mode=='thermal_changed':(d/(run+'-thermal_sampler.log')).unlink()
-    if mode=='exploration_reused':record['before_sha256']=render['baselines'][0]['before_sha256'];binding['raw_artifacts']['render_before_sha256']=record['before_sha256'];shutil.copyfile(d/'admission_0-render-before.raw.tsv',d/(run+'-render-before.raw.tsv'))
    v={'schema':'phonefarm/confirmation_observation@2','source':'phonefarm','status':'VALID_OBSERVATION','qualification':{'stage':'experiment','eligible':False,'evidence_origin':'recorded_device'},'sample_qualification':{'gates':gates},'target_game_attribution':diag,'confirmation_binding':binding,'real_game_optimization_proven':False,'promotion_allowed':False,'host_fixture_only':True}
    write(d/(run+'-bundle.json'),{'schema':'phonefarm/confirmation_bundle@1','run':ref(d,run+'-run.json'),'baseline_admission':ref(d,'admission.json'),'frozen_plan':ref(d,'registered.json')});name=run+'-report.json';write(d/name,v);entry[role+'_report']=name;entry[role+'_report_sha256']=sha(d/name)
   pairs.append(entry)
@@ -215,9 +205,83 @@ impl F {
     fn inspect(&self) -> Output {
         self.cmd(&["case", "inspect", "--case", "case"], "normal")
     }
+    fn rehash_recorded(&self, names: &[&str]) {
+        let mut result = self.read("case/case-result.json");
+        let artifacts = result["artifacts"].as_object_mut().unwrap();
+        for name in names {
+            match std::fs::read(self.root.join("case").join(name)) {
+                Ok(bytes) => {
+                    artifacts.insert(
+                        (*name).to_owned(),
+                        json!({"sha256":format!("{:x}",Sha256::digest(&bytes)),"bytes":bytes.len()}),
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    artifacts.remove(*name);
+                }
+                Err(e) => panic!("rehash {name}: {e}"),
+            }
+        }
+        self.json("case/case-result.json", &result);
+    }
+    fn mutate_first_report(&self, change: impl FnOnce(&mut Value)) {
+        const REPORT: &str = "case/receiver/fixture_a00-report.json";
+        let mut report = self.read(REPORT);
+        change(&mut report);
+        self.json(REPORT, &report);
+        let report_sha256 = format!(
+            "{:x}",
+            Sha256::digest(&std::fs::read(self.root.join(REPORT)).unwrap())
+        );
+        let mut samples = self.read("case/receiver/samples.json");
+        samples["pairs"][0]["a_report_sha256"] = json!(report_sha256);
+        self.json("case/receiver/samples.json", &samples);
+        self.rehash_recorded(&["receiver/fixture_a00-report.json", "receiver/samples.json"]);
+    }
+    fn inspect_rejects_and_restores(
+        &self,
+        mode: &str,
+        expected_guard: &str,
+        files: &[&str],
+        change: impl FnOnce(&F),
+    ) {
+        let saved = files
+            .iter()
+            .map(|name| (*name, std::fs::read(self.root.join(name)).unwrap()))
+            .collect::<Vec<_>>();
+        let calls = self.count();
+        change(self);
+        let rejected = self.inspect();
+        for (name, bytes) in saved {
+            self.write(name, &bytes);
+        }
+        let restored = self.inspect();
+        let stderr = String::from_utf8_lossy(&rejected.stderr);
+        assert!(
+            !rejected.status.success(),
+            "{mode}: inspect accepted tampering"
+        );
+        assert!(
+            stderr.contains(expected_guard),
+            "{mode}: expected inner guard {expected_guard:?}, got: {stderr}"
+        );
+        assert!(
+            !stderr.contains("final artifact hashes differ"),
+            "{mode}: stopped at outer artifact hash instead of target guard: {stderr}"
+        );
+        assert!(
+            restored.status.success(),
+            "{mode}: restore did not recover archive: {}",
+            String::from_utf8_lossy(&restored.stderr)
+        );
+        assert_eq!(self.count(), calls, "{mode}: inspect executed receiver");
+        let result = self.read("case/case-result.json");
+        assert_eq!(result["status"], "CASE_RECORDED", "{mode}: {result}");
+        assert_eq!(result["promotion_allowed"], false, "{mode}: {result}");
+    }
 }
 #[test]
-fn v2_plans_generic_game_and_freezes_native_bytes_without_attestation() {
+fn v2_complete_chain_supports_inspection_and_rehashed_guard_regressions() {
     let f = F::blackbox();
     f.plan();
     let req = f.read("case/request.json");
@@ -238,8 +302,146 @@ fn v2_plans_generic_game_and_freezes_native_bytes_without_attestation() {
     assert_eq!(f.count(), 0);
     f.write("native/reader.elf", b"caller later changed");
     assert!(f.inspect().status.success());
+    let compiler_stderr = std::fs::read(f.root.join("case/native-reader/compiler.stderr")).unwrap();
     f.write("case/native-reader/compiler.stderr", b"tampered");
     assert!(!f.inspect().status.success());
+    f.write("case/native-reader/compiler.stderr", &compiler_stderr);
+    assert!(f.inspect().status.success());
+
+    // The complete chain is executed once; every following guard regression reuses its archive.
+    let out = f.run("normal");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["status"], "CASE_RECORDED", "{result}");
+    assert_eq!(result["verdict"], "BLOCKED");
+    assert_eq!(result["promotion_allowed"], false);
+    assert_eq!(f.count(), 2);
+    assert!(f.inspect().status.success());
+    assert!(!f.run("normal").status.success());
+    assert_eq!(f.count(), 2);
+    assert!(f.inspect().status.success());
+
+    const REPORT_FILES: &[&str] = &[
+        "case/receiver/fixture_a00-report.json",
+        "case/receiver/samples.json",
+        "case/case-result.json",
+    ];
+    const QUALIFICATION_GUARD: &str = "v2 queued origin/grouping qualification missing or changed";
+    const ATTRIBUTION_GUARD: &str =
+        "v2 scope/SPF/caller/context changed or unsupported attestation";
+    for (mode, expected_guard) in [
+        ("spf_changed", ATTRIBUTION_GUARD),
+        ("context_changed", ATTRIBUTION_GUARD),
+        ("caller_changed", ATTRIBUTION_GUARD),
+        ("epoch_changed", ATTRIBUTION_GUARD),
+        ("claim_display", ATTRIBUTION_GUARD),
+        ("binding_changed", QUALIFICATION_GUARD),
+    ] {
+        f.inspect_rejects_and_restores(mode, expected_guard, REPORT_FILES, |f| {
+            f.mutate_first_report(|report| match mode {
+                "spf_changed" => {
+                    report["target_game_attribution"]["record"]["submits_per_group"] = json!(1)
+                }
+                "context_changed" => {
+                    report["target_game_attribution"]["record"]["active_contexts"] = json!([13])
+                }
+                "caller_changed" => {
+                    report["target_game_attribution"]["record"]["caller_tids"] = json!([43])
+                }
+                "epoch_changed" => {
+                    report["target_game_attribution"]["scope"]["process_start_ticks"] = json!(91)
+                }
+                "claim_display" => {
+                    report["target_game_attribution"]["display_verified"] = json!(true)
+                }
+                "binding_changed" => {
+                    report["confirmation_binding"]["render_contract_sha256"] = json!("0".repeat(64))
+                }
+                _ => unreachable!(),
+            });
+        });
+    }
+
+    const WITNESS: &str = "case/receiver/fixture_a00-render-before.raw.tsv";
+    f.inspect_rejects_and_restores(
+        "witness_changed",
+        "current raw/run bytes changed: fixture_a00-render-before.raw.tsv",
+        &[WITNESS, "case/case-result.json"],
+        |f| {
+            f.write(WITNESS, b"changed");
+            f.rehash_recorded(&["receiver/fixture_a00-render-before.raw.tsv"]);
+        },
+    );
+
+    const RUN: &str = "case/receiver/fixture_a00-run.json";
+    const BUNDLE: &str = "case/receiver/fixture_a00-bundle.json";
+    f.inspect_rejects_and_restores(
+        "exploration_reused",
+        "origin witness missing/changed/reused after baseline freeze",
+        &[
+            WITNESS,
+            RUN,
+            BUNDLE,
+            REPORT_FILES[0],
+            REPORT_FILES[1],
+            "case/case-result.json",
+        ],
+        |f| {
+            let reused = std::fs::read(
+                f.root
+                    .join("case/receiver/admission_0-render-before.raw.tsv"),
+            )
+            .unwrap();
+            f.write(WITNESS, &reused);
+            let hash = format!("{:x}", Sha256::digest(&reused));
+            let mut run = f.read(RUN);
+            run["raw"]["render_before"]["sha256"] = json!(hash.clone());
+            f.json(RUN, &run);
+            let run_sha256 = format!(
+                "{:x}",
+                Sha256::digest(&std::fs::read(f.root.join(RUN)).unwrap())
+            );
+            let mut bundle = f.read(BUNDLE);
+            bundle["run"]["sha256"] = json!(run_sha256);
+            f.json(BUNDLE, &bundle);
+            f.mutate_first_report(|report| {
+                report["target_game_attribution"]["record"]["before_sha256"] = json!(hash.clone());
+                report["confirmation_binding"]["raw_artifacts"]["render_before_sha256"] =
+                    json!(hash);
+            });
+            f.rehash_recorded(&[
+                "receiver/fixture_a00-render-before.raw.tsv",
+                "receiver/fixture_a00-run.json",
+                "receiver/fixture_a00-bundle.json",
+            ]);
+        },
+    );
+
+    const ENV: &str = "case/receiver/fixture_a00-sampler.log";
+    f.inspect_rejects_and_restores(
+        "env_changed",
+        "current raw/run bytes changed: fixture_a00-sampler.log",
+        &[ENV, "case/case-result.json"],
+        |f| {
+            f.write(ENV, b"changed");
+            f.rehash_recorded(&["receiver/fixture_a00-sampler.log"]);
+        },
+    );
+
+    const THERMAL: &str = "case/receiver/fixture_a00-thermal_sampler.log";
+    f.inspect_rejects_and_restores(
+        "thermal_changed",
+        "No such file or directory",
+        &[THERMAL, "case/case-result.json"],
+        |f| {
+            std::fs::remove_file(f.root.join(THERMAL)).unwrap();
+            f.rehash_recorded(&["receiver/fixture_a00-thermal_sampler.log"]);
+        },
+    );
 }
 #[test]
 fn v2_profiles_refuse_missing_context_unknown_preset_or_model_budget() {
@@ -297,52 +499,27 @@ fn v2_artifact_inventory_source_architecture_and_logs_are_checked() {
     }
 }
 #[test]
-fn v2_actual_four_stages_preserve_synthetic_negative_and_single_use() {
+fn v2_missing_origin_run_error_stops_before_judge() {
     let f = F::blackbox();
     f.plan();
-    let out = f.run("normal");
+    let out = f.run("missing_origin");
     assert!(
-        out.status.success(),
+        !out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(result["status"], "CASE_RECORDED", "{result}");
-    assert_eq!(result["verdict"], "BLOCKED");
+    assert_eq!(result["status"], "STOPPED", "{result}");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("v2 queued origin/grouping qualification missing or changed"),
+        "{result}"
+    );
+    assert!(!f.root.join("case/03-judge.intent.json").exists());
     assert_eq!(result["promotion_allowed"], false);
     assert_eq!(f.count(), 2);
-    assert!(f.inspect().status.success());
-    assert!(!f.run("normal").status.success());
-    assert_eq!(f.count(), 2);
-}
-#[test]
-fn v2_origin_grouping_epoch_witness_and_unsupported_claims_stop_before_judge() {
-    for mode in [
-        "missing_origin",
-        "spf_changed",
-        "context_changed",
-        "caller_changed",
-        "epoch_changed",
-        "claim_display",
-        "binding_changed",
-        "witness_changed",
-        "exploration_reused",
-        "env_changed",
-        "thermal_changed",
-    ] {
-        let f = F::blackbox();
-        f.plan();
-        let out = f.run(mode);
-        assert!(
-            !out.status.success(),
-            "{mode}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let result: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(result["status"], "STOPPED", "{mode}: {result}");
-        assert!(!f.root.join("case/03-judge.intent.json").exists());
-        assert_eq!(result["promotion_allowed"], false);
-    }
 }
 #[test]
 fn v2_synthetic_legacy_or_mismatched_native_prepare_never_freezes() {
@@ -356,18 +533,6 @@ fn v2_synthetic_legacy_or_mismatched_native_prepare_never_freezes() {
         assert!(!f.root.join("case/01-freeze.intent.json").exists());
         assert_eq!(f.count(), 1);
     }
-}
-#[test]
-fn v2_inspect_rejects_rehashed_outer_witness_tampering() {
-    let f = F::blackbox();
-    f.plan();
-    assert!(f.run("normal").status.success());
-    let name = "receiver/fixture_a00-render-before.raw.tsv";
-    f.write(&format!("case/{name}"), b"changed");
-    let mut v = f.read("case/case-result.json");
-    v["artifacts"][name] = json!({"sha256":format!("{:x}",Sha256::digest(b"changed")),"bytes":7});
-    f.json("case/case-result.json", &v);
-    assert!(!f.inspect().status.success());
 }
 #[test]
 fn v1_module_and_existing_source_fingerprint_are_byte_unchanged() {

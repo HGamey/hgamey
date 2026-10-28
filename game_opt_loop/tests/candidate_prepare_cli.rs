@@ -321,39 +321,54 @@ fn sdk_requests_are_explicit_blocked_negative_or_not_run() {
 }
 #[test]
 fn inspection_rejects_artifact_logs_flags_and_missing_state_receipts() {
-    for target in ["artifact", "log", "flags", "final"] {
-        let f = Fixture::new("ok");
-        success(&f.run(&[]));
+    let f = Fixture::new("ok");
+    success(&f.run(&[]));
+    let journal_path = f.path("session/journal.json");
+    let pristine_journal = fs::read(&journal_path).unwrap();
+    let artifact = PathBuf::from(
+        f.read("session/journal.json")["stages"][2]["result"]["path"]
+            .as_str()
+            .unwrap(),
+    )
+    .join("adapted.spv");
+    let pristine_artifact = fs::read(&artifact).unwrap();
+    let log = f.path("session/adapt.stdout.log");
+    let pristine_log = fs::read(&log).unwrap();
+    for target in ["artifact", "log", "flags", "final", "in_flight"] {
+        // Each negative starts from the same complete chain, not the previous tamper.
+        fs::write(&journal_path, &pristine_journal).unwrap();
+        fs::write(&artifact, &pristine_artifact).unwrap();
+        fs::write(&log, &pristine_log).unwrap();
         match target {
-            "artifact" => {
-                let p = f.read("session/journal.json")["stages"][2]["result"]["path"]
-                    .as_str()
-                    .unwrap()
-                    .to_owned();
-                fs::write(Path::new(&p).join("adapted.spv"), b"changed").unwrap();
-            }
-            "log" => fs::write(f.path("session/adapt.stdout.log"), b"changed").unwrap(),
+            "artifact" => fs::write(&artifact, b"changed").unwrap(),
+            "log" => fs::write(&log, b"changed").unwrap(),
             "flags" => {
                 let mut j = f.read("session/journal.json");
                 j["proof_flags"]["deployable"] = json!(true);
-                fs::write(
-                    f.path("session/journal.json"),
-                    serde_json::to_vec(&j).unwrap(),
-                )
-                .unwrap();
+                fs::write(&journal_path, serde_json::to_vec(&j).unwrap()).unwrap();
+            }
+            "final" => {
+                let mut j = f.read("session/journal.json");
+                j["prepared_receipt"] = Value::Null;
+                fs::write(&journal_path, serde_json::to_vec(&j).unwrap()).unwrap();
             }
             _ => {
                 let mut j = f.read("session/journal.json");
+                j["status"] = json!("RUNNING");
                 j["prepared_receipt"] = Value::Null;
-                fs::write(
-                    f.path("session/journal.json"),
-                    serde_json::to_vec(&j).unwrap(),
-                )
-                .unwrap();
+                j["stages"][3]["state"] = json!("IN_FLIGHT");
+                let bytes = serde_json::to_vec(&j).unwrap();
+                fs::write(&journal_path, &bytes).unwrap();
+                let o = f.inspect();
+                assert!(!o.status.success());
+                assert_eq!(parse(&o)["status"], "UNKNOWN");
+                assert_eq!(fs::read(&journal_path).unwrap(), bytes);
             }
         }
-        assert!(!f.inspect().status.success());
-        assert_eq!(f.calls(), 2);
+        if target != "in_flight" {
+            assert!(!f.inspect().status.success(), "{target}");
+        }
+        assert_eq!(f.calls(), 2, "{target}");
     }
 }
 #[test]
@@ -388,23 +403,6 @@ fn rehashed_final_receipt_cannot_contradict_current_bindings_or_native_policy() 
         assert_eq!(f.calls(), 2);
     }
 }
-#[test]
-fn in_flight_inspection_is_unknown_read_only_and_cannot_run() {
-    let f = Fixture::new("ok");
-    success(&f.run(&[]));
-    let mut j = f.read("session/journal.json");
-    j["status"] = json!("RUNNING");
-    j["prepared_receipt"] = Value::Null;
-    j["stages"][3]["state"] = json!("IN_FLIGHT");
-    let bytes = serde_json::to_vec(&j).unwrap();
-    fs::write(f.path("session/journal.json"), &bytes).unwrap();
-    let o = f.inspect();
-    assert!(!o.status.success());
-    assert_eq!(parse(&o)["status"], "UNKNOWN");
-    assert_eq!(fs::read(f.path("session/journal.json")).unwrap(), bytes);
-    assert_eq!(f.calls(), 2);
-}
-
 #[test]
 fn actual_host_interruption_leaves_unknown_owned_child_and_no_replay() {
     struct Group(u32);
