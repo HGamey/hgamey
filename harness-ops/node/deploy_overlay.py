@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -197,17 +198,137 @@ def cmd_activate(args):
     record(run_dir, receipt, "staged")
     switch(root, run_id)
     record(run_dir, receipt, "active")
-    # Keep the last N releases; never delete the one the cursor points at.
+    # Keep the last N releases, plus any active, rollback or running exceptions.
     prune(root, keep=args.keep)
     return {"schema": SCHEMA, "run_id": run_id, "status": "active", "digest": digest,
             "files": files, "previous": receipt["previous"], "admission": admission_fact}
 
 
+def release_users_from_paths(releases, paths):
+    """Return releases containing any reported process path, without prefix confusion."""
+    resolved = [(release.name, Path(os.path.realpath(release))) for release in releases]
+    users = set()
+    for value in paths:
+        # Linux marks open but unlinked files this way in links and maps.
+        if value.endswith(" (deleted)"):
+            value = value[:-10]
+        if not value.startswith("/"):
+            continue
+        path = Path(os.path.realpath(value))
+        for name, release in resolved:
+            try:
+                path.relative_to(release)
+            except ValueError:
+                continue
+            users.add(name)
+    return users
+
+
+def release_users_from_commands(releases, commands):
+    """Conservatively find absolute release paths in macOS process arguments."""
+    resolved = [(release.name, str(Path(os.path.realpath(release)))) for release in releases]
+    users = set()
+    for command in commands:
+        for name, release in resolved:
+            offset = command.find(release)
+            while offset >= 0:
+                end = offset + len(release)
+                if end == len(command) or not (command[end].isalnum() or command[end] in "._-"):
+                    users.add(name)
+                    break
+                offset = command.find(release, offset + 1)
+    return users
+
+
+def linux_process_paths(proc_root):
+    """Read only path evidence; a process disappearing during inspection is normal."""
+    vanished = (FileNotFoundError, NotADirectoryError, ProcessLookupError)
+    for process in Path(proc_root).iterdir():
+        if not process.name.isdigit():
+            continue
+        for name in ("cwd", "root", "exe"):
+            try:
+                yield os.readlink(process / name)
+            except vanished:
+                pass
+        try:
+            descriptors = list((process / "fd").iterdir())
+        except vanished:
+            descriptors = []
+        for descriptor in descriptors:
+            try:
+                yield os.readlink(descriptor)
+            except vanished:
+                pass
+        try:
+            arguments = (process / "cmdline").read_bytes().split(b"\0")
+        except vanished:
+            arguments = []
+        for argument in arguments:
+            yield os.fsdecode(argument)
+        try:
+            with (process / "maps").open() as stream:
+                for line in stream:
+                    fields = line.split(None, 5)
+                    if len(fields) == 6:
+                        yield fields[5].rstrip("\n")
+        except vanished:
+            pass
+
+
+def linux_release_users(releases, proc_root=Path("/proc")):
+    try:
+        return release_users_from_paths(releases, linux_process_paths(proc_root))
+    except OSError:
+        # Hidden or inaccessible process metadata is not proof that deletion is safe.
+        return {release.name for release in releases}
+
+
+def macos_release_users(releases, runner=subprocess.run):
+    command = ["/usr/sbin/lsof", "-nP", "-F", "n"]
+    try:
+        result = runner(command, capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {release.name for release in releases}
+    if result.returncode != 0:
+        return {release.name for release in releases}
+    paths = (line[1:] for line in result.stdout.splitlines() if line.startswith("n"))
+    users = release_users_from_paths(releases, paths)
+    command = ["/bin/ps", "-ax", "-o", "args="]
+    try:
+        result = runner(command, capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {release.name for release in releases}
+    if result.returncode != 0:
+        return {release.name for release in releases}
+    users.update(release_users_from_commands(releases, result.stdout.splitlines()))
+    return users
+
+
+def process_release_users(releases):
+    if sys.platform.startswith("linux"):
+        return linux_release_users(releases)
+    if sys.platform == "darwin":
+        return macos_release_users(releases)
+    return {release.name for release in releases}
+
+
 def prune(root, keep=5):
     releases = sorted((root / "releases").iterdir(), key=lambda p: p.name)
     active = current_run(root)
-    for release in releases[:-keep] if len(releases) > keep else []:
-        if release.name == active:
+    candidates = releases[:-keep] if len(releases) > keep else []
+    if not candidates:
+        return
+    protected = {active}
+    if active:
+        previous = load_receipt(root / "deploy-state" / active).get("previous")
+        if previous:
+            protected.add(previous)
+    protected.update(process_release_users(candidates))
+    for release in candidates:
+        if release.name in protected:
             continue
         shutil.rmtree(release, ignore_errors=True)
         state = root / "deploy-state" / release.name
