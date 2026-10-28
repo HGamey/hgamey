@@ -10,7 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_node_games as fixture
-from device_scope import resource
+from device_scope import conflicts, resource, scope
 from job_queue import JobQueue
 from node_service import readonly_token
 
@@ -97,6 +97,32 @@ sys.exit(0 if done else 2)
 
 
 class DeviceScopeTests(unittest.TestCase):
+    def test_serial_scopes_write_jobs_to_one_device(self):
+        first = scope({"bin": "adb", "device_access": "write", "argv": ["-s", "redmagic", "shell", "getprop"]})
+        second = scope({"bin": "adb", "device_access": "write", "argv": ["--serial=huawei", "shell", "getprop"]})
+        self.assertEqual((first["scope"], first["binding"]["device_id"]), ("device", "redmagic"))
+        self.assertEqual((second["scope"], second["binding"]["device_id"]), ("device", "huawei"))
+        self.assertFalse(conflicts(first, second))
+        self.assertTrue(conflicts(first, first))
+        self.assertTrue(conflicts(first, scope({"bin": "adb", "device_access": "write", "argv": ["shell", "getprop"]})))
+        self.assertEqual(scope({"bin": "adb", "device_access": "none", "argv": ["-s", "redmagic"]})["scope"], "none")
+        self.assertEqual(scope({"bin": "adb", "device_access": "write", "argv": ["-s", "a", "-s", "b"]})["scope"], "global")
+        typed = bound("A", "redmagic")
+        self.assertEqual(scope({"bin": "phonefarm", "device_access": "write", "device_binding": typed,
+                                "argv": ["--serial", "huawei"]})["binding"], typed)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            queue = JobQueue(Path(temporary) / "queue.sqlite3", default_cpu=3)
+            ids = []
+            for serial in ("redmagic", "huawei", "redmagic"):
+                spec = {"bin": "adb", "device_access": "write", "argv": ["-s", serial, "shell", "getprop"]}
+                row, _ = queue.reserve(serial, serial, spec, ["legacy-device"])
+                queue.ready(row["job_id"])
+                ids.append(row["job_id"])
+            self.assertEqual(queue.claim_next(3)["job_id"], ids[0])
+            self.assertEqual(queue.claim_next(3)["job_id"], ids[1])
+            self.assertIsNone(queue.claim_next(3), "only the same serial remains reserved")
+
     def test_bound_http_workers_recovery_and_original_request(self):
         env = fixture.GameFlowTests()
         env.setUp()

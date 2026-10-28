@@ -317,7 +317,7 @@ class JobDispatch:
         while True:
             row = self.queue.claim_next(self.max_running, admit=lambda r:
                 node_update.maintenance_problem(self.jobs.update_layout, r["spec"]) is None
-                and lease_problem(r["spec"], lease) is None)
+                and lease_problem(r["spec"], lease, mode="recovery" if device_access(r["spec"]) == "recovery" else "start") is None)
             if row is None:
                 break
             if self.launch(row) is False:
@@ -358,7 +358,7 @@ class JobDispatch:
         spec = row["spec"]
         observation = (self.jobs.leases.snapshot(refresh=True) if
                        device_access(spec) == "write" or "device_binding" in spec else {})
-        if lease_problem(spec, observation) is not None:
+        if lease_problem(spec, observation, mode="recovery" if device_access(spec) == "recovery" else "start") is not None:
             self.queue.set_state(jid, "queued")
             return False
         try:

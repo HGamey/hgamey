@@ -87,10 +87,36 @@ def validate_job(spec, *, typed_recovery=False):
     return value
 
 
+def serial_from_argv(argv):
+    serials, index = [], 0
+    while index < len(argv):
+        value = argv[index]
+        if value in ("-s", "--serial") and index + 1 < len(argv):
+            serials.append(argv[index + 1])
+            index += 2
+            continue
+        for prefix in ("-s=", "--serial="):
+            if value.startswith(prefix):
+                serials.append(value[len(prefix):])
+        index += 1
+    return serials[0] if len(set(serials)) == 1 else None
+
+
 def scope(spec):
     if "device_binding" in spec:
         return {"scope": "device", "binding": binding(spec["device_binding"])}
-    return {"scope": "none" if device_access(spec) == "none" else "global"}
+    access = device_access(spec)
+    if access == "none":
+        return {"scope": "none"}
+    if access == "recovery":
+        return {"scope": "global"}
+    serial = serial_from_argv(spec.get("argv") or [])
+    if serial:
+        # A raw serial is a legacy scope, not a registry binding. Use it only
+        # for conflict identity; typed bindings retain their complete schema.
+        return {"scope": "device", "binding": {"domain_id": "serial", "device_id": serial,
+                                                 "serial": serial, "legacy_serial": True}}
+    return {"scope": "global"}
 
 
 def conflicts(left, right):
@@ -139,6 +165,11 @@ def lease_problem(spec, snapshot, mode=None):
         if mode == "recovery":  # Existing global recovery acquires its own original context.
             return None
         return None if snapshot.get("status") == "clear" else "global device lease is " + str(snapshot.get("status", "unknown"))
+    if declared["binding"].get("legacy_serial"):
+        # Raw serials have no registry schema to validate; preserve the old
+        # global lease gate while using the serial only for queue conflicts.
+        allowed = {"clear", "blocked"} if mode == "recovery" else {"clear"}
+        return None if snapshot.get("status") in allowed else "device " + declared["binding"]["device_id"] + " lease is " + str(snapshot.get("status", "unknown"))
     try:
         current = scopes(snapshot)
     except ValueError as error:

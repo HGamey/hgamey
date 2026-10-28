@@ -40,8 +40,11 @@ def reservation_conflicts(row, owner):
         row_resources = {r for r in row["resources"] if r.startswith("host:")}
         owner_resources = {r for r in owner["resources"] if r.startswith("host:")}
         return bool(row_resources & owner_resources)
+    left, right = scope(row["spec"]), scope(owner["spec"])
+    if left["scope"] == right["scope"] == "device":
+        return conflicts(left, right)
     return (bool(set(row["resources"]) & set(owner["resources"]))
-            or conflicts(scope(row["spec"]), scope(owner["spec"])))
+            or conflicts(left, right))
 
 
 def global_waiter(row):
@@ -52,8 +55,11 @@ def recovery_conflicts(row, owner):
     """Only another recovery in the same active chain can block a recovery."""
     if not row["spec"].get("recovery_for") or not owner["spec"].get("recovery_for"):
         return False
+    left, right = scope(row["spec"]), scope(owner["spec"])
+    if left["scope"] == right["scope"] == "device":
+        return conflicts(left, right)
     return (bool(set(row["resources"]) & set(owner["resources"]))
-            or conflicts(scope(row["spec"]), scope(owner["spec"])))
+            or conflicts(left, right))
 
 
 def recovery_sibling_conflicts(row, owner):
