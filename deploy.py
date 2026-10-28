@@ -12,9 +12,9 @@ stopped while files change and started again; the deploy succeeds only when ever
 that SHA for the service, phonefarm and game_opt_loop.
 
 Node data is never written: _jobs, _research, _node, tasks/ and the other RESERVED names stay put, and files
-that exist only in the installation are left alone. Deployment refuses while a configured jobs root holds a
-claimed, preparing or blocked job (--force overrides). Per-node settings live in deploy/<node>.json: paths
-and service commands only, no secrets.
+that exist only in the installation are left alone. Jobs present at publication are recorded in the receipt;
+--force is accepted for compatibility. Per-node settings live in deploy/<node>.json: paths and service
+commands only, no secrets.
 """
 import argparse
 import fcntl
@@ -248,16 +248,9 @@ def deploy(name, config, ref, fetch, force):
         source = work / "src"
         extract(sha, source)
         built = build(sha, source, work, config)
-        jobs = busy(config)
-        if jobs and not force:
-            raise DeployError(f"jobs are running or blocked, deploy refused (--force overrides): {jobs}")
         for argv in config["stop"]:
             run(argv)
-        jobs = busy(config)  # nothing can start a job now; this is the check that counts
-        if jobs and not force:
-            for argv in config["start"]:
-                run(argv)
-            raise DeployError(f"jobs are running or blocked, deploy refused (--force overrides): {jobs}")
+        jobs = busy(config)  # Record jobs present at publication; never refuse deployment.
         backup = work / "backups" / time.strftime("%Y%m%dT%H%M%S")
         backup.mkdir(parents=True)
         publication, changed = Publication(backup), {}
@@ -320,7 +313,7 @@ def main(argv=None):
     parser.add_argument("node", help="node name; settings come from deploy/<node>.json")
     parser.add_argument("--ref", default="origin/main", help="commit, branch or tag to deploy (default origin/main)")
     parser.add_argument("--no-fetch", action="store_true", help="do not git fetch origin first")
-    parser.add_argument("--force", action="store_true", help="deploy even while jobs are running or blocked")
+    parser.add_argument("--force", action="store_true", help="accepted for compatibility; deployment already proceeds over running jobs")
     parser.add_argument("--status", action="store_true", help="show the installed commit and what the nodes report")
     args = parser.parse_args(argv)
     try:

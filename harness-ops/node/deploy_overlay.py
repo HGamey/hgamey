@@ -184,8 +184,7 @@ def locked(path, *, existing=False, wait_seconds=0):
 
 
 def admission(args):
-    """Cross-participant coordination: refuse to switch while jobs are running
-    or another intake holder is mid-launch, unless the administrator forces it."""
+    """Record jobs present at activation without refusing the deployment."""
     if not args.jobs_root:
         return {"kind": "administrator_asserted_quiet", "managed_jobs_checked": False}
     jobs_root = Path(args.jobs_root).expanduser().resolve()
@@ -197,8 +196,6 @@ def admission(args):
             rows = db.execute("SELECT job_id FROM jobs WHERE state IN ('claimed','preparing','blocked')").fetchall()
         finally:
             db.close()
-    if rows and not args.force:
-        raise DeployError(409, f"{len(rows)} running/preparing/blocked job(s) prevent deployment; use --force to override")
     return {"kind": "node_intake", "jobs_root": str(jobs_root),
             "running": len(rows), "forced": bool(args.force)}
 
@@ -419,8 +416,8 @@ def parser():
             one.add_argument("--source", required=True, help="staged harness-ops tree to deploy")
             one.add_argument("--check-only", action="store_true", help="validate and digest without switching")
             one.add_argument("--keep", type=int, default=5, help="releases to retain (default 5)")
-            one.add_argument("--jobs-root", help="node jobs root; refuse switching while jobs run")
-            one.add_argument("--force", action="store_true", help="switch despite running jobs (administrator override)")
+            one.add_argument("--jobs-root", help="node jobs root; record jobs present at activation")
+            one.add_argument("--force", action="store_true", help="accepted for compatibility; activation already proceeds over running jobs")
         if name == "rollback":
             one.add_argument("--run", help="specific release to roll back to (default: previous)")
     return ap

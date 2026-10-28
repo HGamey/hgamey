@@ -89,7 +89,7 @@ class DeployOverlayTests(unittest.TestCase):
         self.assertEqual((self.root / "harness-ops" / "node" / "helper.py").read_text(), "VALUE = 1\n",
                          "failed smoke and check-only must not change the installation")
 
-    def test_running_jobs_prevent_deployment_unless_forced(self):
+    def test_running_jobs_are_receipted_without_blocking_deployment(self):
         from job_queue import JobQueue
 
         jobs_root = self.root / "phonefarm" / "_jobs"
@@ -100,13 +100,11 @@ class DeployOverlayTests(unittest.TestCase):
                                {"bin": "fixture", "argv": ["-c", "pass"], "resources": []}, [])
         queue.ready(row["job_id"])
         self.assertEqual(queue.claim_next(2)["job_id"], row["job_id"])
-        # blocked 状态（含恢复屏障）也应阻止部署
-        code, error = run(["activate", "--root", str(self.root), "--source", str(self.stage(6)),
-                           "--jobs-root", str(jobs_root)])
-        self.assertEqual((code, error["error"]["status"]), (1, 409))
-        self.assertIn("running/preparing", error["error"]["message"])
-        self.assertFalse((self.root / "harness-ops").is_symlink(),
-                         "refused deployment must not adopt or switch the cursor")
+        code, out = run(["activate", "--root", str(self.root), "--source", str(self.stage(6)),
+                         "--jobs-root", str(jobs_root)])
+        self.assertEqual((code, out["status"], out["admission"]["forced"]), (0, "active", False))
+        self.assertEqual(out["admission"]["running"], 1)
+        self.assertTrue((self.root / "harness-ops").is_symlink())
         code, out = run(["activate", "--root", str(self.root), "--source", str(self.stage(6)),
                          "--jobs-root", str(jobs_root), "--force"])
         self.assertEqual((code, out["status"], out["admission"]["forced"]), (0, "active", True))
