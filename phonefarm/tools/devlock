@@ -1,0 +1,202 @@
+#!/bin/zsh
+# devlock status | acquire LABEL | renew LABEL | release LABEL
+# devlock run LABEL -- command... | queue LABEL...
+# devlock reconcile INSTANCE --participants-stopped --confirm-device-idle
+# Existing ordered queue; identity and owner mutation belong to phonefarm.
+# Successful acquire prints only the typed owner JSON. Preserve its instance in
+# DEVLOCK_INSTANCE_ID (with DEVLOCK_LABEL) for renew/release and nested commands.
+PF=${PHONEFARM_BIN:-${0:A:h:h}/phonefarm}
+if (( ${+DEVLOCK_DIR} )); then
+  B=$DEVLOCK_DIR
+  [[ "$B" == /* ]] || { print -u2 'DEVLOCK_DIR must be an absolute path'; exit 2; }
+else
+  lease_status=$("$PF" lease status --json) || { print -u2 'phonefarm lease storage unavailable'; exit 2; }
+  B=$(print -r -- "$lease_status" | python3 -c '
+import json, os, sys
+try:
+    storage = json.load(sys.stdin)["storage"]
+    if storage.get("schema_version") != 1 or storage.get("readiness") != "ready":
+        raise ValueError(storage.get("error") or "lease storage requires explicit initialization")
+    path = storage["devlock_dir"]
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError("phonefarm returned an invalid lease path")
+    print(path)
+except (ValueError, KeyError, TypeError) as error:
+    print("lease storage unavailable: " + str(error), file=sys.stderr)
+    sys.exit(2)
+') || exit 2
+fi
+# This read-only capability check also refuses malformed/legacy owners. Missing
+# or old phonefarm must never fall back to the former label/TTL authorization.
+queue_snapshot=$("$PF" __queue-owner check --root "$B") || { print -u2 'phonefarm queue identity unavailable'; exit 2; }
+QROOT=$(print -r -- "$queue_snapshot" | python3 -c '
+import json, os, sys
+try:
+    value = json.load(sys.stdin)
+    if value.get("schema") != "phonefarm/devlock-check@2" or value.get("layout_version") not in (1, 2):
+        raise ValueError("incompatible phonefarm queue identity protocol")
+    path = value.get("queue_dir")
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError("phonefarm returned an invalid queue directory")
+    print(path)
+except (ValueError, TypeError, AttributeError) as error:
+    print(error, file=sys.stderr)
+    sys.exit(2)
+') || exit 2
+# The typed check above validates the declared shared root and existing queue
+# files. Setgid directories supply the group; only these queue writes use 0007.
+original_umask=$(umask)
+if (( ${+PHONEFARM_SHARED_GID} )); then
+  umask 0007
+fi
+# Observation does not initialize a lock domain.
+[[ "$1" == status ]] || mkdir -p -- "$B" || exit 2
+D=$QROOT/devlock.d; LOG=$QROOT/devlock.log; Q=$QROOT/devlock.queue; SEEN=$QROOT/devlock.seen; M=$QROOT/devlock.qmutex
+N=$QROOT/phonefarm-lease.d
+STALE=${DEVLOCK_STALE:-600}
+now(){ date +%s; }
+ts(){ date '+%F %T'; }
+valid_label(){ [[ -n "$1" && ${#1} -le 128 && "$1" != *[[:space:][:cntrl:]]* ]]; }
+nested(){ [[ -e "$N" || -L "$N" ]]; }
+# qmutex protects only the ordered queue. A lost mutex is not stolen on timeout.
+qlock(){
+  local i=0
+  until mkdir -- "$M" 2>/dev/null; do
+    (( ++i > 20 )) && { print -u2 'queue mutex unavailable; existing state preserved'; return 2; }
+    sleep 0.1
+  done
+}
+qunlock(){ rmdir -- "$M"; }
+qhead(){ [[ -s "$Q" ]] && grep -v '^[[:space:]]*$' "$Q" | head -1; }
+qhas(){ [[ -f "$Q" ]] && grep -Fqx -- "$1" "$Q"; }
+qappend(){ qhas "$1" || print -r -- "$1" >> "$Q"; }
+qdrop(){
+  if [[ -f "$Q" ]]; then
+    grep -Fvx -- "$1" "$Q" > "$Q.tmp"
+    mv -- "$Q.tmp" "$Q"
+  fi
+}
+seen(){
+  awk -v label="$1" '$1 != label' "$SEEN" 2>/dev/null > "$SEEN.tmp"
+  print -r -- "$1 $(now)" >> "$SEEN.tmp"
+  mv -- "$SEEN.tmp" "$SEEN"
+}
+seen_age(){
+  local seen_time=$(awk -v label="$1" '$1 == label {value=$2} END {print value}' "$SEEN" 2>/dev/null)
+  [[ "$seen_time" == <-> ]] && print $(( $(now) - seen_time )) || print 0
+}
+acquire(){
+  local label=$1 holder=$2 head result rc
+  valid_label "$label" || { print -u2 'queue label must be 1..128 non-whitespace characters'; return 2; }
+  (( ${+DEVLOCK_INSTANCE_ID} )) && { print -u2 'acquire cannot replace an inherited instance; use its checked owner'; return 2; }
+  qlock || return 2
+  seen "$label"
+  if [[ -e "$D" || -L "$D" ]] || nested; then
+    qappend "$label"; qunlock
+    print -u2 'busy: queue/strong/nested records are protected; inspect phonefarm lease status --json'
+    return 1
+  fi
+  head=$(qhead)
+  while [[ -n "$head" && "$head" != "$label" ]] && (( $(seen_age "$head") > STALE )); do
+    print -r -- "$(ts) skip $head (queue head idle $(seen_age "$head")s)" >> "$LOG"
+    qdrop "$head"; head=$(qhead)
+  done
+  if [[ -n "$head" && "$head" != "$label" ]]; then
+    qappend "$label"; qunlock
+    print -u2 -- "not your turn (queued): head=$head"
+    return 1
+  fi
+  # Publish global intent before the bridge attempt so new device lanes yield.
+  # A failed or timed-out caller retains its queue entry for existing management.
+  qappend "$label"
+  result=$("$PF" __queue-owner create --root "$B" --queue-dir "$QROOT" --label "$label" --holder-pid "$holder")
+  rc=$?
+  if (( rc == 0 )); then
+    print -r -- "$(ts) acquire $label" >> "$LOG"
+    qdrop "$label"
+  fi
+  qunlock
+  # A partially published identity is retained on error, never guessed empty.
+  if (( rc == 1 )); then
+    print -ru2 -- "$result"
+    return 1
+  fi
+  (( rc == 0 )) || return 2
+  print -r -- "$result"
+}
+renew(){ "$PF" __queue-owner renew --root "$B" --label "$1"; }
+release(){
+  "$PF" __queue-owner release --root "$B" --label "$1" || return 2
+  print -r -- "$(ts) release $1" >> "$LOG"
+}
+stop_heartbeat(){
+  [[ -n "$HB" ]] || return 0
+  kill -TERM "$HB" 2>/dev/null
+  wait "$HB" 2>/dev/null
+  HB=
+}
+case $1 in
+  status)
+    if nested; then
+      print 'lease protected: inspect phonefarm lease status --json'
+    else
+      print -r -- "$queue_snapshot" | python3 -c '
+import json, sys
+value=json.load(sys.stdin)
+state=value["status"]
+print("free" if state == "absent" else
+      "held: " + value["owner"]["owner"].strip() if state == "held" else
+      "lease protected: inspect phonefarm lease status --json" if state == "protected" else
+      "unknown: " + (value.get("error") or "owner identity unavailable"))
+'
+    fi
+    [[ -s "$Q" ]] && print -r -- "queue: $(grep -v '^[[:space:]]*$' "$Q" | tr '\n' ' ')"
+    true ;;
+  acquire) acquire "$2" "$PPID" ;;
+  renew) renew "$2" ;;
+  release) release "$2" ;;
+  reconcile)
+    instance=$2; shift 2
+    "$PF" __queue-owner reconcile --root "$B" --instance "$instance" "$@" ;;
+  queue)
+    shift
+    for label in "$@"; do valid_label "$label" || { print -u2 'invalid queue label'; exit 2; }; done
+    qlock || exit 2
+    : > "$Q"
+    for label in "$@"; do print -r -- "$label" >> "$Q"; seen "$label"; done
+    qunlock
+    print -r -- "$(ts) queue set: $*" >> "$LOG" ;;
+  run)
+    L=$2
+    [[ "$3" == -- && $# -ge 4 ]] || { print -u2 'usage: devlock run LABEL -- command...'; exit 2; }
+    shift 3
+    zmodload zsh/zselect || exit 2
+    record=$(acquire "$L" "$$") || exit $?
+    DEVLOCK_INSTANCE_ID=$(print -r -- "$record" | python3 -c '
+import json, re, sys
+v=json.load(sys.stdin)
+if v.get("schema") != "phonefarm/devlock-owner@1" or not re.fullmatch("[0-9a-f]{32}",v.get("instance_id", "")):
+    sys.exit(2)
+print(v["instance_id"])
+') || exit 2
+    export DEVLOCK_INSTANCE_ID DEVLOCK_LABEL=$L
+    HB=
+    trap stop_heartbeat EXIT
+    # Cancellation leaves the queue record for explicit reconciliation. Neither
+    # process exit nor a successful child proves that the device was restored.
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    ( trap 'exit 0' INT TERM HUP
+      while renew "$L" >/dev/null; do zselect -t 6000; done
+    ) & HB=$!
+    if (( ${+PHONEFARM_SHARED_GID} )); then
+      ( umask "$original_umask"; "$@" ); rc=$?
+    else
+      "$@"; rc=$?
+    fi
+    stop_heartbeat
+    release "$L" >/dev/null || { (( rc != 0 )) || rc=2; }
+    exit $rc ;;
+  *) sed -n '2,7p' "$0" >&2; exit 2 ;;
+esac
