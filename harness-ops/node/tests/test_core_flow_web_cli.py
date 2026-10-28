@@ -454,6 +454,43 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual([(j["job_id"], j["label"], j["state"], j["actor_id"]) for j in tasks[0]["jobs"]],
                          [(jid, "selfsr 1080p A/B", "queued", "agent-a")])
 
+    def test_two_phones_keep_distinct_research_agents_and_jobs(self):
+        jobs = {}
+        for suffix, serial in (("a", "PHONE-A"), ("b", "PHONE-B")):
+            rid, agent = "sr-" + suffix, "agent-" + suffix
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": "任务 " + suffix.upper(), "objective": "双手机并行占用"}))[0], 201)
+            self.assertEqual(self.cli("POST", "/agents", {"name": agent})[0], 201)
+            token = self.cli("POST", f"/agents/{agent}/token", {})[1]["token"]
+            self.assertEqual(self.pf(token, "research", "claim", rid)[0], 0)
+            code, jid, err = self.pf(token, "--research", rid, "--label", "实验 " + suffix.upper(),
+                                     "--device-access", "none", "--detach", "fixture", "-c", "pass")
+            self.assertEqual(code, 0, err)
+            jobs[serial] = (rid, agent, jid.strip())
+            status = self.cli("GET", f"/jobs/{jid.strip()}")[1]
+            self.assertEqual((status["research_id"], status["actor_id"], status["label"]), (rid, agent, "实验 " + suffix.upper()))
+            code, out, err = self.pf(ADMIN, "jobs", "--research", rid)
+            self.assertEqual(code, 0, err)
+            self.assertEqual([(item["id"], item["actor_id"]) for item in json.loads(out)["items"]], [(jid.strip(), agent)])
+
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        lock = {"status": "held", "held_by": None, "lease": {"entries": [
+            {"job_id": jobs[serial][2], "serial": serial, "state": "active", "label": "job-" + jobs[serial][2]}
+            for serial in ("PHONE-A", "PHONE-B")]}}
+        for serial, (rid, agent, jid) in jobs.items():
+            self.assertEqual(board._holder(serial, lock), {
+                "kind": "job", "job_id": jid, "label": "实验 " + serial[-1], "actor_id": agent,
+                "research_id": rid, "research_title": "任务 " + serial[-1], "state": "queued"})
+        tasks = {item["id"]: item for item in board._tasks()}
+        for rid, agent, jid in jobs.values():
+            self.assertEqual(tasks[rid]["owner"], agent)
+            self.assertEqual([(job["job_id"], job["actor_id"]) for job in tasks[rid]["jobs"]], [(jid, agent)])
+        script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
+        research_branch = script.split("job.research_id", 1)[1].split(": `<a", 1)[0]
+        self.assertIn("esc(job.label || job.job_id)", research_branch,
+                      "a research-linked phone must retain the job label as well as the research and agent")
+
     def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
