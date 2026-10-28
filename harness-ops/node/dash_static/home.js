@@ -148,7 +148,7 @@
       const task = job && (job.research_id
         ? `<a href="${esc(HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(job.research_id)}`))}">${esc(job.research_title || job.research_id)}</a>`
         : `<a href="${esc(HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.job_id)}`))}">${esc(job.label || job.job_id)}</a>`);
-      const doing = job ? `<div class="doing${job.kind === "job" ? " on" : ""}">${job.kind === "job" ? "任务" : "全局锁"}：${task}${job.actor_id ? " · " + esc(job.actor_id) : ""}${job.state && job.state !== "running" ? " · " + esc(job.state) : ""}</div>`
+      const doing = job ? `<div class="doing${job.kind === "job" ? " on" : ""}">${job.kind === "job" ? "任务" : job.reserved ? "全局预留" : "全局锁"}：${task}${job.actor_id ? " · " + esc(job.actor_id) : ""}${job.state && job.state !== "running" ? " · " + esc(job.state) : ""}</div>`
         : s.holder?.kind === "external" ? `<div class="doing on">外部占用：${esc(s.holder.label)}</div>`
         : s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
         : s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`

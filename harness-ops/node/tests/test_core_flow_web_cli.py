@@ -324,6 +324,38 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(board._holder("S2", outside), {"kind": "external", "label": "selfsr@S2"})
         self.assertIsNone(board._holder("S1", outside))
 
+    def test_a_device_write_job_keeps_its_phone_between_its_locks(self):
+        # A device-write job reserves the node's phones from claim until someone releases it. Between its
+        # own locks (an experiment cooling the phone, say) its phone still shows it and the others show the
+        # reservation; a lock or lease, when there is one, still decides first.
+        self.assertEqual(self.web("POST", "/research-state/research/sr-ab", self.write(
+            "ab-task", {"title": "原神超分 A/B", "objective": "复现第 7 组"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        code, out, err = self.pf(token, "--research", "sr-ab", "--label", "selfsr 第 7 组", "--device-access", "write",
+                                 "--detach", "fixture", "-c", "pass", "S1", "6")
+        self.assertEqual(code, 0, err)
+        jid = out.strip()
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        phones, free = {"S1", "S2"}, {"status": "free", "held_by": None, "lease": {"entries": []}}
+        self.assertEqual(board._reservations(), [])  # queued: nothing is reserved yet
+        self.assertEqual(self.jobs.dispatch.queue.claim_next(4, admit=lambda row: row["job_id"] == jid)["job_id"], jid)
+        owners = board._reservations()
+        mine = board._holder("S1", free, phones) or board._reserved("S1", owners, phones)
+        self.assertEqual(mine, {"kind": "job", "job_id": jid, "label": "selfsr 第 7 组", "actor_id": "agent-a",
+                                "research_id": "sr-ab", "research_title": "原神超分 A/B", "state": mine["state"],
+                                "reserved": True})
+        self.assertEqual(board._reserved("S2", owners, phones)["kind"], "global")
+        held = {"status": "held", "held_by": f"job-{jid}-selfsr-native-1@S1", "lease": {"entries": []}}
+        self.assertNotIn("reserved", board._holder("S1", held, phones))
+        # Finished but not yet released, the job still holds the phones, and says so.
+        self.jobs.dispatch.queue.set_state(jid, "blocked")
+        self.assertEqual(board._reserved("S1", board._reservations(), phones)["state"], "blocked")
+        self.jobs.dispatch.queue.set_state(jid, "done")  # what a release leaves (this job never ran, so it cannot be released)
+        self.assertEqual(board._reservations(), [])
+        self.assertIsNone(board._reserved("S1", [], phones))
+
     def test_page_discussion_writes_keep_steer_and_csrf_guards(self):
         status, body = self.web("POST", f"/jobs/{self.jid}/discuss", {"text": "x"}, steer=False)
         self.assertEqual((status, body.get("need_steer")), (403, True))

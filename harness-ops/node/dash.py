@@ -33,6 +33,7 @@
 """
 import collections, glob, hashlib, hmac, json, os, re, threading, time
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from device_scope import scope as device_scope
 from node_directory import DirectoryError
 from node_games import GameError, MAX_MANIFEST
 
@@ -816,7 +817,33 @@ class Dash:
             except Exception as e:  # noqa: BLE001
                 log_err(f"dash 扫实验证据出错: {e!r}")
 
-    def _holder(self, serial, lock):
+    def _job_meta(self, jid):
+        try:
+            return self.job_service.status(jid)
+        except (KeyError, OSError, ValueError):
+            return None
+
+    def _job_holder(self, meta, jid, serial, everywhere, aimed=None, known=()):
+        """The job's entry on this phone. A job that holds every phone works only on the ones it names:
+        after @ in its lock label, after --device/--serial, or as a serial in its argv."""
+        bound = (meta.get("device_binding") or {}).get("serial")
+        if everywhere and bound and bound != serial:
+            return None
+        title, rid = None, meta.get("research_id")
+        if rid and getattr(self.job_service, "research", None) is not None:
+            try:
+                title = self.job_service.research.get("research", rid)["data"].get("title")
+            except (KeyError, OSError, ValueError):
+                title = None
+        argv = meta.get("argv") or []
+        targets = {aimed} if aimed else {
+            argv[i + 1] for i, a in enumerate(argv[:-1]) if a in ("--device", "--extra-device", "--serial", "-s")
+        } | {a for a in argv if a in known}
+        kind = "global" if everywhere and not bound and targets and serial not in targets else "job"
+        return {"kind": kind, "job_id": jid, "label": meta.get("label"), "actor_id": meta.get("actor_id"),
+                "research_id": rid, "research_title": title, "state": meta.get("state")}
+
+    def _holder(self, serial, lock, known=()):
         """Who holds this phone: a node job (with its research and agent) or an outside lock label."""
         entry = next((e for e in (lock.get("lease") or {}).get("entries", [])
                       if e.get("serial") == serial and e.get("state") == "active"), None)
@@ -834,28 +861,29 @@ class Dash:
             else:
                 label = held
         if jid and self.job_service:
-            try:
-                meta = self.job_service.status(jid)
-            except (KeyError, OSError, ValueError):
-                meta = None
-            bound = ((meta or {}).get("device_binding") or {}).get("serial")
-            if meta and not (global_job and bound and bound != serial):
-                title, rid = None, meta.get("research_id")
-                if rid and getattr(self.job_service, "research", None) is not None:
-                    try:
-                        title = self.job_service.research.get("research", rid)["data"].get("title")
-                    except (KeyError, OSError, ValueError):
-                        title = None
-                # The global lock blocks every phone; the job only works on the ones its argv names.
-                argv = meta.get("argv") or []
-                targets = {aimed} if aimed else {
-                    argv[i + 1] for i, a in enumerate(argv[:-1]) if a in ("--device", "--extra-device", "--serial", "-s")}
-                kind = "global" if global_job and not bound and targets and serial not in targets else "job"
-                return {"kind": kind, "job_id": jid, "label": meta.get("label"), "actor_id": meta.get("actor_id"),
-                        "research_id": rid, "research_title": title, "state": meta.get("state")}
+            meta = self._job_meta(jid)
             if meta:
-                return None
+                return self._job_holder(meta, jid, serial, bool(global_job), aimed, known)
         return {"kind": "external", "label": label} if label else None
+
+    def _reservations(self):
+        """Device-write jobs holding the node's device reservation: running, or finished and awaiting release."""
+        queue = getattr(getattr(self.job_service, "dispatch", None), "queue", None)
+        if queue is None:
+            return []
+        try:
+            return [row for row in queue.rows(("claimed", "blocked")) if device_scope(row["spec"])["scope"] != "none"]
+        except (OSError, ValueError, sqlite3.Error):
+            return []
+
+    def _reserved(self, serial, owners, known=()):
+        """The job that reserved this phone in the queue while it holds no lock, e.g. between measurements."""
+        for row in owners:
+            meta = self._job_meta(row["job_id"])
+            entry = meta and self._job_holder(meta, row["job_id"], serial, True, known=known)
+            if entry:
+                return {**entry, "reserved": True, **({"state": "blocked"} if row["state"] == "blocked" else {})}
+        return None
 
     # ── 汇总 ──
     def home(self, h):
@@ -867,6 +895,8 @@ class Dash:
         lease_entries = (lock.get("lease") or {}).get("entries", [])
         fl = snapshot
         slots = []
+        known = {d.get("serial") for d in fl.get("devices") or [] if d.get("serial")}
+        owners = self._reservations() if self.job_service else []
         for d in fl.get("devices") or []:
             serial = d.get("serial")
             goal = next((r for r in running if r.get("job_id") and any(
@@ -882,7 +912,7 @@ class Dash:
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
                           "busy": lock["status"] != "free", "light": d.get("probe_depth") == "light",
-                          "holder": self._holder(serial, lock),
+                          "holder": self._holder(serial, lock, known) or self._reserved(serial, owners, known),
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
                                             "demo": goal["demo"]},
