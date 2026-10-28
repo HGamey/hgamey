@@ -887,13 +887,15 @@ class Dash:
         return None
 
     def _tasks(self):
-        """Research tasks in progress, newest first, each with the node jobs still working for it."""
+        """Active and recently delivered research, newest first, with jobs still working for each."""
         research = getattr(self.job_service, "research", None) if self.job_service else None
         queue = getattr(getattr(self.job_service, "dispatch", None), "queue", None)
         if research is None:
             return []
         try:
-            items = research.list("research", {"state": ["active"], "limit": ["10"]})["items"]
+            items = [item for state in ("active", "delivered")
+                     for item in research.list("research", {"state": [state], "limit": ["10"]})["items"]]
+            items.sort(key=lambda item: item["updated_at"], reverse=True)
             rows = queue.rows(("queued", "claimed", "blocked")) if queue is not None else []
         except (OSError, ValueError, sqlite3.Error):
             return []
@@ -904,8 +906,14 @@ class Dash:
                 meta = self._job_meta(row["job_id"]) or {}
                 jobs[rid].append({"job_id": row["job_id"], "label": meta.get("label"), "state": row["state"],
                                   "actor_id": meta.get("actor_id")})
-        return [{"id": item["id"], "title": item["title"], "owner": item.get("owner"), "updated_at": item["updated_at"],
-                 "jobs": jobs.get(item["id"], [])} for item in items]
+        tasks = []
+        for item in items[:10]:
+            task = {"id": item["id"], "title": item["title"], "owner": item.get("owner"), "state": item["state"],
+                    "updated_at": item["updated_at"], "jobs": jobs.get(item["id"], [])}
+            if item["state"] == "delivered":
+                task["report_url"] = "/dash/research?" + urlencode({"kind": "research", "id": item["id"]}) + "#task-report"
+            tasks.append(task)
+        return tasks
 
     def _agents(self):
         """Every enabled agent as a human sees it: last check-in, what it says it is doing, what it still owes

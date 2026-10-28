@@ -316,6 +316,21 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(delivered["data"]["deliverable"]["applies_to"], {"game_version": "5.1", "devices": ["RedMagic NX809J"]})
         self.assertEqual(delivered["audit"]["actor_label"], "agent-b")
 
+    def test_delivered_research_has_a_home_report_link(self):
+        for rid in ("sr-active", "sr-report"):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": rid, "objective": "首页任务与报告"}))[0], 201)
+        summary = "# 结果\n\n| 指标 | 变化 |\n| --- | --- |\n| 帧率 | +18% |"
+        self.assertEqual(self.pf(ADMIN, "research", "deliver", "sr-report", "--summary", summary,
+                                 "--artifact", f"job:{self.jid}", "--game-version", "5.1",
+                                 "--device", "FixturePhone")[0], 0)
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        tasks = {item["id"]: item for item in board._tasks()}
+        self.assertIn("sr-active", tasks)
+        self.assertEqual(tasks["sr-report"]["state"], "delivered")
+        self.assertEqual(tasks["sr-report"]["report_url"], "/dash/research?kind=research&id=sr-report#task-report")
+
     def test_job_artifact_paths_are_shared_by_cli_notes_and_delivery(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-artifacts", self.write(
             "web-artifacts", {"title": "图像证据", "objective": "在任务讨论与交付中保留过程图"}))[0], 201)

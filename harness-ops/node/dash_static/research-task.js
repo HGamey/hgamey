@@ -37,19 +37,25 @@
       if (epoch === imageEpoch) image.replaceWith(el('span', '图片读取失败', 'note'));
     }
   }
+  function imageFigure(ref, alt) {
+    const link = el('a'), figure = el('figure', null, 'research-artifact'), image = el('img');
+    link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop();
+    image.alt = alt || ref.path; link.append(image); figure.append(link, el('figcaption', `任务 ${ref.job_id} · ${ref.path}`));
+    loadImage(image, ref, IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()] || 'application/octet-stream', imageEpoch);
+    return figure;
+  }
   function evidenceList(refs) {
     const list = el('ul', null, 'research-evidence'), local = HGTarget.binding()?.node_id;
     for (const ref of refs || []) {
       const item = el('li');
       if (ref.kind === 'job' && ref.node_id === local) {
         if (ref.path) {
-          const link = el('a'), mime = IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()];
-          link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop();
-          if (mime) {
-            const figure = el('figure', null, 'research-artifact'), image = el('img');
-            image.alt = ref.path; link.append(image); figure.append(link, el('figcaption', `任务 ${ref.job_id} · ${ref.path}`));
-            item.append(figure); loadImage(image, ref, mime, imageEpoch);
-          } else { link.textContent = `任务 ${ref.job_id} · ${ref.path}`; item.append(link); }
+          const mime = IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()];
+          if (mime) item.append(imageFigure(ref, ref.path));
+          else {
+            const link = el('a', `任务 ${ref.job_id} · ${ref.path}`);
+            link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop(); item.append(link);
+          }
         } else {
           const link = el('a', `任务 ${ref.job_id}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(ref.job_id)}`); item.append(link);
         }
@@ -61,6 +67,69 @@
       list.append(item);
     }
     return list;
+  }
+
+  function jobImage(value) {
+    const match = /^job:([0-9a-f]{12}):(.+)$/.exec(value);
+    if (!match) return null;
+    const path = match[2];
+    if (path.length > 2048 || path.startsWith('/') || path.split('/').some(part => !part || ['.', '..'].includes(part))) return null;
+    return {kind: 'job', job_id: match[1], path, node_id: HGTarget.binding()?.node_id};
+  }
+  function appendInline(parent, value) {
+    const pattern = /!\[([^\]]*)\]\((job:[0-9a-f]{12}:[^)]+)\)/g;
+    let at = 0, match;
+    while ((match = pattern.exec(value))) {
+      parent.append(document.createTextNode(value.slice(at, match.index)));
+      const ref = jobImage(match[2]);
+      if (ref) parent.append(imageFigure(ref, match[1]));
+      else parent.append(document.createTextNode(match[0]));
+      at = pattern.lastIndex;
+    }
+    parent.append(document.createTextNode(value.slice(at)));
+  }
+  const tableCells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+  const tableDivider = line => line.includes('|') && tableCells(line).every(cell => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')));
+  const listLine = line => /^\s*([-*+]|\d+\.)\s+(.*)$/.exec(line);
+  function markdownReport(source) {
+    const article = el('article', null, 'research-report'), lines = String(source).replace(/\r\n?/g, '\n').split('\n');
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line.trim()) { ++index; continue; }
+      const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (heading) {
+        const element = el('h' + heading[1].length); appendInline(element, heading[2]); article.append(element); ++index; continue;
+      }
+      if (line.trim().startsWith('```')) {
+        const code = []; ++index;
+        while (index < lines.length && !lines[index].trim().startsWith('```')) code.push(lines[index++]);
+        article.append(el('pre', code.join('\n'))); if (index < lines.length) ++index; continue;
+      }
+      if (index + 1 < lines.length && line.includes('|') && tableDivider(lines[index + 1])) {
+        const table = el('table'), head = el('thead'), body = el('tbody'), header = el('tr');
+        for (const cell of tableCells(line)) { const th = el('th'); appendInline(th, cell); header.append(th); }
+        head.append(header); index += 2;
+        while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
+          const row = el('tr');
+          for (const cell of tableCells(lines[index])) { const td = el('td'); appendInline(td, cell); row.append(td); }
+          body.append(row); ++index;
+        }
+        table.append(head, body); article.append(table); continue;
+      }
+      const item = listLine(line);
+      if (item) {
+        const ordered = /^\d/.test(item[1]), list = el(ordered ? 'ol' : 'ul');
+        while (index < lines.length) {
+          const current = listLine(lines[index]);
+          if (!current || /^\d/.test(current[1]) !== ordered) break;
+          const li = el('li'); appendInline(li, current[2]); list.append(li); ++index;
+        }
+        article.append(list); continue;
+      }
+      const paragraph = el('p'); appendInline(paragraph, line); article.append(paragraph); ++index;
+    }
+    return article;
   }
 
   function ownerSection(record, ctx) {
@@ -87,8 +156,9 @@
     const value = record.data.deliverable;
     if (!value) return null;
     const section = el('section', null, 'research-section'), list = evidenceList(value.artifacts);
+    section.id = 'task-report';
     const scope = [value.applies_to.game_version && `游戏版本 ${value.applies_to.game_version}`, ...value.applies_to.devices].filter(Boolean).join(' · ');
-    section.append(el('h3', '交付'), el('p', value.summary), list);
+    section.append(el('h2', '交付报告'), markdownReport(value.summary), el('h3', '成果文件'), list);
     if (scope) section.append(el('p', scope, 'muted'));
     return section;
   }
