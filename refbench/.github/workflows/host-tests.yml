@@ -1,0 +1,19 @@
+# refbench 宿主已知答案与接口回归：确定性 host fixture，无 GPU/APK/真机。
+# 只证明输出合同、序列质量规则与原生配对采集的宿主逻辑；真机资格单独验收。
+name: host-tests
+on:
+  pull_request:
+  push:
+    branches: [main, 'verify/**']
+permissions:
+  contents: read
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 运行宿主测试（output contract / native pairs known answers）
+        run: python3 -m unittest discover -s tests -p "test_*.py" -v
