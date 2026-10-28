@@ -1797,7 +1797,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if self._history_read_only(parts):
                 return
             if self._authed():
-                self._send(200, b"")
+                self._send(404, {"code": "not_found", "error": "route not found"})
 
         def _history_read_only(self, parts):
             parts = [unquote(p) for p in parts]

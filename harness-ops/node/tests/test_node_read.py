@@ -263,6 +263,14 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(self.request(f"/jobs/{jid}", headers={"Authorization": "Basic " +
             base64.b64encode(("user:" + self.pw).encode()).decode()})[0], 401)
 
+    def test_unknown_delete_route_is_not_a_successful_noop(self):
+        for path in ("/jobs", "/definitely-not-a-route"):
+            status, _, body = self.request(path, method="DELETE", token=self.admin)
+            self.assertEqual(status, 404, body)
+        # Authentication and the existing read-only history route keep their behavior.
+        self.assertEqual(self.request("/jobs", method="DELETE")[0], 401)
+        self.assertEqual(self.request("/job-sources/original", method="DELETE", token=self.admin)[0], 405)
+
     def test_dashboard_uses_same_catalog_without_waking_phone_sampler(self):
         jid = self.fixture(1)
         auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}
