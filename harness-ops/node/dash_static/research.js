@@ -104,7 +104,7 @@
   }
   function renderControls() {
     const allowed = writable(), locked = writeBusy || !!pending && !pending.refill;
-    $('new-object').textContent = `新建${KINDS[$('filter-kind').value]}`;
+    $('new-object').textContent = $('filter-kind').value === 'research' ? '＋ 新任务' : `新建${KINDS[$('filter-kind').value]}`;
     $('new-object').disabled = !capable() || !!pending || writeBusy || relatedBusy;
     $('access-toggle').disabled = accessBusy || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定操作' : '解锁操作';
@@ -163,13 +163,13 @@
     $('state-filter-label').hidden = kind === 'feedback'; $('request-filter-label').hidden = kind !== 'feedback'; renderControls();
   }
   function renderList() {
-    $('objects-heading').textContent = KINDS[listKind]; $('object-count').textContent = `${records.length} 条已载入`;
+    $('objects-heading').textContent = listKind === 'research' ? '任务' : KINDS[listKind]; $('object-count').textContent = `${records.length} 条已载入`;
     $('object-list').replaceChildren(...records.map(item => {
       const li = el('li'), button = el('button', null, 'research-choice'); button.type = 'button'; button.setAttribute('aria-current', String(keyOf(item) === keyOf(selection)));
       button.append(el('strong', item.title || item.id), el('span', `${item.id} · v${item.revision} · ${stateText(item.kind, item.state)}`, 'research-meta'), el('span', `记录于 ${time(item.updated_at)}`, 'research-meta'));
       if (item.kind === 'direction') button.append(el('span', item.metadata_blocked === true ? '存在未解的局部阻断依赖' : item.metadata_blocked === false ? '未解的阻断依赖：无；设备资格另核' : '依赖摘要未提供', 'research-meta'));
       if (item.kind === 'request') button.append(el('span', `${Number.isInteger(item.feedback_count) ? item.feedback_count : '未知'} 条答复；依赖是否解除另记`, 'research-meta'));
-      button.addEventListener('click', () => { selectObject(item.kind, item.id); $('detail-heading').focus(); }); li.append(button); return li;
+      button.addEventListener('click', () => { selectObject(item.kind, item.id); $('object-title').focus(); }); li.append(button); return li;
     }));
     $('more-objects').hidden = !listCursor; $('more-objects').disabled = listBusy;
   }

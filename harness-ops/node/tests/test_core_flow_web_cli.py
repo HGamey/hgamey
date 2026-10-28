@@ -575,6 +575,11 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('["/dash/jobs", "runs", "运行"]', shell)
         self.assertIn('["/dash/research", "task", "任务"]', shell)
         self.assertIn('["/dash/research#agents-directory", "agent", "Agent"]', shell)
+        self.assertIn('id="objects-heading" tabindex="-1">任务</h2>', page)
+        self.assertNotIn('id="detail-heading"', page)
+        self.assertIn('id="object-title" tabindex="-1"', page)
+        self.assertIn("$('object-title').focus()", script)
+        self.assertIn("$('new-object').textContent = $('filter-kind').value === 'research' ? '＋ 新任务'", script)
 
     def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
