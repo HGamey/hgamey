@@ -198,6 +198,42 @@ class JobCLI(unittest.TestCase):
             self.assertIn("job:<任务>:<路径>", text, name)
             self.assertIn("--ask", text, name)
 
+    def test_adb_omitted_access_requires_a_narrow_read_only_form(self):
+        cli = self.load_cli()
+        main = cli["main"]
+        from agent_duties import LOOP
+        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1"])
+        accepted = [
+            ["devices"],
+            ["-s", "redmagic", "shell", "settings", "get", "global"],
+            ["-s", "redmagic", "shell", "dumpsys", "display"],
+            ["-s", "redmagic", "shell", "pm", "list", "packages"],
+            ["-s", "redmagic", "shell", "getprop"],
+        ]
+        for command in accepted:
+            pack = mock.Mock(side_effect=lambda values: (values, b"packed"))
+            submit = mock.Mock(return_value={"id": JOB, "phase": "queued"})
+            with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(node).encode()),
+                                 pack=pack, submit_job=submit), \
+                    mock.patch.object(sys, "argv", [str(CLI), "--detach", "adb", *command]), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                main()
+            self.assertEqual(submit.call_args.args[0]["device_access"], "none")
+        for command in (["shell", "setprop", "x", "y"], ["shell", "input", "tap", "1", "1"], ["shell", "echo", "uncertain"]):
+            pack = mock.Mock(side_effect=lambda values: (values, b"packed"))
+            submit = mock.Mock(return_value={"id": JOB, "phase": "queued"})
+            with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(node).encode()),
+                                 pack=pack, submit_job=submit), \
+                    mock.patch.object(sys, "argv", [str(CLI), "--detach", "adb", *command]), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr, \
+                    self.assertRaises(SystemExit) as stopped:
+                main()
+            self.assertIn("--device-access write", str(stopped.exception))
+            self.assertIn("--device-access none", str(stopped.exception))
+            submit.assert_not_called()
+        self.assertIn("只读白名单", cli["__doc__"])
+        self.assertIn("只读白名单", "\n".join(LOOP))
+
     def test_submission_retries_same_request_and_recovers_without_another_job(self):
         posts, gets = [], []
         meta = {"id": JOB, "state": "running", "phase": "queued", "request_id": "study-001"}
