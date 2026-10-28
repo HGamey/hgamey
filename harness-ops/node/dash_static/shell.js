@@ -1,16 +1,19 @@
-// HGamey 工作台外壳（2026-10-28 重构）：统一 5-tab 导航，固定尺寸不跳动，active 中性灰 pill。
+// HGamey 工作台外壳：统一 6-tab 导航，固定尺寸不跳动，active 中性灰 pill。
 // 每页引入：在 <body> 末尾 <script src="/dash/static/shell.js"></script>；外壳替换旧 header.top。
 (function () {
   const TABS = [
     ["/dash", "main", "总览"],
     ["/dash/fleet", "device", "设备"],
-    ["/dash/jobs", "task", "任务"],
-    ["/dash/research", "agent", "Agent"],
+    ["/dash/jobs", "runs", "运行"],
+    ["/dash/research", "task", "任务"],
+    ["/dash/research#agents-directory", "agent", "Agent"],
     ["/dash/maint", "option", "设置"],
   ];
   const path = location.pathname.replace(/\/+$/, "") || "/dash";
   function current(p) {
     if (p === "/dash") return path === "/dash" || path === "/dash/";
+    if (p === "/dash/research#agents-directory") return path === "/dash/research" && location.hash === "#agents-directory";
+    if (p === "/dash/research") return path === p && location.hash !== "#agents-directory";
     return path === p || path.startsWith(p + "/");
   }
   function build() {

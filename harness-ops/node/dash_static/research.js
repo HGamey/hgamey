@@ -105,11 +105,11 @@
   function renderControls() {
     const allowed = writable(), locked = writeBusy || !!pending && !pending.refill;
     $('new-object').textContent = `新建${KINDS[$('filter-kind').value]}`;
-    $('new-object').disabled = !allowed || !!pending || writeBusy || relatedBusy;
+    $('new-object').disabled = !capable() || !!pending || writeBusy || relatedBusy;
     $('access-toggle').disabled = accessBusy || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定操作' : '解锁操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
-    message('access-message', accessError || (accessBusy ? '正在读取权限…' : !access ? '权限未知，保持只读。' : access.steer ? '可保存研究元数据与答复；不会启动任务。' : access.steer_configured ? '可查看研究；保存与答复需要掌舵权限。' : '未配置掌舵权限，保持只读。'), !!accessError);
+    message('access-message', accessError || (accessBusy ? '正在读取权限…' : ''), !!accessError);
     $('save-object').disabled = !allowed || locked || !draft || !!HGTarget.problem(draft?.target || null);
     $('save-object').textContent = writeBusy ? '正在保存或核对…' : draft?.base_revision ? '保存新版本' : '创建记录';
     $('save-object').setAttribute('aria-busy', String(writeBusy));
@@ -123,8 +123,8 @@
     $('editor-close').disabled = writeBusy || !draft;
     $('editor-close').textContent = $('edit-form').hidden ? '展开草稿' : '收起草稿';
     $('refresh-detail').disabled = !selection || !capable();
-    $('edit-object').disabled = !allowed || !detailFresh || !!pending || writeBusy;
-    for (const id of ['new-direction', 'new-request', 'reply-request', 'close-request']) $(id).disabled = !allowed || !detailFresh || !!pending || writeBusy || relatedBusy;
+    $('edit-object').disabled = !capable() || !detailFresh || !!pending || writeBusy;
+    for (const id of ['new-direction', 'new-request', 'reply-request', 'close-request']) $(id).disabled = !capable() || !detailFresh || !!pending || writeBusy || relatedBusy;
     $('operation-query').disabled = lookupBusy || !capable();
     $('pending-panel').hidden = !pending;
     if (pending) {
@@ -151,7 +151,11 @@
     if (accessBusy) return; accessBusy = true; renderControls(); $('unlock-submit').disabled = true;
     try { await request(`${API}/steer/${lock ? 'lock' : 'unlock'}`, {body}); $('unlock-form').hidden = true; message('unlock-message', ''); }
     catch (error) { message('unlock-message', failText(error), true); }
-    finally { $('steer-password').value = ''; $('unlock-submit').disabled = false; accessBusy = false; await loadAccess(); }
+    finally { $('steer-password').value = ''; $('unlock-submit').disabled = false; accessBusy = false; await loadAccess(); if (access?.steer) $('access-panel').hidden = true; }
+  }
+  function requireWrite() {
+    if (writable()) { $('access-panel').hidden = true; return true; }
+    $('access-panel').hidden = false; message('access-message', '写入需要解锁操作。', true); return false;
   }
   function changeKind() {
     const kind = $('filter-kind').value;
@@ -186,7 +190,7 @@
       if (disposed || epoch !== listEpoch) return;
       if (!Array.isArray(value.items)) throw new Error('列表缺少记录数组。');
       records.push(...value.items); listCursor = value.next_cursor || null;
-      message('list-message', records.length ? '状态是作者声明；选择记录查看具体版本与依赖。' : '没有匹配记录。可新建研究，或调整筛选。');
+      message('list-message', records.length ? '' : '没有匹配记录。可新建研究，或调整筛选。');
     } catch (error) { if (!disposed && epoch === listEpoch) message('list-message', `读取失败：${failText(error)}${records.length ? ' 已载入页保留。' : ''}`, true); }
     finally { if (!disposed && epoch === listEpoch) { listBusy = false; $('filter-submit').disabled = false; $('object-list').setAttribute('aria-busy', 'false'); renderList(); } }
   }
@@ -256,9 +260,12 @@
     renderDerived(record); renderEvidence(record); $('object-json').textContent = JSON.stringify(record, null, 2);
     const target = HGTarget.binding();
     HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target});
-    HGResearchTask.renderDetail($('task-detail'), record, {writable, reload: () => selectObject(record.kind, record.id)})
+    HGResearchTask.renderDetail($('task-detail'), record, {writable, requireWrite, reload: () => selectObject(record.kind, record.id)})
       .catch(error => message('detail-message', error.message, true));
-    HGResearchCriteria.renderDetail($('criteria-detail'), record, {node, target,
+    const criteriaContainer = $('criteria-detail');
+    criteriaContainer.hidden = !(record.kind === 'research' && record.data.criteria);
+    if (!criteriaContainer.hidden) $('object-body').after(criteriaContainer);
+    HGResearchCriteria.renderDetail(criteriaContainer, record, {node, target,
       readAssessment: (id, revision, signal) => request(`${objectPath('research', id)}/assessment?revision=${revision}`, {target, signal})});
     renderControls();
   }
@@ -273,7 +280,7 @@
       const value = checkedObject(await request(objectPath(kind, id) + (revision ? `?revision=${revision}` : ''), {target, signal: detailController.signal}), kind, id, target, revision);
       if (disposed || epoch !== detailEpoch) return;
       detail = value; detailFresh = true; renderDetail(value);
-      message('detail-message', value.revision !== value.current_revision ? '这是历史版本。编辑以此版本为基础，若当前已更新会返回冲突。' : '已读取当前版本。读取不会覆盖打开的草稿。');
+      message('detail-message', value.revision !== value.current_revision ? '这是历史版本。编辑以此版本为基础，若当前已更新会返回冲突。' : '');
     } catch (error) { if (!disposed && epoch === detailEpoch) message('detail-message', failText(error), true); }
     finally { if (!disposed && epoch === detailEpoch) renderControls(); }
   }
@@ -378,7 +385,7 @@
       .catch(() => { note.textContent = '模板暂不可读，可直接编辑计划。'; });
   }
   function openDraft(kind, data = {}, record = null) {
-    if (!writable() || writeBusy || pending) return;
+    if (!requireWrite() || writeBusy || pending) return;
     preserveDraft(); conflictLatest = null; $('conflict-latest').hidden = true;
     draft = {kind, id: record?.id || crypto.randomUUID(), base_revision: record?.revision || null, operation_id: crypto.randomUUID(), target: HGTarget.binding(), data: {...defaults(kind), ...clone(data)}, actor_label: '', reason: ''};
     message('write-message', ''); $('write-links').replaceChildren(); paintDraft(); $('editor-heading').scrollIntoView({block: 'start'});
@@ -429,7 +436,7 @@
       else if (error.status >= 400 && error.status < 500 && error.status !== 409) { pending = null; persistPending(); }
       else if (error.status === 409 && !['research_operation_conflict', 'research_revision_conflict'].includes(error.code)) { pending = null; persistPending(); }
       message('write-message', `${failText(error)}${pending ? ' 原操作与草稿已保留，请先查询或核对版本。' : ' 请求已明确拒绝，草稿仍可修改。'}`, true);
-      if ([401, 403].includes(error.status)) { access = null; accessError = '操作权限已失效，请重新解锁。'; }
+      if ([401, 403].includes(error.status)) { access = null; accessError = '操作权限已失效，请重新解锁。'; $('access-panel').hidden = false; }
     } finally { writeBusy = false; if (!disposed) renderControls(); }
   }
   async function submit() {
@@ -480,7 +487,7 @@
     message('write-message', '已显式另开操作。上个草稿和操作 ID 保留在下方；请对照最新版本自行合并后保存。');
   }
   async function relatedDraft(kind) {
-    if (!detailFresh || !detail || pending || !writable() || relatedBusy) return;
+    if (!detailFresh || !detail || pending || !requireWrite() || relatedBusy) return;
     const current = detail, epoch = detailEpoch, target = HGTarget.binding();
     if (kind === 'direction') { openDraft(kind, {research_id: current.id}); return; }
     if (kind === 'feedback') { openDraft(kind, {request_id: current.id, request_revision: current.revision}); return; }
@@ -699,7 +706,7 @@
     } catch (error) { transfer.error = failText(error); }
     finally { relatedBusy = transfer.loading = false; renderControls(); }
   }
-  function capabilityMessage() { message('capability-message', capable() ? '当前后台保存独立研究状态；只读记录不会探测手机。声明状态与任务运行、设备恢复分别核对。' : '此节点未提供 research.state-v1，研究记录不可用；旧目标客户端仍可从概览进入。', !capable()); renderControls(); }
+  function capabilityMessage() { message('capability-message', capable() ? '' : '此节点未提供 research.state-v1，研究记录不可用；旧目标客户端仍可从概览进入。', !capable()); renderControls(); }
   async function refresh() {
     $('refresh-all').disabled = true;
     try { node = await HGTarget.refresh(); capabilityMessage(); if (capable()) await Promise.all([loadList(), selection ? selectObject(selection.kind, selection.id, selection.revision) : null]); }
@@ -761,6 +768,7 @@
     if (saved && KINDS[saved.kind] && validID(saved.id) && validID(saved.operation_id) && (saved.base_revision == null || Number.isInteger(saved.base_revision) && saved.base_revision > 0)) pending = {...saved, target: saved.target || null};
   } catch (_) { /* Corrupt browser state establishes no operation identity. */ }
   const query = new URLSearchParams(location.search);
+  if (location.hash === '#agents-directory') { $('agents-directory').open = true; $('agents-directory').scrollIntoView({block: 'start'}); }
   if (KINDS[query.get('kind')]) $('filter-kind').value = query.get('kind'); changeKind();
   if (query.has('research_id')) $('filter-research').value = query.get('research_id');
   syncEventScope();

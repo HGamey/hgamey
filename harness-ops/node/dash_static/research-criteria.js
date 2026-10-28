@@ -112,9 +112,11 @@
   function clearDetail() { if(detail){detail.epoch++;detail.controller?.abort();}detail=null;$('criteria-detail').replaceChildren(); }
   function renderDetail(container,record,context) {
     clearDetail();if(record.kind!=='research')return;
-    const panel=el('section',null,'research-section criteria-detail'),criteria=record.data.criteria;
+    const criteria=record.data.criteria;
+    if(!criteria){container.hidden=true;return;}
+    container.hidden=false;
+    const panel=el('section',null,'research-section criteria-detail');
     panel.append(el('h3','版本化判据与点值判断'));
-    if(!criteria){panel.append(note(Object.prototype.hasOwnProperty.call(record.data,'criteria')?'此版本明确没有数值判据。':'此版本未声明数值判据；不会从目标文字补阈值。'));container.append(panel);return;}
     const s={record,context,epoch:0,controller:null,busy:false},message=note('尚未读取判断；将固定此研究版本，不自动使用最新判据。'),read=button(`判断 v${record.revision} 的登记点值`,'criteria-assess'),output=el('div',null,'criteria-assessment');detail=s;s.message=message;s.read=read;
     panel.append(note(`研究 ${record.id} · v${record.revision}（当前 v${record.current_revision}）。首列“${criteria.comparison.columns[0].label}”由作者声明为原游戏基线，未验证原生渲染路径。`),compareLink(criteria.comparison,context.target),bindingView(record.derived?.criteria_bindings));
     const rules=el('ul',null,'research-evidence');for(const axis of criteria.axes)rules.append(el('li',`${axis.label} · ${ROLES[axis.role]||axis.role} · ${PREFER[axis.prefer]||axis.prefer} · ${axis.unit} / ${SCOPES[axis.scope]||axis.scope} · ${ruleText(axis)} · ${axis.required?'必要条件':'可选'}${criteria.pareto_axes.includes(axis.id)?' · 纳入 Pareto':''}`));panel.append(rules,read,message,output);container.append(panel);

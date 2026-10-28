@@ -556,6 +556,26 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('directionsSection', script)
         self.assertIn('container.append(...[ownerSection(record, ctx), directions, runs, thread, deliverableSection(record)]', script)
 
+    def test_research_copy_criteria_filters_and_navigation_follow_task_terms(self):
+        page = (NODE / "dash_static/research.html").read_text(encoding="utf-8")
+        script = (NODE / "dash_static/research.js").read_text(encoding="utf-8")
+        criteria = (NODE / "dash_static/research-criteria.js").read_text(encoding="utf-8")
+        shell = (NODE / "dash_static/shell.js").read_text(encoding="utf-8")
+        for text in ("研究工作台", "研究与协助", "当前后台保存独立研究状态", "可查看研究；保存与答复需要掌舵权限",
+                     "状态是作者声明；选择记录查看具体版本与依赖", "已读取当前版本。读取不会覆盖打开的草稿",
+                     "此版本未声明数值判据；不会从目标文字补阈值"):
+            self.assertNotIn(text, page + script + criteria)
+        self.assertIn('<title>任务 · HGamey</title>', page)
+        self.assertIn('<h1>任务</h1>', page)
+        self.assertIn('class="access-panel" hidden', page)
+        self.assertIn('<details class="research-filters"><summary>记录筛选</summary><form id="filters"', page)
+        self.assertIn('requireWrite', script)
+        engineering = page.split('<summary>工程详情</summary>', 1)[1]
+        self.assertIn('id="criteria-detail"', engineering)
+        self.assertIn('["/dash/jobs", "runs", "运行"]', shell)
+        self.assertIn('["/dash/research", "task", "任务"]', shell)
+        self.assertIn('["/dash/research#agents-directory", "agent", "Agent"]', shell)
+
     def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")

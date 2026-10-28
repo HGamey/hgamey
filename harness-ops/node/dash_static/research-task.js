@@ -234,7 +234,7 @@
         if (note.ask) {
           head.append(el('span', '问人', 'discuss-via'));
           if (note.question_unanswered === true) head.append(el('span', '待回复', 'task-state unknown'));
-          if (note.question_unanswered === true && ctx.writable()) {
+          if (note.question_unanswered === true) {
             const reply = el('button', '回复', 'ghost'); reply.type = 'button'; reply.dataset.replyTo = note.id; head.append(reply);
           }
         }
@@ -253,7 +253,7 @@
       if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'center'});
     }
     try { await load(); } catch (error) { status.textContent = '读取留言失败：' + failure(error); }
-    if (ctx.writable()) {
+    {
       const form = el('form'), input = el('input'), button = el('button', '发送', 'ghost primary');
       form.id = 'task-note-form'; input.id = 'task-note-text'; input.maxLength = 16384; input.autocomplete = 'off'; input.placeholder = '留言…';
       button.type = 'submit'; button.id = 'task-note-submit';
@@ -261,7 +261,7 @@
       form.onsubmit = async event => {
         event.preventDefault();
         const text = input.value.trim();
-        if (!text) return;
+        if (!text || !ctx.requireWrite()) return;
         button.disabled = true; status.textContent = '';
         try {
           await write('note', 'n-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
@@ -274,7 +274,7 @@
     }
     section.addEventListener('click', event => {
       const button = event.target.closest('[data-reply-to]');
-      if (!button) return;
+      if (!button || !ctx.requireWrite()) return;
       replyTo = button.dataset.replyTo;
       const input = document.getElementById('task-note-text');
       if (input) { input.placeholder = '回复 ' + replyTo; input.focus(); }
