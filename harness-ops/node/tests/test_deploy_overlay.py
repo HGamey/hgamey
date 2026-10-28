@@ -1,4 +1,5 @@
 """Overlay deployment: atomic cursor switch, smoke gate, rollback and retention."""
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -6,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 NODE = Path(__file__).resolve().parents[1]
@@ -123,6 +126,27 @@ class DeployOverlayTests(unittest.TestCase):
         # 缺省不传 --jobs-root：管理员自担静默声明，回执如实记录未核。
         code, out = run(["activate", "--root", str(self.root), "--source", str(self.stage(6))])
         self.assertEqual(out["admission"]["kind"], "administrator_asserted_quiet")
+
+    def test_locked_waits_for_intake_release(self):
+        import deploy_overlay
+        path = self.root / "phonefarm" / ".intake.lock"
+        path.write_bytes(b"")
+        fd = os.open(path, os.O_RDWR)
+        entered = []
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        def worker():
+            with deploy_overlay.locked(path, existing=True, wait_seconds=1):
+                entered.append(time.monotonic())
+        thread = threading.Thread(target=worker)
+        started = time.monotonic()
+        thread.start()
+        time.sleep(0.05)
+        self.assertEqual(entered, [])
+        os.close(fd)
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(entered), 1)
+        self.assertGreaterEqual(entered[0], started + 0.04)
 
     def test_non_harness_source_is_rejected(self):
         empty = Path(self.temp.name) / "not-harness"

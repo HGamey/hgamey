@@ -55,15 +55,15 @@ class NodeDeployCLI(unittest.TestCase):
 
                         with patch.dict(os.environ, {**env, "HG_CONFIG_DIR": str(target)}, clear=True), \
                                 patch("job_dispatch.job_runtime.launch", side_effect=track_worker):
-                            jobs = Jobs(str(home / "node"), {"update_node": ("/bin/zsh", str(home / "node"))})
+                            jobs = Jobs(str(home / "node"), {"install_secrets": (sys.executable, str(home / "node"))})
                             # The installed profile filters the service environment;
                             # use the fixture's own group, with no privileged entry.
                             jobs.pf_env = {**env, "LANG": "C.UTF-8",
                                            "PHONEFARM_SHARED_GID": str(os.getegid())}
                             self.assertNotIn("HG_CONFIG_DIR", jobs.pf_env)
                             try:
-                                value = jobs.start({"bin": "update_node",
-                                    "argv": [str(NODE / "update_node.sh"), str(upload)],
+                                value = jobs.start({"bin": "install_secrets",
+                                    "argv": [str(NODE / "install_secrets.py"), str(upload)],
                                     "device_access": "none", "resources": []}, b"", "config-upload")
                                 jid = value["id"]
                                 deadline = time.monotonic() + 10
@@ -87,7 +87,7 @@ class NodeDeployCLI(unittest.TestCase):
                                     jobs.dispatch.thread.join(timeout=5)
                                 jobs._read_root.close()
                     else:
-                        result = subprocess.run(["/bin/zsh", str(NODE / "update_node.sh"), str(upload)],
+                        result = subprocess.run([sys.executable, str(NODE / "install_secrets.py"), str(upload)],
                             cwd=home / "node", env={**env, **({"HG_CONFIG_DIR": str(target)}
                                                            if label != "default" else {})},
                             capture_output=True, text=True, timeout=10)

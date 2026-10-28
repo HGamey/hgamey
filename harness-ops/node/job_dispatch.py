@@ -9,7 +9,6 @@ import threading
 import tarfile
 import time
 import uuid
-import node_update
 
 from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, global_waiter, job_priority
 from device_scope import scope, lease_problem
@@ -309,15 +308,13 @@ class JobDispatch:
                     if not self.finalize(current):
                         self.observe_running(jid)
         lease = self.jobs.leases.snapshot(refresh=True) if any(
-            (device_access(r["spec"]) == "write" or "device_binding" in r["spec"])
-            and node_update.maintenance_problem(self.jobs.update_layout, r["spec"]) is None
+            device_access(r["spec"]) == "write" or "device_binding" in r["spec"]
             for r in self.queue.rows(("queued",))) else {}
         if lease.get("status") == "blocked" and self.jobs.leases.reclaim_observation(lease):
-            lease = self.jobs.leases.snapshot(refresh=True)  # a dead fleet observation no longer holds the phones
+            lease = self.jobs.leases.snapshot()  # reclaim already refreshed; a dead fleet observation no longer holds the phones
         while True:
             row = self.queue.claim_next(self.max_running, admit=lambda r:
-                node_update.maintenance_problem(self.jobs.update_layout, r["spec"]) is None
-                and lease_problem(r["spec"], lease, mode="recovery" if device_access(r["spec"]) == "recovery" else "start") is None)
+                lease_problem(r["spec"], lease, mode="recovery" if device_access(r["spec"]) == "recovery" else "start") is None)
             if row is None:
                 break
             if self.launch(row) is False:
@@ -344,12 +341,6 @@ class JobDispatch:
 
     def _launch(self, row):
         jid = row["job_id"]
-        # Called under intake: a crashed multi-file publication remains a
-        # durable maintenance barrier after its OS locks have been released.
-        maintenance = node_update.maintenance_problem(self.jobs.update_layout, row["spec"])
-        if maintenance is not None:
-            self.queue.set_state(jid, "queued", reason=maintenance)
-            return False
         try:
             policy = require_policy(row["spec"])
         except ValueError as error:
@@ -401,12 +392,9 @@ class JobDispatch:
                     env[key] = bins[name][part]
             if os.environ.get("ANDROID_NDK_HOME"):
                 env.setdefault("ANDROID_NDK_HOME", os.environ["ANDROID_NDK_HOME"])
-        if spec["bin"] == "update_node":
+        if spec["bin"] == "install_secrets":
             # The fixed PF profile omits service credentials and ambient paths.
-            # This admin updater needs only the selected config directory.
             env["HG_CONFIG_DIR"] = self.jobs.update_config_dir
-            env["HG_UPDATE_LAYOUT"] = json.dumps(self.jobs.update_layout)
-            env["HG_UPDATE_JOBS_ROOT"] = os.path.abspath(self.jobs.dir)
         env.pop("PF_RECOVERY_OUT", None)
         if "device_binding" in spec:
             env.pop("DEVLOCK_INSTANCE_ID", None)
@@ -433,9 +421,6 @@ class JobDispatch:
                     (row.get("state_reason") or {}).get("kind") == "durability" else "recovery", "blocking_jobs": []}
         if state != "queued":
             return {"kind": None, "blocking_jobs": []}
-        maintenance = node_update.maintenance_problem(self.jobs.update_layout, row["spec"])
-        if maintenance is not None:
-            return {**maintenance, "blocking_jobs": []}
         borrowed = recovery_reservations(row, rows)
         owners = [r for r in rows if (r["state"] == "claimed" or
                     (r.get("state_reason") or {}).get("kind") == "durability") and r["job_id"] not in borrowed]

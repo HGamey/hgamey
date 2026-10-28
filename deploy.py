@@ -31,7 +31,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 SCHEMA, CONFIG_SCHEMA = "hgamey/deploy@1", "hgamey/deploy-node@1"
-# Same rule as harness-ops/node/node_update.py: these path parts hold execution data, never code.
+# These path parts hold execution data, never code.
 RESERVED = {".git", "_jobs", "jobs", "runs", "lease-receipts", "secrets", ".updates", ".target", "__pycache__", "tasks"}
 # (component directory, crate directory, executable)
 PROGRAMS = (("phonefarm", "phonefarm/src", "phonefarm"), ("game_opt_loop", "game_opt_loop", "game_opt_loop"))

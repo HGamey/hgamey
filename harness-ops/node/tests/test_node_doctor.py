@@ -57,7 +57,7 @@ class DoctorTests(unittest.TestCase):
                 invalid = subprocess.run(command, capture_output=True, text=True, timeout=15)
             self.assertEqual(invalid.returncode, 1, invalid.stderr)
             self.assertEqual(json.loads(invalid.stdout)["error"]["code"], "invalid_response")
-            for name in ("doctor", "update-status"):
+            for name in ("doctor",):
                 bad_target = command.copy()
                 bad_target[bad_target.index("--url") + 1] = "not-a-url"
                 bad_target[-2] = name

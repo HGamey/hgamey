@@ -19,10 +19,13 @@ Typical use:
     python3 deploy_overlay.py rollback  --root ~/node --run <id>
 """
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -152,13 +155,40 @@ def smoke(source):
         raise DeployError(400, "smoke compile failed:\n" + "\n".join(failures[:5]))
 
 
+@contextmanager
+def locked(path, *, existing=False, wait_seconds=0):
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+    if not existing:
+        flags |= os.O_CREAT
+    fd = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise DeployError(409, "update lock is not a regular file")
+        deadline = time.monotonic() + wait_seconds
+        announced = False
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DeployError(409, "another update or node intake operation is in progress; retry explicitly") from None
+                if not announced:
+                    print("node-update: waiting for node intake before checking publication", file=sys.stderr, flush=True)
+                    announced = True
+                time.sleep(min(0.025, remaining))
+        yield
+    finally:
+        os.close(fd)
+
+
 def admission(args):
     """Cross-participant coordination: refuse to switch while jobs are running
     or another intake holder is mid-launch, unless the administrator forces it."""
     if not args.jobs_root:
         return {"kind": "administrator_asserted_quiet", "managed_jobs_checked": False}
     jobs_root = Path(args.jobs_root).expanduser().resolve()
-    from node_update import locked
     import sqlite3
     with locked(jobs_root / ".intake.lock", existing=True, wait_seconds=5):
         db = sqlite3.connect((jobs_root / ".queue.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=1)
