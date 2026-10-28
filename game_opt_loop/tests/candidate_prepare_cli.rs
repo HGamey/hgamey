@@ -480,10 +480,11 @@ fn symlink_ancestors_inputs_and_existing_outputs_are_rejected() {
 
 /// Explicit opt-in actual cross-repository CLI acceptance, separate from synthetic fixtures.
 #[test]
+#[ignore = "requires GOL_TEST_ACTUAL_PHONEFARM_BIN"]
 fn actual_phonefarm_adapter_and_missing_sdk_when_explicitly_configured() {
-    let Some(pf) = std::env::var_os("GOL_TEST_ACTUAL_PHONEFARM_BIN") else {
-        return;
-    };
+    let pf = std::env::var_os("GOL_TEST_ACTUAL_PHONEFARM_BIN").expect(
+        "configuration error: GOL_TEST_ACTUAL_PHONEFARM_BIN must be set to an actual Phonefarm binary when running this ignored acceptance test",
+    );
     let f = Fixture::new("ok");
     let o = Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
         .args(["candidate-prepare", "run", "--candidate"])

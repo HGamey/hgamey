@@ -25,15 +25,14 @@ fn parse(o: &Output) -> Value {
     })
 }
 impl Fixture {
-    fn new(behavior: &str) -> Option<Self> {
-        let Some(pf) = std::env::var_os("GOL_TEST_SUPERVISED_PHONEFARM") else {
-            eprintln!("NOT_RUN: explicit PF24 binary not configured");
-            return None;
-        };
-        let layer = PathBuf::from(
-            std::env::var_os("GOL_TEST_PF_LAYER_ROOT").expect("actual PF layer root required"),
+    fn new(behavior: &str) -> Self {
+        let pf = std::env::var_os("GOL_TEST_SUPERVISED_PHONEFARM").expect(
+            "configuration error: GOL_TEST_SUPERVISED_PHONEFARM must be set to an explicit PF24 binary when running this ignored acceptance test",
         );
-        Some(Self::new_for(behavior, PathBuf::from(pf), layer))
+        let layer = PathBuf::from(std::env::var_os("GOL_TEST_PF_LAYER_ROOT").expect(
+            "configuration error: GOL_TEST_PF_LAYER_ROOT must be set to the actual PF layer root when running this ignored acceptance test",
+        ));
+        Self::new_for(behavior, PathBuf::from(pf), layer)
     }
     fn new_for(behavior: &str, pf: PathBuf, layer: PathBuf) -> Self {
         let base = if cfg!(target_os = "macos") {
@@ -165,8 +164,9 @@ fn no_proof(v: &Value) {
         .all(|x| x == false));
 }
 #[test]
+#[ignore = "requires GOL_TEST_SUPERVISED_PHONEFARM and GOL_TEST_PF_LAYER_ROOT"]
 fn actual_supervised_fixture_binds_sdk_source_adapter_and_outer_groups() {
-    let Some(f) = Fixture::new("ok") else { return };
+    let f = Fixture::new("ok");
     let o = f.run(&[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let v = parse(&o);
@@ -210,10 +210,9 @@ fn actual_supervised_fixture_binds_sdk_source_adapter_and_outer_groups() {
     assert!(f.inspect().status.success());
 }
 #[test]
+#[ignore = "requires GOL_TEST_SUPERVISED_PHONEFARM and GOL_TEST_PF_LAYER_ROOT"]
 fn actual_native_descendant_closed_pipes_never_accepts_or_retries() {
-    let Some(f) = Fixture::new("descendant") else {
-        return;
-    };
+    let f = Fixture::new("descendant");
     let o = f.run(&[]);
     assert!(!o.status.success());
     let j = f.read("session/journal.json");
@@ -227,11 +226,10 @@ fn actual_native_descendant_closed_pipes_never_accepts_or_retries() {
     assert!(!f.p("late-writer").exists());
 }
 #[test]
+#[ignore = "requires GOL_TEST_SUPERVISED_PHONEFARM and GOL_TEST_PF_LAYER_ROOT"]
 fn actual_helper_hang_and_full_stderr_are_unknown_and_bounded() {
     for behavior in ["hang", "stderr"] {
-        let Some(f) = Fixture::new(behavior) else {
-            return;
-        };
+        let f = Fixture::new(behavior);
         let begin = std::time::Instant::now();
         let o = f.run(&[
             "--native-tool-timeout-seconds",
@@ -255,11 +253,10 @@ fn actual_helper_hang_and_full_stderr_are_unknown_and_bounded() {
     }
 }
 #[test]
+#[ignore = "requires GOL_TEST_SUPERVISED_PHONEFARM and GOL_TEST_PF_LAYER_ROOT"]
 fn caller_pf_and_sdk_mutation_cannot_replace_private_execution() {
     for behavior in ["pf_mutation", "sdk_mutation"] {
-        let Some(f) = Fixture::new(behavior) else {
-            return;
-        };
+        let f = Fixture::new(behavior);
         let original_path = if behavior == "pf_mutation" {
             f.pf.clone()
         } else {
@@ -281,8 +278,9 @@ fn caller_pf_and_sdk_mutation_cannot_replace_private_execution() {
     }
 }
 #[test]
+#[ignore = "requires GOL_TEST_SUPERVISED_PHONEFARM and GOL_TEST_PF_LAYER_ROOT"]
 fn unsupported_sdk_symlink_and_wrong_layer_root_are_retained_negative() {
-    let Some(f) = Fixture::new("ok") else { return };
+    let f = Fixture::new("ok");
     symlink("copy-fixture.spv", f.p("sdk/alias")).unwrap();
     let o = f.run(&[]);
     assert!(!o.status.success());
@@ -298,8 +296,9 @@ fn unsupported_sdk_symlink_and_wrong_layer_root_are_retained_negative() {
     assert!(!f.inspect().status.success());
 }
 #[test]
+#[ignore = "requires GOL_TEST_SUPERVISED_PHONEFARM and GOL_TEST_PF_LAYER_ROOT"]
 fn inspect_rejects_rehashed_native_receipt_and_changed_sdk() {
-    let Some(f) = Fixture::new("ok") else { return };
+    let f = Fixture::new("ok");
     assert!(f.run(&[]).status.success());
     let prepared = fs::read(f.p("session/prepared.json")).unwrap();
     let journal = fs::read(f.p("session/journal.json")).unwrap();
@@ -349,10 +348,9 @@ fn inspect_rejects_rehashed_native_receipt_and_changed_sdk() {
 }
 
 #[test]
+#[ignore = "requires GOL_TEST_SUPERVISED_PHONEFARM and GOL_TEST_PF_LAYER_ROOT"]
 fn actual_pf_descriptor_refuses_wrong_frozen_layer_expectation() {
-    let Some(mut f) = Fixture::new("ok") else {
-        return;
-    };
+    let mut f = Fixture::new("ok");
     let wrong = f.p("declared-layer");
     fs::create_dir(&wrong).unwrap();
     for name in [
@@ -389,12 +387,14 @@ fn actual_pf_descriptor_refuses_wrong_frozen_layer_expectation() {
 }
 
 #[test]
+#[ignore = "requires GOL_TEST_LEGACY_SUPERVISED_PHONEFARM and GOL_TEST_LEGACY_PF_LAYER_ROOT"]
 fn actual_legacy_four_input_builder_remains_explicitly_compatible() {
-    let Some(pf) = std::env::var_os("GOL_TEST_LEGACY_SUPERVISED_PHONEFARM") else {
-        eprintln!("NOT_RUN: explicit legacy4 PF binary not configured");
-        return;
-    };
-    let layer = std::env::var_os("GOL_TEST_LEGACY_PF_LAYER_ROOT").expect("legacy layer root");
+    let pf = std::env::var_os("GOL_TEST_LEGACY_SUPERVISED_PHONEFARM").expect(
+        "configuration error: GOL_TEST_LEGACY_SUPERVISED_PHONEFARM must be set to an explicit legacy4 PF binary when running this ignored acceptance test",
+    );
+    let layer = std::env::var_os("GOL_TEST_LEGACY_PF_LAYER_ROOT").expect(
+        "configuration error: GOL_TEST_LEGACY_PF_LAYER_ROOT must be set to the legacy4 PF layer root when running this ignored acceptance test",
+    );
     let f = Fixture::new_for("ok", pf.into(), layer.into());
     let o = f.run(&[]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
