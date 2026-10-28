@@ -93,7 +93,7 @@ class JobRecoveryTests(unittest.TestCase):
         blocked = {"schema_version": 1, "status": "blocked", "entries": [], "error": None}
         with patch.object(self.jobs.leases, "snapshot", return_value=blocked):
             self.jobs.dispatch.tick()
-            self.assertEqual(self.queue.get(parent)["state"], "blocked")
+            self.assertEqual(self.queue.get(parent)["state"], "done")
             self.assertEqual(self.jobs.status(parent)["queue"]["host_capacity"]["state"], "released")
             waiting = self.submit(resources=["device:other"])
             self.assertEqual(self.jobs.status(waiting)["queue"]["waiting"]["kind"], "device_lease")
@@ -132,7 +132,7 @@ class JobRecoveryTests(unittest.TestCase):
                 self.jobs.release_queue(child, "reviewed lost child; host termination remains unknown")
             with self.assertRaises(RequestConflict):
                 self.jobs.release_queue(parent, "reviewed original job; child remains blocked")
-        self.assertEqual(self.queue.get(parent)["state"], "blocked")
+        self.assertEqual(self.queue.get(parent)["state"], "done")
         self.assertEqual(self.queue.get(child)["state"], "blocked")
         self.assertIsNone(self.queue.get(child)["host_capacity_release"])
         self.assertFalse(Path(self.jobs.path(child, "queue-release.json")).exists())

@@ -592,10 +592,10 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(board._reserved("S2", owners, phones)["kind"], "global")
         held = {"status": "held", "held_by": f"job-{jid}-selfsr-native-1@S1", "lease": {"entries": []}}
         self.assertNotIn("reserved", board._holder("S1", held, phones))
-        # Finished but not yet released, the job still holds the phones, and says so.
-        self.jobs.dispatch.queue.set_state(jid, "blocked")
-        self.assertEqual(board._reserved("S1", board._reservations(), phones)["state"], "blocked")
-        self.jobs.dispatch.queue.set_state(jid, "done")  # what a release leaves (this job never ran, so it cannot be released)
+        # Terminal jobs release their scheduling reservation without a manual release step.
+        self.jobs.dispatch.queue.set_state(jid, "blocked")  # legacy rows are not active reservations either
+        self.assertEqual(board._reservations(), [])
+        self.jobs.dispatch.queue.set_state(jid, "done")
         self.assertEqual(board._reservations(), [])
         self.assertIsNone(board._reserved("S1", [], phones))
 

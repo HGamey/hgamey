@@ -151,8 +151,8 @@ def _recovery_qualification(jobs, row):
     status = jobs.status(jid)
     if status.get("phase") in {"finalizing", "storage_blocked"}:
         return "commit the source result first; use retry-finalize if storage is blocked"
-    if row["state"] != "blocked" or status.get("state") != "finished":
-        return "session recovery requires a finished job with a blocked reservation"
+    if row["state"] not in {"blocked", "done"} or status.get("state") != "finished":
+        return "session recovery requires a finished job"
     return jobs.host_execution_problem(jid, status)
 
 
@@ -187,9 +187,8 @@ def recovery_plan(jobs, jid):
         except (OSError, ValueError, KeyError, SessionError):
             plan["reason"] = "an existing recovery attempt does not match the original session binding"
             return plan
-        if current["state"] != "blocked":
-            plan["reason"] = ("the recovery attempt is settled; inspect its receipt and explicitly release source reservations"
-                              if current["state"] == "done" else "an existing recovery attempt is active; inspect its original job")
+        if current["state"] not in {"blocked", "done"}:
+            plan["reason"] = "an existing recovery attempt is active; inspect its original job"
             return plan
     if not plan["supported"]:
         plan["reason"] = "phonefarm helper is not configured"

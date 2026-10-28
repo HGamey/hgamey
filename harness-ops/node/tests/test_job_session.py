@@ -420,7 +420,7 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 self.assertIn("jobs.session-recovery-chain-v1", self.get_json("/node")["capabilities"])
                 source = submit("chain-source", {"bin": "phonefarm", "argv": SESSION_ARGV,
                                                  "resources": ["phone:fake-device"], "device_access": "write"})
-                original = finished(source, "blocked")
+                original = finished(source, "done")
                 self.assertEqual((original["outcome"], original["exit"]), ("failed", 2))
                 source_out = Path(self.jobs.path(source, "out"))
                 source_report = source_out / "gray-session-fixture" / f"report-{source}.json"
@@ -430,7 +430,7 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 first = cli("session-recover", source, "--request-id", "chain-first")
                 r1 = first["id"]
                 self.assertEqual(first["recovery_for"], source)
-                failed = finished(r1, "blocked")
+                failed = finished(r1, "done")
                 self.assertEqual((failed["outcome"], failed["exit"]), ("failed", 2))
                 # These terminal states came from actual workers and finalize(),
                 # not fixture writes to meta/queue or a mock recovery verdict.
@@ -453,8 +453,8 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 free = submit("other-host", {"bin": "host", "argv": ["-c", "print('independent host work')"],
                                             "resources": [], "device_access": "none"})
                 self.assertEqual(finished(free, "done")["exit"], 0)
-                self.assertEqual(self.get_json("/jobs/" + same)["queue"]["state"], "queued")
-                self.assertFalse(Path(self.jobs.path(same, "launch.json")).exists())
+                self.assertEqual(finished(same, "done")["queue"]["state"], "done")
+                self.assertTrue(Path(self.jobs.path(same, "launch.json")).exists())
 
                 barrier = threading.Barrier(2)
                 def race(key):
@@ -473,7 +473,7 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 self.assertIn(denial["code"], ("session_recovery_leaf", "session_recovery_blocked"))
                 self.assertEqual(post(f"/jobs/{r1}/queue-release", "early-release", {"note": "must not bypass child"})[0], 409)
                 (self.root / "release-r2").touch()
-                recovered = finished(r2, "blocked")
+                recovered = finished(r2, "done")
                 self.assertEqual((recovered["outcome"], recovered["exit"]), ("succeeded", 0))
                 for jid in (r1, r2):
                     observed = json.loads(Path(self.jobs.path(jid, "out", "observed.json")).read_text())
@@ -494,14 +494,11 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 self.assertFalse(settled["eligible"])
                 self.assertEqual(settled["target_job_id"], r2)
                 self.assertEqual([item["job_id"] for item in settled["attempts"]], [r1, r2])
-                self.assertTrue(all(self.jobs.dispatch.queue.get(jid)["state"] == "blocked" for jid in (source, r1, r2)))
-                self.assertEqual(post(f"/jobs/{r2}/queue-release", "lease-not-clear", {"note": "still blocked"})[0], 409)
-                self.assertTrue(post(f"/jobs/{same}/cancel", "cancel-waiter")[1]["accepted"])
+                self.assertTrue(all(self.jobs.dispatch.queue.get(jid)["state"] == "done" for jid in (source, r1, r2)))
+                self.assertEqual(post(f"/jobs/{r2}/queue-release", "lease-not-clear", {"note": "already settled"})[0], 409)
+                self.assertFalse(post(f"/jobs/{same}/cancel", "cancel-waiter")[1]["accepted"])
                 lease["status"] = "clear"
-                for jid in (r2, r1, source):
-                    code, released = post(f"/jobs/{jid}/queue-release", "release-" + jid,
-                                          {"note": "synthetic host chain reviewed; no device recovery claim"})
-                    self.assertEqual((code, released["released"]), (200, True), released)
+                self.assertTrue(all(self.jobs.dispatch.queue.get(jid)["state"] == "done" for jid in (r2, r1, source)))
                 self.assertEqual(self.get_json("/jobs/" + r1)["outcome"], "failed")
             except BaseException:
                 # The enclosing QA log retains raw diagnostics if this fixture fails.

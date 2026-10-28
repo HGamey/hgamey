@@ -56,7 +56,7 @@ for k in ('installed','resources_deployed','application_access','login','scene_r
         self.assertEqual(record["report"]["stop"]["status"], "confirmed")
         self.assertEqual(record["report"]["scene_ready"]["status"], "unknown")
         self.assertFalse(record["recovery"]["eligible"])
-        self.assertEqual(record["job"]["queue"]["state"], "blocked")
+        self.assertEqual(record["job"]["queue"]["state"], "done")
         # Local assistance is an experiment decision; it is not automatic queue release.
         version = env.call("GET", "/games/demo/versions/v1")[1]
         self.assertEqual(version["resource_state"], "incomplete")

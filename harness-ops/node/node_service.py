@@ -818,8 +818,7 @@ class Jobs:
         group_status = (execution.get("owned_process_group") or {}).get("status")
         not_started = (execution.get("child_pid") is None and group_status == "not_started"
                        and (meta.get("recovery") or {}).get("status") == "not_needed")
-        if (meta.get("phase") != "finished" or meta.get("lost")
-                or group_status != "absent" and not not_started):
+        if meta.get("phase") not in {"finished", "interrupted"} or group_status != "absent" and not not_started:
             return "source original process group completion is unconfirmed"
         return None
 
@@ -907,6 +906,39 @@ class Jobs:
                 self._read_root.sync("", directory=True)
             except (OSError, ValueError) as error:
                 self.dispatch.block_storage(row, "queue-release", error)
+                return {"released": False, "job": self.status(jid)}
+            self.dispatch.queue.set_state(jid, "done")
+        self.dispatch.start()
+        return {"released": True, "job": self.status(jid)}
+
+    def reset_queue(self, jid, note):
+        """One-step administrator reset for a finished job with unknown host evidence."""
+        if not isinstance(note, str) or not note.strip() or len(note) > 2000:
+            raise ValueError("reset requires a nonempty review note (at most 2000 characters)")
+        with file_lock(self.dispatch.intake_path):
+            row = self.dispatch.queue.get(jid)
+            if not row or row["state"] not in {"blocked", "done"}:
+                raise RequestConflict("reset requires a finished reservation")
+            if (row.get("state_reason") or {}).get("kind") == "durability":
+                raise RequestConflict("retry-finalize must commit the result before resetting resources")
+            status = self.status(jid)
+            if status.get("state") != "finished":
+                raise RequestConflict("reset requires a finished job")
+            if row.get("host_capacity_release") is not None:
+                raise RequestConflict("host completion is already recorded; reset is only for unknown host state")
+            from pathlib import Path
+            if Path(self.path(jid, "queue-release.json")).exists():
+                raise RequestConflict("a review receipt already exists; reset cannot overwrite it")
+            fact = {
+                "at": time.time(), "basis": "administrator_reset", "note": note.strip()}
+            self.dispatch.queue.release_capacity(jid, fact, observation=status)
+            try:
+                self._read_root.write_json(jid + "/queue-release.json", {
+                    "note": note.strip(), "at": time.time(), "basis": fact["basis"], "reset": True})
+                self._read_root.sync(jid, directory=True)
+                self._read_root.sync("", directory=True)
+            except (OSError, ValueError) as error:
+                self.dispatch.block_storage(row, "queue-reset", error)
                 return {"released": False, "job": self.status(jid)}
             self.dispatch.queue.set_state(jid, "done")
         self.dispatch.start()
@@ -2115,6 +2147,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if not isinstance(data, dict):
                         raise ValueError("retry-finalize body must be an object")
                     return self._send(200, jobs.retry_finalize(parts[1]))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reset":
+                    if self.agent:
+                        return self._send(403, {"code": "admin_required", "error": "reset needs the admin token"})
+                    data = json.loads(body or b"{}")
+                    if not isinstance(data, dict):
+                        raise ValueError("reset body must be an object")
+                    return self._send(200, jobs.reset_queue(parts[1], data.get("note")))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "queue-release":
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):

@@ -382,15 +382,14 @@ class NodeReadTests(unittest.TestCase):
                 self.jobs._read_root.write_json(jid + "/exitcode", 1)
                 self.jobs.dispatch.queue.set_state(jid, "claimed")
                 self.assertTrue(self.jobs.dispatch.finalize(self.jobs.dispatch.queue.get(jid)))
-                receipt = self.get_json(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{"note":"checked fixture resource"}')
-            self.assertEqual(receipt["job"]["queue"]["state"], "done")
-            self.assertEqual(receipt["job"]["queue"]["release"]["note"], "checked fixture resource")
-            self.assertEqual(receipt["job"]["queue"]["release"]["lease_observation"]["status"], "clear")
-            self.assertEqual(receipt["job"]["recovery"]["status"], "required")
+                receipt = self.get_json(f"/jobs/{jid}")
+            self.assertEqual(receipt["queue"]["state"], "done")
+            self.assertNotIn("release", receipt["queue"])
+            self.assertEqual(receipt["recovery"]["status"], "required")
             self.assertEqual(self.get_json("/queue")["blocked_count"], 1)
             self.assertEqual(self.jobs.dispatch.queue.get(unknown_id)["state"], "blocked")
             self.assertEqual(self.request("/jobs", method="POST", token=self.admin,
-                headers={"X-Job": json.dumps({**recovery, "recovery_for": jid}), "X-Request-ID": "new-recovery"})[0], 409)
+                headers={"X-Job": json.dumps({**recovery, "recovery_for": jid}), "X-Request-ID": "new-recovery"})[0], 200)
             self.assertEqual(self.get_json("/jobs", method="POST", token=self.admin,
                 headers={"X-Job": json.dumps(recovery), "X-Request-ID": "recovery:fixture"})["id"], child["id"])
             self.assertEqual(self.request(f"/jobs/{jid}/queue-release", method="POST", token=self.admin,

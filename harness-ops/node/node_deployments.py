@@ -286,8 +286,8 @@ class NodeDeployments:
     def _qualification(self, row, status, report):
         if status.get("phase") in {"finalizing", "storage_blocked"}:
             return "commit the source result first; use retry-finalize if storage is blocked"
-        if row["state"] != "blocked" or status.get("state") != "finished":
-            return "recovery requires a finished job with a blocked reservation"
+        if row["state"] not in {"blocked", "done"} or status.get("state") != "finished":
+            return "recovery requires a finished job"
         execution = status.get("execution") or {}
         if execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False:
             return "source worker completion is unconfirmed; reconcile its execution domain first"
@@ -297,7 +297,7 @@ class NodeDeployments:
             problem = self.jobs.host_completion_problem(row["job_id"], status)
             if problem:
                 return problem
-        elif (status.get("phase") != "finished" or status.get("lost")
+        elif (status.get("phase") != "finished"
               or (execution.get("owned_process_group") or {}).get("status") != "absent"):
             return "source original process group completion is unconfirmed"
         if (not report or report.get("phase") != "recovery_required"
@@ -318,11 +318,7 @@ class NodeDeployments:
                         and not (r.get("state_reason") or {}).get("kind") == "cancelled_before_launch"]
             if not children:
                 break
-            if len(children) == 1 and children[0]["state"] == "done":
-                return {"supported": supported, "eligible": False,
-                        "target_job_id": children[0]["job_id"],
-                        "reason": "the recovery attempt is settled; inspect its receipt and explicitly release the source reservation"}
-            if len(children) != 1 or children[0]["state"] != "blocked":
+            if len(children) != 1 or children[0]["state"] not in {"blocked", "done"}:
                 return {"supported": supported, "eligible": False, "target_job_id": target,
                         "reason": "an existing recovery attempt is active; inspect its original job"}
             row = children[0]

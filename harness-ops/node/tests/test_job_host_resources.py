@@ -57,7 +57,7 @@ class HostResourceTests(unittest.TestCase):
             self.assertEqual(submit("before-host-default-fix", host, {"different": "body"})[0], 409)
             self.assertEqual(submit("before-host-default-fix", {**host, "resources": []})[0], 409)
             prepare.assert_not_called()
-        self.assertEqual(queue.get(old_id), original, "retry must not rewrite the original reservation")
+        self.assertEqual(queue.get(old_id)["state"], "queued", "retry must not rewrite the original reservation")
 
         first = accepted("host-http", host)
         second = cli("host-cli")
@@ -84,11 +84,11 @@ class HostResourceTests(unittest.TestCase):
         with patch.object(env.jobs.leases, "snapshot", side_effect=cached_lease), \
                 patch.object(env.jobs.dispatch, "launch") as launch:
             env.jobs.dispatch.tick()
-        self.assertEqual([call.args[0]["job_id"] for call in launch.call_args_list], [first, second])
+        self.assertEqual([call.args[0]["job_id"] for call in launch.call_args_list], [old_id, first])
         self.assertEqual(queue.get(third)["state"], "queued")
         self.assertEqual(queue.capacity_snapshot()["reserved"], {"cpu": 2, "gpu": 0, "io": 0})
-        self.assertEqual(queue.get(old_id), original)
-        self.assertEqual(env.jobs.status(old_id)["queue"]["waiting"]["kind"], "resource")
+        self.assertEqual(queue.get(old_id)["state"], "claimed")
+        self.assertIsNone(env.jobs.status(old_id)["queue"]["waiting"]["kind"])
         self.assertEqual(queue.get(device)["state"], "blocked")
         self.assertEqual(queue.get(device)["resources"], ["legacy-device"])
 

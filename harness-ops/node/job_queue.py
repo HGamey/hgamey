@@ -26,7 +26,7 @@ def job_priority(spec):
 
 def recovery_reservations(row, owners):
     """Borrow the blocked target's ancestor chain, never a sibling's reservation."""
-    blocked = {r["job_id"]: r for r in owners if r["state"] == "blocked"}
+    blocked = {r["job_id"]: r for r in owners if r["state"] in {"blocked", "done"}}
     borrowed, target = set(), row["spec"].get("recovery_for")
     while target in blocked and target not in borrowed:
         borrowed.add(target)
@@ -35,12 +35,35 @@ def recovery_reservations(row, owners):
 
 
 def reservation_conflicts(row, owner):
+    if owner["state"] == "blocked":
+        # Unknown completion can retain declared host slots, never a phone.
+        row_resources = {r for r in row["resources"] if r.startswith("host:")}
+        owner_resources = {r for r in owner["resources"] if r.startswith("host:")}
+        return bool(row_resources & owner_resources)
     return (bool(set(row["resources"]) & set(owner["resources"]))
             or conflicts(scope(row["spec"]), scope(owner["spec"])))
 
 
 def global_waiter(row):
     return device_access(row["spec"]) == "write" and scope(row["spec"])["scope"] == "global"
+
+
+def recovery_conflicts(row, owner):
+    """Only another recovery in the same active chain can block a recovery."""
+    if not row["spec"].get("recovery_for") or not owner["spec"].get("recovery_for"):
+        return False
+    return (bool(set(row["resources"]) & set(owner["resources"]))
+            or conflicts(scope(row["spec"]), scope(owner["spec"])))
+
+
+def recovery_sibling_conflicts(row, owner):
+    """Sibling attempts with the same direct parent serialize even when borrowing."""
+    if not row["spec"].get("recovery_for") or not owner["spec"].get("recovery_for"):
+        return False
+    if row["spec"].get("recovery_for") != owner["spec"].get("recovery_for"):
+        return False
+    return (bool(set(row["resources"]) & set(owner["resources"]))
+            or conflicts(scope(row["spec"]), scope(owner["spec"])))
 
 
 class JobQueue:
@@ -237,14 +260,17 @@ class JobQueue:
                 candidates.append(value)
             # Stable sorting keeps SQL insertion order within each priority,
             # including legacy requests that omit the field (effective zero).
-            for value in sorted(candidates, key=lambda row: -job_priority(row["spec"])):
+            for value in sorted(candidates, key=lambda row: (
+                    -len(recovery_reservations(row, active)), -job_priority(row["spec"]))):
                 if admit and not admit(value):
                     continue
                 if job_capacity.waiting(value["spec"], capacity, active):
                     continue
                 borrowed = recovery_reservations(value, active)
-                if not any(reservation_conflicts(value, owner) for owner in active
-                           if owner["job_id"] not in borrowed):
+                if any(recovery_sibling_conflicts(value, owner) for owner in active):
+                    continue
+                if not any(reservation_conflicts(value, owner) or recovery_conflicts(value, owner)
+                           for owner in active if owner["job_id"] not in borrowed):
                     db.execute("UPDATE jobs SET state='claimed' WHERE job_id=?", (value["job_id"],))
                     return self._publish(db, value["job_id"])
             return None
@@ -260,7 +286,7 @@ class JobQueue:
 
     def release_capacity(self, jid, fact, observation=None):
         with self._transaction(write=True) as db:
-            db.execute("UPDATE jobs SET host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state='blocked'",
+            db.execute("UPDATE jobs SET host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state IN ('blocked','done')",
                        (json.dumps(fact), jid))
             self._publish(db, jid, observation=observation)
 

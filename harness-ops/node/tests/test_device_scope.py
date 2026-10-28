@@ -181,7 +181,7 @@ class DeviceScopeTests(unittest.TestCase):
             self.assertEqual(env.call("POST", "/jobs/" + alias["id"] + "/cancel", {}, headers=pin)[0], 200)
             (env.root / "finish-usb-a").touch()
             ended = terminal(first["id"])
-            self.assertEqual((ended["exit"], ended["queue"]["state"]), (2, "blocked"))
+            self.assertEqual((ended["exit"], ended["queue"]["state"]), (2, "done"))
             self.assertEqual(submit("refuse-unbound-recovery", {
                 "bin": "phonefarm", "argv": ["gray-layer", "session-recover"],
                 "device_access": "recovery", "recovery_for": first["id"]})[0], 400)
@@ -199,7 +199,7 @@ class DeviceScopeTests(unittest.TestCase):
                 self.assertEqual(code, 200, attempt)
                 submitted.append(attempt["id"])
                 done = terminal(attempt["id"])
-                self.assertEqual((done["exit"], done["queue"]["state"]), (2 if number == 1 else 0, "blocked"))
+                self.assertEqual((done["exit"], done["queue"]["state"]), (2 if number == 1 else 0, "done"))
                 actual = json.loads((Path(env.jobs.path(attempt["id"], "out")) / "observed.json").read_text())
                 self.assertEqual(actual["binding"], a)
                 self.assertEqual(actual["source"], env.jobs.path(first["id"], "out"))
@@ -211,9 +211,8 @@ class DeviceScopeTests(unittest.TestCase):
             current["device_scopes"]["devices"][0]["status"] = "clear"
             for item in [*reversed(attempts), first]:
                 view = env.jobs.status(item["id"])
-                self.assertTrue(view["queue"]["release_eligibility"]["eligible"], view)
-                self.assertEqual(env.call("POST", "/jobs/" + item["id"] + "/queue-release",
-                    {"note": "synthetic source scope reviewed; other device remains active"}, headers=pin)[0], 200)
+                self.assertFalse(view["queue"]["release_eligibility"]["eligible"], view)
+                self.assertEqual(env.jobs.dispatch.queue.get(item["id"])["state"], "done")
             self.assertEqual(env.jobs.status(other["id"])["state"], "running")
             (env.root / "finish-usb-b").touch(); terminal(other["id"])
         finally:

@@ -97,8 +97,8 @@ class JobDispatch:
                 admit()
             if spec.get("recovery_for") and not prior:
                 parent = self.queue.get(spec["recovery_for"])
-                if not parent or parent["state"] != "blocked":
-                    raise RequestConflict("recovery_for must name a blocked reservation")
+                if not parent or parent["state"] not in {"blocked", "done"}:
+                    raise RequestConflict("recovery_for must name a finished job")
                 if (parent.get("state_reason") or {}).get("kind") == "durability":
                     raise RequestConflict("retry-finalize the target before submitting a recovery job")
             row, created = self.queue.reserve(key, fingerprint, spec, spec["resources"])
@@ -182,6 +182,11 @@ class JobDispatch:
                 if candidate["state"] != "finished":
                     return False
                 if candidate.get("lost"):
+                    previous = ((candidate.get("execution") or {}).get("service_at_launch") or {}).get("service", {}).get("revision")
+                    current = (getattr(self.jobs, "service_at_launch", {}) or {}).get("service", {}).get("revision")
+                    if current and previous and current != previous:
+                        candidate["note"] = f"部署 {current} 中断"
+                        candidate["interruption"] = {"kind": "deployment", "revision": current}
                     self.jobs._write_meta(jid, candidate)
                 stage = "records"
                 store.sync(jid + "/meta.json", directory=False)
@@ -195,18 +200,10 @@ class JobDispatch:
                 stage = "directories"
                 store.sync(jid, directory=True)
                 store.sync("", directory=True)
-                recovery = candidate.get("recovery", {}).get("status")
-                access = device_access(row["spec"])
-                # Resource recovery settles a limited producer scope. Keep its
-                # reservation for explicit lease review, just like initial writes.
-                argv = row["spec"].get("argv", [])
-                scoped_recovery = (access == "recovery" and row["spec"].get("bin") == "phonefarm"
-                                   and (argv[:1] == ["game-deploy"] or argv[:2] == ["gray-layer", "session-recover"]))
-                blocked = (candidate.get("lost") or recovery == "required" or
-                           (access == "write" or scoped_recovery)
-                           and recovery == "not_reported")
                 release = self._capacity_release_fact(row, candidate)
-                self.queue.set_state(jid, "blocked" if blocked or release is None else "done",
+                # Known terminal jobs release scheduling reservations. Unknown
+                # host completion stays blocked until an administrator resets it.
+                self.queue.set_state(jid, "blocked" if release is None else "done",
                                      host_capacity_release=release, observation=candidate)
                 return True
         except (OSError, ValueError) as error:
@@ -252,16 +249,18 @@ class JobDispatch:
 
     def _refresh_host_capacity(self):
         for row in self.queue.rows(("blocked",)):
-            if row.get("host_capacity_release") is None:
-                with file_lock(self.intake_path):
-                    self.release_host_capacity(row)
+            if (row.get("state_reason") or {}).get("kind") == "durability":
+                continue
+            with file_lock(self.intake_path):
+                self.finalize(row)
 
     def start(self):
         with self.guard:
             if self.thread and self.thread.is_alive():
                 return
             if not self.queue.rows(("preparing", "queued", "claimed")) and not any(
-                    row.get("host_capacity_release") is None for row in self.queue.rows(("blocked",))):
+                    (row.get("state_reason") or {}).get("kind") != "durability"
+                    for row in self.queue.rows(("blocked",))):
                 return
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
@@ -438,7 +437,8 @@ class JobDispatch:
         if maintenance is not None:
             return {**maintenance, "blocking_jobs": []}
         borrowed = recovery_reservations(row, rows)
-        owners = [r for r in rows if r["state"] in ("claimed", "blocked") and r["job_id"] not in borrowed]
+        owners = [r for r in rows if (r["state"] == "claimed" or
+                    (r.get("state_reason") or {}).get("kind") == "durability") and r["job_id"] not in borrowed]
         declared = scope(row["spec"])
         resources = set(row["resources"])
         collisions = [r["job_id"] for r in owners if resources.intersection(r["resources"])]

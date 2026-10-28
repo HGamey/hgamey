@@ -36,8 +36,7 @@ Agent 每轮从这里开始：
   pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
   pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
-  pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
-  pf-node release <id> --note "..." --attest-stopped  # 失联任务：管理员声明原进程组已停止（无特权 worker 的节点）
+  pf-node reset <id> --note "核查结果"       # 仅管理员：无法确认宿主状态时一步重置并释放预留，不证明已恢复
   pf-node retry-finalize <id>                # 重试保存原有结束记录，不重新执行命令
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
@@ -463,6 +462,18 @@ def cancel_job(jid, force=False):
               file=sys.stderr)
     else:
         print(f"pf-node: 任务 {jid} 的取消请求被拒绝：{result.get('reason') or '未说明原因'}", file=sys.stderr)
+    return result
+
+
+def reset_job(jid, note):
+    try:
+        result = json.loads(call("POST", f"/jobs/{jid}/reset", json.dumps({"note": note}).encode(),
+                                 {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
+    except ClientError as e:
+        reason = response_error_text(e.body)
+        sys.exit(f"pf-node: 重置请求被拒绝：{e}" + (f"：{reason}" if reason else ""))
+    if result.get("released") is True:
+        print(f"pf-node: 任务 {jid} 已由管理员重置并释放预留；不证明原进程或设备状态。", file=sys.stderr)
     return result
 
 
@@ -1499,6 +1510,12 @@ def main():
             sys.exit("用法: pf-node queue")
         print(call("GET", "/queue").decode())
         return
+    if args[0] == "reset":
+        if len(args) != 4 or not re.fullmatch(r"[0-9a-f]{12}", args[1]) or args[2] != "--note" or not args[3].strip():
+            sys.exit("用法: pf-node reset <12 位任务 id> --note TEXT（仅管理员记录无法确认宿主状态后的重置）")
+        result = reset_job(args[1], args[3])
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get("released") is True else 1)
     if args[0] == "release":
         attest = args[4:] == ["--attest-stopped"]
         if (len(args) != (5 if attest else 4) or not re.fullmatch(r"[0-9a-f]{12}", args[1])

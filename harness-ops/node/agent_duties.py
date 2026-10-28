@@ -90,9 +90,6 @@ def duties(jobs, name, now=None):
                 "research_id": row["spec"].get("research_id")}
         if row["state"] == "blocked":
             blocked.append(item)
-            owed.append({"kind": "unblock_job", "target": row["job_id"],
-                         "text": f"任务 {row['job_id']} 卡在 blocked，占着资源；核查后释放或请人处理",
-                         "command": f"pf-node status {row['job_id']}"})
         elif row["state"] == "done":
             if last is not None and (row.get("status_committed_at") or 0) > last:
                 finished.append(item)

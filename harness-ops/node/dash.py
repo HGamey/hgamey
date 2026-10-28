@@ -868,12 +868,12 @@ class Dash:
         return {"kind": "external", "label": label} if label else None
 
     def _reservations(self):
-        """Device-write jobs holding the node's device reservation: running, or finished and awaiting release."""
+        """Only actively running device-write jobs hold a scheduling reservation."""
         queue = getattr(getattr(self.job_service, "dispatch", None), "queue", None)
         if queue is None:
             return []
         try:
-            return [row for row in queue.rows(("claimed", "blocked")) if device_scope(row["spec"])["scope"] != "none"]
+            return [row for row in queue.rows(("claimed",)) if device_scope(row["spec"])["scope"] != "none"]
         except (OSError, ValueError, sqlite3.Error):
             return []
 

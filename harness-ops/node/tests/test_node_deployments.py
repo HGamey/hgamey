@@ -130,7 +130,7 @@ sys.exit(0 if done else 2)
             for jid in (alias, legacy):
                 self.assertEqual(env.call("POST", "/jobs/" + jid + "/cancel", {}, headers=pin)[0], 200)
             (env.root / "finish-usb-a").touch()
-            self.assertEqual(env.finish(a)["queue"]["state"], "blocked")
+            self.assertEqual(env.finish(a)["queue"]["state"], "done")
             current["status"] = "blocked"
             current["device_scopes"]["registry_revision"] = 2
             current["device_scopes"]["devices"][0]["status"] = "blocked"
@@ -252,7 +252,7 @@ sys.exit(0 if attempt==2 else 1)
         self.assertEqual((Path(env.jobs.dir) / original / "out/deployment.json").read_bytes(), first_bytes)
         history = env.call("GET", "/games/demo/versions/v1")[1]["deployments"]
         self.assertEqual({j["id"] for j in history}, {original, child["id"], last["id"]})
-        env.jobs.release_queue(last["id"], "isolated fixture recovery reviewed")
+        self.assertEqual(env.jobs.dispatch.queue.get(last["id"])["state"], "done")
         settled = env.call("GET", "/jobs/" + original + "/deployment")[1]["recovery"]
         self.assertFalse(settled["eligible"])
         self.assertEqual(settled["target_job_id"], last["id"])
