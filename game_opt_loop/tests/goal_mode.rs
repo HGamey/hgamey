@@ -71,7 +71,7 @@ fn fake_phonefarm(probe_out: &Path, win: bool) -> String {
 fn fake_phonefarm_d(probe_out: &Path, status: &str, keep: &str, wins: &str, d: &str, code: u8) -> String {
     let mut s = String::new();
     s.push_str("#!/bin/sh\ncase \"$1\" in\n");
-    s.push_str("  devices) echo \"91253241019A  NX809J  adb\"; exit 0 ;;\n");
+    s.push_str("  devices) echo \"91253241019A device\"; exit 0 ;;\n");
     s.push_str(&format!("  probe) cat '{}'; exit 0 ;;\n", probe_out.display()));
     s.push_str("  onboard) echo '{\"status\":\"INGAME\"}'; exit 0 ;;\n");
     s.push_str("  eval)\n    req=\"$3\"\n");

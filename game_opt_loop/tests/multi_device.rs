@@ -55,7 +55,7 @@ fn fake_phonefarm(probe_out: &Path) -> String {
     format!(
         r#"#!/bin/sh
 case "$1" in
-  devices) echo "91253241019A  NX809J  adb"; echo "91253241019B  NX809J  adb"; exit 0 ;;
+  devices) echo "91253241019A device"; echo "91253241019B device"; exit 0 ;;
   probe) cat '{probe}'; exit 0 ;;
   onboard) echo '{{"status":"INGAME"}}'; exit 0 ;;
   eval)
