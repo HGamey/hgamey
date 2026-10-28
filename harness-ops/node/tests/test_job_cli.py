@@ -137,6 +137,32 @@ class JobCLI(unittest.TestCase):
         for text in ("request interrupt-id", "status", "cancel"):
             self.assertIn(text, stderr.getvalue())
 
+    def test_jobs_brief_is_one_line_per_job_and_json_default_is_unchanged(self):
+        cli = self.load_cli()
+        main = cli["main"]
+        payload = {"items": [
+            {"id": JOB, "state": "queued", "phase": "queued", "actor_id": "agent-a",
+             "research_id": "sr-ab", "label": "selfsr A/B", "started": 1700000000,
+             "bin": "phonefarm", "argv": ["eval"]},
+            {"id": "ba9876543210", "state": "running", "phase": "running", "actor_id": None,
+             "research_id": None, "label": None, "started": 1700000001,
+             "bin": "phonefarm", "argv": ["eval", "--request", "x"]},
+        ]}
+        with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(payload).encode())), \
+                mock.patch.object(sys, "argv", [str(CLI), "jobs", "--brief"]), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()):
+            main()
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], "0123456789ab\tqueued\tagent-a\tsr-ab\tselfsr A/B\t2023-11-14T22:13:20Z")
+        self.assertEqual(lines[1], "ba9876543210\trunning\t-\t-\tphonefarm eval\t2023-11-14T22:13:21Z")
+
+        with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(payload).encode())), \
+                mock.patch.object(sys, "argv", [str(CLI), "jobs"]), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()):
+            main()
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
+
     def test_submission_retries_same_request_and_recovers_without_another_job(self):
         posts, gets = [], []
         meta = {"id": JOB, "state": "running", "phase": "queued", "request_id": "study-001"}

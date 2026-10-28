@@ -49,7 +49,7 @@ Agent 每轮从这里开始：
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node live status SERIAL [--device-binding FILE] # 单次读取看屏状态
   pf-node live frame SERIAL --output FILE [--device-binding FILE] # 单次JPEG；原绑定、显式新文件、不重试
-  pf-node jobs [--query TEXT] [--state running|finished|lost] [--research ID] [--limit N] [--cursor C]
+  pf-node jobs [--query TEXT] [--state running|finished|lost] [--research ID] [--limit N] [--cursor C] [--brief]
   pf-node job-sources                     # 管理员登记的只读历史来源与 revision
   pf-node jobs --source old-local --source-revision 1 [--query TEXT] [--limit N] [--cursor C]
   pf-node status|log|artifacts <id> --source old-local --source-revision 1
@@ -185,6 +185,7 @@ Agent 每轮从这里开始：
 - 凭据只用 --token-file FILE 或 PF_NODE_TOKEN / PF_NODE_TOKEN_FILE；显式文件优先，两种环境凭据冲突即拒绝。
 """
 import gzip, hashlib, http.client, io, json, math, os, re, subprocess, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from target_client import Target, TargetError
@@ -196,6 +197,27 @@ CHUNK = 2 << 20
 
 def continuation():
     return TARGET.command() if TARGET is not None else "pf-node"
+
+
+def brief_job_line(job):
+    def clean(value):
+        return re.sub(r"\s+", " ", str(value)).strip() if value not in (None, "") else "-"
+    state = job.get("phase") or job.get("state") or "unknown"
+    command = job.get("bin") or "-"
+    if job.get("argv"):
+        command += " " + str(job["argv"][0])
+    started = job.get("started")
+    if isinstance(started, (int, float)):
+        started = datetime.fromtimestamp(started, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        started = "-"
+    return "\t".join([clean(job.get("id")), clean(state), clean(job.get("actor_id")),
+                      clean(job.get("research_id")), clean(job.get("label") or command), clean(started)])
+
+
+def print_jobs_brief(value):
+    for job in value.get("items", []):
+        print(brief_job_line(job))
 
 
 def admin_restart():
@@ -1621,13 +1643,20 @@ def main():
         else:
             path = "/" + cmd
             allowed = {"--query", "--state", "--research", "--limit", "--cursor"} if cmd == "jobs" else set()
-        query = {}
+        query, brief = {}, False
         while args:
             opt = args.pop(0)
+            if cmd == "jobs" and opt == "--brief":
+                brief = True
+                continue
             if opt not in allowed or not args:
                 sys.exit(f"pf-node: invalid {cmd} option {opt}")
             query[opt[2:]] = args.pop(0)
-        print(call("GET", path + ("?" + urllib.parse.urlencode(query) if query else "")).decode())
+        raw = call("GET", path + ("?" + urllib.parse.urlencode(query) if query else ""))
+        if brief:
+            print_jobs_brief(json.loads(raw))
+        else:
+            print(raw.decode())
         return
     if args[0] == "out" and len(args) == 3:
         fetch_out(args[1], outdir or os.path.join("pf-node-out", args[1]), args[2])
