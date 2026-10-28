@@ -99,7 +99,7 @@ def duties(jobs, name, now=None):
             active.append({**item, "state": row["state"]})
 
     status = entry.get("status")
-    if status is None or now - status["at"] > STATUS_STALE_SECONDS:
+    if (mine or active) and (status is None or now - status["at"] > STATUS_STALE_SECONDS):
         owed.append({"kind": "post_status", "text": "状态" + ("还没报过" if status is None else "超过 30 分钟没更新"),
                      "command": f"pf-node agents status {name} \"<在做什么>\""})
     for rid, data in mine.items():

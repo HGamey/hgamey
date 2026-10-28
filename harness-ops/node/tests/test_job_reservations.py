@@ -86,6 +86,17 @@ class ReservationTests(TestCase):
         self.assertEqual(self.request(f"/jobs/{unknown}/reset", token=self.admin, method="POST", body=body,
                                       headers={"Content-Type": "application/json"})[0], 409)
 
+    def test_status_duty_requires_research_or_active_job(self):
+        import agent_duties
+        self.jobs.agents.create({"name": "maintainer"})
+        value = agent_duties.duties(self.jobs, "maintainer")
+        self.assertFalse(any(item["kind"] == "post_status" for item in value["duties"]))
+        self.jobs.agents.create({"name": "researcher"})
+        self.submit({"bin": "phonefarm", "argv": ["-c", "pass"], "device_access": "none",
+                     "actor_id": "researcher"}, "active-status-duty")
+        value = agent_duties.duties(self.jobs, "researcher")
+        self.assertTrue(any(item["kind"] == "post_status" for item in value["duties"]))
+
     def test_legacy_blocked_finalizes_and_checkin_has_no_release_duty(self):
         self.jobs.agents.create({"name": "glm-researcher"})
         jid = self.submit({"bin": "phonefarm", "argv": ["-c", "pass"], "device_access": "write",
