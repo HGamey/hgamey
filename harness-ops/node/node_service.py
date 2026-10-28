@@ -853,9 +853,11 @@ class Jobs:
         threading.Thread(target=finish, daemon=True).start()
         return {"accepted": True, "job": self.status(jid)}
 
-    def release_queue(self, jid, note):
+    def release_queue(self, jid, note, attest_stopped=False):
         if not isinstance(note, str) or not note.strip() or len(note) > 2000:
             raise ValueError("release requires a nonempty review note (at most 2000 characters)")
+        if type(attest_stopped) is not bool:
+            raise ValueError("attest_stopped must be a boolean")
         with file_lock(self.dispatch.intake_path):
             row = self.dispatch.queue.get(jid)
             if not row:
@@ -863,6 +865,9 @@ class Jobs:
             if row["state"] != "blocked":
                 raise RequestConflict("only a blocked reservation can be released")
             status = self.status(jid)
+            if attest_stopped:
+                self._attest_stopped(row, status, note.strip())
+                row = self.dispatch.queue.get(jid)
             lease = self.leases.snapshot(refresh=True, force=True) if device_access(row["spec"]) != "none" else None
             eligibility = self.queue_release_eligibility(row, status, lease=lease)
             if not eligibility["eligible"]:
@@ -870,7 +875,8 @@ class Jobs:
             if not self.dispatch.release_host_capacity(row):
                 raise RequestConflict("host capacity release could not be confirmed; inspect execution and storage before releasing the reservation")
             try:
-                self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease})
+                self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease,
+                                                                         "attested_stopped": attest_stopped})
                 self._read_root.sync(jid, directory=True)
                 self._read_root.sync("", directory=True)
             except (OSError, ValueError) as error:
@@ -879,6 +885,30 @@ class Jobs:
             self.dispatch.queue.set_state(jid, "done")
         self.dispatch.start()
         return {"released": True, "job": self.status(jid)}
+
+    def _attest_stopped(self, row, meta, note):
+        """Administrator statement that a lost job's original process group is gone.
+
+        Nodes without the privileged worker cannot prove that themselves, so a lost job
+        would hold its capacity forever. The statement becomes the capacity release basis;
+        a recorded process group that still exists refuses it, and device lease checks
+        still apply afterwards.
+        """
+        if row.get("host_capacity_release") is not None:
+            return
+        if (row.get("state_reason") or {}).get("kind") == "durability":
+            raise RequestConflict("retry-finalize must commit the result before releasing resources")
+        execution = meta.get("execution") or {}
+        if ("contained" in (row["spec"].get("execution_policy"), meta.get("execution_policy"))
+                or (execution.get("process_management") or {}).get("policy") == "contained"):
+            raise RequestConflict("contained jobs are released through their cgroup handback, not an attestation")
+        if execution.get("worker_alive") is not False:
+            raise RequestConflict("the job's worker is still alive; cancel it first")
+        pgid = (execution.get("owned_process_group") or {}).get("pgid")
+        if pgid is not None and job_runtime._group_completion(pgid)["status"] != "absent":
+            raise RequestConflict(f"process group {pgid} still exists; stop it before attesting")
+        self.dispatch.queue.release_capacity(row["job_id"], {"at": time.time(), "basis": "administrator_attested_stopped",
+                                                             "note": note}, observation=meta)
 
     def queue_release_eligibility(self, row, meta, *, lease=None):
         """Same advisory decision shown by GET and rechecked fresh by release."""
@@ -2003,7 +2033,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):
                         raise ValueError("release body must be an object")
-                    return self._send(200, jobs.release_queue(parts[1], data.get("note")))
+                    return self._send(200, jobs.release_queue(parts[1], data.get("note"), data.get("attest_stopped", False)))
             except RegistryError as e:
                 return self._send(e.status, e.payload)
             except (DirectoryError, GameError) as e:

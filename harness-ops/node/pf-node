@@ -30,6 +30,7 @@
   pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
   pf-node release <id> --note "核查结果"      # 管理员核查后允许再次调度，不代表设备已恢复
+  pf-node release <id> --note "..." --attest-stopped  # 失联任务：管理员声明原进程组已停止（无特权 worker 的节点）
   pf-node retry-finalize <id>                # 重试保存原有结束记录，不重新执行命令
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
@@ -430,9 +431,10 @@ def cancel_job(jid, force=False):
     return result
 
 
-def release_job(jid, note):
+def release_job(jid, note, attest_stopped=False):
     try:
-        result = json.loads(call("POST", f"/jobs/{jid}/queue-release", json.dumps({"note": note}).encode(),
+        body = {"note": note, "attest_stopped": True} if attest_stopped else {"note": note}
+        result = json.loads(call("POST", f"/jobs/{jid}/queue-release", json.dumps(body).encode(),
                                  {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
     except ClientError as e:
         if e.code in (401, 403):
@@ -1436,10 +1438,11 @@ def main():
         print(call("GET", "/queue").decode())
         return
     if args[0] == "release":
-        if (len(args) != 4 or not re.fullmatch(r"[0-9a-f]{12}", args[1])
+        attest = args[4:] == ["--attest-stopped"]
+        if (len(args) != (5 if attest else 4) or not re.fullmatch(r"[0-9a-f]{12}", args[1])
                 or args[2] != "--note" or not args[3].strip()):
-            sys.exit("用法: pf-node release <12 位任务 id> --note TEXT（填写管理员核查结果）")
-        result = release_job(args[1], args[3])
+            sys.exit("用法: pf-node release <12 位任务 id> --note TEXT [--attest-stopped]（填写管理员核查结果）")
+        result = release_job(args[1], args[3], attest_stopped=attest)
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("released") is True else 1)
     if args[0] == "retry-finalize":

@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 import threading
 from unittest import TestCase, mock
 
@@ -13,6 +15,37 @@ class JobReconcileTests(TestCase):
     fixture = read_fixture.NodeReadTests.fixture
     request = read_fixture.NodeReadTests.request
     get_json = read_fixture.NodeReadTests.get_json
+
+    def test_lost_job_without_privileged_worker_releases_on_attested_stop(self):
+        # The runner died before starting anything (on rhodes1 its release had been pruned), so no
+        # process group was ever recorded and only an administrator can say the job is gone.
+        self.jobs.dispatch.start = lambda: None
+        row, _ = self.jobs.dispatch.queue.reserve("lost", "fixture", {"bin": "custom", "device_access": "none"}, [])
+        jid = self.fixture(int(row["job_id"], 16))
+        meta = self.jobs._read_meta(jid)
+        meta.update(state="finished", phase="interrupted", outcome="interrupted", lost=True, exit=-1,
+                    recovery={"status": "required", "reason": "worker disappeared without a terminal receipt"},
+                    execution={"kind": "supervised-v1", "worker_alive": False})
+        self.jobs._write_meta(jid, meta)
+        self.jobs.dispatch.queue.set_state(jid, "blocked")
+        with self.assertRaises(RequestConflict):
+            self.jobs.release_queue(jid, "a note alone does not release a lost job")
+        meta["execution"]["owned_process_group"] = {"scope": "original_process_group", "status": "pending",
+                                                    "pgid": os.getpgid(0)}
+        self.jobs._write_meta(jid, meta)
+        with self.assertRaises(RequestConflict):  # that group is this test process: still present
+            self.jobs.release_queue(jid, "stopped", attest_stopped=True)
+        self.assertIsNone(self.jobs.dispatch.queue.get(jid)["host_capacity_release"])
+        del meta["execution"]["owned_process_group"]
+        self.jobs._write_meta(jid, meta)
+        status, _, raw = self.request(f"/jobs/{jid}/queue-release", token=self.admin, method="POST",
+                                      body=json.dumps({"note": "runner never started", "attest_stopped": True}).encode(),
+                                      headers={"Content-Type": "application/json"})
+        self.assertEqual(status, 200, raw)
+        self.assertTrue(json.loads(raw)["released"])
+        row = self.jobs.dispatch.queue.get(jid)
+        self.assertEqual((row["state"], row["host_capacity_release"]["basis"]), ("done", "administrator_attested_stopped"))
+        self.assertTrue(json.loads(Path(self.jobs.path(jid, "queue-release.json")).read_text())["attested_stopped"])
 
     def test_reconciliation_auth_async_receipt_and_release_barrier(self):
         self.jobs.dispatch.start = lambda: None
