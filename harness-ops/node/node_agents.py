@@ -1,7 +1,10 @@
-"""Registered agent identities; same persistence pattern as the node directory."""
+"""Registered agent identities and their own tokens; same persistence pattern as the node directory."""
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import stat
 import threading
 import time
@@ -12,6 +15,7 @@ from job_dispatch import file_lock
 
 SCHEMA = "phonefarm/agent-registry@1"
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
+TOKEN = re.compile(r"hgag_([0-9a-f]{8})_[A-Za-z0-9_-]{43}\Z")
 
 
 class AgentError(ValueError):
@@ -45,7 +49,8 @@ def _fields(body):
 
 
 class NodeAgents:
-    """Persistent agent registry; agent identity is declared, not authenticated."""
+    """Persistent agent registry. An agent that holds its own token is identified by it;
+    only the token's sha256 is stored."""
 
     def __init__(self, data_root, local_node_id):
         self.local_node_id = local_node_id
@@ -88,7 +93,54 @@ class NodeAgents:
                 yield self._read()
 
     def _public(self, entry):
-        return {**entry, "credential_present": False}
+        return {**{k: v for k, v in entry.items() if k != "credential"}, "credential_present": "credential" in entry}
+
+    def _entry(self, state, name):
+        entry = next((e for e in state["agents"] if e["name"] == name), None)
+        if entry is None:
+            raise AgentError(404, "registered agent was not found")
+        return entry
+
+    def issue_token(self, name):
+        """Mint the agent's own token. Issuing again replaces the previous token."""
+        _name(name)
+        with self._locked() as state:
+            entry = self._entry(state, name)
+            if not entry.get("enabled", True):
+                raise AgentError(409, "this agent is disabled")
+            token_id = secrets.token_hex(4)
+            token = f"hgag_{token_id}_{secrets.token_urlsafe(32)}"
+            now = time.time()
+            entry["credential"] = {"id": token_id, "sha256": hashlib.sha256(token.encode()).hexdigest(), "issued_at": now}
+            entry["revision"] += 1
+            entry["updated_at"] = now
+            self._store.write_json("registry.json", state)
+            return {"agent": self._public(entry), "token": token}
+
+    def verify(self, token):
+        """Name of the enabled agent this token belongs to, or None."""
+        match = TOKEN.fullmatch(token or "")
+        if not match:
+            return None
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self._locked() as state:
+            for entry in state["agents"]:
+                credential = entry.get("credential") or {}
+                if (credential.get("id") == match.group(1) and entry.get("enabled", True)
+                        and hmac.compare_digest(credential["sha256"], digest)):
+                    return entry["name"]
+        return None
+
+    def record_checkin(self, name, seen_event_seq):
+        """Remember when the agent last checked in and how far it has read the research stream."""
+        with self._locked() as state:
+            entry = self._entry(state, name)
+            previous = entry.get("checkin") or {}
+            now = time.time()
+            entry["checkin"] = {"at": now, "previous_at": previous.get("at"),
+                                "seen_event_seq": max(previous.get("seen_event_seq", 0), seen_event_seq)}
+            self._store.write_json("registry.json", state)
+            return self._public(entry)
 
     def list(self):
         with self._locked() as state:

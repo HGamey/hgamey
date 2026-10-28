@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import uuid
@@ -29,10 +30,16 @@ HELP = """用法:
   pf-node research events [--after N | --cursor CURSOR] [--research-id ID] [--limit 1..500]
       [--wait-seconds 0..15]
   pf-node research media REQUEST A|B --revision N --output FILE
+  pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
+  pf-node research assign ID AGENT|none           # 指派或取消负责人
+  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject]   # 在研究里留言/回应
+  pf-node research thread ID                      # 按时间读研究里的留言
+  pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID|result:ID|url:URL ...
+      [--game-version V] [--device D ...]          # 交付：总结、产物、适用范围；状态变为 delivered
 
 recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
 plan-template 离线输出 next_experiment JSON 草稿，可带路线；填写实际条件后放入方向 data，不提交任务。
-KIND 为 research/direction/request/feedback。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
+KIND 为 research/direction/request/feedback/note。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
@@ -50,7 +57,7 @@ media 只读下载固定版本的一个槽位，需显式 node-id 与评价能�
 图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
 没有自动重试或续传；失败只清理本次 partial。下载完整不表示已解码、看过或已提交评价。
 """
-KINDS = ("research", "direction", "request", "feedback")
+KINDS = ("research", "direction", "request", "feedback", "note")
 MAX_DATA = 64 << 10
 MAX_BODY = 128 << 10
 MAX_RESPONSE = 8 << 20
@@ -128,6 +135,24 @@ def parser():
     events.add_argument("--research-id", type=identifier)
     events.add_argument("--limit", type=lambda v: integer(v, maximum=500))
     events.add_argument("--wait-seconds", type=lambda v: integer(v, minimum=0, maximum=15))
+    claim = commands.add_parser("claim")
+    claim.add_argument("id", type=identifier)
+    assign = commands.add_parser("assign")
+    assign.add_argument("id", type=identifier)
+    assign.add_argument("agent")
+    note = commands.add_parser("note")
+    note.add_argument("id", type=identifier)
+    note.add_argument("text")
+    note.add_argument("--reply-to", type=identifier)
+    note.add_argument("--decision", choices=("adopt", "defer", "reject"))
+    thread = commands.add_parser("thread")
+    thread.add_argument("id", type=identifier)
+    deliver = commands.add_parser("deliver")
+    deliver.add_argument("id", type=identifier)
+    deliver.add_argument("--summary", required=True)
+    deliver.add_argument("--artifact", action="append", required=True)
+    deliver.add_argument("--game-version")
+    deliver.add_argument("--device", action="append", default=[])
     media = commands.add_parser("media")
     media.add_argument("id", type=identifier)
     media.add_argument("slot", choices=("A", "B"))
@@ -459,6 +484,67 @@ def _write(client, args):
     return 0
 
 
+def _post(client, kind, oid, data, base, reason):
+    operation_id = uuid.uuid4().hex
+    body = json.dumps({"schema": "phonefarm/research-write@1", "operation_id": operation_id, "base_revision": base,
+                       "data": data, "actor_label": None, "reason": reason},
+                      ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    print(f"pf-node: {kind}/{oid} operation_id={operation_id}", file=sys.stderr, flush=True)
+    print(json.dumps(client.request("POST", f"/research-state/{kind}/{oid}", body), ensure_ascii=False))
+    return 0
+
+
+def _artifact(item, node_id):
+    kind, _, value = item.partition(":")
+    if kind == "job":
+        return {"kind": "job", "job_id": value, "node_id": node_id}
+    if kind == "result":
+        return {"kind": "result", "result_id": value, "node_id": node_id}
+    if kind == "url" and value:
+        return {"kind": "external", "locator": value, "node_id": None}
+    raise ValueError("--artifact 用 job:<任务ID>、result:<结果ID> 或 url:<地址>")
+
+
+def _task(client, args):
+    """Owner, thread and delivery of one research: the operations an agent loop uses."""
+    if args.command == "thread":
+        client.require_capability()
+        query = urllib.parse.urlencode({"research_id": args.id, "limit": 100})
+        for item in reversed(client.request("GET", "/research-state/note?" + query)["items"]):
+            speaker = "human" if item["auth_channel"] == "dashboard_steer" else item["actor_label"] or item["auth_channel"]
+            answer = f" ↳{item['reply_to']}" + (f" [{item['decision']}]" if item["decision"] else "") if item["reply_to"] else ""
+            stamp = time.strftime("%m-%d %H:%M", time.localtime(item["updated_at"]))
+            print(f"{stamp} {speaker} {item['id']}{answer}: {item['text']}")
+        return 0
+    client.require_capability(write=True)
+    if args.command == "note":
+        data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
+                "evidence_refs": []}
+        return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
+    current = client.request("GET", f"/research-state/research/{args.id}")
+    data, owner = current["data"], current["data"].get("owner")
+    if args.command == "claim":
+        me = client.request("GET", "/whoami").get("agent")
+        if not me:
+            raise ValueError("认领要用你自己的 agent token：先用管理 token 运行 pf-node agents token <名字>")
+        if owner == me:
+            print(f"pf-node: {args.id} 已经由你负责", file=sys.stderr)
+            return 0
+        if owner:
+            raise ValueError(f"{args.id} 由 {owner} 负责；改派请人工在网页上操作")
+        data["owner"] = me
+        return _post(client, "research", args.id, data, current["revision"], f"{me} 认领")
+    if args.command == "assign":
+        data["owner"] = None if args.agent == "none" else args.agent
+        return _post(client, "research", args.id, data, current["revision"], f"指派给 {args.agent}")
+    summary = Path(args.summary[1:]).read_text(encoding="utf-8") if args.summary.startswith("@") else args.summary
+    node_id = client.target.identity()["node_id"]
+    data["deliverable"] = {"summary": summary, "artifacts": [_artifact(item, node_id) for item in args.artifact],
+                           "applies_to": {"game_version": args.game_version, "devices": args.device}}
+    data["state"] = "delivered"
+    return _post(client, "research", args.id, data, current["revision"], "交付")
+
+
 def main(argv, *, target):
     argv = list(argv)
     if not argv or any(item in ("-h", "--help") for item in argv):
@@ -481,6 +567,8 @@ def main(argv, *, target):
     try:
         if args.command in ("create", "update"):
             return _write(client, args)
+        if args.command in ("claim", "assign", "note", "thread", "deliver"):
+            return _task(client, args)
         if args.command == "media":
             return _media(client, args)
         if args.command == "list":

@@ -54,6 +54,7 @@ from node_games import NodeGames, GameError, MAX_MANIFEST
 from node_uploads import NodeUploads
 from node_deployments import NodeDeployments, DeploymentError
 from game_assets import AssetUploadError, UPLOAD_MAX
+import agent_duties
 import job_runtime
 import job_inputs
 import job_preparation
@@ -1049,12 +1050,18 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def _authed(self, allow_ro=False):
             got = self.headers.get("Authorization", "")
-            self.ro = False
+            self.ro, self.agent = False, None
             if hmac.compare_digest(got, f"Bearer {token}"):
                 return True
             if allow_ro and hmac.compare_digest(got, f"Bearer {ro_token}"):
                 self.ro = True
                 return True
+            if got.startswith("Bearer hgag_"):
+                # An agent's own token can do what the admin token does, except manage agents,
+                # and everything it writes is attributed to that agent.
+                self.agent = jobs.agents.verify(got[7:].strip())
+                if self.agent:
+                    return True
             log(f"401 {self.command} {self.path} 来自 {self.headers.get('CF-Connecting-IP', self.client_address[0])}")
             self._send(401, {"code": "unauthorized", "error": "unauthorized"})
             return False
@@ -1074,6 +1081,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             return False
 
         def do_GET(self):
+            self.agent = None  # a kept-alive connection must not carry the previous request's identity
             if self._remote("GET"):
                 return
             u = urlparse(self.path)
@@ -1120,8 +1128,17 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(200, jobs.agents.get(parts[1]))
                     except AgentError as error:
                         return self._send(error.status, {"code": "agent_error", "error": str(error)})
+                if len(parts) == 3 and parts[0] == "agents" and parts[2] == "duties":
+                    try:
+                        return self._send(200, agent_duties.duties(jobs, parts[1]))
+                    except AgentError as error:
+                        return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["whoami"]:
+                    agent = getattr(self, "agent", None)
+                    kind = "agent" if agent else "readonly" if getattr(self, "ro", False) else "admin"
+                    return self._send(200, {"schema_version": 1, "node_id": node.node_id, "credential": kind, "agent": agent})
                 if parts == ["node-updates"]:
                     q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
@@ -1532,8 +1549,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 text = request["text"].strip()
                 if not text or len(text) > 4096:
                     raise ValueError("discuss text must be 1-4096 characters")
+                channel, agent = self._channel(dashboard)
                 if dashboard:
                     actor = "human"
+                elif agent is not None:
+                    if request.get("from") not in (None, agent):
+                        raise ValueError("from is fixed by the agent token; omit it")
+                    actor = agent
                 else:
                     actor = request.get("from")
                     if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 64:
@@ -1541,7 +1563,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     actor = actor.strip()
                     if actor.casefold() == "human":
                         raise ValueError("from=human is reserved for the dashboard; declare the agent name")
-                entry = {"at": time.time(), "from": actor, "auth_channel": "dashboard_steer" if dashboard else "admin_token",
+                entry = {"at": time.time(), "from": actor, "auth_channel": channel,
                          "text": text}
                 with jobs._read_root.append_file(jid + "/discuss.jsonl") as stream:
                     stream.write(json.dumps(entry, ensure_ascii=False).encode() + b"\n")
@@ -1557,6 +1579,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             self.close_connection = True
             if not self._authed():
                 return
+            if self.agent:
+                return self._send(403, {"code": "admin_required", "error": "registering agents needs the admin token"})
             try:
                 got = self.headers.get("X-Expected-Node-ID")
                 if not (got or parse_qs(urlparse(self.path).query).get("expected_node_id")):
@@ -1576,6 +1600,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             self.close_connection = True
             if not self._authed():
                 return
+            if self.agent and self.agent != name:
+                return self._send(403, {"code": "agent_mismatch", "error": "an agent token can only change its own registration"})
             try:
                 if not (self.headers.get("X-Expected-Node-ID") or
                         parse_qs(urlparse(self.path).query).get("expected_node_id")):
@@ -1595,6 +1621,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             self.close_connection = True
             if not self._authed():
                 return
+            if self.agent and self.agent != name:
+                return self._send(403, {"code": "agent_mismatch", "error": "an agent token can only report its own status"})
             try:
                 if not (self.headers.get("X-Expected-Node-ID") or
                         parse_qs(urlparse(self.path).query).get("expected_node_id")):
@@ -1651,8 +1679,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 raw = self.rfile.read(length)
                 if len(raw) != length:
                     raise ValueError("research body was interrupted; query the original operation ID")
-                value = research.write(parts[1], unquote(parts[2]), json.loads(raw),
-                                       "dashboard_steer" if dashboard else "admin_token")
+                envelope = json.loads(raw)
+                channel, agent = self._channel(dashboard)
+                if agent is not None and isinstance(envelope, dict):
+                    if envelope.get("actor_label") not in (None, agent):
+                        raise ValueError("actor_label is fixed by the agent token; omit it")
+                    envelope["actor_label"] = agent
+                value = research.write(parts[1], unquote(parts[2]), envelope, channel, agent=agent)
                 return self._send(201, value)
             except (ResearchError, MediaError) as e:
                 return self._send(e.status, e.payload)
@@ -1774,6 +1807,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                        extra={"Allow": "GET", "Connection": "close"})
             return True
 
+        def _channel(self, dashboard):
+            """Who is writing: (auth_channel, agent name or None)."""
+            if dashboard:
+                return "dashboard_steer", None
+            agent = getattr(self, "agent", None)
+            return ("agent_token", agent) if agent else ("admin_token", None)
+
         def _upload_write_auth(self, dashboard):
             if not dashboard:
                 return self._authed()
@@ -1861,6 +1901,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(503, {"code": "upload_storage_error", "error": "upload could not be confirmed; query the same ID"})
 
         def do_POST(self):
+            self.agent = None  # a kept-alive connection must not carry the previous request's identity
             if self._remote("POST"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
@@ -1968,6 +2009,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     # Refuse an unavailable guarantee before reading a potentially large upload.
                     try:
                         spec = json.loads(self.headers.get("X-Job", "{}"))
+                        if self.agent and isinstance(spec, dict):
+                            if spec.get("actor_id") not in (None, self.agent):
+                                raise ValueError("actor_id is fixed by the agent token; omit it")
+                            spec["actor_id"] = self.agent
                         require_policy(spec)
                         _job_time_budget(spec)
                         _job_disk_guard(spec)
@@ -2022,6 +2067,22 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                             "paused": bool(row["paused"]), "state": row["state"]})
                 if len(parts) == 3 and parts[0] == "agents" and parts[2] == "status":
                     return self._agents_status(parts[1], body)
+                if len(parts) == 3 and parts[0] == "agents" and parts[2] == "checkin":
+                    # Checking in moves the agent's unread position, so only the agent itself does it.
+                    if self.agent != parts[1]:
+                        return self._send(403, {"code": "agent_token_required",
+                                                "error": "check in with this agent's own token (pf-node agents token NAME)"})
+                    try:
+                        return self._send(200, agent_duties.checkin(jobs, parts[1]))
+                    except AgentError as error:
+                        return self._send(error.status, {"code": "agent_error", "error": str(error)})
+                if len(parts) == 3 and parts[0] == "agents" and parts[2] == "token":
+                    if self.agent:
+                        return self._send(403, {"code": "admin_required", "error": "issuing agent tokens needs the admin token"})
+                    try:
+                        return self._send(201, jobs.agents.issue_token(parts[1]))
+                    except AgentError as error:
+                        return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if len(parts) == 2 and parts[0] == "agents":
                     return self._agents_put(parts[1], False, body)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "retry-finalize":

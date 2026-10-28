@@ -409,7 +409,7 @@ class Dash:
             return
         if sub in (["jobs"], ["fleet"], ["games"], ["results"], ["research"], ["doctor"], ["updates"]):
             return self._static(h, sub[0] + ".html")
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("updates.js", "updates.css", "doctor.js", "doctor.css", "target.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("updates.js", "updates.css", "doctor.js", "doctor.css", "target.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research-task.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1])
         self.last_view = _now()
         self.wake.set()

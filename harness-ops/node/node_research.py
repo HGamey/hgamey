@@ -20,12 +20,14 @@ from node_media import LIMITS, MediaError
 
 MAX_DATA = 64 << 10
 MAX_WRITE = 128 << 10
+AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")  # same rule as node_agents.NAME
 STATES = {
-    "research": {"active", "idle", "paused", "closed"},
+    "research": {"active", "idle", "paused", "closed", "delivered"},
     "direction": {"proposed", "preparing", "ready", "running", "waiting_device", "waiting_human",
                   "waiting_material", "awaiting_evaluation", "verified", "no_gain", "rejected", "deferred"},
-    "request": {"open", "closed"}, "feedback": set(),
+    "request": {"open", "closed"}, "feedback": set(), "note": set(),
 }
+DECISIONS = {"adopt", "defer", "reject"}
 
 
 class ResearchError(ValueError):
@@ -120,26 +122,29 @@ def evaluation(kind, value, evidence_refs):
 def normalize(kind, data):
     common = {"evidence_refs"} | ({"evaluation"} if kind in ("request", "feedback") else set())
     fields = {
-        "research": {"title", "objective", "game", "constraints", "budgets", "device_requirements", "state", "state_reason", "coverage", "criteria"},
+        "research": {"title", "objective", "game", "constraints", "budgets", "device_requirements", "state", "state_reason", "coverage", "criteria",
+                     "owner", "deliverable"},
         "direction": {"research_id", "title", "hypothesis", "priority", "priority_reason", "prerequisites", "cost_expectation",
                       "expected_benefit", "next_experiment", "state", "state_reason", "dependencies", "feedback_decisions"},
         "request": {"research_id", "type", "title", "need", "why", "resume_hint", "context", "supersedes", "state", "close_reason", "due_at"},
         "feedback": {"request_id", "request_revision", "text", "supersedes"},
+        # The research's discussion thread: humans and agents post, agents answer guidance with a decision.
+        "note": {"research_id", "text", "reply_to", "decision"},
     }
     if kind not in fields:
         raise ValueError("unsupported research object kind")
     value = copy.deepcopy(object_fields(data, fields[kind] | common))
     value["evidence_refs"] = refs(value.get("evidence_refs", []))
-    if kind != "feedback":
+    if kind not in ("feedback", "note"):
         value["title"] = text(value.get("title"), 240, True)
         value.setdefault("state", {"research": "active", "direction": "proposed", "request": "open"}[kind])
         if value["state"] not in STATES[kind]:
             raise ValueError("unsupported declared object state")
-    if kind in ("direction", "request"):
+    if kind in ("direction", "request", "note"):
         identifier(value.get("research_id"))
     if kind in ("research", "direction"):
         value["state_reason"] = text(value.get("state_reason"), 16384)
-        needs_reason = (kind == "research" and value["state"] != "active" or kind == "direction"
+        needs_reason = (kind == "research" and value["state"] not in {"active", "delivered"} or kind == "direction"
                         and value["state"] not in {"proposed", "preparing", "ready", "running"})
         if needs_reason and value["state_reason"] is None:
             raise ValueError("this declared state requires a reason")
@@ -169,6 +174,21 @@ def normalize(kind, data):
         unique(value["coverage"], "key")
         if value.get("criteria") is not None:
             criteria_rules.validate(value["criteria"])
+        owner = value.setdefault("owner", None)
+        if owner is not None and (not isinstance(owner, str) or not AGENT_NAME.fullmatch(owner)):
+            raise ValueError("owner must be a registered agent name or null")
+        deliverable = value.setdefault("deliverable", None)
+        if deliverable is not None:
+            object_fields(deliverable, {"summary", "artifacts", "applies_to"})
+            deliverable["summary"] = text(deliverable.get("summary"), 16384, True)
+            deliverable["artifacts"] = refs(deliverable.get("artifacts", []))
+            if not deliverable["artifacts"]:
+                raise ValueError("a deliverable names at least one artifact (job, result or external locator)")
+            applies = object_fields(deliverable.get("applies_to") or {}, {"game_version", "devices"})
+            deliverable["applies_to"] = {"game_version": text(applies.get("game_version"), 128),
+                                         "devices": strings(applies.get("devices", []))}
+        if value["state"] == "delivered" and deliverable is None:
+            raise ValueError("delivered research needs a deliverable: summary, artifacts and where it applies")
     elif kind == "direction":
         value["hypothesis"] = text(value.get("hypothesis"), 16384, True)
         for key in ("priority_reason", "cost_expectation", "expected_benefit"):
@@ -228,6 +248,14 @@ def normalize(kind, data):
             raise ValueError("due_at must be a finite timestamp or null")
         if value["type"] == "evaluation" and not any(ref["kind"] == "result_source" for ref in value["evidence_refs"]):
             raise ValueError("evaluation requires an explicit registered source reference")
+    elif kind == "note":
+        value["text"] = text(value.get("text"), 16384, True)
+        value["reply_to"] = identifier(value["reply_to"]) if value.get("reply_to") is not None else None
+        value.setdefault("decision", None)
+        if value["decision"] is not None and value["decision"] not in DECISIONS:
+            raise ValueError("decision must be adopt, defer or reject")
+        if value["decision"] is not None and value["reply_to"] is None:
+            raise ValueError("a decision answers a note; set reply_to")
     else:
         identifier(value.get("request_id")); positive(value.get("request_revision"))
         value["text"] = text(value.get("text"), 16384, True)
@@ -424,6 +452,12 @@ class NodeResearch:
                 if prior["request_id"] != value["request_id"]:
                     raise ValueError("superseded feedback must answer the same request")
             return rid, observations
+        if kind == "note":
+            rid = value["research_id"]
+            self._reference(db, "research", rid)
+            if value["reply_to"]:
+                self._reference(db, "note", value["reply_to"], research_id=rid)
+            return rid, observations
         rid = value["research_id"]
         self._reference(db, "research", rid)
         if old and old["research_id"] != rid:
@@ -466,7 +500,7 @@ class NodeResearch:
             raise ResearchError(409, "research_dependency_cycle", "unresolved blocking dependencies would form a cycle")
         return rid, observations
 
-    def write(self, kind, oid, envelope, auth_channel):
+    def write(self, kind, oid, envelope, auth_channel, agent=None):
         identifier(oid)
         object_fields(envelope, {"schema", "operation_id", "base_revision", "data", "actor_label", "reason"})
         if envelope.get("schema") != "phonefarm/research-write@1":
@@ -489,6 +523,16 @@ class NodeResearch:
         if kind == "request" and "evaluation" in value:
             self._evaluation_sources(value, bindings)
         criteria_bindings = self._criteria_bindings(value, previous) if kind == "research" else None
+        deliverable_bindings = None
+        if kind == "research" and value["deliverable"] is not None:
+            deliverable_bindings = self._bindings({"evidence_refs": value["deliverable"]["artifacts"]})
+        if kind == "research" and value["owner"] is not None:
+            registry = getattr(self.results.jobs, "agents", None)
+            if registry is not None:
+                try:
+                    registry.get(value["owner"])
+                except ValueError:
+                    raise ResearchError(404, "research_owner_unknown", "owner must be a registered agent") from None
         with self._db(True) as db:
             receipt = self._operation(db, operation_id, request)
             if receipt is not None:
@@ -497,11 +541,18 @@ class NodeResearch:
             current = old["revision"] if old else None
             if current != base:
                 raise ResearchError(409, "research_revision_conflict", "object revision changed; keep the draft and merge explicitly", current_revision=current)
-            if kind == "feedback" and old:
-                raise ResearchError(409, "research_immutable", "feedback is immutable; append a correction with a new ID")
+            if kind in ("feedback", "note") and old:
+                raise ResearchError(409, "research_immutable", kind + " is immutable; append a correction with a new ID")
+            if kind == "research" and agent is not None:
+                before = json.loads(old["data"]).get("owner") if old else None
+                if value["owner"] != before and before not in (None, agent):
+                    raise ResearchError(409, "research_owned", f"this research belongs to {before}; a human reassigns it",
+                                        owner=before)
             rid, observations = self._validate_links(db, kind, oid, value, old)
             if criteria_bindings is not None:
                 observations["criteria_bindings"] = criteria_bindings
+            if deliverable_bindings is not None:
+                observations["deliverable_bindings"] = deliverable_bindings
             now, revision = time.time(), (current or 0) + 1
             audit = {"actor_label": actor, "auth_channel": auth_channel, "reason": reason, "at": now}
             sequence = db.execute("INSERT INTO events (research_id,kind,object_id,revision,operation_id,at) VALUES (?,?,?,?,?,?)",
@@ -554,11 +605,18 @@ class NodeResearch:
             return {"unresolved_dependencies": pending, "metadata_blocked": bool(pending)}
         if kind == "feedback":
             return json.loads(row["observations"])
+        if kind == "note":
+            replies = db.execute("SELECT id FROM revisions WHERE kind='note' AND json_extract(data,'$.reply_to')=? ORDER BY sequence",
+                                 (oid,)).fetchall()
+            return {"replies": [item["id"] for item in replies]}
         if kind == "research":
             counts = db.execute("SELECT r.state,COUNT(*) AS n FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id AND r.revision=o.revision WHERE o.kind='direction' AND o.research_id=? GROUP BY r.state", (oid,)).fetchall()
-            derived = {"direction_counts": {item["state"]: item["n"] for item in counts}}
+            derived = {"direction_counts": {item["state"]: item["n"] for item in counts},
+                       "note_count": db.execute("SELECT COUNT(*) FROM objects WHERE kind='note' AND research_id=?", (oid,)).fetchone()[0]}
             if value.get("criteria") is not None:
                 derived["criteria_bindings"] = json.loads(row["observations"])["criteria_bindings"]
+            if value.get("deliverable") is not None:
+                derived["deliverable_bindings"] = json.loads(row["observations"]).get("deliverable_bindings")
             return derived
         feedback = db.execute("SELECT COUNT(*) AS n,MAX(at) AS at FROM revisions WHERE kind='feedback' AND request_id=?", (oid,)).fetchone()
         impacted = db.execute("SELECT d.*,o.revision FROM dependencies d JOIN objects o ON o.kind='direction' AND o.id=d.direction_id WHERE d.kind='request' AND d.target_id=? ORDER BY d.direction_id,d.id", (oid,)).fetchall()
@@ -635,6 +693,12 @@ class NodeResearch:
                 item = {"kind": kind, "id": row["id"], "research_id": row["research_id"], "revision": row["revision"],
                         "title": row["title"] or data.get("text", "")[:120], "state": row["state"],
                         "sequence": row["sequence"], "updated_at": row["at"]}
+                if kind == "research":
+                    item["owner"] = data.get("owner")
+                if kind == "note":
+                    audit = json.loads(row["audit"])
+                    item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"],
+                                actor_label=audit.get("actor_label"), auth_channel=audit.get("auth_channel"))
                 if kind == "direction":
                     item["metadata_blocked"] = any(dep["blocking"] and dep["resolution"] is None for dep in data["dependencies"])
                 elif kind == "request":

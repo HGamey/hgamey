@@ -10,7 +10,6 @@
   <section class="card" id="agents-card" style="margin-bottom:16px">
     <div class="card-h"><h2>已注册 Agent</h2><span id="agents-count" class="muted"></span></div>
     <div id="agents-list"></div>
-    <p class="note">Agent 在此注册身份；任务提交时带 actor_id 关联。</p>
   </section>
   <section class="card" id="agent-detail" hidden>
     <div class="card-h"><h2 id="agent-detail-name"></h2><span class="muted">详情</span></div>
@@ -39,6 +38,7 @@
     <section id="detail" class="research-detail"><div class="section-heading"><h2 id="detail-heading" tabindex="-1">记录与上下文</h2><button id="refresh-detail" class="ghost" type="button" disabled>读取当前版本</button></div><p id="detail-message" class="note" role="status">选择记录查看版本、依赖和原件引用。</p><div id="detail-content" hidden>
       <div class="research-title"><h3 id="object-title"></h3><span id="object-state" class="task-state unknown"></span></div><p id="detail-version" class="read-time"></p><dl id="object-info" class="facts"></dl>
       <div id="detail-actions" class="research-actions"><button id="edit-object" class="ghost" type="button" disabled>编辑此版本</button><button id="new-direction" class="ghost" type="button" hidden>新增方向</button><button id="new-request" class="ghost" type="button" hidden>发出协助请求</button><button id="reply-request" class="ghost primary" type="button" hidden>答复此问题</button><button id="close-request" class="ghost" type="button" hidden>关闭问题</button><button id="related-directions" class="ghost" type="button" hidden>查看研究方向</button><button id="related-requests" class="ghost" type="button" hidden>查看研究请求</button><button id="related-feedback" class="ghost" type="button" hidden>查看所有答复</button></div>
+      <div id="task-detail"></div>
       <div id="object-body" class="research-body"></div>
       <div id="criteria-detail"></div>
       <div id="evaluation-detail"></div>
@@ -61,7 +61,7 @@
   </details>
 </main>
 <footer class="foot">共享研究状态独立于聊天工具。方向的声明状态、执行任务、设备恢复和研究证据各有自己的依据。</footer>
-<script src="/dash/static/target.js"></script><script src="/dash/static/research-evaluation.js"></script><script src="/dash/static/research-criteria.js"></script><script src="/dash/static/research.js"></script>
+<script src="/dash/static/target.js"></script><script src="/dash/static/research-evaluation.js"></script><script src="/dash/static/research-criteria.js"></script><script src="/dash/static/research-task.js"></script><script src="/dash/static/research.js"></script>
 <script src="/dash/static/agents-panel.js"></script>
 <script src="/dash/static/shell.js"></script>
 </body></html>

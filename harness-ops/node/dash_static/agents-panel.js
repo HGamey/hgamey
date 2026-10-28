@@ -22,16 +22,21 @@
       if (active(j) && j.actor_id) runningByAgent[j.actor_id] = (runningByAgent[j.actor_id] || 0) + 1;
     }
     const items = agents.agents || [];
+    const owed = Object.fromEntries(await Promise.all(items.map(a =>
+      api(`/dash/api/agents/${encodeURIComponent(a.name)}/duties`).then(d => [a.name, d.duties.length]).catch(() => [a.name, null]))));
+    const stamp = at => at ? new Date(at * 1000).toLocaleString("zh-CN", { hour12: false }) : "从未";
     document.getElementById("agents-count").textContent = items.length ? items.length + " 个" : "";
     list.innerHTML = items.length
-      ? `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中任务</th><th>当前状态</th></tr></thead><tbody>${
+      ? `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中任务</th><th>上次签到</th><th>待办</th><th>当前状态</th></tr></thead><tbody>${
           items.map(a => `<tr>
             <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button></td>
             <td>${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(" ") || "–"}</td>
             <td class="num">${runningByAgent[a.name] || 0}</td>
+            <td>${stamp(a.checkin && a.checkin.at)}</td>
+            <td class="num">${owed[a.name] ?? "–"}</td>
             <td>${a.status ? esc(a.status.text) : "–"}${a.status ? `<div class="muted" style="font-size:12px">${new Date(a.status.at * 1000).toLocaleString("zh-CN", { hour12: false })}</div>` : ""}</td>
           </tr>`).join("")}</tbody></table>`
-      : `<div class="empty"><b>还没有注册 Agent</b>用 pf-node agents register 注册；任务提交时带 --actor-id 关联</div>`;
+      : `<div class="empty">还没有注册 Agent</div>`;
   }
   // 点击 agent 名展开详情
   document.addEventListener("click", async (ev) => {

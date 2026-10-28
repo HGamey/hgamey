@@ -4,7 +4,7 @@
   const $ = id => document.getElementById(id), API = '/dash/api', KEY = 'hgamey.research.pending';
   const KINDS = {research: '研究目标', direction: '研究方向', request: '协助请求', feedback: '答复记录'};
   const STATES = {
-    research: {active: '推进中', idle: '暂空闲', paused: '已暂停', closed: '已关闭'},
+    research: {active: '推进中', idle: '暂空闲', paused: '已暂停', closed: '已关闭', delivered: '已交付'},
     direction: {proposed: '待探索', preparing: '准备中', ready: '可开展', running: '进行中', waiting_device: '等待设备', waiting_human: '等待协助', waiting_material: '等待素材', awaiting_evaluation: '等待评价', verified: '已验证声明', no_gain: '无收益声明', rejected: '已排除', deferred: '已暂缓'},
     request: {open: '开放', closed: '已关闭'}
   };
@@ -256,6 +256,8 @@
     renderDerived(record); renderEvidence(record); $('object-json').textContent = JSON.stringify(record, null, 2);
     const target = HGTarget.binding();
     HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target});
+    HGResearchTask.renderDetail($('task-detail'), record, {writable, reload: () => selectObject(record.kind, record.id)})
+      .catch(error => message('detail-message', error.message, true));
     HGResearchCriteria.renderDetail($('criteria-detail'), record, {node, target,
       readAssessment: (id, revision, signal) => request(`${objectPath('research', id)}/assessment?revision=${revision}`, {target, signal})});
     renderControls();
@@ -263,7 +265,7 @@
   async function selectObject(kind, id, revision = null) {
     if (!KINDS[kind] || !validID(id) || !capable() || disposed) return;
     selection = {kind, id, revision}; const epoch = ++detailEpoch, target = HGTarget.binding();
-    HGResearchEvaluation.unloadAll('记录已切换，媒体已卸下；再次查看需明确加载。'); HGResearchEvaluation.clearDetail(); HGResearchCriteria.clearDetail();
+    HGResearchEvaluation.unloadAll('记录已切换，媒体已卸下；再次查看需明确加载。'); HGResearchEvaluation.clearDetail(); HGResearchCriteria.clearDetail(); HGResearchTask.clearDetail($('task-detail'));
     detailController?.abort(); detailController = new AbortController(); detailFresh = false;
     ++historyEpoch; historyCursor = null; historyBusy = false; $('history-list').replaceChildren(); $('more-history').hidden = true; $('load-history').disabled = false; message('history-message', '');
     $('detail-content').hidden = true; message('detail-message', '正在读取明确版本…'); renderList(); renderControls();

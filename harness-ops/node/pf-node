@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """pf-node：在手机节点上跑 phonefarm / game_opt_loop / adb / devlock，用法和本地几乎一样。
 
+Agent 每轮从这里开始：
+  pf-node checkin                            # 用你自己的 token：现在该做的事，以及每轮做法
+  pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
+  pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
+
   pf-node phonefarm eval --request r.json --json --lock-label judge
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
   pf-node adb -s 91253241019A shell 'su -c "cat /sys/class/kgsl/kgsl-3d0/max_pwrlevel"'
@@ -1423,6 +1428,24 @@ def main():
     if args[0] == "agents":
         from agent_client import main as agent_main
         raise SystemExit(agent_main(args[1:], target=TARGET))
+    if args[0] == "whoami":
+        print(call("GET", "/whoami", attempts=1, raise_4xx=True).decode())
+        sys.exit(0)
+    if args[0] == "checkin":
+        if args[1:] not in ([], ["--json"]):
+            sys.exit("用法: pf-node checkin [--json]")
+        me = json.loads(call("GET", "/whoami", attempts=1, raise_4xx=True)).get("agent")
+        if not me:
+            sys.exit("pf-node checkin 要用 agent 自己的 token：先用管理 token 运行 pf-node agents token <名字>，"
+                     "把输出存进私有文件，再设 PF_NODE_TOKEN_FILE=<文件>")
+        value = json.loads(call("POST", f"/agents/{me}/checkin", b"{}", {"Content-Type": "application/json"},
+                                attempts=1, raise_4xx=True))
+        if args[1:] == ["--json"]:
+            print(json.dumps(value, ensure_ascii=False))
+        else:
+            from agent_client import render_checkin
+            print(render_checkin(value))
+        sys.exit(0)
     if args[0] == "export-caches":
         quota = None
         if len(args) == 3 and args[1] == "--enforce-quota":
@@ -1468,7 +1491,9 @@ def main():
                 via = " (token)" if e.get("auth_channel") == "admin_token" else ""
                 print(f"[{e.get('at', '?')}] {e.get('from', '?')}{via}: {e.get('text', '')}")
             sys.exit(0)
-        body = json.dumps({"text": args[2], "from": os.environ.get("PF_AGENT", "cli")}).encode()
+        # An agent's own token already says who is speaking; the admin token has to declare it.
+        speaker = {} if TOKEN.startswith("hgag_") else {"from": os.environ.get("PF_AGENT", "cli")}
+        body = json.dumps({"text": args[2], **speaker}).encode()
         result = json.loads(call("POST", f"/jobs/{jid}/discuss", body, {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0)

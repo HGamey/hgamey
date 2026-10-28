@@ -5,14 +5,17 @@ cookies and headers the page scripts set, token calls mirror pf-node. No workers
 """
 import http.client
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+NODE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(NODE))
 import dash
 from node_service import Jobs, make_handler
 
@@ -33,7 +36,8 @@ class CoreFlowTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        root = str(Path(temporary.name) / "node")
+        self.tmp = Path(temporary.name)
+        root = str(self.tmp / "node")
         self.jobs = Jobs(root, {"fixture": (sys.executable, root)}, data_dir=root)
         self.addCleanup(self.jobs._read_root.close)
         self.jobs.dispatch.start = lambda: None
@@ -85,6 +89,29 @@ class CoreFlowTests(unittest.TestCase):
             headers["Content-Type"] = "application/json"
         return self.request(method, path, body, headers)
 
+    def agent(self, token, method, path, body=None):
+        """What pf-node sends when it holds an agent's own token."""
+        headers = {"Authorization": f"Bearer {token}", "X-Expected-Node-ID": self.node_id}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        return self.request(method, path, body, headers)
+
+    def pf(self, token, *args):
+        """The real pf-node CLI, holding `token` in a private file."""
+        token_file = self.tmp / ("token-" + token[-8:])
+        token_file.write_text(token + "\n")
+        token_file.chmod(0o600)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PF_")}
+        env.update(PF_NODE_URL="http://%s:%d" % self.address, PF_NODE_TOKEN_FILE=str(token_file), PF_NODE_ID=self.node_id)
+        done = subprocess.run([sys.executable, str(NODE / "pf-node"), *args], env=env, capture_output=True,
+                              text=True, timeout=60, cwd=self.tmp)
+        return done.returncode, done.stdout, done.stderr
+
+    def duties(self, token):
+        code, out, err = self.pf(token, "checkin", "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
     @staticmethod
     def write(operation, data):
         return {"schema": "phonefarm/research-write@1", "operation_id": operation, "base_revision": None,
@@ -130,6 +157,119 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual([(e["from"], e["auth_channel"]) for e in thread["entries"]],
                              [("human", "dashboard_steer"), ("agent-a", "admin_token")])
+
+    def test_agent_own_token_carries_its_identity(self):
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+        status, issued = self.cli("POST", "/agents/agent-a/token", {})
+        self.assertEqual(status, 201)
+        token = issued["token"]
+        self.assertTrue(issued["agent"]["credential_present"])
+        self.assertNotIn("credential", self.cli("GET", "/agents/agent-a")[1])
+        self.assertEqual(self.agent(token, "GET", "/whoami")[1]["agent"], "agent-a")
+        self.assertEqual(self.cli("GET", "/whoami")[1]["credential"], "admin")
+
+        # It reports and speaks only as itself, and cannot manage agents.
+        self.assertEqual(self.agent(token, "POST", "/agents/agent-a/status", {"text": "跑插帧 A/B"})[0], 200)
+        self.assertEqual(self.agent(token, "POST", "/agents/agent-b/status", {"text": "x"})[0], 403)
+        self.assertEqual(self.agent(token, "POST", "/agents", {"name": "agent-c"})[0], 403)
+        self.assertEqual(self.agent(token, "POST", "/agents/agent-b/token", {})[0], 403)
+        status, posted = self.agent(token, "POST", f"/jobs/{self.jid}/discuss", {"text": "收到"})
+        self.assertEqual((status, posted["entry"]["from"], posted["entry"]["auth_channel"]), (201, "agent-a", "agent_token"))
+        self.assertEqual(self.agent(token, "POST", f"/jobs/{self.jid}/discuss", {"text": "x", "from": "agent-b"})[0], 400)
+        status, _ = self.agent(token, "POST", "/research-state/research/sr-a", self.write("agent-task", {"title": "t", "objective": "o"}))
+        self.assertEqual(status, 201)
+        audit = self.cli("GET", "/research-state/research/sr-a")[1]["audit"]
+        self.assertEqual((audit["actor_label"], audit["auth_channel"]), ("agent-a", "agent_token"))
+        posing = dict(self.write("agent-task-2", {"title": "t", "objective": "o"}), actor_label="agent-b")
+        self.assertEqual(self.agent(token, "POST", "/research-state/research/sr-b", posing)[0], 400)
+
+        # Jobs it submits are its own.
+        status, job = self.request("POST", "/jobs", None, {
+            "Authorization": f"Bearer {token}", "X-Expected-Node-ID": self.node_id,
+            "X-Job": json.dumps({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none"})})
+        self.assertEqual(status, 200, job)
+        jid = job["job"]["id"] if "job" in job else job["id"]
+        self.assertEqual(self.jobs.dispatch.queue.get(jid)["spec"]["actor_id"], "agent-a")
+
+        # Issuing again retires the old token; disabling the agent retires the new one.
+        fresh = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.agent(token, "GET", "/whoami")[0], 401)
+        self.assertEqual(self.agent(fresh, "GET", "/whoami")[1]["agent"], "agent-a")
+        revision = self.cli("GET", "/agents/agent-a")[1]["revision"]
+        self.assertEqual(self.cli("POST", "/agents/agent-a", {"revision": revision, "enabled": False})[0], 200)
+        self.assertEqual(self.agent(fresh, "GET", "/whoami")[0], 401)
+
+    def test_agent_loop_claim_guidance_and_delivery_through_cli(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
+            "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+        code, token_a, err = self.pf(ADMIN, "agents", "token", "agent-a")
+        self.assertEqual(code, 0, err)
+        token_a = token_a.strip()
+        token_b = self.cli("POST", "/agents/agent-b/token", {})[1]["token"]
+
+        # First check-in: nothing owned yet, the human's research is claimable, status never posted.
+        first = self.duties(token_a)
+        self.assertEqual([item["research_id"] for item in first["research"]["unclaimed"]], ["sr-genshin"])
+        self.assertEqual([duty["kind"] for duty in first["duties"]], ["post_status"])
+        self.assertTrue(first["loop"])
+        code, text, _ = self.pf(token_a, "checkin")
+        self.assertIn("pf-node research claim sr-genshin", text)
+        self.assertEqual(self.pf(ADMIN, "checkin")[0], 1)  # the admin token has no agent to check in as
+        self.assertEqual(self.agent(token_b, "POST", "/agents/agent-a/checkin", {})[0], 403)
+
+        code, _, err = self.pf(token_a, "research", "claim", "sr-genshin")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.cli("GET", "/research-state/research/sr-genshin")[1]["data"]["owner"], "agent-a")
+        self.assertEqual(self.pf(token_a, "agents", "status", "agent-a", "规划超分方向")[0], 0)
+        self.assertEqual([duty["kind"] for duty in self.duties(token_a)["duties"]], ["plan_directions"])
+
+        # The human gives guidance on the page; the next check-in shows it as new, until answered.
+        status, receipt = self.web("POST", "/research-state/note/n-guide", self.write(
+            "web-guide", {"research_id": "sr-genshin", "text": "先做 1080p，别动 HUD", "reply_to": None, "decision": None}))
+        self.assertEqual(status, 201, receipt)
+        owed = [duty for duty in self.duties(token_a)["duties"] if duty["kind"] == "answer_note"]
+        self.assertEqual([(duty["target"], duty["unread"]) for duty in owed], [("n-guide", True)])
+        owed = [duty for duty in self.duties(token_a)["duties"] if duty["kind"] == "answer_note"]
+        self.assertEqual([(duty["target"], duty["unread"]) for duty in owed], [("n-guide", False)])
+        code, _, err = self.pf(token_a, "research", "note", "sr-genshin", "采纳：先做 1080p，HUD 区域不处理",
+                               "--reply-to", "n-guide", "--decision", "adopt")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("answer_note", [duty["kind"] for duty in self.duties(token_a)["duties"]])
+        code, thread, err = self.pf(ADMIN, "research", "thread", "sr-genshin")
+        self.assertEqual(code, 0, err)
+        lines = thread.strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("human n-guide: 先做 1080p", lines[0])
+        self.assertIn("agent-a", lines[1])
+        self.assertIn("↳n-guide [adopt]", lines[1])
+        self.assertEqual(self.web("GET", "/agents/agent-a/duties")[0], 200)
+
+        # Another agent cannot take it; a human can reassign it.
+        self.assertNotEqual(self.pf(token_b, "research", "claim", "sr-genshin")[0], 0)
+        current = self.cli("GET", "/research-state/research/sr-genshin")[1]
+        taking = dict(self.write("b-takes", {**current["data"], "owner": "agent-b"}), base_revision=current["revision"], reason="take")
+        status, body = self.agent(token_b, "POST", "/research-state/research/sr-genshin", taking)
+        self.assertEqual((status, body["code"]), (409, "research_owned"))
+        reassign = dict(self.write("web-reassign", {**current["data"], "owner": "agent-b"}),
+                        base_revision=current["revision"], reason="改派给 agent-b")
+        self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", reassign)[0], 201)
+        self.assertEqual(self.duties(token_a)["research"]["mine"], [])
+
+        # Delivery needs a deliverable; the CLI writes summary, artifact and scope together.
+        current = self.cli("GET", "/research-state/research/sr-genshin")[1]
+        bare = dict(self.write("b-bare", {**current["data"], "state": "delivered"}), base_revision=current["revision"], reason="done")
+        self.assertEqual(self.agent(token_b, "POST", "/research-state/research/sr-genshin", bare)[0], 400)
+        code, _, err = self.pf(token_b, "research", "deliver", "sr-genshin", "--summary", "1080p 自训练超分，帧率 +18%",
+                               "--artifact", f"job:{self.jid}", "--game-version", "5.1", "--device", "RedMagic NX809J")
+        self.assertEqual(code, 0, err)
+        delivered = self.web("GET", "/research-state/research/sr-genshin")[1]
+        self.assertEqual(delivered["data"]["state"], "delivered")
+        self.assertEqual(delivered["data"]["deliverable"]["artifacts"][0]["job_id"], self.jid)
+        self.assertEqual(delivered["data"]["deliverable"]["applies_to"], {"game_version": "5.1", "devices": ["RedMagic NX809J"]})
+        self.assertEqual(delivered["audit"]["actor_label"], "agent-b")
 
     def test_page_discussion_writes_keep_steer_and_csrf_guards(self):
         status, body = self.web("POST", f"/jobs/{self.jid}/discuss", {"text": "x"}, steer=False)
