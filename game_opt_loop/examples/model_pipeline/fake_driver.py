@@ -71,7 +71,15 @@ with tmp.open("w") as stream:
 tmp.replace(receipt_path)
 if behavior in ("receipt_then_wait", "receipt_then_wait_for_timeout"):
     (stage_dir / "ready.flag").write_text("synthetic driver alive; host can be killed for at-most-once test")
-    # The short wait belongs to the killed-host/reconcile test. A separate long
-    # wait lets the timeout test observe the receipt before a generous wall cap.
-    time.sleep(0.5 if behavior == "receipt_then_wait" else 30)
+    if behavior == "receipt_then_wait":
+        # Keep the worker alive until the test has verified live reconciliation is
+        # rejected. Removing the fixture on an early failure also releases it.
+        release = stage_dir / "release_driver.flag"
+        while not release.exists():
+            if not stage_dir.exists():
+                sys.exit(0)
+            time.sleep(0.01)
+    else:
+        # Let the timeout test observe the receipt before a generous wall cap.
+        time.sleep(30)
     (stage_dir / "driver_finished.flag").write_text("synthetic driver stopped")

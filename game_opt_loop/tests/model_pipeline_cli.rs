@@ -375,6 +375,7 @@ fn lock_blocks_parallel_writer_and_killed_host_requires_explicit_reconcile() {
         .unwrap();
     let stage = f.out.join("0_design");
     wait_file(&stage.join("ready.flag"));
+    let driver_pid = f.journal()["entries"][0]["driver_pid"].as_u64().unwrap() as i32;
     assert!(!f.cli("resume", &[]).status.success());
     child.kill().unwrap();
     child.wait().unwrap();
@@ -397,8 +398,21 @@ fn lock_blocks_parallel_writer_and_killed_host_requires_explicit_reconcile() {
         )
         .status
         .success());
+    std::fs::write(
+        stage.join("release_driver.flag"),
+        "live reconcile rejected; synthetic driver may stop",
+    )
+    .unwrap();
     wait_file(&stage.join("driver_finished.flag"));
-    std::thread::sleep(Duration::from_millis(30));
+    let stopped = Instant::now() + Duration::from_secs(5);
+    loop {
+        let result = unsafe { libc::kill(-driver_pid, 0) };
+        if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            break;
+        }
+        assert!(Instant::now() < stopped, "released driver did not stop");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(f.journal()["entries"][0]["state"], "in_flight");
     assert!(!f.cli("resume", &[]).status.success());
     assert_eq!(f.calls(), 1);
