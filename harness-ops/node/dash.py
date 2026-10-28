@@ -885,6 +885,27 @@ class Dash:
                 return {**entry, "reserved": True, **({"state": "blocked"} if row["state"] == "blocked" else {})}
         return None
 
+    def _tasks(self):
+        """Research tasks in progress, newest first, each with the node jobs still working for it."""
+        research = getattr(self.job_service, "research", None) if self.job_service else None
+        queue = getattr(getattr(self.job_service, "dispatch", None), "queue", None)
+        if research is None:
+            return []
+        try:
+            items = research.list("research", {"state": ["active"], "limit": ["10"]})["items"]
+            rows = queue.rows(("queued", "claimed", "blocked")) if queue is not None else []
+        except (OSError, ValueError, sqlite3.Error):
+            return []
+        jobs = collections.defaultdict(list)
+        for row in rows:
+            rid = row["spec"].get("research_id")
+            if rid:
+                meta = self._job_meta(row["job_id"]) or {}
+                jobs[rid].append({"job_id": row["job_id"], "label": meta.get("label"), "state": row["state"],
+                                  "actor_id": meta.get("actor_id")})
+        return [{"id": item["id"], "title": item["title"], "owner": item.get("owner"), "updated_at": item["updated_at"],
+                 "jobs": jobs.get(item["id"], [])} for item in items]
+
     # ── 汇总 ──
     def home(self, h):
         """首页：手机槽位 + 目标运行列表。不含开发 agent 的任务、锁队列（那些在维护页）。"""
@@ -921,7 +942,7 @@ class Dash:
                                                        "holder": lock.get("held_by")}})
         while len(slots) < SLOTS_MIN:
             slots.append(None)
-        return {"now": _now(), "slots": slots, "fleet_age_s": snapshot["age_s"],
+        return {"now": _now(), "slots": slots, "tasks": self._tasks(), "fleet_age_s": snapshot["age_s"],
                 "fleet_err": snapshot["error"], "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
                 "busy": lock["status"] != "free",

@@ -323,6 +323,11 @@ class CoreFlowTests(unittest.TestCase):
         outside = {"status": "held", "held_by": "selfsr@S2", "lease": {"entries": []}}
         self.assertEqual(board._holder("S2", outside), {"kind": "external", "label": "selfsr@S2"})
         self.assertIsNone(board._holder("S1", outside))
+        # The home page lists the task in progress with its owner and the jobs still working for it.
+        tasks = board._tasks()
+        self.assertEqual([(t["id"], t["title"], t["owner"]) for t in tasks], [("sr-genshin", "优化原神超分方向", "agent-a")])
+        self.assertEqual([(j["job_id"], j["label"], j["state"], j["actor_id"]) for j in tasks[0]["jobs"]],
+                         [(jid, "selfsr 1080p A/B", "queued", "agent-a")])
 
     def test_a_device_write_job_keeps_its_phone_between_its_locks(self):
         # A device-write job reserves the node's phones from claim until someone releases it. Between its

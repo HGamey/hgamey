@@ -126,7 +126,7 @@
       const h = await api("/dash/api/home");
       S.home = h;
       $("live").className = "live ok"; $("live-text").textContent = `实时 · ${hm(h.now)}`;
-      renderPhones(h); renderSteerBtn(h); renderRunSel(h); renderNow();
+      renderPhones(h); renderTasks(h); renderSteerBtn(h); renderRunSel(h); renderNow();
     } catch (e) { $("live").className = "live bad"; $("live-text").textContent = "连不上手机节点"; }
   }
 
@@ -189,6 +189,16 @@
     } catch (e) { }
   }
 
+  // ───────── 任务：进行中的研究和为它们跑的任务 ─────────
+  const QUEUE_STATE = {queued: "排队", claimed: "运行中", blocked: "待核查"};
+  const taskLink = (t) => `<a href="${esc(HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(t.id)}`))}">${esc(t.title || t.id)}</a>`;
+  const taskJobs = (t) => t.jobs.map((j) => `${esc(j.label || j.job_id)}（${esc(QUEUE_STATE[j.state] || j.state)}）`).join("、");
+  function renderTasks(h) {
+    const tasks = h.tasks || [];
+    $("tasks").innerHTML = tasks.map((t) => `<li data-task="${esc(t.id)}">${taskLink(t)} · ${esc(t.owner || "无人负责")}${t.jobs.length ? " · " + taskJobs(t) : ""} · ${esc(hm(t.updated_at))}</li>`).join("")
+      || `<li>没有进行中的任务</li>`;
+  }
+
   // ───────── 「现在」一行：现状 + 下一步 ─────────
   function renderNow() {
     const h = S.home, r = S.run;
@@ -228,6 +238,11 @@
       }
     } else if (h && !(h.runs || []).length) {
       now = "没有目标在跑。";
+    }
+    const working = (h?.tasks || []).filter((t) => t.jobs.some((j) => j.state === "claimed"));
+    if (working.length && !(r && r.status === "running" && r.run_id === S.runId)) {
+      now = working.map((t) => `${taskLink(t)} · ${esc(t.owner || "无人负责")}：${taskJobs({...t, jobs: t.jobs.filter((j) => j.state === "claimed")})}`).join("；");
+      next = "";
     }
     $("now-text").innerHTML = now; $("next-text").innerHTML = next ? `下一步：${next}` : "";
   }
