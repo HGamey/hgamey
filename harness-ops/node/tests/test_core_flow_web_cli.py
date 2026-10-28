@@ -310,6 +310,12 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(board._holder("S1", by_lease), expected)
         self.assertIsNone(board._holder("S2", {**by_lease, "status": "free"}))
         self.assertEqual(board._holder("S2", {"status": "held", "held_by": f"job-{jid}", "lease": {"entries": []}}), expected)
+        # Under the global lock, a job that names its phone works on that phone and only blocks the others.
+        aimed = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass", "--device", "S1"], "device_access": "none",
+                                           "resources": [], "actor_id": "agent-a"}, b"", "aimed-job")
+        aimed = aimed["job"]["id"] if "job" in aimed else aimed["id"]
+        held = {"status": "held", "held_by": f"job-{aimed}", "lease": {"entries": []}}
+        self.assertEqual((board._holder("S1", held)["kind"], board._holder("S2", held)["kind"]), ("job", "global"))
         outside = {"status": "held", "held_by": "selfsr@S2", "lease": {"entries": []}}
         self.assertEqual(board._holder("S2", outside), {"kind": "external", "label": "selfsr@S2"})
         self.assertIsNone(board._holder("S1", outside))

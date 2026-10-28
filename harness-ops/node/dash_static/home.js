@@ -144,11 +144,11 @@
       const st = !s.online ? (s.state || "离线") : s.busy ? "在线 · 占用或待核查" : "在线 · 锁记录空闲";
       const thumb = s.shot_at && HGTarget.canWrite() ? `<img alt="${esc(s.model || s.serial)} 的画面" src="${esc(HGTarget.url(`/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}`))}">`
         : `<div class="ph">${s.busy ? "占用或待核查，暂缓截图" : "暂无画面"}</div>`;
-      const job = s.holder?.kind === "job" ? s.holder : null;
+      const job = ["job", "global"].includes(s.holder?.kind) ? s.holder : null;
       const task = job && (job.research_id
         ? `<a href="${esc(HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(job.research_id)}`))}">${esc(job.research_title || job.research_id)}</a>`
         : `<a href="${esc(HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.job_id)}`))}">${esc(job.label || job.job_id)}</a>`);
-      const doing = job ? `<div class="doing on">任务：${task}${job.actor_id ? " · " + esc(job.actor_id) : ""}${job.state && job.state !== "running" ? " · " + esc(job.state) : ""}</div>`
+      const doing = job ? `<div class="doing${job.kind === "job" ? " on" : ""}">${job.kind === "job" ? "任务" : "全局锁"}：${task}${job.actor_id ? " · " + esc(job.actor_id) : ""}${job.state && job.state !== "running" ? " · " + esc(job.state) : ""}</div>`
         : s.holder?.kind === "external" ? `<div class="doing on">外部占用：${esc(s.holder.label)}</div>`
         : s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
         : s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`

@@ -844,7 +844,11 @@ class Dash:
                         title = self.job_service.research.get("research", rid)["data"].get("title")
                     except (KeyError, OSError, ValueError):
                         title = None
-                return {"kind": "job", "job_id": jid, "label": meta.get("label"), "actor_id": meta.get("actor_id"),
+                # The global lock blocks every phone; the job only works on the ones its argv names.
+                argv = meta.get("argv") or []
+                targets = {argv[i + 1] for i, a in enumerate(argv[:-1]) if a in ("--device", "--extra-device", "--serial", "-s")}
+                kind = "global" if global_job and not bound and targets and serial not in targets else "job"
+                return {"kind": kind, "job_id": jid, "label": meta.get("label"), "actor_id": meta.get("actor_id"),
                         "research_id": rid, "research_title": title, "state": meta.get("state")}
             if meta:
                 return None
