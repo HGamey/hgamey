@@ -32,9 +32,10 @@ HELP = """用法:
   pf-node research media REQUEST A|B --revision N --output FILE
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
-  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject]   # 在研究里留言/回应
+  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject]
+      [--evidence job:ID[:PATH]|result:ID|url:URL ...]                            # 在研究里留言/回应
   pf-node research thread ID                      # 按时间读研究里的留言
-  pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID|result:ID|url:URL ...
+  pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|url:URL ...
       [--game-version V] [--device D ...]          # 交付：总结、产物、适用范围；状态变为 delivered
 
 recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
@@ -43,6 +44,7 @@ plan-template 离线输出 next_experiment JSON 草稿（title、plan、research
 方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
 最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
+job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
@@ -149,6 +151,7 @@ def parser():
     note.add_argument("text")
     note.add_argument("--reply-to", type=identifier)
     note.add_argument("--decision", choices=("adopt", "defer", "reject"))
+    note.add_argument("--evidence", action="append", default=[])
     thread = commands.add_parser("thread")
     thread.add_argument("id", type=identifier)
     deliver = commands.add_parser("deliver")
@@ -519,15 +522,21 @@ def _post(client, kind, oid, data, base, reason):
     return 0
 
 
-def _artifact(item, node_id):
+def _artifact(item, node_id, option="--artifact"):
     kind, _, value = item.partition(":")
     if kind == "job":
-        return {"kind": "job", "job_id": value, "node_id": node_id}
+        job_id, separator, path = value.partition(":")
+        reference = {"kind": "job", "job_id": job_id, "node_id": node_id}
+        if separator:
+            if not path:
+                raise ValueError(option + " 的 job 产物路径不能为空")
+            reference["path"] = path
+        return reference
     if kind == "result":
         return {"kind": "result", "result_id": value, "node_id": node_id}
     if kind == "url" and value:
         return {"kind": "external", "locator": value, "node_id": None}
-    raise ValueError("--artifact 用 job:<任务ID>、result:<结果ID> 或 url:<地址>")
+    raise ValueError(option + " 用 job:<任务ID>[:<产物相对路径>]、result:<结果ID> 或 url:<地址>")
 
 
 def _task(client, args):
@@ -543,8 +552,9 @@ def _task(client, args):
         return 0
     client.require_capability(write=True)
     if args.command == "note":
+        node_id = client.target.identity()["node_id"]
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
-                "evidence_refs": []}
+                "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]}
         return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
     current = client.request("GET", f"/research-state/research/{args.id}")
     data, owner = current["data"], current["data"].get("owner")

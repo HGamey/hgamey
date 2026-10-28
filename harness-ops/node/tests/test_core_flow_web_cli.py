@@ -281,6 +281,36 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(delivered["data"]["deliverable"]["applies_to"], {"game_version": "5.1", "devices": ["RedMagic NX809J"]})
         self.assertEqual(delivered["audit"]["actor_label"], "agent-b")
 
+    def test_job_artifact_paths_are_shared_by_cli_notes_and_delivery(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-artifacts", self.write(
+            "web-artifacts", {"title": "图像证据", "objective": "在任务讨论与交付中保留过程图"}))[0], 201)
+        output = Path(self.jobs.path(self.jid, "out"))
+        (output / "charts").mkdir()
+        (output / "charts/frame.png").write_bytes(b"fixture png bytes")
+        reference = f"job:{self.jid}:charts/frame.png"
+        code, _, err = self.pf(ADMIN, "research", "note", "sr-artifacts", "第一代帧时图", "--evidence", reference)
+        self.assertEqual(code, 0, err)
+        status, thread = self.web("GET", "/research-state/note?research_id=sr-artifacts&limit=100")
+        self.assertEqual(status, 200)
+        self.assertEqual(thread["items"][0]["evidence_refs"], [
+            {"kind": "job", "job_id": self.jid, "node_id": self.node_id, "path": "charts/frame.png"}])
+
+        code, _, err = self.pf(ADMIN, "research", "deliver", "sr-artifacts", "--summary", "交付过程图",
+                               "--artifact", reference)
+        self.assertEqual(code, 0, err)
+        delivered = self.web("GET", "/research-state/research/sr-artifacts")[1]
+        self.assertEqual(delivered["data"]["deliverable"]["artifacts"][0]["path"], "charts/frame.png")
+
+        (self.tmp / "outside.png").write_bytes(b"outside")
+        (output / "escape.png").symlink_to(self.tmp / "outside.png")
+        for path in ("../outside.png", "/absolute.png", "charts//frame.png", "charts/missing.png", "escape.png"):
+            with self.subTest(path=path):
+                code, _, err = self.pf(ADMIN, "research", "note", "sr-artifacts", "不能保存的引用",
+                                       "--evidence", f"job:{self.jid}:{path}")
+                self.assertNotEqual(code, 0, err)
+        _, notes = self.web("GET", "/research-state/note?research_id=sr-artifacts&limit=100")
+        self.assertEqual(len(notes["items"]), 1, "rejected artifact references must not create notes")
+
     def test_jobs_carry_their_research_to_the_task_page_and_the_phone(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
             "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)

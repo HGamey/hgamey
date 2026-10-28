@@ -2,7 +2,8 @@
 (() => {
   'use strict';
   const API = '/dash/api';
-  let agents = null, shown = null;
+  let agents = null, shown = null, imageEpoch = 0;
+  const imageURLs = new Set(), IMAGE_TYPES = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', svg: 'image/svg+xml', webp: 'image/webp'};
   const el = (tag, value, className) => { const item = document.createElement(tag); if (value != null) item.textContent = String(value); if (className) item.className = className; return item; };
   const when = at => new Date(at * 1000).toLocaleString('zh-CN', {hour12: false});
   const speaker = note => note.auth_channel === 'dashboard_steer' ? 'human' : note.actor_label || note.auth_channel;
@@ -18,6 +19,49 @@
   const write = (kind, id, data, base, reason) => api(`/research-state/${kind}/${encodeURIComponent(id)}`,
     {schema: 'phonefarm/research-write@1', operation_id: crypto.randomUUID(), base_revision: base, data, actor_label: null, reason});
   const failure = error => error.needSteer ? '需要先解锁研究操作（掌舵密码）' : error.message;
+  const artifactPath = ref => `${API}/jobs/${encodeURIComponent(ref.job_id)}/out?${new URLSearchParams({path: ref.path})}`;
+  function clearImages() {
+    ++imageEpoch;
+    for (const url of imageURLs) URL.revokeObjectURL(url);
+    imageURLs.clear();
+  }
+  async function loadImage(image, ref, mime, epoch) {
+    try {
+      const response = await HGTarget.fetch(artifactPath(ref), {credentials: 'same-origin', cache: 'no-store'});
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const blob = await response.blob();
+      if (epoch !== imageEpoch) return;
+      const url = URL.createObjectURL(blob.slice(0, blob.size, mime));
+      imageURLs.add(url); image.src = url;
+    } catch (_) {
+      if (epoch === imageEpoch) image.replaceWith(el('span', '图片读取失败', 'note'));
+    }
+  }
+  function evidenceList(refs) {
+    const list = el('ul', null, 'research-evidence'), local = HGTarget.binding()?.node_id;
+    for (const ref of refs || []) {
+      const item = el('li');
+      if (ref.kind === 'job' && ref.node_id === local) {
+        if (ref.path) {
+          const link = el('a'), mime = IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()];
+          link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop();
+          if (mime) {
+            const figure = el('figure', null, 'research-artifact'), image = el('img');
+            image.alt = ref.path; link.append(image); figure.append(link, el('figcaption', `任务 ${ref.job_id} · ${ref.path}`));
+            item.append(figure); loadImage(image, ref, mime, imageEpoch);
+          } else { link.textContent = `任务 ${ref.job_id} · ${ref.path}`; item.append(link); }
+        } else {
+          const link = el('a', `任务 ${ref.job_id}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(ref.job_id)}`); item.append(link);
+        }
+      } else if (ref.kind === 'external') item.append(el('span', ref.locator));
+      else if (['result', 'result_source'].includes(ref.kind) && ref.node_id === local) {
+        const link = el('a', `结果 ${ref.result_id}${ref.source_name ? ` · 来源 ${ref.source_name}` : ''}`);
+        link.href = HGTarget.url(`/dash/results#result=${encodeURIComponent(ref.result_id)}`); item.append(link);
+      } else item.append(el('span', `${ref.kind} · ${ref.node_id || '未绑定节点'} · ${ref.job_id || ref.result_id || ''}`));
+      list.append(item);
+    }
+    return list;
+  }
 
   function ownerSection(record, ctx) {
     const section = el('section', null, 'research-section'), row = el('div', null, 'research-actions'), status = el('p', null, 'note');
@@ -42,14 +86,7 @@
   function deliverableSection(record) {
     const value = record.data.deliverable;
     if (!value) return null;
-    const section = el('section', null, 'research-section'), list = el('ul', null, 'research-evidence');
-    for (const ref of value.artifacts) {
-      const item = el('li');
-      if (ref.kind === 'job') { const link = el('a', `任务 ${ref.job_id}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(ref.job_id)}`); item.append(link); }
-      else if (ref.kind === 'external') item.append(el('span', ref.locator));
-      else { const link = el('a', `结果 ${ref.result_id}`); link.href = HGTarget.url(`/dash/results#result=${encodeURIComponent(ref.result_id)}`); item.append(link); }
-      list.append(item);
-    }
+    const section = el('section', null, 'research-section'), list = evidenceList(value.artifacts);
     const scope = [value.applies_to.game_version && `游戏版本 ${value.applies_to.game_version}`, ...value.applies_to.devices].filter(Boolean).join(' · ');
     section.append(el('h3', '交付'), el('p', value.summary), list);
     if (scope) section.append(el('p', scope, 'muted'));
@@ -86,6 +123,7 @@
         head.append(el('span', speaker(note), 'discuss-from'), el('span', when(note.updated_at), 'discuss-time'));
         if (note.reply_to) head.append(el('span', `回复 ${note.reply_to}${note.decision ? ` · ${{adopt: '采纳', defer: '暂缓', reject: '不采纳'}[note.decision]}` : ''}`, 'discuss-via'));
         entry.append(head, el('p', note.text));
+        if (note.evidence_refs?.length) entry.append(evidenceList(note.evidence_refs));
         entry.dataset.note = note.id;
         return entry;
       }) : [el('div', '暂无留言', 'empty')]));
@@ -114,7 +152,7 @@
 
   async function renderDetail(container, record, ctx) {
     shown = record;
-    container.replaceChildren();
+    clearImages(); container.replaceChildren();
     if (record.kind !== 'research') return;
     if (agents === null) agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
     if (shown !== record) return;
@@ -124,5 +162,5 @@
     await Promise.all([runsSection(record, runs), threadSection(record, ctx, thread)]);
   }
 
-  window.HGResearchTask = {renderDetail, clearDetail: container => { shown = null; container.replaceChildren(); }};
+  window.HGResearchTask = {renderDetail, clearDetail: container => { shown = null; clearImages(); container.replaceChildren(); }};
 })();

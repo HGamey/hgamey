@@ -64,7 +64,7 @@ def refs(value):
         if not isinstance(ref, dict):
             raise ValueError("evidence reference must be an object")
         kind = ref.get("kind")
-        fields = {"job": {"job_id"}, "result": {"result_id"},
+        fields = {"job": {"job_id", "path"}, "result": {"result_id"},
                   "result_source": {"result_id", "source_name"}, "external": {"locator"}}
         if kind not in fields:
             raise ValueError("unsupported evidence reference kind")
@@ -78,6 +78,12 @@ def refs(value):
         elif kind == "job":
             if not isinstance(ref.get("job_id"), str) or not re.fullmatch(r"[0-9a-f]{12}", ref["job_id"]):
                 raise ValueError("evidence job identity must have 12 hexadecimal characters")
+            path = ref.get("path")
+            if path is not None:
+                path = text(path, 2048, True)
+                if path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
+                    raise ValueError("evidence job path must be a normalized relative path within job/out")
+                ref["path"] = path
         else:
             identifier(ref.get("result_id"))
             if kind == "result_source":
@@ -406,6 +412,13 @@ class NodeResearch:
                 try:
                     if kind == "job":
                         self.results._job_exists(ref["job_id"])
+                        if ref.get("path") is not None:
+                            try:
+                                with self.results.jobs._read_root.open_file(ref["job_id"] + "/out/" + ref["path"]):
+                                    pass
+                            except (OSError, ValueError):
+                                raise ResearchError(404, "research_reference_not_found",
+                                                    "referenced job artifact is absent or outside job/out") from None
                         binding["identity_kind"] = "job_reference"
                     else:
                         row = self.results._row(ref["result_id"])
@@ -761,7 +774,8 @@ class NodeResearch:
                 if kind == "note":
                     audit = json.loads(row["audit"])
                     item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"],
-                                actor_label=audit.get("actor_label"), auth_channel=audit.get("auth_channel"))
+                                evidence_refs=data["evidence_refs"], actor_label=audit.get("actor_label"),
+                                auth_channel=audit.get("auth_channel"))
                 if kind == "direction":
                     item["metadata_blocked"] = any(dep["blocking"] and dep["resolution"] is None for dep in data["dependencies"])
                 elif kind == "request":
