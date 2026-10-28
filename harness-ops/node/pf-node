@@ -263,9 +263,10 @@ def response_error_text(body):
     return value.get("error") if isinstance(value, dict) and isinstance(value.get("error"), str) else None
 
 
-def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False, raise_errors=False, stop_error_codes=()):
+def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False, raise_errors=False, stop_error_codes=(), safe_retry=None):
     if TARGET is None:
         raise TargetError("target_unconfigured", "需先显式配置连接目标")
+    safe_retry = method == "GET" if safe_retry is None else safe_retry
     if method == "GET" and path == "/node":
         return json.dumps(TARGET.identity()).encode()
     request = TARGET.request(method, path, data, headers)
@@ -291,7 +292,8 @@ def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4x
         if attempt + 1 < attempts:
             print(f"pf-node: {method} {path.split('?')[0]} 出错 {err!r}，{min(2 ** attempt, 30)}s 后重试", file=sys.stderr)
             time.sleep(min(2 ** attempt, 30))
-    sys.exit(f"pf-node: 连不上节点 {URL}: {err!r}")
+    hint = "只读命令可安全重试" if safe_retry else "提交类命令先用 request <request_id> 核对，不要盲重投"
+    sys.exit(f"pf-node: 连不上节点 {URL}: {err!r}；{hint}")
 
 
 def pack(argv):
@@ -1511,7 +1513,7 @@ def main():
             sys.exit("pf-node checkin 要用 agent 自己的 token：先用管理 token 运行 pf-node agents token <名字>，"
                      "把输出存进私有文件，再设 PF_NODE_TOKEN_FILE=<文件>")
         value = json.loads(call("POST", f"/agents/{me}/checkin", b"{}", {"Content-Type": "application/json"},
-                                attempts=1, raise_4xx=True))
+                                attempts=1, raise_4xx=True, safe_retry=True))
         if args[1:] == ["--json"]:
             print(json.dumps(value, ensure_ascii=False))
         else:

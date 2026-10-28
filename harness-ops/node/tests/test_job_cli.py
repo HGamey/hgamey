@@ -163,6 +163,22 @@ class JobCLI(unittest.TestCase):
             main()
         self.assertEqual(json.loads(stdout.getvalue()), payload)
 
+    def test_connection_error_retry_guidance_distinguishes_read_and_submit(self):
+        cli = self.load_cli()
+        target = cli["Target"]("http://fixture.invalid", "fixture-token", NODE_ID)
+        target._identity = identity()
+        target.opener = mock.Mock()
+        target.opener.open.side_effect = urllib.error.URLError("connection refused")
+        cli["main"].__globals__.update(TARGET=target)
+        for method, kwargs, expected in [
+            ("GET", {}, "只读命令可安全重试"),
+            ("POST", {}, "request <request_id>"),
+            ("POST", {"safe_retry": True}, "只读命令可安全重试"),
+        ]:
+            with self.assertRaises(SystemExit) as stopped:
+                cli["call"](method, "/fixture", attempts=1, **kwargs)
+            self.assertIn(expected, str(stopped.exception))
+
     def test_submission_retries_same_request_and_recovers_without_another_job(self):
         posts, gets = [], []
         meta = {"id": JOB, "state": "running", "phase": "queued", "request_id": "study-001"}
