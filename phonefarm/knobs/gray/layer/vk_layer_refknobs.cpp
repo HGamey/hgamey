@@ -17,6 +17,9 @@
 #include <vulkan/vulkan.h>
 #include <android/log.h>
 #include <atomic>
+#include <dlfcn.h>
+#include <elf.h>
+#include <link.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -39,6 +42,7 @@
 #endif
 #include "interp.h"
 #include "selfsr.h"
+#include "interp_sc.h"
 #include "artifact_stats.h"
 #ifdef RK_DYNAMIC_UPOP_BUILD
 #include "artifact_metadata.h"
@@ -669,6 +673,107 @@ static bool read_bool_prop(const char* name) {
     return v[0] == '1' || v[0] == 't' || v[0] == 'y';
 }
 
+// unlimit (debug.knobs.unlimit=1): 解开红魔 libgui 的进程内限帧。
+// RedMagicOS 11 的 libgui.so: Surface::queueBuffer → Surface::limitedFpsIfNeeded() 读
+// FpsControlConfig::getGlobalConfig() 偏移 0x60 的 int (1..253 时按 1/N 秒睡眠补齐), BLASTBufferQueue 也用它同步
+// 生产者的 setLimitedFps 并随帧元数据发给 SF。系统服务按温度下发 (真机过热 30, 凉 60)。每次送显前把它清零。
+// 只对这个版本的偏移有效: 取到的配置指针为空或 libgui 里没有该符号时什么都不做, 原因记进 marker。
+static bool g_unlimit = false;
+static std::atomic<uint64_t> g_unlimit_cleared{0};
+static std::atomic<int> g_unlimit_seen{-1};
+static std::string g_unlimit_reason;
+static void* (*g_fps_cfg_get)() = nullptr;
+// 按应用方式加载的层 (gpu_debug_app, 不 root) 在应用的链接器命名空间里, dlopen("libgui.so") 拿不到系统内部库。
+// 退路: dl_iterate_phdr 找到进程里已加载的 libgui 的装载偏移, 再从磁盘读它的 .dynsym 找符号 (系统库对应用可读)。
+struct LoadedLib { const char* want; std::string path; uintptr_t base = 0; };
+static int find_loaded_cb(dl_phdr_info* info, size_t, void* data) {
+    auto* L = static_cast<LoadedLib*>(data);
+    const char* n = info->dlpi_name;
+    if (!n) return 0;
+    const char* slash = strrchr(n, '/');
+    if (!strcmp(slash ? slash + 1 : n, L->want)) { L->path = n; L->base = info->dlpi_addr; return 1; }
+    return 0;
+}
+static void* sym_from_loaded(const char* lib, const char* sym) {
+    LoadedLib L{lib};
+    dl_iterate_phdr(find_loaded_cb, &L);
+    if (!L.base || L.path.empty()) return nullptr;
+    FILE* f = fopen(L.path.c_str(), "rb");
+    if (!f) return nullptr;
+    void* found = nullptr;
+    Elf64_Ehdr eh;
+    if (fread(&eh, sizeof eh, 1, f) == 1 && !memcmp(eh.e_ident, ELFMAG, SELFMAG) && eh.e_shentsize == sizeof(Elf64_Shdr)) {
+        std::vector<Elf64_Shdr> sh(eh.e_shnum);
+        if (!fseek(f, (long)eh.e_shoff, SEEK_SET) && fread(sh.data(), sizeof(Elf64_Shdr), sh.size(), f) == sh.size()) {
+            for (auto& s : sh) {
+                if (s.sh_type != SHT_DYNSYM || s.sh_link >= sh.size()) continue;
+                const Elf64_Shdr& st = sh[s.sh_link];
+                std::vector<char> strs(st.sh_size);
+                std::vector<Elf64_Sym> syms(s.sh_size / sizeof(Elf64_Sym));
+                if (fseek(f, (long)st.sh_offset, SEEK_SET) || fread(strs.data(), 1, strs.size(), f) != strs.size()) break;
+                if (fseek(f, (long)s.sh_offset, SEEK_SET) || fread(syms.data(), sizeof(Elf64_Sym), syms.size(), f) != syms.size()) break;
+                for (auto& y : syms)
+                    if (y.st_value && y.st_name < strs.size() && !strcmp(&strs[y.st_name], sym)) { found = reinterpret_cast<void*>(L.base + y.st_value); break; }
+                break;
+            }
+        }
+    }
+    fclose(f);
+    return found;
+}
+static void unlimit_init() {
+    g_unlimit = read_bool_prop("debug.knobs.unlimit");
+    if (!g_unlimit) return;
+    static const char* kSym = "_ZN7android16FpsControlConfig15getGlobalConfigEv";
+    void* h = dlopen("libgui.so", RTLD_NOW | RTLD_NOLOAD);
+    if (!h) h = dlopen("libgui.so", RTLD_NOW);
+    if (h) g_fps_cfg_get = reinterpret_cast<void* (*)()>(dlsym(h, kSym));
+    if (!g_fps_cfg_get) g_fps_cfg_get = reinterpret_cast<void* (*)()>(sym_from_loaded("libgui.so", kSym));
+    if (!g_fps_cfg_get) g_unlimit_reason = "no_FpsControlConfig";
+    __android_log_print(ANDROID_LOG_INFO, "refknobs", "unlimit=1: FpsControlConfig::getGlobalConfig %s", g_fps_cfg_get ? "找到" : "没有");
+}
+// debug.knobs.unlimit_dump=1: 第一次送显时把 FpsControlConfig 的 toString 和前 0x100 字节打进 logcat (找 IFAS 等字段的偏移)
+static std::string json_escape_str(const std::string& in) {
+    std::string o; for (char c : in) { if (c == '"' || c == '\\') { o += '\\'; o += c; } else if ((unsigned char)c < 0x20) o += ' '; else o += c; } return o;
+}
+static std::string g_cfg_str, g_cfg_hex;   // unlimit_dump 的结果, 也进 marker
+static void unlimit_dump(char* cfg) {
+    static bool done = false;
+    if (done || !read_bool_prop("debug.knobs.unlimit_dump")) return;
+    done = true;
+    auto to_str = reinterpret_cast<void (*)(void*, std::string&)>(sym_from_loaded("libgui.so",
+        "_ZN7android16FpsControlConfig8toStringERNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE"));
+    if (to_str) { std::string out; to_str(cfg, out); g_cfg_str = out; __android_log_print(ANDROID_LOG_INFO, "refknobs", "FpsControlConfig: %s", out.c_str()); }
+    char hex[0x100 * 3 + 1] = {0};
+    for (int i = 0; i < 0x100; i++) snprintf(hex + i * 3, 4, "%02x ", (unsigned char)cfg[i]);
+    g_cfg_hex = hex;
+    __android_log_print(ANDROID_LOG_INFO, "refknobs", "FpsControlConfig bytes: %s", hex);
+}
+static void unlimit_on_present() {
+    if (!g_fps_cfg_get) return;
+    char* cfg = static_cast<char*>(g_fps_cfg_get());
+    if (!cfg) return;
+    unlimit_dump(cfg);
+    // debug.knobs.unlimit_poke="0x20:0,0x80:120": 每次送显前把配置里这些偏移的 int 改成给定值 (RedMagicOS 11 实测布局:
+    // 0x20 FpsControl 总开关, 0x60 Limited Frame, 0x80 Ceiling, 0x88 Floor)
+    static std::vector<std::pair<int, int>> pokes;
+    static bool pokes_read = false;
+    if (!pokes_read) {
+        pokes_read = true;
+        char v[PROP_VALUE_MAX] = {0};
+        __system_property_get("debug.knobs.unlimit_poke", v);
+        for (char* tok = strtok(v, ","); tok; tok = strtok(nullptr, ",")) {
+            int off = 0, val = 0;
+            if (sscanf(tok, "%i:%i", &off, &val) == 2 && off >= 0 && off <= 0xfc && off % 4 == 0) pokes.push_back({off, val});
+        }
+    }
+    for (auto& pk : pokes) *reinterpret_cast<int*>(cfg + pk.first) = pk.second;
+    int* lim = reinterpret_cast<int*>(cfg + 0x60);
+    int v = *lim;
+    if (v != 0) { g_unlimit_seen = v; *lim = 0; g_unlimit_cleared++; }
+}
+
+
 // 证据双通道。原本只走文件系统, 因为立项时以为本机 logcat 哑掉 —— 2026-09-23 实测发现
 // logcat 只是对 shell uid 不可读, `su -c logcat` 一切正常 (refbench 与原神都验过)。
 // 文件通道在这两个应用上都能写, 但换个目标应用未必 (存储沙箱/SELinux 各不相同),
@@ -791,6 +896,9 @@ static void write_marker() {
     if (fd_on()) json += ",\"framedump\":" + fd_json();   // 逐帧读回 (framedump.cpp)
     if (ip_on()) json += ",\"interp\":" + ip_json();       // 层内多 present (interp.cpp)
     if (sr_on()) json += ",\"selfsr\":" + sr_json();       // 送显前超分 (selfsr.cpp)
+    if (g_unlimit) json += ",\"unlimit\":{\"symbol\":" + std::string(g_fps_cfg_get ? "true" : "false") + ",\"last_seen\":" +
+                           std::to_string(g_unlimit_seen.load()) + ",\"cleared\":" + std::to_string(g_unlimit_cleared.load()) +
+                           ",\"reason\":\"" + g_unlimit_reason + "\",\"cfg_hex\":\"" + g_cfg_hex + "\",\"cfg_str\":\"" + json_escape_str(g_cfg_str) + "\"}";
     json += "}";
 
     // 通道 1: logcat (root 可读, 不受目标应用存储沙箱影响)。
@@ -889,6 +997,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateInstance(
     if (fd_init_from_props()) RK_LOG("framedump=1: present 处逐帧读回 (framedump.cpp)");
     if (ip_init_from_props()) RK_LOG("interp=1: 层内多 present, 两帧之间插一张合成帧 (interp.cpp)");
     if (sr_init_from_props()) RK_LOG("selfsr: 送显前超分 (selfsr.cpp)");
+    unlimit_init();
     RK_LOG("rk_CreateInstance entered (pkg=%s) rewrite_loadop=%d passdump=%d copyprobe=%d upop=%d frameaudit=%d ts=%d",
            self_pkg().c_str(), (int)g_rewrite_loadop, (int)g_dump_passes, (int)g_copyprobe, (int)g_upop,
            (int)g_frameaudit, (int)g_frameaudit_ts);
@@ -978,12 +1087,16 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateDevice(
     // 加载器链节已推进, 复制一份 create info 改扩展列表即可 (pNext 链原样共享)。
     VkDeviceCreateInfo ip_ci;
     std::vector<const char*> ip_exts;
-    bool ip_ext_enabled = false;
+    bool ip_ext_enabled = false, sc_ext_enabled = false, rel_ext_enabled = false;
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT rel_feat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
     const VkDeviceCreateInfo* orig_ci = ci;
     if (ip_on()) {
         bool supported = false, already = false;
-        for (uint32_t i = 0; i < ci->enabledExtensionCount; i++)
+        std::vector<std::string> avail, on;
+        for (uint32_t i = 0; i < ci->enabledExtensionCount; i++) {
+            on.push_back(ci->ppEnabledExtensionNames[i]);
             if (!strcmp(ci->ppEnabledExtensionNames[i], VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) already = true;
+        }
         PFN_vkEnumerateDeviceExtensionProperties enumDevExt = nullptr;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
@@ -991,32 +1104,52 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateDevice(
             if (it == g_inst.end() && g_inst.size() == 1) it = g_inst.begin();
             if (it != g_inst.end()) enumDevExt = it->second.EnumDevExt;
         }
-        if (already) supported = true;
-        else if (enumDevExt) {
+        if (enumDevExt) {
             uint32_t n = 0;
             if (enumDevExt(phys, nullptr, &n, nullptr) == VK_SUCCESS && n) {
                 std::vector<VkExtensionProperties> ep(n);
                 enumDevExt(phys, nullptr, &n, ep.data());
-                for (uint32_t i = 0; i < n; i++) if (!strcmp(ep[i].extensionName, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) supported = true;
+                for (uint32_t i = 0; i < n; i++) {
+                    avail.push_back(ep[i].extensionName);
+                    if (!strcmp(ep[i].extensionName, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) supported = true;
+                }
             }
         }
+        if (already) supported = true;
         const char* want = ip_wanted_device_ext(supported);
-        if (want && !already) {
+        // 子图层后端 (interp_backend=sc) 要的 AHardwareBuffer 导入扩展及其依赖
+        std::vector<const char*> sc_exts = sc_wanted_device_exts(avail, on);
+        bool ahb_on = false;
+        for (auto& e : on) if (e == "VK_ANDROID_external_memory_android_hardware_buffer") ahb_on = true;
+        // interp_sc_noreal: 游戏的图不送显、直接还给 swapchain, 要 vkReleaseSwapchainImagesEXT。
+        // 游戏自己开了就照用 (它的 pNext 里会有功能结构); 没开就加扩展并在 pNext 链头挂上功能开关
+        bool rel_have = false, rel_on = false;
+        for (auto& e : avail) if (e == VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) rel_have = true;
+        for (auto& e : on) if (e == VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) rel_on = true;
+        const bool rel_add = ip_sc_noreal() && rel_have && !rel_on;
+        rel_ext_enabled = ip_sc_noreal() && (rel_on || rel_add);
+        if ((want && !already) || !sc_exts.empty() || rel_add) {
             ip_exts.assign(ci->ppEnabledExtensionNames, ci->ppEnabledExtensionNames + ci->enabledExtensionCount);
-            ip_exts.push_back(want);
+            if (want && !already) ip_exts.push_back(want);
+            for (auto* e : sc_exts) { ip_exts.push_back(e); if (!strcmp(e, "VK_ANDROID_external_memory_android_hardware_buffer")) ahb_on = true; }
+            if (rel_add) ip_exts.push_back(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
             ip_ci = *ci;
+            if (rel_add) { rel_feat.swapchainMaintenance1 = VK_TRUE; rel_feat.pNext = (void*)ci->pNext; ip_ci.pNext = &rel_feat; }
             ip_ci.enabledExtensionCount = (uint32_t)ip_exts.size();
             ip_ci.ppEnabledExtensionNames = ip_exts.data();
             ci = &ip_ci;
-            ip_ext_enabled = true;
-        } else if (want && already) ip_ext_enabled = true;
-        RK_LOG("interp: VK_GOOGLE_display_timing supported=%d already=%d enabled=%d", (int)supported, (int)already, (int)ip_ext_enabled);
+        }
+        ip_ext_enabled = want != nullptr;
+        sc_ext_enabled = sc_requested() && ahb_on;
+        RK_LOG("interp: VK_GOOGLE_display_timing supported=%d already=%d enabled=%d; sc 扩展 +%zu ahb=%d; noreal 扩展 have=%d on=%d add=%d",
+               (int)supported, (int)already, (int)ip_ext_enabled, sc_exts.size(), (int)sc_ext_enabled, (int)rel_have, (int)rel_on,
+               (int)rel_add);
     }
     VkResult r = createFunc(phys, ci, a, pDev);
-    if (r != VK_SUCCESS && ip_ext_enabled && ci == &ip_ci) {
+    if (r != VK_SUCCESS && ci == &ip_ci) {
         // 重试只在「没有别的层夹在中间」时可靠 (加载器链节已被推进一次); 本机只挂本层
         RK_LOG("interp: 加扩展后 vkCreateDevice 失败 (%d), 退回原参数", (int)r);
-        ip_ext_enabled = false;
+        ip_ext_enabled = false; sc_ext_enabled = false; rel_ext_enabled = false;
         ci = orig_ci;
         r = createFunc(phys, ci, a, pDev);
     }
@@ -1152,7 +1285,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateDevice(
     uint32_t sole_family = ci->queueCreateInfoCount == 1 && ci->pQueueCreateInfos ? ci->pQueueCreateInfos[0].queueFamilyIndex
                                                                                   : UINT32_MAX;
     if (fd_on()) fd_on_device(inst, phys, *pDev, gipa, gdpa, sdld, sole_family);
-    if (ip_on()) ip_on_device(inst, phys, *pDev, gipa, gdpa, sdld, sole_family, ip_ext_enabled);
+    if (ip_on()) { ip_note_release_ext(rel_ext_enabled); ip_on_device(inst, phys, *pDev, gipa, gdpa, sdld, sole_family, ip_ext_enabled); }
+    if (ip_on() && sc_requested())
+        sc_on_device(*pDev, phys, gdpa, inst && gipa ? (PFN_vkGetPhysicalDeviceMemoryProperties)gipa(inst, "vkGetPhysicalDeviceMemoryProperties") : nullptr,
+                     sc_ext_enabled);
     if (sr_on()) {
         // 多个队列族时取第一个 (游戏的图形队列一般排第一); 日志里记下, 送显队列不在这个族上会提交失败并退回原样
         uint32_t fam = sole_family != UINT32_MAX ? sole_family
@@ -3712,6 +3848,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_QueuePresentKHR(VkQueue q, const VkPres
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     uint64_t f = ++g_frames;
+    if (g_unlimit) unlimit_on_present();
     if (g_storeop_live && f % 30 == 0) {
         bool on = read_bool_prop("debug.knobs.storeop_on");
         if (on != g_storeop_on.exchange(on)) RK_LOG("storeop 现场切换: %s (frame=%llu)", on ? "开" : "关", (unsigned long long)f);

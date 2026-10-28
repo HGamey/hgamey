@@ -14,6 +14,7 @@
 // 任何一步放弃合成都只送真实帧 N (与不开层时相同), 原因计数进 marker 的 fallbacks。
 #include "interp.h"
 #include "framedump.h"
+#include "interp_sc.h"
 
 #include <android/log.h>
 #include <dlfcn.h>
@@ -91,15 +92,20 @@ struct Ring {
 };
 
 enum Kind : uint8_t { K_REAL = 0, K_SYNTH = 1 };
-struct Pending { uint32_t id; uint8_t kind; uint64_t frame, desired, target, call; };   // call = 游戏调 present 的时刻
+// call = 游戏调 present 的时刻; seq = 本层送显序号 (判相邻用, presentID 有游戏与层两套编号, 不连续)
+struct Pending { uint32_t id; uint8_t kind; uint64_t frame, desired, target, call, seq; };
+// 层自己发的 presentID 从这里起; 更小的是游戏 (Swappy) 自己的编号, 回读记录原样转交给游戏
+const uint32_t kOwnIdBase = 0x40000000u;
 
 struct Swap {
     uint32_t w = 0, h = 0, fmt = 0, usage = 0, n_images = 0;
+    uint32_t pre = 0;   // preTransform: 游戏按它预旋转画面, 子图层要反着转回来
     uint32_t min_req = 0, min_used = 0, present_mode_orig = 0, present_mode_used = 0;
     bool patched = false;
     std::vector<VkImage> imgs;
     std::vector<VkSemaphore> sems;        // 一张图一个: 层提交 → 这张图的 present
     VkImage hist = VK_NULL_HANDLE;        // 历史图 H (上一张真实帧), 层自有
+    uint64_t hist_gen = 0;                // 全局唯一的 H 代号 (见 IpSynthCtx::prev_gen)
     VkDeviceMemory hist_mem = VK_NULL_HANDLE;
     bool hist_valid = false;              // H 里有没有内容 (第一帧没有)
     // 节奏
@@ -108,18 +114,24 @@ struct Swap {
     bool phase_known = false;
     uint64_t phase_ns = 0;                // 最近一次真实显示时刻 mod refresh
     uint64_t last_target_n = 0;           // 上一张真实帧的目标显示时刻
-    uint32_t next_id = 1;
-    std::deque<Pending> pending;
-    uint32_t last_id = 0; uint8_t last_kind = K_REAL; uint64_t last_actual = 0;
+    uint32_t next_id = kOwnIdBase;
+    uint64_t next_seq = 1;
+    std::map<uint32_t, Pending> pend;      // 等回读的 presentID → 记录
+    std::deque<uint32_t> pend_order;       // 只留最近 512 条
+    std::deque<VkPastPresentationTimingGOOGLE> game_q;   // 游戏编号的回读记录, 等游戏自己来取
+    std::vector<std::pair<uint32_t, VkFence>> held;      // sc_noreal: 没送显的图, 层的拷贝做完 (fence) 后还给 swapchain
+    uint64_t last_seq = 0; uint8_t last_kind = K_REAL; uint64_t last_actual = 0;
     // 游戏 present 调用节奏
     uint64_t prev_call_t = 0; double ema_ns = 0;
     uint64_t synth_count = 0;
 };
 
+const int kMaxMult = 5;   // 每个真实帧最多插几张
 struct Slot {
     VkCommandBuffer cb = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     VkSemaphore acq = VK_NULL_HANDLE;
+    VkSemaphore acqx[kMaxMult] = {};   // 多帧插 (interp_mult>1) 时第 2.. 张的 acquire 信号量, 用到时才建
     bool busy = false, acq_dirty = false;
 };
 
@@ -139,7 +151,7 @@ struct Dev {
     IP_FN(CreateImage) IP_FN(DestroyImage) IP_FN(GetImageMemoryRequirements) IP_FN(AllocateMemory) IP_FN(FreeMemory)
     IP_FN(BindImageMemory) IP_FN(GetRefreshCycleDurationGOOGLE) IP_FN(GetPastPresentationTimingGOOGLE)
     IP_FN(GetPhysicalDeviceMemoryProperties) IP_FN(GetPhysicalDeviceSurfaceCapabilitiesKHR)
-    IP_FN(GetPhysicalDeviceFormatProperties)
+    IP_FN(GetPhysicalDeviceFormatProperties) IP_FN(ReleaseSwapchainImagesEXT)
 #undef IP_FN
     std::map<VkSwapchainKHR, Swap> swaps;
     std::vector<VkSemaphore> retired_sems;
@@ -161,8 +173,17 @@ std::mutex g_m;
 bool g_on = false;
 std::string g_mode = "dup";
 bool g_pacing = true;
+bool g_stamp = true;       // interp_stamp=0: 开着 display_timing 回读上屏时刻, 但不给合成/真实帧定时刻 (纯 FIFO 依次送)
 long g_lead_ns = -1;       // -1 = 一个刷新周期
+long g_sc_ring = 0;        // 子图层缓冲环张数; 0 = 4*(m+1)
+uint64_t g_sc_last = 0;    // 子图层上一张定的上屏时刻 (ns)
+uint64_t g_sc_skip = 0;    // 积压太多而不插合成帧的次数
+long g_sc_noreal = 0;      // debug.knobs.interp_sc_noreal=1: 游戏的图不送显 (还回去); =2: 晚一帧送 (送的是 GPU 早已画完的上一张)。见 sc 送显处
+bool g_rel_ext = false;    // VK_EXT_swapchain_maintenance1 加上了 (CreateDevice 告知)
+long g_sc_real_wait = 0;  // debug.knobs.interp_sc_real_wait=1: 游戏的真实帧交给它自己的 swapchain 之前, CPU 等 GPU 做完 (见 sc 送显处)
+long g_sc_gap_ns = 0;      // debug.knobs.interp_sc_gap_ns: 相邻两张最小间隔, 0 = 一个周期 + 0.1 ms
 long g_extra_images = 2;
+long g_mult = 1;           // interp_mult: 每个真实帧之前插几张 (t = k/(mult+1)); >1 时不定显示时刻, 纯 FIFO
 long g_acquire_ms = 4;
 bool g_csv = true;
 long g_fps_vote = 0;                   // debug.knobs.interp_fps: 给游戏窗口投的帧率, 0 = 不投
@@ -177,6 +198,7 @@ uint64_t g_real = 0, g_synth = 0, g_real_only = 0;
 std::map<std::string, uint64_t> g_fb;  // fallback 原因
 uint64_t g_late = 0, g_early = 0, g_timing_samples = 0;
 uint64_t g_pair_rs = 0, g_pair_sr = 0, g_pair_rr = 0, g_pair_ss = 0;   // 相邻显示帧的种类组合
+Ring g_sc_delay;   // 子图层后端: 真实帧「游戏调 present → 定的上屏时刻」(ns), 即插帧给真实帧加的排队延迟
 Ring g_disp_int, g_disp_int_rs, g_disp_int_sr, g_call_int, g_cpu_us, g_margin;
 Ring g_lat_real;   // 真实帧: 游戏调 present → 实际上屏 (插帧带来的显示延迟看它与 real 模式之差)
 uint64_t g_last_half_ns = 0, g_last_period_ns = 0;
@@ -259,7 +281,9 @@ uint32_t pick_device_local(Dev* D, uint32_t bits) {
     return UINT32_MAX;
 }
 
+uint64_t g_hist_gen = 0;
 bool create_hist(Dev* D, Swap& S) {
+    S.hist_gen = ++g_hist_gen;
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ici.imageType = VK_IMAGE_TYPE_2D; ici.format = (VkFormat)S.fmt; ici.extent = {S.w, S.h, 1};
     ici.mipLevels = 1; ici.arrayLayers = 1; ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -292,6 +316,21 @@ void release_swap_locked(Dev* D, Swap& S) {
     if (S.hist_mem) { D->FreeMemory(D->dev, S.hist_mem, nullptr); S.hist_mem = VK_NULL_HANDLE; }
     for (auto s : S.sems) if (s) D->retired_sems.push_back(s);
     S.sems.clear();
+    S.held.clear();   // swapchain 要销毁了, 扣着的图随它一起走
+}
+
+// sc_noreal: 把之前扣着的图还给 swapchain (先等层对它的拷贝做完, 游戏才能再往里画)。调用方持 g_m。
+void drain_held_locked(Dev* D, VkSwapchainKHR sc, Swap& S) {
+    if (S.held.empty() || g_sc_noreal == 2 || !D->ReleaseSwapchainImagesEXT) return;
+    std::vector<uint32_t> idx;
+    for (auto& h : S.held) {
+        if (D->WaitForFences(D->dev, 1, &h.second, VK_TRUE, 100000000ull) != VK_SUCCESS) g_fb["noreal_fence_timeout"]++;
+        idx.push_back(h.first);
+    }
+    VkReleaseSwapchainImagesInfoEXT ri{VK_STRUCTURE_TYPE_RELEASE_SWAPCHAIN_IMAGES_INFO_EXT};
+    ri.swapchain = sc; ri.imageIndexCount = (uint32_t)idx.size(); ri.pImageIndices = idx.data();
+    if (D->ReleaseSwapchainImagesEXT(D->dev, &ri) != VK_SUCCESS) g_fb["noreal_release_fail"]++;
+    S.held.clear();
 }
 
 void image_barrier(Dev* D, VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to, VkAccessFlags sa,
@@ -311,6 +350,23 @@ void copy_full(Dev* D, VkCommandBuffer cb, VkImage src, VkImage dst, uint32_t w,
 }
 
 // 回读真实显示时刻 (只在 pacing 下有记录)。调用方持 g_m。
+void track(Swap& S, const Pending& p) {
+    S.pend[p.id] = p;
+    S.pend_order.push_back(p.id);
+    while (S.pend_order.size() > 512) { S.pend.erase(S.pend_order.front()); S.pend_order.pop_front(); }
+}
+
+// pNext 链里游戏自己的 VkPresentTimesInfoGOOGLE (Swappy 用它定节奏、回读判断迟到), 没有返回空
+const VkPresentTimesInfoGOOGLE* game_times(const VkPresentInfoKHR* pi) {
+    struct Hdr { VkStructureType sType; const void* pNext; };
+    for (const Hdr* h = reinterpret_cast<const Hdr*>(pi->pNext); h; h = reinterpret_cast<const Hdr*>(h->pNext))
+        if (h->sType == VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE) {
+            auto t = reinterpret_cast<const VkPresentTimesInfoGOOGLE*>(h);
+            return (t->swapchainCount >= 1 && t->pTimes) ? t : nullptr;
+        }
+    return nullptr;
+}
+
 void poll_timing_locked(Dev* D, VkSwapchainKHR sc, Swap& S) {
     if (!S.timing_ok || !D->GetPastPresentationTimingGOOGLE) return;
     uint32_t n = 0;
@@ -321,15 +377,18 @@ void poll_timing_locked(Dev* D, VkSwapchainKHR sc, Swap& S) {
     const uint64_t R = S.refresh_ns;
     for (uint32_t i = 0; i < n; i++) {
         const auto& e = v[i];
+        if (e.presentID < kOwnIdBase) {   // 游戏自己的编号: 留给游戏的 vkGetPastPresentationTimingGOOGLE
+            S.game_q.push_back(e);
+            while (S.game_q.size() > 256) S.game_q.pop_front();
+        }
         if (!e.actualPresentTime) continue;
-        Pending p{e.presentID, K_REAL, 0, 0, 0, 0};
-        bool found = false;
-        while (!S.pending.empty() && S.pending.front().id < e.presentID) S.pending.pop_front();   // 回读丢了的
-        if (!S.pending.empty() && S.pending.front().id == e.presentID) { p = S.pending.front(); S.pending.pop_front(); found = true; }
-        if (!found) continue;
+        auto it = S.pend.find(e.presentID);
+        if (it == S.pend.end()) continue;
+        Pending p = it->second;
+        S.pend.erase(it);
         g_timing_samples++;
         if (R) { S.phase_ns = e.actualPresentTime % R; S.phase_known = true; }
-        if (S.last_id && e.presentID == S.last_id + 1 && e.actualPresentTime >= S.last_actual) {
+        if (S.last_seq && p.seq == S.last_seq + 1 && e.actualPresentTime >= S.last_actual) {
             uint64_t d = e.actualPresentTime - S.last_actual;
             g_disp_int.push(d);
             if (S.last_kind == K_REAL && p.kind == K_SYNTH) { g_pair_rs++; g_disp_int_rs.push(d); }
@@ -337,7 +396,7 @@ void poll_timing_locked(Dev* D, VkSwapchainKHR sc, Swap& S) {
             else if (S.last_kind == K_REAL) g_pair_rr++;
             else g_pair_ss++;
         }
-        S.last_id = e.presentID; S.last_actual = e.actualPresentTime; S.last_kind = p.kind;
+        S.last_seq = p.seq; S.last_actual = e.actualPresentTime; S.last_kind = p.kind;
         if (p.target && R) {
             if (e.actualPresentTime > p.target + R / 4) g_late++;
             else if (e.actualPresentTime + R / 4 < p.target) g_early++;
@@ -367,6 +426,23 @@ VKAPI_ATTR void VKAPI_CALL ip_GetDeviceQueue2(VkDevice dev, const VkDeviceQueueI
     else D->GetDeviceQueue2(dev, qi, q);
     if (qi && q && *q) { std::lock_guard<std::mutex> lk(g_m); D->queue_family[*q] = qi->queueFamilyIndex; }
 }
+// 层自己要回读上屏时刻, 会把驱动的记录读空; 游戏 (Swappy) 的那部分在这里原样交还, 层编号的不给它看
+VKAPI_ATTR VkResult VKAPI_CALL ip_GetPastPresentationTimingGOOGLE(VkDevice dev, VkSwapchainKHR sc, uint32_t* n,
+                                                                  VkPastPresentationTimingGOOGLE* out) {
+    std::lock_guard<std::mutex> lk(g_m);
+    Dev* D = dev_of_key(fkey(dev));
+    if (!D || !D->GetPastPresentationTimingGOOGLE) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    auto it = D->swaps.find(sc);
+    if (it == D->swaps.end() || !it->second.timing_ok) return D->GetPastPresentationTimingGOOGLE(dev, sc, n, out);
+    Swap& S = it->second;
+    poll_timing_locked(D, sc, S);
+    if (!out) { *n = (uint32_t)S.game_q.size(); return VK_SUCCESS; }
+    uint32_t k = std::min<uint32_t>(*n, (uint32_t)S.game_q.size());
+    for (uint32_t i = 0; i < k; i++) { out[i] = S.game_q.front(); S.game_q.pop_front(); }
+    *n = k;
+    return S.game_q.empty() ? VK_SUCCESS : VK_INCOMPLETE;
+}
+
 VKAPI_ATTR void VKAPI_CALL ip_DestroySwapchainKHR(VkDevice dev, VkSwapchainKHR sc, const VkAllocationCallbacks* a) {
     Dev* D;
     {
@@ -390,6 +466,9 @@ void ip_register_synth(const char* mode, IpSynthFn fn, void* user) {
     registry()[mode] = Synth{fn, user};
 }
 
+bool ip_sc_noreal() { return g_on && g_sc_noreal && sc_requested(); }
+void ip_note_release_ext(bool on) { std::lock_guard<std::mutex> lk(g_m); g_rel_ext = on; }
+
 bool ip_init_from_props() {
     std::string v = prop("debug.knobs.interp");
     g_on = !v.empty() && (v[0] == '1' || v[0] == 't' || v[0] == 'y');
@@ -398,24 +477,33 @@ bool ip_init_from_props() {
     g_mode = m.empty() ? "dup" : m;
     std::string p = prop("debug.knobs.interp_pacing");
     g_pacing = p.empty() || p[0] == '1' || p[0] == 't' || p[0] == 'y';
+    std::string st = prop("debug.knobs.interp_stamp");
+    g_stamp = st.empty() || st[0] == '1';
     g_lead_ns = prop_long("debug.knobs.interp_lead_ns", -1, -1, 200000000);
-    g_extra_images = prop_long("debug.knobs.interp_extra_images", 2, 1, 4);
+    g_sc_gap_ns = prop_long("debug.knobs.interp_sc_gap_ns", 0, 0, 50000000);
+    g_sc_real_wait = prop_long("debug.knobs.interp_sc_real_wait", 0, 0, 1);
+    g_sc_noreal = prop_long("debug.knobs.interp_sc_noreal", 0, 0, 2);
+    g_sc_ring = prop_long("debug.knobs.interp_sc_ring", 0, 0, 64);
+    g_mult = prop_long("debug.knobs.interp_mult", 1, 1, kMaxMult);
+    g_extra_images = prop_long("debug.knobs.interp_extra_images", g_mult + 1, 1, kMaxMult + 1);
     g_acquire_ms = prop_long("debug.knobs.interp_acquire_ms", 4, 0, 100);
     g_fps_vote = prop_long("debug.knobs.interp_fps", 0, 0, 240);
     std::string c = prop("debug.knobs.interp_csv");
     g_csv = c.empty() || c[0] == '1';
     if (!g_pacing) g_pacing_reason = "disabled_by_prop";
-    IP_LOG("开启: mode=%s pacing=%d lead_ns=%ld extra_images=%ld acquire_ms=%ld csv=%d", g_mode.c_str(), (int)g_pacing,
+    IP_LOG("开启: stamp=%d mode=%s pacing=%d lead_ns=%ld extra_images=%ld acquire_ms=%ld csv=%d", (int)g_stamp, g_mode.c_str(), (int)g_pacing,
            g_lead_ns, g_extra_images, g_acquire_ms, (int)g_csv);
     return true;
 }
 
 bool ip_on() { return g_on; }
 
-bool ip_wants_surface_hook() { return g_on && g_fps_vote > 0; }
+bool ip_wants_surface_hook() { return g_on && (g_fps_vote > 0 || sc_requested()); }
 
 void ip_on_android_surface(ANativeWindow* w) {
-    if (!g_on || g_fps_vote <= 0 || !w) return;
+    if (!g_on || !w) return;
+    sc_on_window(w);   // 子图层后端要挂在这个窗口下 (没要求时空操作)
+    if (g_fps_vote <= 0) return;
     typedef int32_t (*SetFrameRate)(ANativeWindow*, float, int8_t);
     static SetFrameRate fn = nullptr;
     if (!fn) {
@@ -455,6 +543,7 @@ void ip_on_device(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, PFN_vkGe
     IP_GD(CreateImage) IP_GD(DestroyImage) IP_GD(GetImageMemoryRequirements) IP_GD(AllocateMemory) IP_GD(FreeMemory)
     IP_GD(BindImageMemory)
     if (ext_enabled) { IP_GD(GetRefreshCycleDurationGOOGLE) IP_GD(GetPastPresentationTimingGOOGLE) }
+    if (g_rel_ext) IP_GD(ReleaseSwapchainImagesEXT)
 #undef IP_GD
     if (inst && gipa) {
         D->GetPhysicalDeviceMemoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)gipa(inst, "vkGetPhysicalDeviceMemoryProperties");
@@ -472,7 +561,8 @@ void ip_on_device(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, PFN_vkGe
         g_pacing_reason = "ext_functions_missing";
     if (g_pacing && !ext_enabled && g_pacing_reason.empty()) g_pacing_reason = "ext_not_enabled";
     g_devs[fkey(dev)] = D;
-    IP_LOG("device 已登记: complete=%d display_timing=%d loader_data_callback=%d", (int)D->complete, (int)ext_enabled, sdld ? 1 : 0);
+    IP_LOG("device 已登记: complete=%d display_timing=%d loader_data_callback=%d sc_noreal=%ld release=%d", (int)D->complete,
+           (int)ext_enabled, sdld ? 1 : 0, g_sc_noreal, D->ReleaseSwapchainImagesEXT ? 1 : 0);
 }
 
 void ip_on_destroy_device(VkDevice dev) {
@@ -485,7 +575,9 @@ void ip_on_destroy_device(VkDevice dev) {
     for (auto& s : D->slots) {
         if (s.fence) D->DestroyFence(D->dev, s.fence, nullptr);
         if (s.acq) D->DestroySemaphore(D->dev, s.acq, nullptr);
+        for (auto x : s.acqx) if (x) D->DestroySemaphore(D->dev, x, nullptr);
     }
+    sc_on_destroy_device(D->dev);
     if (D->pool) D->DestroyCommandPool(D->dev, D->pool, nullptr);
     for (auto s : D->retired_sems) if (s && D->DestroySemaphore) D->DestroySemaphore(D->dev, s, nullptr);
     g_devs.erase(fkey(dev));
@@ -531,7 +623,7 @@ void ip_on_swapchain(VkDevice dev, VkSwapchainKHR sc, const VkSwapchainCreateInf
     auto old = D->swaps.find(sc);
     if (old != D->swaps.end()) { release_swap_locked(D, old->second); D->swaps.erase(old); }
     Swap S;
-    S.w = ci->imageExtent.width; S.h = ci->imageExtent.height; S.fmt = (uint32_t)ci->imageFormat; S.usage = (uint32_t)ci->imageUsage;
+    S.w = ci->imageExtent.width; S.h = ci->imageExtent.height; S.fmt = (uint32_t)ci->imageFormat; S.usage = (uint32_t)ci->imageUsage; S.pre = (uint32_t)ci->preTransform;
     S.min_used = ci->minImageCount; S.present_mode_used = (uint32_t)ci->presentMode;
     S.min_req = patched ? D->pend_min_req : ci->minImageCount;
     S.present_mode_orig = patched ? D->pend_mode_orig : (uint32_t)ci->presentMode;
@@ -577,6 +669,24 @@ VkResult ip_on_present(VkQueue q, const VkPresentInfoKHR* pi, PFN_vkQueuePresent
     auto si = D->swaps.find(sc);
     if (si == D->swaps.end()) return bail("swapchain_unknown");
     Swap& S = si->second;
+    drain_held_locked(D, sc, S);
+    if (g_sc_noreal == 2 && !S.held.empty()) {
+        // 晚一帧送: 上一次扣下的图这时 GPU 早画完了, 不带信号量送, SF 拿到的缓冲 fence 已 signal,
+        // 红魔 waitframe 不用在 commit 里等它 (游戏图层被不透明子图层盖着, 晚一帧看不出来)
+        auto held = S.held;
+        S.held.clear();
+        lk.unlock();
+        for (auto& h : held) {
+            if (D->WaitForFences(D->dev, 1, &h.second, VK_TRUE, 100000000ull) != VK_SUCCESS) g_fb["lag_fence_timeout"]++;
+            VkPresentInfoKHR lp{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            lp.swapchainCount = 1; lp.pSwapchains = &sc; lp.pImageIndices = &h.first;
+            VkResult lr = next(q, &lp);
+            if (lr != VK_SUCCESS && lr != VK_SUBOPTIMAL_KHR) g_fb["lag_present_fail"]++;
+        }
+        lk.lock();
+        si = D->swaps.find(sc);
+        if (si == D->swaps.end()) return bail("swapchain_gone");   // map 结点不动: S 仍指向它
+    }
     // 游戏 present 调用节奏 (滑动平均, 用来定半个周期)
     if (S.prev_call_t) {
         uint64_t dt = t - S.prev_call_t;
@@ -587,20 +697,15 @@ VkResult ip_on_present(VkQueue q, const VkPresentInfoKHR* pi, PFN_vkQueuePresent
     if (g_mode == "real") {   // 对照: 不插帧, 只给真实帧带 presentID 回读上屏时刻 (延迟口径与插帧相同)
         poll_timing_locked(D, sc, S);
         bool timed = g_pacing && S.timing_ok;
-        uint32_t id = S.next_id++;
-        if (timed) {
-            S.pending.push_back(Pending{id, K_REAL, frame, 0, 0, t});
-            while (S.pending.size() > 512) S.pending.pop_front();
-        }
+        const VkPresentTimesInfoGOOGLE* gt = game_times(pi);
+        uint32_t id = gt ? gt->pTimes[0].presentID : S.next_id++;   // 游戏带了编号就跟着它的, 不改它的时间戳
+        if (timed) track(S, Pending{id, K_REAL, frame, gt ? gt->pTimes[0].desiredPresentTime : 0, 0, t, S.next_seq++});
         g_real++; g_real_only++;
+        if (gt) g_fb["game_present_times"]++;
         lk.unlock();
-        if (!timed) return next(q, pi);
-        struct Hdr { VkStructureType sType; const void* pNext; };
-        const void* chain = pi->pNext;
-        while (chain && reinterpret_cast<const Hdr*>(chain)->sType == VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE)
-            chain = reinterpret_cast<const Hdr*>(chain)->pNext;   // 游戏自己的时间戳在链头: 换成我们的 (desired=0 即尽快)
+        if (!timed || gt) return next(q, pi);
         VkPresentTimeGOOGLE tm{id, 0};
-        VkPresentTimesInfoGOOGLE pt{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, chain, 1, &tm};
+        VkPresentTimesInfoGOOGLE pt{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, pi->pNext, 1, &tm};
         VkPresentInfoKHR pn = *pi;
         pn.pNext = &pt;
         return next(q, &pn);
@@ -625,6 +730,247 @@ VkResult ip_on_present(VkQueue q, const VkPresentInfoKHR* pi, PFN_vkQueuePresent
         sl.acq_dirty = false;
     }
     poll_timing_locked(D, sc, S);
+    if (sc_requested() && sc_ready(D->dev)) {
+        // 子图层后端: 真实帧拷一份、合成帧画进层自己的缓冲, 经 ASurfaceTransaction 直接交给 SF (绕开缓冲队列的限帧);
+        // 游戏的帧照常送到它自己的 swapchain (被子图层盖住)
+        const int m = (int)g_mult;
+        std::vector<ScBuf*> bufs;
+        for (int k = 0; k <= m; k++) {
+            ScBuf* b = sc_next_buffer(D->dev, S.w, S.h, g_sc_ring > m ? (uint32_t)g_sc_ring : (uint32_t)(4 * (m + 1)));
+            if (!b) break;
+            bufs.push_back(b);
+        }
+        if ((int)bufs.size() != m + 1) return bail("sc_buffers");
+        VkImage N = S.imgs[idxN];
+        D->ResetCommandBuffer(sl.cb, 0);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
+        D->BeginCommandBuffer(sl.cb, &bi);
+        const VkPipelineStageFlags TR = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        image_barrier(D, sl.cb, N, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, VK_ACCESS_TRANSFER_READ_BIT, TR, TR);
+        bool use_hist = S.hist != VK_NULL_HANDLE;
+        auto reg = registry().find(g_mode);
+        bool synth_any = S.hist_valid;   // 第一帧没有历史: 只送真实帧
+        for (int k = 0; k < m && synth_any; k++) {
+            ScBuf* b = bufs[k];
+            sc_acquire_barrier(sl.cb, D->CmdPipelineBarrier, b->img, family, b->fresh);
+            bool custom = false;
+            if (reg != registry().end()) {
+                IpSynthCtx cx;
+                cx.dev = D->dev; cx.queue = q; cx.cb = sl.cb; cx.prev_gen = S.hist_gen; cx.prev = S.hist; cx.cur = N; cx.dst = b->img;
+                cx.w = S.w; cx.h = S.h; cx.fmt = S.fmt; cx.swap_usage = S.usage; cx.queue_family = family; cx.frame = frame;
+                cx.gdpa = D->gdpa; cx.t = (float)(k + 1) / (float)(m + 1); cx.sub = (uint32_t)k; cx.subs = (uint32_t)m;
+                custom = reg->second.fn(cx, reg->second.user);
+                if (!custom) g_fb["synth_declined"]++;
+            }
+            if (!custom) copy_full(D, sl.cb, g_mode == "dupcur" ? N : S.hist, b->img, S.w, S.h);
+            sc_release_barrier(sl.cb, D->CmdPipelineBarrier, b->img, family);
+        }
+        ScBuf* rb = bufs[m];
+        sc_acquire_barrier(sl.cb, D->CmdPipelineBarrier, rb->img, family, rb->fresh);
+        copy_full(D, sl.cb, N, rb->img, S.w, S.h);
+        sc_release_barrier(sl.cb, D->CmdPipelineBarrier, rb->img, family);
+        if (use_hist) {
+            image_barrier(D, sl.cb, S.hist, S.hist_valid ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, TR, TR);
+            copy_full(D, sl.cb, N, S.hist, S.w, S.h);
+            image_barrier(D, sl.cb, S.hist, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, TR, TR);
+        }
+        image_barrier(D, sl.cb, N, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_READ_BIT, 0, TR, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        D->EndCommandBuffer(sl.cb);
+        std::vector<VkPipelineStageFlags> stages(pi->waitSemaphoreCount, TR);
+        VkSubmitInfo sub{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        sub.waitSemaphoreCount = pi->waitSemaphoreCount; sub.pWaitSemaphores = pi->pWaitSemaphores; sub.pWaitDstStageMask = stages.data();
+        sub.commandBufferCount = 1; sub.pCommandBuffers = &sl.cb;
+        // sc_noreal: 游戏的图不送显, 不发 present 用的信号量 (发了没人等, 下次再发就是重复 signal)
+        const bool noreal = g_sc_noreal == 2 || (g_sc_noreal == 1 && D->ReleaseSwapchainImagesEXT);
+        sub.signalSemaphoreCount = noreal ? 0 : 1; sub.pSignalSemaphores = &S.sems[idxN];
+        D->ResetFences(D->dev, 1, &sl.fence);
+        if (D->QueueSubmit(q, 1, &sub, sl.fence) != VK_SUCCESS) { g_fb["submit_fail"]++; return bail("sc_submit"); }
+        S.hist_valid = use_hist;
+        // 子图层要等缓冲写完: 优先导出 sync fd 交给 SF (游戏线程不等); 拿不到再在这里等 GPU (最多 50 ms)
+        sl.busy = true;
+        int fence_fd = sc_export_fence(D->dev, q);
+        bool done = true;
+        if (fence_fd < 0) {
+            g_fb["sc_cpu_wait"]++;
+            done = D->WaitForFences(D->dev, 1, &sl.fence, VK_TRUE, 50000000ull) == VK_SUCCESS;
+            if (done) sl.busy = false; else g_fb["sc_gpu_wait_timeout"]++;
+        }
+        S.synth_count++;
+        const uint64_t R = S.refresh_ns ? S.refresh_ns : 16666667;
+        uint64_t period = S.ema_ns > 0 ? (uint64_t)S.ema_ns : 2 * R;
+        // 合成帧与真实帧在一个游戏周期里均分; 不用 swapchain 建立时记的刷新周期当下限
+        // (那时屏幕可能还是 60 Hz, 真机: 游戏 57 帧 + 下限 16.6 ms → 积压, 子图层只上屏 60/s)
+        uint64_t step = period / (uint64_t)(m + 1);
+        if (step < 2000000ull) step = 2000000ull;
+        // 第一张定在「GPU 大概写完」之后: 定在现在的话, fence 迟到时合成帧和真实帧在同一个 vsync 就绪, SF 只显示后一张
+        // (真机: 游戏 53 帧时子图层只上屏 60/s, 间隔多为 16.7 ms)。缺省提前量 = 一个刷新周期
+        const uint64_t t0 = now_ns() + (g_lead_ns >= 0 ? (uint64_t)g_lead_ns : R);
+        // 相邻两张至少隔一个 vsync (按投的帧率算; 没投按 120): 游戏帧时抖动时按「半个周期」排会和上一帧落进同一个 vsync,
+        // SF 只显示后一张 (真机: 120 Hz 下 30% 的间隔是 16.7 ms, 子图层只上屏 89/s)。
+        // 往后挪积压超过一个游戏周期时, 这一帧不插合成帧, 只送真实帧 (延迟不往上滚)
+        // debug.knobs.interp_sc_gap_ns 可覆盖。试过「一个周期 + 0.1 ms」: 红魔原神上屏不变 (89), 积压让延迟 33 → 45 ms, 所以缺省不变
+        uint64_t gph = 0, gP = 0;
+        const bool grid = sc_vsync_grid(&gph, &gP);   // interp_sc_grid=1: 对齐 vsync 网格, 每张取格子中点、各占一格
+        // 对齐时先只推到「上一张 + 半格」再向上取中点 = 紧挨着的下一格; 推一整格的话, 周期估计每帧略变,
+        // 「上一张 + P」常比下一个中点多一点, 被取到再下一格 (真机: 每次多跳一格, 积压到延迟 48 ms、上屏 75)
+        const uint64_t gap = grid ? gP / 2 : g_sc_gap_ns > 0 ? (uint64_t)g_sc_gap_ns : 1000000000ull / (uint64_t)(g_fps_vote > 0 ? g_fps_vote : 120) - 300000ull;
+        auto slot = [&](uint64_t want) {
+            uint64_t d = (g_sc_last && want < g_sc_last + gap) ? g_sc_last + gap : want;
+            if (grid) {   // 不早于 d 的第一个格子中点 (gph + kP + P/2)
+                const int64_t rel = (int64_t)d - (int64_t)(gph + gP / 2);
+                const int64_t k = rel <= 0 ? -((-rel) / (int64_t)gP) : (rel + (int64_t)gP - 1) / (int64_t)gP;
+                d = (uint64_t)((int64_t)(gph + gP / 2) + k * (int64_t)gP);
+                if (g_sc_last && d < g_sc_last + gP / 2) d += gP;
+            }
+            g_sc_last = d; return d;
+        };
+        std::vector<std::pair<ScBuf*, int64_t>> show;
+        int shown_synth = 0;
+        uint64_t real_at = 0;
+        const bool backlog = g_sc_last && g_sc_last + gap > t0 + period;
+        if (backlog) g_sc_skip++;
+        for (int k = 0; k < m && synth_any && done && !backlog; k++) { show.push_back({bufs[k], (int64_t)slot(t0 + (uint64_t)k * step)}); shown_synth++; }
+        if (done) { real_at = slot(t0 + (uint64_t)shown_synth * step); show.push_back({rb, (int64_t)real_at}); }
+        g_real++; g_synth += shown_synth;
+        if (done) g_sc_delay.push(real_at - t);
+        // 红魔 SF (ZTE wait_frame) 在 commit 里每 1 ms 轮询一次「游戏图层缓冲的 fence 还没 signal」, 一等 7~8 ms,
+        // 这一帧合成晚了, 下一个 vsync 因 backpressure (PrevFramePending) 整帧跳过, 那一格排的子图层缓冲
+        // 下次和后一张一起就绪被顶掉 (atrace: commit → wait×8 → onCommitNotComposited, 子图层卡在 89 帧)。
+        // 游戏图层被不透明子图层盖着, 它的缓冲晚一点交没关系: 等 GPU 做完再交, SF 拿到时 fence 已 signal
+        if (g_sc_real_wait && sl.busy) {
+            if (D->WaitForFences(D->dev, 1, &sl.fence, VK_TRUE, 50000000ull) == VK_SUCCESS) g_fb["sc_real_waited"]++;
+            else g_fb["sc_real_wait_timeout"]++;
+        }
+        g_cpu_us.push((now_ns() - t) / 1000);
+        VkSemaphore semN = S.sems[idxN];
+        // sc_noreal: 真实帧已经拷进子图层, 游戏自己的 swapchain 不送显, 图扣到下一次 present 时还回去 (不进 SF)。
+        // 游戏图层从此没有新缓冲, 红魔 SF 的 waitframe 就没有「fence 还没 signal 的游戏缓冲」可等,
+        // 不会再因为等它整帧跳过 (见上: 这是子图层卡 89 帧的原因)。不需要 root, 不改系统设置
+        if (noreal) {
+            S.held.push_back({idxN, sl.fence});
+            g_fb["noreal_withheld"]++;
+            lk.unlock();
+            sc_show(D->dev, show, S.w, S.h, S.pre, fence_fd);
+            return VK_SUCCESS;
+        }
+        lk.unlock();
+        sc_show(D->dev, show, S.w, S.h, S.pre, fence_fd);
+        VkPresentInfoKHR pn = *pi;
+        pn.waitSemaphoreCount = 1; pn.pWaitSemaphores = &semN;
+        return next(q, &pn);
+    }
+    if (g_mult > 1) {   // 多帧插: m 张合成帧 (t = k/(m+1)) 依次送, 最后送真实帧; 只带 presentID 回读, 不定时刻
+        const int m = (int)g_mult;
+        std::vector<uint32_t> idx;
+        std::vector<VkSemaphore> acqs;
+        for (int k = 0; k < m; k++) {
+            VkSemaphore& sem = k == 0 ? sl.acq : sl.acqx[k];
+            if (!sem) {
+                VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+                if (D->CreateSemaphore(D->dev, &sci, nullptr, &sem) != VK_SUCCESS) { sem = VK_NULL_HANDLE; break; }
+            }
+            uint32_t i = UINT32_MAX;
+            VkResult ar = D->AcquireNextImageKHR(D->dev, sc, (uint64_t)g_acquire_ms * 1000000ull, sem, VK_NULL_HANDLE, &i);
+            if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) { g_fb["mult_acquire_short"]++; break; }
+            if (i >= S.imgs.size() || i == idxN || !S.sems[i]) {   // 信号量已发出但图不能用: 换新信号量, 图照样送回去
+                g_fb["mult_acquire_index"]++;
+                VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+                D->DestroySemaphore(D->dev, sem, nullptr);
+                if (D->CreateSemaphore(D->dev, &sci, nullptr, &sem) != VK_SUCCESS) sem = VK_NULL_HANDLE;
+                break;
+            }
+            idx.push_back(i); acqs.push_back(sem);
+        }
+        if (idx.empty()) return bail("acquire_timeout");
+        const int got = (int)idx.size();
+        VkImage N = S.imgs[idxN];
+        D->ResetCommandBuffer(sl.cb, 0);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
+        D->BeginCommandBuffer(sl.cb, &bi);
+        const VkPipelineStageFlags TR = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        image_barrier(D, sl.cb, N, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, VK_ACCESS_TRANSFER_READ_BIT, TR, TR);
+        bool use_hist = S.hist != VK_NULL_HANDLE;
+        auto reg = registry().find(g_mode);
+        for (int k = 0; k < got; k++) {
+            VkImage L = S.imgs[idx[k]];
+            image_barrier(D, sl.cb, L, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, TR, TR);
+            bool custom = false;
+            if (reg != registry().end()) {
+                IpSynthCtx cx;
+                cx.dev = D->dev; cx.queue = q; cx.cb = sl.cb; cx.prev_gen = S.hist_gen; cx.prev = S.hist_valid ? S.hist : VK_NULL_HANDLE; cx.cur = N; cx.dst = L;
+                cx.w = S.w; cx.h = S.h; cx.fmt = S.fmt; cx.swap_usage = S.usage; cx.queue_family = family; cx.frame = frame;
+                cx.gdpa = D->gdpa; cx.t = (float)(k + 1) / (float)(got + 1); cx.sub = (uint32_t)k; cx.subs = (uint32_t)got;
+                custom = reg->second.fn(cx, reg->second.user);
+                if (!custom) g_fb["synth_declined"]++;
+            }
+            if (!custom) {
+                VkImage src = (g_mode != "dupcur" && S.hist_valid) ? S.hist : N;
+                copy_full(D, sl.cb, src, L, S.w, S.h);
+            }
+            image_barrier(D, sl.cb, L, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0, TR, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        }
+        if (use_hist) {
+            image_barrier(D, sl.cb, S.hist, S.hist_valid ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, TR, TR);
+            copy_full(D, sl.cb, N, S.hist, S.w, S.h);
+            image_barrier(D, sl.cb, S.hist, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, TR, TR);
+        }
+        image_barrier(D, sl.cb, N, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_READ_BIT, 0, TR, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        D->EndCommandBuffer(sl.cb);
+        std::vector<VkSemaphore> waits(pi->pWaitSemaphores, pi->pWaitSemaphores + pi->waitSemaphoreCount);
+        waits.insert(waits.end(), acqs.begin(), acqs.end());
+        std::vector<VkPipelineStageFlags> stages(waits.size(), TR);
+        std::vector<VkSemaphore> signals;
+        for (uint32_t i : idx) signals.push_back(S.sems[i]);
+        signals.push_back(S.sems[idxN]);
+        VkSubmitInfo sub{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        sub.waitSemaphoreCount = (uint32_t)waits.size(); sub.pWaitSemaphores = waits.data(); sub.pWaitDstStageMask = stages.data();
+        sub.commandBufferCount = 1; sub.pCommandBuffers = &sl.cb;
+        sub.signalSemaphoreCount = (uint32_t)signals.size(); sub.pSignalSemaphores = signals.data();
+        D->ResetFences(D->dev, 1, &sl.fence);
+        bool submitted = D->QueueSubmit(q, 1, &sub, sl.fence) == VK_SUCCESS;
+        if (!submitted) g_fb["submit_fail"]++;
+        else { sl.busy = true; S.hist_valid = use_hist; }
+        S.synth_count++;
+        bool timed = g_pacing && S.timing_ok;
+        const VkPresentTimesInfoGOOGLE* gt = game_times(pi);
+        std::vector<uint32_t> ids;
+        for (int k = 0; k < got; k++) {
+            ids.push_back(S.next_id++);
+            if (timed) track(S, Pending{ids.back(), K_SYNTH, frame, 0, 0, 0, S.next_seq++});
+        }
+        uint32_t idN2 = gt ? gt->pTimes[0].presentID : S.next_id++;
+        if (timed) track(S, Pending{idN2, K_REAL, frame, gt ? gt->pTimes[0].desiredPresentTime : 0, 0, t, S.next_seq++});
+        g_real++; g_synth += got;
+        if (got < m) g_fb["mult_partial"]++;
+        g_cpu_us.push((now_ns() - t) / 1000);
+        std::vector<VkSemaphore> sem_of;
+        for (uint32_t i : idx) sem_of.push_back(S.sems[i]);
+        VkSemaphore semN = S.sems[idxN];
+        lk.unlock();
+        VkResult rr = VK_SUCCESS;
+        for (int k = 0; k < got; k++) {
+            VkPresentTimeGOOGLE tm{ids[k], 0};
+            VkPresentTimesInfoGOOGLE pt{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, nullptr, 1, &tm};
+            VkPresentInfoKHR pl{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            pl.pNext = timed ? &pt : nullptr;
+            pl.waitSemaphoreCount = submitted ? 1 : 0; pl.pWaitSemaphores = &sem_of[k];
+            pl.swapchainCount = 1; pl.pSwapchains = &sc; pl.pImageIndices = &idx[k];
+            VkResult r = next(q, &pl);
+            if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) rr = r;
+        }
+        VkPresentTimeGOOGLE tmN{idN2, 0};
+        VkPresentTimesInfoGOOGLE ptN{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, pi->pNext, 1, &tmN};
+        VkPresentInfoKHR pn = *pi;
+        if (submitted) { pn.waitSemaphoreCount = 1; pn.pWaitSemaphores = &semN; }
+        if (timed && !gt) pn.pNext = &ptN;
+        VkResult rN = next(q, &pn);
+        lk.lock();
+        if (rr != VK_SUCCESS) g_fb["present_l_fail"]++;
+        if (rN != VK_SUCCESS && rN != VK_SUBOPTIMAL_KHR) g_fb["present_n_fail"]++;
+        return rN;
+    }
     // 2. 层自己 acquire 一张图
     uint32_t idxL = UINT32_MAX;
     VkResult ar = D->AcquireNextImageKHR(D->dev, sc, (uint64_t)g_acquire_ms * 1000000ull, sl.acq, VK_NULL_HANDLE, &idxL);
@@ -690,7 +1036,16 @@ VkResult ip_on_present(VkQueue q, const VkPresentInfoKHR* pi, PFN_vkQueuePresent
     g_last_half_ns = half; g_last_period_ns = period;
     bool pace = g_pacing && S.timing_ok;
     uint64_t desiredL = 0, desiredN = 0, targetL = 0, targetN = 0;
-    if (pace) {
+    const VkPresentTimesInfoGOOGLE* gt = game_times(pi);
+    const uint64_t gdes = gt ? gt->pTimes[0].desiredPresentTime : 0;
+    if (gt) g_fb["game_present_times"]++;
+    if (pace && !g_stamp) {
+        // 不定时刻: 两张都只带 presentID (desired=0), FIFO 依次占一个刷新周期; 节奏由游戏自己的帧率决定
+    } else if (pace && gdes) {   // 游戏 (Swappy) 自己定了真实帧的时刻: 不动它, 合成帧排在它前面半个游戏周期
+        desiredN = gdes; targetN = gdes + R / 2;
+        if (gdes > half + t) { desiredL = gdes - half; targetL = desiredL + R / 2; }
+        S.last_target_n = targetN;
+    } else if (pace) {
         if (S.phase_known) {
             uint64_t lead = g_lead_ns >= 0 ? (uint64_t)g_lead_ns : R;
             uint64_t from = t + lead;
@@ -702,10 +1057,9 @@ VkResult ip_on_present(VkQueue q, const VkPresentInfoKHR* pi, PFN_vkQueuePresent
             S.last_target_n = targetN;
         } else g_fb["no_phase_yet"]++;   // 还没回读到真实显示时刻: 这一对不设时间戳 (ASAP), 但带 presentID 以便回读
     }
-    uint32_t idL = S.next_id++, idN = S.next_id++;
-    S.pending.push_back(Pending{idL, K_SYNTH, frame, desiredL, targetL, 0});
-    S.pending.push_back(Pending{idN, K_REAL, frame, desiredN, targetN, t});
-    while (S.pending.size() > 512) S.pending.pop_front();
+    uint32_t idL = S.next_id++, idN = gt ? gt->pTimes[0].presentID : S.next_id++;
+    track(S, Pending{idL, K_SYNTH, frame, desiredL, targetL, 0, S.next_seq++});
+    track(S, Pending{idN, K_REAL, frame, desiredN, targetN, t, S.next_seq++});
     csv_row("present", idL, K_SYNTH, frame, t, desiredL, targetL, 0, 0, 0);
     csv_row("present", idN, K_REAL, frame, t, desiredN, targetN, 0, 0, 0);
     g_real++; g_synth++;
@@ -727,7 +1081,7 @@ VkResult ip_on_present(VkQueue q, const VkPresentInfoKHR* pi, PFN_vkQueuePresent
     const void* chain = pi->pNext;
     struct Hdr { VkStructureType sType; const void* pNext; };
     bool deep_times = false;
-    if (pace) {
+    if (pace && !gt) {   // 游戏没带时间戳: 真实帧挂我们的 (游戏带了就原样送它的)
         while (chain && reinterpret_cast<const Hdr*>(chain)->sType == VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE)
             chain = reinterpret_cast<const Hdr*>(chain)->pNext;   // 游戏自己的时间戳 (Swappy) 在链头: 跳过, 用我们的
         for (const Hdr* h = reinterpret_cast<const Hdr*>(chain); h; h = reinterpret_cast<const Hdr*>(h->pNext))
@@ -746,6 +1100,7 @@ VkResult ip_on_present(VkQueue q, const VkPresentInfoKHR* pi, PFN_vkQueuePresent
 PFN_vkVoidFunction ip_hook(const char* name) {
     if (!g_on || !name) return nullptr;
     if (!strcmp(name, "vkGetDeviceQueue")) return reinterpret_cast<PFN_vkVoidFunction>(ip_GetDeviceQueue);
+    if (!strcmp(name, "vkGetPastPresentationTimingGOOGLE")) return reinterpret_cast<PFN_vkVoidFunction>(ip_GetPastPresentationTimingGOOGLE);
     if (!strcmp(name, "vkGetDeviceQueue2")) return reinterpret_cast<PFN_vkVoidFunction>(ip_GetDeviceQueue2);
     if (!strcmp(name, "vkDestroySwapchainKHR")) return reinterpret_cast<PFN_vkVoidFunction>(ip_DestroySwapchainKHR);
     return nullptr;
@@ -787,10 +1142,13 @@ std::string ip_json() {
     j += ",\"displayed_interval_synth_to_real_ns\":" + g_disp_int_sr.json();
     j += ",\"present_margin_ns\":" + g_margin.json();
     j += ",\"real_present_to_display_ns\":" + g_lat_real.json();
+    j += ",\"sc_real_sched_delay_ns\":" + g_sc_delay.json();
+    j += ",\"sc_backlog_skips\":" + std::to_string(g_sc_skip);
     j += ",\"present_call_interval_ns\":" + g_call_int.json();
     j += ",\"layer_cpu_us\":" + g_cpu_us.json();
     j += ",\"fallbacks\":{" + fb + "}";
     j += ",\"fps_vote\":\"" + g_fps_vote_result + "\"";
+    if (sc_requested()) j += ",\"sc\":" + sc_json();
     j += ",\"swapchain\":" + swap;
     j += std::string(",\"csv\":") + (g_csv_f ? "true" : "false");
     j += "}";

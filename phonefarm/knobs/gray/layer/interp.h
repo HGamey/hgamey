@@ -12,10 +12,13 @@
 //                         bm      = 块匹配运动补偿中间帧 (interp_bm.cpp)
 //                         <其它>  = 查 ip_register_synth 登记的名字 (I5 的 GPU 着色器 / NPU 调用挂在这里);
 //                                   没登记就退回 dup 并在 marker 里记 fallbacks.unknown_mode
+//   interp_stamp        1 (缺省) = 定 desiredPresentTime; 0 = 开着扩展只回读上屏时刻, 不定时刻 (纯 FIFO 依次送)
 //   interp_pacing       1 (缺省) = 用 VK_GOOGLE_display_timing 的 desiredPresentTime 定节奏;
 //                       0 = 不设时间戳, 只靠 FIFO 连续送两张 (要求屏幕 60 Hz 才会是 30→60)
 //   interp_lead_ns      合成帧目标显示时刻至少在「现在 + 这么多」之后, 缺省 = 一个刷新周期
-//   interp_extra_images swapchain 多要几张图给层用, 缺省 2 (受 surface maxImageCount 限制)
+//   interp_mult         每个真实帧之前插几张 (1..5, 缺省 1); >1 时第 k 张取 t=k/(mult+1), 不定显示时刻 (FIFO 依次送),
+//                       给高刷屏用 (游戏 30 帧、屏幕 144 Hz → mult=4)
+//   interp_extra_images swapchain 多要几张图给层用, 缺省 mult+1 (受 surface maxImageCount 限制)
 //   interp_acquire_ms   层自己 acquire 合成图的最长等待, 缺省 4 ms; 超时这一帧只送真实帧
 //   interp_csv          1 = 每次 present 追加一行到 <files>/knobs_interp_frames.csv (缺省 1)
 //
@@ -43,10 +46,13 @@ struct IpSynthCtx {
     VkQueue queue = VK_NULL_HANDLE;       // 游戏 present 用的队列 (同一条)
     VkCommandBuffer cb = VK_NULL_HANDLE;  // 已 Begin, 由层 End + 提交
     VkImage prev = VK_NULL_HANDLE, cur = VK_NULL_HANDLE, dst = VK_NULL_HANDLE;
+    uint64_t prev_gen = 0;                // prev 每重建一次加 1 (句柄值可能被复用, 合成方式靠它判断视图要不要重建)
     uint32_t w = 0, h = 0, fmt = 0;       // VkFormat
     uint32_t swap_usage = 0;              // swapchain 图实际的 VkImageUsageFlags
     uint32_t queue_family = 0;
     uint64_t frame = 0;                   // 本层的全局 present 序号
+    float t = 0.5f;                       // 合成帧在前后两帧之间的时刻 (0..1); 同一帧插多张时依次 1/(m+1)..m/(m+1)
+    uint32_t sub = 0, subs = 1;           // 本帧的第几张 / 共几张 (合成方式可据此复用本帧已算的运动场)
     PFN_vkGetDeviceProcAddr gdpa = nullptr;
 };
 typedef bool (*IpSynthFn)(const IpSynthCtx& c, void* user);
@@ -62,6 +68,10 @@ void ip_on_device(VkInstance inst, VkPhysicalDevice phys, VkDevice dev, PFN_vkGe
                   PFN_vkGetDeviceProcAddr gdpa, PFN_rkSetDeviceLoaderData sdld, uint32_t sole_family,
                   bool ext_enabled);
 void ip_on_destroy_device(VkDevice dev);
+// debug.knobs.interp_sc_noreal=1: 子图层后端下游戏自己的 swapchain 不再送显 (图用 VK_EXT_swapchain_maintenance1 还回去)。
+// CreateDevice 前问要不要加这个扩展; 建好后告诉本模块加上没有 (要在 ip_on_device 之前)。
+bool ip_sc_noreal();
+void ip_note_release_ext(bool on);
 // 建 swapchain 前: 多要几张图、加 TRANSFER_SRC|TRANSFER_DST (+SAMPLED/STORAGE 若支持)、强制 FIFO。返回是否改了。
 bool ip_patch_swapchain_ci(VkDevice dev, VkSwapchainCreateInfoKHR* ci);
 void ip_on_swapchain(VkDevice dev, VkSwapchainKHR sc, const VkSwapchainCreateInfoKHR* used_ci, bool patched);

@@ -7,13 +7,18 @@
   native              原生: 不挂层, Game Mode 无干预
   layer               只挂透传层 (gray-layer session --mode probe), 第 2 步用
   hwc:<F>             Android Game Mode 降分辨率 F (cmd game mode custom + cmd game set --downscale F), 放大交给 HWC
-  ip:<合成方式>[:<帧率>]  挂层并开层内插帧 (debug.knobs.interp=1, interp_mode=dup/dupcur/bm, interp_fps=给窗口投的帧率)
+  ip:<合成方式>[:<帧率>[:键=值,...]]  挂层并开层内插帧 (interp_mode=dup/dupcur/bm/real, interp_fps=给窗口投的帧率,
+                      可选 pacing/stamp/acquire_ms/extra_images/lead_ns → debug.knobs.interp_<键>)
   srip:<F>:<宽>x<高>:<锐化>:<合成方式>[:<帧率>]  超分 + 插帧叠加 (第 5 步)
+  <挂层的臂>+gfrc:<三位>  自研层与 G-FRC+ 同开 (例 sr:1:2688x1216:0.8+gfrc:001)
+  gfrc:<三位>          厂商 G-FRC+ (game_gfrc_mode 本包位, 例 101 = 只超分, 111 = 超分+插帧), 对标用
   sr:<F>:<宽>x<高>[:<锐化>]  同上降分辨率 F, 再挂层并设 debug.knobs.selfsr=<宽>x<高>[:<锐化>]: 层在送显前把游戏的小图超分到 <宽>x<高>
 每臂: (devlock 下) 设好 Game Mode 与 selfsr 属性 → 冷启动进大世界 → 静置 --settle 秒 → --window 秒窗口并行采
   - SurfaceFlinger timestats: 上屏帧率 / 刷新率 / 丢帧
   - ftrace + phonefarm parse-trace: 游戏 GPU 提交 → 游戏渲染帧率 / p95 帧时
   - 截图: 锐度 (拉普拉斯方差), 与本轮第一张 native 截图的 SSIM (跨冷启动场景会有云/时辰差异, 只作参考)
+  - --pan: 窗口后录 5 秒屏、期间拖动视角, 量 HUD 区相邻帧平均差 (重影越重越大) 与画面中央的帧间差 (证明在转)
+  - --power: 窗口内停充, 每秒读电池电流×电压 = 整机功耗 (mW) 与每个看到的帧的能耗 (mJ); 整轮亮度固定为手动、不改值
   - 游戏图层送显缓冲尺寸 (HWC 源); 挂层臂另读层 marker (层加载、窗口内帧数、selfsr 实际尺寸与计数)
   不挂层的臂整臂在 tools/devlock 下跑; 挂层的臂由 gray-layer session 持设备租约, 挂层并冷启动游戏,
   onboard --enter-only --no-cold 只导航不重启 (重启会丢层), 采完 stop 会话 (会话负责摘层)。
@@ -21,32 +26,62 @@
 收尾 (含 Ctrl-C): Game Mode 恢复原模式并 reset 干预、清 debug.knobs.selfsr、screen_off_timeout 还原, 逐项回读核对。
 统计: 每对 (B - A) 配对差, 精确符号翻转检验 + bootstrap 95% 区间。
 """
-import argparse, json, os, shlex, signal, statistics, subprocess, sys, time, uuid
+import argparse, json, os, re, shlex, signal, statistics, subprocess, sys, time, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(REPO, "loop_v1", "gfrc"))
-from gfrc_ab import Dev, parse_timestats, layer_src, sharpness, signflip, boot_ci  # noqa: E402
+from gfrc_ab import Dev, parse_timestats, layer_src, sharpness, signflip, boot_ci, set_pkg_bits  # noqa: E402
 
 PKG_DEFAULT = "com.miHoYo.Yuanshen"
 DEV_TRACE = "/data/local/tmp/selfsr_ftrace_capture.sh"
+DEV_POWER = "/data/local/tmp/selfsr_power_sample.sh"
+CHG_NODE = "/sys/class/qcom-battery/charging_enabled"   # 高通停充开关; 停充后整机电流全部来自电池
+POWER_PRE = 5   # 停充后等电流稳定的秒数 (实测前 3~5 秒电流还在爬升)
 SR_PROP = "debug.knobs.selfsr"
+SR_OPTS = ("algo", "direct", "unlimit")   # → debug.knobs.selfsr_<键>; unlimit → debug.knobs.unlimit
+UNLIMIT_PROP = "debug.knobs.unlimit"
+# 截图 (2688x1216) 右上角那排固定图标: 整屏锐度被场景主导 (冷启动后角色/镜头可能不同), 这块内容各臂相同
+HUD_BOX = (1760, 10, 2600, 130)
 IP_PROPS = ("debug.knobs.interp", "debug.knobs.interp_mode", "debug.knobs.interp_fps")
+IP_TUNE = ("static", "sfovr", "sfwait", "sc_grid", "sc_real_wait", "sc_noreal", "sc_presig", "sc_name", "sc_kick_ns", "sc_gap_ns", "sc_winvote", "sc_xform", "sc_vote", "sc_pacer", "sc_margin_ns", "sc_ring", "pacing", "stamp", "acquire_ms", "extra_images", "lead_ns", "mult", "backend", "sc_dst", "panel", "framepacing",
+           "unlimit")
+FP_PROP = "vendor.perf.framepacing.enable"   # 高通 perf HAL 的游戏帧节奏; framepacing=<值> 进世界后设, 收尾写回原值   # panel 不是层属性, 见 prepare   # ip 臂第 4 段可设的 debug.knobs.interp_<键>
 
 
 def parse_kind(s):
+    if "+gfrc:" in s:   # <挂层的臂>+gfrc:<三位>  自研层 + 厂商 G-FRC+ 同时开 (G-FRC+ 开着时系统放开限帧)
+        base, bits = s.rsplit("+gfrc:", 1)
+        k = parse_kind(base)
+        if not uses_layer(k) or len(bits) != 3 or not bits.isdigit():
+            raise argparse.ArgumentTypeError(f"+gfrc 只接在挂层的臂后面, 三位数字: {s}")
+        return {**k, "gfrc": bits}
     p = s.split(":")
     if p[0] in ("native", "layer") and len(p) == 1:
         return {"kind": p[0], "downscale": None, "selfsr": None}
-    if p[0] == "ip" and len(p) in (2, 3):   # ip:<合成方式>[:<投帧率>]  层内插帧 (interp.cpp), dup/dupcur/bm
-        return {"kind": "ip", "downscale": None, "selfsr": None, "interp": p[1], "fps": p[2] if len(p) == 3 else ""}
+    if p[0] == "layer" and len(p) == 2 and p[1] == "unlimit=1":   # 透传层 + 解开红魔 libgui 进程内限帧
+        return {"kind": "layer", "downscale": None, "selfsr": None, "unlimit": True}
+    if p[0] == "gfrc" and len(p) == 2 and len(p[1]) == 3:   # gfrc:<画质档><帧率档><总开关>  厂商 G-FRC+ (对标用)
+        return {"kind": "gfrc", "downscale": None, "selfsr": None, "gfrc": p[1]}
+    if p[0] == "ip" and len(p) in (2, 3, 4):   # ip:<合成方式>[:<投帧率>[:键=值,...]]  层内插帧 (interp.cpp)
+        tune = dict(kv.split("=", 1) for kv in p[3].split(",")) if len(p) == 4 and p[3] else {}
+        if any(k not in IP_TUNE for k in tune) or ("panel" in tune and tune["panel"] not in PANEL_MODE):
+            raise argparse.ArgumentTypeError(f"ip 臂只认这些键: {IP_TUNE}")
+        return {"kind": "ip", "downscale": None, "selfsr": None, "interp": p[1], "fps": p[2] if len(p) >= 3 else "",
+                "tune": tune}
     if p[0] == "hwc" and len(p) == 2:
         return {"kind": "hwc", "downscale": float(p[1]), "selfsr": None}
-    if p[0] == "srip" and len(p) in (5, 6) and "x" in p[2]:   # srip:<F>:<宽>x<高>:<锐化>:<合成方式>[:<投帧率>]
+    if p[0] == "srip" and len(p) in (5, 6, 7) and "x" in p[2]:   # srip:<F>:<宽>x<高>:<锐化>:<合成方式>[:<投帧率>[:键=值,...]]
+        tune = dict(kv.split("=", 1) for kv in p[6].split(",")) if len(p) == 7 and p[6] else {}
+        if any(k not in IP_TUNE for k in tune):
+            raise argparse.ArgumentTypeError(f"srip 臂的插帧参数只认: {IP_TUNE}")
         return {"kind": "srip", "downscale": float(p[1]), "selfsr": f"{p[2]}:{p[3]}", "interp": p[4],
-                "fps": p[5] if len(p) == 6 else ""}
-    if p[0] == "sr" and len(p) in (3, 4) and "x" in p[2]:   # sr:<F>:<宽>x<高>[:<锐化>]
-        return {"kind": "sr", "downscale": float(p[1]), "selfsr": ":".join(p[2:])}
+                "fps": p[5] if len(p) >= 6 else "", "tune": tune}
+    if p[0] == "sr" and len(p) in (3, 4, 5) and "x" in p[2]:   # sr:<F>:<宽>x<高>[:<锐化>[:algo=cr,direct=1]]
+        opts = dict(kv.split("=", 1) for kv in p[4].split(",")) if len(p) == 5 and p[4] else {}
+        if any(k not in SR_OPTS for k in opts):
+            raise argparse.ArgumentTypeError(f"sr 臂只认这些键: {SR_OPTS}")
+        return {"kind": "sr", "downscale": float(p[1]), "selfsr": ":".join(p[2:4]), "sr_opts": opts}
     raise argparse.ArgumentTypeError(f"不认识的臂: {s}")
 
 
@@ -101,12 +136,12 @@ def ssim(png_a, png_b):
 
 def game_mode(dev, pkg, downscale, orig_mode):
     """设 Game Mode 干预; downscale=None 表示无干预。返回核对信息。"""
-    if downscale is None:
+    if downscale is None or downscale >= 1:   # >=1: 不降分辨率 (满分辨率超分只换放大)
         dev.shell(f"cmd game reset {pkg}")
         if orig_mode and orig_mode not in ("unknown", ""):
             dev.shell(f"cmd game mode {orig_mode} {pkg}")
         cfg = dev.shell(f"cmd game list-configs {pkg}")
-        return {"downscale": None, "ok": "downscale" not in cfg.lower() or "no intervention" in cfg.lower(), "configs": cfg[-300:]}
+        return {"downscale": downscale, "ok": "downscale" not in cfg.lower() or "no intervention" in cfg.lower(), "configs": cfg[-300:]}
     o1 = dev.shell(f"cmd game mode custom {pkg}")
     o2 = dev.shell(f"cmd game set --downscale {downscale} {pkg}")
     cfg = dev.shell(f"cmd game list-configs {pkg}")
@@ -118,6 +153,112 @@ def current_mode(dev, pkg):
     return t.split("current mode:")[1].split(",")[0].strip() if "current mode:" in t else "unknown"
 
 
+def timestats_layer(text, needle):
+    """timestats 里名字含 needle 的图层的 totalFrames (取帧数最多的那个) 与全局 displayOnTime。"""
+    g = {"displayOnTime": None, "layer_frames": None}
+    m = re.search(r"^displayOnTime = (\d+)", text, re.M)
+    g["displayOnTime"] = int(m.group(1)) if m else None
+    for blk in text.split("layerName = ")[1:]:
+        if needle in blk.splitlines()[0]:
+            f = re.search(r"^totalFrames = (\d+)", blk, re.M)
+            if f and int(f.group(1)) > (g["layer_frames"] or 0):
+                g["layer_frames"] = int(f.group(1))
+    return g
+
+
+PAN_HUD = (0.80, 0.70, 0.995, 0.97)   # 右下技能按钮区 (横屏比例 x0,y0,x1,y1): 不透明、固定, 转视角时背景在它周围动
+PAN_BG = (0.30, 0.25, 0.70, 0.75)     # 画面中央: 转视角时全是运动
+
+
+def pan_probe(dev, a, name, out):
+    """录 PAN_SECONDS 秒屏, 期间在右半屏横向来回拖视角; 返回 HUD 区与中央区的相邻帧平均差 (0..255) 和录到的帧率。"""
+    import numpy as np
+    W, H = map(int, re.findall(r"(\d+)x(\d+)", dev.shell("wm size"))[-1])
+    W, H = max(W, H), min(W, H)
+    remote = "/data/local/tmp/selfsr_pan.mp4"
+    rec = subprocess.Popen(["adb", "-s", a.serial, "shell", "screenrecord", "--time-limit", "5", "--bit-rate", "40000000", remote],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.8)
+    y = int(H * 0.45)
+    for i in range(4):   # 原神: 右半屏空白处拖动 = 转视角
+        x0, x1 = (int(W * 0.55), int(W * 0.85)) if i % 2 == 0 else (int(W * 0.85), int(W * 0.55))
+        dev.shell(f"input swipe {x0} {y} {x1} {y} 700")
+    rec.wait(timeout=30)
+    local = os.path.join(out, "traces", f"{name}_pan.mp4")
+    dev.adb(f"pull {remote} {shlex.quote(local)}")
+    dev.shell(f"rm -f {remote}")
+
+    def crop_diffs(box):
+        # 逐帧从 ffmpeg 管道读、边读边算相邻帧差: 整段 600 帧一次读进来转 float 要几 GB, 16 GB 的节点会被系统 SIGKILL
+        vw, vh = map(int, subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                                          "-of", "csv=p=0", local], capture_output=True, text=True).stdout.strip().split(","))
+        x, yy = int(box[0] * vw) // 2 * 2, int(box[1] * vh) // 2 * 2
+        w, h = (int(box[2] * vw) - x) // 2 * 2, (int(box[3] * vh) - yy) // 2 * 2
+        w2, h2 = w // 2, h // 2   # 再缩一半: 量的是平均差, 不需要全分辨率
+        p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", local, "-vf", f"crop={w}:{h}:{x}:{yy},scale={w2}:{h2},format=gray",
+                              "-f", "rawvideo", "-"], stdout=subprocess.PIPE)
+        n, prev, d = 0, None, []
+        while True:
+            buf = p.stdout.read(w2 * h2)
+            if len(buf) < w2 * h2:
+                break
+            cur = np.frombuffer(buf, np.uint8).astype(np.int16)
+            if prev is not None:
+                d.append(float(np.abs(cur - prev).mean()))
+            prev, n = cur, n + 1
+        p.wait()
+        return n, np.array(d)
+
+    try:
+        hf, hd = crop_diffs(PAN_HUD)
+        _, bd = crop_diffs(PAN_BG)
+        moving = bd > 1.0   # 只算画面确实在动的相邻帧 (拖动前后静止段不算)
+        dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", local],
+                                   capture_output=True, text=True).stdout.strip() or 0)
+        return {"hud_flicker": round(float(hd[moving].mean()), 3) if moving.any() else None,
+                "pan_bg_motion": round(float(bd[moving].mean()), 3) if moving.any() else None,
+                "pan_moving_frames": int(moving.sum()), "pan_rec_fps": round(hf / dur, 1) if dur else None}
+    except (ValueError, IndexError) as e:
+        return {"pan_error": repr(e)[:200]}
+
+
+def sc_layer_fps(dev, windows=6, raw_path=None):
+    """插帧子图层 (selfsr_interp) 的实际上屏帧率: SF --latency 的 actual-present 列, 每段 1 s (缓冲只存 128 帧)。
+    timestats 不收这个子图层, 只能这样量。返回 {fps, interval_p50_ms, interval_p95_ms} 或 {}。"""
+    out = dev.shell("N=$(dumpsys SurfaceFlinger --list | grep -o '[^{ ]*selfsr_interp#[0-9]*' | tail -1); [ -n \"$N\" ] || exit 0; "
+                    f"for i in $(seq {windows}); do dumpsys SurfaceFlinger --latency-clear >/dev/null; sleep 1; "
+                    "echo ===; dumpsys SurfaceFlinger --latency \"$N\"; done; echo '### mode'; "
+                    "dumpsys SurfaceFlinger | grep -iE 'activeMode|renderRate|vsyncRate|desiredMode' | head -12; "
+                    "settings get system refresh_rate_mode", timeout=windows * 4 + 30)
+    if raw_path:
+        open(raw_path, "w").write(out)
+    out = out.split("### mode")[0]
+    fps, iv = [], []
+    for blk in out.split("===")[1:]:
+        ts = sorted(int(r[1]) for r in (ln.split() for ln in blk.splitlines()) if len(r) == 3 and 0 < int(r[1]) < 9e18)
+        if len(ts) > 2:
+            fps.append((len(ts) - 1) / ((ts[-1] - ts[0]) / 1e9))
+            iv += [(b - x) / 1e6 for x, b in zip(ts, ts[1:])]
+    if not fps:
+        return {}
+    iv.sort()
+    return {"fps": round(statistics.mean(fps), 2), "interval_p50_ms": round(iv[len(iv) // 2], 2),
+            "interval_p95_ms": round(iv[int(len(iv) * 0.95)], 2)}
+
+
+# 窗口后抓 3 s SF 的 atrace (gfx), 数红魔 waitframe 的三个痕迹: commit 等 fence 没 signal 的缓冲 / 整帧跳过 / 缓冲被后一张顶掉
+SF_MARKS = {"sf_fence_unsignaled": "fence unsignaled", "sf_not_composited": "onCommitNotComposited", "sf_release_pending": "releasePendingBuffer"}
+
+
+def sf_atrace(dev, name, out, secs=3):
+    txt = dev.su(f"atrace -b 65536 -t {secs} gfx view", timeout=secs + 30) or ""
+    open(os.path.join(out, "traces", f"{name}_atrace.txt"), "w").write(txt)
+    r = {k: round(txt.count(v) / secs, 1) for k, v in SF_MARKS.items()}
+    # 等的是谁的缓冲: fence unsignaled 行前后常带图层名, 留几行样本
+    r["sf_fence_samples"] = [ln.strip()[-160:] for ln in txt.splitlines() if "fence unsignaled" in ln][:5]
+    return r
+
+
 def measure(dev, a, name, out):
     dev_trace = f"/data/local/tmp/selfsr_trace_{name}.txt"
     ts_cmd = ("dumpsys SurfaceFlinger --timestats -disable -clear >/dev/null; "
@@ -127,8 +268,27 @@ def measure(dev, a, name, out):
     tr = subprocess.Popen(f"adb -s {shlex.quote(a.serial)} shell su -c "
                           + shlex.quote(shlex.quote(f"sh {DEV_TRACE} {a.window} {dev_trace} {a.pkg}")),
                           shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    ts = parse_timestats(dev.shell(ts_cmd, timeout=a.window + 60), a.pkg)
+    pw = None
+    if a.power:   # 先停充、等电流稳定, 再开 timestats 窗口, 两者对齐
+        pw = subprocess.Popen(f"adb -s {shlex.quote(a.serial)} shell su -c "
+                              + shlex.quote(shlex.quote(f"sh {DEV_POWER} {a.window} {POWER_PRE}")),
+                              shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        time.sleep(POWER_PRE)
+    ts_text = dev.shell(ts_cmd, timeout=a.window + 60)
+    ts = parse_timestats(ts_text, a.pkg)
+    ts_sc = timestats_layer(ts_text, "selfsr_interp")   # 插帧子图层后端的图层
     tr.wait(timeout=a.window + 90)
+    power = {}
+    if pw is not None:
+        rows = [ln.split() for ln in pw.communicate(timeout=a.window + 60)[0].splitlines()]
+        rows = [[int(x) for x in r] for r in rows if len(r) == 3 and all(x.lstrip("-").isdigit() for x in r)]
+        mw = [-c * v / 1e9 for c, v, _ in rows]   # uA × uV → mW; 放电为负
+        power = {"power_mw": round(statistics.mean(mw), 1) if mw else None, "power_samples": len(mw),
+                 "power_charging_seen": any(c > 0 for c, _, _ in rows),
+                 "bat_temp_c": round(statistics.mean(t for _, _, t in rows) / 10, 1) if rows else None}
+        open(os.path.join(out, "traces", f"{name}_power.txt"), "w").write("\n".join(" ".join(map(str, r)) for r in rows) + "\n")
+    sc = sc_layer_fps(dev, raw_path=os.path.join(out, "traces", f"{name}_sclat.txt"))
+    sfa = sf_atrace(dev, name, out) if a.sf_atrace else {}
     local_trace = os.path.join(out, "traces", f"{name}.txt")
     dev.adb(f"exec-out su -c {shlex.quote('cat ' + dev_trace)} > {shlex.quote(local_trace)}")
     dev.su(f"rm -f {dev_trace}")
@@ -138,16 +298,68 @@ def measure(dev, a, name, out):
     except ValueError:
         game = {}
     fg = dev.shell("dumpsys window | grep mCurrentFocus")
-    src = layer_src(dev.shell("dumpsys SurfaceFlinger"), a.pkg)
+    sf = dev.shell("dumpsys SurfaceFlinger")
+    src = layer_src(sf, a.pkg)
+    # 游戏图层在 SF 里的帧率票 / HWC 合成方式: 插帧时上屏率被谁限住要看这里
+    keep = [ln for i, ln in enumerate(sf.splitlines()) if a.pkg[:12] in ln or "Frame Rate" in ln or "frameRate" in ln
+            or "FrameRateOverride" in ln or "refresh" in ln.lower()][:80]
+    open(os.path.join(out, "traces", f"{name}_sf.txt"), "w").write("\n".join(keep) + "\n")
     shot = os.path.join(out, "shots", f"{name}.png")
     dev.adb(f"exec-out screencap -p > {shlex.quote(shot)}")
+    pan = pan_probe(dev, a, name, out) if a.pan else {}
     span = (ts.get("displayOnTime") or a.window * 1000) / 1000
-    return {"in_game": a.pkg in fg,
+    return {**sfa, "in_game": a.pkg in fg,
             "display_fps": round(ts["layer_frames"] / span, 2) if ts.get("layer_frames") else None,
             "display_hz": ts.get("display_hz"), "missed_frames": ts.get("missedFrames"),
+            "display_fps_sc": sc.get("fps") or (round(ts_sc["layer_frames"] / ((ts_sc.get("displayOnTime") or a.window * 1000) / 1000), 2)
+                                                if ts_sc.get("layer_frames") else None),
+            "sc_interval_p95_ms": sc.get("interval_p95_ms"),
+            # 看到的画面的帧率: 子图层插帧时游戏图层被盖住, 取子图层; 否则取游戏图层
+            # (--latency 量不到时退回 timestats 里子图层的帧数, 再没有才取游戏图层)
+            "seen_fps": sc.get("fps") or (round(ts_sc["layer_frames"] / ((ts_sc.get("displayOnTime") or a.window * 1000) / 1000), 2)
+                                          if ts_sc.get("layer_frames") else None)
+                        or (round(ts["layer_frames"] / span, 2) if ts.get("layer_frames") else None),
             "game_fps": game.get("fps_mean"), "game_frame_p95_ms": game.get("frame_p95"),
             "gpu_active_ms": game.get("gpu_active_mean"),
-            "out_res": src, "sharp_full": sharpness(shot), "shot": shot}
+            "out_res": src, "sharp_full": sharpness(shot), "sharp_hud": sharpness(shot, HUD_BOX), "shot": shot, **power, **pan}
+
+
+def uptime_ns(dev):
+    """手机的 CLOCK_MONOTONIC (≈ /proc/uptime, 不含休眠), 与层 CSV 里的时刻同一个钟。"""
+    try:
+        return int(float(dev.shell("cat /proc/uptime").split()[0]) * 1e9)
+    except (ValueError, IndexError):
+        return None
+
+
+def interp_window(dev, a, name, out, t0, t1):
+    """层的 knobs_interp_frames.csv 里 [t0, t1] 内实际上屏的帧: 每秒几张真实帧 / 合成帧, 上屏间隔。"""
+    import statistics as st
+    path = f"/storage/emulated/0/Android/data/{a.pkg}/files/knobs_interp_frames.csv"
+    local = os.path.join(out, "traces", f"{name}_interp.csv")
+    dev.adb(f"exec-out su -c {shlex.quote('cat ' + path)} > {shlex.quote(local)}")
+    rows = []
+    for ln in open(local, errors="replace"):
+        f = ln.strip().split(",")
+        if len(f) >= 8 and f[0] == "timing":
+            try:
+                rows.append((int(f[7]), f[2]))
+            except ValueError:
+                pass
+    # /proc/uptime 是 BOOTTIME, 层的时刻是 CLOCK_MONOTONIC (差了累计休眠), 对不齐;
+    # 改为以 CSV 里最后一条上屏时刻为终点往前取一个测量窗口 (CSV 在测量结束后才拉, 每 64 行落一次盘)
+    if not rows:
+        return {"status": "no_rows"}
+    end = max(r[0] for r in rows)
+    span = (t1 - t0) / 1e9 if (t0 and t1 and t1 > t0) else float(a.window)
+    win = sorted(r for r in rows if end - span * 1e9 <= r[0] <= end)
+    if len(win) < 2:
+        return {"status": "no_samples", "rows": len(rows)}
+    iv = [(b[0] - a_[0]) / 1e6 for a_, b in zip(win, win[1:])]
+    return {"span_s": round(span, 2), "displayed_per_s": round(len(win) / span, 2),
+            "real_per_s": round(sum(1 for r in win if r[1] == "real") / span, 2),
+            "synth_per_s": round(sum(1 for r in win if r[1] == "synth") / span, 2),
+            "interval_p50_ms": round(st.median(iv), 2), "interval_max_ms": round(max(iv), 2)}
 
 
 def layer_absent(dev, pkg):
@@ -157,7 +369,35 @@ def layer_absent(dev, pkg):
     return (not has_so) and prop == "", {"so_present": has_so, "debug.vulkan.layers": prop}
 
 
+def enter_by_script(a, out, name, cold):
+    """--enter-script: 给 onboard 认不出「已在游戏里」的游戏用的固定进门脚本。
+    步骤用 ; 分隔: s:<秒> 等待, t:<x>,<y> 点屏幕 (横屏下的比例坐标)。cold 时先冷启动游戏。"""
+    dev = Dev(a.serial)
+    log = []
+    if cold:
+        dev.shell(f"am force-stop {a.pkg}")
+        dev.shell(f"monkey -p {a.pkg} -c android.intent.category.LAUNCHER 1")
+    for step in a.enter_script.split(";"):
+        op, _, arg = step.strip().partition(":")
+        if op == "s":
+            time.sleep(float(arg))
+        elif op == "t":
+            fx, fy = (float(v) for v in arg.split(","))
+            m = re.search(r" cur=(\d+)x(\d+)", dev.shell("dumpsys window displays | grep -m1 ' cur='"))
+            w, h = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+            if not w:
+                return 1, "读不到屏幕尺寸"
+            dev.shell(f"input tap {int(fx * w)} {int(fy * h)}")
+        log.append(step)
+    fg = dev.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity|mResumedActivity'")
+    os.makedirs(os.path.join(out, "onboard"), exist_ok=True)
+    json.dump({"steps": log, "foreground": fg.strip()}, open(os.path.join(out, "onboard", f"{name}.json"), "w"), ensure_ascii=False)
+    return (0, "") if a.pkg in fg else (1, f"脚本走完但前台不是 {a.pkg}: {fg.strip()[:200]}")
+
+
 def onboard(a, out, name, cold):
+    if getattr(a, "enter_script", None):
+        return enter_by_script(a, out, name, cold)
     args = [a.phonefarm, "onboard", "--package", a.pkg, "--serial", a.serial, "--enter-only", "--no-guest",
             "--out", os.path.join(out, "onboard", name)]
     if not cold:
@@ -167,15 +407,92 @@ def onboard(a, out, name, cold):
     return r.returncode, r.stderr[-600:]
 
 
+PANEL_KEYS = ("refresh_rate_mode",)
+# 红魔 system refresh_rate_mode: 1/2/3/4 = 60/90/120/144 Hz, 0 = 自动。2026-10-24 panel_probe.sh 实测原神在前台时
+# 设 4 屏幕跑 144.5 Hz; AOSP 的 min/peak_refresh_rate 设 144 无效 (仍 60 Hz)。
+PANEL_MODE = {"60": 1, "90": 2, "120": 3, "144": 4}
+PANEL_ORIG = {"path": None}   # <输出目录>/panel_orig.json: 开跑前的原值 (run 写, prepare/restore 读)
+
+
+# sfovr=<Hz>: 进世界后用 SF 后门 (事务 1039) 给游戏 uid 下帧率覆盖, 优先于按图层投票算出的覆盖;
+# 红魔上游戏主图层投 60 时, SF 的 isVsyncValid 按 60 放行同 uid 的子图层事务。传 0 删除覆盖。
+SFOVR_UID = {"uid": None}
+# sfwait=off: 进世界后关红魔 SF 的 waitframe (dumpsys SurfaceFlinger --fpsControl_waitframe_off)。它在 commit 里每 1 ms
+# 轮询一次游戏图层缓冲的 fence, 一等 7~8 ms, 下一个 vsync 因 backpressure 整帧跳过, 子图层缓冲两张撞车被顶掉
+SFWAIT_OFF = {"on": False}
+
+
+def set_sfovr(dev, uid, hz):
+    dev.su(f"service call SurfaceFlinger 1039 i32 {int(uid)} f {float(hz)}")
+
+
+# debug.* 属性用 shell 身份写: 荣耀的 su (u:r:kernel) 被 init 拒写 debug.*, shell 域在所有机器上都能写。
+def restore_panel(dev):
+    # 收尾可能在另一个进程 (_locked), 不知道下过哪个 uid: 按 SF 里现有的 Backdoor 条目逐个删
+    dump = dev.su("dumpsys SurfaceFlinger | grep -A8 '^FrameRateOverrides'")
+    back = dump.split("Backdoor=", 1)[1] if "Backdoor=" in dump else ""
+    for uid in re.findall(r"\{(\d+), [0-9.]+ Hz\}", back.split("\n\n", 1)[0]):
+        set_sfovr(dev, uid, 0)
+    SFOVR_UID["uid"] = None
+    # sfwait=off 关掉的 ZTE waitframe 写回开 (红魔出厂是开的: atrace 里 commit 每 1 ms 轮询游戏缓冲的 fence)
+    # 收尾可能在另一个进程, 不知道关没关过: ZTE 机器上一律写回开 (别的机器没有这个开关, 不发)
+    if SFWAIT_OFF["on"] or dev.prop("ro.vendor.feature.zte_feature_ifas") == "true":
+        dev.su("dumpsys SurfaceFlinger --fpsControl_waitframe_on >/dev/null")
+        SFWAIT_OFF["on"] = False
+    try:
+        orig = json.load(open(PANEL_ORIG["path"]))
+    except (OSError, ValueError, TypeError):
+        return
+    for key in PANEL_KEYS:
+        v = orig.get(key)
+        dev.shell(f"settings delete system {key}" if v in (None, "null") else f"settings put system {key} {v}")
+    if orig.get(FP_PROP) not in (None, "") and dev.prop(FP_PROP) != orig[FP_PROP]:
+        dev.su(f"setprop {FP_PROP} {shlex.quote(orig[FP_PROP])}")
+
+
+def gfrc_after_enter(dev, a, k):
+    """进世界后写本包 G-FRC+ 位并回读厂商属性核对。游戏助手会记住上次开过 G-FRC+, 启动时自己再打开
+    (全局设置只是镜像, 启动前写 000 管不住), 所以每一臂都在进世界后明确写一次: G-FRC+ 臂写目标位, 其它臂写 000。
+    返回 (属性, 错误或 None)。本机没有 G-FRC+ (属性不存在) 时什么都不做。"""
+    if dev.prop("vendor.gpp.frc.enable") in ("", None):
+        return {}, None
+    bits = k.get("gfrc") or "000"
+    cur = dev.shell("settings get global game_gfrc_mode").strip()
+    if cur in ("", "null"):
+        return {}, None
+    dev.shell(f"settings put global game_gfrc_mode {shlex.quote(set_pkg_bits(cur, a.pkg, bits))}")
+    time.sleep(8)
+    props = {p: dev.prop(f"vendor.gpp.{p}") for p in ("gfrc.interp.rate", "gfrc.upscale.ratio", "frc.enable")}
+    want_up = bits[2] == "1" and bits[0] != "0"
+    want_ip = bits[2] == "1" and bits[1] != "0"
+    if ((props["gfrc.upscale.ratio"] not in ("", "0")) != want_up) or ((props["gfrc.interp.rate"] not in ("", "0")) != want_ip):
+        return props, f"G-FRC+ 没按 {bits} 生效: {props}"
+    return props, None
+
+
 def prepare(a, k, orig_mode):
     """在设备锁下调用: Game Mode 与 selfsr 属性。"""
     dev = Dev(a.serial)
     dev.shell(f"am force-stop {a.pkg}")
     gm = game_mode(dev, a.pkg, k["downscale"], orig_mode)
-    dev.su(f"setprop {SR_PROP} {shlex.quote(k['selfsr'] or '')}")
+    dev.shell(f"setprop {SR_PROP} {shlex.quote(k['selfsr'] or '')}")
+    # 厂商 G-FRC+: 只改 settings global game_gfrc_mode 里本包那一项; 收尾写回开跑前原值 (orig.json)
+    cur = dev.shell("settings get global game_gfrc_mode").strip()
+    if cur not in ("", "null"):
+        # 先一律关; G-FRC+ 要在进世界之后再开才生效 (见 arm_plain)
+        dev.shell(f"settings put global game_gfrc_mode {shlex.quote(set_pkg_bits(cur, a.pkg, '000'))}")
+    so = k.get("sr_opts") or {}
+    dev.shell("; ".join(f"setprop debug.knobs.selfsr_{o} {shlex.quote(so.get(o, ''))}" for o in SR_OPTS if o != "unlimit"))
+    unl = k.get("unlimit") or so.get("unlimit") == "1" or (k.get("tune") or {}).get("unlimit") == "1"
+    dev.shell(f"setprop {UNLIMIT_PROP} {'1' if unl else shlex.quote('')}")
     mode = k.get("interp")
-    dev.su(f"setprop {IP_PROPS[0]} {'1' if mode else shlex.quote('')}; setprop {IP_PROPS[1]} {shlex.quote(mode or '')}; "
+    dev.shell(f"setprop {IP_PROPS[0]} {'1' if mode else shlex.quote('')}; setprop {IP_PROPS[1]} {shlex.quote(mode or '')}; "
            f"setprop {IP_PROPS[2]} {shlex.quote(k.get('fps') or '')}")
+    tune = k.get("tune") or {}
+    dev.shell("; ".join(f"setprop debug.knobs.interp_{t} {shlex.quote(str(tune.get(t, {'static': '0', 'sc_name': 'none'}.get(t, ''))))}" for t in IP_TUNE if t not in ("panel", "framepacing", "unlimit", "sfovr", "sfwait")))
+    # panel=<Hz>: 屏幕刷新率 (红魔 refresh_rate_mode), 收尾 (restore) 按开跑前记下的原值写回
+    # 刷新率在进世界之后才设 (arm_layer): 原神启动时游戏助手会把它压回 60 Hz
+    restore_panel(dev)
     return {"game_mode": gm, "selfsr_prop": dev.prop(SR_PROP), "interp_props": [dev.prop(p) for p in IP_PROPS]}
 
 
@@ -186,6 +503,10 @@ def arm_plain(a, out, name, k, orig_mode):
     code, err = onboard(a, out, name, cold=True)
     if code != 0:
         rec["error"] = f"onboard: {err}"
+        return rec
+    rec["gfrc_props"], err = gfrc_after_enter(dev, a, k)
+    if err:
+        rec["error"] = err
         return rec
     time.sleep(a.settle)
     rec.update(measure(dev, a, name, out))
@@ -207,6 +528,8 @@ def arm_layer(a, out, name, k, note, locked):
            "--out", sdir, "--max-seconds", str(a.session_seconds)]
     if a.so:
         cmd += ["--so", a.so]
+    if a.keep_layer_prop:
+        cmd += ["--keep-prop"]
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
     st = None
     try:
@@ -226,6 +549,41 @@ def arm_layer(a, out, name, k, note, locked):
         if code != 0:
             rec["error"] = f"onboard --no-cold: {err}"
             return rec
+        rec["gfrc_props"], err = gfrc_after_enter(dev, a, k)
+        if err:
+            rec["error"] = err
+            return rec
+        panel = (k.get("tune") or {}).get("panel")
+        if panel:   # 进世界后再设刷新率 (红魔 refresh_rate_mode), 回读 SF 刷新周期确认
+            want = str(PANEL_MODE[str(panel)])
+            if dev.shell("settings get system refresh_rate_mode").strip() == want:
+                # 值没变 settings 不发变更通知, 屏幕停在游戏自己要的刷新率 (残留原值时真机 60 Hz): 先写 0 再写目标
+                dev.shell("settings put system refresh_rate_mode 0")
+                time.sleep(1)
+            dev.shell(f"settings put system refresh_rate_mode {want}")
+            time.sleep(4)
+            per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
+            rec["panel_period"] = per.strip()
+            m = re.search(r"\(([0-9.]+) fps\)", per)
+            if not m or abs(float(m.group(1)) - float(panel)) > 3:
+                rec["error"] = f"屏幕没切到 {panel} Hz: {per.strip()}"
+                return rec
+        fpv = (k.get("tune") or {}).get("framepacing")
+        if fpv is not None:   # 进世界后设高通帧节奏开关, 回读核对
+            dev.su(f"setprop {FP_PROP} {shlex.quote(str(fpv))}")
+            rec["framepacing_now"] = dev.prop(FP_PROP)
+        ovr = (k.get("tune") or {}).get("sfovr")
+        if ovr:
+            m = re.search(r"uid:(\d+)", dev.shell(f"pm list packages -U {a.pkg}"))
+            if not m:
+                rec["error"] = "sfovr: 读不到游戏 uid"
+                return rec
+            SFOVR_UID["uid"] = int(m.group(1))
+            set_sfovr(dev, SFOVR_UID["uid"], ovr)
+            rec["sfovr"] = dev.su("dumpsys SurfaceFlinger | grep -A6 '^FrameRateOverrides'").strip()
+        if (k.get("tune") or {}).get("sfwait") == "off":
+            SFWAIT_OFF["on"] = True
+            rec["sfwait"] = dev.su("dumpsys SurfaceFlinger --fpsControl_waitframe_off").strip()[-200:]
         time.sleep(a.settle)
         code, s = pf_json(a.phonefarm, "gray-layer", "session-status", "--out", sdir, "--json")
         if proc.poll() is not None or s.get("phase") != "ready":
@@ -239,8 +597,20 @@ def arm_layer(a, out, name, k, note, locked):
             except Exception:
                 return {}
         m0 = marker()
+        t0 = uptime_ns(dev)
         rec.update(measure(dev, a, name, out))
+        t1 = uptime_ns(dev)
+        if panel:   # 窗口结束再回读一次: 系统可能在窗口中途把刷新率压回去 (真机: 开始 120 Hz, 窗口内降到 60, 子图层只上屏 60)
+            per = dev.shell("dumpsys SurfaceFlinger | grep -m1 mPeriod")
+            rec["panel_period_end"] = per.strip()
+            m = re.search(r"\(([0-9.]+) fps\)", per)
+            if not m or abs(float(m.group(1)) - float(panel)) > 3 or rec.get("display_hz") not in (None, int(panel)):
+                rec["error"] = f"测量窗口内屏幕没保持 {panel} Hz: 结束时 {per.strip()}, timestats {rec.get('display_hz')} Hz"
         m1 = marker()
+        if k["kind"] in ("ip", "srip"):   # 窗口内层回读的实际上屏 (会话累计的环形统计混着加载期, 不可用)
+            rec["interp_window"] = interp_window(dev, a, name, out, t0, t1)
+            iw = rec["interp_window"]
+            rec["displayed_per_s"] = iw.get("displayed_per_s")
         rec["layer_loaded"] = bool(m0.get("layer_loaded") and m1.get("layer_loaded"))
         f0 = (m0.get("readonly_stats") or {}).get("frames")
         f1 = (m1.get("readonly_stats") or {}).get("frames")
@@ -250,14 +620,19 @@ def arm_layer(a, out, name, k, note, locked):
             rec["selfsr"] = s1
             up = (s1.get("upscaled") or 0) - (s0.get("upscaled") or 0)
             rec["selfsr_upscaled_in_window"] = up
-            if up <= 0:
+            # 层的 marker 每 300 帧落一次盘, 游戏帧率低时窗口内可能一次没落: 判「在超分」看累计次数
+            if (s1.get("upscaled") or 0) <= 0:
                 rec["error"] = f"层没在超分 (selfsr={s1})"
+        rec["unlimit"] = m1.get("unlimit")
         if k["kind"] in ("ip", "srip"):
             ipj = m1.get("interp") or {}
             rec["interp"] = ipj
             lat = ipj.get("real_present_to_display_ns") or {}
             # 真实帧 present→上屏 (整个会话累计); 插帧带来的延迟 = 与 ip:real 对照臂之差
             rec["display_latency_p50_ms"] = round(lat["p50"] / 1e6, 3) if lat.get("p50") else None
+            sd = ipj.get("sc_real_sched_delay_ns") or {}
+            # 子图层后端: 真实帧被排到「present 调用之后多久」上屏 (提前量 + 合成帧占的半个周期), 是插帧加的延迟的下限
+            rec["sc_added_delay_p50_ms"] = round(sd["p50"] / 1e6, 2) if sd.get("p50") else None
         if not rec["layer_loaded"]:
             rec["error"] = "层没加载 (marker layer_loaded 不为真)"
     finally:
@@ -288,9 +663,18 @@ def main():
     ap.add_argument("--b", type=parse_kind, default=parse_kind("layer"))
     ap.add_argument("--rounds", type=int, default=6)
     ap.add_argument("--so", default=None, help="层 .so (挂层臂); 缺省用 gray-layer session 自己的")
+    ap.add_argument("--enter-script", default=None,
+                    help="onboard 认不出进了游戏时用固定脚本进门: 's:<秒>;t:<x>,<y>;…' (横屏比例坐标), 冷启动由脚本自己做")
+    ap.add_argument("--keep-layer-prop", action="store_true",
+                    help="整个会话保留 debug.vulkan.layers (Unity 先建一个探测用 VkInstance、再建真正的那种游戏需要; 原神不需要)")
     ap.add_argument("--settle", type=float, default=20)
     ap.add_argument("--window", type=int, default=10)
     ap.add_argument("--session-seconds", type=int, default=1200)
+    ap.add_argument("--cool-max", type=float, default=0, help="每臂开跑前电池温度要降到这个 °C 以下 (0 = 不等), 最多等 15 分钟")
+    ap.add_argument("--fan", action="store_true", help="整轮开机身风扇最高档 (红魔 /sys/kernel/fan), 收尾写回原值; 没有该节点的机器跳过")
+    ap.add_argument("--pan", action="store_true", help="窗口后录屏 + 拖视角, 量 HUD 重影 (原神右下技能区)")
+    ap.add_argument("--sf-atrace", action="store_true", help="窗口后抓 3 s SF atrace, 每秒数 waitframe 等 fence / 整帧跳过 / 缓冲被顶掉 (要 root)")
+    ap.add_argument("--power", action="store_true", help="测量窗口内停充采整机功耗 (高通机 + root, 见 loop_v1/tools/power_sample.sh)")
     ap.add_argument("--phonefarm", default=os.environ.get("PHONEFARM_BIN") or os.path.join(REPO, "phonefarm"))
     # _locked 内部用
     ap.add_argument("--what", default=None)
@@ -299,6 +683,7 @@ def main():
     ap.add_argument("--orig-mode", default="standard")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
+    PANEL_ORIG["path"] = os.path.join(out, "panel_orig.json")
     for d in ("shots", "traces", "sessions", "onboard"):
         os.makedirs(os.path.join(out, d), exist_ok=True)
 
@@ -314,9 +699,21 @@ def main():
             dev = Dev(a.serial)
             dev.shell(f"am force-stop {a.pkg}")
             gm = game_mode(dev, a.pkg, None, a.orig_mode)
-            dev.su(f"setprop {SR_PROP} ''")
-            dev.su("; ".join(f"setprop {p} ''" for p in IP_PROPS))
+            dev.shell(f"setprop {SR_PROP} ''")
+            dev.shell("; ".join(f"setprop debug.knobs.selfsr_{o} ''" for o in SR_OPTS if o != "unlimit"))
+            dev.shell(f"setprop {UNLIMIT_PROP} ''")
+            try:
+                og = json.load(open(os.path.join(out, "orig.json"))).get("game_gfrc_mode")
+            except (OSError, ValueError):
+                og = None
+            if og not in (None, "", "null"):
+                dev.shell(f"settings put global game_gfrc_mode {shlex.quote(og)}")
+            dev.shell("; ".join(f"setprop {p} ''" for p in IP_PROPS))
+            dev.shell("; ".join(f"setprop debug.knobs.interp_{t} ''" for t in IP_TUNE if t not in ("panel", "framepacing", "unlimit", "sfovr", "sfwait")))
+            restore_panel(dev)
+            dev.su(f"[ -w {CHG_NODE} ] && echo 1 > {CHG_NODE}")   # 功耗采样被打断时也要恢复充电
             rec = {"game_mode": gm, "mode_now": current_mode(dev, a.pkg), "selfsr_prop": dev.prop(SR_PROP),
+                   "game_gfrc_mode": dev.shell("settings get global game_gfrc_mode").strip(),
                    "interp_props": [dev.prop(p) for p in IP_PROPS]}
         print("ARM_JSON " + json.dumps(rec, ensure_ascii=False))
         return 0
@@ -334,10 +731,17 @@ def main():
     kb = raw[raw.index("--b") + 1] if "--b" in raw else "layer"
 
     def locked(what, name, k_str):
-        cmd = [os.path.join(REPO, "tools", "devlock"), "run", f"selfsr-{what}-{name}", "--", sys.executable, "-I",
+        # 标签带序列号「<标签>@<序列号>」: 看板与远程调试据此只把这一台当作测量中 (harness-ops 的约定)
+        cmd = [os.path.join(REPO, "tools", "devlock"), "run", f"selfsr-{what}-{name}@{a.serial}", "--", sys.executable, "-I",
                os.path.abspath(__file__), "_locked", "--what", what, "--name", name, "--kind", k_str,
                "--orig-mode", orig_mode, "--serial", a.serial, "--pkg", a.pkg, "--out", out,
                "--settle", str(a.settle), "--window", str(a.window), "--phonefarm", a.phonefarm]
+        if a.power:
+            cmd += ["--power"]
+        if a.pan:
+            cmd += ["--pan"]
+        if a.enter_script:
+            cmd += ["--enter-script", a.enter_script]
         r = None
         for _ in range(90):   # devlock run 轮不到时立即返回 1 (不等), 有界重试
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
@@ -357,13 +761,44 @@ def main():
     orig_cfg = dev.shell(f"cmd game list-configs {a.pkg}")
     orig_sr = dev.prop(SR_PROP)
     orig_timeout = dev.shell("settings get system screen_off_timeout").strip()
+    json.dump({**{key: dev.shell(f"settings get system {key}").strip() for key in PANEL_KEYS}, FP_PROP: dev.prop(FP_PROP)},
+              open(PANEL_ORIG["path"], "w"))
     json.dump({"game_mode": orig_mode, "game_configs": orig_cfg, "selfsr_prop": orig_sr,
+               "game_gfrc_mode": dev.shell("settings get global game_gfrc_mode").strip(),
                "screen_off_timeout": orig_timeout}, open(os.path.join(out, "orig.json"), "w"), ensure_ascii=False)
     if "no intervention" not in orig_cfg.lower() and "downscale" in orig_cfg.lower():
         note(f"开跑前本包已有 Game Mode 干预, 拒绝开始 (不覆盖别人的设置): {orig_cfg[-200:]}")
         return 2
+    # 机身风扇: 红魔 /sys/kernel/fan (enable + 档位 1..5); 荣耀 hn_thermal/fan (目标转速, 0 = 关, 最高 fan_max_rpm)
+    FAN = "/sys/kernel/fan"
+    HFAN = "/sys/devices/virtual/hn_thermal/fan"
+    fan_orig = None   # ("redmagic", enable, level) | ("honor", target_rpm)
+    if a.fan:
+        fo = dev.su(f"cat {FAN}/fan_enable {FAN}/fan_speed_level 2>/dev/null").split()
+        ho = dev.su(f"cat {HFAN}/fan_target_rpm {HFAN}/fan_max_rpm 2>/dev/null").split()
+        if len(fo) == 2:
+            fan_orig = ("redmagic", fo[0], fo[1])
+            dev.su(f"echo 1 > {FAN}/fan_enable; echo 5 > {FAN}/fan_speed_level")
+            note(f"风扇 (红魔): 原值 enable={fo[0]} level={fo[1]}, 本轮开到 1/5")
+        elif len(ho) == 2:
+            fan_orig = ("honor", ho[0])
+            dev.su(f"echo {ho[1]} > {HFAN}/fan_target_rpm")
+            note(f"风扇 (荣耀): 原目标转速 {ho[0]}, 本轮 {ho[1]}")
+        else:
+            note("风扇: 本机没有已知的风扇节点, 跳过")
     dev.shell("settings put system screen_off_timeout 1800000")
     dev.adb(f"push {shlex.quote(os.path.join(REPO, 'loop_v1/tools/ftrace_capture.sh'))} {DEV_TRACE}", check=True)
+    bright_orig = None
+    if a.power:
+        if dev.su(f"[ -w {CHG_NODE} ] && echo yes").strip() != "yes":
+            note(f"--power: 这台机器没有可写的 {CHG_NODE}, 量不了整机功耗")
+            return 2
+        dev.adb(f"push {shlex.quote(os.path.join(REPO, 'loop_v1/tools/power_sample.sh'))} {DEV_POWER}", check=True)
+        # 自动亮度会随环境光变, 两臂功耗就不可比: 整轮固定为手动, 亮度值不动
+        bright_orig = (dev.shell("settings get system screen_brightness_mode").strip(),
+                       dev.shell("settings get system screen_brightness").strip())
+        dev.shell("settings put system screen_brightness_mode 0")
+        note(f"功耗: 窗口内停充采样; 亮度固定手动 {bright_orig[1]} (原模式 {bright_orig[0]})")
     stop = {"flag": False}
     signal.signal(signal.SIGINT, lambda *_: stop.update(flag=True))
     signal.signal(signal.SIGTERM, lambda *_: stop.update(flag=True))
@@ -381,12 +816,32 @@ def main():
                 break
             k, k_str = (a.a, ka) if arm == "A" else (a.b, kb)
             name = f"{arm}{pair + 1}"
-            dev.shell("input keyevent KEYCODE_WAKEUP")
+            cool_wait = 0
+            if a.cool_max > 0:   # 等电池降温 (过热时系统高温保护会弹窗挡前台、限制应用运行)
+                dev.shell(f"am force-stop {a.pkg}; input keyevent KEYCODE_SLEEP")
+                for _ in range(90):
+                    try:
+                        t_c = int(re.search(r"temperature: (\d+)", dev.shell("dumpsys battery")).group(1)) / 10
+                    except (AttributeError, ValueError):
+                        break
+                    if t_c <= a.cool_max:
+                        break
+                    time.sleep(10)
+                    cool_wait += 10
+                if cool_wait:
+                    note(f"{name}: 等降温 {cool_wait}s (电池 ≤ {a.cool_max}°C)")
+            dev.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard")   # 无密码锁屏的机器 (荣耀) 也要解锁
             if uses_layer(k):
                 rec = arm_layer(a, out, name, k, note, lambda w, n, _k: locked(w, n, k_str))
             else:
                 rec = locked("plain", name, k_str)
-            rec = {"arm": name, "side": arm, "kind": k_str, "pair": pair + 1, "seq": seq + 1, **rec, "t": time.time()}
+            rec = {"arm": name, "side": arm, "kind": k_str, "pair": pair + 1, "seq": seq + 1, **rec, "cool_wait_s": cool_wait,
+                   "t": time.time()}
+            if a.power and not rec.get("error"):
+                if rec.get("power_charging_seen"):
+                    rec["error"] = "功耗: 窗口内电池在充电 (停充没生效)"
+                elif not rec.get("power_samples"):
+                    rec["error"] = "功耗: 没采到样本"
             if rec.get("shot") and os.path.exists(rec["shot"]):
                 if k["kind"] == "native" and ref_shot is None and not rec.get("error"):
                     ref_shot = rec["shot"]
@@ -398,14 +853,27 @@ def main():
             else:
                 note(f"{name} ({k_str}): 显示 {rec.get('display_fps')} fps @{rec.get('display_hz')}Hz 游戏 {rec.get('game_fps')} fps "
                      f"p95 {rec.get('game_frame_p95_ms')} ms 锐度 {rec.get('sharp_full', 0):.1f} 输出 {rec.get('out_res')}"
+                     + (f" 功耗 {rec.get('power_mw')} mW" if rec.get('power_mw') is not None else "")
                      + (f" 层帧数 {rec.get('layer_frames_in_window')}" if uses_layer(k) else "")
+                     + (f" 窗口上屏 {rec.get('interp_window')}" if rec.get('interp_window') else "")
                      + (f" 超分 {rec.get('selfsr_upscaled_in_window')} 次 {(rec.get('selfsr') or {}).get('game_extent')}→{(rec.get('selfsr') or {}).get('swap_extent')}" if k['kind'] in ('sr', 'srip') else ""))
             if uses_layer(k) and not rec.get("layer_removed", False):
                 note(f"{name}: 层没摘干净, 中止整轮 (先人工核对再继续)")
                 break
     finally:
         r = locked("restore", "end", "native")
+        if fan_orig and fan_orig[0] == "redmagic":
+            dev.su(f"echo {fan_orig[1]} > {FAN}/fan_enable; echo {fan_orig[2]} > {FAN}/fan_speed_level")
+            r["fan_restored"] = dev.su(f"cat {FAN}/fan_enable {FAN}/fan_speed_level").split()
+        elif fan_orig and fan_orig[0] == "honor":
+            dev.su(f"echo {fan_orig[1]} > {HFAN}/fan_target_rpm")
+            r["fan_restored"] = dev.su(f"cat {HFAN}/fan_target_rpm").split()
         dev.shell(f"settings put system screen_off_timeout {orig_timeout}")
+        if a.power:
+            dev.su(f"echo 1 > {CHG_NODE}")
+            r["charging_enabled"] = dev.su(f"cat {CHG_NODE}").strip()
+            if bright_orig and bright_orig[0] in ("0", "1"):
+                dev.shell(f"settings put system screen_brightness_mode {bright_orig[0]}")
         ok, info = layer_absent(dev, a.pkg)
         json.dump({**r, "layer_absent": ok, "layer_info": info}, open(os.path.join(out, "restore.json"), "w"), ensure_ascii=False)
         note(f"收尾核对: Game Mode {r.get('mode_now')} (原 {orig_mode}), selfsr 属性 '{r.get('selfsr_prop')}', "
@@ -414,8 +882,10 @@ def main():
     good = [r for r in arms if not r.get("error") and r.get("in_game")
             and (not uses_layer(parse_kind(r["kind"])) or (r.get("layer_loaded") and r.get("layer_removed")))]
     pairs = sorted({r["pair"] for r in good if sum(1 for x in good if x["pair"] == r["pair"]) == 2})
-    metrics = ["display_fps", "game_fps", "game_frame_p95_ms", "gpu_active_ms", "sharp_full", "ssim_vs_native_ref", "missed_frames",
-               "display_latency_p50_ms"]
+    metrics = ["seen_fps", "display_fps", "display_fps_sc", "sc_added_delay_p50_ms", "sc_interval_p95_ms", "game_fps", "game_frame_p95_ms", "gpu_active_ms", "sharp_full", "sharp_hud", "ssim_vs_native_ref", "missed_frames",
+               "display_latency_p50_ms", "displayed_per_s", "power_mw", "mj_per_seen_frame", "bat_temp_c", "hud_flicker", "pan_bg_motion", "pan_rec_fps"]
+    for r in good:   # 每个看到的帧的能耗: 插帧把帧率翻倍时, 这个比总功耗更能说明效率
+        r["mj_per_seen_frame"] = round(r["power_mw"] / r["seen_fps"], 3) if r.get("power_mw") and r.get("seen_fps") else None
     res = {}
     for m in metrics:
         av = [next(x.get(m) for x in good if x["pair"] == p and x["side"] == "A") for p in pairs]
@@ -433,10 +903,14 @@ def main():
               "out_res": {side: sorted({tuple(r["out_res"]) for r in good if r["side"] == side and r.get("out_res")}) for side in "AB"},
               "metrics": res, "min_p_possible": 2 / 2 ** len(pairs) if pairs else None}
     json.dump(report, open(os.path.join(out, "report.json"), "w"), ensure_ascii=False, indent=1)
-    names = {"display_fps": "上屏帧率", "game_fps": "游戏渲染帧率 (GPU 提交)", "game_frame_p95_ms": "游戏渲染 p95 帧时 (ms)",
+    names = {"seen_fps": "实际上屏帧率 (看到的画面: 有子图层取子图层)", "display_fps": "游戏图层上屏帧率", "display_fps_sc": "子图层上屏帧率 (插帧 sc 后端)", "sc_added_delay_p50_ms": "插帧给真实帧加的排队延迟 p50 (ms)", "sc_interval_p95_ms": "子图层上屏间隔 p95 (ms)", "game_fps": "游戏渲染帧率 (GPU 提交)", "game_frame_p95_ms": "游戏渲染 p95 帧时 (ms)",
              "gpu_active_ms": "每帧 GPU 忙碌 (ms, 均值)",
              "display_latency_p50_ms": "真实帧 present→上屏 p50 (ms)",
-             "sharp_full": "锐度 (拉普拉斯方差)", "ssim_vs_native_ref": "与第一张原生截图的 SSIM", "missed_frames": "SF 丢帧 / 窗口"}
+             "displayed_per_s": "层回读: 窗口内每秒实际上屏 (真实+合成)",
+             "sharp_full": "锐度 (拉普拉斯方差)", "sharp_hud": "右上角固定图标区锐度", "ssim_vs_native_ref": "与第一张原生截图的 SSIM", "missed_frames": "SF 丢帧 / 窗口",
+             "power_mw": "整机功耗 (mW, 停充电池放电)", "mj_per_seen_frame": "每个看到的帧的能耗 (mJ)", "bat_temp_c": "窗口内电池温度 (°C)",
+             "hud_flicker": "转视角时 HUD 区相邻帧平均差 (越小重影越轻)", "pan_bg_motion": "转视角时画面中央相邻帧平均差 (运动量)",
+             "pan_rec_fps": "录屏帧率"}
     md = [f"# {ka} (A) vs {kb} (B): {a.pkg}", "",
           f"每臂冷启动进大世界, 有效 {len(pairs)} 对, 精确符号翻转检验 (最小可能 p = {report['min_p_possible']})。"
           f"游戏内设置未改。作废臂: {report['dropped_arms'] or '无'}。送显缓冲: {report['out_res']}", "",

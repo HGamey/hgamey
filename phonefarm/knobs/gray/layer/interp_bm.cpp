@@ -11,7 +11,9 @@
 #include "interp.h"
 
 #include <android/log.h>
+#include <sys/system_properties.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -48,11 +50,14 @@ struct Stage {
 
 struct Res {
     bool tried = false, ok = false, zeroed = false;
+    float st_thr = 32.f / 255.f;   // 静止保护阈值 (0..1); debug.knobs.interp_static=<0..255 色阶>, 空 = 默认 32 (第 11 组定的), 0 = 关; 负数 = 比较模式, 绝对值是余量
+    uint64_t flow_frame = UINT64_MAX;   // 运动场是哪一帧算的 (同一帧插多张时只算一次)
     uint32_t W = 0, H = 0, qw = 0, qh = 0, gw = 0, gh = 0;
     VkImage C = VK_NULL_HANDLE, O = VK_NULL_HANDLE;
     VkImageView C_view = VK_NULL_HANDLE, O_view = VK_NULL_HANDLE;
     VkImageView H_view = VK_NULL_HANDLE;   // 历史图 H 的视图 (H 变了就重建)
     VkImage H_for_view = VK_NULL_HANDLE;
+    uint64_t H_gen = 0;
     VkBuffer l0 = VK_NULL_HANDLE, l1 = VK_NULL_HANDLE, mv = VK_NULL_HANDLE, flow = VK_NULL_HANDLE,
              res = VK_NULL_HANDLE, hud = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
@@ -186,7 +191,7 @@ bool build(VkDevice dev, Fn& f, Res& R, uint32_t W, uint32_t H) {
     if (!make_stage(dev, f, R.pool, t_luma, 4, 16, kInterpBLumaSpv, kInterpBLumaSpvLen, R.luma) ||
         !make_stage(dev, f, R.pool, t_bm, 3, 16, kInterpBBmSpv, kInterpBBmSpvLen, R.bm) ||
         !make_stage(dev, f, R.pool, t_smooth, 2, 12, kInterpBSmoothSpv, kInterpBSmoothSpvLen, R.smooth) ||
-        !make_stage(dev, f, R.pool, t_comp, 6, 44, kInterpBComposeSpv, kInterpBComposeSpvLen, R.compose))
+        !make_stage(dev, f, R.pool, t_comp, 6, 48, kInterpBComposeSpv, kInterpBComposeSpvLen, R.compose))
         return false;
     // 不随帧变的绑定 (H 的视图每帧可能不同, 在 synth 里写 binding 0)
     write_img(dev, f, R.luma.set, 1, CIS, R.sampler, R.C_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -229,22 +234,33 @@ bool synth_bm(const IpSynthCtx& c, void*) {
         if (R.tried && (R.W != c.w || R.H != c.h)) R = Res{};   // 尺寸变了: 旧对象不收 (极少见), 重建
         R.tried = true;
         R.ok = load(c.dev, c.gdpa, f) && build(c.dev, f, R, c.w, c.h);
+        char sv[PROP_VALUE_MAX] = {0};
+        if (__system_property_get("debug.knobs.interp_static", sv) > 0) R.st_thr = strtof(sv, nullptr) / 255.f;
+        BM_LOG("静止保护阈值 %.1f/255", R.st_thr * 255.f);
         if (!R.ok) BM_LOG("建资源失败, 退回 dup");
     }
     if (!R.ok) { g_declined++; return false; }
-    if (R.H_for_view != c.prev) {   // 历史图换了 (swapchain 重建): 新视图
+    // 历史图换了 (swapchain 重建): 新视图。只比句柄不够: 销毁重建后句柄值可能一样, 旧视图还指着旧图的尺寸
+    // (真机: 超分 + 插帧时合成帧混进一张放大 1.26 倍的画面)
+    if (R.H_for_view != c.prev || R.H_gen != c.prev_gen) {
         VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vci.image = c.prev; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = VK_FORMAT_R8G8B8A8_UNORM;
         vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         if (f.CreateImageView(c.dev, &vci, nullptr, &R.H_view) != VK_SUCCESS) { g_declined++; return false; }
-        R.H_for_view = c.prev;
+        // 旧视图不销毁: 子图层后端不在 CPU 上等 GPU, 可能还有提交在用它 (swapchain 重建才走到这里, 漏一个视图可接受)
+        R.H_for_view = c.prev; R.H_gen = c.prev_gen;
         write_img(c.dev, f, R.luma.set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, R.sampler, R.H_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         write_img(c.dev, f, R.compose.set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, R.sampler, R.H_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     VkCommandBuffer cb = c.cb;
     const VkPipelineStageFlags TR = VK_PIPELINE_STAGE_TRANSFER_BIT, CS = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     const VkAccessFlags ALL = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    mem_barrier(f, cb, ALL, ALL, TR | CS, TR | CS);   // 上一帧对 C/O/缓冲的读写全部完成
+    mem_barrier(f, cb, ALL, ALL, TR | CS, TR | CS);   // 上一帧 (或本帧上一张) 对 C/O/缓冲的读写全部完成
+    VkImageCopy rg{};
+    rg.srcSubresource = rg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    rg.extent = {c.w, c.h, 1};
+    const bool reuse = c.sub > 0 && R.flow_frame == c.frame;   // 同一帧第 2.. 张: C、运动场都还在, 只重做合成
+    if (!reuse) {
     if (!R.zeroed) {   // 残差与 HUD 框: 全零 (不加残差、不排除 HUD)
         f.CmdFillBuffer(cb, R.res, 0, VK_WHOLE_SIZE, 0);
         f.CmdFillBuffer(cb, R.hud, 0, VK_WHOLE_SIZE, 0);
@@ -252,12 +268,11 @@ bool synth_bm(const IpSynthCtx& c, void*) {
     }
     // N → C
     img_barrier(f, cb, R.C, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, TR, TR);
-    VkImageCopy rg{};
-    rg.srcSubresource = rg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    rg.extent = {c.w, c.h, 1};
     f.CmdCopyImage(cb, c.cur, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, R.C, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg);
     img_barrier(f, cb, R.C, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, TR, CS);
+    }
     img_barrier(f, cb, c.prev, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, TR, CS);
+    if (!reuse) {
     // 1. 亮度
     int32_t p_luma[4] = {(int32_t)c.w, (int32_t)c.h, (int32_t)R.qw, (int32_t)R.qh};
     f.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.luma.pipe);
@@ -279,10 +294,12 @@ bool synth_bm(const IpSynthCtx& c, void*) {
     f.CmdPushConstants(cb, R.smooth.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p_sm, p_sm);
     f.CmdDispatch(cb, (R.gw * R.gh + 63) / 64, 1, 1);
     mem_barrier(f, cb, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT, CS | TR, CS);
-    // 4. 合成 t=0.5
+    R.flow_frame = c.frame;
+    }
+    // 4. 合成 t (缺省 0.5; 多帧插时 k/(m+1))
     img_barrier(f, cb, R.O, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT, CS, CS);
-    struct { int32_t W, H, gw, gh; float cell; int32_t rw, rh; float t, res_scale, res_zp; int32_t hud_on; } p_c{
-        (int32_t)c.w, (int32_t)c.h, (int32_t)R.gw, (int32_t)R.gh, 32.f, 1, 1, 0.5f, 0.f, 0.f, 0};
+    struct { int32_t W, H, gw, gh; float cell; int32_t rw, rh; float t, res_scale, res_zp; int32_t hud_on; float st_thr; } p_c{
+        (int32_t)c.w, (int32_t)c.h, (int32_t)R.gw, (int32_t)R.gh, 32.f, 1, 1, c.t, 0.f, 0.f, 0, R.st_thr};
     f.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.compose.pipe);
     f.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, R.compose.pl, 0, 1, &R.compose.set, 0, nullptr);
     f.CmdPushConstants(cb, R.compose.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p_c, &p_c);
