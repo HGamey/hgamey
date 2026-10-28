@@ -1,10 +1,8 @@
 """Placement of derived directory exports; originals and builder locks stay put."""
 import errno
-import json
 import os
 import re
 import stat
-import time
 
 from artifact_io import SafeRoot, ExportError, export_lock
 
@@ -25,8 +23,7 @@ def validate_root(path, jobs_root, history_sources):
 
 
 class ExportCache:
-    def __init__(self, original, jobs_root, root=None, history_sources=(), quota_bytes=None):
-        self.quota_bytes = quota_bytes if type(quota_bytes) is int and quota_bytes > 0 else None
+    def __init__(self, original, jobs_root, root=None, history_sources=()):
         self.configured_root = validate_root(root, jobs_root, history_sources)
         self.original = original
         self.jobs_root = os.path.realpath(jobs_root)
@@ -53,8 +50,7 @@ class ExportCache:
                 "configured_root": self.configured_root,
                 "effective_root": os.path.join(self.configured_root, self.namespace) if external else self.jobs_root,
                 "availability": "unavailable" if self.error else "available",
-                "reason": str(self.error) if self.error else None, "legacy_entries_migrated": False,
-                "configured_quota_bytes": self.quota_bytes}
+                "reason": str(self.error) if self.error else None, "legacy_entries_migrated": False}
 
     def target(self, jid):
         if self.error:
@@ -84,71 +80,6 @@ class ExportCache:
         return self._inspect(jid)
 
     OVERVIEW_LIMIT = 512
-
-    def enforce_quota(self, quota_bytes):
-        """Explicit, auditable GC: evict oldest regenerable caches until the
-        external namespace fits the quota. Originals and game assets stay put."""
-        if self.configured_root is None:
-            raise ExportError(409, "export_storage_unavailable", "quota enforcement needs an external export cache root")
-        if type(quota_bytes) is not int or quota_bytes <= 0:
-            raise ExportError(400, "quota must be a positive integer")
-        entries = []
-        for jid in self._known_jobs():
-            row = self.inspect(jid)
-            try:
-                directory = self.store.open_fd(self.namespace + "/" + jid, directory=True)
-            except (OSError, ValueError):
-                stamp = 0.0
-            else:
-                try:
-                    stamp = os.stat(directory).st_mtime
-                except OSError:
-                    stamp = 0.0
-                finally:
-                    os.close(directory)
-            entries.append((stamp, jid, row["bytes"], row["count"]))
-        entries.sort()
-        total = sum(size for _, _, size, _ in entries)
-        report = {"schema": "phonefarm/export-cache-quota@1", "quota_bytes": quota_bytes,
-                  "before": {"bytes": total, "jobs": len(entries)}, "evicted": [], "kept": [],
-                  "errors": []}
-        for stamp, jid, size, count in entries:
-            if total <= quota_bytes:
-                report["kept"].append({"job_id": jid, "bytes": size})
-                continue
-            if size == 0:
-                report["kept"].append({"job_id": jid, "bytes": 0})
-                continue
-            try:
-                row = self.inspect(jid, clear=True)
-                total -= row["deleted"]["bytes"]
-                report["evicted"].append({"job_id": jid, "bytes": row["deleted"]["bytes"],
-                                          "count": row["deleted"]["count"]})
-            except ExportError as error:
-                total -= size
-                report["errors"].append({"job_id": jid, "error": str(error)})
-        report["after"] = {"bytes": total, "jobs": len(report["kept"])}
-        return report
-
-    def startup_enforcement(self):
-        """Run the configured quota once at service start; keep an auditable
-        report beside the cache. Never raises: failures become a logged report."""
-        if not self.quota_bytes or self.error:
-            return None
-        try:
-            report = self.enforce_quota(self.quota_bytes)
-        except ExportError as error:
-            report = {"schema": "phonefarm/export-cache-quota@1", "quota_bytes": self.quota_bytes,
-                      "error": str(error)}
-        try:
-            path = os.path.join(self.configured_root,
-                                f"quota-report-{time.strftime('%Y%m%dT%H%M%S')}.json")
-            with open(path, "w") as stream:
-                json.dump(report, stream, ensure_ascii=False, indent=1)
-            report["report_path"] = path
-        except OSError as error:
-            report["report_error"] = str(error)
-        return report
 
     def _known_jobs(self):
         """Enumerate job namespaces that already hold a cache directory; newest names are untracked order."""

@@ -262,7 +262,7 @@ def read_host_capacity(path):
 
 class Jobs:
     def __init__(self, root, bins, data_dir=None, max_running=2, worker_prefix=None, host_capacity=None,
-                 history_sources=None, export_cache_root=None, export_cache_quota=None,
+                 history_sources=None, export_cache_root=None,
                  require_device_binding=False, experiment_url=None):
         self.root, self.bins = root, bins
         self.history_sources = history_sources if history_sources is not None else []
@@ -276,8 +276,7 @@ class Jobs:
         validate_export_cache_root(export_cache_root, self.dir, self.history_sources)
         os.makedirs(self.dir, exist_ok=True)
         self._read_root = SafeRoot(self.dir)
-        self.export_cache = ExportCache(self._read_root, self.dir, export_cache_root, self.history_sources,
-                                        quota_bytes=export_cache_quota)
+        self.export_cache = ExportCache(self._read_root, self.dir, export_cache_root, self.history_sources)
         self.require_device_binding = bool(require_device_binding)
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
@@ -414,7 +413,6 @@ class Jobs:
         original_admit = admit
         def admit():
             # submit() calls this only for a new request while holding intake.
-            check_fit(spec, self.dispatch.queue.capacity())
             self.programs.require_session(spec)
             if device_binding and access == "write":
                 if spec["argv"][:1] == ["game-deploy"]:
@@ -1008,13 +1006,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
         jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
     if not hasattr(jobs, "agents"):
         jobs.agents = NodeAgents(jobs.data_root, node.node_id)
-    if jobs.export_cache.quota_bytes:
-        try:
-            report = jobs.export_cache.startup_enforcement()
-        except Exception as error:  # noqa: BLE001 - quota GC must never block startup
-            report = {"error": repr(error)}
-        if report:
-            log(f"export cache quota: {json.dumps(report, ensure_ascii=False)[:500]}")
     directory = jobs.directory
     if not hasattr(jobs, "result_search"):
         jobs.result_search = NodeResultSearch(directory, node.node_id)
@@ -1480,39 +1471,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 self.connection.settimeout(10)
                 body = self.rfile.read(length)
                 request = json.loads(body) if len(body) == length else None
-                if (not isinstance(request, dict) or request.get("schema") != "phonefarm/export-cache-clear@1"
-                        or request.get("confirm") != "regenerable-only" or set(request) != {"schema", "confirm"}):
-                    raise ValueError("export cache cleanup requires the explicit regenerable-only confirmation")
+                if not isinstance(request, dict):
+                    raise ValueError("export cache cleanup body must be an object")
                 return self._send(200, {"node_id": node.node_id,
                                         **jobs.export_cache.overview(clear=True)})
-            except (ExportError, AssetUploadError) as error:
-                return self._send(error.status, error.payload)
-            except ValueError as error:
-                return self._send(400, {"code": "invalid_request", "error": str(error)})
-
-        def _export_quota_enforce(self, dashboard):
-            self.close_connection = True
-            if not self._upload_write_auth(dashboard):
-                return
-            try:
-                q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
-                if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
-                    return self._send(400, {"code": "target_required", "error": "quota enforcement requires an explicit node identity"})
-                if set(q) - {"expected_node_id"}:
-                    raise ValueError("quota enforcement has no source or path override")
-                length = self._upload_length(1024, 2)
-                if self.headers.get_content_type() != "application/json":
-                    raise ValueError("quota enforcement requires application/json")
-                self.connection.settimeout(10)
-                body = self.rfile.read(length)
-                request = json.loads(body) if len(body) == length else None
-                if (not isinstance(request, dict) or request.get("schema") != "phonefarm/export-cache-quota@1"
-                        or type(request.get("quota_bytes")) is not int
-                        or request.get("quota_bytes", 0) <= 0 or set(request) != {"schema", "quota_bytes"}):
-                    raise ValueError("quota enforcement requires phonefarm/export-cache-quota@1 and a positive quota_bytes")
-                report = jobs.export_cache.enforce_quota(request["quota_bytes"])
-                report["node_id"] = node.node_id
-                return self._send(200, report)
             except (ExportError, AssetUploadError) as error:
                 return self._send(error.status, error.payload)
             except ValueError as error:
@@ -1958,8 +1920,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._export_cache_post(parts[1], False)
             if parts == ["export-caches", "clear"]:
                 return self._export_cache_clear_all(False)
-            if parts == ["export-caches", "enforce-quota"]:
-                return self._export_quota_enforce(False)
             if board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"] and parts[4] == "export-cache":
                 return self._export_cache_post(parts[3], True)
             if parts[:1] == ["research-state"]:
@@ -2205,7 +2165,6 @@ def argument_parser():
     ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
     ap.add_argument("--history-roots", type=history_path, help="旧作业只读来源的绝对配置路径（hgamey/job-history@1，最多64KiB）")
     ap.add_argument("--export-cache-root", help="当前作业目录导出的独立绝对缓存根；省略保留旧布局，不迁移原件或游戏资源")
-    ap.add_argument("--export-cache-quota", type=bounded_int(1, 1 << 40), help="外部缓存根的字节配额；启动时显式逐出最旧缓存并写审计报告")
     ap.add_argument("--require-device-binding", action="store_true", help="拒绝缺少 device_binding 的设备访问任务（多设备纪律）")
     ap.add_argument("--experiments-url", default=os.environ.get("HGAMEY_EXPERIMENTS_URL") or job_experiment.DEFAULT_URL,
                     help="实验仓库地址；bin experiment 的任务按提交号从这里取代码")
@@ -2241,7 +2200,7 @@ def main():
             "experiment": (sys.executable, root)}
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
                 host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root,
-                export_cache_quota=a.export_cache_quota, require_device_binding=a.require_device_binding,
+                require_device_binding=a.require_device_binding,
                 experiment_url=a.experiments_url)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None

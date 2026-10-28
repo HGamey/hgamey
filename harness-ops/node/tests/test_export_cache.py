@@ -93,19 +93,10 @@ class ExportCacheTests(unittest.TestCase):
                                  "only real job namespaces are enumerated")
                 self.assertEqual(value["totals"]["count"], sum(seeded.values()))
                 self.assertTrue(value["complete"])
-                # 只读 token 可以查看聚合，但清理需要管理员写授权与显式确认体。
+                # 只读 token 可以查看聚合；管理员对专用 /clear 的显式 POST 即可清理。
                 self.assertEqual(request("/export-caches/clear", read_headers, method="POST",
-                                         body=json.dumps({"schema": "phonefarm/export-cache-clear@1",
-                                                          "confirm": "regenerable-only"}).encode())[0], 401)
-                bad = request("/export-caches/clear", write_headers, method="POST", body=b"{}")
-                self.assertEqual(bad[0], 400)
-                wrong = request("/export-caches/clear", write_headers, method="POST",
-                                body=json.dumps({"schema": "phonefarm/export-cache-clear@1",
-                                                 "confirm": "everything"}).encode())
-                self.assertEqual(wrong[0], 400)
-                code, _, raw = request("/export-caches/clear", write_headers, method="POST",
-                                       body=json.dumps({"schema": "phonefarm/export-cache-clear@1",
-                                                        "confirm": "regenerable-only"}).encode())
+                                         body=b"{}")[0], 401)
+                code, _, raw = request("/export-caches/clear", write_headers, method="POST", body=b"{}")
                 value = json.loads(raw)
                 self.assertEqual(code, 200)
                 self.assertEqual(value["deleted"]["count"], sum(seeded.values()))
@@ -270,8 +261,7 @@ class ExportCacheTests(unittest.TestCase):
                 self.assertEqual(identity["storage"]["export_cache"], {
                     "scope": "directory_export", "mode": "external", "configured_root": str(cache_root),
                     "effective_root": str(destination.parent), "availability": "available",
-                    "reason": None, "legacy_entries_migrated": False,
-                    "configured_quota_bytes": None})
+                    "reason": None, "legacy_entries_migrated": False})
                 with patch.object(node_service, "archive_directory", side_effect=AssertionError("reopened cache rebuilt")):
                     status, _, raw = get(f"/jobs/{JID}/out?meta=1")
                     self.assertEqual((status, json.loads(raw)), (200, info_a))
@@ -334,92 +324,6 @@ class ExportCacheTests(unittest.TestCase):
             self.assertEqual(legacy_files(job_a), old_cache)
             self.assertEqual(legacy_files(job_b), {})
             self.assertEqual(files(destination.glob(".outcache-*")), external_cache)
-
-
-    def test_startup_quota_enforcement_writes_an_auditable_report(self):
-        with tempfile.TemporaryDirectory(prefix="export-startup-quota-") as temporary, ExitStack() as cleanup:
-            root = Path(temporary).resolve()
-            jobs = Jobs(str(root / "node"), {}, export_cache_root=str(root / "cache"),
-                        export_cache_quota=1)
-            cleanup.callback(jobs._read_root.close)
-            cleanup.callback(jobs.export_cache.close)
-            jid = "0123456789ab"
-            job = Path(jobs.path(jid))
-            (job / "out").mkdir(parents=True)
-            (job / "out" / "result.bin").write_bytes(b"original result")
-            jobs._write_meta(jid, {"id": jid, "bin": "fixture", "started": 1, "exit": 0})
-            opened, _ = jobs.out_blob(jid)
-            opened.read()
-            opened.close()
-            handler = make_handler(None, jobs, "export-cache-fixture-admin-not-production")
-            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-
-            def close_server():
-                server.shutdown()
-                server.server_close()
-                thread.join(5)
-
-            cleanup.callback(close_server)
-            reports = list((root / "cache").glob("quota-report-*.json"))
-            self.assertEqual(len(reports), 1, "startup enforcement leaves exactly one report")
-            report = json.loads(reports[0].read_text())
-            self.assertEqual(report["schema"], "phonefarm/export-cache-quota@1")
-            self.assertEqual(report["evicted"][0]["job_id"], jid)
-            self.assertEqual(report["after"]["bytes"], 0)
-            self.assertEqual((job / "out" / "result.bin").read_bytes(), b"original result")
-
-    def test_running_jobs_prevent_deployment_unless_forced(self):
-        with tempfile.TemporaryDirectory(prefix="export-quota-") as temporary, ExitStack() as cleanup:
-            root = Path(temporary).resolve()
-            jobs = Jobs(str(root / "node"), {}, export_cache_root=str(root / "cache"))
-            cleanup.callback(jobs._read_root.close)
-            cleanup.callback(jobs.export_cache.close)
-            ids = ["0123456789ab", "ba9876543210"]
-            for index, jid in enumerate(ids):
-                job = Path(jobs.path(jid))
-                (job / "out").mkdir(parents=True)
-                (job / "out" / "result.bin").write_bytes(("quota " + jid).encode())
-                jobs._write_meta(jid, {"id": jid, "bin": "fixture", "started": 1, "exit": 0})
-                opened, _ = jobs.out_blob(jid)
-                opened.read()
-                opened.close()
-            cache = root / "cache" / jobs.export_cache.namespace
-            # 让第一个任务显著更旧。
-            older = cache / ids[0]
-            os.utime(older, (1, 1))
-            with endpoint(jobs) as (url, request):
-                identity = json.loads(request("/node")[2])
-                write_headers = {"Content-Type": "application/json",
-                                 "Authorization": "Bearer export-cache-fixture-admin-not-production",
-                                 "X-Expected-Node-ID": identity["node_id"]}
-                code, _, raw = request("/export-caches", write_headers)
-                before = json.loads(raw)["totals"]["bytes"]
-                self.assertGreater(before, 0)
-                # 只读 token 不能触发配额逐出。
-                ro_headers = {"X-Expected-Node-ID": identity["node_id"], "Content-Type": "application/json"}
-                self.assertEqual(request("/export-caches/enforce-quota", ro_headers, method="POST",
-                                         body=json.dumps({"schema": "phonefarm/export-cache-quota@1",
-                                                          "quota_bytes": 1}).encode())[0], 401)
-                # 足额配额：全部保留。
-                keep = request("/export-caches/enforce-quota", write_headers, method="POST",
-                               body=json.dumps({"schema": "phonefarm/export-cache-quota@1",
-                                                "quota_bytes": before}).encode())
-                value = json.loads(keep[2])
-                self.assertEqual((keep[0], value["evicted"], value["after"]["bytes"]), (200, [], before))
-                # 极小配额：最旧者先逐出，剩下的留在配额内；原件不动。
-                code, _, raw = request("/export-caches/enforce-quota", write_headers, method="POST",
-                                       body=json.dumps({"schema": "phonefarm/export-cache-quota@1",
-                                                        "quota_bytes": 1}).encode())
-                value = json.loads(raw)
-                self.assertEqual(code, 200)
-                self.assertEqual(value["after"]["bytes"], 0)
-                self.assertEqual({item["job_id"] for item in value["evicted"]}, set(ids))
-                for jid in ids:
-                    self.assertEqual((Path(jobs.path(jid)) / "out/result.bin").read_bytes(),
-                                     ("quota " + jid).encode(), "quota GC must not touch originals")
-                self.assertEqual(json.loads(request("/export-caches", write_headers)[2])["totals"]["bytes"], 0)
 
 
 if __name__ == "__main__":

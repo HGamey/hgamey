@@ -159,8 +159,7 @@ class TargetClient(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls[-1]["method"], "POST")
         self.assertEqual(calls[-1]["path"], "/export-caches/clear")
-        self.assertEqual(json.loads(calls[-1]["body"]), {
-            "schema": "phonefarm/export-cache-clear@1", "confirm": "regenerable-only"})
+        self.assertEqual(json.loads(calls[-1]["body"]), {})
 
     def test_legacy_fleet_freezes_probe_identity_and_clears_ambient_token(self):
         fleet = runpy.run_path(str(NODE / "pf-fleet"))
