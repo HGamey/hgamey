@@ -507,6 +507,13 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(item["public"]["phase"], "queued")
         self.assertEqual(item["public"]["queue"]["state"], "claimed")
 
+    def test_live_research_supersedes_demo_and_phone_copy_has_no_review_gate(self):
+        script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
+        self.assertIn("r && !r.demo && r.status === \"running\"", script,
+                      "a real research job must supersede a demo GOL run in the now line")
+        for text in ("占用或待核查", "占用或状态待核查"):
+            self.assertNotIn(text, script, "phone copy must follow the post-release state machine")
+
     def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")

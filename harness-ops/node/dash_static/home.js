@@ -141,9 +141,9 @@
     const on = h.slots.filter(Boolean), free = h.slots.length - on.length;
     $("phones").innerHTML = on.map((s) => {
       const cls = !s.online ? "off" : s.busy ? "busy" : "on";
-      const st = !s.online ? (s.state || "离线") : s.busy ? "在线 · 占用或待核查" : "在线 · 锁记录空闲";
+      const st = !s.online ? (s.state || "离线") : s.busy ? "在线 · 占用" : "在线 · 锁记录空闲";
       const thumb = s.shot_at && HGTarget.canWrite() ? `<img alt="${esc(s.model || s.serial)} 的画面" src="${esc(HGTarget.url(`/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}`))}">`
-        : `<div class="ph">${s.busy ? "占用或待核查，暂缓截图" : "暂无画面"}</div>`;
+        : `<div class="ph">${s.busy ? "占用中，暂缓截图" : "暂无画面"}</div>`;
       const job = ["job", "global"].includes(s.holder?.kind) ? s.holder : null;
       const task = job && (job.research_id
         ? `${esc(job.label || job.job_id)} · <a href="${esc(HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(job.research_id)}`))}">${esc(job.research_title || job.research_id)}</a>`
@@ -152,7 +152,7 @@
         : s.holder?.kind === "external" ? `<div class="doing on">外部占用：${esc(s.holder.label)}</div>`
         : s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
         : s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`
-        : `<div class="doing">${s.busy ? "占用或状态待核查；不代表正在测量" : "未记录占用；运行前仍需调度与租约核验"}</div>`;
+        : `<div class="doing">${s.busy ? "已占用，未记录占用者" : "未记录占用；运行前仍需调度与租约核验"}</div>`;
       return `<div class="phone-card"><a class="thumb" href="/dash/live?serial=${encodeURIComponent(s.serial)}" title="看实时画面">${thumb}</a><div class="meta">
         <div class="name" title="${esc(s.serial)}">${esc(s.model || "未知型号")}</div>
         <span class="status ${cls}"><i></i>${esc(st)}</span>
@@ -262,7 +262,7 @@
       now = "没有目标在跑。";
     }
     const working = (h?.tasks || []).filter((t) => t.jobs.some((j) => j.state === "claimed"));
-    if (working.length && !(r && r.status === "running" && r.run_id === S.runId)) {
+    if (working.length && !(r && !r.demo && r.status === "running" && r.run_id === S.runId)) {
       now = working.map((t) => `${taskLink(t)} · ${esc(t.owner || "无人负责")}：${taskJobs({...t, jobs: t.jobs.filter((j) => j.state === "claimed")})}`).join("；");
       next = "";
     }
