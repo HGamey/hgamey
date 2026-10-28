@@ -333,21 +333,23 @@ class DiscussRouteTests(unittest.TestCase):
         status, value = call("GET", f"/jobs/{jid}/discuss")
         self.assertEqual((status, value["entries"]), (200, []))
 
-        # 人工发言
-        status, value = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": "这个方向可行吗？"}).encode())
-        self.assertEqual(status, 201)
-        self.assertEqual(value["entry"]["from"], "human")
+        # token 写入必须声明发言者，且不能自称 human（人工发言走网页，见 test_core_flow_web_cli）
+        status, _ = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": "这个方向可行吗？"}).encode())
+        self.assertEqual(status, 400)
+        status, _ = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": "这个方向可行吗？", "from": "human"}).encode())
+        self.assertEqual(status, 400)
 
-        # agent 发言
+        # agent 发言，另一个 agent 参与
+        status, value = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": "这个方向可行吗？", "from": "test-agent-b"}).encode())
+        self.assertEqual((status, value["entry"]["from"]), (201, "test-agent-b"))
         status, value = call("POST", f"/jobs/{jid}/discuss", json.dumps({"text": "我测了，可行", "from": "test-agent"}).encode())
         self.assertEqual(status, 201)
         self.assertEqual(value["entry"]["from"], "test-agent")
 
         # 读取包含两条
         status, value = call("GET", f"/jobs/{jid}/discuss")
-        self.assertEqual(len(value["entries"]), 2)
-        self.assertEqual(value["entries"][0]["from"], "human")
-        self.assertEqual(value["entries"][1]["from"], "test-agent")
+        self.assertEqual([(e["from"], e["auth_channel"]) for e in value["entries"]],
+                         [("test-agent-b", "admin_token"), ("test-agent", "admin_token")])
 
         # 不存在任务 404
         status, _ = call("GET", "/jobs/no-such-job/discuss")

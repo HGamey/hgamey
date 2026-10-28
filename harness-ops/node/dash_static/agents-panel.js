@@ -2,10 +2,14 @@
 (function () {
   const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   async function api(path) {
-    const r = await fetch(path);
+    const init = { credentials: "same-origin", cache: "no-store" };
+    const r = await (window.HGTarget ? HGTarget.fetch(path, init) : fetch(path, init));
     if (!r.ok) throw new Error(path + " → HTTP " + r.status);
     return r.json();
   }
+  // 与任务页同一口径：排队/准备/资源保留/中断/收尾都还没在跑（API 对它们也返回 state:"running"）。
+  const NOT_RUNNING = ["preparing", "queued", "blocked", "interrupted", "finalizing", "storage_blocked"];
+  const active = j => j.state === "running" && !NOT_RUNNING.includes(j.phase) && j.queue?.state !== "blocked" && !j.lost;
   async function load() {
     const list = document.getElementById("agents-list");
     if (!list) return;
@@ -15,12 +19,12 @@
     ]);
     const runningByAgent = {};
     for (const j of jobs.items || []) {
-      if (j.state === "running" && j.actor_id) runningByAgent[j.actor_id] = (runningByAgent[j.actor_id] || 0) + 1;
+      if (active(j) && j.actor_id) runningByAgent[j.actor_id] = (runningByAgent[j.actor_id] || 0) + 1;
     }
     const items = agents.agents || [];
     document.getElementById("agents-count").textContent = items.length ? items.length + " 个" : "";
     list.innerHTML = items.length
-      ? `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中任务</th><th>注册时间</th></tr></thead><tbody>${
+      ? `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中任务</th><th>当前状态</th></tr></thead><tbody>${
           items.map(a => `<tr>
             <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button></td>
             <td>${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(" ") || "–"}</td>
@@ -43,7 +47,7 @@
       api(`/dash/api/agents/${name}`).catch(() => null),
       api("/dash/api/jobs?limit=50").catch(() => ({ items: [] })),
     ]);
-    const running = (jobs.items || []).filter(j => j.state === "running" && j.actor_id === name);
+    const running = (jobs.items || []).filter(j => active(j) && j.actor_id === name);
     const history = (agent && agent.status_history) || [];
     document.getElementById("agent-detail-status").textContent = agent && agent.status ? agent.status.text : "–";
     document.getElementById("agent-detail-tasks").innerHTML = running.length

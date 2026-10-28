@@ -354,3 +354,14 @@
 .job-source-picker select { width: 100%; min-width: 0; max-width: 100%; }
 .job-source-picker .note, .job-source-picker .read-time { margin: 0; overflow-wrap: anywhere; }
 #historical-detail { margin: 16px 0 24px; }
+
+/* 任务讨论区：发言人、来源通道与时间分开显示 */
+.discuss-list { display: grid; gap: 8px; margin: 8px 0; }
+.discuss-entry { border-top: 1px solid var(--line); padding-top: 8px; }
+.discuss-entry p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.discuss-from { font-weight: 600; margin-right: 6px; }
+.discuss-via { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-right: 6px; }
+.discuss-time { font-size: 12px; color: var(--muted); }
+#discuss-form { display: flex; gap: 8px; }
+#discuss-form[hidden] { display: none; }
+#discuss-form input { flex: 1; min-width: 0; }

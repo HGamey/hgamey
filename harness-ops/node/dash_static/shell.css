@@ -133,6 +133,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .shell-exit { display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border-radius: 7px;
   color: var(--muted); text-decoration: none; font-size: 13px; }
 .shell-exit:hover { background: var(--wash); color: var(--ink); }
+/* 退出是 POST 表单（服务端只接受 POST /dash/logout）；按钮外观与原链接一致 */
+.shell-logout { margin: 0; display: inline-flex; }
+button.shell-exit { border: 0; background: none; font: inherit; font-size: 13px; cursor: pointer; }
 /* 目标卡默认折叠：只显示标题行，点击展开 */
 #connection-target.collapsed { padding: 6px 12px; }
 #connection-target.collapsed > *:not(.target-heading) { display: none; }

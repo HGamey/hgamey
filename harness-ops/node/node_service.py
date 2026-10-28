@@ -1461,9 +1461,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                     "note": "takes effect at the next producer safe point; cancel still works"})
 
         def _discuss_get(self, jid):
+            # do_GET already authenticated either the token or the dashboard session.
             self.close_connection = True
-            if not self._authed(allow_ro=True):
-                return
             row = jobs.dispatch.queue.get(jid)
             if row is None:
                 return self._send(404, {"code": "job_not_found", "error": "no such job"})
@@ -1483,27 +1482,42 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(503, {"code": "discuss_unavailable", "error": str(error)})
             return self._send(200, {"node_id": node.node_id, "job_id": jid, "entries": entries})
 
-        def _discuss_post(self, jid, body):
+        def _discuss_post(self, jid, dashboard):
+            # The speaker follows the auth channel: a page write is the human; a token write
+            # declares its agent label and may not claim "human".
             self.close_connection = True
-            if not self._authed():
+            if not self._upload_write_auth(dashboard):
                 return
-            row = jobs.dispatch.queue.get(jid)
-            if row is None:
-                return self._send(404, {"code": "job_not_found", "error": "no such job"})
             try:
+                length = self._upload_length(MAX_REQUEST, 1)
+                self.connection.settimeout(30)
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    raise ValueError("discuss body was interrupted")
+                if jobs.dispatch.queue.get(jid) is None:
+                    return self._send(404, {"code": "job_not_found", "error": "no such job"})
                 request = json.loads(body)
                 if not isinstance(request, dict) or not isinstance(request.get("text"), str):
                     raise ValueError("discuss requires a text field")
                 text = request["text"].strip()
                 if not text or len(text) > 4096:
                     raise ValueError("discuss text must be 1-4096 characters")
-                actor = request.get("from")
-                if actor is not None and (not isinstance(actor, str) or not actor.strip() or len(actor) > 64):
-                    raise ValueError("from must be 1-64 characters")
-                entry = {"at": time.time(), "from": (actor or "human").strip() if actor else "human", "text": text}
+                if dashboard:
+                    actor = "human"
+                else:
+                    actor = request.get("from")
+                    if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 64:
+                        raise ValueError("token writes must declare from (1-64 characters)")
+                    actor = actor.strip()
+                    if actor.casefold() == "human":
+                        raise ValueError("from=human is reserved for the dashboard; declare the agent name")
+                entry = {"at": time.time(), "from": actor, "auth_channel": "dashboard_steer" if dashboard else "admin_token",
+                         "text": text}
                 with jobs._read_root.append_file(jid + "/discuss.jsonl") as stream:
                     stream.write(json.dumps(entry, ensure_ascii=False).encode() + b"\n")
                 return self._send(201, {"node_id": node.node_id, "job_id": jid, "entry": entry})
+            except AssetUploadError as error:
+                return self._send(error.status, error.payload)
             except ValueError as error:
                 return self._send(400, {"code": "invalid_request", "error": str(error)})
             except (OSError, KeyError) as error:
@@ -1842,6 +1856,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._research_post(parts, False)
             if board and parts[:3] == ["dash", "api", "research-state"]:
                 return self._research_post(parts[2:], True)
+            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "discuss":
+                return self._discuss_post(parts[1], False)
+            if board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"] and parts[4] == "discuss":
+                return self._discuss_post(parts[3], True)
             if parts[:1] in (["results"], ["result-imports"]):
                 return self._result_post(parts, False)
             if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["results"], ["result-imports"]):
@@ -1952,8 +1970,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     self._send(200, {"restarting": True})
                     threading.Timer(0.5, lambda: os._exit(0)).start()
                     return
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "discuss":
-                    return self._discuss_post(parts[1], body)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):

@@ -5,6 +5,7 @@ import sys
 HELP = """pf-node agents                              # 注册 agent 列表
 pf-node agents show NAME                    # 单个详情
 pf-node agents register FILE                # 注册（FILE 为 data JSON，至多 4 KiB）
+pf-node agents status NAME TEXT             # 上报当前在做什么（至多 1024 字符，保留最近 50 条）
 pf-node agents update NAME FILE --revision N  # 并发更新（CAS）"""
 
 
