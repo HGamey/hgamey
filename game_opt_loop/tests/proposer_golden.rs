@@ -13,6 +13,14 @@
 use game_opt_loop::optimize::{self, plan::Budget};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+// All fixtures in this binary share one fd table. Prevent a script writer from
+// overlapping another test's fork/exec window (O_CLOEXEC alone cannot prevent it).
+static TEST_SLOT: Mutex<()> = Mutex::new(());
+fn test_slot() -> MutexGuard<'static, ()> {
+    TEST_SLOT.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// 一台已 root、装着原神、正在放电的红魔 (与 optimize_flow.rs 同一份录音)。
 const ROOTED_NX809J: &str = "\
@@ -165,6 +173,7 @@ fn golden_dir(seed: u64) -> PathBuf {
 }
 
 fn check_against_golden(seed: u64) {
+    let _slot = test_slot();
     let root = scaffold(&seed.to_string());
     optimize::run(&config(&root, seed)).expect("假 phonefarm 下整条链路应该跑得通");
     let got = requests(&root.join("out").join("requests"));
@@ -211,6 +220,7 @@ fn local_proposer_requests_match_the_pre_refactor_golden_seed_7() {
 /// ③ 第一代下发且只下发它给的那一个候选, ② 它不出候选, 报告里记着是谁出的、问了几次。
 #[test]
 fn the_example_external_proposer_runs_end_to_end() {
+    let _slot = test_slot();
     let root = scaffold("ext");
     let mut cfg = config(&root, 1);
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/proposers/fixed_one.py");
@@ -240,6 +250,7 @@ fn the_example_external_proposer_runs_end_to_end() {
 /// 各臂的请求与单独跑时一样, 对比报告里的账和各臂 report.json 对得上。
 #[test]
 fn compare_mode_runs_each_proposer_on_the_same_terms() {
+    let _slot = test_slot();
     let root = scaffold("cmp");
     let mut cfg = config(&root, 20260923);
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/proposers/fixed_one.py");
@@ -273,6 +284,7 @@ fn compare_mode_runs_each_proposer_on_the_same_terms() {
 /// 分段跑 (每段各自持锁) 的单臂输出, 离线拼成的对比与一次跑完的对比账目一致。
 #[test]
 fn arms_run_in_separate_sessions_can_be_compared_offline() {
+    let _slot = test_slot();
     let root = scaffold("cmp_off");
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/proposers/fixed_one.py");
     let mut dirs = Vec::new();
