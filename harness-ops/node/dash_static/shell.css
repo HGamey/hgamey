@@ -133,3 +133,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .shell-exit { display: inline-flex; align-items: center; height: 30px; padding: 0 10px; border-radius: 7px;
   color: var(--muted); text-decoration: none; font-size: 13px; }
 .shell-exit:hover { background: var(--wash); color: var(--ink); }
+/* 目标卡默认折叠：只显示标题行，点击展开 */
+#connection-target.collapsed { padding: 6px 12px; }
+#connection-target.collapsed > *:not(.target-heading) { display: none; }
+#connection-target .target-heading { cursor: pointer; }
+/* 旧 header 立即隐藏，由 shell.js 替换——消除点击导航时的布局跳动 */
+header.top:not(.shell-top) { display: none !important; }

@@ -84,7 +84,9 @@
   function mount(){
     const main=document.querySelector('main')||document.body,box=document.createElement('section');box.id='connection-target';box.className='connection-target';box.setAttribute('aria-label','当前连接与执行目标');
     box.innerHTML='<div class="target-heading"><strong>此后台的执行目标</strong><button type="button" class="ghost">刷新目标身份</button></div><p data-target-status role="status"></p><dl class="target-facts"><dt>访问入口</dt><dd data-target-entry></dd><dt>绑定节点</dt><dd data-target-expected></dd><dt>执行宿主</dt><dd data-target-host></dd><dt>数据目录</dt><dd data-target-data></dd></dl><details><summary>实际身份与任务目录</summary><dl class="target-facts"><dt>实际节点</dt><dd data-target-actual></dd><dt>任务目录</dt><dd data-target-jobs></dd></dl></details>';
+    box.classList.add('collapsed');
     main.prepend(box);box.querySelector('button').addEventListener('click',()=>refresh().catch(()=>{}));
+    box.addEventListener('click',(e)=>{if(e.target.closest('button'))return;box.classList.toggle('collapsed');});
     for(const nav of document.querySelectorAll('nav.nav')){nav.setAttribute('aria-label','此后台导航');nav.title='这些入口属于当前后台；远端目录选择只改变目录视图。';}
     const observer=new MutationObserver(records=>{for(const record of records)for(const n of record.addedNodes)if(n.nodeType===1){if(n.matches('a[href]')){const before=n.getAttribute('href');if(before&&!before.startsWith('#'))n.setAttribute('href',url(before));}decorate(n);}});observer.observe(document.body,{childList:true,subtree:true});
     document.addEventListener('click',event=>{const a=event.target.closest?.('a[href]');if(a&&!a.getAttribute('href').startsWith('#'))a.href=url(a.getAttribute('href'));},true);

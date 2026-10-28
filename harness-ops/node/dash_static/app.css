@@ -2,46 +2,46 @@
    图表三色 蓝 #1F5FBF / 琥珀 #B5771E / 绿 #159A74；红只标状态。浅色为主，跟随系统明暗。 */
 :root {
   color-scheme: light;
-  --page: #F5F7FA; --card: #FFFFFF; --panel: #F3F6FA;
+  --page: #F6F7F9; --card: #FFFFFF; --panel: #F0F2F5;
   /* 文字色：正文墨蓝；次要说明 #3D4B5F；浅灰只给时间戳（仍 ≥4.5:1） */
-  --ink: #0F2744; --ink2: #3D4B5F; --muted: #5E6A7D;
-  --line: #D3DBE6; --grid: #E4E9F0; --axis: #C3CDDA; --wash: #F0F3F8;
+  --ink: #101828; --ink2: #344054; --muted: #667085;
+  --line: #D8DEE6; --grid: #E4E7EC; --axis: #C3CDDA; --wash: #F2F4F7;
   --blue: #1F5FBF; --blue-soft: #EAF1FC; --blue-ink: #1F5FBF; --on-blue: #FFFFFF;
   --amber: #B5771E; --amber-soft: #FFF4E2; --amber-ink: #85560F;
   --teal: #159A74; --teal-soft: #E5F4EE; --teal-ink: #0D6A4F;
   --green: #1D6B57; --green-soft: #E5F1EC;
   --brown: #8A5530; --brown-soft: #F6EDE4;
-  --good: #0CA30C; --good-ink: #0B7A0B; --warn: #FAB219; --bad: #D03B3B; --bad-ink: #B42828; --bad-soft: #FBEAEA; --void: #8593A6;
-  --acc: var(--blue); --series: var(--blue);
+  --good: #12805C; --good-ink: #0B7A0B; --warn: #B54708; --bad: #B42318; --bad-ink: #B42828; --bad-soft: #FDEBEB; --void: #8593A6;
+  --acc: #1F5FBF; --series: var(--blue);
   --held: rgba(181,119,30,.14); --log-bg: #F0F3F8;
   --shadow: 0 1px 2px rgba(15,39,68,.06), 0 4px 16px rgba(15,39,68,.05);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --page: #0A1524; --card: #102038; --panel: #142844;
-    --ink: #EEF2F8; --ink2: #C9D3E1; --muted: #9AA9BD;
-    --line: #24405F; --grid: #1C3350; --axis: #2E4A6B; --wash: #15294A;
+    --page: #0C111D; --card: #131A29; --panel: #182234;
+    --ink: #E4E7EC; --ink2: #C0C7D4; --muted: #98A2B3;
+    --line: #263244; --grid: #1D2939; --axis: #2E4A6B; --wash: #1A2433;
     --blue: #5B93E6; --blue-soft: #16325A; --blue-ink: #9BBEF2; --on-blue: #0A1524;
     --amber: #D69A3E; --amber-soft: #3A2A12; --amber-ink: #EDBB6E;
     --teal: #2DB88E; --teal-soft: #0F3A30; --teal-ink: #5BD6AE;
     --green: #6CC5AB; --green-soft: #0F3329;
     --brown: #DDA77E; --brown-soft: #35251A;
-    --good-ink: #5ADB5A; --bad-ink: #FF9090; --bad-soft: #3A1A1E; --held: rgba(214,154,62,.16); --log-bg: #0C1A2E;
+    --good-ink: #5ADB5A; --bad-ink: #FF9090; --bad-soft: #351A17; --held: rgba(214,154,62,.16); --log-bg: #0C1A2E;
     --shadow: none;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page: #0A1524; --card: #102038; --panel: #142844;
-  --ink: #EEF2F8; --ink2: #C9D3E1; --muted: #9AA9BD;
-  --line: #24405F; --grid: #1C3350; --axis: #2E4A6B; --wash: #15294A;
+  --page: #0C111D; --card: #131A29; --panel: #182234;
+  --ink: #E4E7EC; --ink2: #C0C7D4; --muted: #98A2B3;
+  --line: #263244; --grid: #1D2939; --axis: #2E4A6B; --wash: #1A2433;
   --blue: #5B93E6; --blue-soft: #16325A; --blue-ink: #9BBEF2; --on-blue: #0A1524;
   --amber: #D69A3E; --amber-soft: #3A2A12; --amber-ink: #EDBB6E;
   --teal: #2DB88E; --teal-soft: #0F3A30; --teal-ink: #5BD6AE;
   --green: #6CC5AB; --green-soft: #0F3329;
   --brown: #DDA77E; --brown-soft: #35251A;
-  --good-ink: #5ADB5A; --bad-ink: #FF9090; --bad-soft: #3A1A1E; --held: rgba(214,154,62,.16); --log-bg: #0C1A2E;
+  --good-ink: #5ADB5A; --bad-ink: #FF9090; --bad-soft: #351A17; --held: rgba(214,154,62,.16); --log-bg: #0C1A2E;
   --shadow: none;
 }
 * { box-sizing: border-box; }
