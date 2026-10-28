@@ -195,6 +195,8 @@ class JobCLI(unittest.TestCase):
             self.assertIn("设备锁", text, name)
             self.assertIn("任务预留", text, name)
             self.assertIn("终态自动释放", text, name)
+            self.assertIn("job:<任务>:<路径>", text, name)
+            self.assertIn("--ask", text, name)
 
     def test_submission_retries_same_request_and_recovers_without_another_job(self):
         posts, gets = [], []

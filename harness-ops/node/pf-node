@@ -9,6 +9,7 @@ Agent 每轮从这里开始（最短完整路径）：
   4. pf-node --research <研究ID> --detach <命令>  # 或 --experiment <提交> experiment <脚本>
   5. pf-node jobs --brief；pf-node status <job>
   6. pf-node research note <研究> "<回复>" --reply-to <留言> --decision adopt|defer|reject
+     图片/附件引用 job:<任务>:<路径>；需要人定的事用 --ask 提问，然后继续做其他方向。
   7. pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>
   设备锁序列化实际设备操作；任务预留只在执行中占调度资源，终态自动释放。
   宿主完成未知时仅由管理员用 reset 一步重置，不代表设备已恢复。
