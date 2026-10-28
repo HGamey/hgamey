@@ -288,18 +288,9 @@ class NodeDeployments:
             return "commit the source result first; use retry-finalize if storage is blocked"
         if row["state"] not in {"blocked", "done"} or status.get("state") != "finished":
             return "recovery requires a finished job"
-        execution = status.get("execution") or {}
-        if execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False:
-            return "source worker completion is unconfirmed; reconcile its execution domain first"
-        contained = (row["spec"].get("execution_policy") == "contained"
-                     or (execution.get("process_management") or {}).get("policy") == "contained")
-        if contained:
-            problem = self.jobs.host_completion_problem(row["job_id"], status)
-            if problem:
-                return problem
-        elif (status.get("phase") != "finished"
-              or (execution.get("owned_process_group") or {}).get("status") != "absent"):
-            return "source original process group completion is unconfirmed"
+        problem = self.jobs.host_execution_problem(row["job_id"], status)
+        if problem:
+            return problem
         if (not report or report.get("phase") != "recovery_required"
                 or report["recovery"].get("status") != "required"):
             return "no recoverable deployment context is reported; inspect the original job and lease"

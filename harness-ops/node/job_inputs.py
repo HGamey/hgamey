@@ -128,27 +128,17 @@ def _node_id(jobs):
 
 
 def _source_ready(jobs, jid):
-    from job_runtime import runner_alive
-
     _job_id(jid)
     try:
         raw = jobs._read_meta(jid)
         if not isinstance(raw, dict) or (raw.get("execution") or {}).get("kind") != "supervised-v1":
             raise InputError(409, "source_unavailable", "source job lacks verifiable host completion evidence")
         meta = jobs.status(jid)
-        execution = meta.get("execution") or {}
-        if (meta.get("state") != "finished" or execution.get("worker_alive") is not False
-                or runner_alive(jobs._read_root, jid)):
-            raise InputError(409, "source_unavailable", "source job must be finished without a live worker")
-        policy = (execution.get("process_management") or {}).get("policy")
-        row = jobs.dispatch.queue.get(jid)
-        if policy == "contained" or (row and row["spec"].get("execution_policy") == "contained"):
-            problem = jobs.host_completion_problem(jid, meta)
-            if problem:
-                raise InputError(409, "source_unavailable", "source host handback is unconfirmed: " + problem)
-        elif (meta.get("phase") != "finished" or meta.get("lost")
-              or (execution.get("owned_process_group") or {}).get("status") != "absent"):
-            raise InputError(409, "source_unavailable", "source original process group completion is unconfirmed")
+        if meta.get("lost"):
+            raise InputError(409, "source_unavailable", "source job is lost and cannot be consumed as an input")
+        problem = jobs.host_execution_problem(jid, meta)
+        if problem:
+            raise InputError(409, "source_unavailable", problem)
     except (FileNotFoundError, KeyError) as error:
         raise InputError(404, "source_not_found", "source job is unavailable") from error
 
