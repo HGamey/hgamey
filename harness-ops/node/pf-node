@@ -10,7 +10,7 @@ Agent 每轮从这里开始：
 
   pf-node phonefarm eval --request r.json --json --lock-label judge
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
-  pf-node adb -s 91253241019A shell 'su -c "cat /sys/class/kgsl/kgsl-3d0/max_pwrlevel"'
+  pf-node --research <研究> --detach adb -s 91253241019A shell 'su -c "cat /sys/class/kgsl/kgsl-3d0/max_pwrlevel"'
   pf-node devlock status
   pf-node --detach phonefarm autoloop ...      # stdout 只回任务 id；stderr 显示提交阶段和 request_id
   pf-node --request-id study-001 --resource device:oneplus phonefarm eval ...
@@ -145,7 +145,8 @@ Agent 每轮从这里开始：
 - job-events 每次只读取一页（limit 1–200），不等待、不自动重试/分页或确认消费；失败保留原 cursor。
   status_revision 仅覆盖 Node 的 committed_status，不能据相同版本推断 worker、lease、日志或控制资格未变。
   事件不是无损执行历史；head 不是已处理位置，消费者处理后自行保存 next_cursor。Ctrl-C 不取消任务。
-- --device-access none|write|recovery 显式声明设备访问；recovery 必须配 --recovery-for 原资源保留任务 ID，
+- --device-access none|write|recovery 显式声明设备访问；adb 未声明时按 none 提交，不预留整机，
+  写设备必须显式 write；其他命令未声明保持原默认。recovery 必须配 --recovery-for 原资源保留任务 ID，
   资源由父任务继承，不能同时传 --resource。恢复任务不自动解除原屏障；核查后另行 release。
 - --device-binding FILE 只读 devices-resolve 保存的 JSON 文件，核其 node_id 与当前目标；只将 binding 放入 job spec，
   不自行给 argv 注入参数。仅配置 phonefarm 的 gray-layer session 支持，禁止 --exe 和 none/recovery 覆盖；
@@ -408,7 +409,8 @@ def find_gray_session_request(request_id):
 
 
 def submit_job(spec, body, request_id):
-    print(f"pf-node: 提交 request_id={request_id}；结果未知时用 {continuation()} request {request_id} 找回任务。",
+    print(f"pf-node: 提交 request_id={request_id}；结果未知时用 {continuation()} request {request_id} 找回任务，"
+          "再用 status <job> 或 cancel <job> 核查/撤销。",
           file=sys.stderr, flush=True)
     headers = {"X-Job": json.dumps(spec, ensure_ascii=True), "X-Request-ID": request_id,
                "Content-Type": "application/gzip"}
@@ -438,7 +440,8 @@ def submit_job(spec, body, request_id):
         sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{e}" + (f"：{reason}" if reason else ""))
     except (SystemExit, ValueError, KeyError, KeyboardInterrupt, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         print(f"pf-node: 提交结果未知，request_id={request_id}：{e}；"
-              f"请用 {continuation()} request {request_id} 查询；不要换 request_id 重复提交。", file=sys.stderr)
+              f"请用 {continuation()} request {request_id} 查询，再用 status <job> 或 cancel <job> 核查/撤销；"
+              "不要换 request_id 重复提交。", file=sys.stderr)
         raise SystemExit(130 if isinstance(e, KeyboardInterrupt) else 1)
 
 
@@ -644,8 +647,8 @@ def follow(jid):
             cancel_job(jid)
         except SystemExit as e:
             print(f"\npf-node: 未确认取消请求：{e}", file=sys.stderr)
-        print(f"pf-node: 已停止本地跟随（130）；收尾仍由节点上的独立 worker 负责。"
-              f"请用 {continuation()} status {jid} 或 wait {jid} 确认；这不是任务终态或设备恢复证明。", file=sys.stderr)
+        print(f"pf-node: 已停止本地跟随（130）；收尾仍由节点上的独立 worker 负责，客户端中断不会撤销提交。"
+              f"请用 {continuation()} status {jid} 或 wait {jid} 确认，或用 cancel {jid} 撤销；这不是任务终态或设备恢复证明。", file=sys.stderr)
         # Do not download a changing output directory as if this were a terminal result.
         raise SystemExit(130)
 
@@ -1674,6 +1677,9 @@ def main():
         spec["execution_policy"] = execution_policy
     if device_access is not None:
         spec["device_access"] = device_access
+    elif binname == "adb":
+        # Direct commands default to no reservation; writes must be explicit.
+        spec["device_access"] = "none"
     if recovery_for is not None:
         spec["recovery_for"] = recovery_for
     meta = submit_job(spec, body, request_id)

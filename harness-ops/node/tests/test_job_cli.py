@@ -102,6 +102,41 @@ class JobCLI(unittest.TestCase):
                                     (f"/jobs/{JOB}/kill", None),
                                     (f"/jobs/{JOB}/queue-release", {"note": "checked device state"})])
 
+    def test_direct_adb_defaults_no_reservation_supports_research_and_interrupt_guidance(self):
+        cli = self.load_cli()
+        main = cli["main"]
+        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "jobs.research-link-v1", "jobs.recovery-v1"])
+        cases = [
+            (["--research", "sr-ab", "--detach", "adb", "-s", "serial", "shell", "settings list global"],
+             {"device_access": "none", "research_id": "sr-ab"}),
+            (["--device-access", "write", "--detach", "adb", "-s", "serial", "shell", "setprop x y"],
+             {"device_access": "write"}),
+            (["--detach", "phonefarm", "eval"], {}),
+        ]
+        for command, expected in cases:
+            pack = mock.Mock(side_effect=lambda values: (values, b"packed"))
+            submit = mock.Mock(return_value={"id": JOB, "phase": "queued"})
+            with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(node).encode()),
+                                 pack=pack, submit_job=submit), \
+                    mock.patch.object(sys, "argv", [str(CLI), *command]), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                main()
+            spec = submit.call_args.args[0]
+            for key, value in expected.items():
+                self.assertEqual(spec[key], value)
+            if not expected:
+                self.assertNotIn("device_access", spec)
+        self.assertIn("pf-node --research <研究> --detach adb", cli["__doc__"])
+
+        stderr = io.StringIO()
+        with mock.patch.dict(cli["submit_job"].__globals__,
+                             call=mock.Mock(side_effect=KeyboardInterrupt)), \
+                contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as stopped:
+            cli["submit_job"]({"bin": "adb"}, b"", "interrupt-id")
+        self.assertEqual(stopped.exception.code, 130)
+        for text in ("request interrupt-id", "status", "cancel"):
+            self.assertIn(text, stderr.getvalue())
+
     def test_submission_retries_same_request_and_recovers_without_another_job(self):
         posts, gets = [], []
         meta = {"id": JOB, "state": "running", "phase": "queued", "request_id": "study-001"}
