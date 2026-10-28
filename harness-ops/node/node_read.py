@@ -15,7 +15,7 @@ import job_input_archive
 from artifact_io import relative_path, EXPORT_LIMITS
 from game_assets import ASSET_WRITE_LIMITS
 from job_policy import process_policies
-from runtime_identity import runtime_snapshot
+from runtime_identity import read_build_info, runtime_snapshot
 
 
 def page_size(query, default=50):
@@ -110,7 +110,11 @@ class NodeRead:
                 ["git", "status", "--porcelain", "--untracked-files=no"], cwd=source_dir,
                 stderr=subprocess.DEVNULL, timeout=3).strip())
         except (OSError, subprocess.SubprocessError):
-            pass
+            # A deployed release is a plain tree; deploy.py names its commit in runtime-build.json.
+            declared = read_build_info(source_dir)
+            if declared is not None:
+                self.service.update(revision=declared["revision"], dirty=declared["dirty"],
+                                    source_kind="installation_declaration")
         jobs.service_at_launch = {"node_id": self.node_id, "service": copy.deepcopy(self.service)}
 
     def refresh_runtime(self):

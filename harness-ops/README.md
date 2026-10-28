@@ -7,7 +7,7 @@
 | `node/node_service.py` | 节点上的 HTTP 服务：接任务、跑 phonefarm / game_opt_loop、回传输出 |
 | `node/pf-node` | 开发机上的客户端，把命令派到一台节点执行 |
 | `node/pf-fleet` | 共享节点目录；显式 legacy 注册表可选空闲节点，迁移入口暂不支持 |
-| `node/pf-node-deploy`、`node/update_node.sh` | 让节点从 GitHub 拉代码、编译、更新 |
+| `../deploy.py`、`node/deploy_overlay.py` | 在节点上按一个提交构建、发布、重启并核对版本 |
 | `node/dash.py`、`node/dash_goals.py`、`node/dash_static/` | 网页任务、游戏、研究协助、节点目录与控制；查看和操作分别授权 |
 | `node/node_remote.py`、`skills/hgamey-remote/` | 远程调试：个人操作员令牌接管设备（HTTP `/remote`、MCP `/remote/mcp`、网页 `/dash/control`），用法见 skill |
 | `node/run_node.sh` | 在节点上前台运行节点服务和 cloudflared 隧道 |
@@ -27,7 +27,7 @@ node/pf-node jobs --query Doom                         # 任意任务检索、�
 node/pf-node artifacts <job-id>                        # 列举输出；用 out <job-id> <path> 下载
 node/pf-node results list --game-id doom3               # 显式结果索引；register/import 登记已有小报告
 node/pf-node results search --node lab-a --node lab-b   # 目录绑定的远端索引；各自分页，详情和原件回源
-node/pf-node-deploy --restart                          # 运维操作：更新并重启，非上手必需
+python3 ../deploy.py rhodes1                           # 运维操作，在节点上运行：部署 origin/main
 ```
 
 节点 URL/凭据必须显式设置；TOKEN 与 TOKEN_FILE 环境变量不可同时设置，`--token-file` 可显式覆盖。凭据不进仓库。

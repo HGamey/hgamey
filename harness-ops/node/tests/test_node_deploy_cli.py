@@ -113,39 +113,27 @@ class NodeDeployCLI(unittest.TestCase):
                     for value in payloads.values():
                         self.assertNotIn(value.decode().strip(), output_text)
 
-    def test_wrapper_preserves_target_and_single_restart_never_retries_unknown(self):
-        # Only this temporary sibling is executed by the copied wrapper. It
-        # records invocation facts and never performs an update or restart.
+    def test_retired_wrapper_points_to_deploy_py_and_single_restart_never_retries_unknown(self):
+        # pf-node-deploy used to make the node pull each old repository from GitHub; it now
+        # refuses before contacting any node. The temporary sibling only records calls.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             wrapper = root / "pf-node-deploy"
             wrapper.write_bytes((NODE / "pf-node-deploy").read_bytes())
             recorder = root / "pf-node"
             recorder.write_text(f"#!{sys.executable}\n" + """
-import json, os, sys
-with open(os.environ['FIXTURE_CALLS'], 'a') as output:
-    output.write(json.dumps({'argv':sys.argv[1:], 'url':os.environ['PF_NODE_URL'],
-                             'node_id':os.environ['PF_NODE_ID']})+'\\n')
-sys.exit(int(os.environ.get('FIXTURE_UPDATE_EXIT','0')) if 'update_node' in sys.argv else 1)
+import os
+open(os.environ['FIXTURE_CALLS'], 'a').write('called\\n')
 """)
             recorder.chmod(0o700)
             log = root / "calls.jsonl"
             env = {"PATH": os.defpath, "PF_NODE_URL": "https://fixture.invalid/service",
-                   "PF_NODE_ID": NODE_ID, "PF_NODE_TOKEN": "fixture-only",
-                   "FIXTURE_CALLS": str(log)}
+                   "PF_NODE_ID": NODE_ID, "PF_NODE_TOKEN": "fixture-only", "FIXTURE_CALLS": str(log)}
             result = subprocess.run(["/bin/zsh", str(wrapper), "--restart", "harness-ops@fixture"],
                                     env=env, capture_output=True, text=True, timeout=5)
-            self.assertEqual(result.returncode, 1)  # The restart substitute reports unknown.
-            calls = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual([call["argv"] for call in calls], [
-                ["--device-access", "none", "--label", "deploy", "update_node", "--git", "harness-ops@fixture"], ["admin-restart"]])
-            self.assertTrue(all(call["url"] == env["PF_NODE_URL"] and call["node_id"] == NODE_ID for call in calls))
-            log.unlink()
-            failed = subprocess.run(["/bin/zsh", str(wrapper), "--restart"],
-                                    env={**env, "FIXTURE_UPDATE_EXIT": "7"}, capture_output=True,
-                                    text=True, timeout=5)
-            self.assertEqual(failed.returncode, 7)
-            self.assertEqual(len(log.read_text().splitlines()), 1)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("deploy.py", result.stderr)
+            self.assertFalse(log.exists())
 
         requests = []
 

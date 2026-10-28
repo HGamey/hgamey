@@ -29,28 +29,27 @@ class NodeUpdateTests(unittest.TestCase):
         return subprocess.run(['/bin/zsh', str(NODE / 'update_node.sh'), *map(str, args)],
                               env=env, text=True, capture_output=True, timeout=20)
 
-    def test_local_git_publication_and_explicit_rollback_preserve_unmanaged_data(self):
+    def test_git_mode_is_retired_in_favour_of_deploy_py(self):
+        # HGamey is one repository now; per-repository --git staging would pull the frozen old repos.
         with tempfile.TemporaryDirectory(prefix='node-update-git-') as temporary:
             base = Path(temporary)
-            home, install, source = base / 'home', base / 'install with spaces', base / 'origin'
+            home, install = base / 'home', base / 'install'
             home.mkdir()
-            (source / 'node').mkdir(parents=True)
-            (source / 'node' / 'module.py').write_text('VERSION = "new"\n')
-            for relative in ('tasks/old-evidence.bin', 'loop_v1/runs/old-evidence.bin'):
-                item = source / 'node' / relative
-                item.parent.mkdir(parents=True)
-                item.write_bytes(b'historical fixture; not code')
+            (install / 'harness-ops').mkdir(parents=True)
+            result = self.cli(self.env(home), '--install-root', install, '--offline', '--git', 'harness-ops@origin/main')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('deploy.py', result.stderr)
+            self.assertEqual(result.stdout, '')
+            self.assertFalse((install / '.updates').exists())
+
+    def test_upload_publication_and_explicit_rollback_preserve_unmanaged_data(self):
+        with tempfile.TemporaryDirectory(prefix='node-update-upload-') as temporary:
+            base = Path(temporary)
+            home, install, upload = base / 'home', base / 'install with spaces', base / 'upload'
+            home.mkdir()
+            (upload / 'harness-ops').mkdir(parents=True)
+            (upload / 'harness-ops' / 'module.py').write_text('VERSION = "new"\n')
             env = self.env(home)
-            for argv in (['init', '-q', '-b', 'main', str(source)],
-                         ['-C', str(source), 'add', 'node/'],
-                         ['-C', str(source), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-                          'commit', '-qm', 'synthetic update']):
-                subprocess.run(['git', *argv], env=env, check=True, capture_output=True, timeout=10)
-            revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], env=env, text=True).strip()
-            # Real git uses a command-scoped URL rewrite into this one local repo.
-            # No SSH/network, global config, package build or production checkout.
-            env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='url.' + source.as_uri() + '.insteadOf',
-                       GIT_CONFIG_VALUE_0='git@github.com:HGamey/harness-ops.git')
             target = install / 'harness-ops'
             target.mkdir(parents=True)
             old = target / 'module.py'
@@ -60,19 +59,18 @@ class NodeUpdateTests(unittest.TestCase):
             data.parent.mkdir()
             data.write_bytes(b'original evidence')
             before = (data.read_bytes(), data.stat().st_mtime_ns)
-            result = self.cli(env, '--install-root', install, '--offline', '--git', 'harness-ops@origin/main')
+            result = self.cli(env, '--install-root', install, '--offline', upload)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
             self.assertEqual(report['status'], 'succeeded')
             self.assertEqual(old.read_text(), 'VERSION = "new"\n', result.stderr)
-            self.assertEqual(json.loads((target / 'runtime-build.json').read_text())['revision'], revision)
+            # An undeclared upload must not keep the old build identity.
+            self.assertEqual((target / 'runtime-build.json').read_text(), 'null\n')
             receipt = json.loads(Path(report['receipt']).read_text())
             self.assertEqual(receipt['guard']['kind'], 'administrator_asserted_offline')
             self.assertFalse(receipt['guard']['all_participants_verified'])
             self.assertEqual((data.read_bytes(), data.stat().st_mtime_ns), before)
             self.assertFalse((home / 'node').exists())
-            self.assertFalse((target / 'tasks').exists())
-            self.assertFalse((target / 'loop_v1' / 'runs').exists())
             # A later edit is not silently destroyed by a rollback request.
             old.write_text('later administrator edit\n')
             refused = self.cli(env, '--install-root', install, '--offline', '--rollback', report['run_id'])

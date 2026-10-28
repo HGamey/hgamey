@@ -110,7 +110,7 @@ def report(node):
                 add("deploy.overlay", "deployment", "ok", "overlay 部署游标",
                     "安装目录由符号链接游标指向完整 release；升级与回滚都是单步原子切换。",
                     {"cursor": os.readlink(link), "target": target, "releases": count},
-                    "升级/回滚继续走 deploy_overlay.py；不要直接改写游标目录或 rsync 覆盖安装根。")
+                    "升级用仓库根目录 deploy.py，回滚即部署上一个提交；不要直接改写游标目录或 rsync 覆盖安装根。")
             else:
                 add("deploy.overlay", "deployment", "error", "overlay 部署游标",
                     "游标指向的目标不存在（悬空链接）；运行中的服务仍在用旧 inode，但重启会失败。",

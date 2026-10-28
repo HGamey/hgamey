@@ -176,6 +176,14 @@ class RuntimeIdentityTests(unittest.TestCase):
         launch = json.loads(Path(self.jobs.path(job["id"], "launch.json")).read_text())
         self.assertEqual(launch["service_at_launch"], execution["service_at_launch"])
 
+    def test_release_without_checkout_reports_its_declared_commit(self):
+        (self.root / "runtime-build.json").write_text(json.dumps({"schema": "hgamey/source-build@1",
+            "repository": "HGamey/hgamey", "revision": "a" * 40, "dirty": False}))
+        with patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root.parent)}):
+            service = NodeRead(self.jobs, self.jobs.data_root, str(self.root)).service
+        self.assertEqual((service["revision"], service["dirty"], service["source_kind"]),
+                         ("a" * 40, False, "installation_declaration"))
+
     def test_cache_replacement_and_job_reports_stay_separate(self):
         initial = self.get("/node")
         self.assertIn("node.runtime-v1", initial["capabilities"])

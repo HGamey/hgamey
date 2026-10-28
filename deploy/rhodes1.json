@@ -1,0 +1,14 @@
+{
+ "schema": "hgamey/deploy-node@1",
+ "root": "~/node",
+ "work": "/data2/kamico/hgamey-node/deploy-work",
+ "jobs_roots": ["~/node/phonefarm/_jobs", "/data2/kamico/hgamey-node/node-b-data/jobs"],
+ "stop": [["systemctl", "--user", "stop", "hgamey-hub.service", "hgamey-node-b.service"]],
+ "start": [["systemctl", "--user", "start", "hgamey-hub.service", "hgamey-node-b.service"]],
+ "nodes": [
+  {"url": "http://127.0.0.1:8765", "token_file": "~/.config/hgamey/node.token"},
+  {"url": "http://127.0.0.1:8766", "token_file": "/data2/kamico/hgamey-node/node-b.token"}
+ ],
+ "gray_layer": false,
+ "path_prepend": ["~/.cargo/bin"]
+}

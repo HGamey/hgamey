@@ -509,7 +509,7 @@ def parser():
     ap.add_argument("--jobs-root", help="existing node jobs root to guard publication (absolute)")
     ap.add_argument("--offline", action="store_true", help="administrator asserts the installation is offline; not a participant audit")
     modes = ap.add_mutually_exclusive_group()
-    modes.add_argument("--git", action="store_true", help="stage selected repositories before publication")
+    modes.add_argument("--git", action="store_true", help="retired; deploy commits with deploy.py at the repository root")
     modes.add_argument("--rollback", metavar="RUN_ID", help="restore a recorded update, refusing changed destinations")
     ap.add_argument("targets", nargs="*", help="repo[@ref] with --git, otherwise one uploaded directory")
     return ap
@@ -521,6 +521,9 @@ def main(argv=None):
     try:
         if args.rollback and args.targets:
             raise UpdateError("rollback does not accept update targets")
+        if args.git:
+            raise UpdateError("--git per-repository updates are retired: HGamey is one repository (HGamey/hgamey); "
+                              "deploy a commit with deploy.py at its root")
         upload = None
         if not args.git and not args.rollback:
             if len(args.targets) != 1:

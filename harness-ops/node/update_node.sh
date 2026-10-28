@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Code preparation remains compatible with the existing git/prebuilt workflow.
+# --prepare-internal only served the retired per-repository --git updates (see node_update.py);
+# code is deployed with deploy.py at the HGamey/hgamey root.
 # The Python supervisor owns locking, guarded publication, receipts and rollback.
 set -euo pipefail
 SCRIPT_DIR=${0:A:h}

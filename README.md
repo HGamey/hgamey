@@ -11,6 +11,8 @@
 
 一个提交就是一个版本：运行组件按同一 SHA 构建、测试和部署。目录名与节点上的运行布局（`~/node/{harness-ops,phonefarm,game_opt_loop}`）一致，组件之间的 `../phonefarm`、`../refbench` 等相对路径不变。
 
+部署：在节点上运行 `python3 deploy.py <节点名>`（默认 origin/main，`--ref` 指定提交，`--status` 查看节点实际运行的版本）。节点配置在 `deploy/<节点名>.json`，只有路径和服务命令，不含凭据。回滚就是部署上一个提交。
+
 各组件测试（在仓库根目录执行）：
 
 ```sh
