@@ -54,7 +54,8 @@ def path(value):
 
 def run(argv, **kwargs):
     say("$ " + " ".join(map(str, argv)))
-    subprocess.run([str(a) for a in argv], check=True, **kwargs)
+    # Build and service commands talk on stderr; stdout carries only the receipt JSON.
+    subprocess.run([str(a) for a in argv], check=True, stdout=sys.stderr, **kwargs)
 
 
 def git(*args):
