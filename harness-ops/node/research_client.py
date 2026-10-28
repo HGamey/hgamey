@@ -192,6 +192,15 @@ def _data(path):
     return value
 
 
+# What to do next for refusals an agent can fix itself; keyed by the node's safe error code, never its text.
+CODE_MESSAGES = {
+    "research_guidance_unanswered": "这个研究里还有人工留言没回应，回应之前不能交付或给方向下结论："
+                                    "pf-node checkin 列出要回应的留言，"
+                                    "用 pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject 回应",
+    "research_owned": "这个研究已有负责人；换负责人由人在网页上操作",
+}
+
+
 class RequestError(Exception):
     def __init__(self, message, *, status=None, code=None, current_revision=None, retry_after_seconds=None):
         super().__init__(message)
@@ -261,7 +270,9 @@ class Client:
             pass
         finally:
             error.close()
-        if status == 409:
+        if code in CODE_MESSAGES:
+            message = CODE_MESSAGES[code]
+        elif status == 409:
             message = "操作内容、对象版本、原目标或原件状态冲突；保留原 ID，先读取当前状态"
         elif 300 <= status < 400:
             message = "节点返回重定向；未转发凭据或重发请求"

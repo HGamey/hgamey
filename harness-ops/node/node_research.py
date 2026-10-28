@@ -28,6 +28,8 @@ STATES = {
     "request": {"open", "closed"}, "feedback": set(), "note": set(),
 }
 DECISIONS = {"adopt", "defer", "reject"}
+# States that conclude work. An agent only reaches them after answering every human note in that research.
+CONCLUDING = {"research": {"delivered", "closed"}, "direction": {"verified", "no_gain", "rejected", "deferred"}}
 
 
 class ResearchError(ValueError):
@@ -317,6 +319,21 @@ class NodeResearch:
         return db.execute("SELECT r.* FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id AND r.revision=o.revision WHERE o.kind=? AND o.id=?", (kind, oid)).fetchone()
 
     @staticmethod
+    def _unanswered_guidance(db, research_id, agent):
+        """Human notes (written on the page) in `research_id` that `agent` has not replied to, oldest first."""
+        rows = db.execute("SELECT r.id, r.data, r.audit FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id "
+                          "AND r.revision=o.revision WHERE o.kind='note' AND r.research_id=? ORDER BY r.sequence",
+                          (research_id,)).fetchall()
+        human, answered = [], set()
+        for row in rows:
+            data, audit = json.loads(row["data"]), json.loads(row["audit"])
+            if audit.get("actor_label") == agent and data.get("reply_to"):
+                answered.add(data["reply_to"])
+            elif audit.get("auth_channel") == "dashboard_steer":
+                human.append(row["id"])
+        return [note for note in human if note not in answered]
+
+    @staticmethod
     def _reference(db, kind, oid, revision=None, research_id=None):
         row = (db.execute("SELECT * FROM revisions WHERE kind=? AND id=? AND revision=?", (kind, oid, revision)).fetchone()
                if revision is not None else NodeResearch._latest(db, kind, oid))
@@ -549,6 +566,12 @@ class NodeResearch:
                     raise ResearchError(409, "research_owned", f"this research belongs to {before}; a human reassigns it",
                                         owner=before)
             rid, observations = self._validate_links(db, kind, oid, value, old)
+            if (agent is not None and value.get("state") in CONCLUDING.get(kind, ())
+                    and (json.loads(old["data"])["state"] if old else None) != value["state"]):
+                waiting = self._unanswered_guidance(db, rid, agent)
+                if waiting:
+                    raise ResearchError(409, "research_guidance_unanswered",
+                                        "answer the human notes in this research before concluding it", notes=waiting)
             if criteria_bindings is not None:
                 observations["criteria_bindings"] = criteria_bindings
             if deliverable_bindings is not None:

@@ -258,6 +258,16 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", reassign)[0], 201)
         self.assertEqual(self.duties(token_a)["research"]["mine"], [])
 
+        # The new owner inherits the human's guidance: its check-in lists the note, and it cannot deliver until it
+        # answers it itself, so a handover does not drop what the human asked for.
+        self.assertIn("n-guide", [duty["target"] for duty in self.duties(token_b)["duties"] if duty["kind"] == "answer_note"])
+        code, _, err = self.pf(token_b, "research", "deliver", "sr-genshin", "--summary", "1080p 自训练超分，帧率 +18%",
+                               "--artifact", f"job:{self.jid}")
+        self.assertNotEqual(code, 0)
+        self.assertIn("code=research_guidance_unanswered", err)
+        self.assertEqual(self.pf(token_b, "research", "note", "sr-genshin", "接手：照旧先做 1080p，不动 HUD",
+                                 "--reply-to", "n-guide", "--decision", "adopt")[0], 0)
+
         # Delivery needs a deliverable; the CLI writes summary, artifact and scope together.
         current = self.cli("GET", "/research-state/research/sr-genshin")[1]
         bare = dict(self.write("b-bare", {**current["data"], "state": "delivered"}), base_revision=current["revision"], reason="done")
@@ -354,6 +364,45 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.pf(token, "research", "note", "sr-genshin", "采纳", "--reply-to", "n-guide",
                                  "--decision", "adopt")[0], 0)
         self.assertEqual(board._agents()[0]["owes"], ["plan_directions"])
+
+    def test_an_agent_cannot_conclude_its_research_while_a_human_note_is_unanswered(self):
+        # Agents forget to read the page, which is where a human steers. Until the owner answers every human note in
+        # its research it can neither conclude a direction nor deliver, and the CLI says what to do. Talking stays open.
+        self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
+            "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-genshin")[0], 0)
+        self.assertEqual(self.agent(token, "POST", "/research-state/direction/d-1080p", self.write(
+            "d-create", {"research_id": "sr-genshin", "title": "1080p 超分", "hypothesis": "1080p 渲染再超分到 2K"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/note/n-guide", self.write(
+            "web-guide", {"research_id": "sr-genshin", "text": "先做 1080p，别动 HUD", "reply_to": None, "decision": None}))[0], 201)
+
+        def conclude(operation):
+            return self.agent(token, "POST", "/research-state/direction/d-1080p", {
+                **self.write(operation, {"research_id": "sr-genshin", "title": "1080p 超分", "hypothesis": "1080p 渲染再超分到 2K",
+                                         "state": "no_gain", "state_reason": "帧率没涨"}),
+                "base_revision": 1, "reason": "量完了"})
+        status, refused = conclude("d-done")
+        self.assertEqual((status, refused["code"], refused["notes"]), (409, "research_guidance_unanswered", ["n-guide"]))
+        code, _, err = self.pf(token, "research", "deliver", "sr-genshin", "--summary", "完成", "--artifact", f"job:{self.jid}")
+        self.assertNotEqual(code, 0)
+        self.assertIn("code=research_guidance_unanswered", err)
+        self.assertIn("--reply-to <留言>", err)
+
+        self.assertEqual(self.pf(token, "research", "note", "sr-genshin", "采纳：先做 1080p", "--reply-to", "n-guide",
+                                 "--decision", "adopt")[0], 0)
+        self.assertEqual(conclude("d-done-2")[0], 201)
+        code, _, err = self.pf(token, "research", "deliver", "sr-genshin", "--summary", "完成", "--artifact", f"job:{self.jid}")
+        self.assertEqual(code, 0, err)
+        # A human closing a research on the page is not held back by notes nobody answered.
+        self.assertEqual(self.web("POST", "/research-state/note/n-later", self.write(
+            "web-later", {"research_id": "sr-genshin", "text": "再看看 HUD", "reply_to": None, "decision": None}))[0], 201)
+        current = self.cli("GET", "/research-state/research/sr-genshin")[1]
+        status, closed = self.web("POST", "/research-state/research/sr-genshin", {
+            **self.write("web-close", {**current["data"], "state": "closed", "state_reason": "人工结束"}),
+            "base_revision": current["revision"], "reason": "人工结束"})
+        self.assertEqual(status, 201, closed)
 
     def test_a_device_write_job_keeps_its_phone_between_its_locks(self):
         # A device-write job reserves the node's phones from claim until someone releases it. Between its
