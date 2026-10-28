@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: harness-ops node tests
+            command: python3 -m unittest discover -s harness-ops/node/tests
+          - name: refbench tests
+            command: (cd refbench && python3 -m unittest discover -s tests -p 'test_*.py')
+          - name: phonefarm tests
+            command: (cd phonefarm/src && cargo test)
+            rust: true
+            cache_workspace: phonefarm/src
+          - name: game_opt_loop tests
+            command: (cd game_opt_loop && cargo test)
+            rust: true
+            cache_workspace: game_opt_loop
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        if: matrix.rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo
+        if: matrix.rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.cache_workspace }}
+      - name: Run tests
+        run: ${{ matrix.command }}
