@@ -510,14 +510,34 @@ class CoreFlowTests(unittest.TestCase):
     def test_home_has_no_gol_or_demo_panels_and_reports_are_separate(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
-        server = (NODE / "dash.py").read_text(encoding="utf-8")
+        gol_script = (NODE / "dash_static/gol.js").read_text(encoding="utf-8")
         for element in ('id="now-text"', 'id="human"', 'id="goalmd"', 'id="dlg-new"'):
             self.assertNotIn(element, page, "GOL panels belong on the GOL page, not the home page")
         self.assertIn('href="/dash/gol"', page)
         self.assertIn('id="reports"', page)
-        self.assertIn('not r.get("demo")', server, "demo runs must not reach either page")
         for text in ("占用或待核查", "占用或状态待核查"):
             self.assertNotIn(text, script, "phone copy must follow the post-release state machine")
+
+        class DemoGoals:
+            def list(self):
+                return [{"run_id": "demo", "demo": True, "status": "running", "state": {}}]
+
+            def harness_support(self):
+                return {"ok": False}
+
+        class EmptyMonitor:
+            @staticmethod
+            def snapshot():
+                return {"devices": [], "lock": {"status": "free", "lease": {"entries": []}},
+                        "age_s": 1, "error": None, "deferred": False}
+
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service, board.goals, board.monitor = self.jobs, DemoGoals(), EmptyMonitor()
+        board.shot_dir, board.steered, board._steer_pass = str(self.tmp), lambda _h: False, lambda: "steer"
+        self.assertEqual(board.home(object())["runs"], [], "no demo run may reach either page's data")
+        self.assertIn('h.runs = (h.runs || []).filter(r => !r.demo);', gol_script)
+        self.assertIn('没有目标在跑', gol_script)
+        self.assertIn('还没有目标', gol_script, "an empty GOL must say there is no goal, never show a demo")
 
     def test_direction_list_exposes_hypothesis_for_task_page(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-direction-view", self.write(
