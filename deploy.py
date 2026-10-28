@@ -153,6 +153,7 @@ def build(sha, source, work, config):
     partial.mkdir(parents=True)
     env = dict(os.environ, HGAMEY_BUILD_REVISION=sha, HGAMEY_BUILD_DIRTY="false")
     env["PATH"] = os.pathsep.join([os.path.expanduser(p) for p in config.get("path_prepend", [])] + [env.get("PATH", os.defpath)])
+    env.update({key: os.path.expanduser(value) for key, value in config.get("build_env", {}).items()})
     for name, crate, executable in PROGRAMS:
         target = work / "target" / name
         run(["cargo", "build", "--release", "--locked", "-q"], cwd=source / crate, env=dict(env, CARGO_TARGET_DIR=str(target)))

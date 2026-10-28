@@ -1,0 +1,12 @@
+{
+ "schema": "hgamey/deploy-node@1",
+ "root": "/Users/mac/hgamey",
+ "work": "/Users/mac/hgamey/.deploy",
+ "jobs_roots": ["/Users/mac/hgamey/phonefarm/_jobs"],
+ "stop": [["sudo", "-n", "/bin/launchctl", "bootout", "system/com.hgamey.node"]],
+ "start": [["sudo", "-n", "/bin/launchctl", "bootstrap", "system", "/Library/LaunchDaemons/com.hgamey.node.plist"]],
+ "nodes": [{"url": "http://127.0.0.1:8765", "token_file": "/Users/mac/hgamey/.state/node.token"}],
+ "gray_layer": true,
+ "path_prepend": ["/opt/homebrew/bin"],
+ "build_env": {"ANDROID_NDK_HOME": "/Users/mac/hgamey/tools/ndk/android-ndk-r28c"}
+}
