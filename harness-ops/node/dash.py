@@ -34,6 +34,7 @@
 import collections, glob, hashlib, hmac, json, os, re, threading, time
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from device_scope import scope as device_scope
+import agent_duties
 from node_directory import DirectoryError
 from node_games import GameError, MAX_MANIFEST
 
@@ -906,6 +907,25 @@ class Dash:
         return [{"id": item["id"], "title": item["title"], "owner": item.get("owner"), "updated_at": item["updated_at"],
                  "jobs": jobs.get(item["id"], [])} for item in items]
 
+    def _agents(self):
+        """Every enabled agent as a human sees it: last check-in, what it says it is doing, what it still owes
+        (unanswered guidance comes first) and the research it owns. Same duties as its own check-in, read only."""
+        registry = getattr(self.job_service, "agents", None) if self.job_service else None
+        if registry is None:
+            return []
+        try:
+            out = []
+            for entry in registry.list():
+                if not entry.get("enabled", True):
+                    continue
+                owed = agent_duties.duties(self.job_service, entry["name"])
+                out.append({"name": entry["name"], "checkin_at": (entry.get("checkin") or {}).get("at"),
+                            "status": entry.get("status"), "owes": [duty["kind"] for duty in owed["duties"]],
+                            "research": [item["research_id"] for item in owed["research"]["mine"]]})
+            return out
+        except (OSError, ValueError, sqlite3.Error):
+            return []
+
     # ── 汇总 ──
     def home(self, h):
         """首页：手机槽位 + 目标运行列表。不含开发 agent 的任务、锁队列（那些在维护页）。"""
@@ -942,7 +962,7 @@ class Dash:
                                                        "holder": lock.get("held_by")}})
         while len(slots) < SLOTS_MIN:
             slots.append(None)
-        return {"now": _now(), "slots": slots, "tasks": self._tasks(), "fleet_age_s": snapshot["age_s"],
+        return {"now": _now(), "slots": slots, "tasks": self._tasks(), "agents": self._agents(), "fleet_age_s": snapshot["age_s"],
                 "fleet_err": snapshot["error"], "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
                 "busy": lock["status"] != "free",

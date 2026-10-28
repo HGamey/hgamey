@@ -329,6 +329,32 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual([(j["job_id"], j["label"], j["state"], j["actor_id"]) for j in tasks[0]["jobs"]],
                          [(jid, "selfsr 1080p A/B", "queued", "agent-a")])
 
+    def test_the_home_page_shows_each_agent_its_check_in_its_status_and_what_it_owes(self):
+        # A human sees every agent on the home page: when it last checked in, what it says it is doing,
+        # what it still owes (guidance it has not answered comes first) and the research it owns.
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(board._agents(), [{"name": "agent-a", "checkin_at": None, "status": None,
+                                            "owes": ["post_status"], "research": []}])
+        self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
+            "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)
+        self.assertEqual(self.pf(token, "research", "claim", "sr-genshin")[0], 0)
+        self.assertEqual(self.pf(token, "agents", "status", "agent-a", "规划超分方向")[0], 0)
+        checked_in = self.duties(token)["at"]
+        self.assertEqual(self.web("POST", "/research-state/note/n-guide", self.write(
+            "web-guide", {"research_id": "sr-genshin", "text": "先做 1080p，别动 HUD", "reply_to": None, "decision": None}))[0], 201)
+        [agent] = board._agents()
+        self.assertAlmostEqual(agent["checkin_at"], checked_in, delta=5)
+        self.assertEqual((agent["status"]["text"], agent["owes"], agent["research"]),
+                         ("规划超分方向", ["answer_note", "plan_directions"], ["sr-genshin"]))
+        # Reading the home page is not a check-in: the guidance stays new for the agent's next one.
+        self.assertEqual([duty["unread"] for duty in self.duties(token)["duties"] if duty["kind"] == "answer_note"], [True])
+        self.assertEqual(self.pf(token, "research", "note", "sr-genshin", "采纳", "--reply-to", "n-guide",
+                                 "--decision", "adopt")[0], 0)
+        self.assertEqual(board._agents()[0]["owes"], ["plan_directions"])
+
     def test_a_device_write_job_keeps_its_phone_between_its_locks(self):
         # A device-write job reserves the node's phones from claim until someone releases it. Between its
         # own locks (an experiment cooling the phone, say) its phone still shows it and the others show the

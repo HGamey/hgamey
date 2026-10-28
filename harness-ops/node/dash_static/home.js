@@ -126,7 +126,7 @@
       const h = await api("/dash/api/home");
       S.home = h;
       $("live").className = "live ok"; $("live-text").textContent = `实时 · ${hm(h.now)}`;
-      renderPhones(h); renderTasks(h); renderSteerBtn(h); renderRunSel(h); renderNow();
+      renderPhones(h); renderTasks(h); renderAgents(h); renderSteerBtn(h); renderRunSel(h); renderNow();
     } catch (e) { $("live").className = "live bad"; $("live-text").textContent = "连不上手机节点"; }
   }
 
@@ -197,6 +197,23 @@
     const tasks = h.tasks || [];
     $("tasks").innerHTML = tasks.map((t) => `<li data-task="${esc(t.id)}">${taskLink(t)} · ${esc(t.owner || "无人负责")}${t.jobs.length ? " · " + taskJobs(t) : ""} · ${esc(hm(t.updated_at))}</li>`).join("")
       || `<li>没有进行中的任务</li>`;
+  }
+
+  const DUTY = {answer_note: "回应留言", process_feedback: "处理反馈", unblock_job: "放行任务", post_status: "报状态",
+                plan_directions: "写方向", deliver: "交付"};
+  const since = (now, at) => {
+    if (!at) return "从未签到";
+    const m = Math.max(0, Math.round((now - at) / 60));
+    return m < 1 ? "刚签到" : m < 60 ? `${m} 分钟前签到` : `${Math.round(m / 60)} 小时前签到`;
+  };
+  function renderAgents(h) {
+    const agents = h.agents || [];
+    $("agents").innerHTML = agents.map((a) => {
+      const owes = a.owes.length ? "欠：" + [...new Set(a.owes)].map((k) => DUTY[k] || k).join("、") : "没有待办";
+      const doing = a.status ? `${esc(a.status.text)}（${esc(hm(a.status.at))}）` : "没报过状态";
+      const mine = a.research.length ? " · 负责 " + a.research.map((id) => taskLink({id})).join("、") : "";
+      return `<li data-agent="${esc(a.name)}"><b>${esc(a.name)}</b> · ${esc(since(h.now, a.checkin_at))} · ${doing} · ${esc(owes)}${mine}</li>`;
+    }).join("") || `<li>还没有注册 agent</li>`;
   }
 
   // ───────── 「现在」一行：现状 + 下一步 ─────────
