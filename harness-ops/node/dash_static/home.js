@@ -35,7 +35,7 @@
   }
   const LAYER = { sysparam: "改系统设置", gray: "精简画面步骤", upop: "改画面算法", shader: "改画面算法" };
   const STOP = { target_reached: "达到目标了", budget_exhausted: "预算用完了", no_gain: "连续几代都没有收益，这条路走不通", human_stop: "你叫停的", error: "出错停下了" };
-  const S = { home: null, runId: null, userPicked: false, run: null, humanDirty: false, humanBase: null, histOpen: null, draftId: null };
+  const S = { home: null, runId: null, userPicked: false, run: null, humanDirty: false, humanBase: null, histOpen: null, draftId: null, researchDraft: null };
 
   async function api(url, body) {
     const opt = body === undefined ? { cache: "no-store", credentials: "same-origin" }
@@ -170,7 +170,7 @@
     if (!runs.length) {
       sel.hidden = true; S.runId = null; S.run = null;
       $("run-status").textContent = "还没有目标"; $("run-status").className = "spill"; $("run-demo").hidden = true; $("run-when").textContent = "";
-      $("run-body").innerHTML = `<p class="run-title">还没有目标</p><p class="run-intent">点右上角「＋ 新目标」，用一句话告诉 harness 你想要什么。</p>`;
+      $("run-body").innerHTML = `<p class="run-title">还没有目标</p><p class="run-intent">点右上角「新建 GOL 目标」，用一句话告诉 harness 你想要什么。</p>`;
       $("tl").innerHTML = ""; return;
     }
     if (!S.userPicked || !runs.find((r) => r.run_id === S.runId)) S.runId = runs[0].run_id;
@@ -219,7 +219,7 @@
   // ───────── 「现在」一行：现状 + 下一步 ─────────
   function renderNow() {
     const h = S.home, r = S.run;
-    let now = "没有目标在跑。", next = "点右上角「＋ 新目标」，用一句话告诉 harness 你想要什么。";
+    let now = "没有目标在跑。", next = "点右上角「新建 GOL 目标」，用一句话告诉 harness 你想要什么。";
     if (h && r && r.run_id === S.runId) {
       const I = runInfo(r), st = I.st, name = `${I.short}目标`;
       const lock = h.lock || {};
@@ -232,7 +232,7 @@
       else if (r.status === "paused") { now = `${esc(name)}已暂停；设备释放与恢复情况请查看租约记录。`; next = "在「人工干预」里改一句指令（比如删掉「暂停」）就会继续。"; }
       else if (r.status === "done" || r.status === "failed") {
         now = `没有目标在跑。上一个${esc(name)}${r.status === "failed" ? "出错停了" : "已经结束"}：${esc(STOP[st.stop_reason] || st.stop_reason || "")}。`;
-        next = r.report_md ? "总报告在页面下方「总报告」里；也可以点「＋ 新目标」再来一个。" : "可以点「＋ 新目标」再来一个。";
+        next = r.report_md ? "总报告在页面下方「总报告」里；也可以点「新建 GOL 目标」再来一个。" : "可以点「新建 GOL 目标」再来一个。";
       } else if (r.status === "running") {
         if (lock.lease?.status === "blocked") {
           now = `${esc(name)}运行记录仍在；节点存在待恢复屏障。`;
@@ -446,7 +446,7 @@
   });
 
   document.addEventListener("hgamey-target-change", () => {
-    for(const id of ["do-confirm","do-draft","save-human","stop-run"]){const button=$(id);if(button)button.disabled=!HGTarget.canWrite();}
+    for(const id of ["do-confirm","do-draft","save-human","stop-run","research-submit"]){const button=$(id);if(button)button.disabled=!HGTarget.canWrite();}
     if(S.run)renderSteer(S.run);
   });
   async function needSteer() {
@@ -482,7 +482,34 @@
     if (r) { S.humanDirty = false; S.humanBase = null; pollRun(); }
   });
 
-  // ───────── 新目标 ─────────
+  // ───────── 新研究任务 ─────────
+  function openResearch() {
+    const slots = (S.home && S.home.slots || []).filter((s) => s && s.online);
+    $("research-device").innerHTML = `<option value="">不限设备</option>` + slots.map((s) => `<option value="${esc(s.serial)}">${esc(s.model || "")} · ${esc(s.serial)}${s.busy ? "（现在有人在用）" : ""}</option>`).join("");
+    S.researchDraft = { id: crypto.randomUUID(), operationId: crypto.randomUUID() };
+    $("research-msg").textContent = "";
+    if (!$("dlg-research").open) $("dlg-research").showModal();
+  }
+  $("new-btn").addEventListener("click", async () => { if (await needSteer()) openResearch(); });
+  $("research-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const objective = $("research-objective").value.trim(), draft = S.researchDraft;
+    if (!objective) { $("research-msg").textContent = "先写一句话"; return; }
+    if (!draft) return;
+    const game = $("research-game").value, device = $("research-device").value;
+    const data = { title: objective.split("\n", 1)[0].slice(0, 240), objective,
+      game: game ? { game_id: game, game_version: null } : null,
+      device_requirements: device ? [device] : [] };
+    const r = await steerCall(`/dash/api/research-state/research/${encodeURIComponent(draft.id)}`, {
+      schema: "phonefarm/research-write@1", operation_id: draft.operationId, base_revision: null,
+      data, actor_label: null, reason: null }, "research-msg");
+    if (!r) return;
+    if (r.object?.id !== draft.id) { $("research-msg").textContent = "回执不属于此任务，请核对后再继续"; return; }
+    $("dlg-research").close();
+    location.href = HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(draft.id)}`);
+  });
+
+  // ───────── 可选的 GOL 目标 ─────────
   function openNew(step) {
     const dlg = $("dlg-new");
     $("new-1").hidden = step !== 1; $("new-2").hidden = step !== 2;
@@ -494,7 +521,7 @@
     }
     if (!dlg.open) dlg.showModal();
   }
-  $("new-btn").addEventListener("click", async () => { if (await needSteer()) openNew(1); });
+  $("goal-btn").addEventListener("click", async () => { if (await needSteer()) openNew(1); });
   $("do-draft").addEventListener("click", async () => {
     const intent = $("intent").value.trim();
     if (!intent) { $("draft-msg").textContent = "先写一句话"; return; }

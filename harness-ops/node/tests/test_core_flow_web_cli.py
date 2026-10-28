@@ -339,6 +339,17 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual([(j["job_id"], j["label"], j["state"], j["actor_id"]) for j in tasks[0]["jobs"]],
                          [(jid, "selfsr 1080p A/B", "queued", "agent-a")])
 
+    def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
+        page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
+        script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
+        self.assertRegex(page, r'id="new-btn" class="btn primary"[^>]*>＋ 新任务</button>')
+        self.assertIn('id="goal-btn"', page)
+        self.assertIn('id="research-form"', page)
+        self.assertIn('id="research-objective"', page)
+        self.assertIn('id="research-game"', page)
+        self.assertIn('id="research-device"', page)
+        self.assertIn('/dash/api/research-state/research/', script)
+
     def test_the_home_page_shows_each_agent_its_check_in_its_status_and_what_it_owes(self):
         # A human sees every agent on the home page: when it last checked in, what it says it is doing,
         # what it still owes (guidance it has not answered comes first) and the research it owns.
