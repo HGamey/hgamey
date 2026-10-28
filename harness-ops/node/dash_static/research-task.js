@@ -183,6 +183,7 @@
 
   async function threadSection(record, ctx, section) {
     const list = el('div', null, 'discuss-list'), status = el('p', null, 'note');
+    let replyTo = null;
     status.setAttribute('role', 'status');
     section.append(el('h3', '留言'), list);
     async function load() {
@@ -198,10 +199,17 @@
         const entry = el('div', null, 'discuss-entry'), head = el('div');
         head.append(el('span', speaker(note), 'discuss-from'), el('span', when(note.updated_at), 'discuss-time'));
         if (note.unanswered === true) head.append(el('span', '未回应', 'task-state unknown'));
+        if (note.ask) {
+          head.append(el('span', '问人', 'discuss-via'));
+          if (note.question_unanswered === true) head.append(el('span', '待回复', 'task-state unknown'));
+          if (note.question_unanswered === true && ctx.writable()) {
+            const reply = el('button', '回复', 'ghost'); reply.type = 'button'; reply.dataset.replyTo = note.id; head.append(reply);
+          }
+        }
         if (note.reply_to) head.append(el('span', `回复 ${note.reply_to}${note.decision ? ` · ${{adopt: '采纳', defer: '暂缓', reject: '拒绝'}[note.decision]}` : ''}`, 'discuss-via'));
         entry.append(head, el('p', note.text));
         if (note.evidence_refs?.length) entry.append(evidenceList(note.evidence_refs));
-        entry.dataset.note = note.id;
+        entry.dataset.note = note.id; entry.id = 'note-' + note.id;
         const replies = children.get(note.id) || [];
         if (replies.length) {
           const nested = el('div', null, 'discuss-replies');
@@ -211,6 +219,7 @@
       }
       clearImages();
       list.replaceChildren(...(roots.length ? roots.map(paint) : [el('div', '暂无留言', 'empty')]));
+      if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'center'});
     }
     try { await load(); } catch (error) { status.textContent = '读取留言失败：' + failure(error); }
     if (ctx.writable()) {
@@ -224,13 +233,21 @@
         if (!text) return;
         button.disabled = true; status.textContent = '';
         try {
-          await write('note', 'n-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12), {research_id: record.id, text, reply_to: null, decision: null, evidence_refs: []}, null, null);
-          input.value = ''; await load();
+          await write('note', 'n-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+                      {research_id: record.id, text, reply_to: replyTo, decision: null, ask: false, evidence_refs: []}, null, null);
+          replyTo = null; input.placeholder = '留言…'; input.value = ''; await load();
         } catch (error) { status.textContent = '发送失败：' + failure(error); }
         finally { button.disabled = false; }
       };
       section.append(form);
     }
+    section.addEventListener('click', event => {
+      const button = event.target.closest('[data-reply-to]');
+      if (!button) return;
+      replyTo = button.dataset.replyTo;
+      const input = document.getElementById('task-note-text');
+      if (input) { input.placeholder = '回复 ' + replyTo; input.focus(); }
+    });
     section.append(status);
   }
 

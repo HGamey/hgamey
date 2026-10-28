@@ -915,6 +915,17 @@ class Dash:
             tasks.append(task)
         return tasks
 
+    def _questions(self):
+        research = getattr(self.job_service, "research", None) if self.job_service else None
+        if research is None:
+            return []
+        try:
+            items = research.open_questions()
+        except (OSError, ValueError, sqlite3.Error):
+            return []
+        return [{**item, "url": "/dash/research?" + urlencode({"kind": "research", "id": item["research_id"]}) + "#note-" + item["id"]}
+                for item in items]
+
     def _agents(self):
         """Every enabled agent as a human sees it: last check-in, what it says it is doing, what it still owes
         (unanswered guidance comes first) and the research it owns. Same duties as its own check-in, read only."""
@@ -970,7 +981,8 @@ class Dash:
                                                        "holder": lock.get("held_by")}})
         while len(slots) < SLOTS_MIN:
             slots.append(None)
-        return {"now": _now(), "slots": slots, "tasks": self._tasks(), "agents": self._agents(), "fleet_age_s": snapshot["age_s"],
+        return {"now": _now(), "slots": slots, "tasks": self._tasks(), "questions": self._questions(),
+                "agents": self._agents(), "fleet_age_s": snapshot["age_s"],
                 "fleet_err": snapshot["error"], "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
                 "busy": lock["status"] != "free",

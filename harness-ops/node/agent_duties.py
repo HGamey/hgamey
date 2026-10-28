@@ -47,6 +47,19 @@ def duties(jobs, name, now=None):
 
     owed, waiting = [], []
     answered = {data["reply_to"] for _, data, audit in notes if audit.get("actor_label") == name and data["reply_to"]}
+    own_questions = {row["id"]: (row, data) for row, data, audit in notes
+                     if data.get("ask") is True and audit.get("actor_label") == name}
+    answers_by_question, question_answers = set(), []
+    for row, data, audit in notes:
+        if data.get("reply_to") not in own_questions or audit.get("auth_channel") != "dashboard_steer":
+            continue
+        answers_by_question.add(data["reply_to"])
+        question_answers.append({"research_id": row["research_id"], "id": row["id"], "reply_to": data["reply_to"],
+                                 "text": data["text"], "at": row["at"], "unread": row["sequence"] > seen})
+    for question_id, (row, data) in own_questions.items():
+        if question_id not in answers_by_question:
+            waiting.append({"kind": "note_question", "research_id": row["research_id"], "request_id": question_id,
+                            "title": data["text"][:200], "overdue": False})
     for row, data, audit in notes:
         if audit.get("actor_label") == name or row["id"] in answered:
             continue
@@ -104,6 +117,7 @@ def duties(jobs, name, now=None):
                  if data.get("owner") is None and data["state"] == "active"]
     return {"schema": SCHEMA, "node_id": jobs.agents.local_node_id, "agent": name, "at": now,
             "previous_checkin_at": last, "event_head": head, "duties": owed, "waiting_on_human": waiting,
+            "question_answers": question_answers,
             "jobs": {"active": active, "blocked": blocked, "finished_since_last_checkin": finished},
             "research": {"mine": [{"research_id": rid, "title": data["title"], "state": data["state"]} for rid, data in mine.items()],
                          "unclaimed": unclaimed},

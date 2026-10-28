@@ -193,6 +193,41 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.pf(token, "research", "deliver", "sr-guidance", "--summary", "完成",
                                  "--artifact", f"job:{self.jid}")[0], 0)
 
+    def test_agent_questions_reach_home_and_checkin_then_clear_on_human_reply(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-questions", self.write(
+            "web-question-task", {"title": "问人流程", "objective": "异步问题在首页可见并回到 agent"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-questions")[0], 0)
+        code, out, err = self.pf(token, "research", "note", "sr-questions", "先测 1080p 还是 720p？", "--ask")
+        self.assertEqual(code, 0, err)
+        question_id = json.loads(out)["object"]["id"]
+        _, thread = self.web("GET", "/research-state/note?research_id=sr-questions&limit=100")
+        self.assertIs(thread["items"][0]["ask"], True)
+        self.assertIs(thread["items"][0]["question_unanswered"], True)
+
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        self.assertEqual([(item["id"], item["research_title"]) for item in board._questions()],
+                         [(question_id, "问人流程")])
+        self.assertEqual(board._questions()[0]["url"],
+                         f"/dash/research?kind=research&id=sr-questions#note-{question_id}")
+        pending = self.duties(token)
+        self.assertIn(question_id, [item["request_id"] for item in pending["waiting_on_human"]])
+        self.assertEqual(pending["question_answers"], [])
+
+        self.assertEqual(self.web("POST", "/research-state/note/n-human-answer", self.write(
+            "web-human-answer", {"research_id": "sr-questions", "text": "先测 1080p",
+                                  "reply_to": question_id, "decision": None}))[0], 201)
+        _, thread = self.web("GET", "/research-state/note?research_id=sr-questions&limit=100")
+        question = next(item for item in thread["items"] if item["id"] == question_id)
+        self.assertIs(question["question_unanswered"], False)
+        self.assertEqual(board._questions(), [])
+        answered = self.duties(token)
+        self.assertNotIn(question_id, [item["request_id"] for item in answered["waiting_on_human"]])
+        self.assertEqual([(item["reply_to"], item["text"], item["unread"]) for item in answered["question_answers"]],
+                         [(question_id, "先测 1080p", True)])
+
     def test_agent_own_token_carries_its_identity(self):
         for name in ("agent-a", "agent-b"):
             self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)

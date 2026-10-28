@@ -126,7 +126,7 @@
       const h = await api("/dash/api/home");
       S.home = h;
       $("live").className = "live ok"; $("live-text").textContent = `实时 · ${hm(h.now)}`;
-      renderPhones(h); renderTasks(h); renderAgents(h); renderSteerBtn(h); renderRunSel(h); renderNow();
+      renderPhones(h); renderTasks(h); renderQuestions(h); renderAgents(h); renderSteerBtn(h); renderRunSel(h); renderNow();
     } catch (e) { $("live").className = "live bad"; $("live-text").textContent = "连不上手机节点"; }
   }
 
@@ -197,6 +197,12 @@
     const tasks = h.tasks || [];
     $("tasks").innerHTML = tasks.map((t) => `<li data-task="${esc(t.id)}">${taskLink(t)}${t.state === "delivered" ? " · 已交付" : ""} · ${esc(t.owner || "无人负责")}${t.jobs.length ? " · " + taskJobs(t) : ""} · ${esc(hm(t.updated_at))}</li>`).join("")
       || `<li>没有进行中的任务</li>`;
+  }
+
+  function renderQuestions(h) {
+    const questions = h.questions || [];
+    $("questions").innerHTML = questions.map((q) => `<li data-question="${esc(q.id)}"><a href="${esc(HGTarget.url(q.url))}">${esc(q.text)}</a> · ${esc(q.research_title || q.research_id)} · ${esc(q.actor_label || "agent")} · ${esc(hm(q.updated_at))}</li>`).join("")
+      || `<li>没有待回复问题</li>`;
   }
 
   const DUTY = {answer_note: "回应留言", process_feedback: "处理反馈", unblock_job: "放行任务", post_status: "报状态",

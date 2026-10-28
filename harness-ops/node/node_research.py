@@ -141,7 +141,7 @@ def normalize(kind, data):
         "request": {"research_id", "type", "title", "need", "why", "resume_hint", "context", "supersedes", "state", "close_reason", "due_at"},
         "feedback": {"request_id", "request_revision", "text", "supersedes"},
         # The research's discussion thread: humans and agents post, agents answer guidance with a decision.
-        "note": {"research_id", "text", "reply_to", "decision"},
+        "note": {"research_id", "text", "reply_to", "decision", "ask"},
     }
     if kind not in fields:
         raise ValueError("unsupported research object kind")
@@ -304,6 +304,9 @@ def normalize(kind, data):
             raise ValueError("decision must be adopt, defer or reject")
         if value["decision"] is not None and value["reply_to"] is None:
             raise ValueError("a decision answers a note; set reply_to")
+        value.setdefault("ask", False)
+        if type(value["ask"]) is not bool:
+            raise ValueError("ask must be a boolean")
     else:
         identifier(value.get("request_id")); positive(value.get("request_revision"))
         value["text"] = text(value.get("text"), 16384, True)
@@ -378,6 +381,21 @@ class NodeResearch:
             elif audit.get("auth_channel") == "dashboard_steer":
                 human.append(row["id"])
         return [note for note in human if note not in answered]
+
+    @staticmethod
+    def _unanswered_questions(db, research_id=None):
+        """Agent questions that have no human reply, oldest first."""
+        scope, params = (" AND r.research_id=?", (research_id,)) if research_id is not None else ("", ())
+        rows = db.execute("SELECT r.id, r.data, r.audit FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id "
+                          "AND r.revision=o.revision WHERE o.kind='note'" + scope + " ORDER BY r.sequence", params).fetchall()
+        questions, answered = [], set()
+        for row in rows:
+            data, audit = json.loads(row["data"]), json.loads(row["audit"])
+            if audit.get("auth_channel") == "dashboard_steer" and data.get("reply_to"):
+                answered.add(data["reply_to"])
+            elif data.get("ask") is True and audit.get("auth_channel") != "dashboard_steer":
+                questions.append(row["id"])
+        return [note for note in questions if note not in answered]
 
     @staticmethod
     def _reference(db, kind, oid, revision=None, research_id=None):
@@ -728,6 +746,26 @@ class NodeResearch:
                 raise ResearchError(404, "research_not_found", "research object or version was not found")
             return self._show(db, row)
 
+    def open_questions(self):
+        with self._db() as db:
+            pending = set(self._unanswered_questions(db))
+            if not pending:
+                return []
+            rows = db.execute("SELECT r.* FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id "
+                              "AND r.revision=o.revision WHERE o.kind='note' ORDER BY r.sequence DESC").fetchall()
+            output = []
+            for row in rows:
+                if row["id"] not in pending:
+                    continue
+                data, audit = json.loads(row["data"]), json.loads(row["audit"])
+                research = self._latest(db, "research", row["research_id"])
+                output.append({"id": row["id"], "research_id": row["research_id"],
+                               "research_title": research["title"] if research else row["research_id"],
+                               "text": data["text"], "actor_label": audit.get("actor_label"), "updated_at": row["at"]})
+                if len(output) == 50:
+                    break
+            return output
+
     def assessment(self, oid, revision):
         record = self.get("research", oid, positive(revision))
         criteria = record["data"].get("criteria")
@@ -763,7 +801,7 @@ class NodeResearch:
                 terms.append("r.sequence<?"); params.append(after)
             rows = db.execute("SELECT r.* FROM revisions r WHERE " + " AND ".join(terms) + " ORDER BY r.sequence DESC LIMIT ?",
                               (*params, limit + 1)).fetchall()
-            items, guidance = [], {}
+            items, guidance, questions = [], {}, {}
             for row in rows[:limit]:
                 data = json.loads(row["data"])
                 item = {"kind": kind, "id": row["id"], "research_id": row["research_id"], "revision": row["revision"],
@@ -778,10 +816,12 @@ class NodeResearch:
                         research = self._latest(db, "research", rid)
                         owner = json.loads(research["data"]).get("owner") if research else None
                         guidance[rid] = set(self._unanswered_guidance(db, rid, owner))
+                        questions[rid] = set(self._unanswered_questions(db, rid))
                     item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"],
                                 evidence_refs=data["evidence_refs"], actor_label=audit.get("actor_label"),
-                                auth_channel=audit.get("auth_channel"),
-                                unanswered=row["id"] in guidance[rid] if audit.get("auth_channel") == "dashboard_steer" else None)
+                                auth_channel=audit.get("auth_channel"), ask=data.get("ask", False),
+                                unanswered=row["id"] in guidance[rid] if audit.get("auth_channel") == "dashboard_steer" else None,
+                                question_unanswered=row["id"] in questions[rid] if data.get("ask") is True else None)
                 if kind == "direction":
                     item["metadata_blocked"] = any(dep["blocking"] and dep["resolution"] is None for dep in data["dependencies"])
                 elif kind == "request":

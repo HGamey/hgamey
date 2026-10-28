@@ -32,7 +32,7 @@ HELP = """用法:
   pf-node research media REQUEST A|B --revision N --output FILE
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
-  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject]
+  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask]
       [--evidence job:ID[:PATH]|result:ID|url:URL ...]                            # 在研究里留言/回应
   pf-node research thread ID                      # 按时间读研究里的留言
   pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|url:URL ...
@@ -45,6 +45,7 @@ plan-template 离线输出 next_experiment JSON 草稿（title、plan、research
 最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
+--ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
@@ -152,6 +153,7 @@ def parser():
     note.add_argument("--reply-to", type=identifier)
     note.add_argument("--decision", choices=("adopt", "defer", "reject"))
     note.add_argument("--evidence", action="append", default=[])
+    note.add_argument("--ask", action="store_true")
     thread = commands.add_parser("thread")
     thread.add_argument("id", type=identifier)
     deliver = commands.add_parser("deliver")
@@ -547,14 +549,15 @@ def _task(client, args):
         for item in reversed(client.request("GET", "/research-state/note?" + query)["items"]):
             speaker = "human" if item["auth_channel"] == "dashboard_steer" else item["actor_label"] or item["auth_channel"]
             answer = f" ↳{item['reply_to']}" + (f" [{item['decision']}]" if item["decision"] else "") if item["reply_to"] else ""
+            ask = " [问人]" + ("[待回复]" if item.get("question_unanswered") else "") if item.get("ask") else ""
             stamp = time.strftime("%m-%d %H:%M", time.localtime(item["updated_at"]))
-            print(f"{stamp} {speaker} {item['id']}{answer}: {item['text']}")
+            print(f"{stamp} {speaker} {item['id']}{ask}{answer}: {item['text']}")
         return 0
     client.require_capability(write=True)
     if args.command == "note":
         node_id = client.target.identity()["node_id"]
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
-                "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]}
+                "ask": args.ask, "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]}
         return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
     current = client.request("GET", f"/research-state/research/{args.id}")
     data, owner = current["data"], current["data"].get("owner")
