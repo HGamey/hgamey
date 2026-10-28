@@ -261,7 +261,8 @@
       form.onsubmit = async event => {
         event.preventDefault();
         const text = input.value.trim();
-        if (!text || !ctx.requireWrite()) return;
+        if (!text) return;
+        if (!ctx.requireWrite(() => form.requestSubmit())) return;
         button.disabled = true; status.textContent = '';
         try {
           await write('note', 'n-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
@@ -274,7 +275,7 @@
     }
     section.addEventListener('click', event => {
       const button = event.target.closest('[data-reply-to]');
-      if (!button || !ctx.requireWrite()) return;
+      if (!button || !ctx.requireWrite(() => button.click())) return;
       replyTo = button.dataset.replyTo;
       const input = document.getElementById('task-note-text');
       if (input) { input.placeholder = '回复 ' + replyTo; input.focus(); }

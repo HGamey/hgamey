@@ -6,7 +6,7 @@
   const num = (v, d = 1) => v == null || Number.isNaN(+v) ? "—" : (+v).toFixed(d);
   const toDate = t => typeof t === "number" ? new Date(t * 1000) : new Date(t);
   const hm = t => { const d = toDate(t); return isNaN(d) ? "" : d.toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", hour12: false}); };
-  const S = {home: null, researchDraft: null};
+  const S = {home: null, researchDraft: null, afterUnlock: null};
 
   async function api(url, body) {
     const opt = body === undefined ? {cache: "no-store", credentials: "same-origin"}
@@ -91,21 +91,24 @@
     }).join("") || `<li>还没有注册 agent</li>`;
   }
 
-  async function needSteer() {
+  async function needSteer(onReady) {
     if (S.home && S.home.steer) return true;
+    S.afterUnlock = onReady || null;
     $("unlock-msg").textContent = ""; $("steer-pw").value = ""; $("dlg-unlock").showModal(); $("steer-pw").focus(); return false;
   }
   $("f-unlock").addEventListener("submit", async ev => {
     ev.preventDefault();
-    try { await api("/dash/api/steer/unlock", {pw: $("steer-pw").value}); $("dlg-unlock").close(); await pollHome(); }
-    catch (e) { $("unlock-msg").textContent = e.message; }
+    try {
+      await api("/dash/api/steer/unlock", {pw: $("steer-pw").value}); $("dlg-unlock").close(); await pollHome();
+      const action = S.afterUnlock; S.afterUnlock = null; if (action) await action();
+    } catch (e) { $("unlock-msg").textContent = e.message; }
   });
   $("steer-btn").addEventListener("click", async () => {
     if (S.home && S.home.steer) { await api("/dash/api/steer/lock", {}); await pollHome(); } else needSteer();
   });
   async function steerCall(url, body, msgEl) {
     if (!HGTarget.canWrite()) { $(msgEl).textContent = HGTarget.problem() || "此节点未提供目标约束协议，操作已禁用。"; return null; }
-    if (!(await needSteer())) return null;
+    if (!(await needSteer(() => steerCall(url, body, msgEl)))) return null;
     const m = $(msgEl); m.className = "msg"; m.innerHTML = `<span class="spin"></span> 提交中`;
     try { const r = await api(url, body); m.textContent = r.note || "已保存"; return r; }
     catch (e) { if (e.data && e.data.need_steer) { await pollHome(); needSteer(); } m.className = "msg err"; m.textContent = e.message; return null; }
@@ -116,7 +119,7 @@
     S.researchDraft = {id: crypto.randomUUID(), operationId: crypto.randomUUID()}; $("research-msg").textContent = "";
     if (!$("dlg-research").open) $("dlg-research").showModal();
   }
-  $("new-btn").addEventListener("click", async () => { if (await needSteer()) openResearch(); });
+  $("new-btn").addEventListener("click", async () => { if (await needSteer(openResearch)) openResearch(); });
   $("research-form").addEventListener("submit", async ev => {
     ev.preventDefault();
     const objective = $("research-objective").value.trim(), draft = S.researchDraft;

@@ -35,7 +35,7 @@
   }
   const LAYER = { sysparam: "改系统设置", gray: "精简画面步骤", upop: "改画面算法", shader: "改画面算法" };
   const STOP = { target_reached: "达到目标了", budget_exhausted: "预算用完了", no_gain: "连续几代都没有收益，这条路走不通", human_stop: "你叫停的", error: "出错停下了" };
-  const S = { home: null, runId: null, userPicked: false, run: null, humanDirty: false, humanBase: null, histOpen: null, draftId: null, researchDraft: null };
+  const S = { home: null, runId: null, userPicked: false, run: null, humanDirty: false, humanBase: null, histOpen: null, draftId: null, researchDraft: null, afterUnlock: null };
 
   async function api(url, body) {
     const opt = body === undefined ? { cache: "no-store", credentials: "same-origin" }
@@ -449,16 +449,19 @@
     for(const id of ["do-confirm","do-draft","save-human","stop-run","research-submit"]){const button=$(id);if(button)button.disabled=!HGTarget.canWrite();}
     if(S.run)renderSteer(S.run);
   });
-  async function needSteer() {
+  async function needSteer(onReady) {
     if (S.home && S.home.steer) return true;
+    S.afterUnlock = onReady || null;
     $("unlock-msg").textContent = ""; $("steer-pw").value = "";
     $("dlg-unlock").showModal(); $("steer-pw").focus();
     return false;
   }
   $("f-unlock").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    try { await api("/dash/api/steer/unlock", { pw: $("steer-pw").value }); $("dlg-unlock").close(); await pollHome(); if (S.run) renderSteer(S.run); }
-    catch (e) { $("unlock-msg").textContent = e.message; }
+    try {
+      await api("/dash/api/steer/unlock", { pw: $("steer-pw").value }); $("dlg-unlock").close(); await pollHome(); if (S.run) renderSteer(S.run);
+      const action = S.afterUnlock; S.afterUnlock = null; if (action) await action();
+    } catch (e) { $("unlock-msg").textContent = e.message; }
   });
   $("steer-btn").addEventListener("click", async () => {
     if (S.home && S.home.steer) { await api("/dash/api/steer/lock", {}); await pollHome(); if (S.run) renderSteer(S.run); }
@@ -467,7 +470,7 @@
 
   async function steerCall(url, body, msgEl) {
     if (!HGTarget.canWrite()) { $(msgEl).textContent = HGTarget.problem() || "此节点未提供目标约束协议，操作已禁用。"; return null; }
-    if (!(await needSteer())) return null;
+    if (!(await needSteer(() => steerCall(url, body, msgEl)))) return null;
     const m = $(msgEl); m.className = "msg"; m.innerHTML = `<span class="spin"></span> 提交中`;
     try { const r = await api(url, body); m.textContent = r.note || "已保存"; return r; }
     catch (e) { if (e.data && e.data.need_steer) { await pollHome(); needSteer(); } m.className = "msg err"; m.textContent = e.message; return null; }
@@ -494,7 +497,7 @@
     }
     if (!dlg.open) dlg.showModal();
   }
-  $("new-btn").addEventListener("click", async () => { if (await needSteer()) openNew(1); });
+  $("new-btn").addEventListener("click", async () => { if (await needSteer(() => openNew(1))) openNew(1); });
   $("do-draft").addEventListener("click", async () => {
     const intent = $("intent").value.trim();
     if (!intent) { $("draft-msg").textContent = "先写一句话"; return; }

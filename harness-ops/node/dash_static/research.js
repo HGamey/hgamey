@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id), API = '/dash/api', KEY = 'hgamey.research.pending';
-  const KINDS = {research: '研究目标', direction: '研究方向', request: '协助请求', feedback: '答复记录'};
+  const KINDS = {research: '任务', direction: '研究方向', request: '协助请求', feedback: '答复记录'};
   const STATES = {
     research: {active: '推进中', idle: '暂空闲', paused: '已暂停', closed: '已关闭', delivered: '已交付'},
     direction: {proposed: '待探索', preparing: '准备中', ready: '可开展', running: '进行中', waiting_device: '等待设备', waiting_human: '等待协助', waiting_material: '等待素材', awaiting_evaluation: '等待评价', verified: '已验证声明', no_gain: '无收益声明', rejected: '已排除', deferred: '已暂缓'},
@@ -47,7 +47,7 @@
   const EVENT_KEY = 'hgamey.research.browse.', EVENT_BUDGET = 5 * 60 * 1000, eventPositions = new Map();
   let eventPosition = null, eventsBusy = false, eventsListening = false, eventsEpoch = 0, eventsController = null;
   let eventsDeadline = 0, eventsBudgetTimer = null, eventsNextTimer = null, eventsPages = 0, eventsTrimmed = 0, eventsStorageError = '';
-  let draft = null, pending = null, writeBusy = false, lookupBusy = false, conflictLatest = null, relatedBusy = false;
+  let draft = null, pending = null, writeBusy = false, lookupBusy = false, conflictLatest = null, relatedBusy = false, writeContinuation = null;
   let criteriaTransfer = null, assistanceTransfer = null, planTemplates = null;
   const validID = value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(value) && !['.', '..'].includes(value);
   const capable = () => node?.capabilities?.includes('research.state-v1') === true;
@@ -151,10 +151,17 @@
     if (accessBusy) return; accessBusy = true; renderControls(); $('unlock-submit').disabled = true;
     try { await request(`${API}/steer/${lock ? 'lock' : 'unlock'}`, {body}); $('unlock-form').hidden = true; message('unlock-message', ''); }
     catch (error) { message('unlock-message', failText(error), true); }
-    finally { $('steer-password').value = ''; $('unlock-submit').disabled = false; accessBusy = false; await loadAccess(); if (access?.steer) $('access-panel').hidden = true; }
+    finally {
+      $('steer-password').value = ''; $('unlock-submit').disabled = false; accessBusy = false; await loadAccess();
+      if (access?.steer) {
+        $('access-panel').hidden = true;
+        const action = writeContinuation; writeContinuation = null; if (action) await action();
+      }
+    }
   }
-  function requireWrite() {
+  function requireWrite(continuation) {
     if (writable()) { $('access-panel').hidden = true; return true; }
+    writeContinuation = continuation || null;
     $('access-panel').hidden = false; message('access-message', '写入需要解锁操作。', true); return false;
   }
   function changeKind() {
@@ -385,7 +392,7 @@
       .catch(() => { note.textContent = '模板暂不可读，可直接编辑计划。'; });
   }
   function openDraft(kind, data = {}, record = null) {
-    if (!requireWrite() || writeBusy || pending) return;
+    if (!requireWrite(() => openDraft(kind, data, record)) || writeBusy || pending) return;
     preserveDraft(); conflictLatest = null; $('conflict-latest').hidden = true;
     draft = {kind, id: record?.id || crypto.randomUUID(), base_revision: record?.revision || null, operation_id: crypto.randomUUID(), target: HGTarget.binding(), data: {...defaults(kind), ...clone(data)}, actor_label: '', reason: ''};
     message('write-message', ''); $('write-links').replaceChildren(); paintDraft(); $('editor-heading').scrollIntoView({block: 'start'});
@@ -487,7 +494,7 @@
     message('write-message', '已显式另开操作。上个草稿和操作 ID 保留在下方；请对照最新版本自行合并后保存。');
   }
   async function relatedDraft(kind) {
-    if (!detailFresh || !detail || pending || !requireWrite() || relatedBusy) return;
+    if (!detailFresh || !detail || pending || !requireWrite(() => relatedDraft(kind)) || relatedBusy) return;
     const current = detail, epoch = detailEpoch, target = HGTarget.binding();
     if (kind === 'direction') { openDraft(kind, {research_id: current.id}); return; }
     if (kind === 'feedback') { openDraft(kind, {request_id: current.id, request_revision: current.revision}); return; }

@@ -581,6 +581,20 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("$('object-title').focus()", script)
         self.assertIn("$('new-object').textContent = $('filter-kind').value === 'research' ? '＋ 新任务'", script)
 
+    def test_unlock_resumes_original_task_creation_and_labels_are_tasks(self):
+        home = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
+        gol = (NODE / "dash_static/gol.js").read_text(encoding="utf-8")
+        research = (NODE / "dash_static/research.js").read_text(encoding="utf-8")
+        task = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
+        page = (NODE / "dash_static/research.html").read_text(encoding="utf-8")
+        self.assertIn('needSteer(openResearch)', home)
+        self.assertIn('needSteer(() => openNew(1))', gol)
+        self.assertIn('writeContinuation', research)
+        self.assertIn('requireWrite(() => openDraft', research)
+        self.assertIn('requireWrite(() => form.requestSubmit())', task)
+        self.assertIn("research: '任务'", research)
+        self.assertIn('<option value="research">任务</option>', page)
+
     def test_home_primary_action_creates_a_research_task_not_a_gol_goal(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
