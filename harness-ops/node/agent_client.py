@@ -81,6 +81,9 @@ def render_checkin(value):
     finished = jobs["finished_since_last_checkin"]
     lines.append(f"任务：进行中 {len(jobs['active'])} · 卡住 {len(jobs['blocked'])} · 上次签到后结束 {len(finished)}"
                  + (" (" + ", ".join(item["job_id"] for item in finished) + ")" if finished else ""))
+    unlinked = [item["job_id"] for item in jobs["active"] if not item.get("research_id")]
+    if unlinked and value["research"]["mine"]:
+        lines.append("未关联研究的任务：" + ", ".join(unlinked) + "（之后提交加 --research <研究>）")
     for item in value["research"]["mine"]:
         lines.append(f"我负责的研究：{item['research_id']} {item['title']}（{item['state']}）")
     for item in value["research"]["unclaimed"]:

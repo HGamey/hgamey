@@ -816,6 +816,40 @@ class Dash:
             except Exception as e:  # noqa: BLE001
                 log_err(f"dash 扫实验证据出错: {e!r}")
 
+    def _holder(self, serial, lock):
+        """Who holds this phone: a node job (with its research and agent) or an outside lock label."""
+        entry = next((e for e in (lock.get("lease") or {}).get("entries", [])
+                      if e.get("serial") == serial and e.get("state") == "active"), None)
+        jid, label = (entry or {}).get("job_id"), (entry or {}).get("label")
+        held = lock.get("held_by") if lock.get("status") == "held" else None
+        global_job = None
+        if not entry and held:
+            match = re.fullmatch(r"job-([0-9a-f]{12})", held)
+            if match:
+                jid = global_job = match.group(1)
+            elif "@" in held:  # experiments outside the node name their lock <label>@<serial>
+                label = held if held.rsplit("@", 1)[1] == serial else None
+            else:
+                label = held
+        if jid and self.job_service:
+            try:
+                meta = self.job_service.status(jid)
+            except (KeyError, OSError, ValueError):
+                meta = None
+            bound = ((meta or {}).get("device_binding") or {}).get("serial")
+            if meta and not (global_job and bound and bound != serial):
+                title, rid = None, meta.get("research_id")
+                if rid and getattr(self.job_service, "research", None) is not None:
+                    try:
+                        title = self.job_service.research.get("research", rid)["data"].get("title")
+                    except (KeyError, OSError, ValueError):
+                        title = None
+                return {"kind": "job", "job_id": jid, "label": meta.get("label"), "actor_id": meta.get("actor_id"),
+                        "research_id": rid, "research_title": title, "state": meta.get("state")}
+            if meta:
+                return None
+        return {"kind": "external", "label": label} if label else None
+
     # ── 汇总 ──
     def home(self, h):
         """首页：手机槽位 + 目标运行列表。不含开发 agent 的任务、锁队列（那些在维护页）。"""
@@ -841,6 +875,7 @@ class Dash:
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
                           "busy": lock["status"] != "free", "light": d.get("probe_depth") == "light",
+                          "holder": self._holder(serial, lock),
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
                                             "demo": goal["demo"]},

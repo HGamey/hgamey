@@ -271,6 +271,49 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(delivered["data"]["deliverable"]["applies_to"], {"game_version": "5.1", "devices": ["RedMagic NX809J"]})
         self.assertEqual(delivered["audit"]["actor_label"], "agent-b")
 
+    def test_jobs_carry_their_research_to_the_task_page_and_the_phone(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
+            "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        code, out, err = self.pf(token, "--research", "sr-genshin", "--label", "selfsr 1080p A/B", "--device-access", "none",
+                                 "--detach", "fixture", "-c", "pass")
+        self.assertEqual(code, 0, err)
+        jid = out.strip()
+        code, _, err = self.pf(token, "--research", "no-such-study", "--device-access", "none", "--detach", "fixture", "-c", "pass")
+        self.assertNotEqual(code, 0)
+        self.assertIn("research_id", err)
+
+        # Both surfaces list the research's jobs and nothing else; the job keeps its agent.
+        code, out, err = self.pf(ADMIN, "jobs", "--research", "sr-genshin")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(item["id"], item["actor_id"]) for item in json.loads(out)["items"]], [(jid, "agent-a")])
+        status, listed = self.web("GET", "/jobs?research=sr-genshin&limit=50")
+        self.assertEqual((status, [item["id"] for item in listed["items"]]), (200, [jid]))
+        self.assertEqual(self.cli("GET", f"/jobs/{jid}")[1]["research_id"], "sr-genshin")
+        self.assertEqual(self.web("GET", "/jobs?research=bad/id")[0], 400)
+        active = self.duties(token)["jobs"]["active"]
+        self.assertEqual({item["job_id"]: item["research_id"] for item in active}, {self.jid: None, jid: "sr-genshin"})
+        self.assertEqual(self.pf(token, "research", "claim", "sr-genshin")[0], 0)
+        code, text, err = self.pf(token, "checkin")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"未关联研究的任务：{self.jid}（", text)
+
+        # A phone shows the task its holder works for: by device lease, by the node's global lock,
+        # or the bare label an outside experiment put on the lock.
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        by_lease = {"status": "held", "held_by": None, "lease": {"entries": [
+            {"job_id": jid, "serial": "S1", "state": "active", "label": f"job-{jid}"}]}}
+        expected = {"kind": "job", "job_id": jid, "label": "selfsr 1080p A/B", "actor_id": "agent-a",
+                    "research_id": "sr-genshin", "research_title": "优化原神超分方向", "state": "running"}
+        self.assertEqual(board._holder("S1", by_lease), expected)
+        self.assertIsNone(board._holder("S2", {**by_lease, "status": "free"}))
+        self.assertEqual(board._holder("S2", {"status": "held", "held_by": f"job-{jid}", "lease": {"entries": []}}), expected)
+        outside = {"status": "held", "held_by": "selfsr@S2", "lease": {"entries": []}}
+        self.assertEqual(board._holder("S2", outside), {"kind": "external", "label": "selfsr@S2"})
+        self.assertIsNone(board._holder("S1", outside))
+
     def test_page_discussion_writes_keep_steer_and_csrf_guards(self):
         status, body = self.web("POST", f"/jobs/{self.jid}/discuss", {"text": "x"}, steer=False)
         self.assertEqual((status, body.get("need_steer")), (403, True))

@@ -146,7 +146,7 @@ class NodeRead:
                 "capabilities": ["node.target-v1", "node.doctor-v1", "node.updates-v1", "node.runtime-v1", "node.protocol-compat-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "results.cross-compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
                                  "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range", "jobs.history-read-v1",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.priority-v1", "jobs.durability-v1",
-                                 "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.input-limits-v1", "jobs.export-limits-v1", "jobs.export-cache-root-v1", "jobs.export-cache-cleanup-v1", "jobs.time-budget-v1", "jobs.disk-guard-v1", "jobs.host-capacity-v1", "jobs.state-events-v1",
+                                 "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.input-limits-v1", "jobs.export-limits-v1", "jobs.export-cache-root-v1", "jobs.export-cache-cleanup-v1", "jobs.time-budget-v1", "jobs.disk-guard-v1", "jobs.host-capacity-v1", "jobs.state-events-v1", "jobs.research-link-v1",
                                  "leases.read-v1", "jobs.recovery-v1", "jobs.leases-v1", "jobs.session-control-v1",
                                  "jobs.session-recovery-v1", "jobs.session-recovery-chain-v1"] +
                                 (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +
@@ -170,13 +170,17 @@ class NodeRead:
         state = query.get("state", [""])[0]
         if state not in ("", "running", "finished", "lost", "preparing", "queued", "blocked"):
             raise ValueError("state must be running, finished, lost, preparing, queued or blocked")
+        research = query.get("research", [""])[0]
+        if research and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", research):
+            raise ValueError("research must be a research id")
+        scope = [search, state] + ([research] if research else [])
         after = None
         if query.get("cursor"):
             cursor = decode_cursor(query["cursor"][0])
-            if not (isinstance(cursor, list) and len(cursor) == 4 and
+            if not (isinstance(cursor, list) and len(cursor) == 2 + len(scope) and
                     isinstance(cursor[0], (int, float)) and math.isfinite(cursor[0]) and
                     isinstance(cursor[1], str) and re.fullmatch(r"[0-9a-f]{12}", cursor[1]) and
-                    cursor[2:] == [search, state]):
+                    cursor[2:] == scope):
                 raise ValueError("cursor must belong to the same query and state")
             after = tuple(cursor[:2])
         entries, warnings = [], []
@@ -201,6 +205,8 @@ class NodeRead:
                     continue
                 if state == "blocked" and meta.get("queue", {}).get("state") != "blocked":
                     continue
+                if research and meta.get("research_id") != research:
+                    continue
                 haystack = json.dumps({k: meta.get(k) for k in ("id", "bin", "label", "argv")}, ensure_ascii=False).casefold()
                 if search and search not in haystack:
                     continue
@@ -209,7 +215,7 @@ class NodeRead:
                 warnings.append({"job": jid, "error": "metadata_unavailable"})
         entries.sort(key=lambda pair: pair[0], reverse=True)
         page = entries[:limit]
-        cursor = encode_cursor([*page[-1][0], search, state]) if len(entries) > limit else None
+        cursor = encode_cursor([*page[-1][0], *scope]) if len(entries) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": [m for _, m in page],
                 "next_cursor": cursor, "warnings": warnings[:100], "warning_count": len(warnings)}
 

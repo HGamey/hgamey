@@ -5,6 +5,7 @@ Agent 每轮从这里开始：
   pf-node checkin                            # 用你自己的 token：现在该做的事，以及每轮做法
   pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
+  pf-node --research <研究> --detach phonefarm ... # 为研究跑的任务带上研究 ID：手机占用和任务页据此显示
 
   pf-node phonefarm eval --request r.json --json --lock-label judge
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
@@ -48,7 +49,7 @@ Agent 每轮从这里开始：
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node live status SERIAL [--device-binding FILE] # 单次读取看屏状态
   pf-node live frame SERIAL --output FILE [--device-binding FILE] # 单次JPEG；原绑定、显式新文件、不重试
-  pf-node jobs [--query TEXT] [--state running|finished|lost] [--limit N] [--cursor C]
+  pf-node jobs [--query TEXT] [--state running|finished|lost] [--research ID] [--limit N] [--cursor C]
   pf-node job-sources                     # 管理员登记的只读历史来源与 revision
   pf-node jobs --source old-local --source-revision 1 [--query TEXT] [--limit N] [--cursor C]
   pf-node status|log|artifacts <id> --source old-local --source-revision 1
@@ -231,6 +232,14 @@ def response_error_code(body):
     return value.get("code") if isinstance(value, dict) and isinstance(value.get("code"), str) else None
 
 
+def response_error_text(body):
+    try:
+        value = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    return value.get("error") if isinstance(value, dict) and isinstance(value.get("error"), str) else None
+
+
 def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4xx=False, raise_errors=False, stop_error_codes=()):
     if TARGET is None:
         raise TargetError("target_unconfigured", "需先显式配置连接目标")
@@ -408,7 +417,8 @@ def submit_job(spec, body, request_id):
             sys.exit(f"pf-node: 提交条件冲突（HTTP 409），request_id={request_id}；"
                      f"请用 {continuation()} request {request_id} 核对原节点已有任务，"
                      "并检查恢复目标条件；不要换 request_id 盲目重投。")
-        sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{e}")
+        reason = response_error_text(e.body) if 400 <= e.code < 500 else None
+        sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{e}" + (f"：{reason}" if reason else ""))
     except (SystemExit, ValueError, KeyError, KeyboardInterrupt, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         print(f"pf-node: 提交结果未知，request_id={request_id}：{e}；"
               f"请用 {continuation()} request {request_id} 查询；不要换 request_id 重复提交。", file=sys.stderr)
@@ -1084,7 +1094,7 @@ def main():
     priority = None
     device_access, recovery_for, execution_policy = None, None, None
     inputs_path, inputs, submission_node = None, None, None
-    actor_id = None
+    actor_id = research_id = None
     binding_path, binding_envelope = None, None
     host_slots_path, host_slots = None, None
     disk_guard_path, disk_guard = None, None
@@ -1113,6 +1123,10 @@ def main():
             if not args or actor_id is not None:
                 sys.exit("pf-node: --actor-id 需要且只能指定一次")
             actor_id = args.pop(0)
+        elif a == "--research":
+            if not args or research_id is not None:
+                sys.exit("pf-node: --research 需要且只能指定一次研究 ID")
+            research_id = args.pop(0)
         elif a == "--inputs":
             if not args or inputs_path is not None:
                 sys.exit("pf-node: --inputs 需要且只能指定一个清单文件")
@@ -1564,7 +1578,7 @@ def main():
             allowed = {"--path", "--limit", "--cursor"}
         else:
             path = "/" + cmd
-            allowed = {"--query", "--state", "--limit", "--cursor"} if cmd == "jobs" else set()
+            allowed = {"--query", "--state", "--research", "--limit", "--cursor"} if cmd == "jobs" else set()
         query = {}
         while args:
             opt = args.pop(0)
@@ -1594,6 +1608,8 @@ def main():
     binname, argv = args[0], args[1:]
     if submission_node is None:
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None, execution_policy=execution_policy, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
+    if research_id is not None and "jobs.research-link-v1" not in submission_node.get("capabilities", []):
+        sys.exit("pf-node: 节点缺少 jobs.research-link-v1；未提交，不丢弃 --research")
     if gray_session and existing_gray_request is None:
         require_gray_session_compatibility(submission_node, exe)
     request_id = request_id or str(uuid.uuid4())
@@ -1601,6 +1617,8 @@ def main():
     spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
     if actor_id is not None:
         spec["actor_id"] = actor_id
+    if research_id is not None:
+        spec["research_id"] = research_id
     if binding_envelope is not None:
         spec["device_binding"] = device_binding_envelope(binding_envelope, submission_node.get("node_id"))
     if inputs is not None:

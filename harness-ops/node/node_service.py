@@ -343,6 +343,15 @@ class Jobs:
             if not isinstance(actor_id, str) or not actor_id.strip() or len(actor_id) > 64:
                 raise ValueError("actor_id 必须是 1-64 字符的非空字符串")
             actor_id = actor_id.strip()
+        research_id = spec.get("research_id")
+        if research_id is not None:
+            store = getattr(self, "research", None)
+            try:
+                if store is None:
+                    raise ValueError("this node keeps no research records")
+                store.get("research", research_id)
+            except ValueError as error:  # ResearchError is a ValueError: malformed id or no such research
+                raise ValueError(f"research_id must name a research on this node: {error}") from None
         external_lock = binname in {"adb", "fetch_apk"}
         if external_lock and spec.get("exe"):
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
@@ -387,6 +396,7 @@ class Jobs:
                   if "inputs" in spec else None)
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"),
                 **({"actor_id": actor_id} if actor_id else {}),
+                **({"research_id": research_id} if research_id is not None else {}),
                 **({"asset_refs": asset_refs} if asset_refs else {}), "resources": sorted(set(resources)),
                 **({"inputs": inputs} if inputs is not None else {}),
                 **({"execution_policy": policy} if "execution_policy" in spec else {}),

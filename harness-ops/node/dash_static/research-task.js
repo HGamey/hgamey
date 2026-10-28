@@ -56,6 +56,24 @@
     return section;
   }
 
+  const JOB_STATE = {running: '运行中', finished: '已结束', lost: '丢失'};
+  async function runsSection(record, section) {
+    const list = el('ul', null, 'research-evidence');
+    section.append(el('h3', '运行'), list);
+    try {
+      const value = await api(`/jobs?research=${encodeURIComponent(record.id)}&limit=50`);
+      list.replaceChildren(...(value.items.length ? value.items.map(job => {
+        const item = el('li'), link = el('a', job.label || `${job.bin} ${(job.argv || [])[0] || ''}`.trim());
+        link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.id)}`);
+        const state = job.outcome && job.state === 'finished' ? job.outcome : JOB_STATE[job.state] || job.state;
+        item.dataset.job = job.id;
+        const facts = [state, job.actor_id, job.started && when(job.started)].filter(Boolean);
+        item.append(link, el('span', facts.length ? ' · ' + facts.join(' · ') : '', 'muted'));
+        return item;
+      }) : [el('li', '暂无运行', 'empty')]));
+    } catch (error) { list.replaceChildren(el('li', '读取运行失败：' + failure(error))); }
+  }
+
   async function threadSection(record, ctx, section) {
     const list = el('div', null, 'discuss-list'), status = el('p', null, 'note');
     status.setAttribute('role', 'status');
@@ -100,10 +118,10 @@
     if (record.kind !== 'research') return;
     if (agents === null) agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
     if (shown !== record) return;
-    const thread = el('section', null, 'research-section');
-    thread.id = 'task-thread';
-    container.append(...[ownerSection(record, ctx), deliverableSection(record), thread].filter(Boolean));
-    await threadSection(record, ctx, thread);
+    const runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
+    runs.id = 'task-runs'; thread.id = 'task-thread';
+    container.append(...[ownerSection(record, ctx), deliverableSection(record), runs, thread].filter(Boolean));
+    await Promise.all([runsSection(record, runs), threadSection(record, ctx, thread)]);
   }
 
   window.HGResearchTask = {renderDetail, clearDetail: container => { shown = null; container.replaceChildren(); }};
