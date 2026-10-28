@@ -26,6 +26,8 @@ HELP = """用法:
   pf-node research assess ID --revision N
   pf-node research create KIND ID FILE [--operation-id ID] [--actor-label TEXT] [--reason TEXT]
   pf-node research update KIND ID FILE --revision N --reason TEXT [--operation-id ID] [--actor-label TEXT]
+  pf-node research conclude <方向ID> verified|no_gain|rejected|deferred --reason "<依据>"
+      [--evidence job:ID[:PATH] ...]                 # 读取当前 revision 给方向下结论
   pf-node research operation ID
   pf-node research events [--after N | --cursor CURSOR] [--research-id ID] [--limit 1..500]
       [--wait-seconds 0..15]
@@ -47,6 +49,7 @@ KIND 为 research/direction/request/feedback/note。FILE 只含 data JSON 对象
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
 --ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
+conclude 读取方向当前 revision 写入结论与 state_reason；可用 --evidence 重复引用任务产物，未回应人工留言时仍拒绝。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
 输出与网页同一 API JSON；错误保安全错误码、HTTP 状态与 current_revision，不回显源正文。
@@ -133,6 +136,11 @@ def parser():
         command.add_argument("--reason", required=name == "update")
         if name == "update":
             command.add_argument("--revision", type=integer, required=True)
+    conclude = commands.add_parser("conclude")
+    conclude.add_argument("id", type=identifier)
+    conclude.add_argument("state", choices=("verified", "no_gain", "rejected", "deferred"))
+    conclude.add_argument("--reason", required=True)
+    conclude.add_argument("--evidence", action="append", default=[])
     operation = commands.add_parser("operation")
     operation.add_argument("id", type=identifier)
     events = commands.add_parser("events")
@@ -541,6 +549,19 @@ def _artifact(item, node_id, option="--artifact"):
     raise ValueError(option + " 用 job:<任务ID>[:<产物相对路径>]、result:<结果ID> 或 url:<地址>")
 
 
+def _conclude(client, args):
+    if not args.reason.strip() or len(args.reason) > 16384:
+        raise ValueError("reason 须为非空文字，至多 16384 字符")
+    current = client.request("GET", f"/research-state/direction/{args.id}")
+    if current.get("kind") != "direction" or current.get("id") != args.id or type(current.get("revision")) is not int:
+        raise ValueError("方向回包未绑定原对象；未下结论")
+    data = current["data"]
+    data["state"], data["state_reason"] = args.state, args.reason
+    if args.evidence:
+        data["evidence_refs"] = [_artifact(item, client.target.identity()["node_id"], "--evidence") for item in args.evidence]
+    return _post(client, "direction", args.id, data, current["revision"], args.reason)
+
+
 def _task(client, args):
     """Owner, thread and delivery of one research: the operations an agent loop uses."""
     if args.command == "thread":
@@ -554,6 +575,8 @@ def _task(client, args):
             print(f"{stamp} {speaker} {item['id']}{ask}{answer}: {item['text']}")
         return 0
     client.require_capability(write=True)
+    if args.command == "conclude":
+        return _conclude(client, args)
     if args.command == "note":
         node_id = client.target.identity()["node_id"]
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
@@ -605,7 +628,7 @@ def main(argv, *, target):
     try:
         if args.command in ("create", "update"):
             return _write(client, args)
-        if args.command in ("claim", "assign", "note", "thread", "deliver"):
+        if args.command in ("claim", "assign", "note", "thread", "deliver", "conclude"):
             return _task(client, args)
         if args.command == "media":
             return _media(client, args)

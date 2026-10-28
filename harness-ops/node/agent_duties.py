@@ -17,6 +17,7 @@ LOOP = [
     "用自己的 token 提交任务、写 research、发言，记录都会落在你的名下。",
     "每轮结束用 pf-node agents status <你的名字> \"<在做什么>\" 更新状态。",
     "做完后用 pf-node research deliver 交付：总结、产物（任务或结果）、适用的游戏版本和设备。",
+    "研究交付不会自动给方向下结论：pf-node research conclude <方向ID> verified|no_gain|rejected|deferred --reason \"<依据>\" [--evidence job:<任务>:<路径>]。",
 ]
 
 
@@ -34,7 +35,8 @@ def duties(jobs, name, now=None):
     with jobs.research._db() as db:
         head = jobs.research._upper(db)
         studies = [(row, json.loads(row["data"])) for row in _latest(db, "research")]
-        mine = {row["id"]: data for row, data in studies if data.get("owner") == name and data["state"] in OPEN_RESEARCH}
+        owned = {row["id"]: data for row, data in studies if data.get("owner") == name}
+        mine = {rid: data for rid, data in owned.items() if data["state"] in OPEN_RESEARCH}
         notes = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "note")
                  if row["research_id"] in mine]
         requests = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "request")
@@ -44,8 +46,8 @@ def duties(jobs, name, now=None):
             feedback.setdefault(row["request_id"], []).append(row["sequence"])
         directions = {}
         for row in _latest(db, "direction"):
-            if row["research_id"] in mine:
-                directions.setdefault(row["research_id"], []).append(row["state"])
+            if row["research_id"] in owned:
+                directions.setdefault(row["research_id"], []).append((row["id"], row["state"]))
 
     owed, waiting = [], []
     answered = {data["reply_to"] for _, data, audit in notes if audit.get("actor_label") == name and data["reply_to"]}
@@ -103,7 +105,7 @@ def duties(jobs, name, now=None):
         owed.append({"kind": "post_status", "text": "状态" + ("还没报过" if status is None else "超过 30 分钟没更新"),
                      "command": f"pf-node agents status {name} \"<在做什么>\""})
     for rid, data in mine.items():
-        states = directions.get(rid, [])
+        states = [state for _, state in directions.get(rid, [])]
         if not states:
             owed.append({"kind": "plan_directions", "research_id": rid,
                          "text": f"{rid}（{data['title']}）还没有方向；先写下要试的方向",
@@ -112,6 +114,15 @@ def duties(jobs, name, now=None):
             owed.append({"kind": "deliver", "research_id": rid,
                          "text": f"{rid} 的方向都已有结论；交付，或者再开一个方向",
                          "command": f"pf-node research deliver {rid} --summary <文件> --artifact job:<任务ID>"})
+    for rid, data in owned.items():
+        states = [state for _, state in directions.get(rid, [])]
+        if data["state"] == "delivered" or (data["state"] == "active" and states and all(state in TERMINAL_DIRECTIONS for state in states)):
+            for did, state in directions.get(rid, []):
+                if state not in TERMINAL_DIRECTIONS:
+                    owed.append({"kind": "conclude_direction", "research_id": rid, "target": did,
+                                 "text": f"{rid} 已交付或准备交付，方向 {did} 仍为 {state}；给方向下结论",
+                                 "command": f"pf-node research conclude {did} verified|no_gain|rejected|deferred "
+                                            "--reason \"<依据>\" [--evidence job:<任务>:<路径>]"})
     unclaimed = [{"research_id": row["id"], "title": data["title"]} for row, data in studies
                  if data.get("owner") is None and data["state"] == "active"]
     return {"schema": SCHEMA, "node_id": jobs.agents.local_node_id, "agent": name, "at": now,

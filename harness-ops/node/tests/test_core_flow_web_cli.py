@@ -270,6 +270,47 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.cli("POST", "/agents/agent-a", {"revision": revision, "enabled": False})[0], 200)
         self.assertEqual(self.agent(fresh, "GET", "/whoami")[0], 401)
 
+    def test_research_conclude_command_and_checkin_reminder(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-conclude", self.write(
+            "create-conclude", {"title": "方向结论", "objective": "交付后方向不再停留待探索"}))[0], 201)
+        for did in ("d-done", "d-open"):
+            self.assertEqual(self.web("POST", f"/research-state/direction/{did}", self.write(
+                "create-" + did, {"research_id": "sr-conclude", "title": did, "hypothesis": "验证结论路径"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-conclude")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-guide", self.write(
+            "guide-conclude", {"research_id": "sr-conclude", "text": "先回应再下结论", "reply_to": None, "decision": None}))[0], 201)
+        code, _, err = self.pf(token, "research", "conclude", "d-done", "verified", "--reason", "A/B 已复测")
+        self.assertNotEqual(code, 0)
+        self.assertIn("research_guidance_unanswered", err)
+        self.assertEqual(self.cli("GET", "/research-state/direction/d-done")[1]["data"]["state"], "proposed")
+        self.assertEqual(self.pf(token, "research", "note", "sr-conclude", "采纳", "--reply-to", "n-guide",
+                                 "--decision", "adopt")[0], 0)
+        output = Path(self.jobs.path(self.jid, "out"))
+        (output / "report.json").write_text('{"gain": true}')
+        code, _, err = self.pf(token, "research", "conclude", "d-done", "verified", "--reason", "A/B 已复测",
+                               "--evidence", f"job:{self.jid}:report.json")
+        self.assertEqual(code, 0, err)
+        concluded = self.cli("GET", "/research-state/direction/d-done")[1]
+        self.assertEqual((concluded["revision"], concluded["data"]["state"], concluded["data"]["state_reason"]),
+                         (2, "verified", "A/B 已复测"))
+        self.assertEqual(concluded["data"]["evidence_refs"][0]["path"], "report.json")
+        code, help_text, _ = self.pf(ADMIN, "research", "--help")
+        self.assertIn("research conclude <方向ID> verified|no_gain|rejected|deferred", help_text)
+
+        self.assertEqual(self.pf(token, "research", "deliver", "sr-conclude", "--summary", "完成",
+                                 "--artifact", f"job:{self.jid}")[0], 0)
+        pending = self.duties(token)
+        self.assertTrue(any("pf-node research conclude <方向ID> verified|no_gain|rejected|deferred" in step
+                            for step in pending["loop"]))
+        reminder = next(item for item in pending["duties"] if item["kind"] == "conclude_direction")
+        self.assertEqual((reminder["research_id"], reminder["target"]), ("sr-conclude", "d-open"))
+        self.assertIn("pf-node research conclude d-open verified|no_gain|rejected|deferred --reason", reminder["command"])
+        self.assertIn("已交付", reminder["text"])
+        self.assertEqual(self.pf(token, "research", "conclude", "d-open", "no_gain", "--reason", "没有收益")[0], 0)
+        self.assertNotIn("conclude_direction", [item["kind"] for item in self.duties(token)["duties"]])
+
     def test_agent_loop_claim_guidance_and_delivery_through_cli(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
             "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)
