@@ -25,7 +25,6 @@ jobs:
             | grep -vE '^([^/]+/)?README\.md$' \
             | grep -vE '(^|/)(AGENTS|CLAUDE|SKILL|THIRD_PARTY_NOTICES|LICENSE)\.md$' \
             | grep -vE '(^|/)(tests?|fixtures|testdata|skills|evidence|dash_demo|assets|static|dash_static|\.cursor|\.github)/' \
-            | grep -vE '^[^/]+/(tasks/|loop_v1/runs)' \
             | grep -vE '^history/' || true)
           status=0
           if [ -n "$bad" ]; then
