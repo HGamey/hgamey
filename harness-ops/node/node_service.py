@@ -365,8 +365,6 @@ class Jobs:
             raise ValueError(
                 "this node requires device_binding for device-access jobs; resolve one via devices-resolve")
         legacy_device_bin = binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"}
-        legacy_host_default = (legacy_device_bin and spec.get("device_access") == "none"
-                               and "resources" not in spec and not device_binding and recovery_for is None)
         resources = spec.get("resources", [] if device_binding or access == "none" else
                              ["legacy-device"] if legacy_device_bin else [])
         if access == "recovery":
@@ -407,9 +405,6 @@ class Jobs:
             self.validate_bound_recovery(spec)
         if experiment and device_binding:
             raise ValueError("experiment jobs take device locks themselves; device_binding does not apply")
-        # Old explicit host-only requests persisted the bin's device default.
-        # This candidate may find an existing request; it must never admit one.
-        legacy_resource_spec = {**spec, "resources": ["legacy-device"]} if legacy_host_default else None
         original_admit = admit
         def admit():
             # submit() calls this only for a new request while holding intake.
@@ -420,8 +415,7 @@ class Jobs:
                 self.device_scopes.admit(device_binding)
             if original_admit is not None:
                 original_admit()
-        return self.dispatch.submit(spec, body, request_id, admit=admit,
-                                    legacy_resource_spec=legacy_resource_spec)
+        return self.dispatch.submit(spec, body, request_id, admit=admit)
 
     def _prepare(self, row, body):
         spec, jid = row["spec"], row["job_id"]

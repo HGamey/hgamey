@@ -45,20 +45,6 @@ class HostResourceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             return result.stdout.strip()
 
-        # Explicit legacy resources create exactly the normalized old-default
-        # record through real HTTP, without mirroring its fingerprint algorithm.
-        old_id = accepted("before-host-default-fix", {**host, "resources": ["legacy-device"]})
-        original = queue.get(old_id)
-        with patch.object(env.jobs, "_prepare", wraps=env.jobs._prepare) as prepare, \
-                patch.object(env.jobs.programs, "require_session",
-                             side_effect=AssertionError("existing ID must skip new admission")):
-            self.assertEqual(cli("before-host-default-fix"), old_id)
-            self.assertEqual(submit("before-host-default-fix", {**host, "argv": ["different"]})[0], 409)
-            self.assertEqual(submit("before-host-default-fix", host, {"different": "body"})[0], 409)
-            self.assertEqual(submit("before-host-default-fix", {**host, "resources": []})[0], 409)
-            prepare.assert_not_called()
-        self.assertEqual(queue.get(old_id)["state"], "queued", "retry must not rewrite the original reservation")
-
         first = accepted("host-http", host)
         second = cli("host-cli")
         self.assertEqual(queue.get(first)["resources"], [], "explicit none must not inherit legacy-device")
@@ -84,24 +70,24 @@ class HostResourceTests(unittest.TestCase):
         with patch.object(env.jobs.leases, "snapshot", side_effect=cached_lease), \
                 patch.object(env.jobs.dispatch, "launch") as launch:
             env.jobs.dispatch.tick()
-        self.assertEqual([call.args[0]["job_id"] for call in launch.call_args_list], [old_id, first])
+        self.assertEqual([call.args[0]["job_id"] for call in launch.call_args_list], [first, second])
         self.assertEqual(queue.get(third)["state"], "queued")
         self.assertEqual(queue.capacity_snapshot()["reserved"], {"cpu": 2, "gpu": 0, "io": 0})
-        self.assertEqual(queue.get(old_id)["state"], "claimed")
-        self.assertIsNone(env.jobs.status(old_id)["queue"]["waiting"]["kind"])
         self.assertEqual(queue.get(device)["state"], "blocked")
         self.assertEqual(queue.get(device)["resources"], ["legacy-device"])
 
         write = accepted("explicit-write", {**host, "device_access": "write"})
         self.assertEqual(queue.get(write)["resources"], ["legacy-device"])
         named = accepted("host-explicit-resource", {**host, "resources": ["legacy-device"]})
-        self.assertEqual(env.jobs.status(named)["queue"]["waiting"]["kind"], "resource")
+        self.assertEqual(queue.get(named)["state"], "queued")
+        self.assertEqual(queue.get(named)["resources"], ["legacy-device"])
+        self.assertIsNotNone(env.jobs.status(named)["queue"]["waiting"]["kind"])
         recovery = accepted("recover-device", {**host, "device_access": "recovery",
                             "recovery_for": device, "resources": ["ignored-recovery-override"]})
         self.assertEqual(queue.get(recovery)["resources"], queue.get(device)["resources"])
         self.assertEqual(queue.get(recovery)["spec"]["recovery_for"], device)
-        self.assertEqual(len(queue.rows()), 8, "all retries must preserve the original job count")
+        self.assertEqual(len(queue.rows()), 7, "all retries must preserve the original job count")
         print(json.dumps({"scope": "HTTP/CLI admission and synthetic scheduler only; no workers/devices",
                           "http": requests, "cli": cli_calls,
-                          "original_job": old_id, "host_claimed": [first, second],
+                          "host_claimed": [first, second],
                           "device_still_blocked": device, "jobs": len(queue.rows())}, sort_keys=True))

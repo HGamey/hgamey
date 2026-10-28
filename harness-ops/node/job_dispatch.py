@@ -82,16 +82,11 @@ class JobDispatch:
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
                 "recovery": {"status": "not_needed", "reason": "command has not started"}}
 
-    def submit(self, spec, body, request_id, *, admit=None, legacy_resource_spec=None):
+    def submit(self, spec, body, request_id, *, admit=None):
         key = self.request_key(uuid.uuid4().hex if request_id is None else request_id)
         fingerprint = request_fingerprint(spec, body)
         with file_lock(self.intake_path):
             prior = self.queue.by_request(key)
-            if prior and prior["fingerprint"] != fingerprint and legacy_resource_spec is not None:
-                # Full historical content, including upload bytes, must match.
-                # Keep its original spec/reservation; new IDs use today's default.
-                if request_fingerprint(legacy_resource_spec, body) == prior["fingerprint"]:
-                    spec, fingerprint = prior["spec"], prior["fingerprint"]
             if admit is not None and not prior:
                 admit()
             if spec.get("recovery_for") and not prior:
