@@ -163,7 +163,7 @@ class LeaseState:
                         or not isinstance(value.get("entries"), list)):
                     raise ValueError("incompatible lease status; upgrade phonefarm")
                 try:
-                    queue_directory(value)
+                    storage_root(value)
                     if "device_scopes" in value:
                         scopes(value)
                 except ValueError as error:

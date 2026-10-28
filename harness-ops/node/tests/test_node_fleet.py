@@ -112,7 +112,7 @@ class FleetStateTests(unittest.TestCase):
             value.update(status="clear", entries=[])
             del value["storage"]["queue_dir"]
             with patch("node_lease.subprocess.run", return_value=Mock(stdout=json.dumps(value))):
-                self.assertEqual(leases.snapshot(refresh=True, force=True)["status"], "unknown")
+                self.assertEqual(leases.snapshot(refresh=True, force=True)["status"], "clear")
             state = FleetState(directory, None, str(root / "shots"), lease_state=leases)
             try:
                 empty = Mock(returncode=1, stdout='{"schema":"phonefarm/fleet@1","devices": []}')
