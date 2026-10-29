@@ -5,12 +5,12 @@ import os
 import subprocess
 import threading
 import time
-from node_lease import LeaseState, abandoned_observation, queue_directory
+from node_lease import LeaseState, queue_directory
 
 VIEW_IDLE_S = 90
 FLEET_EVERY_FREE_S = 30
 FLEET_EVERY_HELD_S = 60
-FREE_GRACE_S = 30
+FREE_GRACE_S = 0
 SHOT_EVERY_S = 60
 STALE_AFTER_S = 90
 
@@ -157,29 +157,14 @@ class FleetState:
                     return
                 self._attempted_at = time.time()
                 lock = self._read_lock()
-                free_for = lock["free_for_s"]
-                reclaim = ((lock["status"] != "free" or lock["stale"] or
-                            (lock["status"] == "free" and free_for is not None and free_for < FREE_GRACE_S))
-                           and self.leases is not None and abandoned_observation(lock.get("lease")))
                 self._refreshing, self._deferred = True, None
-                # PF chooses full versus light observation. Only screenshots
-                # require the node's stronger free/no-queue/grace qualification.
-                screenshots = (lock["status"] == "free" and not lock["stale"] and not lock["queue"]
-                               and (free_for is None or free_for >= FREE_GRACE_S) and now < self._shots_until)
+                # PF tries each device independently; one busy phone must not
+                # disable screenshots of every idle phone.
+                screenshots = now < self._shots_until
             executable, cwd = (self.leases.bins["phonefarm"] if self.leases else
                                (os.path.join(self.root, "phonefarm"), self.root))
             configured = self.leases.env if self.leases and self.leases.env is not None else os.environ
             env = {k: v for k, v in configured.items() if k not in {"DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"}}
-            if reclaim:
-                retired = self.leases.reclaim_observation(lock.get("lease"))
-                with self._condition:
-                    self._refreshing = False
-                    if not retired:
-                        self._deferred, self._error = "设备锁状态未知或心跳过期，暂缓采样", None
-                    self._next_at = time.monotonic() + (0 if retired else 5)
-                    self._attempt += 1
-                    self._condition.notify_all()
-                continue
             command = [executable, "fleet", "--json"]
             if self.leases is None:
                 command += ["--lock-dir", self.lock_dir]
@@ -187,7 +172,7 @@ class FleetState:
                 command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
             fleet, error, deferred = None, None, None
             try:
-                # Its own session: stopping the node (a deploy) must not kill an observation that holds the lock.
+                # The PF supervisor bounds and cleans up its own observation group.
                 result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, start_new_session=True,
                                         timeout=40, stdin=subprocess.DEVNULL, check=False)
                 value = json.loads(result.stdout)

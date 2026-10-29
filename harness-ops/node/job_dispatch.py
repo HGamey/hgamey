@@ -314,8 +314,6 @@ class JobDispatch:
         lease = self.jobs.leases.snapshot(refresh=True) if any(
             device_access(r["spec"]) == "write" or "device_binding" in r["spec"]
             for r in self.queue.rows(("queued",))) else {}
-        if lease.get("status") == "blocked" and self.jobs.leases.reclaim_observation(lease):
-            lease = self.jobs.leases.snapshot()  # reclaim already refreshed; a dead fleet observation no longer holds the phones
         while True:
             row = self.queue.claim_next(self.max_running, lease_snapshot=lease, admit=lambda r:
                 lease_problem(r["spec"], lease, mode="recovery" if device_access(r["spec"]) == "recovery" else "start") is None)
