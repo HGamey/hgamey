@@ -275,7 +275,7 @@
     }
     section.addEventListener('click', event => {
       const button = event.target.closest('[data-reply-to]');
-      if (!button || !ctx.requireWrite(() => button.click())) return;
+      if (!button || !ctx.requireWrite(() => { button.click(); return false; })) return;
       replyTo = button.dataset.replyTo;
       const input = document.getElementById('task-note-text');
       if (input) { input.placeholder = '回复 ' + replyTo; input.focus(); }
@@ -287,7 +287,7 @@
     shown = record;
     clearImages(); container.replaceChildren();
     if (record.kind !== 'research') return;
-    if (agents === null) agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
+    agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
     if (shown !== record) return;
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';

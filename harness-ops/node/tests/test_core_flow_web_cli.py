@@ -613,6 +613,13 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('directionsSection', script)
         self.assertIn('container.append(...[ownerSection(record, ctx), directions, runs, thread, deliverableSection(record)]', script)
 
+    def test_owner_agents_refresh_with_detail_and_access(self):
+        task = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
+        research = (NODE / "dash_static/research.js").read_text(encoding="utf-8")
+        self.assertNotIn('if (agents === null)', task, "owner options must not be pinned to the first agent query")
+        self.assertIn('agents = (await api(\'/agents\')', task)
+        self.assertIn('renderDetail(detail)', research, "unlock must repaint the current task and its owner controls")
+
     def test_research_copy_criteria_filters_and_navigation_follow_task_terms(self):
         page = (NODE / "dash_static/research.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/research.js").read_text(encoding="utf-8")

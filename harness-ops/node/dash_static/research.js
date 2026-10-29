@@ -145,7 +145,7 @@
     accessBusy = true; renderControls();
     try { access = await request(`${API}/access`); accessError = ''; $('login-link').hidden = true; }
     catch (error) { access = null; accessError = failText(error); $('login-link').hidden = error.status !== 401; }
-    finally { accessBusy = false; if (!disposed) renderControls(); }
+    finally { accessBusy = false; if (!disposed) { renderControls(); if (!writeContinuation && detailFresh && detail) renderDetail(detail); } }
   }
   async function setAccess(body, lock = false) {
     if (accessBusy) return; accessBusy = true; renderControls(); $('unlock-submit').disabled = true;
@@ -155,7 +155,9 @@
       $('steer-password').value = ''; $('unlock-submit').disabled = false; accessBusy = false; await loadAccess();
       if (access?.steer) {
         $('access-panel').hidden = true;
-        const action = writeContinuation; writeContinuation = null; if (action) await action();
+        const action = writeContinuation; writeContinuation = null;
+        const shouldRender = action ? await action() : true;
+        if (shouldRender !== false && detailFresh && detail) renderDetail(detail);
       }
     }
   }
