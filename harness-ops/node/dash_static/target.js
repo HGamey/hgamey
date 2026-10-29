@@ -48,7 +48,7 @@
     flight=(async()=>{
       const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),10000);
       try{
-        const response=await rawFetch(discovery,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:ctl.signal});
+        const response=await rawFetch(discovery,{credentials:'same-origin',cache:'no-store',redirect:'error',signal:ctl.signal,headers:operator?{'X-HG':'1'}:{}});
         if(!response.ok)throw localError(`无法读取节点身份（HTTP ${response.status}）；请核对登录后刷新目标。`);
         const value=await response.json();if(!ID.test(value?.node_id))throw localError('节点身份协议不可读。');identity=value;
         if(!pin){pin={entry:origin,node_id:value.node_id};persist();}

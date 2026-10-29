@@ -20,7 +20,7 @@ LOOP = [
     "图在自己机器上画，用 research note --attach 附上；实验 Python 只保证有标准库。",
     "devlock busy 默认等 DEVLOCK_WAIT_SECONDS=900 秒，超时清自己的队列标签并记录阻塞者；立即失败设 0。单机用 phonefarm lease --serial <串号>（已注册设备走 lane），多机才用全局 devlock。",
     "需要人判断时发 request，然后继续做其他方向，不要停下来等人。",
-    "为研究提交任务时加 --research <研究ID>，网页的手机占用和任务页才看得到这个任务。",
+    "为研究提交任务时加 --research <研究ID>，网页的手机占用和任务页才看得到这个任务；属于某方向时再加 --direction <方向ID>，运行会挂到该方向下。",
     "用自己的 token 提交任务、写 research、发言，记录都会落在你的名下。",
     "每轮结束用 pf-node agents status <你的名字> \"<在做什么>\" 更新状态。",
     "做完后用 pf-node research deliver 交付：总结、产物（任务或结果）、适用的游戏版本和设备。",
@@ -62,7 +62,7 @@ def duties(jobs, name, now=None):
                      if data.get("ask") is True and audit.get("actor_label") == name}
     answers_by_question, question_answers = set(), []
     for row, data, audit in notes:
-        if data.get("reply_to") not in own_questions or audit.get("auth_channel") != "dashboard_steer":
+        if data.get("reply_to") not in own_questions or audit.get("auth_channel") not in ("dashboard_steer", "admin_token"):
             continue
         answers_by_question.add(data["reply_to"])
         question_answers.append({"research_id": row["research_id"], "id": row["id"], "reply_to": data["reply_to"],

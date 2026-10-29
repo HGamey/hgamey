@@ -348,6 +348,18 @@ class Jobs:
                 research_devices = store.get("research", research_id)["data"].get("device_requirements") or []
             except ValueError as error:  # ResearchError is a ValueError: malformed id or no such research
                 raise ValueError(f"research_id must name a research on this node: {error}") from None
+        direction_id = spec.get("direction_id")
+        if direction_id is not None:
+            if research_id is None:
+                raise ValueError("direction_id requires research_id")
+            store = getattr(self, "research", None)
+            try:
+                if store is None:
+                    raise ValueError("this node keeps no research records")
+                if store.get("direction", direction_id)["research_id"] != research_id:
+                    raise ValueError("direction_id must belong to research_id")
+            except ValueError as error:
+                raise ValueError(f"direction_id must name a direction on research {research_id}: {error}") from None
         external_lock = binname in {"adb", "fetch_apk"}
         if external_lock and spec.get("exe"):
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
@@ -400,6 +412,7 @@ class Jobs:
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"),
                 **({"actor_id": actor_id} if actor_id else {}),
                 **({"research_id": research_id} if research_id is not None else {}),
+                **({"direction_id": direction_id} if direction_id is not None else {}),
                 **({"experiment": experiment} if experiment else {}),
                 **({"asset_refs": asset_refs} if asset_refs else {}), "resources": sorted(set(resources)),
                 **({"inputs": inputs} if inputs is not None else {}),
@@ -1159,8 +1172,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if board is None or getattr(board, "live", None) is None:
                         return self._send(503, {"code": "live_unavailable", "error": "live observation is not configured on this node"})
                     return dash.dash_live.handle(board, self, ["api", *parts], urlparse(self.path).query)
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "discuss":
-                    return self._discuss_get(parts[1])
                 if parts == ["agents"]:
                     return self._send(200, {"node_id": node.node_id, "agents": jobs.agents.list()})
                 if len(parts) == 2 and parts[0] == "agents":
@@ -1518,74 +1529,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             return self._send(200, {"node_id": node.node_id, "job_id": jid,
                                     "session_pause_requested": pausing,
                                     "note": "takes effect at the next producer safe point; cancel still works"})
-
-        def _discuss_get(self, jid):
-            # do_GET already authenticated either the token or the dashboard session.
-            self.close_connection = True
-            row = jobs.dispatch.queue.get(jid)
-            if row is None:
-                return self._send(404, {"code": "job_not_found", "error": "no such job"})
-            entries = []
-            try:
-                with jobs._read_root.open_file(jid + "/discuss.jsonl") as stream:
-                    for line in stream.read().decode().splitlines():
-                        line = line.strip()
-                        if line:
-                            try:
-                                entries.append(json.loads(line))
-                            except json.JSONDecodeError:
-                                entries.append({"at": None, "from": "unknown", "text": line})
-            except FileNotFoundError:
-                pass
-            except (OSError, ValueError) as error:
-                return self._send(503, {"code": "discuss_unavailable", "error": str(error)})
-            return self._send(200, {"node_id": node.node_id, "job_id": jid, "entries": entries})
-
-        def _discuss_post(self, jid, dashboard):
-            # The speaker follows the auth channel: a page write is the human; a token write
-            # declares its agent label and may not claim "human".
-            self.close_connection = True
-            if not self._upload_write_auth(dashboard):
-                return
-            try:
-                length = self._upload_length(MAX_REQUEST, 1)
-                self.connection.settimeout(30)
-                body = self.rfile.read(length)
-                if len(body) != length:
-                    raise ValueError("discuss body was interrupted")
-                if jobs.dispatch.queue.get(jid) is None:
-                    return self._send(404, {"code": "job_not_found", "error": "no such job"})
-                request = json.loads(body)
-                if not isinstance(request, dict) or not isinstance(request.get("text"), str):
-                    raise ValueError("discuss requires a text field")
-                text = request["text"].strip()
-                if not text or len(text) > 4096:
-                    raise ValueError("discuss text must be 1-4096 characters")
-                channel, agent = self._channel(dashboard)
-                if dashboard:
-                    actor = "human"
-                elif agent is not None:
-                    if request.get("from") not in (None, agent):
-                        raise ValueError("from is fixed by the agent token; omit it")
-                    actor = agent
-                else:
-                    actor = request.get("from")
-                    if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 64:
-                        raise ValueError("token writes must declare from (1-64 characters)")
-                    actor = actor.strip()
-                    if actor.casefold() == "human":
-                        raise ValueError("from=human is reserved for the dashboard; declare the agent name")
-                entry = {"at": time.time(), "from": actor, "auth_channel": channel,
-                         "text": text}
-                with jobs._read_root.append_file(jid + "/discuss.jsonl") as stream:
-                    stream.write(json.dumps(entry, ensure_ascii=False).encode() + b"\n")
-                return self._send(201, {"node_id": node.node_id, "job_id": jid, "entry": entry})
-            except AssetUploadError as error:
-                return self._send(error.status, error.payload)
-            except ValueError as error:
-                return self._send(400, {"code": "invalid_request", "error": str(error)})
-            except (OSError, KeyError) as error:
-                return self._send(503, {"code": "discuss_unavailable", "error": str(error)})
 
         def _agents_post(self, dashboard, body):
             self.close_connection = True
@@ -1971,10 +1914,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._research_post(parts, False)
             if board and parts[:3] == ["dash", "api", "research-state"]:
                 return self._research_post(parts[2:], True)
-            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "discuss":
-                return self._discuss_post(parts[1], False)
-            if board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"] and parts[4] == "discuss":
-                return self._discuss_post(parts[3], True)
             if parts[:1] in (["results"], ["result-imports"]):
                 return self._result_post(parts, False)
             if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["results"], ["result-imports"]):

@@ -21,7 +21,6 @@
   GET /dash/static/<文件>    页面资源
   GET /dash/api/state       手机 + 设备锁 + 任务 + 温度/电量历史（页面每 3 秒拉一次）
   GET /dash/api/log?job=ID  任务日志尾部
-  GET /dash/api/exps?ver=V  实验证据（optimize / autoloop / eval）汇总；ver 没变时只回 {"same": true}
   GET /dash/api/shot[?serial=S]  最近一张手机截图（jpeg）
   GET /dash/live, /dash/api/live/{status,stream,frame}  近实时画面（见 dash_live.py 的测量纪律）
   GET /dash/maint           维护页
@@ -34,6 +33,7 @@
 import collections, glob, hashlib, hmac, json, os, re, threading, time
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from device_scope import scope as device_scope
+from device_registry import DeviceRegistry, RegistryError
 import agent_duties
 from node_directory import DirectoryError
 from node_games import GameError, MAX_MANIFEST
@@ -60,7 +60,6 @@ STATIC_TYPES = {".json": "application/json; charset=utf-8", ".html": "text/html;
 TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/doctor"}
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
-SCAN_EVERY_S = 30         # 实验证据多久扫一次（只在有人看时）
 JOBS_SHOWN = 30
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
 REDACT = re.compile(r"(Bearer\s+|sk-[A-Za-z0-9]{4})[A-Za-z0-9._\-]{8,}|((?:api[_-]?key|token|secret|password)\s*[=:]\s*)\S+", re.I)
@@ -97,196 +96,6 @@ def _redact(s):
     return REDACT.sub(lambda m: (m.group(1) or m.group(2)) + "***", s)
 
 
-# ═════════════ 实验证据解析 ═════════════
-
-VERDICT = {"PASS": "win", "KEEP": "win", "REJECT": "lose", "SLOW": "lose", "POOR_QUALITY": "lose",
-           "CRASH": "lose", "ABORT": "void", "REVERTED": "other"}
-METRIC_KEYS = {"fps_mean": "fps", "frame_p95": "frame_p95", "fps_p95_ms": "frame_p95", "frame_p95_ms": "frame_p95",
-               "power_w_mean": "power", "power_watt": "power"}
-ORIGIN = {"llm": "大模型", "local_mutation": "本地变异器", "external": "外部出方案进程"}
-
-
-def _change_text(c):
-    if not isinstance(c, dict):
-        return str(c)
-    if "params" in c and isinstance(c["params"], dict):
-        return ", ".join(f"{k}={v}" for k, v in c["params"].items())
-    if "rewrites" in c:
-        rs = c["rewrites"] or []
-        return " + ".join(r.get("knob", "?") + (f"[{r['scope']}]" if r.get("scope") else "") if isinstance(r, dict) else str(r)
-                          for r in rs)
-    if "payload" in c:
-        return _change_text(c["payload"])
-    if "track" in c:
-        return f"{c.get('track')}: {c.get('shader_path')}"
-    return json.dumps(c, ensure_ascii=False)[:200]
-
-
-def _metrics_from_per_metric(pm):
-    out = {}
-    for k, v in (pm or {}).items():
-        key = METRIC_KEYS.get(k)
-        if not key or not isinstance(v, dict):
-            continue
-        out[key] = {"a": v.get("a_mean"), "b": v.get("b_mean"), "pct": v.get("diff_pct"),
-                    "p": v.get("p", v.get("perm_p_two_sided")), "status": v.get("status"),
-                    "sig": v.get("significant_at_0.05")}
-    return out
-
-
-def _cand(**kw):
-    c = {"id": None, "gen": None, "why": "", "change": "", "status": None, "outcome": "pending", "reason": None,
-         "p": None, "metrics": {}, "temp_max_c": None, "abs": {}}
-    c.update(kw)
-    if c["status"]:
-        c["outcome"] = VERDICT.get(str(c["status"]).upper(), "other")
-    return c
-
-
-def parse_optimize(d):
-    rep = _load(os.path.join(d, "report.json"))
-    if rep is not None and "archive" not in rep:
-        rep = None
-    cands, order, gens_meta = {}, [], {}
-    if rep:
-        for e in rep.get("archive") or []:
-            v = e.get("verdict") or {}
-            m = e.get("metrics") or {}
-            cands[e["id"]] = _cand(id=e["id"], gen=e.get("generation"), layer=e.get("layer"), why=e.get("why", ""),
-                                   change=_change_text(e.get("change")), status=e.get("status"),
-                                   reason=v.get("reason"), p=v.get("p_value"),
-                                   metrics=_metrics_from_per_metric(v.get("per_metric")),
-                                   temp_max_c=m.get("soc_temp_max_c"), kept=e.get("kept"),
-                                   abs={"fps": m.get("fps_mean"), "frame_p95": m.get("frame_p95_ms") or m.get("fps_p95_ms"),
-                                        "power": m.get("power_watt")})
-            order.append(e["id"])
-    pdir = os.path.join(d, "proposer")
-    for fin in sorted(glob.glob(os.path.join(pdir, "*_g*.input.json")), key=_mtime):
-        stem = os.path.basename(fin)[:-len(".input.json")]
-        kind, _, g = stem.rpartition("_g")
-        inp = _load(fin) or {}
-        for h in inp.get("history") or []:
-            cid = h.get("candidate_id")
-            if not cid or cid in cands:
-                continue
-            cands[cid] = _cand(id=cid, gen=h.get("generation"), layer=kind, why=(h.get("candidate") or {}).get("why", ""),
-                               change=_change_text(h.get("candidate")), status=h.get("status"), reason=h.get("reason"),
-                               p=h.get("p_value"), metrics=_metrics_from_per_metric(h.get("per_metric")), kept=h.get("kept"))
-            order.append(cid)
-        out = _load(os.path.join(pdir, stem + ".output.json")) or {}
-        prop = out.get("proposed") or {}
-        gm = gens_meta.setdefault(int(g) if g.isdigit() else g, {})
-        gm.update(origin=ORIGIN.get(prop.get("origin"), prop.get("origin")), error=prop.get("error"),
-                  rejected=(out.get("rejected") or [])[:12], proposed=len(prop.get("candidates") or []))
-        prefix = {"sysparam": "sys", "gray": "gray"}.get(kind, kind)
-        for i, c in enumerate(out.get("accepted") or []):
-            cid = f"{prefix}_g{g}c{i + 1}"
-            if cid not in cands:
-                cands[cid] = _cand(id=cid, gen=int(g) if g.isdigit() else g, layer=kind, why=c.get("why", ""),
-                                   change=_change_text(c))
-                order.append(cid)
-    if not cands and not rep and not os.path.isdir(pdir) and not os.path.isfile(os.path.join(d, "caps.json")):
-        return None
-    title = "optimize"
-    meta = {}
-    if rep:
-        title = f"optimize · {rep.get('game') or ''}".strip(" ·")
-        meta = {"game": rep.get("game"), "device": rep.get("device_model"), "headline": rep.get("headline"),
-                "layers": [{"name": l.get("layer_display") or l.get("layer"), "used": l.get("used"), "reason": l.get("reason"),
-                            "proposer": l.get("proposer")} for l in rep.get("layers") or []],
-                "proposer": (rep.get("proposer") or {}).get("describe"), "done": not rep.get("plan_only")}
-    return {"kind": "optimize", "title": title, "meta": meta, "cands": [cands[i] for i in order],
-            "gens": {str(k): v for k, v in gens_meta.items()}}
-
-
-def parse_autoloop(d):
-    rep = _load(os.path.join(d, "report.json"))
-    if rep is not None and "results" not in rep:
-        rep = None
-    gdirs = sorted((g for g in glob.glob(os.path.join(d, "gen*")) if os.path.isdir(g)),
-                   key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0))
-    if not rep and not gdirs and not os.path.isfile(os.path.join(d, "rule.json")):
-        return None
-    cands, gens_meta = [], {}
-    for gd in gdirs:
-        g = int(re.sub(r"\D", "", os.path.basename(gd)) or 0)
-        cj = _load(os.path.join(gd, "candidates.json")) or {}
-        gens_meta[str(g)] = {"origin": cj.get("source"), "proposed": len(cj.get("candidates") or [])}
-        for i, c in enumerate(cj.get("candidates") or []):
-            r = _load(os.path.join(gd, f"cand{i + 1}", "result.json"))
-            base = dict(id=f"g{g}c{i + 1}", gen=g, why=c.get("why", ""), change=_change_text(c))
-            if r:
-                cands.append(_cand(**base, status=r.get("verdict"), reason=r.get("reason"),
-                                   metrics=_metrics_from_per_metric(r.get("comparisons")), temp_max_c=r.get("temp_max_c")))
-            else:
-                cands.append(_cand(**base))
-    if not gdirs and rep:  # 只有总报告（证据目录被裁剪过）
-        for i, r in enumerate(rep.get("results") or []):
-            cands.append(_cand(id=f"c{i + 1}", gen=r.get("generation"), why=r.get("why", ""), change=_change_text(r),
-                               status=r.get("verdict"), reason=r.get("reason"),
-                               metrics=_metrics_from_per_metric(r.get("comparisons")), temp_max_c=r.get("temp_max_c")))
-    meta = {}
-    rule = (rep or {}).get("rule") or _load(os.path.join(d, "rule.json")) or {}
-    if rep:
-        n_keep = len(rep.get("kept") or [])
-        meta = {"goal": rep.get("goal"), "device": (rep.get("test_conditions") or {}).get("device"),
-                "headline": f"保留 {n_keep} 组 / 共 {len(rep.get('results') or [])} 组", "done": True}
-    meta["rule"] = rule.get("keep_condition")
-    return {"kind": "autoloop", "title": f"autoloop · {(rep or {}).get('goal') or os.path.basename(d)}", "meta": meta,
-            "cands": cands, "gens": gens_meta}
-
-
-def parse_eval_log(path):
-    """phonefarm eval --json 把判定报告整行打到 stdout（进了任务日志）。从日志尾部捞最后一份。"""
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            f.seek(max(0, f.tell() - (512 << 10)))
-            data = f.read().decode(errors="replace")
-    except OSError:
-        return None
-    rep, dec = None, json.JSONDecoder()
-    for mt in re.finditer(r"(?m)^\{", data):  # 报告可能是一行，也可能是缩进排版的多行
-        try:
-            obj, _ = dec.raw_decode(data, mt.start())
-        except ValueError:
-            continue
-        if isinstance(obj, dict) and "candidate_id" in obj and "verdict" in obj:
-            rep = obj
-    if not rep:
-        return None
-    v, m = rep.get("verdict") or {}, rep.get("metrics") or {}
-    c = _cand(id=rep.get("candidate_id"), gen=1, layer=rep.get("kind"), status=rep.get("status"), reason=v.get("reason"),
-              p=v.get("p_value"), metrics=_metrics_from_per_metric(v.get("per_metric")), temp_max_c=m.get("soc_temp_max_c"),
-              abs={"fps": m.get("fps_mean"), "frame_p95": m.get("frame_p95_ms") or m.get("fps_p95_ms"), "power": m.get("power_watt")})
-    return {"kind": "eval", "title": f"eval · {rep.get('kind') or ''} · {rep.get('candidate_id')}", "meta": {"done": True},
-            "cands": [c], "gens": {}}
-
-
-def detect(d):
-    if os.path.isdir(os.path.join(d, "proposer")) or os.path.isfile(os.path.join(d, "caps.json")):
-        return parse_optimize(d)
-    if os.path.isfile(os.path.join(d, "rule.json")) or os.path.isfile(os.path.join(d, "whitelist.json")) \
-            or glob.glob(os.path.join(d, "gen*", "candidates.json")):
-        return parse_autoloop(d)
-    rep = _load(os.path.join(d, "report.json"))
-    if isinstance(rep, dict):
-        if "archive" in rep:
-            return parse_optimize(d)
-        if "results" in rep:
-            return parse_autoloop(d)
-    return None
-
-
-def signature(d):
-    """(最新 mtime, 文件数) —— 没变就不重新解析；最新 mtime 也当「最近更新」。"""
-    newest, n = 0.0, 0
-    for pat in ("report.json", "caps.json", "rule.json", "proposer/*.json", "gen*/candidates.json", "gen*/cand*/result.json"):
-        for p in glob.glob(os.path.join(d, pat)):
-            newest, n = max(newest, _mtime(p)), n + 1
-    return (newest, n)
-
-
 # ═════════════ 主体 ═════════════
 
 class Dash:
@@ -303,9 +112,6 @@ class Dash:
         self.monitor = fleet or FleetState(self.pf_root, None, self.shot_dir,
                                           lease_state=jobs.leases if jobs else None)
         self.meta_cache = {}
-        self.walk_cache = {}
-        self.exp_cache = {}
-        self.exps, self.exps_ver = [], "0"
         self.fails = collections.defaultdict(list)
         self.wake = threading.Event()
         lease_reader = self.monitor.leases
@@ -315,7 +121,6 @@ class Dash:
             lease_reader.env if lease_reader else None, os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "live"))
         self.live = dash_live.LiveHub(lambda: self.monitor.snapshot()["lock"], live_backend,
                                      device_scopes=jobs.device_scopes if jobs else None)
-        threading.Thread(target=self._scanner, daemon=True, name="dash-scan").start()
 
     # ── 认证 ──
     def _pass(self):
@@ -442,10 +247,6 @@ class Dash:
         if sub == ["api", "log"]:
             jid = (q.get("job") or [""])[0]
             return self._send(h, 200, self.log_tail(jid, int((q.get("bytes") or ["16384"])[0])))
-        if sub == ["api", "exps"]:
-            if (q.get("ver") or [""])[0] == self.exps_ver:
-                return self._send(h, 200, {"same": True, "ver": self.exps_ver})
-            return self._send(h, 200, {"ver": self.exps_ver, "exps": self.exps})
         if sub == ["api", "shot"]:
             return self._shot(h, (q.get("serial") or [""])[0])
         return self._send(h, 404, {"error": "not found"})
@@ -708,113 +509,6 @@ class Dash:
         return {"job": jid, "size": size, "text": text}
 
     # ── 实验证据扫描线程 ──
-    def _candidate_dirs(self, jobs):
-        """(目录, 任务) 对：任务的 @out 目录树 + 任务参数里 --out 指向的节点本地目录 + 常见 runs 目录。"""
-        seen, res = set(), []
-
-        def add(d, job):
-            d = os.path.realpath(d)
-            if d not in seen and os.path.isdir(d):
-                seen.add(d)
-                res.append((d, job))
-
-        for j in jobs:
-            meta = self._job_meta(j["id"]) or {}
-            found = self.walk_cache.get(j["id"])
-            if found is None or j["state"] == "running":
-                found, visited = [], 0
-                jout = os.path.join(self.jobs_dir, j["id"], "out")
-                for root, dirs, files in os.walk(jout):
-                    visited += 1
-                    depth = root[len(jout):].count(os.sep)
-                    if detect_markers(root, dirs, files):
-                        found.append(root)
-                        dirs[:] = []
-                    elif depth >= 3 or visited > 200:
-                        dirs[:] = []
-                self.walk_cache[j["id"]] = found  # 结束了的任务输出不再变，只走一次
-            for root in found:
-                add(root, j)
-            argv = meta.get("argv") or []
-            cwd = self.gol_root if meta.get("bin") == "game_opt_loop" else self.pf_root
-            for i, a in enumerate(argv):
-                val = None
-                if a in ("--out", "--out-dir", "-o") and i + 1 < len(argv):
-                    val = argv[i + 1]
-                elif a.startswith("--out="):
-                    val = a.split("=", 1)[1]
-                if val and "@out" not in val and "/_jobs/" not in val:
-                    add(val if os.path.isabs(val) else os.path.join(cwd, val), j)
-        cutoff = _now() - 3 * 86400
-        for pat in (os.path.join(self.gol_root, "runs", "*"), os.path.join(self.pf_root, "loop_v1", "runs*"),
-                    os.path.join(self.pf_root, "loop_v1", "runs*", "*")):
-            for d in glob.glob(pat):
-                if os.path.isdir(d) and _mtime(d) > cutoff and detect_markers(d, os.listdir(d), os.listdir(d)):
-                    add(d, None)
-        return res
-
-    def _scan_once(self):
-        jobs = self.jobs(limit=200)
-        exps = []
-        for d, job in self._candidate_dirs(jobs):
-            sig = signature(d)
-            c = self.exp_cache.get(d)
-            if not c or c[0] != sig:
-                try:
-                    c = (sig, detect(d))
-                except Exception as e:  # 证据格式千奇百怪，一个目录坏了不能拖垮看板
-                    c = (sig, {"kind": "?", "title": os.path.basename(d), "meta": {"error": str(e)[:200]}, "cands": [], "gens": {}})
-                self.exp_cache[d] = c
-            if c[1]:
-                exps.append(self._wrap(c[1], d, job, sig))
-        for j in jobs:
-            meta = self._job_meta(j["id"]) or {}
-            if j["bin"] == "phonefarm" and (meta.get("argv") or [""])[0] == "eval":
-                logp = os.path.join(self.jobs_dir, j["id"], "log")
-                key = "log:" + j["id"]
-                sig = _mtime(logp)
-                c = self.exp_cache.get(key)
-                if not c or c[0] != sig:
-                    c = (sig, parse_eval_log(logp))
-                    self.exp_cache[key] = c
-                e = c[1] or {"kind": "eval", "title": "eval（测量中）" if j["state"] == "running" else "eval（没有判定输出）",
-                             "meta": {}, "cands": [], "gens": {}}
-                exps.append(self._wrap(e, key, j, sig))
-        exps.sort(key=lambda e: e["updated"], reverse=True)
-        exps = exps[:15]
-        ver = hashlib.sha1(json.dumps([(e["id"], e["updated"], e["running"], len(e["cands"])) for e in exps]).encode()).hexdigest()[:12]
-        self.exps, self.exps_ver = exps, ver
-
-    def _wrap(self, e, d, job, sig):
-        running = bool(job and job["state"] == "running")
-        cands = [dict(c) for c in e["cands"]]
-        if running:  # 正在跑的那一个 = 第一个还没有判定的
-            nxt = next((c for c in cands if c["outcome"] == "pending"), None)
-            if nxt:
-                nxt["outcome"] = "measuring"
-        rel = d
-        for base, tag in ((self.jobs_dir, "_jobs"), (self.gol_root, "game_opt_loop"), (self.pf_root, "phonefarm")):
-            if d.startswith(base):
-                rel = tag + d[len(base):]
-                break
-        cnt = collections.Counter(c["outcome"] for c in cands)
-        return {**e, "cands": cands, "id": hashlib.sha1(d.encode()).hexdigest()[:10], "path": rel,
-                "job": job and {"id": job["id"], "label": job["label"], "state": job["state"]},
-                "running": running, "updated": max(sig[0] if isinstance(sig, tuple) else sig, job["started"] if job else 0),
-                "counts": dict(cnt)}
-
-    def _scanner(self):
-        last = 0.0
-        while True:
-            time.sleep(1)
-            if _now() - self.last_view > VIEW_IDLE_S or _now() - last < SCAN_EVERY_S:
-                continue  # 没人看就不扫；有人看时每 SCAN_EVERY_S 扫一次（第一次打开页面 1 秒内就扫）
-            last = _now()
-            try:
-                self._scan_once()
-            except Exception as e:  # noqa: BLE001
-                log_err(f"dash 扫实验证据出错: {e!r}")
-
     def _job_meta(self, jid):
         try:
             return self.job_service.status(jid)
@@ -957,6 +651,18 @@ class Dash:
         except (OSError, ValueError, sqlite3.Error):
             return []
 
+    @staticmethod
+    def _device_busy(serial, lock, registry):
+        scopes = (lock.get("lease") or {}).get("device_scopes") or {}
+        devices = scopes.get("devices") or []
+        for device in registry.get("devices", []):
+            if serial in (device.get("aliases") or []):
+                state = next((item.get("status") for item in devices if item.get("device_id") == device.get("device_id")), None)
+                if state is not None:
+                    return state != "clear"
+                break
+        return lock.get("status") != "free"
+
     # ── 汇总 ──
     def home(self, h):
         """首页：手机槽位 + 目标运行列表。不含开发 agent 的任务、锁队列（那些在维护页）。"""
@@ -969,6 +675,12 @@ class Dash:
         slots = []
         known = {d.get("serial") for d in fl.get("devices") or [] if d.get("serial")}
         owners = self._reservations() if self.job_service else []
+        registry = {"devices": []}
+        if self.job_service and self.job_service.bins.get("phonefarm"):
+            try:
+                registry = DeviceRegistry(self.job_service, self.job_service.node_id).read()
+            except RegistryError:
+                pass
         for d in fl.get("devices") or []:
             serial = d.get("serial")
             goal = next((r for r in running if r.get("job_id") and any(
@@ -987,7 +699,7 @@ class Dash:
                           "model": " ".join(x for x in (d.get("brand"), d.get("model")) if x) or None, "os": d.get("os"),
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
-                          "busy": lock["status"] != "free", "light": d.get("probe_depth") == "light",
+                          "busy": self._device_busy(serial, lock, registry), "light": d.get("probe_depth") == "light",
                           "holder": holder, "global_holder": global_holder,
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
@@ -1018,18 +730,6 @@ class Dash:
                 "fleet_skip": snapshot["deferred"], "shot": shot, "jobs": self.jobs(), "hist": self.monitor.history(),
                 "policy": {"shot_every_s": SHOT_EVERY_S, "free_grace_s": FREE_GRACE_S,
                            "fleet_every_free_s": FLEET_EVERY_FREE_S, "fleet_every_held_s": FLEET_EVERY_HELD_S}}
-
-
-def detect_markers(root, dirs, files):
-    dirs, files = set(dirs), set(files)
-    if "proposer" in dirs or "caps.json" in files or "rule.json" in files:
-        return True
-    if any(re.fullmatch(r"gen\d+", x) for x in dirs):
-        return True
-    if "report.json" in files:
-        rep = _load(os.path.join(root, "report.json"))
-        return isinstance(rep, dict) and ("archive" in rep or "results" in rep)
-    return False
 
 
 LOGIN_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">

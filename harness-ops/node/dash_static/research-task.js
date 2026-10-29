@@ -187,7 +187,7 @@
         head.append(link, el('span', DIRECTION_STATE[direction.state] || direction.state, 'task-state unknown'));
         item.append(head, el('p', direction.hypothesis));
         const related = el('div', null, 'research-actions');
-        for (const job of jobs.items.filter(job => results.items.some(result => result.labels?.direction_id === direction.id && result.job_id === job.id))) {
+        for (const job of jobs.items.filter(job => job.direction_id === direction.id || results.items.some(result => result.labels?.direction_id === direction.id && result.job_id === job.id))) {
           const link = el('a', `${job.label || job.id} · ${HGJobState.label(job)}`);
           link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.id)}`); related.append(link);
         }

@@ -117,47 +117,6 @@ class CoreFlowTests(unittest.TestCase):
         return {"schema": "phonefarm/research-write@1", "operation_id": operation, "base_revision": None,
                 "data": data, "actor_label": None, "reason": None}
 
-    def test_task_guidance_and_discussion_meet_on_both_surfaces(self):
-        status, _ = self.web("POST", "/research-state/research/sr-genshin",
-                             self.write("web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))
-        self.assertEqual(status, 201)
-        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
-        self.assertEqual(self.cli("POST", "/agents/agent-a/status", {"text": "探索超分插帧"})[0], 200)
-        status, _ = self.cli("POST", "/research-state/request/ask-1", self.write("cli-ask", {
-            "research_id": "sr-genshin", "type": "guidance", "title": "目标分辨率", "need": "确认目标分辨率",
-            "why": "决定方向排序", "context": {"research_revision": 1, "directions": []}}))
-        self.assertEqual(status, 201)
-
-        status, listing = self.web("GET", "/research-state/request?state=open")
-        self.assertEqual((status, [item["id"] for item in listing["items"]]), (200, ["ask-1"]))
-        status, _ = self.web("POST", "/research-state/feedback/fb-1",
-                             self.write("web-answer", {"request_id": "ask-1", "request_revision": 1, "text": "先做 1080p"}))
-        self.assertEqual(status, 201)
-        status, feedback = self.cli("GET", "/research-state/feedback/fb-1")
-        self.assertEqual((status, feedback["audit"]["auth_channel"]), (200, "dashboard_steer"))
-        status, agents = self.web("GET", "/agents")
-        self.assertEqual((status, agents["agents"][0]["status"]["text"]), (200, "探索超分插帧"))
-
-        # The task page reads the discussion with the page session only, exactly like discuss.js.
-        status, thread = self.web("GET", f"/jobs/{self.jid}/discuss")
-        self.assertEqual(status, 200, thread)
-        self.assertEqual(thread["entries"], [])
-        # A page write is always the human, whatever label the body claims.
-        status, posted = self.web("POST", f"/jobs/{self.jid}/discuss", {"text": "先试插帧", "from": "agent-a"})
-        self.assertEqual(status, 201)
-        self.assertEqual((posted["entry"]["from"], posted["entry"]["auth_channel"]), ("human", "dashboard_steer"))
-        status, posted = self.cli("POST", f"/jobs/{self.jid}/discuss", {"text": "收到，开始插帧 A/B", "from": "agent-a"})
-        self.assertEqual(status, 201)
-        self.assertEqual((posted["entry"]["from"], posted["entry"]["auth_channel"]), ("agent-a", "admin_token"))
-        # A token holder cannot speak as the human.
-        self.assertEqual(self.cli("POST", f"/jobs/{self.jid}/discuss", {"text": "批准", "from": "human"})[0], 400)
-
-        for read in (self.cli, self.web):
-            status, thread = read("GET", f"/jobs/{self.jid}/discuss")
-            self.assertEqual(status, 200)
-            self.assertEqual([(e["from"], e["auth_channel"]) for e in thread["entries"]],
-                             [("human", "dashboard_steer"), ("agent-a", "admin_token")])
-
     def test_guidance_response_status_matches_the_delivery_gate(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-guidance", self.write(
             "web-guidance-task", {"title": "指导回应", "objective": "网页状态与交付闸门一致"}))[0], 201)
@@ -228,6 +187,53 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual([(item["reply_to"], item["text"], item["unread"]) for item in answered["question_answers"]],
                          [(question_id, "先测 1080p", True)])
 
+    def test_admin_reply_closes_agent_question(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-admin-question", self.write(
+            "create-admin-question", {"title": "管理员回答", "objective": "平台问题由维护者处理"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-admin-question")[0], 0)
+        code, out, err = self.pf(token, "research", "note", "sr-admin-question", "平台接下来怎么做？", "--ask")
+        self.assertEqual(code, 0, err)
+        question_id = json.loads(out)["object"]["id"]
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        self.assertEqual(len(board._questions()), 1)
+        self.assertEqual(self.cli("POST", "/research-state/note/n-admin-answer", self.write(
+            "admin-answer", {"research_id": "sr-admin-question", "text": "按现有方向继续", "reply_to": question_id,
+                              "decision": None}))[0], 201)
+        self.assertEqual(board._questions(), [])
+        _, thread = self.web("GET", "/research-state/note?research_id=sr-admin-question&limit=10")
+        question = next(item for item in thread["items"] if item["id"] == question_id)
+        self.assertIs(question["question_unanswered"], False)
+        self.assertEqual([(item["reply_to"], item["text"]) for item in self.duties(token)["question_answers"]],
+                         [(question_id, "按现有方向继续")])
+
+    def test_direction_job_links_do_not_require_registered_results(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-direction", self.write(
+            "create-direction-task", {"title": "方向运行", "objective": "无结果也显示运行"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-other", self.write(
+            "create-other-task", {"title": "其他研究", "objective": "方向不能串研究"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-direction")[0], 0)
+        self.assertEqual(self.pf(token, "research", "claim", "sr-other")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-direction", self.write(
+            "create-direction", {"research_id": "sr-direction", "title": "方向 A", "hypothesis": "验证"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-other", self.write(
+            "create-other-direction", {"research_id": "sr-other", "title": "方向 B", "hypothesis": "不属于"}))[0], 201)
+        code, jid, err = self.pf(token, "--research", "sr-direction", "--direction", "d-direction",
+                                 "--device-access", "none", "--detach", "fixture", "-c", "pass")
+        self.assertEqual(code, 0, err)
+        status = self.cli("GET", f"/jobs/{jid.strip()}")[1]
+        self.assertEqual((status["research_id"], status["direction_id"]), ("sr-direction", "d-direction"))
+        code, _, err = self.pf(token, "--research", "sr-direction", "--direction", "d-other",
+                               "--device-access", "none", "--detach", "fixture", "-c", "pass")
+        self.assertNotEqual(code, 0)
+        self.assertIn("direction_id", err)
+        script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
+        self.assertIn("job.direction_id === direction.id", script)
+
     def test_cli_times_are_utc_and_checkin_declares_timezone(self):
         from agent_client import render_checkin
         value = {"agent": "agent-a", "at": 1700000000, "previous_checkin_at": 1700000001,
@@ -260,12 +266,12 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.agent(token, "POST", "/agents/agent-b/status", {"text": "x"})[0], 403)
         self.assertEqual(self.agent(token, "POST", "/agents", {"name": "agent-c"})[0], 403)
         self.assertEqual(self.agent(token, "POST", "/agents/agent-b/token", {})[0], 403)
-        status, posted = self.agent(token, "POST", f"/jobs/{self.jid}/discuss", {"text": "收到"})
-        self.assertEqual((status, posted["entry"]["from"], posted["entry"]["auth_channel"]), (201, "agent-a", "agent_token"))
-        self.assertEqual(self.agent(token, "POST", f"/jobs/{self.jid}/discuss", {"text": "x", "from": "agent-b"})[0], 400)
         status, _ = self.agent(token, "POST", "/research-state/research/sr-a", self.write("agent-task", {"title": "t", "objective": "o"}))
         self.assertEqual(status, 201)
-        audit = self.cli("GET", "/research-state/research/sr-a")[1]["audit"]
+        status, posted = self.agent(token, "POST", "/research-state/note/n-agent-a", self.write(
+            "agent-note", {"research_id": "sr-a", "text": "收到", "reply_to": None, "decision": None}))
+        self.assertEqual(status, 201)
+        audit = self.cli("GET", "/research-state/note/n-agent-a")[1]["audit"]
         self.assertEqual((audit["actor_label"], audit["auth_channel"]), ("agent-a", "agent_token"))
         posing = dict(self.write("agent-task-2", {"title": "t", "objective": "o"}), actor_label="agent-b")
         self.assertEqual(self.agent(token, "POST", "/research-state/research/sr-b", posing)[0], 400)
@@ -837,6 +843,12 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual((local["kind"], local["job_id"], local["actor_id"]), ("job", lane_id, "kimi-researcher"))
         self.assertEqual((global_holder["kind"], global_holder["job_id"], global_holder["actor_id"]),
                          ("global", global_id, "glm-researcher"))
+        registry = {"devices": [{"device_id": "HONOR", "aliases": ["HONOR"]}]}
+        scoped = {"status": "unknown", "lease": {"device_scopes": {"devices": [{"device_id": "HONOR", "status": "clear"}]}}}
+        self.assertFalse(board._device_busy("HONOR", scoped, registry))
+        scoped["lease"]["device_scopes"]["devices"][0]["status"] = "held"
+        self.assertTrue(board._device_busy("HONOR", scoped, registry))
+        self.assertTrue(board._device_busy("UNKNOWN", {"status": "unknown", "lease": {}}, registry))
 
     def test_a_device_write_job_keeps_its_phone_between_its_locks(self):
         # A device-write job reserves the node's phones from claim until someone releases it. Between its
@@ -869,17 +881,6 @@ class CoreFlowTests(unittest.TestCase):
         self.jobs.dispatch.queue.set_state(jid, "done")
         self.assertEqual(board._reservations(), [])
         self.assertIsNone(board._reserved("S1", [], phones))
-
-    def test_page_discussion_writes_keep_steer_and_csrf_guards(self):
-        status, body = self.web("POST", f"/jobs/{self.jid}/discuss", {"text": "x"}, steer=False)
-        self.assertEqual((status, body.get("need_steer")), (403, True))
-        self.assertEqual(self.web("POST", f"/jobs/{self.jid}/discuss", {"text": "x"}, hg=False)[0], 400)
-        self.assertEqual(self.request("GET", f"/dash/api/jobs/{self.jid}/discuss")[0], 401)
-        status, body = self.web("POST", "/jobs/000000000000/discuss", {"text": "x"})
-        self.assertEqual((status, body.get("code")), (404, "job_not_found"))
-        status, thread = self.cli("GET", f"/jobs/{self.jid}/discuss")
-        self.assertEqual((status, thread["entries"]), (200, []))
-
 
 if __name__ == "__main__":
     unittest.main()

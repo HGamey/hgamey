@@ -18,6 +18,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
   pf-node --research <研究> --detach phonefarm ... # 为研究跑的任务带上研究 ID：手机占用和任务页据此显示
+  pf-node --research <研究> --direction <方向> --detach <命令> # 把运行挂到任务页的对应方向；方向必须属于该研究
   设备写任务只占一台：研究只有一台 device_requirements 时默认同机；否则显式 --resource device:<串号>，参数优先于研究默认。
   单机操作也可用 phonefarm lease --serial <串号> -- <命令>（layout 2 已注册设备走 device lane）；devlock busy 默认等待 DEVLOCK_WAIT_SECONDS=900 秒，设 0 立即失败。
   pf-node --experiment <分支|提交> --research <研究> --detach experiment <脚本.py|.sh> ...  # 跑实验仓库里固定提交的脚本
@@ -1179,7 +1180,7 @@ def main():
     priority = None
     device_access, recovery_for, execution_policy = None, None, None
     inputs_path, inputs, submission_node = None, None, None
-    actor_id = research_id = experiment_ref = None
+    actor_id = research_id = direction_id = experiment_ref = None
     binding_path, binding_envelope = None, None
     host_slots_path, host_slots = None, None
     disk_guard_path, disk_guard = None, None
@@ -1212,6 +1213,10 @@ def main():
             if not args or research_id is not None:
                 sys.exit("pf-node: --research 需要且只能指定一次研究 ID")
             research_id = args.pop(0)
+        elif a == "--direction":
+            if not args or direction_id is not None:
+                sys.exit("pf-node: --direction 需要且只能指定一次方向 ID")
+            direction_id = args.pop(0)
         elif a == "--experiment":
             if not args or experiment_ref is not None:
                 sys.exit("pf-node: --experiment 需要且只能指定一次实验仓库的分支、标签或提交")
@@ -1582,22 +1587,6 @@ def main():
         result = cancel_job(args[1], force=len(args) == 3)
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("accepted") is True else 1)
-    if args[0] == "discuss":
-        if len(args) < 2:
-            sys.exit("用法: pf-node discuss <id> [text]   # 读任务讨论 / 发言")
-        jid = args[1]
-        if len(args) == 2:
-            result = json.loads(call("GET", f"/jobs/{jid}/discuss", attempts=1, raise_4xx=True))
-            for e in result.get("entries", []):
-                via = " (token)" if e.get("auth_channel") == "admin_token" else ""
-                print(f"[{e.get('at', '?')}] {e.get('from', '?')}{via}: {e.get('text', '')}")
-            sys.exit(0)
-        # An agent's own token already says who is speaking; the admin token has to declare it.
-        speaker = {} if TOKEN.startswith("hgag_") else {"from": os.environ.get("PF_AGENT", "cli")}
-        body = json.dumps({"text": args[2], **speaker}).encode()
-        result = json.loads(call("POST", f"/jobs/{jid}/discuss", body, {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
-        print(json.dumps(result, ensure_ascii=False))
-        sys.exit(0)
     if args[0] in ("session-pause", "session-resume"):
         if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
             sys.exit(f"用法: pf-node {args[0]} <12 位任务 id>   # 运行中任务的生产者安全点暂停/恢复")
@@ -1726,6 +1715,10 @@ def main():
         spec["actor_id"] = actor_id
     if research_id is not None:
         spec["research_id"] = research_id
+    if direction_id is not None:
+        if research_id is None:
+            sys.exit("pf-node: --direction 必须和 --research 一起使用")
+        spec["direction_id"] = direction_id
     if binding_envelope is not None:
         spec["device_binding"] = device_binding_envelope(binding_envelope, submission_node.get("node_id"))
     if inputs is not None:

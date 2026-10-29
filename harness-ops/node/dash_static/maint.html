@@ -13,29 +13,14 @@
 <header class="top">
   <div class="brand-row">
     <a class="logo" href="/dash" aria-label="首页">HG</a>
-    <div class="brand">
-      <h1>HGamey 实时看板 · 维护</h1>
-      <span class="sub">开发 agent 的任务、谁在用手机、日志 · <span id="dev-name">—</span></span>
-    </div>
+    <div class="brand"><h1>HGamey 实时看板 · 维护</h1><span class="sub">30 分钟曲线与实时日志</span></div>
     <nav class="nav" style="flex-wrap:wrap"><a href="/dash">首页</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/doctor">环境诊断</a><a href="/dash/maint" aria-current="page">维护</a></nav>
   </div>
-  <div class="top-right">
-    <span id="lock-pill" class="pill">—</span>
-    <span id="live" class="live"><i></i><span id="live-text">连接中</span></span>
-    <form method="post" action="/dash/logout"><button class="ghost" title="退出">退出</button></form>
-  </div>
+  <div class="top-right"><span id="live" class="live"><i></i><span id="live-text">连接中</span></span><form method="post" action="/dash/logout"><button class="ghost" title="退出">退出</button></form></div>
 </header>
-
 <main class="grid">
   <section class="card phone" aria-labelledby="h-phone">
-    <div class="card-h"><h2 id="h-phone">手机</h2><span id="probe" class="chip">—</span></div>
-    <div class="tiles">
-      <div class="tile"><div class="k">在线</div><div class="v" id="t-online">—</div><div class="s" id="t-os"></div></div>
-      <div class="tile"><div class="k">电量</div><div class="v" id="t-bat">—</div><div class="s" id="t-batst"></div></div>
-      <div class="tile"><div class="k" title="SoC 结温">芯片最高温度</div><div class="v" id="t-soc">—</div><div class="s" id="t-socz"></div></div>
-      <div class="tile"><div class="k">显卡 / 电池温度</div><div class="v sm" id="t-gpu">—</div><div class="s" id="t-fan"></div></div>
-    </div>
-    <div class="fg"><span class="k">前台应用</span> <b id="t-fg">—</b></div>
+    <div class="card-h"><h2 id="h-phone">30 分钟曲线</h2><span id="probe" class="chip">—</span></div>
     <div class="spark-wrap">
       <div class="spark-h"><span>芯片温度 · 最近 30 分钟</span><span class="legend"><i class="sw held"></i>有人在用手机（测量中）</span></div>
       <svg id="spark" class="spark" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="芯片温度走势"></svg>
@@ -43,47 +28,11 @@
     </div>
     <p id="phone-note" class="note"></p>
   </section>
-
-  <section class="card lock" aria-labelledby="h-lock">
-    <div class="card-h"><h2 id="h-lock" title="设备锁">谁在用手机</h2><span id="lock-age" class="muted"></span></div>
-    <div id="lock-holder" class="holder">—</div>
-    <div class="k">排队</div>
-    <ol id="queue" class="queue"></ol>
-    <div class="k">最近</div>
-    <ul id="lock-events" class="events"></ul>
-  </section>
-
-  <section class="card screen" aria-labelledby="h-screen">
-    <div class="card-h"><h2 id="h-screen">画面</h2><span id="shot-age" class="muted"></span></div>
-    <div class="shot-box">
-      <img id="shot" alt="手机截图" hidden>
-      <div id="shot-empty" class="shot-empty">还没有截图</div>
-      <div id="shot-veil" class="veil" hidden><b>测量进行中</b><span>暂停截图，避免给测量加噪声</span></div>
-    </div>
-    <p class="note" id="shot-rule"></p>
-  </section>
-
-  <section class="card jobs" aria-labelledby="h-jobs">
-    <div class="card-h"><h2 id="h-jobs">任务</h2><span id="jobs-count" class="muted"></span></div>
-    <ul id="jobs" class="job-list"></ul>
-  </section>
-
   <section class="card log" aria-labelledby="h-log">
-    <div class="card-h"><h2 id="h-log">实时日志</h2><span id="log-title" class="muted"></span>
-      <label class="follow"><input type="checkbox" id="follow" checked> 跟随</label></div>
-    <pre id="log" class="logbox">选一个任务看日志</pre>
-  </section>
-
-  <section class="card exps" aria-labelledby="h-exps">
-    <div class="card-h"><h2 id="h-exps">旧格式自动发现</h2>
-      <select id="exp-sel" aria-label="选择实验"></select></div>
-    <p class="note">本区只发现近期兼容格式，最多展示 15 项，不是完整结果目录。显式登记与导入请到<a href="/dash/results">研究结果</a>；全部执行记录在<a href="/dash/jobs">任务页</a>。</p>
-    <div id="exp-head" class="exp-head"></div>
-    <div id="exp-chart" class="exp-chart"></div>
-    <div id="exp-gens" class="gens"></div>
+    <div class="card-h"><h2 id="h-log">实时日志</h2><span id="log-title" class="muted"></span><label class="follow"><input type="checkbox" id="follow" checked> 跟随</label></div>
+    <pre id="log" class="logbox">读取当前任务日志</pre>
   </section>
 </main>
-<footer class="foot">这个页面只看不改，不会让手机做任何事。有人在用手机时只做最轻的读取、不截图，免得干扰测量。</footer>
 <div id="tip" class="tip" hidden></div>
 <script src="/dash/static/target.js"></script>
 <script src="/dash/static/maint.js"></script>

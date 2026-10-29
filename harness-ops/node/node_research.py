@@ -406,7 +406,7 @@ class NodeResearch:
         questions, answered = [], set()
         for row in rows:
             data, audit = json.loads(row["data"]), json.loads(row["audit"])
-            if audit.get("auth_channel") == "dashboard_steer" and data.get("reply_to"):
+            if audit.get("auth_channel") in ("dashboard_steer", "admin_token") and data.get("reply_to"):
                 answered.add(data["reply_to"])
             elif data.get("ask") is True and audit.get("auth_channel") != "dashboard_steer":
                 questions.append(row["id"])

@@ -3,7 +3,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const statuses = {ok:'通过', warning:'需关注', error:'需修复', unknown:'未知', not_applicable:'不适用'};
-  const categories = {connection:'连接与节点身份', runtime:'程序、版本与签名', tools:'宿主工具', storage:'磁盘与数据位置', permissions:'目录权限', devices:'设备授权与实测资格'};
+  const categories = {connection:'连接与节点身份', runtime:'程序、版本与签名', tools:'宿主工具', storage:'磁盘与数据位置', permissions:'目录权限', devices:'设备授权与实测资格', deployment:'部署与运行环境'};
   let busy = false, report = null;
   const text = (tag, value, className) => { const el = document.createElement(tag); el.textContent = value; if (className) el.className = className; return el; };
   const timestamp = value => typeof value === 'number' && Number.isFinite(value) ? new Date(value * 1000).toLocaleString() : '未记录';
