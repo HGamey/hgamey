@@ -1,28 +1,6 @@
 /* A quiet reading workspace. Color denotes execution state, never experiment validity. */
-.jobs-view {
-  --page: #f6f6f3; --card: #ffffff; --panel: #f4f5f1; --wash: #edf0eb;
-  --ink: #252d29; --ink2: #4b5750; --muted: #657168; --line: #d7ddd6; --grid: #e8ece6;
-  --blue: #26715d; --blue-soft: #e6f2eb; --blue-ink: #22614e; --on-blue: #ffffff;
-  --amber-soft: #faf0db; --amber-ink: #80540f; --bad-soft: #faeae6; --bad-ink: #a63f31;
-  --log-bg: #f4f5f1;
-  font-size: 15px; line-height: 1.6;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .jobs-view {
-    --page: #191d1b; --card: #222724; --panel: #282f2b; --wash: #2c3530;
-    --ink: #e9eee9; --ink2: #c5cec6; --muted: #a3b0a6; --line: #3b463e; --grid: #333c36;
-    --blue: #81c6a5; --blue-soft: #293e33; --blue-ink: #a0d8b8; --on-blue: #17251e;
-    --amber-soft: #3f3421; --amber-ink: #e5bf79; --bad-soft: #422b26; --bad-ink: #f0aa9b;
-    --log-bg: #1b211d;
-  }
-}
-:root[data-theme="dark"] .jobs-view {
-  --page: #191d1b; --card: #222724; --panel: #282f2b; --wash: #2c3530;
-  --ink: #e9eee9; --ink2: #c5cec6; --muted: #a3b0a6; --line: #3b463e; --grid: #333c36;
-  --blue: #81c6a5; --blue-soft: #293e33; --blue-ink: #a0d8b8; --on-blue: #17251e;
-  --amber-soft: #3f3421; --amber-ink: #e5bf79; --bad-soft: #422b26; --bad-ink: #f0aa9b;
-  --log-bg: #1b211d;
-}
+/* 调色板与字号来自 shell.css 的全站 token；这里只放运行类页面自己的排版。 */
+.jobs-view { font-size: var(--fs-base); line-height: 1.6; }
 .jobs-view .top { position: static; padding: 16px 32px; background: var(--card); backdrop-filter: none; gap: 16px; }
 .jobs-view .brand-row { gap: 12px; }
 .jobs-view .logo { width: 32px; height: 32px; border-radius: 7px; background: var(--ink); }

@@ -1,13 +1,21 @@
-// HGamey 工作台外壳：统一 6-tab 导航，固定尺寸不跳动，active 中性灰 pill。
+// HGamey 工作台外壳：主导航 5 项 + 「更多」菜单；节点身份收进节点名按钮；窄屏两行，标签可横向滚动。
 // 每页引入：在 <body> 末尾 <script src="/dash/static/shell.js"></script>；外壳替换旧 header.top。
 (function () {
   const TABS = [
     ["/dash", "main", "总览"],
-    ["/dash/fleet", "device", "设备"],
-    ["/dash/jobs", "runs", "运行"],
     ["/dash/research", "task", "任务"],
     ["/dash/research#agents-directory", "agent", "Agent"],
-    ["/dash/maint", "option", "设置"],
+    ["/dash/fleet", "device", "设备"],
+    ["/dash/jobs", "runs", "运行"],
+  ];
+  const MORE = [
+    ["/dash/results", "研究结果"],
+    ["/dash/games", "游戏与资源"],
+    ["/dash/gol", "GOL 目标"],
+    ["/dash/live", "实时画面"],
+    ["/dash/control", "远程调试"],
+    ["/dash/doctor", "环境诊断"],
+    ["/dash/maint", "曲线与日志"],
   ];
   const path = location.pathname.replace(/\/+$/, "") || "/dash";
   function current(p) {
@@ -16,55 +24,122 @@
     if (p === "/dash/research") return path === p && location.hash !== "#agents-directory";
     return path === p || path.startsWith(p + "/");
   }
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+  // A disclosure that closes on Esc, outside click and focus leaving it; Esc returns focus to its trigger.
+  function disclosure(button, panel, keep) {
+    const set = open => {
+      button.setAttribute("aria-expanded", String(open));
+      panel.hidden = !open && !(keep && keep());
+    };
+    button.addEventListener("click", () => set(button.getAttribute("aria-expanded") !== "true"));
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && button.getAttribute("aria-expanded") === "true") { set(false); button.focus(); }
+    });
+    document.addEventListener("pointerdown", e => {
+      if (button.getAttribute("aria-expanded") === "true" && !panel.contains(e.target) && !button.contains(e.target)) set(false);
+    });
+    panel.addEventListener("focusout", e => {
+      if (e.relatedTarget && !panel.contains(e.relatedTarget) && !button.contains(e.relatedTarget)) set(false);
+    });
+    return set;
+  }
+
   function build() {
     const old = document.querySelector("header.top");
-    const sub = old?.querySelector(".brand .sub")?.textContent || "";
-    // 收割旧顶栏动作区（如 home 的 live/干预/新目标），并入外壳右侧
+    // 收割旧顶栏动作区（如首页的实时、操作权限、新任务），并入外壳右侧；退出表单改放进「更多」菜单
     const actions = old ? Array.from(old.querySelector(".top-right")?.children || [])
-        .filter(el => el.tagName !== "FORM" || !el.querySelector('form[action="/dash/logout"]')) : [];
-    const top = document.createElement("header");
-    top.className = "shell-top";
-    const brand = document.createElement("a");
-    brand.className = "shell-brand";
+      .filter(n => !n.matches('form[action="/dash/logout"]')) : [];
+    const top = el("header", "shell-top");
+    const brand = el("a", "shell-brand");
     brand.href = "/dash";
-    brand.innerHTML = `<span class="shell-mark">HG</span><span class="shell-name">HGamey</span><span class="shell-node" id="shell-node"></span>`;
-    const tabs = document.createElement("nav");
-    tabs.className = "shell-tabs";
-    tabs.setAttribute("aria-label", "主导航");
+    brand.setAttribute("aria-label", "HGamey 总览");
+    brand.innerHTML = '<span class="shell-mark" aria-hidden="true">HG</span><span class="shell-name">HGamey</span>';
+
+    const nav = el("nav", "shell-nav");
+    nav.setAttribute("aria-label", "主导航");
+    const tabs = el("div", "shell-tabs");
     for (const [href, key, label] of TABS) {
-      const a = document.createElement("a");
-      a.className = "shell-tab";
+      const a = el("a", "shell-tab", label);
       a.href = href;
-      a.textContent = label;
       a.dataset.tab = key;
+      a.dataset.href = href;
       if (current(href)) a.setAttribute("aria-current", "page");
       tabs.append(a);
     }
-    const right = document.createElement("div");
-    right.className = "shell-right";
-    const hasLive = actions.some(el => el.id === "live");
-    right.innerHTML = `${hasLive ? "" : '<span class="shell-clock" id="shell-clock"></span>'}
-      <form class="shell-logout" method="post" action="/dash/logout"><button class="shell-exit" id="shell-logout" type="submit">退出</button></form>`;
-    const actBox = document.createElement("div");
-    actBox.className = "shell-right";
-    actBox.style.marginRight = "-4px";
-    for (const el of actions) {
-      if (el.matches('form[action="/dash/logout"]')) continue;
-      actBox.append(el);
+    // 任务 ↔ Agent 只差一个 #，切换时不重新加载页面
+    window.addEventListener("hashchange", () => {
+      for (const a of tabs.querySelectorAll(".shell-tab")) {
+        if (current(a.dataset.href)) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+      }
+    });
+    const here = MORE.find(([href]) => current(href));
+    const moreWrap = el("div", "shell-more");
+    const moreBtn = el("button", "shell-tab shell-more-btn");
+    moreBtn.type = "button";
+    moreBtn.setAttribute("aria-haspopup", "true");
+    moreBtn.setAttribute("aria-controls", "shell-more-menu");
+    moreBtn.innerHTML = `<span>${here ? here[1] : "更多"}</span><svg aria-hidden="true" viewBox="0 0 12 12" width="12" height="12"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    if (here) moreBtn.setAttribute("aria-current", "page");
+    const menu = el("div", "shell-menu");
+    menu.id = "shell-more-menu";
+    menu.hidden = true;
+    const list = el("ul");
+    for (const [href, label] of MORE) {
+      const li = el("li"), a = el("a", null, label);
+      a.href = href;
+      if (current(href)) a.setAttribute("aria-current", "page");
+      li.append(a);
+      list.append(li);
     }
-    top.append(brand, tabs, actBox, right);
+    const logout = el("form", "shell-logout");
+    logout.method = "post";
+    logout.action = "/dash/logout";
+    logout.innerHTML = '<button type="submit" id="shell-logout">退出登录</button>';
+    menu.append(list, logout);
+    moreWrap.append(moreBtn, menu);
+    nav.append(tabs, moreWrap);
+    disclosure(moreBtn, menu);
+
+    const actBox = el("div", "shell-actions");
+    for (const n of actions) actBox.append(n);
+
+    // 节点名按钮：圆点表示目标身份状态，点开看完整的执行目标（target.js 的 #connection-target）
+    const nodeBtn = el("button", "shell-node");
+    nodeBtn.type = "button";
+    nodeBtn.setAttribute("aria-controls", "connection-target");
+    nodeBtn.setAttribute("aria-expanded", "false");
+    nodeBtn.innerHTML = '<i class="shell-node-dot" aria-hidden="true"></i><span class="shell-node-name">节点</span>';
+    nodeBtn.title = "执行目标";
+
+    top.append(brand, nodeBtn, nav, actBox);
     if (old) old.replaceWith(top); else document.body.prepend(top);
-    // 时钟（每 30s 刷新）
-    const clock = top.querySelector("#shell-clock");
-    if (clock) {
-      const tick = () => { const d = new Date(); clock.textContent =
-        `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
-      tick(); setInterval(tick, 30000);
+    document.body.classList.add("has-shell");
+
+    const box = document.getElementById("connection-target");
+    if (box) {
+      box.classList.remove("collapsed");
+      disclosure(nodeBtn, box, () => box.classList.contains("inline"));
+      // target.js 在标题行上切换折叠；外壳里由节点按钮开关，这里吞掉那次切换
+      box.addEventListener("click", e => { if (!e.target.closest("button,a,summary")) box.classList.remove("collapsed"); });
+      const sync = () => {
+        const problem = window.HGTarget?.problem?.() || "";
+        const ok = !problem && window.HGTarget?.canWrite?.();
+        nodeBtn.dataset.state = problem ? "bad" : ok ? "ok" : "wait";
+        box.classList.toggle("inline", !!problem && !/尚未核对|正在核对/.test(problem));
+        if (box.classList.contains("inline")) box.hidden = false;
+        else if (nodeBtn.getAttribute("aria-expanded") !== "true") box.hidden = true;
+        nodeBtn.title = problem || (ok ? "执行目标已核对" : "执行目标：只读");
+      };
+      document.addEventListener("hgamey-target-change", sync);
+      box.hidden = true;
+      sync();
     }
-    // 节点名（异步，不阻塞渲染）
     fetch("/dash/api/node").then(r => r.ok ? r.json() : null).then(d => {
-      if (d && d.host) top.querySelector("#shell-node").textContent = "· " + d.host.hostname;
+      if (d && d.host) nodeBtn.querySelector(".shell-node-name").textContent = d.host.hostname;
     }).catch(() => {});
+    const tab = tabs.querySelector('[aria-current="page"]');
+    if (tab && tabs.scrollWidth > tabs.clientWidth) tab.scrollIntoView({block: "nearest", inline: "center"});
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", build);
   else build();
