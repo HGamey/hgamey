@@ -193,12 +193,13 @@ free.** So:
 - If the queue is empty and the lock is free, any label works.
 - `run` acquires, heartbeats every 60 s in the background, runs your command,
   and releases.
-- **If it is not your turn, `run` prints `not your turn (已自动排进队尾)` and
-  exits 1.** That is the normal case, not an error.
-- **Re-issuing does not lose your place** — `acquire` only appends a label that
-  is not already queued. So a retry loop is safe.
-- Poll at **30–60 s**, not faster, and expect to wait: on a shared phone a
-  single holder legitimately runs 45 minutes or more. Do not steal the lock.
+- `run` waits while busy (default `DEVLOCK_WAIT_SECONDS=900`). During the wait
+  its label retains its FIFO place; on final timeout it removes its own label
+  and exits 1. Use 0 for an immediate attempt.
+- Re-issuing while the caller is still waiting does not duplicate its label.
+  After the caller has abandoned, its slot is gone; do not assume it was saved.
+  Do not add a second retry loop around the built-in wait.
+- On a shared phone a single holder legitimately runs 45 minutes or more. Do not steal the lock.
   A strong lease or pending recovery cannot be cleared by heartbeat age;
   follow phonefarm's explicit recovery workflow when it reports a barrier.
 
