@@ -34,6 +34,10 @@ def forbidden(*args, **kwargs):
 class NoDevices:
     handle = request = forbidden
 
+    def snapshot(self):
+        return {"schema_version": 1, "devices": [], "lock": {"status": "unknown"},
+                "sampled_at": None, "age_s": None}
+
 
 class CoreFlowTests(unittest.TestCase):
     def setUp(self):
@@ -118,6 +122,12 @@ class CoreFlowTests(unittest.TestCase):
     def write(operation, data):
         return {"schema": "phonefarm/research-write@1", "operation_id": operation, "base_revision": None,
                 "data": data, "actor_label": None, "reason": None}
+
+    def test_cached_fleet_returns_without_device_work_or_handler_exception(self):
+        code, result = self.cli("GET", "/fleet?cached=1")
+        self.assertEqual(code, 200)
+        self.assertEqual(result["devices"], [])
+        self.assertEqual(result["node_id"], self.node_id)
 
     def test_guidance_response_status_matches_the_delivery_gate(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-guidance", self.write(

@@ -52,6 +52,7 @@ class JobDispatch:
         self.dispatch_path = os.path.join(jobs.dir, ".dispatcher.lock")
         self.guard = threading.Lock()
         self.thread = None
+        self._closed = threading.Event()
 
     @staticmethod
     def request_key(value):
@@ -253,29 +254,37 @@ class JobDispatch:
 
     def start(self):
         with self.guard:
-            if self.thread and self.thread.is_alive():
+            if self._closed.is_set() or self.thread and self.thread.is_alive():
                 return
             if not self._pending():
                 return
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
 
+    def close(self):
+        """Stop dispatching and finish the current tick before closing storage."""
+        with self.guard:
+            self._closed.set()
+            thread = self.thread
+        if thread:
+            thread.join()
+
     def _run(self):
         try:
-            while True:
+            while not self._closed.is_set():
                 with file_lock(self.dispatch_path, blocking=False) as acquired:
                     if acquired:
-                        while self._pending():
+                        while not self._closed.is_set() and self._pending():
                             self.tick()
                             self.last_error = None
-                            time.sleep(0.2)
+                            self._closed.wait(0.2)
                 # Release the flock before publishing an idle thread. A submit
                 # racing this check either keeps this loop alive or starts a new one.
                 with self.guard:
-                    if not self._pending():
+                    if self._closed.is_set() or not self._pending():
                         self.thread = None
                         return
-                time.sleep(0.2)
+                self._closed.wait(0.2)
         except Exception as error:
             self.last_error = f"{type(error).__name__}: {error}"
 

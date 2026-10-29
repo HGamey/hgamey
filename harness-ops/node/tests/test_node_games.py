@@ -33,6 +33,7 @@ class GameFlowTests(unittest.TestCase):
         self.board.wake = threading.Event()
         self.board.monitor = FleetState(str(self.root), str(self.root / "locks"), str(self.root / "shots"))
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(None, self.jobs, self.admin, self.board))
+        self.server.daemon_threads = False
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.url = "http://127.0.0.1:" + str(self.server.server_port)
@@ -45,11 +46,17 @@ class GameFlowTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
-        if self.jobs.dispatch.thread:
-            self.jobs.dispatch.thread.join(timeout=4)
-        self.jobs.directory.close()
-        self.jobs.games.close()
+        self.jobs.dispatch.close()
         self.board.monitor.close()
+        if self.board.monitor._thread:
+            self.board.monitor._thread.join()
+        self.jobs.directory.close()
+        with self.jobs.directory._guard:
+            self.jobs.directory._guard.wait_for(lambda: not self.jobs.directory._workers)
+        self.jobs.games.close()
+        self.jobs.history.close()
+        self.jobs.export_cache.close()
+        self.jobs._read_root.close()
         self.temp.cleanup()
 
     def call(self, method, path, data=None, token=None, headers=None):
@@ -99,6 +106,7 @@ class GameFlowTests(unittest.TestCase):
                 pass
 
         self.source = ThreadingHTTPServer(("127.0.0.1", 0), Source)
+        self.source.daemon_threads = False
         threading.Thread(target=self.source.serve_forever, daemon=True).start()
         manifest = self.manifest()
         manifest["assets"][0]["source"] = {"kind": "url", "url": f"http://127.0.0.1:{self.source.server_port}/game"}
