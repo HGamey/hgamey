@@ -54,6 +54,8 @@ class CoreFlowTests(unittest.TestCase):
         board._steer_pass = lambda: STEER
         board.job_service = self.jobs
         board.last_view, board.wake, board.monitor = 0, threading.Event(), NoDevices()
+        board.showcase_dir = str(self.tmp / "showcase")
+        self.board = board
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(NoDevices(), self.jobs, ADMIN, board))
         thread = start_http_server(server)
 
@@ -908,6 +910,101 @@ class CoreFlowTests(unittest.TestCase):
                     seen[policy] = page.is_visible("#force-open")
                     self.assertEqual(seen[policy], shown, policy)
                     self.assertIn("SIGINT", page.text_content("#cancel-help"))
+            finally:
+                browser.close()
+
+    def raw(self, path, login=True):
+        connection = http.client.HTTPConnection(*self.address, timeout=10)
+        connection.request("GET", path, headers={"Cookie": self.view_cookie} if login else {})
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        return response.status, response.getheader("Content-Type") or "", body
+
+    def showcase_snapshot(self):
+        t0 = 1793200000
+        data = {"at": t0 + 3600, "source": "测试快照", "agents": ["agent-a"],
+                "phones": [{"serial": "S1", "brand": "HONOR", "model": "M1", "temp_c": 36.0, "soc_c": 37.5, "state": "device"}],
+                "research": [{"id": "r1", "title": "测试任务", "state": "delivered", "owner": "agent-a", "updated_at": t0 + 3000,
+                              "created_at": t0, "created_by": "agent-a"}],
+                "directions": [{"id": "d1", "research_id": "r1", "title": "一个方向", "state": "verified", "updated_at": t0 + 2000, "created_at": t0 + 100}],
+                "notes": [{"id": "n1", "research_id": "r1", "who": "agent-a", "decision": None, "reply_to": None, "text": "开始",
+                           "at": t0 + 200, "ask": False, "open": False}],
+                "jobs": [{"id": "j1", "kind": "刷新率 A/B", "agent": "agent-a", "research_id": "r1", "device": "HONOR", "started": t0 + 300,
+                          "ended": t0 + 900, "outcome": "succeeded", "label": "", "phone": True, "direction_id": "d1",
+                          "queued": t0 + 300, "claimed": t0 + 420}],
+                "history": {"since": "2026-08-29", "commits": {"a": 1}, "experiment_lines": ["x"], "sr_loop_generations": 1,
+                            "sr_networks": 2, "sr_networks_kept": 1}}
+        folder = Path(self.board.showcase_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return data
+
+    def test_showcase_pages_load_every_module_they_import(self):
+        self.assertIn(self.raw("/dash/showcase", login=False)[0], (302, 303, 401))
+        seen, todo = set(), []
+        for page in ("/dash/showcase", "/dash/showcase/command"):
+            status, kind, body = self.raw(page)
+            self.assertEqual((status, kind.split(";")[0]), (200, "text/html"), page)
+            html = body.decode()
+            self.assertNotIn("<script>", html, "the dash CSP allows no inline script")
+            self.assertNotIn("importmap", html)
+            todo += re.findall(r'(?:src|href)="(/dash/static/[^"?]+)', html)
+        while todo:
+            path = todo.pop()
+            if path in seen:
+                continue
+            seen.add(path)
+            status, kind, body = self.raw(path)
+            self.assertEqual(status, 200, path)
+            if path.endswith(".js"):
+                self.assertEqual(kind.split(";")[0], "text/javascript", path)
+                for spec in re.findall(r"""(?:import|export)\b[^'";]*?\bfrom\s*['"]([^'"]+)['"]""", body.decode()):
+                    self.assertTrue(spec.startswith("./"), f"{path} imports {spec}: only flat relative imports resolve here")
+                    todo.append("/dash/static/" + spec[2:])
+        self.assertIn("/dash/static/three.core.js", seen)
+
+    def test_showcase_data_comes_from_the_node_local_snapshot(self):
+        self.assertEqual(self.raw("/dash/api/showcase")[0], 404)
+        data = self.showcase_snapshot()
+        status, kind, body = self.raw("/dash/api/showcase")
+        self.assertEqual((status, json.loads(body)), (200, data))
+        self.assertEqual(self.raw("/dash/api/showcase/screen/HONOR")[0], 404)
+        (Path(self.board.showcase_dir) / "screen-HONOR.jpg").write_bytes(b"\xff\xd8jpeg")
+        self.assertEqual(self.raw("/dash/api/showcase/screen/HONOR")[1:], ("image/jpeg", b"\xff\xd8jpeg"))
+        for bad in ("honor", "..%2Fdata", "HONOR.jpg"):
+            self.assertEqual(self.raw("/dash/api/showcase/screen/" + bad)[0], 404, bad)
+        self.assertEqual(self.raw("/dash/api/showcase", login=False)[0], 401)
+
+    def test_showcase_command_view_replays_a_snapshot(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        data = self.showcase_snapshot()
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1600, "height": 900})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/showcase/command?t={data['at']}&paused=1")
+                page.wait_for_function("() => document.querySelectorAll('.leaf').length === 1")
+                self.assertEqual(page.locator(".root").count(), 1)
+                self.assertIn("刷新率 A/B", page.text_content(".leaf"))
+                self.assertIn("8m", page.text_content(".leaf"), "run time counts from the claim (8 min), not the submit (10 min)")
+                self.assertIn("测试快照", page.text_content("#source"))
+                self.assertEqual(errors, [])
             finally:
                 browser.close()
 

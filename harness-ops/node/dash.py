@@ -84,6 +84,12 @@ def _versioned_links(html):
     return ASSET_LINK.sub(link, html.decode()).encode()
 STATIC_TYPES = {".json": "application/json; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+# The showcase (/dash/showcase): a story page and a command view, plus three.js r186 flattened for the CSP.
+SHOWCASE_STATIC = frozenset((
+    "showcase.css", "showcase.js", "showcase-parts.js", "showcase-command.css", "showcase-command.js",
+    "three.module.js", "three.core.js", "three-effect-composer.js", "three-render-pass.js", "three-unreal-bloom-pass.js",
+    "three-output-pass.js", "three-pass.js", "three-shader-pass.js", "three-mask-pass.js", "three-copy-shader.js",
+    "three-luminosity-high-pass-shader.js", "three-output-shader.js", "three-rounded-box-geometry.js", "three-css2d-renderer.js"))
 TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/doctor"}
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
@@ -135,6 +141,8 @@ class Dash:
                                       os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "demo-goals"),
                                       jobs=jobs, gol_exe=os.path.join(gol_root, "game_opt_loop"))
         self.shot_dir = os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "screens")
+        # Node-local, read-only snapshot for the showcase: data.json and screen-<BRAND>.jpg. Not in the repo.
+        self.showcase_dir = os.path.join(os.path.dirname(jobs_dir.rstrip("/")), "_dash", "showcase")
         self.last_view = 0.0
         self.monitor = fleet or FleetState(self.pf_root, None, self.shot_dir,
                                           lease_state=jobs.leases if jobs else None)
@@ -242,6 +250,14 @@ class Dash:
             return
         if sub in (["gol"], ["jobs"], ["fleet"], ["games"], ["results"], ["research"], ["doctor"]):
             return self._static(h, sub[0] + ".html")
+        if sub == ["showcase"]:
+            return self._static(h, "showcase.html")
+        if sub == ["showcase", "command"]:
+            return self._static(h, "showcase-command.html")
+        if sub == ["api", "showcase"] or sub[:3] == ["api", "showcase", "screen"] and len(sub) == 4:
+            return self._showcase(h, sub[3] if len(sub) == 4 else None)
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in SHOWCASE_STATIC:
+            return self._static(h, sub[1], query)
         if len(sub) == 2 and sub[0] == "static" and sub[1] in ("doctor.js", "doctor.css", "target.js", "job-state.js", "gol.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research-task.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1], query)
         self.last_view = _now()
@@ -433,6 +449,18 @@ class Dash:
             data = _versioned_links(data)
         cached = ext in (".js", ".css") and parse_qs(query).get("v") == [_asset_version(name)]
         self._send(h, 200, data, STATIC_TYPES[ext], ASSET_CACHE if cached else None)
+
+    def _showcase(self, h, brand=None):
+        """Serve the node-local showcase snapshot as written; this node's own state is not consulted."""
+        if brand is not None and not re.fullmatch(r"[A-Z]{2,16}", brand):
+            return self._send(h, 404, {"error": "not found"})
+        name = "data.json" if brand is None else f"screen-{brand}.jpg"
+        try:
+            with open(os.path.join(getattr(self, "showcase_dir", None) or "/nonexistent", name), "rb") as f:
+                data = f.read()
+        except OSError:
+            return self._send(h, 404, {"error": "此节点还没有展示数据快照" if brand is None else "没有这台手机的截图"})
+        self._send(h, 200, data, "application/json; charset=utf-8" if brand is None else "image/jpeg")
 
     def _login_page(self, h, msg="", code=200):
         html = LOGIN_HTML.replace("{{msg}}", f'<p class="err">{msg}</p>' if msg else "")
