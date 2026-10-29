@@ -18,6 +18,7 @@ jobs:
         include:
           - name: harness-ops node tests
             command: python3 -m unittest discover -s harness-ops/node/tests
+            playwright: '1.64.1'
           - name: refbench tests
             command: (cd refbench && python3 -m unittest discover -s tests -p 'test_*.py')
           - name: phonefarm tests
@@ -33,6 +34,23 @@ jobs:
       - name: Install phonefarm test tools
         if: matrix.name == 'phonefarm tests'
         run: sudo apt-get update && sudo apt-get install -y zsh adb
+      - name: Set up Python
+        if: matrix.playwright
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright
+        if: matrix.playwright
+        run: python3 -m pip install playwright==${{ matrix.playwright }}
+      - name: Cache Playwright browsers
+        if: matrix.playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ matrix.playwright }}
+      - name: Install Chromium
+        if: matrix.playwright
+        run: python3 -m playwright install --with-deps chromium
       - name: Install Rust
         if: matrix.rust
         uses: dtolnay/rust-toolchain@stable

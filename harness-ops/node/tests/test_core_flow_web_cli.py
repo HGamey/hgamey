@@ -786,9 +786,12 @@ class CoreFlowTests(unittest.TestCase):
 
     def test_web_reassignment_is_read_back_from_the_api(self):
         """A real browser clicks 改派; the owner must then have changed on the server, not just in the select."""
+        # CI installs playwright and chromium; only a machine without them may skip this.
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
+            if os.environ.get("CI"):
+                raise
             self.skipTest("playwright is not installed")
         for name in ("agent-a", "agent-b"):
             self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
@@ -801,6 +804,8 @@ class CoreFlowTests(unittest.TestCase):
             try:
                 browser = playwright.chromium.launch()
             except Exception as error:
+                if os.environ.get("CI"):
+                    raise
                 self.skipTest(f"no browser for playwright: {error}")
             try:
                 context = browser.new_context()
