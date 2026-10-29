@@ -561,7 +561,9 @@ class Jobs:
                     meta["cancel"] = {**request, "status": "not_applied", "signals": []}
                 meta["controls"] = {"cancel_supported": False, "force_supported": False, "reason": "job is terminal"}
             else:
-                meta = self._execution_status(jid)
+                # done was committed after worker release. The finalizer may
+                # still hold runner.lock briefly; it is not a live worker.
+                meta = self._execution_status(jid, worker_alive=False if row and row["state"] == "done" else None)
         if row and row["state"] == "claimed" and meta.get("state") == "finished":
             meta.update(state="running", phase="finalizing")
             meta["controls"] = {"cancel_supported": False, "force_supported": False,

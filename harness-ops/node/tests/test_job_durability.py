@@ -115,6 +115,29 @@ class JobDurabilityTests(unittest.TestCase):
                 print(f"job durability host result: {path}", file=sys.stderr)
             self.temporary.cleanup()
 
+    def test_committed_job_does_not_mistake_finalizer_lock_for_a_live_worker(self):
+        jid = self.submit("finalizer-observation", [])
+        self.jobs.dispatch.tick()
+        self.until(lambda: self.jobs._read_meta(jid).get("phase") == "finished"
+                   and not job_runtime.runner_alive(self.store, jid))
+        original = self.queue.set_state
+
+        def commit_then_observe(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if args[:2] == (jid, "done"):
+                # Observe the real completion window: SQL is committed while
+                # finalize still holds runner.lock, after the worker released it.
+                self.assertTrue(job_runtime.runner_alive(self.store, jid))
+                self.observations["committed"] = self.jobs.status(jid)
+            return result
+
+        with patch.object(self.queue, "set_state", side_effect=commit_then_observe):
+            self.assertTrue(self.jobs.dispatch.finalize(self.queue.get(jid)))
+        value = self.observations["committed"]
+        self.assertEqual((value["state"], value["queue"]["state"], value["exit"]), ("finished", "done", 0))
+        self.assertFalse(value["execution"]["worker_alive"])
+        self.case_ok = True
+
     def test_visible_terminal_fsync_failure_blocks_until_retry_without_replay(self):
         counter = "import pathlib,sys; p=pathlib.Path(sys.argv[1],'executions'); p.open('a').write('run\\n')"
         jid = self.submit("visible-terminal", ["host:shared"], counter)
