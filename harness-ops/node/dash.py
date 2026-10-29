@@ -55,6 +55,33 @@ STEER_FILE = os.path.join(CONFIG_DIR, "steer.pass")   # 掌舵密码：改 human
 STEER_COOKIE = "hg_steer"
 STEER_MAX_AGE = 12 * 3600
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dash_static")
+# Pages link their CSS/JS with ?v=<content hash>; such a request may stay in the browser cache, so switching
+# pages does not fetch every file again. Pages and unversioned requests stay no-store.
+ASSET_LINK = re.compile(r'(/dash/static/[a-z0-9_.-]+\.(?:js|css))"')
+ASSET_CACHE = {"Cache-Control": "private, max-age=31536000, immutable"}
+_asset_versions = {}
+
+
+def _asset_version(name):
+    path = os.path.join(STATIC_DIR, name)
+    try:
+        st = os.stat(path)
+        known = _asset_versions.get(name)
+        if known and known[0] == (st.st_mtime_ns, st.st_size):
+            return known[1]
+        with open(path, "rb") as f:
+            version = hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        return None
+    _asset_versions[name] = ((st.st_mtime_ns, st.st_size), version)
+    return version
+
+
+def _versioned_links(html):
+    def link(m):
+        version = _asset_version(m.group(1).rsplit("/", 1)[1])
+        return f'{m.group(1)}?v={version}"' if version else m.group(0)
+    return ASSET_LINK.sub(link, html.decode()).encode()
 STATIC_TYPES = {".json": "application/json; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
 TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/doctor"}
@@ -216,7 +243,7 @@ class Dash:
         if sub in (["gol"], ["jobs"], ["fleet"], ["games"], ["results"], ["research"], ["doctor"]):
             return self._static(h, sub[0] + ".html")
         if len(sub) == 2 and sub[0] == "static" and sub[1] in ("doctor.js", "doctor.css", "target.js", "job-state.js", "gol.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research-task.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
-            return self._static(h, sub[1])
+            return self._static(h, sub[1], query)
         self.last_view = _now()
         self.wake.set()
         # Only existing observation endpoints enable screenshots; assets and run/log reads do not.
@@ -241,7 +268,7 @@ class Dash:
             except KeyError:
                 return self._send(h, 404, {"error": "没有这个版本"})
         if sub[0] == "static" and len(sub) == 2:
-            return self._static(h, sub[1])
+            return self._static(h, sub[1], query)
         if sub == ["api", "state"]:
             return self._send(h, 200, self.state())
         if sub == ["api", "log"]:
@@ -395,7 +422,7 @@ class Dash:
     def _redirect(self, h, to, extra=None):
         h._send(303, b"", "text/plain", {**HEADERS, "Location": to, **(extra or {})})
 
-    def _static(self, h, name):
+    def _static(self, h, name, query=""):
         ext = os.path.splitext(name)[1]
         if not re.fullmatch(r"[a-z0-9_.-]+", name) or ext not in STATIC_TYPES:
             return self._send(h, 404, {"error": "not found"})
@@ -404,7 +431,10 @@ class Dash:
                 data = f.read()
         except OSError:
             return self._send(h, 404, {"error": "not found"})
-        self._send(h, 200, data, STATIC_TYPES[ext])
+        if ext == ".html":
+            data = _versioned_links(data)
+        cached = ext in (".js", ".css") and parse_qs(query).get("v") == [_asset_version(name)]
+        self._send(h, 200, data, STATIC_TYPES[ext], ASSET_CACHE if cached else None)
 
     def _login_page(self, h, msg="", code=200):
         html = LOGIN_HTML.replace("{{msg}}", f'<p class="err">{msg}</p>' if msg else "")

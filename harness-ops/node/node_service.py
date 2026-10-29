@@ -1095,9 +1095,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            for k, v in (extra or {}).items():
+            extra = extra or {}
+            # Defaults unless the caller set its own (the dashboard lets versioned CSS/JS be cached).
+            if "Cache-Control" not in extra:
+                self.send_header("Cache-Control", "no-store")
+            if "X-Content-Type-Options" not in extra:
+                self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in extra.items():
                 for one in (v if isinstance(v, list) else [v]):
                     self.send_header(k, one)
             self.end_headers()

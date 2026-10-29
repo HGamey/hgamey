@@ -6,6 +6,7 @@ cookies and headers the page scripts set, token calls mirror pf-node. No workers
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -775,6 +776,23 @@ class CoreFlowTests(unittest.TestCase):
         self.assertNotIn('if (agents === null)', task, "owner options must not be pinned to the first agent query")
         self.assertIn('agents = (await api(\'/agents\')', task)
         self.assertIn('renderDetail(detail)', research, "unlock must repaint the current task and its owner controls")
+
+    def test_pages_link_versioned_assets_the_browser_may_keep(self):
+        def get(path):
+            connection = http.client.HTTPConnection(*self.address, timeout=10)
+            connection.request("GET", path, headers={"Cookie": self.view_cookie})
+            response = connection.getresponse()
+            body, caching = response.read(), [v for k, v in response.getheaders() if k.lower() == "cache-control"]
+            connection.close()
+            return response.status, caching, body
+
+        status, caching, page = get("/dash/research")
+        self.assertEqual((status, caching), (200, ["no-store"]))
+        version = re.search(rb'/dash/static/research\.js\?v=([0-9a-f]{12})"', page)
+        self.assertIsNotNone(version, "pages link their scripts with a content version")
+        self.assertEqual(get(f"/dash/static/research.js?v={version.group(1).decode()}")[1], ["private, max-age=31536000, immutable"])
+        self.assertEqual(get("/dash/static/research.js")[1], ["no-store"])
+        self.assertEqual(get("/dash/static/research.js?v=000000000000")[1], ["no-store"])
 
     def test_web_writes_outlive_the_page_and_conflicts_are_read_back(self):
         # 2026-10-29 mbp1: 改派 was clicked, the page was left while the POST was still crossing the Cloudflare hop,
