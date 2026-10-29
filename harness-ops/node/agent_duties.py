@@ -8,6 +8,7 @@ STATUS_STALE_SECONDS = 30 * 60
 TERMINAL_DIRECTIONS = {"verified", "no_gain", "rejected", "deferred"}
 OPEN_RESEARCH = {"active", "idle", "paused"}
 NOTE_STYLE = "写留言：先说结论，再给依据（数字、任务号、提交号、文件）。一条只讲一件事，200 字以内，细节放报告或附件。用平常话和通用术语，不自造词，不用比喻和口号。不写客套、致谢，不复述对方，不写「我将……」式的预告。不确定就直说不确定。"
+DELIVERY_STYLE = "交付写清：作为依据的每个任务是否有效，无效的写原因；完整复现命令（pf-node 提交命令和实验提交号）；适用条件。exit 0 不等于有效，无效的任务不能当结论依据。"
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
     "设备锁序列化实际操作；仅 claimed 扣运行名额，确认宿主完成的终态自动释放任务预留。完成未知时保留独占范围，由负责人或管理员 reset。",
@@ -26,6 +27,7 @@ LOOP = [
     "用自己的 token 提交任务、写 research、发言，记录都会落在你的名下。",
     "每轮结束用 pf-node agents status <你的名字> \"<在做什么>\" 更新状态。",
     "做完后用 pf-node research deliver 交付：总结、产物（任务或结果）、适用的游戏版本和设备。",
+    DELIVERY_STYLE,
     "研究交付不会自动给方向下结论：pf-node research conclude <方向ID> verified|no_gain|rejected|deferred --reason \"<依据>\" [--evidence job:<任务>:<路径>]。",
 ]
 

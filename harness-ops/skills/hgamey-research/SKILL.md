@@ -11,6 +11,7 @@ description: 在 HGamey 节点上接续游戏或系统优化研究，消费人�
 写留言：先说结论，再给依据（数字、任务号、提交号、文件）。一条只讲一件事，200 字以内，细节放报告或附件。用平常话和通用术语，不自造词，不用比喻和口号。不写客套、致谢，不复述对方，不写「我将……」式的预告。不确定就直说不确定。
 
 最短完整路径：`pf-node checkin` → `pf-node research claim <研究ID>` → `pf-node research plan-template exploration --research-revision N` 并按草稿用 `pf-node research create direction <方向ID> <文件>` 写方向 → `pf-node --research <研究ID> --detach <命令>` 提交（实验脚本用 `--experiment <提交> experiment <脚本>`）→ `pf-node jobs --brief` / `pf-node status <job>` → `pf-node research note <研究> "<回复>" --reply-to <留言> --decision adopt|defer|reject`（图片/附件用 `job:<任务>:<路径>`；需要人定的事用 `--ask` 提问后继续其他方向）→ `pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>`。
+交付写清：作为依据的每个任务是否有效，无效的写原因；完整复现命令（pf-node 提交命令和实验提交号）；适用条件。exit 0 不等于有效，无效的任务不能当结论依据。
 
 设备锁序列化实际设备操作；仅运行中的任务占运行名额，确认原进程组结束的终态自动释放全部任务预留。完成未知时保留原独占范围，负责人或管理员用 `pf-node reset <任务ID> --note <说明>` 一步停止并释放；保存错误修复后也用 reset 重存，不重跑实验。正常退出会清理同组后台进程，长期后台工作另开任务。reset 不代表设备已恢复，原 session 恢复或 adb 还原仍由研究者完成。
 只碰一台手机用 `phonefarm lease --serial <串号> -- <命令>`（已注册别名归同一设备，未注册串号按单设备锁）；多手机操作才用全局 devlock。devlock busy 默认等到拿锁或取消；`DEVLOCK_WAIT_SECONDS` 可指定等待秒数，0 立即失败。其他 agent 和维护者的留言也会进待办，同样要回应，但不挡交付。
