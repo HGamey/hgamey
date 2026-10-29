@@ -177,6 +177,44 @@ class DeviceScopeTests(unittest.TestCase):
                                                  "device_access": "write", "research_id": "sr-multiple"})
         self.assertEqual(scope(global_job)["scope"], "global")
 
+    def test_registered_serial_scope_uses_typed_binding(self):
+        env = fixture.GameFlowTests()
+        env.setUp()
+        self.addCleanup(env.tearDown)
+        program = env.root / "scope-pf"
+        program.write_text("#!" + sys.executable + "\n" + PROGRAM)
+        program.chmod(0o755)
+        env.jobs.bins["phonefarm"] = (str(program), str(env.root))
+        env.jobs.programs.refresh()
+        (env.root / "registry.json").write_text(json.dumps({"revision": 1, "aliases": {"usb-a": "A", "usb-b": "B"}}))
+        pin = {"X-Expected-Node-ID": env.jobs.node_id}
+
+        def submit(request, spec):
+            status, response = env.call("POST", "/jobs", headers={**pin, "X-Request-ID": request,
+                                                                  "X-Job": json.dumps(spec)})
+            self.assertEqual(status, 200, response)
+            return response
+
+        write = {"schema": "phonefarm/research-write@1", "operation_id": "create-typed", "base_revision": None,
+                 "actor_label": None, "reason": None,
+                 "data": {"title": "typed", "objective": "已登记设备走 lane", "device_requirements": ["usb-a"]}}
+        env.jobs.research.write("research", "sr-typed", write, "fixture")
+        research = submit("typed-research", {"bin": "bundle_prepare", "argv": ["script"], "device_access": "write",
+                                             "research_id": "sr-typed"})
+        self.assertEqual(research["device_binding"], bound("A", "usb-a"))
+        self.assertEqual(scope(research)["scope"], "device")
+        explicit = submit("typed-resource", {"bin": "bundle_prepare", "argv": ["script"], "device_access": "write",
+                                             "resources": ["device:usb-b"]})
+        self.assertEqual(explicit["device_binding"], bound("B", "usb-b"))
+        argv = submit("typed-argv", {"bin": "bundle_prepare", "argv": ["-s", "usb-a"], "device_access": "write"})
+        self.assertEqual(argv["device_binding"], bound("A", "usb-a"))
+        self.assertFalse(conflicts(scope(research), scope(explicit)))
+        self.assertTrue(conflicts(scope(research), scope(argv)))
+        legacy = submit("legacy-resource", {"bin": "bundle_prepare", "argv": ["script"], "device_access": "write",
+                                            "resources": ["device:unknown-serial"]})
+        self.assertNotIn("device_binding", legacy)
+        self.assertEqual(scope(legacy)["binding"]["device_id"], "unknown-serial")
+
     def test_bound_http_workers_recovery_and_original_request(self):
         env = fixture.GameFlowTests()
         env.setUp()

@@ -371,6 +371,14 @@ class Jobs:
                            and not device_binding and "resources" not in spec and not serial_from_argv(argv) and recovery_for is None else None)
         resources = spec.get("resources", ["device:" + research_serial] if research_serial else
                              [] if device_binding or access == "none" else ["legacy-device"] if legacy_device_bin else [])
+        candidates = [value[len("device:"):] for value in resources if isinstance(value, str) and value.startswith("device:")]
+        scope_serial = serial_from_argv(argv) or research_serial or (candidates[0] if len(candidates) == 1 else None)
+        if access == "write" and not device_binding and recovery_for is None and scope_serial:
+            try:
+                device_binding = self.device_scopes.resolve(scope_serial)
+                resources = sorted(set(resources) | {device_resource(device_binding)})
+            except RegistryError:
+                pass
         if access == "recovery":
             self.path(recovery_for)
             parent = self.dispatch.queue.get(recovery_for)
@@ -407,8 +415,6 @@ class Jobs:
                 **({"exe": spec["exe"]} if spec.get("exe") else {})}
         if device_binding and access == "recovery":
             self.validate_bound_recovery(spec)
-        if experiment and device_binding:
-            raise ValueError("experiment jobs take device locks themselves; device_binding does not apply")
         original_admit = admit
         def admit():
             # submit() calls this only for a new request while holding intake.
@@ -459,7 +465,7 @@ class Jobs:
             checkout = os.path.join(jin, job_experiment.CHECKOUT)
             job_experiment.materialize(self.experiment_mirror, self.experiment_url, spec["experiment"]["commit"], checkout)
             command, cwd = job_experiment.command(checkout, [argv[0]] + [sub(a) for a in argv[1:]]), checkout
-        if "device_binding" in spec and spec.get("device_access") != "recovery":
+        if binname == "phonefarm" and "device_binding" in spec and spec.get("device_access") != "recovery":
             # Binding is opaque JSON, not an @in/@out template. Check serial
             # after ordinary argument expansion before adding the owned flag.
             validate_device_job({**spec, "argv": command[1:]})
@@ -480,7 +486,7 @@ class Jobs:
 
     def validate_prepared_scope(self, row, prepared):
         spec, jid = row["spec"], row["job_id"]
-        if "device_binding" not in spec:
+        if "device_binding" not in spec or spec["bin"] != "phonefarm":
             return
         exe, cwd = self.bins["phonefarm"]
         if spec.get("inputs", {}).get("cwd") == "input":
