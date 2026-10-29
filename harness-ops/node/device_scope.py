@@ -202,6 +202,16 @@ class DeviceScope:
     def __init__(self, jobs):
         self.jobs = jobs
 
+    def _empty_registry_error(self):
+        try:
+            value = DeviceRegistry(self.jobs, getattr(self.jobs, "node_id", None)).read()
+        except RegistryError:
+            return None
+        if isinstance(value, dict) and value.get("devices") == []:
+            return RegistryError("unavailable", "device registry is empty; use research device_requirements or "
+                                               "--resource device:<serial> instead of --device-binding")
+        return None
+
     def resolve(self, serial):
         if not valid_serial(serial):
             raise RegistryError("invalid_request", "serial must be one explicit nonempty transport identifier")
@@ -213,12 +223,22 @@ class DeviceScope:
         if code == 2 and isinstance(value, dict) and value.get("schema") == ERROR_SCHEMA:
             reason, message = value.get("code"), value.get("error")
             if isinstance(reason, str) and reason in STATUS and isinstance(message, str) and 0 < len(message) <= 2048:
+                if reason == "unavailable":
+                    empty = self._empty_registry_error()
+                    if empty is not None:
+                        raise empty
                 raise RegistryError(reason, message)
         try:
             result = binding(value)
         except ValueError:
+            empty = self._empty_registry_error()
+            if empty is not None:
+                raise empty
             raise RegistryError("unavailable", "phonefarm device binding protocol is unavailable") from None
         if code != 0 or result["serial"] != serial:
+            empty = self._empty_registry_error()
+            if empty is not None:
+                raise empty
             raise RegistryError("unavailable", "phonefarm did not resolve the requested serial")
         return result
 

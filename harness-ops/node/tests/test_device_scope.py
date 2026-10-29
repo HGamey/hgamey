@@ -7,10 +7,12 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_node_games as fixture
-from device_scope import conflicts, resource, scope
+from device_scope import conflicts, resource, scope, DeviceScope
+from device_registry import DeviceRegistry, RegistryError, ERROR_SCHEMA
 from job_queue import JobQueue
 from node_service import readonly_token
 
@@ -122,6 +124,20 @@ class DeviceScopeTests(unittest.TestCase):
             self.assertEqual(queue.claim_next(3)["job_id"], ids[0])
             self.assertEqual(queue.claim_next(3)["job_id"], ids[1])
             self.assertIsNone(queue.claim_next(3), "only the same serial remains reserved")
+
+    def test_empty_registry_resolve_explains_raw_serial_alternative(self):
+        env = fixture.GameFlowTests()
+        env.setUp()
+        self.addCleanup(env.tearDown)
+        unavailable = {"schema": ERROR_SCHEMA, "code": "unavailable", "error": "registry unavailable"}
+        with mock.patch.object(DeviceRegistry, "_run", return_value=(2, unavailable)), \
+                mock.patch.object(DeviceRegistry, "read", return_value={"devices": []}):
+            with self.assertRaises(RegistryError) as rejected:
+                DeviceScope(env.jobs).resolve("91253241019A")
+        self.assertEqual(rejected.exception.status, 503)
+        self.assertIn("device registry is empty", str(rejected.exception))
+        self.assertIn("device_requirements", str(rejected.exception))
+        self.assertIn("--resource device:<serial>", str(rejected.exception))
 
     def test_research_single_device_requirement_scopes_write_job(self):
         env = fixture.GameFlowTests()
