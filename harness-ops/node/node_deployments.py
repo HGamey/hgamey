@@ -9,7 +9,7 @@ from job_inputs import validate as validate_inputs
 from job_dispatch import request_fingerprint
 from job_queue import RequestConflict
 from node_games import MAX_MANIFEST, snapshot_body
-from device_scope import binding, resource as device_resource
+from device_scope import binding, resource as device_resource, same_binding, same_bound_spec
 
 CAPABILITY = "games.deploy-v1"
 INSTALL_CAPABILITY = "games.install-v1"
@@ -224,10 +224,11 @@ class NodeDeployments:
         parent, request = self._bound(spec["recovery_for"])
         original = parent["spec"].get("device_binding")
         expected = self._spec(request, parent["job_id"], device_binding=original)
+        expected["resources"] = parent["resources"]
         if "priority" in spec:
             expected["priority"] = spec["priority"]
         report, _ = self._report(parent["job_id"], request, original)
-        if spec != expected or report is None:
+        if not same_bound_spec(spec, expected) or report is None:
             raise DeploymentError(409, "deployment_binding_changed",
                                   "bound recovery must inherit the original game transaction, report and device binding")
 
@@ -251,9 +252,13 @@ class NodeDeployments:
         if parent:
             source = self.jobs.dispatch.queue.get(parent)
             if (self.jobs._read_root.read_json(parent + "/in/manifest.json", maximum=MAX_MANIFEST) != request
-                    or not source or source["spec"].get("device_binding") != original):
+                    or not source or not same_binding(source["spec"].get("device_binding"), original)):
                 raise DeploymentError(409, "deployment_binding_changed", "recovery inputs differ from its source transaction")
         expected_spec = self._spec(request, parent, inputs, original)
+        if original is not None:
+            # The fingerprint covers saved metadata, including retired domain
+            # fields and resource names. Never regenerate those historical bytes.
+            expected_spec.update(device_binding=original, resources=row["spec"]["resources"])
         if "priority" in row["spec"]:
             expected_spec["priority"] = row["spec"]["priority"]
         if request != expected or row["fingerprint"] != request_fingerprint(expected_spec, snapshot_body(request)):
@@ -274,7 +279,7 @@ class NodeDeployments:
                     or value.get("session_path") not in (None, "game-deploy")
                     or any(not isinstance(value.get(k), dict) for k in facts)):
                 raise ValueError("deployment report identity mismatch")
-            if (value.get("device_binding") != device_binding
+            if (not same_binding(value.get("device_binding"), device_binding)
                     or (value.get("lease_scope") == "device") != (device_binding is not None)):
                 raise ValueError("deployment report device binding mismatch")
             return value, None

@@ -12,7 +12,7 @@ import pwd
 import shutil
 import sys
 
-from worker_config import CONFIG_NAME, MODULES, configuration, trusted_path, PF_ROOTS, PF_TOOLS
+from worker_config import CONFIG_NAME, MODULES, configuration, trusted_path
 from runtime_identity import read_build_info
 
 
@@ -37,12 +37,6 @@ def main():
     parser.add_argument("--cgroup-root", type=Path, required=True)
     for key in ("node-uid", "node-gid", "job-uid", "job-gid"):
         parser.add_argument("--" + key, type=int, required=True)
-    parser.add_argument("--phonefarm-state-dir", type=Path)
-    parser.add_argument("--devlock-dir", type=Path)
-    parser.add_argument("--phonefarm-lease-dir", type=Path)
-    parser.add_argument("--adb-bin", type=Path)
-    parser.add_argument("--devlock-bin", type=Path)
-    parser.add_argument("--aapt2-bin", type=Path)
     args = parser.parse_args()
     if sys.platform != "linux" or os.geteuid() != 0:
         parser.error("installation requires an explicit root administrator on Linux")
@@ -54,17 +48,6 @@ def main():
               "cgroup_root": str(args.cgroup_root), "node_uid": args.node_uid, "node_gid": args.node_gid,
               "uid": args.job_uid, "gid": args.job_gid,
               "capabilities": ["jobs.execution-reconcile-v1", "jobs.disk-guard-v1"]}
-    roots = (args.phonefarm_state_dir, args.devlock_dir, args.phonefarm_lease_dir)
-    if any(roots):
-        if not all(roots):
-            parser.error("all three persistent PF roots must be configured together")
-        config["pf_env"] = {key: str(path) for key, path in zip(PF_ROOTS, roots)}
-        config["pf_env"]["PHONEFARM_SHARED_GID"] = str(args.job_gid)
-        for key, path in zip(PF_TOOLS, (args.adb_bin, args.devlock_bin, args.aapt2_bin)):
-            if path is not None:
-                config["pf_env"][key] = str(path)
-    elif args.adb_bin or args.devlock_bin or args.aapt2_bin:
-        parser.error("fixed PF tools require the shared PF profile")
     # Account selection is an administrator operation; do not create or modify
     # accounts, cgroups, data roots, sudoers or an existing installation here.
     account = pwd.getpwuid(args.node_uid)

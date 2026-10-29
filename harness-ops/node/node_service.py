@@ -39,7 +39,7 @@ from node_history import JobHistory, HistoryError, load_history_config
 from job_export_cache import ExportCache, validate_root as validate_export_cache_root
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
 from device_scope import (DeviceScope, validate_job as validate_device_job, resource as device_resource,
-                          scope as job_scope, lease_problem, serial_from_argv, binding_argument)
+                          scope as job_scope, lease_problem, serial_from_argv, binding_argument, same_binding)
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
@@ -283,9 +283,8 @@ class Jobs:
             raise ValueError("max_running must be between 1 and 64")
         self.pf_env, self.worker_entry = None, None
         if worker_prefix is not None:
-            from worker_config import node_configuration, phonefarm_environment
+            from worker_config import node_configuration
             config = node_configuration(worker_prefix, self.dir)
-            self.pf_env = phonefarm_environment(config)
             if "jobs.execution-reconcile-v1" in config.get("capabilities", []):
                 self.worker_entry = os.path.join(worker_prefix, "phonefarm-worker")
         self.programs = ConfiguredPrograms(bins, self.pf_env)
@@ -395,15 +394,16 @@ class Jobs:
             parent = self.dispatch.queue.get(recovery_for)
             if not parent:
                 raise KeyError(recovery_for)
-            if parent["spec"].get("device_binding") != device_binding:
+            if not same_binding(parent["spec"].get("device_binding"), device_binding):
                 raise ValueError("recovery must inherit the original device binding")
+            device_binding = parent["spec"].get("device_binding")
             resources = parent["resources"]
         elif recovery_for is not None:
             raise ValueError("recovery_for requires device_access=recovery")
         if not isinstance(resources, list) or len(resources) > 32 or any(
                 not isinstance(r, str) or not r or len(r) > 160 or any(ord(c) < 32 for c in r) for r in resources):
             raise ValueError("resources must be at most 32 nonempty resource names")
-        if device_binding:
+        if device_binding and access != "recovery":
             resources = sorted(set(resources) | {device_resource(device_binding)})
             if len(resources) > 32:
                 raise ValueError("resources including the required device reservation must fit within 32 names")
@@ -449,9 +449,7 @@ class Jobs:
         jin, jout = self.path(jid, "in"), self.path(jid, "out")
         self._read_root.mkdir(jid)
         self._read_root.mkdir(jid + "/in")
-        shared_gid = (int(self.pf_env["PHONEFARM_SHARED_GID"]) if self.pf_env is not None
-                      and spec.get("execution_policy", "process_group") == "process_group" else None)
-        self._read_root.mkdir(jid + "/out", shared_gid=shared_gid)
+        self._read_root.mkdir(jid + "/out")
         self._write_meta(jid, {**self.dispatch.base_meta(row), "input_preparation_expected": True})
         with self._read_root.create_file(jid + "/log"):
             pass

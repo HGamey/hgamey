@@ -22,6 +22,6 @@ https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/GOL-DEV
 - 主 Agent 聚焦系统结构、协议与整合；前端等独立模块可交具体 subagent，划分文件所有权。
 - 每批记录已做、未做、测试层级和恢复义务；部署与代码提交分开。
 
-## 外层队列身份（源码与隔离宿主已验，未部署）
+## 任务锁
 
-PF/devlock需与本客户端同版升级。队列借用、续期和释放依 DEVLOCK_INSTANCE_ID 与宿主进程身份，label只显示与排队。继承实例失效即拒绝，不换ID重试。源码/宿主验证状态及恢复限制见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/LEASE-IDENTITY.md 。
+GOL 向所选 PF 取得同一组内核锁 fd，单设备范围按 serial／登记别名归一；没有第二套 owner、队列或续期。默认等待到拿到或被取消，显式等待期限仍可指定。人工暂停关闭持有的 fd，继续时重新取锁；label 只作显示。PF 与 GOL 须同版升级，宿主替身通过不代表真机验证。

@@ -1,8 +1,285 @@
-"""Battery/idle additions reused from the frozen control power host fixture.
+"""Synthetic Android only; PF locks, transport processes and recovery are real."""
+import struct
+import zlib
 
-Only Android responses are synthetic. The shared base checks the actual PF
-lease-command PID/PGID and durable pending records. No shell/ADB fallback.
-"""
+PKG = 'com.example.fixture'
+NATIVE = '/data/app/~~synthetic/com.example.fixture/lib/arm64'
+
+def png_bytes():
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    raw = b''.join(b'\0' + bytes((x * 37 + y * 53 + c * 101) % 256
+                                for x in range(32) for c in range(3)) for y in range(18))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 32, 18, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+
+FAKE_ADB = r'''#!/usr/bin/env python3
+"""Gray control extension of gray-capture-fake-adb.py; never invokes a real transport."""
+import json
+import os
+from pathlib import Path, PurePosixPath
+import shlex
+import sys
+import time
+
+argv=sys.argv[1:]
+serial=argv[1] if len(argv)>=2 and argv[0]=='-s' else None
+args=argv[2:]
+log=Path(os.environ['QA_GRAY_CAPTURE_LOG'])
+device=Path(os.environ['QA_GRAY_CAPTURE_DEVICE'])
+entry={'event':'transport','argv':argv,'serial':serial,'pid':os.getpid(),'pgid':os.getpgrp(),
+       'simulation':True,'gate_ok':False,'kind':'unhandled','environment_keys':sorted(os.environ)}
+# The client has no task fd; the finite PF proxy keeps the actual lock.
+import fcntl, hashlib
+lock=Path(os.environ['PHONEFARM_LEASE_DIR'])/'by-device-id'/(hashlib.sha256(serial.encode()).hexdigest()+'.lock')
+with lock.open('rb') as held:
+    try: fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    except BlockingIOError: entry['gate_ok']=True
+receipts=[json.loads(path.read_text()) for path in Path(os.environ['PF_JOB_LEASE_DIR']).glob('*.json')]
+contexts=[r['recovery']['context'] for r in receipts if r['serial']==serial and r['recovery']['context']]
+context=contexts[0] if contexts else None
+
+
+def finish(code,output='',error='',binary=None):
+    entry.update(exit=code,stdout=output,stderr=error)
+    if binary is not None:
+        entry['binary_bytes']=len(binary)
+    with log.open('a') as stream:
+        stream.write(json.dumps(entry,ensure_ascii=False)+'\n')
+    if binary is not None:
+        sys.stdout.buffer.write(binary)
+    else:
+        sys.stdout.write(output)
+    sys.stderr.write(error)
+    raise SystemExit(code)
+
+
+if not entry['gate_ok']:
+    finish(99,error='transport outside direct-command lease identity\n')
+session=json.loads((Path(context)/'session.json').read_text()) if context else None
+entry['session']=session
+state_path=device/'state.json'
+state=json.loads(state_path.read_text())
+initial=json.loads((device/'initial-state.json').read_text())
+pkg=state['target_pkg']
+marker_path='/storage/emulated/0/Android/data/'+pkg+'/files/knobs_layer_out.json'
+audit_path='/storage/emulated/0/Android/data/'+pkg+'/files/knobs_frameaudit.json'
+
+
+def save():
+    state_path.write_text(json.dumps(state,ensure_ascii=False,indent=2)+'\n')
+
+
+def pending():
+    entry['pending_ok']=(session is not None and session.get('write_pending') is not None)
+    if not entry['pending_ok']:
+        finish(99,error='write preceded durable pending/hold\n')
+
+
+def is_running():
+    return pkg in state['processes']
+
+
+def launch():
+    pending()
+    if not is_running():
+        state['processes'].append(pkg)
+    state['ever_started']=True
+    state['marker_frames']=10
+    state['files'][marker_path]=json.dumps({'layer_loaded':True,'pkg':pkg,'readonly_stats':{'frames':10,'render_pass_begins':300}})
+    save()
+
+
+if args==['exec-out','screencap','-p']:
+    entry['kind']='screenshot'
+    data=(device/'synthetic.png').read_bytes()
+    if os.environ.get('QA_GRAY_CAPTURE_BAD_PNG')=='1':
+        data=b'synthetic invalid screenshot, safe read failure'
+    finish(0,binary=data)
+if len(args)==3 and args[0]=='push':
+    entry['kind']='push-so'
+    pending()
+    parent=str(PurePosixPath(args[2]).parent)
+    if state.get('dir_owners',{}).get(parent)!='shell':
+        finish(1,error='synthetic adb push permission denied: staging not owned by shell\n')
+    state['files'][args[2]]=Path(args[1]).read_bytes().decode('latin1')
+    save()
+    finish(0,'synthetic bytes pushed\n')
+if len(args)!=2 or args[0]!='shell':
+    finish(99,error='unexpected transport shape\n')
+shell=args[1]
+words=shlex.split(shell)
+as_root=False
+if words[:2]==['su','-c'] and len(words)==3:
+    as_root=True
+    shell=words[2]
+    words=shlex.split(shell)
+entry.update(shell=shell,words=words,as_root=as_root)
+merge_stderr='2>&1' in words
+words=[word for word in words if word!='2>&1']
+
+
+def fail(message):
+    finish(1,output=message+'\n' if merge_stderr else '',error='' if merge_stderr else message+'\n')
+
+
+def operands():
+    return [word for word in words[1:] if not word.startswith('-')]
+
+
+if words==['cat','/proc/sys/kernel/random/boot_id']:
+    entry['kind']='boot'
+    finish(0,'11111111-2222-3333-4444-555555555555\n')
+elif words[:1]==['cat']:
+    entry['kind']='read-file'
+    path=operands()[-1]
+    entry['path']=path
+    if path==marker_path and is_running() and state.get('ever_started'):
+        state['marker_frames']+=10
+        state['files'][path]=json.dumps({'layer_loaded':True,'pkg':pkg,'readonly_stats':{'frames':state['marker_frames'],'render_pass_begins':state['marker_frames']*30}})
+        save()
+    if path not in state['files']:
+        fail('cat: '+path+': No such file (synthetic)')
+    finish(0,state['files'][path])
+elif words[:1]==['ls']:
+    directory=operands()[-1].rstrip('/') or '/'
+    entry.update(kind='list-directory',path=directory)
+    if '-Zd' in words:
+        if directory not in state['files'] and directory not in state['dirs']:
+            fail('ls: path does not exist')
+        finish(0,'u:object_r:apk_data_file:s0 '+directory+'\n')
+    if directory not in state['dirs']:
+        fail('ls: '+directory+': No such directory (synthetic)')
+    names={PurePosixPath(path).name for path in [*state['files'],*state['dirs']]
+           if str(PurePosixPath(path).parent)==directory and path!=directory}
+    finish(0,''.join(name+'\n' for name in sorted(names)))
+elif words==['dumpsys','input']:
+    entry['kind']='rotation-read'
+    finish(0,'Input Reader State:\n  SurfaceOrientation: 1\n')
+elif words[:2]==['input','swipe']:
+    entry['kind']='swipe'
+    pending()
+    values=[int(value) for value in words[2:]]
+    if len(values)!=5 or not 1<=values[-1]<=10000:
+        fail('invalid bounded swipe')
+    state.setdefault('control_inputs',[]).append({'kind':'swipe','values':values})
+    save()
+    time.sleep(values[-1]/1000)
+    entry['natural_complete']=True
+    finish(0)
+elif words[:2]==['dumpsys','package'] and len(words)==3:
+    entry['kind']='package-read'
+    if words[2]!=pkg:
+        fail('unexpected target package')
+    finish(0,'Packages:\n  legacyNativeLibraryDir='+str(PurePosixPath(state['target_dir']).parent)+'\n')
+elif words[:1]==['getprop'] and len(words)==2:
+    entry.update(kind='property-read',property=words[1])
+    prop=words[1]
+    value=state['properties'].get(prop,'')
+    if os.environ.get('QA_GRAY_CAPTURE_RESTORE_MISMATCH')=='1' and state.get('restored_'+prop):
+        value='999'
+        entry['kind']='property-restore-mismatch'
+    if os.environ.get('QA_GRAY_CAPTURE_META_FAILURE')=='1' and state.get('restored_'+prop):
+        # Fault only local final metadata creation, after recovery writes completed.
+        parent=Path(context).resolve()
+        if not parent.is_relative_to(device.parent.resolve()):
+            finish(99,error='metadata fault escaped isolated fixture\n')
+        (parent/'capture_meta.json').mkdir(exist_ok=True)
+    finish(0,value+'\n')
+elif words[:1]==['setprop'] and len(words)==3:
+    entry.update(kind='property-write',property=words[1],value=words[2])
+    pending()
+    prop,value=words[1:]
+    state['properties'][prop]=value
+    if (state.get('ever_started') and not is_running() and prop=='debug.knobs.npuprobe'
+            and value==initial['properties'][prop]):
+        state['restored_'+prop]=True
+    if prop=='debug.knobs.frameaudit_go' and value!='0' and is_running() and state.get('ever_started'):
+        state['files'][audit_path]=json.dumps({'knob':'gray_frameaudit','version':1,'go':int(value),
+                                              'images':[],'frames':[],'swapchain':{'w':32,'h':18,'fmt':37}})
+    save()
+    if (os.environ.get('QA_GRAY_CAPTURE_UNKNOWN_WRITE')=='1' and prop=='debug.knobs.loadop'
+            and value!=initial['properties'][prop]):
+        entry['kind']='unknown-property-write'
+        fail('synthetic transport returned nonzero after applying property')
+    finish(0)
+elif words[:2]==['am','force-stop'] and len(words)==3:
+    entry['kind']='stop-target'
+    pending()
+    state['processes']=[name for name in state['processes'] if name!=words[2] and not name.startswith(words[2]+':')]
+    save()
+    finish(0)
+elif words==['ps','-A','-o','NAME']:
+    entry['kind']='process-read'
+    finish(0,'NAME\n'+''.join(name+'\n' for name in state['processes']))
+elif words[:3]==['cmd','package','resolve-activity']:
+    entry['kind']='activity-read'
+    finish(0,pkg+'/.MainActivity\n')
+elif words[:2]==['am','start'] or words[:1]==['monkey']:
+    entry['kind']='launch'
+    launch()
+    finish(0,'Starting: Intent synthetic\nStatus: ok\n')
+elif words[:2]==['input','tap']:
+    entry['kind']='tap'
+    pending()
+    state.setdefault('control_inputs',[]).append({'kind':'tap','values':[int(v) for v in words[2:]]})
+    save()
+    finish(0)
+elif words[:1]==['mkdir']:
+    entry['kind']='mkdir'
+    pending()
+    for path in operands():
+        if path not in state['dirs']:
+            state['dirs'].append(path)
+        state.setdefault('dir_owners',{})[path]='root' if as_root else 'shell'
+    save()
+    finish(0)
+elif words[:1] in (['cp'],['mv']):
+    entry['kind']='copy-file' if words[0]=='cp' else 'move-file'
+    pending()
+    source,target=operands()
+    if source not in state['files']:
+        fail('missing synthetic source '+source)
+    state['files'][target]=state['files'][source]
+    if words[0]=='mv':
+        del state['files'][source]
+    save()
+    finish(0)
+elif words[:1] in (['chmod'],['chown'],['chcon']):
+    entry['kind']='file-metadata-write'
+    pending()
+    finish(0)
+elif words[:1]==['stat']:
+    entry['kind']='file-stat'
+    finish(0,'755 1000 1000\n')
+elif words[:1]==['rm']:
+    entry['kind']='remove-file'
+    pending()
+    for path in operands():
+        state['files'].pop(path,None)
+    save()
+    finish(0)
+elif words[:1]==['rmdir']:
+    entry['kind']='rmdir'
+    pending()
+    for directory in operands():
+        if any(path.startswith(directory+'/') for path in [*state['files'],*state['dirs']]):
+            fail('directory not empty')
+        if directory in state['dirs']:
+            state['dirs'].remove(directory)
+        state.get('dir_owners',{}).pop(directory,None)
+    save()
+    finish(0)
+elif words[:1] in (['printf'],['echo']) and '>' in words:
+    entry['kind']='write-state'
+    pending()
+    arrow=words.index('>')
+    text=words[2:arrow] if words[0]=='printf' else words[1:arrow]
+    state['files'][words[arrow+1]]=' '.join(text)+'\n'
+    save()
+    finish(0)
+finish(99,error='unexpected synthetic command: '+repr(words)+'\n')
+'''
 
 SAMPLING_EXTENSION = r'''
 import re
@@ -10,7 +287,7 @@ parent_path = Path(context) / 'eval-session.json' if context else None
 parent = json.loads(parent_path.read_text()) if parent_path and parent_path.is_file() else None
 entry['parent_pending'] = parent.get('pending') if parent else None
 entry.update(uid=os.geteuid(), gid=os.getegid(), job_id=os.environ.get('PF_JOB_ID'),
-             recovery_out=os.environ.get('PF_RECOVERY_OUT'), shared_gid=os.environ.get('PHONEFARM_SHARED_GID'))
+             recovery_out=os.environ.get('PF_RECOVERY_OUT'))
 BOOT = '11111111-2222-3333-4444-555555555555'
 CHARGE_NODE = '/sys/class/power_supply/battery/input_suspend'
 entry['charging'] = parent.get('charging') if parent else None
@@ -256,5 +533,5 @@ def compose(base):
     marker = "if args==['exec-out','screencap','-p']:\n"
     prefix, found, suffix = base.partition(marker)
     if not found or marker in suffix:
-        raise ValueError("shared fake dispatch anchor changed")
+        raise ValueError("fake dispatch anchor changed")
     return prefix + SAMPLING_EXTENSION + marker + suffix

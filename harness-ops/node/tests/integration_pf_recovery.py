@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
-"""One contained battery session, failed typed recovery, then successful recovery.
+"""One same-UID battery session, failed typed recovery, then successful recovery.
 
-Explicit isolated Linux/root integration only. The PF, node, installed worker,
-queue, Unix permissions and cgroup are real; all Android responses are fake.
-No public contained admission or production device/lease is used.
+PF, Node, queue and task process groups are real; Android responses are fake.
+Everything runs in a new temporary directory without devices or root access.
 """
 import argparse
 import json
 import os
 from pathlib import Path
-import pwd
 import shutil
 import signal
 import stat
+import time
+import uuid
 import subprocess
 import sys
 import tempfile
 import traceback
 
-from integration_pf_shared import SharedFixture, FAKE_ADB, PKG
-from integration_job_cgroup import NODE, events, save
-from artifact_io import SafeRoot
-from pf_recovery_fake import compose
+from pf_recovery_fake import compose, FAKE_ADB, PKG, NATIVE, png_bytes
+
+NODE = Path(__file__).resolve().parents[1]
+
+def save(path, value):
+    path.write_text(json.dumps(value, indent=2) + "\n")
 
 
 CHARGE_NODE = '/sys/class/power_supply/battery/input_suspend'
@@ -36,31 +38,18 @@ control=pathlib.Path(plan['control'])
 def answer(value):
     print(json.dumps({'helper_pid':os.getpid(),'helper_uid':os.getuid(),**value}),flush=True)
 job=pathlib.Path(plan['jobs_root'])/plan['jid'] if plan.get('jid') else None
-if operation=='job-read':
-    assert os.getuid()==plan['job_uid']
-    denied=[]
-    for path in (job/'meta.json',job/'out/session-control.json',job/'out'):
-        try:
-            list(path.iterdir()) if path.suffix=='' else path.read_bytes()
-        except OSError as error:
-            assert error.errno in (errno.EACCES,errno.EPERM),repr(error)
-            denied.append(str(path))
-        else: raise AssertionError('job identity can reopen sealed history: '+str(path))
-    answer({'denied':denied}); sys.exit(0)
-assert os.getuid()==plan['node_uid'] and plan['job_gid'] in os.getgroups()
 os.umask(0o077)
-sys.path[:0]=[plan['prefix'],plan['node_source']]
+sys.path.insert(0,plan['node_source'])
 from node_service import Jobs,make_handler
 from node_lease import job_lease_receipts
 from job_dispatch import file_lock
-from worker_config import node_environment
 import job_runtime as runtime
-env=node_environment(plan['prefix'],jobs_root=plan['jobs_root'])
-assert env['PHONEFARM_SHARED_GID']==str(plan['job_gid'])
-assert env['PHONEFARM_STATE_DIR']==plan['state_root']
-assert env['DEVLOCK_DIR']==plan['lock_root'] and env['PHONEFARM_LEASE_DIR']==plan['device_lease_root']
-assert env['ADB_BIN']==plan['fake_adb'] and env['DEVLOCK_BIN']==plan['devlock']
-jobs=Jobs(plan['node_root'],{'phonefarm':(plan['phonefarm'],plan['node_root'])},worker_prefix=plan['prefix'])
+env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8','PHONEFARM_STATE_DIR':plan['state_root'],
+     'DEVLOCK_DIR':plan['lock_root'],'PHONEFARM_LEASE_DIR':plan['device_lease_root'],
+     'ADB_BIN':plan['fake_adb'],'DEVLOCK_BIN':plan['devlock'],'PHONEFARM_BIN':plan['phonefarm']}
+os.environ.update(env)
+jobs=Jobs(plan['node_root'],{'phonefarm':(plan['phonefarm'],plan['node_root'])})
+jobs.pf_env=env
 store=jobs._read_root
 def keep(name,value):
     (control/(name+'.json')).write_text(json.dumps(value,indent=2)+'\n')
@@ -74,7 +63,6 @@ def bounded(check,seconds=45):
     raise AssertionError('bounded recovery fixture wait expired')
 def lease():
     value=jobs.leases.snapshot(refresh=True,force=True)
-    assert value['storage']['readiness']=='ready',value
     assert value['storage']['devlock_dir']==plan['lock_root'],value
     assert value['storage']['device_lease_dir']==plan['device_lease_root'],value
     return value
@@ -96,7 +84,7 @@ if operation=='prepare':
           '--actor-id','agent','--max-seconds','90','--power-policy','battery',
           '--evidence-origin','synthetic','--lock-wait','0s','--json']
     spec={'bin':'phonefarm','argv':argv,'label':'isolated battery recovery source',
-          'execution_policy':'contained','device_access':'write','resources':['fixture-device:'+plan['serial']]}
+          'execution_policy':'process_group','device_access':'write','resources':['fixture-device:'+plan['serial']]}
     body=io.BytesIO()
     with tarfile.open(fileobj=body,mode='w:gz') as archive:
         payload=b'explicit synthetic SO fixture'
@@ -104,8 +92,7 @@ if operation=='prepare':
         archive.addfile(member,io.BytesIO(payload))
     data=body.getvalue()
     digest=hashlib.sha256(json.dumps(spec,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()+b'\0'+data).hexdigest()
-    # This administrator fixture cannot use public contained submission. Its
-    # source reservation/preparation/claim are genuine, not a fake blocked row.
+    # Exercise actual reservation, preparation and claim before the launcher exits.
     with file_lock(jobs.dispatch.intake_path):
         row,created=jobs.dispatch.queue.reserve('pf-recovery-source-'+plan['nonce'],digest,spec,spec['resources'])
         assert created
@@ -121,11 +108,9 @@ if operation=='prepare':
     current=lease(); assert current['status']=='clear',current
     answer({'jid':jid,'row':claimed,'lease':current}); sys.exit(0)
 if operation=='launch':
-    prepared=store.read_json(plan['jid']+'/prepared.json')
-    process=runtime.launch(store,plan['jid'],str(job),prepared['command'],prepared['cwd'],
-        dict(os.environ,PF_NODE_TOKEN='fixture-secret-must-not-reach-job'),
-        execution_policy='contained',privileged_entry=plan['entry'])
-    value={'launcher_pid':os.getpid(),'worker_handle_pid':process.pid,'argv':prepared['command']}
+    jobs.dispatch._launch(jobs.dispatch.queue.get(plan['jid']))
+    meta=bounded(lambda: jobs._read_meta(plan['jid']) if jobs._read_meta(plan['jid']).get('pid') else None)
+    value={'launcher_pid':os.getpid(),'worker_handle_pid':meta['pid']}
     keep('launch',value); answer(value); store.close(); os._exit(0)
 if operation=='cleanup':
     rows=jobs.dispatch.queue.rows(('preparing','queued','claimed','blocked','done'))
@@ -212,8 +197,8 @@ try:
         stopped=action(descriptor,'battery-stop','stop',{},expected='failed')
         done=keep('source-terminal',bounded(lambda:terminal(plan['jid'])))
         assert done['state']=='finished' and done['exit']==2 and done['outcome']=='failed',done
-        assert done['execution']['owned_cgroup']['status']=='absent',done
-        assert jobs.dispatch.queue.get(plan['jid'])['state']=='blocked'
+        assert done['execution']['owned_process_group']['status']=='absent',done
+        assert jobs.dispatch.queue.get(plan['jid'])['state']=='done'
         descriptor=keep('source-required',get(session_url))
         assert descriptor['phase']=='recovery_required' and not descriptor['live_owner']
         assert descriptor['power']['stage']=='restoring' and descriptor['recovery']['status']=='required'
@@ -225,11 +210,8 @@ try:
         assert base['write_pending'] is None and base['transport_uncertain'] is False
         record=pathlib.Path(parent['charging']['record_path'])
         assert record.parent==pathlib.Path(plan['state_root'])
-        # This read is genuinely performed as node UID after output handback;
-        # the global record remains owned by the old, distinct job UID.
         raw=record.read_bytes(); binding=pathlib.Path(parent['charging']['binding']['record_evidence'])
         assert raw==binding.read_bytes()
-        assert ownership(record)=={'uid':plan['job_uid'],'gid':plan['job_gid'],'mode':0o640}
         (control/'charge-before.raw').write_bytes(raw)
         keep('charge-before',{'path':str(record),'binding':str(binding),'ownership':ownership(record),'read_as_uid':os.getuid()})
         # Public recovery references and the sample originals are immutable;
@@ -242,8 +224,7 @@ try:
         receipts=keep('source-required-receipts',job_lease_receipts(store,plan['jid']))
         assert receipts['status']=='recorded' and receipts['entries'][0]['recovery']['status']=='required'
         current=keep('source-retained-lease',lease())
-        assert current['status']=='blocked',current
-        assert ownership(job)=={'uid':plan['node_uid'],'gid':plan['node_gid'],'mode':0o700}
+        assert current['status']=='clear',current
         assert ownership(job/'out')['mode']==0o700 and ownership(session/'session.json')['mode']==0o600
         answer({'sample':sample,'stop':stopped,'meta':done,'descriptor':descriptor,'receipts':receipts,
                 'lease':current,'preserved_count':len(preserved),'global_record':ownership(record)})
@@ -253,7 +234,7 @@ try:
         previous=None if failing else json.loads((control/'failed-recovery-id.json').read_text())
         target=plan['jid'] if failing else previous['id']
         endpoint='/jobs/'+target+'/session/recover'
-        before=keep('before-'+name+'-lease',lease()); assert before['status']=='blocked',before
+        before=keep('before-'+name+'-lease',lease()); assert before['status']=='clear',before
         saved=json.loads((control/'source-required.json').read_text())
         proposed=keep(name+'-plan',get(session_url+'/recovery'))
         assert proposed['supported'] and proposed['eligible'],proposed
@@ -279,7 +260,7 @@ try:
         assert done['recovery_for']==target
         # The ordinary worker reports process completion, not aggregate PF recovery.
         assert done['recovery']['status']=='not_reported',done
-        assert done['queue']['state']=='blocked' and jobs.dispatch.queue.get(jid)['state']=='blocked',done
+        assert done['queue']['state']=='done' and jobs.dispatch.queue.get(jid)['state']=='done',done
         assert done['execution']['process_management']['completion_scope']=='original_process_group'
         assert done['execution']['owned_process_group']['status']=='absent'
         launch=store.read_json(jid+'/launch.json')
@@ -296,23 +277,20 @@ try:
             assert pathlib.Path(original['source']).read_bytes()==pathlib.Path(original['copy']).read_bytes(),original
         old_stop=get(session_url+'/actions/battery-stop')
         assert old_stop==json.loads((control/'battery-stop.json').read_text()),'original failed action was rewritten'
-        assert jobs._read_meta(plan['jid'])['exit']==2 and jobs.dispatch.queue.get(plan['jid'])['state']=='blocked'
+        assert jobs._read_meta(plan['jid'])['exit']==2 and jobs.dispatch.queue.get(plan['jid'])['state']=='done'
         receipts=keep(name+'-receipts',job_lease_receipts(store,jid))
         assert receipts['status']=='recorded' and len(receipts['entries'])==1,receipts
         entry=receipts['entries'][0]
         old=json.loads((control/('source-required-receipts.json' if failing else 'failed-recovery-receipts.json')).read_text())['entries'][0]
         assert entry['job_id']==jid and entry['lease_id']!=old['lease_id'],entry
-        assert entry['state']==('retained' if failing else 'released'),entry
+        assert entry['state']=='released',entry
         assert entry['recovery']['status']==('required' if failing else 'reported_complete'),entry
         assert entry['serial']==plan['serial'] and entry['recovery']['context']==old['recovery']['context']
-        # This R1 failed after acquiring the lease. The receipt's actual prior
-        # marker therefore belongs to R1 for R2; do not derive it from queue ancestry.
-        assert entry['recovery_of']=={'job_id':old['job_id'],'lease_id':old['lease_id']},entry
+        # Recovery ancestry is the saved source context and Node job chain.
+        # No previous lock owner survives after its last fd closes.
+        assert entry['recovery_of'] is None,entry
         out=pathlib.Path(jobs.path(jid,'out'))
-        for directory in (out,out/'lease-receipts'):
-            assert ownership(directory)=={'uid':plan['node_uid'],'gid':plan['job_gid'],'mode':0o2770}
         receipt_path=out/entry['artifact_path']
-        assert ownership(receipt_path)=={'uid':plan['node_uid'],'gid':plan['job_gid'],'mode':0o640}
         downloaded=get('/jobs/'+jid+'/out?path='+quote(entry['artifact_path'],safe=''))
         assert downloaded==json.loads(receipt_path.read_text())
         current=keep(name+'-lease',lease())
@@ -321,11 +299,11 @@ try:
         code,repeated=request('POST',endpoint,{},request_id)
         assert code==200 and repeated['id']==jid,(code,repeated)
         rows=jobs.dispatch.queue.rows(('preparing','queued','claimed','blocked','done'))
-        assert len(rows)==(2 if failing else 3) and all(r['state']=='blocked' for r in rows),rows
+        assert len(rows)==(2 if failing else 3) and all(r['state']=='done' for r in rows),rows
         releases=[]
         if failing:
             assert descriptor['phase']=='recovery_required' and descriptor['recovery']['status']=='required',descriptor
-            assert descriptor['power']['stage']=='restoring' and current['status']=='blocked'
+            assert descriptor['power']['stage']=='restoring' and current['status']=='clear'
             assert pathlib.Path(info['path']).read_bytes()==(control/'charge-before.raw').read_bytes()
             next_plan=keep('after-failed-recovery-plan',get(session_url+'/recovery'))
             assert next_plan['eligible'] and next_plan['target_job_id']==jid,next_plan
@@ -347,16 +325,9 @@ try:
             assert closed_plan['supported'] and not closed_plan['eligible'] and closed_plan['reason'],closed_plan
             assert closed_plan['source_job_id']==plan['jid'] and closed_plan['target_job_id']==jid
             assert [item['job_id'] for item in closed_plan['attempts']]==[previous['id'],jid]
-            assert all(item['queue_state']=='blocked' for item in closed_plan['attempts'])
-            # Scoped PF success and a fresh clear lease are evidence for explicit
-            # review, not automatic release. Preserve every attempt's failure.
-            for release_id in (jid,previous['id'],plan['jid']):
-                code,released=request('POST','/jobs/'+release_id+'/queue-release',
-                    {'note':'Reviewed actual fixture receipts, original process completion, and fresh clear synthetic lease; not a real-device claim'})
-                assert code==200 and released['released'] is True,(code,released)
-                assert released['job']['queue']['state']=='done'
-                releases.append(release_id)
-            keep('explicit-release-order',releases)
+            assert all(item['queue_state']=='done' for item in closed_plan['attempts'])
+            # Known host completion already returned every reservation. Device
+            # recovery does not rewrite failed exits or require a manual release.
             assert all(jobs.dispatch.queue.get(r['job_id'])['state']=='done' for r in rows)
             assert jobs.status(previous['id'])['exit']==2 and jobs.status(plan['jid'])['exit']==2
         answer({'job':done,'recovery_id':jid,'descriptor':descriptor,'lease':current,'receipts':receipts,
@@ -372,126 +343,92 @@ finally:
 '''
 
 
-class RecoveryFixture(SharedFixture):
+class RecoveryFixture:
     def __init__(self, artifact_dir, phonefarm, devlock):
-        super().__init__(artifact_dir, phonefarm, devlock)
-        self.report['scope'] = 'one actual contained PF battery session, failed and successful typed process_group recoveries across UIDs, explicit leaf-first releases; synthetic Android only'
+        self.artifacts=artifact_dir
+        artifact_dir.mkdir(parents=True,exist_ok=False)
+        self.phonefarm,self.devlock=phonefarm,devlock
+        self.nonce=uuid.uuid4().hex[:12]
+        self.scratch=Path(tempfile.mkdtemp(prefix='phonefarm-pf-recovery-'))
+        self.helper_handles=[]
+        self.report={'passed':False,'checks':{},'scope':'actual same-UID PF/Node process groups, failed and successful recovery of one source; synthetic Android only'}
 
-    def helper(self, operation, *, job_identity=False):
-        uid,gid = (self.uid,self.gid) if job_identity else (self.node_uid,self.node_gid)
+    def helper(self, operation):
         process=subprocess.Popen(['/usr/bin/python3','-I',str(self.scratch/'node-helper.py'),
                                   operation,str(self.scratch/'node-plan.json')],
-            user=uid,group=gid,extra_groups=[] if job_identity else [self.gid],cwd='/',
-            env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8','PF_NODE_TOKEN':'fixture-secret-must-not-reach-job'},
+            cwd=str(self.scratch),
+            env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'},
             stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-        self.helper_handles.append(process); self.known_pids.add(process.pid)
+        self.helper_handles.append(process)
         try: stdout,stderr=process.communicate(timeout=90 if operation in ('source','recover-fail','recover') else 45 if operation=='cleanup' else 12)
         except subprocess.TimeoutExpired:
             process.kill(); stdout,stderr=process.communicate(timeout=3)
             (self.artifacts/(operation+'.stdout')).write_text(stdout)
             (self.artifacts/(operation+'.stderr')).write_text(stderr)
             raise
-        suffix='-after' if operation=='job-read' and (self.artifacts/'job-read.stdout').exists() else ''
-        (self.artifacts/(operation+suffix+'.stdout')).write_text(stdout)
-        (self.artifacts/(operation+suffix+'.stderr')).write_text(stderr)
+        (self.artifacts/(operation+'.stdout')).write_text(stdout)
+        (self.artifacts/(operation+'.stderr')).write_text(stderr)
         assert process.returncode==0,(operation,process.returncode,stderr)
-        value=json.loads(stdout); assert value['helper_uid']==uid
+        value=json.loads(stdout)
         return value
 
     def device(self):
-        device=super().device()
-        # Only the synthetic Android backing crosses identities. The real old
-        # PF output is left private after worker handback, throughout recovery.
-        os.chown(device,0,self.gid); device.chmod(0o2770)
+        device=self.scratch/'device'; device.mkdir(mode=0o700)
+        props={'debug.vulkan.layers':''}
+        for n,name in enumerate(('loadop','passdump','copyprobe','upop','frameaudit','frameaudit_ts',
+                                 'frameaudit_go','storeop','storeop_live','storeop_on'),2):
+            props['debug.knobs.'+name]=str(n)
+        props.update({'debug.knobs.storeop':'deadbeef:1','debug.knobs.npuprobe':'3'})
+        marker='/storage/emulated/0/Android/data/'+PKG+'/files/knobs_layer_out.json'
+        audit='/data/local/tmp/knobs_frameaudit.'+PKG+'.json'
+        files={marker:'{"historical_marker":"preserve"}\n',audit:'{"historical_audit":"preserve"}\n',
+               NATIVE+'/libgame.so':'unrelated native library',
+               '/data/local/tmp/libVkLayer_refknobs.so':'shared staging file, unknown owner'}
+        dirs={'/','/data/local/tmp',NATIVE,'/data/data/'+PKG,
+              '/storage/emulated/0/Android/data/'+PKG+'/files'}
+        for path in [*files,*dirs]: dirs.update(str(p) for p in Path(path).parents)
+        state={'target_pkg':PKG,'target_dir':NATIVE,'properties':props,'files':files,'dirs':sorted(dirs),
+               'processes':['init',PKG,PKG+':render','org.example.other'],
+               'legacy_settings':{'gpu_debug_app':'untouched'},'marker_frames':0}
+        state['files'][CHARGE_NODE]='0\n'
+        state['dirs']=sorted(set(state['dirs']) | {'/sys','/sys/kernel','/sys/kernel/tracing','/sys/kernel/tracing/instances'})
+        state['dirs']=sorted(set(state['dirs']) | {str(p) for path in state['files'] for p in Path(path).parents})
+        state['initially_discharging']=False
         for name in ('state.json','initial-state.json'):
-            path=device/name; state=json.loads(path.read_text())
-            state['files'][CHARGE_NODE]='0\n'
-            # Same sampling roots as gray-control-sampling-host-cli: presence
-            # is proved by ancestor listings, not just the created leaf entry.
-            state['files']['/sys/kernel/tracing/tracing_on']='1\n'
-            state['dirs']=sorted(set(state['dirs'])|{str(p) for p in Path(CHARGE_NODE).parents}
-                                |{'/sys','/sys/kernel','/sys/kernel/tracing','/sys/kernel/tracing/instances'})
-            state['initially_discharging']=False
-            save(path,state); os.chown(path,0,self.gid); path.chmod(0o660 if name=='state.json' else 0o640)
-        os.chown(device/'synthetic.png',0,self.gid); (device/'synthetic.png').chmod(0o640)
-        self.transport_log.touch(mode=0o660); os.chown(self.transport_log,0,self.gid); self.transport_log.chmod(0o660)
+            save(device/name,state)
+        (device/'synthetic.png').write_bytes(png_bytes())
+        self.transport_log=device/'transport.jsonl'
+        self.transport_log.touch()
         (device/'restore-mismatch').write_text('known successful write with mismatching readback\n')
-        (device/'restore-mismatch').chmod(0o444)
         return device
 
+
     def run(self):
-        if sys.platform!='linux' or os.geteuid()!=0:
-            raise RuntimeError('isolated root Linux integration required; no skip')
         assert self.phonefarm.is_file() and self.devlock.is_file() and Path('/bin/zsh').is_file()
-        mount=Path('/sys/fs/cgroup')
-        assert any(line.split()[4]==str(mount) and line.split(' - ')[1].split()[0]=='cgroup2'
-                   for line in Path('/proc/self/mountinfo').read_text().splitlines() if ' - ' in line)
-        self.cgroup_root=mount/('phonefarm-pf-recovery-'+self.nonce)
-        self.cgroup_root.mkdir(mode=0o755); self.cgroup_created=True
-        assert events(self.cgroup_root)['populated']=='0' and (self.cgroup_root/'cgroup.kill').is_file()
-        for name in (self.node_account,self.username):
-            try: pwd.getpwnam(name)
-            except KeyError: pass
-            else: raise RuntimeError('fixture account already exists')
-            self.command(['/usr/sbin/useradd','--system','--user-group','--no-create-home','--shell','/usr/sbin/nologin',name])
-            if name==self.node_account: self.node_created=True
-            else: self.account_created=True
-        node,job=pwd.getpwnam(self.node_account),pwd.getpwnam(self.username)
-        self.node_uid,self.node_gid,self.uid,self.gid=node.pw_uid,node.pw_gid,job.pw_uid,job.pw_gid
-        self.command(['/usr/sbin/usermod','--append','--groups',self.username,self.node_account])
-        self.report['identity']={'node_uid':self.node_uid,'node_gid':self.node_gid,'job_uid':self.uid,'job_gid':self.gid}
-        self.scratch=Path(tempfile.mkdtemp(prefix='phonefarm-pf-recovery-',dir='/tmp')); self.scratch.chmod(0o755)
-        node_root=self.scratch/'node'; node_root.mkdir(mode=0o755); os.chown(node_root,self.node_uid,self.node_gid)
-        jobs_root=node_root/'_jobs'; jobs_root.mkdir(mode=0o755); os.chown(jobs_root,self.node_uid,self.node_gid)
-        control=self.scratch/'control'; control.mkdir(mode=0o700); os.chown(control,self.node_uid,self.node_gid)
+        node_root=self.scratch/'node'; node_root.mkdir()
+        jobs_root=node_root/'_jobs'; jobs_root.mkdir()
+        control=self.scratch/'control'; control.mkdir()
         roots={name:self.scratch/name for name in ('state','locks','device-leases')}
-        for path in roots.values():
-            path.mkdir(mode=0o770); os.chown(path,0,self.gid); path.chmod(0o2770)
-        self.install_root=Path(tempfile.mkdtemp(prefix='phonefarm-recovery-install-',dir='/')); self.install_root.chmod(0o755)
-        node_source=self.install_root/'node-source'; node_source.mkdir(mode=0o755)
-        for source in sorted(NODE.glob('*.py')):
-            target=node_source/source.name; shutil.copyfile(source,target); target.chmod(0o644)
-        tools=self.install_root/'bin'; tools.mkdir(mode=0o755)
-        phonefarm=tools/'phonefarm'; devlock=tools/'devlock'
-        shutil.copyfile(self.phonefarm,phonefarm); phonefarm.chmod(0o755)
-        shutil.copyfile(self.devlock,devlock); devlock.chmod(0o755)
-        device=self.device(); fake=self.install_root/'fake-adb'
+        device=self.device(); fake=self.scratch/'fake-adb'
         fixture_env={'QA_GRAY_CAPTURE_DEVICE':str(device),'QA_GRAY_CAPTURE_LOG':str(self.transport_log),
                      'QA_GRAY_CAPTURE_SERIAL':'PFRECOVERY-FIXTURE'}
         fake.write_text('#!/usr/bin/python3\nimport os,sys\n'
             'if sys.argv[1:]==["--version"]:\n print("synthetic adb fixture"); sys.exit(0)\n'
             +'os.environ.update('+repr(fixture_env)+')\n'+compose(FAKE_ADB))
-        fake.chmod(0o755)
-        prefix=self.install_root/'worker'
-        self.command(['/usr/bin/python3',str(node_source/'install_worker.py'),'--prefix',str(prefix),
-            '--jobs-root',str(jobs_root),'--cgroup-root',str(self.cgroup_root),
-            '--node-uid',str(self.node_uid),'--node-gid',str(self.node_gid),'--job-uid',str(self.uid),'--job-gid',str(self.gid),
-            '--phonefarm-state-dir',str(roots['state']),'--devlock-dir',str(roots['locks']),
-            '--phonefarm-lease-dir',str(roots['device-leases']),'--adb-bin',str(fake),'--devlock-bin',str(devlock)])
-        installed=json.loads(self.report['commands'][-1]['stdout']); save(self.artifacts/'installation.json',installed)
-        config=(prefix/'worker.json').stat()
-        assert config.st_uid==0 and config.st_gid==self.node_gid and stat.S_IMODE(config.st_mode)==0o640
-        self.sudoers_path=Path('/etc/sudoers.d')/('phonefarm-integration-'+self.nonce)
-        fd=os.open(self.sudoers_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o440); self.sudoers_created=True
-        with os.fdopen(fd,'w') as stream: stream.write(installed['sudoers'].rstrip()+'\n')
-        self.command(['/usr/sbin/visudo','-cf',str(self.sudoers_path)])
-        (self.scratch/'node-helper.py').write_text(NODE_HELPER); (self.scratch/'node-helper.py').chmod(0o644)
-        plan={'prefix':str(prefix),'entry':installed['entry'],'jobs_root':str(jobs_root),'node_root':str(node_root),
-            'node_source':str(node_source),'nonce':self.nonce,'node_uid':self.node_uid,'node_gid':self.node_gid,
-            'job_uid':self.uid,'job_gid':self.gid,'phonefarm':str(phonefarm),'devlock':str(devlock),
+        fake.chmod(0o700)
+        (self.scratch/'node-helper.py').write_text(NODE_HELPER)
+        plan={'jobs_root':str(jobs_root),'node_root':str(node_root),'node_source':str(NODE),
+            'nonce':self.nonce,'phonefarm':str(self.phonefarm),'devlock':str(self.devlock),
             'control':str(control),'package':PKG,'serial':fixture_env['QA_GRAY_CAPTURE_SERIAL'],
             'fake_adb':str(fake),'state_root':str(roots['state']),'lock_root':str(roots['locks']),
             'device_lease_root':str(roots['device-leases'])}
         save(self.scratch/'node-plan.json',plan)
         prepared=self.helper('prepare'); self.jid=prepared['jid']; self.job=jobs_root/self.jid
         plan['jid']=self.jid; save(self.scratch/'node-plan.json',plan)
-        self.store=SafeRoot(jobs_root)
         self.report['checks']['genuine_source_reservation']=prepared
-        launched=self.helper('launch'); self.known_pids.add(launched['worker_handle_pid'])
+        launched=self.helper('launch')
         assert not Path('/proc/'+str(launched['launcher_pid'])).exists()
         self.report['checks']['failed_source_handed_back']=self.helper('source')
-        assert events(self.cgroup_root)['populated']=='0' and not [p for p in self.cgroup_root.iterdir() if p.is_dir()]
-        self.report['checks']['sealed_before_recovery']=self.helper('job-read',job_identity=True)
         calls=[json.loads(line) for line in self.transport_log.read_text().splitlines()]
         mismatch=next(i for i,c in enumerate(calls) if c['kind']=='known-charge-readback-mismatch')
         assert not any(c['kind'] in ('sampling-close','sampling-trace-remove') for c in calls[mismatch:])
@@ -506,7 +443,6 @@ class RecoveryFixture(SharedFixture):
         # never a PF record or a queue state, and recover the same source via R1.
         (device/'restore-mismatch').unlink()
         self.report['checks']['typed_recovery']=self.helper('recover')
-        self.report['checks']['sealed_after_recovery']=self.helper('job-read',job_identity=True)
         calls=[json.loads(line) for line in self.transport_log.read_text().splitlines()]
         recovery=calls[before_recovery:]
         success=calls[before_success:]
@@ -522,9 +458,6 @@ class RecoveryFixture(SharedFixture):
         second_id=self.report['checks']['typed_recovery']['recovery_id']
         assert all(c['job_id']==first_id for c in failed_recovery)
         assert all(c['job_id']==second_id for c in success)
-        assert all(c['uid']==self.uid for c in calls[:before_recovery])
-        assert all(c['uid']==self.node_uid for c in recovery)
-        assert all(c['shared_gid']==str(self.gid) for c in calls)
         assert all(c['recovery_out']==str(self.job/'out') for c in recovery)
         assert all(c['gate_ok'] and c.get('pending_ok',True) and c.get('parent_pending_ok',True) for c in calls)
         assert all('PF_NODE_TOKEN' not in c['environment_keys'] for c in calls)
@@ -536,25 +469,23 @@ class RecoveryFixture(SharedFixture):
         self.report['checks']['transport_scope']={'transports':len(calls),'source_transports':before_recovery,
             'recovery_transports':len(recovery),'failed_recovery_transports':len(failed_recovery),
             'successful_recovery_transports':len(success),'samples':1,'charge_writes':['1','0','0','0'],
-            'source_reservation':'explicitly_released',
-            'release_order':[second_id,first_id,self.jid],
+            'source_reservation':'released_on_known_completion',
+            'recovery_order':[first_id,second_id],
             'device_state':'synthetic only','game_state_restored':False}
         self.report['passed']=True
 
     def cleanup(self):
-        # Cancel only workers in this newly created root, through real recorded
-        # worker ownership. No saved PID/group is blindly signalled.
-        if self.store and hasattr(self,'jid'):
+        if hasattr(self,'jid'):
             try: self.report['cleanup_request']=self.helper('cleanup')
             except Exception as error:
                 self.report['cleanup_request_error']=repr(error); self.report['passed']=False
-            for path in self.job.parent.glob('*/meta.json'):
-                try:
-                    meta=json.loads(path.read_text())
-                    for pid in (meta.get('pid'),meta.get('execution',{}).get('child_pid')):
-                        if isinstance(pid,int) and pid>1: self.known_pids.add(pid)
-                except (OSError,ValueError): pass
-        super().cleanup()
+        for process in self.helper_handles:
+            if process.poll() is None:
+                process.kill(); process.wait(timeout=3)
+        shutil.copytree(self.scratch,self.artifacts/'raw',symlinks=True)
+        if not self.report.get('cleanup_request_error'):
+            shutil.rmtree(self.scratch)
+
 
 
 def main():

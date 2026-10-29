@@ -9,7 +9,7 @@ import base64, fnmatch, hashlib, hmac, json, os, re, secrets, subprocess, sys, t
 import threading, time, uuid
 from urllib.parse import parse_qs, unquote
 from remote_owner import OwnerError
-from device_scope import binding, conflicts, scope, lease_problem
+from device_scope import binding, conflicts, scope, lease_problem, same_binding
 from device_registry import RegistryError
 
 CONFIG_DIR = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
@@ -482,7 +482,7 @@ class Remote:
             for sess in self.sessions.values():
                 if sess.operator['id'] == op['id'] and sess.ref['acquisition_id'] == acquisition:
                     if (sess.serial != serial or sess.ref['max_seconds'] != minutes * 60
-                            or sess.ref.get('device_binding') != value):
+                            or not same_binding(sess.ref.get('device_binding'), value)):
                         raise RemoteError(409, 'acquisition request ID already has different content')
                     return {'reused': True, **self._refresh(sess)}
             if not self.policy.enabled(serial):

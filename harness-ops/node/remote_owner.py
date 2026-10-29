@@ -8,6 +8,7 @@ import time
 import uuid
 
 from artifact_io import SafeRoot
+from device_scope import same_binding
 
 
 class OwnerError(Exception):
@@ -146,7 +147,7 @@ class PFRemote:
                     return self.status(ref)
             if (value.get("schema") != "phonefarm/remote-control@1"
                     or value.get("serial") != ref["serial"]
-                    or value.get("device_binding") != ref.get("device_binding")
+                    or not same_binding(value.get("device_binding"), ref.get("device_binding"))
                     or (value.get("lease_scope") == "device") != bool(scoped)):
                 raise OwnerError("PF session identity/descriptor unavailable")
         except OwnerError as exc:

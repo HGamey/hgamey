@@ -8,7 +8,6 @@ DEVICE_BINS = {"phonefarm", "game_opt_loop", "adb", "fetch_apk"}
 BINDING_SCHEMA = "phonefarm/device-binding@1"
 SCOPES_SCHEMA = "phonefarm/device-scopes@1"
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
-DOMAIN = re.compile(r"[0-9a-f]{32}\Z")
 STATES = {"clear", "held", "blocked", "unknown"}
 SESSION_VALUES = {"--out", "--serial", "--package", "--mode", "--so", "--actor-id",
                   "--evidence-origin", "--max-seconds", "--power-policy"}
@@ -25,19 +24,34 @@ def valid_serial(value):
 
 
 def binding(value):
-    if (not isinstance(value, dict) or set(value) != {
-            "schema", "domain_id", "registry_revision", "device_id", "serial"}
+    if (not isinstance(value, dict)
             or value.get("schema") != BINDING_SCHEMA
-            or not isinstance(value.get("domain_id"), str) or not DOMAIN.fullmatch(value["domain_id"])
             or type(value.get("registry_revision")) is not int or not 1 <= value["registry_revision"] <= 2**53 - 1
             or not isinstance(value.get("device_id"), str) or not IDENTIFIER.fullmatch(value["device_id"])
             or not valid_serial(value.get("serial"))):
         raise ValueError("invalid device_binding; use the configured node's devices-resolve response")
-    return copy.deepcopy(value)
+    return {key: value[key] for key in ("schema", "registry_revision", "device_id", "serial")}
 
 
 def resource(value):
-    return "device:" + value["domain_id"] + ":" + value["device_id"]
+    return "device:" + value["device_id"]
+
+
+def same_binding(left, right):
+    """Compare device identity without rewriting saved producer metadata."""
+    if left is None or right is None:
+        return left is right
+    try:
+        return binding(left) == binding(right)
+    except ValueError:
+        return False
+
+
+def same_bound_spec(left, right):
+    return (left.keys() == right.keys()
+            and {k: v for k, v in left.items() if k != "device_binding"}
+            == {k: v for k, v in right.items() if k != "device_binding"}
+            and same_binding(left.get("device_binding"), right.get("device_binding")))
 
 
 def binding_argument(spec):
@@ -128,12 +142,12 @@ def scope(spec, snapshot=None):
             for entry in current.get("devices", []):
                 if serial in entry.get("aliases", []):
                     return {"scope": "device", "binding": {
-                        "schema": BINDING_SCHEMA, "domain_id": current["domain_id"],
+                        "schema": BINDING_SCHEMA,
                         "registry_revision": current["registry_revision"],
                         "device_id": entry["device_id"], "serial": serial}}
         # A raw serial is a legacy scope, not a registry binding. Use it only
         # for conflict identity; typed bindings retain their complete schema.
-        return {"scope": "device", "binding": {"domain_id": "serial", "device_id": serial,
+        return {"scope": "device", "binding": {"device_id": serial,
                                                  "serial": serial, "legacy_serial": True}}
     return {"scope": "global"}
 
@@ -144,22 +158,16 @@ def conflicts(left, right):
     if "global" in (left["scope"], right["scope"]):
         return True
     a, b = left["binding"], right["binding"]
-    # Different configured domains cannot be assumed to be independent on one node.
-    return a["domain_id"] != b["domain_id"] or a["device_id"] == b["device_id"]
+    return a["device_id"] == b["device_id"]
 
 
 def scopes(snapshot):
     value = snapshot.get("device_scopes")
     if (not isinstance(value, dict) or value.get("schema") != SCOPES_SCHEMA
-            or not isinstance(value.get("domain_id"), str) or not DOMAIN.fullmatch(value["domain_id"])
             or type(value.get("registry_revision")) is not int or not 0 <= value["registry_revision"] <= 2**53 - 1
             or type(value.get("queue_waiting")) is not bool or type(value.get("unknown")) is not bool
             or not isinstance(value.get("devices"), list) or len(value["devices"]) > 128):
         raise ValueError("phonefarm device scopes are unavailable or incomplete")
-    storage = snapshot.get("storage")
-    if (not isinstance(storage, dict) or storage.get("readiness") != "ready" or storage.get("layout_version") != 2
-            or storage.get("domain_id") != value["domain_id"]):
-        raise ValueError("phonefarm scope and storage domains do not match")
     seen = set()
     for entry in [value.get("global"), *value["devices"]]:
         if (not isinstance(entry, dict) or not isinstance(entry.get("status"), str) or entry["status"] not in STATES
@@ -194,8 +202,6 @@ def lease_problem(spec, snapshot, mode=None):
     except ValueError as error:
         return str(error)
     target = declared["binding"]
-    if current["domain_id"] != target["domain_id"]:
-        return "frozen device binding belongs to a different lease domain"
     if mode == "start" and current["registry_revision"] != target["registry_revision"]:
         return "device registry changed; submit a new explicitly resolved binding"
     if current["unknown"]:
@@ -271,5 +277,5 @@ class DeviceScope:
         return result
 
     def admit(self, value):
-        if self.resolve(value["serial"]) != value:
+        if not same_binding(self.resolve(value["serial"]), value):
             raise RegistryError("conflict", "device registration no longer matches the frozen binding")

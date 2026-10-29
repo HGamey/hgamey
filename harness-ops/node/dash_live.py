@@ -16,7 +16,7 @@ import threading
 import time
 from urllib.parse import parse_qs
 
-from device_scope import binding, lease_problem
+from device_scope import binding, lease_problem, same_binding
 from device_registry import RegistryError
 
 
@@ -136,7 +136,7 @@ class PFBackend:
             if (value.get("serial") != serial or value.get("ownership") != "observation-v1"
                     or value.get("jpeg_path") != str(path) or type(at) is not int or at <= 0):
                 raise CaptureError("error", "PF capture identity or time is missing", retain=True)
-            if device_binding is not None and (value.get("device_binding") != device_binding
+            if device_binding is not None and (not same_binding(value.get("device_binding"), device_binding)
                                               or value.get("lease_scope") != "device"):
                 raise CaptureError("error", "PF capture did not preserve the original device binding", retain=True)
             with path.open("rb") as stream:
