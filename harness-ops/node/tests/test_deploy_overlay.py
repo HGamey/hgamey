@@ -8,8 +8,8 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
+from unittest.mock import patch
 
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
@@ -131,20 +131,32 @@ class DeployOverlayTests(unittest.TestCase):
         path.write_bytes(b"")
         fd = os.open(path, os.O_RDWR)
         entered = []
+        conflicted = threading.Event()
         fcntl.flock(fd, fcntl.LOCK_EX)
+        real_flock = fcntl.flock
+
+        def flock(fd, operation):
+            try:
+                return real_flock(fd, operation)
+            except BlockingIOError:
+                conflicted.set()
+                raise
+
         def worker():
             with deploy_overlay.locked(path, existing=True, wait_seconds=1):
-                entered.append(time.monotonic())
+                entered.append(True)
+
         thread = threading.Thread(target=worker)
-        started = time.monotonic()
-        thread.start()
-        time.sleep(0.05)
-        self.assertEqual(entered, [])
-        os.close(fd)
-        thread.join(2)
+        with patch("fcntl.flock", new=flock):
+            thread.start()
+            try:
+                self.assertTrue(conflicted.wait(1), "worker did not contend for the intake lock")
+                self.assertEqual(entered, [])
+            finally:
+                os.close(fd)
+                thread.join(2)
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(entered), 1)
-        self.assertGreaterEqual(entered[0], started + 0.04)
 
     def test_non_harness_source_is_rejected(self):
         empty = Path(self.temp.name) / "not-harness"

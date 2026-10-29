@@ -60,7 +60,7 @@ where
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::time::{Duration, Instant};
+    use std::sync::{Barrier, Condvar};
 
     fn devs(n: usize) -> Vec<String> {
         (0..n).map(|i| format!("dev{i}")).collect()
@@ -86,13 +86,13 @@ mod tests {
         );
     }
 
-    /// 模拟设备: 每个候选「量」40ms。3 台跑 6 个 ≈ 2 轮, 不是 6 轮;
-    /// 每个候选恰好跑一次, 结果按原顺序, 每台同一时刻只跑一个。
+    /// 首批三个任务都在 Barrier 前持忙等待，证明三台设备同时进入；
+    /// 每个候选恰好跑一次，结果按原顺序，每台同一时刻只跑一个。
     #[test]
     fn several_devices_share_the_work_and_keep_order() {
         let busy: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+        let entered = Barrier::new(3);
         let runs = AtomicUsize::new(0);
-        let t0 = Instant::now();
         let items: Vec<usize> = (0..6).collect();
         let out = run_on_devices(&items, &devs(3), |d, i, x| {
             {
@@ -101,7 +101,9 @@ mod tests {
                 b.insert(d.to_string(), true);
             }
             runs.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(40));
+            if i < 3 {
+                entered.wait();
+            }
             busy.lock().unwrap().insert(d.to_string(), false);
             assert_eq!(i, *x);
             x * 100
@@ -109,19 +111,36 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 6);
         assert_eq!(out.iter().map(|(_, r)| *r).collect::<Vec<_>>(), vec![0, 100, 200, 300, 400, 500]);
         assert!(out.iter().all(|(d, _)| d.starts_with("dev")));
-        let took = t0.elapsed();
-        assert!(took < Duration::from_millis(200), "没有并行: {took:?}");
     }
 
-    /// 慢机器少领: 一台每个 60ms, 一台每个 10ms, 快的那台领得多。
+    /// 慢设备占住首项，快设备完成其余五项后用 Condvar 释放它，证明动态领活。
     #[test]
     fn faster_device_takes_more_candidates() {
-        let items: Vec<usize> = (0..8).collect();
-        let out = run_on_devices(&items, &devs(2), |d, _, _| {
-            std::thread::sleep(Duration::from_millis(if d == "dev0" { 60 } else { 10 }));
+        const FAST_TASKS: usize = 5;
+        let entered = Barrier::new(2);
+        let fast_completed = Mutex::new(0usize);
+        let release_slow = Condvar::new();
+        let items: Vec<usize> = (0..=FAST_TASKS).collect();
+        let out = run_on_devices(&items, &devs(2), |d, i, _| {
+            if i < 2 {
+                entered.wait();
+            }
+            if d == "dev0" {
+                let mut completed = fast_completed.lock().unwrap();
+                while *completed < FAST_TASKS {
+                    completed = release_slow.wait(completed).unwrap();
+                }
+            } else {
+                let mut completed = fast_completed.lock().unwrap();
+                *completed += 1;
+                if *completed == FAST_TASKS {
+                    release_slow.notify_one();
+                }
+            }
         });
         let fast = out.iter().filter(|(d, _)| d == "dev1").count();
-        assert!(fast >= 5, "快机只领了 {fast} 个");
+        assert_eq!(fast, FAST_TASKS, "快机应领走慢机阻塞期间的全部剩余任务");
+        assert_eq!(out.iter().filter(|(d, _)| d == "dev0").count(), 1);
     }
 
     #[test]

@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import dash
+from http_server_fixture import start_http_server
 from node_service import Jobs, make_handler, readonly_token
 from node_read import NodeRead
 from node_fleet import FleetState
@@ -45,8 +46,7 @@ class NodeReadTests(unittest.TestCase):
         self.board.monitor = FleetState(str(self.root), str(self.root / "locks"), str(self.root / "shots"))
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(
             NoMcp(), self.jobs, self.admin, self.board, self.node))
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.thread = start_http_server(self.server)
 
     def tearDown(self):
         self.jobs.directory.close()
@@ -106,8 +106,7 @@ class NodeReadTests(unittest.TestCase):
         remote_token = "isolated-directory-peer-admin"
         remote_server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(
             NoMcp(), remote_jobs, remote_token, node=remote_node, fleet=remote_fleet))
-        remote_thread = threading.Thread(target=remote_server.serve_forever, daemon=True)
-        remote_thread.start()
+        remote_thread = start_http_server(remote_server)
         view = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}",
                 "X-HG": "1", "Content-Type": "application/json"}
         steer = {**view, "Cookie": view["Cookie"] + "; " + dash.STEER_COOKIE + "=" +

@@ -17,6 +17,7 @@ from http.server import ThreadingHTTPServer
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
 import dash
+from http_server_fixture import start_http_server
 from node_service import Jobs, make_handler
 
 ADMIN = "core-flow-fixture-admin-token"
@@ -48,8 +49,7 @@ class CoreFlowTests(unittest.TestCase):
         board.job_service = self.jobs
         board.last_view, board.wake, board.monitor = 0, threading.Event(), NoDevices()
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(NoDevices(), self.jobs, ADMIN, board))
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        thread = start_http_server(server)
 
         def stop():
             server.shutdown()

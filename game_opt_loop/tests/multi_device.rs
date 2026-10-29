@@ -1,7 +1,7 @@
 //! 多台同型号设备并行 (`--extra-device`) 的整条链路测试, 用假 phonefarm 模拟两台手机。
 //!
-//! 钉住: 每个候选只在一台设备上量、请求里的 serial 就是量它的那台; 两台都分到活,
-//! 墙钟接近单机的一半; 档案逐条记下设备, 单机档案不变。不连设备、不调大模型。
+//! 钉住: 每个候选只在一台设备上量、请求里的 serial 就是量它的那台; 两个 serial
+//! 同时停在 started 回执才放行; 档案逐条记下设备, 单机档案不变。不连设备、不调大模型。
 
 use game_opt_loop::optimize::{self, plan::Budget};
 use std::path::{Path, PathBuf};
@@ -50,8 +50,21 @@ setting.system.min_refresh_rate.cur=60
 ";
 
 
-/// 假 phonefarm: 两台在线; eval 每个候选「量」0.4 秒, 回 REJECT, evidence_dir 写上设备。
-fn fake_phonefarm(probe_out: &Path) -> String {
+/// 假 phonefarm: 两台在线; 双机测试在 started 回执后等待 release, 回 REJECT 并记录设备。
+fn fake_phonefarm(probe_out: &Path, rendezvous: Option<&Path>) -> String {
+    let gate = rendezvous.map(|root| {
+        format!(
+            r#"    if [ -n "$serial" ] && [ -n "$id" ]; then
+      marker='{started}/'"$serial.$id.started"
+      printf '%s\n' "$serial" > "$marker.tmp.$$"
+      mv "$marker.tmp.$$" "$marker"
+      while [ ! -e '{release}' ]; do sleep 0.01; done
+    fi
+"#,
+            started = root.join("started").display(),
+            release = root.join("release").display()
+        )
+    }).unwrap_or_default();
     format!(
         r#"#!/bin/sh
 case "$1" in
@@ -63,8 +76,7 @@ case "$1" in
     id=$(grep -o '"candidate_id": *"[^"]*"' "$req" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
     kind=$(grep -o '"kind": *"[^"]*"' "$req" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
     serial=$(grep -o '"serial": *"[^"]*"' "$req" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
-    sleep 0.4
-    cat <<EOF
+{gate}    cat <<EOF
 {{"candidate_id":"$id","status":"REJECT","kind":"$kind","version":2,
  "metrics":{{"fps_p95_ms":19.4,"fps_mean":59.2,"power_watt":4.8}},
  "verdict":{{"is_pareto_improvement":false,"p_value":0.3143,"reason":"没有任何指标显著改善"}},
@@ -76,19 +88,27 @@ EOF
   *) echo "未知子命令 $1" >&2; exit 2 ;;
 esac
 "#,
-        probe = probe_out.display()
+        probe = probe_out.display(),
+        gate = gate
     )
 }
 
-fn scaffold(tag: &str) -> PathBuf {
+fn scaffold(tag: &str, rendezvous: bool) -> PathBuf {
     let root = std::env::temp_dir().join(format!("gol_multi_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let pf = root.join("phonefarm");
     std::fs::create_dir_all(&pf).unwrap();
+    std::fs::create_dir_all(root.join("started")).unwrap();
     std::fs::write(root.join("probe_out.txt"), ROOTED_NX809J).unwrap();
     std::fs::write(root.join("probe.txt"), PROBE).unwrap();
     let bin = pf.join("phonefarm");
-    std::fs::write(&bin, fake_phonefarm(&root.join("probe_out.txt"))).unwrap();
+    std::fs::write(
+        &bin,
+        fake_phonefarm(
+            &root.join("probe_out.txt"),
+            rendezvous.then_some(root.as_path()),
+        ),
+    ).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -145,17 +165,47 @@ fn sys_requests(root: &Path) -> Vec<(String, serde_json::Value)> {
     v
 }
 
+fn started_serials(root: &Path) -> std::collections::BTreeSet<String> {
+    std::fs::read_dir(root.join("started"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "started"))
+        .map(|p| {
+            std::fs::read_to_string(p)
+                .unwrap()
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
 #[test]
 fn two_devices_split_a_generation_and_record_where_each_ran() {
-    let single = scaffold("single");
-    let t = Instant::now();
+    let single = scaffold("single", false);
     optimize::run(&config(&single, vec![])).unwrap();
-    let t_single = t.elapsed();
 
-    let multi = scaffold("multi");
-    let t = Instant::now();
-    optimize::run(&config(&multi, vec!["91253241019B".into()])).unwrap();
-    let t_multi = t.elapsed();
+    let multi = scaffold("multi", true);
+    let worker_root = multi.clone();
+    let worker = std::thread::spawn(move || {
+        optimize::run(&config(&worker_root, vec!["91253241019B".into()]))
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (started, running) = loop {
+        let started = started_serials(&multi);
+        let running = !worker.is_finished();
+        if started.len() == 2 || !running || Instant::now() >= deadline {
+            break (started, running);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    std::fs::write(multi.join("release"), b"test").unwrap();
+    worker.join().unwrap().unwrap();
+    assert!(running, "双机任务在 release 前已经退出");
+    assert_eq!(
+        started.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["91253241019A", "91253241019B"],
+        "两个不同 serial 必须同时停在 started"
+    );
 
     let (a, b) = (sys_requests(&single), sys_requests(&multi));
     assert_eq!(a.len(), 4);
@@ -189,18 +239,13 @@ fn two_devices_split_a_generation_and_record_where_each_ran() {
     let rep1 = std::fs::read_to_string(single.join("out/report.json")).unwrap();
     assert!(!rep1.contains("\"device\":"), "单机档案不该多出 device 字段");
 
-    // 4 个候选 × 0.4 秒: 单机 ≥ 1.6 秒, 两台约 0.8 秒
-    assert!(
-        t_multi + Duration::from_millis(500) < t_single,
-        "没有并行: 单机 {t_single:?}, 两台 {t_multi:?}"
-    );
     std::fs::remove_dir_all(&single).ok();
     std::fs::remove_dir_all(&multi).ok();
 }
 
 #[test]
 fn an_offline_extra_device_is_refused_before_touching_anything() {
-    let root = scaffold("offline");
+    let root = scaffold("offline", false);
     let err = optimize::run(&config(&root, vec!["NOT_ONLINE".into()])).unwrap_err();
     assert!(err.to_string().contains("不在线"), "{err}");
     assert!(!root.join("out/requests").exists(), "拒绝之前不该下发任何请求");
