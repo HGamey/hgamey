@@ -798,6 +798,23 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('agents = (await api(\'/agents\')', task)
         self.assertIn('renderDetail(detail)', research, "unlock must repaint the current task and its owner controls")
 
+    def test_the_event_history_says_which_job_held_a_queued_job(self):
+        submit = lambda key: self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                                         "resources": ["phone-a"], "actor_id": "agent-a"}, b"", key)
+        first, second = (value["job"]["id"] if "job" in value else value["id"] for value in (submit("hold-1"), submit("hold-2")))
+        self.jobs.dispatch.queue.set_state(first, "claimed")
+        self.jobs.dispatch.record_waiting()
+        status, page = self.cli("GET", f"/job-events?job_id={second}&after=0&limit=200")
+        self.assertEqual(status, 200, page)
+        self.assertEqual(page["items"][-1]["committed_status"]["waiting"], {"kind": "resource", "blocking_jobs": [first]})
+        live = self.cli("GET", f"/jobs/{second}")[1]["queue"]["waiting"]
+        self.assertEqual((live["kind"], live["blocking_jobs"], live["reason"]),
+                         ("resource", [first], "declared resources overlap an active reservation"), "the live field is unchanged")
+        self.jobs.dispatch.record_waiting()
+        self.assertEqual(len(self.cli("GET", f"/job-events?job_id={second}&after=0&limit=200")[1]["items"]), len(page["items"]))
+        first_events = self.cli("GET", f"/job-events?job_id={first}&after=0&limit=200")[1]["items"]
+        self.assertFalse(any("waiting" in item["committed_status"] for item in first_events))
+
     def test_the_jobs_page_resets_through_one_entry_and_never_replays(self):
         # The page's only recovery action: POST /dash/api/jobs/<id>/reset {note}, steer required, repeatable.
         script = (NODE / "dash_static/jobs.js").read_text(encoding="utf-8")

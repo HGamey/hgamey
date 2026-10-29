@@ -86,6 +86,40 @@ class JobQueueTests(unittest.TestCase):
             queue.set_state(finished["id"], "done")
             self.assertEqual(queue.claim_next(2)["job_id"], expected["id"])
 
+    def committed(self, jid):
+        with self.queue._transaction() as db:
+            return [json.loads(row["committed_status"]) for row in db.execute(
+                "SELECT committed_status FROM job_events WHERE job_id=? ORDER BY sequence", (jid,))]
+
+    def test_queued_jobs_commit_what_holds_them_and_nothing_else_gains_an_event(self):
+        owner, waiter, free, old = (self.submit(key, resources) for key, resources in
+                                    (("owner", ["phone:a"]), ("waiter", ["phone:a"]), ("free", ["phone:b"]), ("old", [])))
+        self.settle_fixture(old, "done")
+        before = {jid: len(self.committed(jid)) for jid in (owner, waiter, free, old)}
+        held = {"kind": "resource", "blocking_jobs": [owner], "scope": {"scope": "global"},
+                "reason": "declared resources overlap an active reservation", "lease_status": "clear"}
+        self.queue.note_waiting({waiter: held, free: {"kind": None, "blocking_jobs": []}, old: held})
+        self.assertEqual(self.committed(waiter)[-1]["waiting"], {"kind": "resource", "blocking_jobs": [owner]},
+                         "only the kind and the blocking jobs are committed; reason text and lease status stay live")
+        self.assertEqual(len(self.committed(waiter)), before[waiter] + 1)
+        for jid in (owner, free, old):
+            self.assertEqual(len(self.committed(jid)), before[jid], "a job nothing holds, or one out of the queue, publishes nothing")
+            self.assertNotIn("waiting", self.committed(jid)[-1])
+
+        self.queue.note_waiting({waiter: {**held, "reason": "other wording", "lease_status": "stale"}})
+        self.assertEqual(len(self.committed(waiter)), before[waiter] + 1, "the same holder is not a new event")
+        self.queue.note_waiting({waiter: {"kind": "capacity", "blocking_jobs": ["b" * 12, "a" * 12]}})
+        self.assertEqual(self.committed(waiter)[-1]["waiting"], {"kind": "capacity", "blocking_jobs": ["a" * 12, "b" * 12]})
+
+        self.queue.set_paused(waiter, True)
+        self.assertEqual(self.committed(waiter)[-1]["waiting"]["kind"], "capacity", "other queue changes carry the fact")
+        self.queue.set_paused(waiter, False)
+        self.queue.set_state(waiter, "claimed")
+        self.assertNotIn("waiting", self.committed(waiter)[-1], "leaving the queue drops it with that transition")
+        count = len(self.committed(waiter))
+        self.queue.note_waiting({waiter: held})
+        self.assertEqual(len(self.committed(waiter)), count)
+
     def test_concurrent_same_request_is_one_job_and_changed_content_conflicts(self):
         def reserve(_):
             return self.queue.reserve("request-1", "content-1", {"command": "example"}, ["phone:a"])

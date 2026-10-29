@@ -322,6 +322,15 @@ class JobDispatch:
                 break
             if self.launch(row) is False:
                 break
+        self.record_waiting(lease)
+
+    def record_waiting(self, lease=None):
+        """Commit why each still-queued job waits, so the event history says who held it and for how long."""
+        rows = self.queue.rows(("preparing", "queued", "claimed", "blocked"))
+        queued = [row for row in rows if row["state"] == "queued"]
+        if queued:
+            lease = lease or self.jobs.leases.snapshot()
+            self.queue.note_waiting({row["job_id"]: self.waiting(row, rows, lease) for row in queued})
 
     def launch(self, row):
         with file_lock(self.intake_path):
@@ -421,7 +430,7 @@ class JobDispatch:
             return
         threading.Thread(target=proc.wait, daemon=True).start()
 
-    def waiting(self, row, rows=None):
+    def waiting(self, row, rows=None, lease=None):
         rows = rows if rows is not None else self.queue.rows(("preparing", "queued", "claimed", "blocked"))
         state = row["state"]
         if state in ("preparing", "blocked"):
@@ -430,7 +439,7 @@ class JobDispatch:
         if state != "queued":
             return {"kind": None, "blocking_jobs": []}
         owners = [r for r in rows if r["state"] in {"claimed", "blocked"}]
-        lease = self.jobs.leases.snapshot()
+        lease = lease or self.jobs.leases.snapshot()
         declared = scope(row["spec"], lease)
         resources = set(row["resources"])
         blockers = blocking_owners(row, owners, lease)

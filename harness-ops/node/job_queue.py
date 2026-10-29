@@ -130,12 +130,12 @@ class JobQueue:
         value["paused"] = bool(value.get("paused"))
         return value
 
-    def _publish(self, db, jid, kind="queue_transition", observation=None):
+    def _publish(self, db, jid, kind="queue_transition", observation=None, waiting=job_events.KEEP):
         """Commit a bounded projection and its event with the owning SQL change."""
         row = self._row(db.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
         if row is None:
             return None
-        projection = job_events.projection(row, observation)
+        projection = job_events.projection(row, observation, waiting)
         if projection == row["status_projection"]:
             return row
         revision, at = row["status_revision"] + 1, time.time()
@@ -148,6 +148,15 @@ class JobQueue:
                    (secrets.token_hex(16), jid, revision, kind, at, encoded))
         row.update(status_revision=revision, status_projection=projection, status_committed_at=at)
         return row
+
+    def note_waiting(self, waiting):
+        """Commit what holds each queued job ({job_id: dispatch.waiting()}); an event is written only on change.
+        Rows that left the queue meanwhile, or predate committed projections, are not touched."""
+        with self._transaction(write=True) as db:
+            for jid, value in waiting.items():
+                row = db.execute("SELECT state, status_revision FROM jobs WHERE job_id=?", (jid,)).fetchone()
+                if row is not None and row["state"] == "queued" and row["status_revision"] > 0:
+                    self._publish(db, jid, waiting=value)
 
     def observe(self, jid, observation):
         # Caller reads the worker receipt and commits it under the intake lock.

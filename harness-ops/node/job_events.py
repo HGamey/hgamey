@@ -12,13 +12,22 @@ OBSERVATION_FIELDS = (
     "owned_scope", "owned_status", "owned_error", "reconciliation_state",
 )
 DISK_FIELDS = ("disk_guard_status", "disk_guard_trigger_reason", "disk_guard_triggered_at")
+KEEP = object()  # projection(waiting=KEEP): carry the committed waiting fact unchanged
 
 
 def _object(value):
     return value if isinstance(value, dict) else {}
 
 
-def projection(row, observation=None):
+def waiting_fact(waiting):
+    """The committed part of dispatch.waiting(): what holds a queued job. Reason text and lease status stay live only."""
+    waiting = _object(waiting)
+    if not waiting.get("kind"):
+        return None
+    return {"kind": waiting["kind"], "blocking_jobs": sorted(str(jid) for jid in waiting.get("blocking_jobs") or [])}
+
+
+def projection(row, observation=None, waiting=KEEP):
     """Keep SQL facts current without inventing a new worker observation."""
     prior = _object(row.get("status_projection"))
     # Optional extension: observing an old job must not manufacture new null
@@ -60,9 +69,16 @@ def projection(row, observation=None):
         if cancelled:
             worker.update(cancel_mode="graceful", cancel_status="not_applied")
     storage = reason if reason.get("kind") == "durability" else {}
-    return {"queue_state": row["state"], "storage_kind": storage.get("kind"),
-            "storage_stage": storage.get("stage"),
-            "host_capacity_state": job_facts(row)["state"], **worker, **disk}
+    value = {"queue_state": row["state"], "storage_kind": storage.get("kind"),
+             "storage_stage": storage.get("stage"),
+             "host_capacity_state": job_facts(row)["state"], **worker, **disk}
+    # Like the disk fields, an optional key: only a queued job something holds carries it, so a job that never
+    # waited (and every old row) publishes nothing new, and leaving the queue drops it with that transition.
+    if row["state"] == "queued":
+        fact = copy.deepcopy(prior.get("waiting")) if waiting is KEEP else waiting_fact(waiting)
+        if fact:
+            value["waiting"] = fact
+    return value
 
 
 def public_fields(row):
