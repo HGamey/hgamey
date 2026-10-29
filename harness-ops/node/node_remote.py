@@ -681,7 +681,8 @@ for _action, _props in {
                        'the session must declare frame-bound-v1. Never capture or replay automatically.')
     MCP_TOOLS.append(('hgremote_' + _action,
         'Submit one typed PF action. accepted/started are pending; unknown requires querying the same request_id. '
-        'release closes admission and waits for current action; only session phase closed proves handback.' + _input_hint,
+        'release cancels a starting acquisition, or closes admission and waits for the current action; '
+        'only session phase closed proves handback.' + _input_hint,
         _schema({**_S, **_props}, _required)))
 MCP_ACTION = {name: name.removeprefix('hgremote_') for name, _, _ in MCP_TOOLS if name not in ('hgremote_devices', 'hgremote_status')}
 
@@ -728,7 +729,8 @@ def mcp_handle(remote, op, ip, msg):
                   "capabilities": {"tools": {"listChanged": False}},
                   "serverInfo": {"name": "hgamey-remote", "version": "2"},
                   "instructions": "HGamey 远程真机：先 hgremote_devices，再 hgremote_acquire 拿控制权，"
-                                  "操作完 hgremote_release。实验占用的设备会被拒绝，别重试抢占。"}
+                                  "手机被占用时返回 starting 并等待；按原 ID 查询，ready 后再操作。"
+                                  "等待中可 hgremote_release 取消，操作完也用它交回；以会话 closed 确认结束。"}
     elif method == "ping":
         result = {}
     elif method == "tools/list":

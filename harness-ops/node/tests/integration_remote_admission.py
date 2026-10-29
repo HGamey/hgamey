@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import select
-import signal
 import subprocess
 import sys
 import tempfile
@@ -103,6 +102,23 @@ print('\\n'+terminal.group(0)+'0')
         self.assertEqual(result["status"], "completed", result)
         return result
 
+    def release_session(self, serial, session, request, process):
+        calls = (self.root / "adb-calls").read_bytes()
+        result = self.remote.do(self.operator, "fixture", serial, "release", {
+            "session_id": session["session_id"], "request_id": request})
+        deadline = time.monotonic() + 5
+        while result["status"] in ("accepted", "started"):
+            self.assertLess(time.monotonic(), deadline, result)
+            time.sleep(.02)
+            result = self.remote.query(self.operator, serial, session_id=session["session_id"], request_id=request)
+        self.assertEqual(result["status"], "completed", result)
+        process.wait(timeout=5)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(self.remote.query(self.operator, serial, session_id=session["session_id"])["phase"], "closed")
+        self.assertEqual(self.remote.do(self.operator, "fixture", serial, "release", {
+            "session_id": session["session_id"], "request_id": request}), result)
+        self.assertEqual((self.root / "adb-calls").read_bytes(), calls)
+
     def test_device_and_global_locks_remain_authoritative(self):
         first = self.acquire(A, "a")
         second = self.acquire(B, "b")
@@ -126,8 +142,7 @@ print('\\n'+terminal.group(0)+'0')
         self.assertEqual(devices[A]["holder"]["session_id"], first["session_id"])
         self.assertEqual(devices[B]["holder"]["session_id"], second["session_id"])
         self.assertEqual((self.root / "adb-calls").read_bytes(), calls)
-        waiter.terminate()
-        waiter.wait(timeout=5)
+        self.release_session(ALIAS, waiting, "cancel-alias-wait", waiter)
         self.assertFalse(self.probe(A), "cancelling a waiter must not release the original owner")
 
         owner = self.process("a")
@@ -142,10 +157,8 @@ print('\\n'+terminal.group(0)+'0')
         devices = {d["serial"]: d for d in self.remote.devices()["devices"]}
         self.assertEqual(devices[A]["holder"]["session_id"], replacement["session_id"])
 
-        for request in ("new-a", "b"):
-            process = self.process(request)
-            process.terminate()
-            process.wait(timeout=5)
+        for serial, session, request in ((A, replacement, "new-a"), (B, second, "b")):
+            self.release_session(serial, session, "release-" + request, self.process(request))
         self.assertTrue(self.probe())
         # A true global holder still blocks either phone. Synchronize by stdout.
         holder = subprocess.Popen([PF, "lease", "--", sys.executable, "-c",
@@ -157,8 +170,7 @@ print('\\n'+terminal.group(0)+'0')
             waiting = self.acquire(B, "global-wait")
             self.assertEqual(waiting["phase"], "starting", waiting)
             waiter = self.process("global-wait")
-            waiter.send_signal(signal.SIGTERM)
-            waiter.wait(timeout=5)
+            self.release_session(B, waiting, "cancel-global-wait", waiter)
             self.assertFalse(self.probe(B))
         finally:
             holder.communicate(timeout=5)

@@ -99,7 +99,7 @@
       && d?.transport !== "hdc" && Array.isArray(d?.capabilities) && d.capabilities.includes(action);
   }
   function unresolved(action) { return state.requests.some(r => r.serial === state.serial && r.session_id === state.binding?.session_id && !TERMINAL.has(r.status) && !(r.action === "acquire" && r.receipt?.phase === "closed") && (!action || r.action === action)); }
-  function sessionReason() {
+  function sessionReason(action) {
     if (!HGTarget.canWrite()) return HGTarget.problem() || "节点未提供目标约束协议，设备观察与操作禁用。";
     if (state.binding && HGTarget.problem(state.binding.target || null)) return HGTarget.problem(state.binding.target || null);
     if (!state.op) return "先使用操作员令牌登录。";
@@ -113,13 +113,13 @@
     if (!state.binding?.session_id) return state.binding?.acquisition_id ? "接管结果未确认，请查询原会话。" : "尚未建立本页可核验的会话。";
     if (!state.sessionFresh) return state.sessionError || "会话状态未确认，请查询。";
     if (state.session?.session_id !== state.binding.session_id || state.session?.serial !== state.serial) return "会话身份不匹配。";
-    if (state.session.phase !== "ready") return PHASE[state.session.phase] || PHASE.unknown;
+    if (state.session.phase !== "ready" && !(action === "release" && state.session.phase === "starting")) return PHASE[state.session.phase] || PHASE.unknown;
     if (state.session.live_owner !== true) return "未确认活跃 owner，禁止新操作。";
     if (state.session.recovery?.required !== false) return "恢复状态未确认或仍需核查，禁止新操作。";
     return "";
   }
   const coordinateAction = action => action === "tap" || action === "swipe";
-  function canAction(action) { return !sessionReason() && !state.posting && !state.authBusy && actionSupported(action) && (!["logcat", "diagnostics"].includes(action) || state.session?.capabilities?.includes(action)) && (action === "release" ? !unresolved("release") : !unresolved()) && (!coordinateAction(action) || !frameReason()); }
+  function canAction(action) { return !sessionReason(action) && !state.posting && !state.authBusy && actionSupported(action) && (!["logcat", "diagnostics"].includes(action) || state.session?.capabilities?.includes(action)) && (action === "release" ? !unresolved("release") : !unresolved()) && (!coordinateAction(action) || !frameReason()); }
   function holderText(d) {
     const h = d.holder;
     if (!state.devicesFresh) return "上次观测；当前状态未知";

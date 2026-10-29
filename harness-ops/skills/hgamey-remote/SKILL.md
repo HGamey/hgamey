@@ -34,7 +34,7 @@ remote devices
 remote acquire "$SERIAL" --request-id "$ACQUISITION_ID" --max-minutes 30
 remote session "$SERIAL" --acquisition-id "$ACQUISITION_ID"
 
-# 仅在原会话已确认为 ready 后提交动作。OUT_FILE 必须不存在。
+# 设备动作等原会话 ready 后再提交；starting 时可 release 取消等待。OUT_FILE 必须不存在。
 remote action "$SERIAL" screenshot --session-id "$SESSION_ID" \
   --request-id "$SCREENSHOT_ID" --params '{"max_side":1280}' --out "$OUT_FILE"
 remote receipt "$SERIAL" "$SCREENSHOT_ID" --session-id "$SESSION_ID"
@@ -43,15 +43,16 @@ remote receipt "$SERIAL" "$SCREENSHOT_ID" --session-id "$SESSION_ID"
 remote action "$SERIAL" tap --session-id "$SESSION_ID" --request-id "$TAP_ID" \
   --frame-id "$SCREENSHOT_ID" --params '{"x":100,"y":200}'
 
-# 用单独的动作 ID 请求关闭，再查询原会话。
+# 用单独的动作 ID 取消等待或请求关闭，再查询原会话。
 remote action "$SERIAL" release --session-id "$SESSION_ID" --request-id "$RELEASE_ID"
 remote session "$SERIAL" --session-id "$SESSION_ID"
 ```
 
+- 手机被占用时，`acquire` 返回 `starting` 并等待 PF 锁；不同手机可并行，同一手机的别名和全场锁仍互斥。保留原 ID 查询，等 `ready` 再提交设备动作；不想等时对该 `session_id` 发 `release`。
 - `accepted` / `started` 只表示待定；继续只读查询原 acquisition/session/request ID。截图尚未完成时，之后可用 `receipt … --out NEW_FILE` 获取已完成原件，不会重新截屏。
 - 超时、断线、`unknown` 或 `recovery_required` 不证明动作未执行。保留原 ID，只读续查，不换 ID 重放。409 也不统一等于“别人占用”；按原会话与回执判断，不能绕过冲突抢占。
-- `release` 先关闭新动作准入；此前已开始的一条有界动作可结束，其余未开始动作应为 `not_executed`。回执已接受不等于已释放，以会话 `phase: closed` 为准。
-- 心跳 TTL 和最长时长触发有序关闭，不是强制解锁证明。节点退出、owner 丢失或未决传输可能保留真实租约屏障，需管理员按恢复合同核验；操作员不能靠删除文件、等待 TTL 或更换锁域解除。
+- `release` 在 `starting` 时终止等待，结束后不会再取得手机；在 `ready` 时先关闭新动作准入，此前已开始的一条有界动作可结束，其余未开始动作应为 `not_executed`。回执已接受不等于已释放，以会话 `phase: closed` 为准。
+- 心跳 TTL 和最长时长在拿到锁后触发有序关闭。owner 退出会释放其 fd 锁；节点退出、owner 丢失或未决传输仍可能需要核验设备状态，按原 session／adb 恢复，不以锁已释放证明设备已还原。
 - 正常关闭只证明该会话的命令已收束，不恢复应用/UI 状态。若状态保留 `original_outcome: unknown`，不能因人工退休后 `closed` 就改称原动作成功或未开始。
 
 CLI 退出码：`0` 为正常返回，`1` 为拒绝/失败/未执行或输入错误，`3` 为仍待定，`4` 为未知或恢复所需。结合 JSON 的动作状态和会话 phase 判断，不把进程退出码替代设备恢复证据。

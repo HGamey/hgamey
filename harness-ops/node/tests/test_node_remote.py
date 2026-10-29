@@ -414,6 +414,51 @@ class RemoteHttpTests(Base):
             finally:
                 browser.close()
 
+    def test_control_page_can_release_starting_without_enabling_device_actions(self):
+        from playwright.sync_api import sync_playwright
+        self.board.wake = threading.Event()
+        self.board.live = mock.Mock()
+        self.board.live.known.return_value = False
+        self.board.live.status.return_value = {"devices": [], "policy": {}}
+        start = self.backend.start
+
+        def waiting(*args, **kwargs):
+            self.backend.starting.add(args[4])
+            return start(*args, **kwargs)
+
+        view = f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"
+        status, headers, _ = self.req("POST", "/dash/api/remote/login", {"token": self.alice_token},
+                                    {"Cookie": view, "Content-Type": "application/json", "X-HG": "1"})
+        self.assertEqual(status, 200)
+        operator = headers["Set-Cookie"].split(";", 1)[0]
+        base = "http://%s:%d" % self.server.server_address
+        with sync_playwright() as playwright, mock.patch.object(self.backend, "start", side_effect=waiting):
+            browser = playwright.chromium.launch()
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": c.split("=", 1)[0], "value": c.split("=", 1)[1], "url": base}
+                                     for c in (view, operator)])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(base + "/dash/control")
+                page.locator("#devices button").filter(has_text=SERIAL).click()
+                page.locator("#take").click()
+                page.wait_for_function("() => document.querySelector('#lease-info').textContent.includes('正在建立会话')")
+                self.assertTrue(page.locator("#release").is_enabled())
+                self.assertTrue(page.locator("#renew").is_disabled())
+                self.assertTrue(page.locator("#ops").evaluate("element => element.disabled"))
+                self.assertTrue(all(button.is_disabled() for button in page.locator("[data-action], [data-key]").all()))
+                page.locator("#release").click()
+                page.wait_for_function("() => document.querySelector('#lease-info').textContent.includes('正在交回')")
+                requests = list(self.backend.data["requests"].values())
+                self.assertEqual(len(requests), 1)
+                self.assertEqual((requests[0]["action"], requests[0]["session_id"]), ("release", "session-ref-1"))
+                self.assertTrue(page.locator("#release").is_disabled())
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_logcat_mapping_preserves_receipt_and_owner_capability(self):
         self.backend.actions = [*self.backend.actions, "logcat"]
         sid = self.acquire()["session_id"]
