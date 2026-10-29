@@ -2,16 +2,34 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>HGamey</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>讲解 · HGamey</title>
 <link rel="stylesheet" href="/dash/static/showcase.css">
 </head>
 <body>
-<div id="world"><canvas id="c"></canvas></div>
-<div class="brand"><span class="mark">HG</span>HGamey<small></small></div>
-<section class="caption"><p id="kicker"></p><h1 id="title"></h1><p id="sub"></p></section>
-<div id="chart" class="chart" hidden><p class="legend"></p><svg viewBox="0 0 1600 440" preserveAspectRatio="none"></svg><p class="quote"></p></div>
-<div id="wins" class="wins" hidden></div>
-<nav class="dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></nav>
+<div class="stage" id="stage"><canvas id="c" aria-hidden="true"></canvas></div>
+<header class="bar">
+  <a class="back" href="/dash"><span aria-hidden="true">‹</span>控制台</a>
+  <span class="src mono" id="src"></span>
+  <nav class="links">
+    <a class="button" href="/dash/command">指挥中心</a>
+    <button type="button" class="icon" id="full" aria-label="全屏" title="全屏（F）">⤢</button>
+  </nav>
+</header>
+<main class="copy" id="copy" aria-live="polite">
+  <p class="kicker" id="kicker"></p>
+  <h1 id="title"></h1>
+  <p class="lead" id="lead"></p>
+  <dl class="facts" id="facts"></dl>
+  <blockquote class="quote" id="quote" hidden></blockquote>
+</main>
+<footer class="steps" aria-label="步骤">
+  <button type="button" class="icon" id="prev" aria-label="上一步" title="上一步（←）">‹</button>
+  <ol id="dots"></ol>
+  <span class="count mono" id="count"></span>
+  <button type="button" class="icon" id="next" aria-label="下一步" title="下一步（→ 或空格）">›</button>
+</footer>
+<p class="empty" id="empty" hidden></p>
 <script type="module" src="/dash/static/showcase.js"></script>
 </body>
 </html>

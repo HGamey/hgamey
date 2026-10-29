@@ -1056,6 +1056,49 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_story_steps_through_the_snapshot_and_names_each_step(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.showcase_snapshot()
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/showcase")
+                page.wait_for_function("() => window.__ready === true")
+                self.assertEqual(page.text_content("#title"), "1 个 Agent，1 台手机")
+                self.assertIn("测试快照", page.text_content("#src"))
+                page.keyboard.press("ArrowRight")
+                page.wait_for_function("() => location.hash === '#2'")
+                page.wait_for_function("() => document.getElementById('title').textContent === '1 次提交'")
+                page.keyboard.press("End")
+                page.wait_for_function("() => document.getElementById('kicker').textContent === '下一步'")
+                self.assertTrue(page.is_disabled("#next"))
+                page.goto(f"{base}/dash/showcase#5")   # same page: the hash alone moves to step 5
+                page.wait_for_function("() => document.getElementById('title').textContent === '1 份交付报告'")
+                page.reload()
+                page.wait_for_function("() => window.__ready === true")
+                self.assertEqual(page.text_content("#title"), "1 份交付报告", "a reload opens the step the address names")
+                self.assertTrue(page.is_visible('a.back[href="/dash"]'))
+                self.assertTrue(page.is_visible('a[href="/dash/command"]'))
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_the_command_view_follows_this_node_live_and_holds_when_left(self):
         try:
             from playwright.sync_api import sync_playwright

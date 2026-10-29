@@ -1,230 +1,332 @@
-// Concept B: keynote-style story. One persistent 3D world; each chapter moves the camera, dims what is not the
-// subject and shows one line in large type. ?ch=1..6 holds a chapter (stills); ?auto=1 plays 1→6 and reports done
-// to the page that framed it. Every number comes from data.json.
-import {THREE, loadData, stage, phone, orb, beam, starfield, textureFrom, statusScreen, rng, fmt, CSS2DObject} from './showcase-parts.js';
+// Story page: six steps, each a fact in large type beside one subject in a single 3D world (phones and agents, the
+// commits behind them, the record of people and agents, waiting for phones, results, what more phones would add).
+// The camera frames each subject inside the area beside the text. → / Space / PageDown advance; #N names a step;
+// ?kiosk=go|loop plays through and hands over to the command view. Data: the node's snapshot, else its live model.
+import {THREE, BG, makeStage, label, phone, ghostPhone, statusScreen, textureFrom, dots, framing, fmt, RoundedBoxGeometry} from './showcase-parts.js';
 
-const data = await loadData();
 const Q = new URLSearchParams(location.search);
-const PAGES = {story: '/dash/showcase', command: '/dash/showcase/command'};
-const leave = url => { document.body.classList.add('leaving'); setTimeout(() => { location.href = url; }, 700); };
-const BG = 0x151d26; // reads as #0c1218 after tone mapping, matching the command view
-const S = stage(document.getElementById('c'), {bloom: 0.45, radius: 0.35, threshold: 0.9, background: BG, fog: {color: BG, density: 0.018}});
-const {scene, camera} = S;
-scene.add(new THREE.AmbientLight(0x9aa8b8, 0.75));
-const sun = new THREE.DirectionalLight(0xffffff, 1.1); sun.position.set(5, 14, 8); scene.add(sun);
-{ const stars = starfield(420, 140); stars.material.opacity = 0.3; stars.material.color.set(0x5d6f84); scene.add(stars); }
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const BRAND = {HONOR: '荣耀', REDMAGIC: '红魔', NUBIA: '红魔', HUAWEI: '华为'};
+const SAME = {NUBIA: 'REDMAGIC'}, key = b => { const k = String(b || '').toUpperCase(); return SAME[k] || k; };
+const AGENT = {'kimi-researcher': [0x7cc4ff, 'kimi'], 'glm-researcher': [0xb49cff, 'glm'], 'claude-lead': [0xff9f7a, 'claude'], 'glm-ops': [0xe39ad6, 'glm-ops']};
+const agentOf = a => AGENT[a] || [0xa3b3c2, String(a).replace(/-(researcher|agent)$/, '')];
+const COLOR = {gold: 0xf0c36e, teal: 0x5ccfc0, ash: 0x4c5866, steel: 0x8aa1b5, ice: 0x8db4f5, white: 0xe3eaf0};
+const stampFmt = new Intl.DateTimeFormat('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
+const stamp = s => stampFmt.format(new Date(s * 1000));
 
-const GOLD = new THREE.Color(0xf0c36e), STEEL = new THREE.Color(0x8aa1b5), ASH = new THREE.Color(0x3d4854), RUN = new THREE.Color(0x5d6f80), TEAL = new THREE.Color(0x5ccfc0);
-const AGENT = {'kimi-researcher': 0x7cc4ff, 'glm-researcher': 0xb49cff, 'claude-lead': 0xff9f7a, 'glm-ops': 0xe39ad6};
-const tag = (html, cls, pos, parent = scene) => { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; const o = new CSS2DObject(d); o.position.copy(pos); parent.add(o); return o; };
+// ── Data
+async function load() {
+  for (const url of ['/dash/api/showcase', '/dash/api/command']) {
+    const r = await fetch(url, {credentials: 'same-origin'}).catch(() => null);
+    if (r?.status === 401) { location.href = '/dash/login?next=' + encodeURIComponent(location.pathname + location.search); return null; }
+    if (r?.ok) return {...await r.json(), from: url.endsWith('showcase') ? 'snapshot' : 'live'};
+  }
+  return null;
+}
+const data = await load();
+if (!data || !(data.research || []).length) { $('empty').textContent = data ? '这个节点还没有任务。' : '读不到数据。'; $('empty').hidden = false; await new Promise(() => {}); }
+const at = data.at, H = data.history;
+const ids = new Set(data.research.map(r => r.id));
+const jobs = data.jobs || [], notes = (data.notes || []).filter(n => ids.has(n.research_id)), phones = (data.phones || []).map(p => ({...p, key: key(p.brand)}));
+const begun = j => j.claimed || (j.queued ? j.ended : j.started);
+const phoneJobs = jobs.filter(j => j.phone && begun(j));
+const day = phoneJobs.filter(j => begun(j) >= at - 86400), dayH = day.reduce((s, j) => s + Math.min(j.ended || at, at) - begun(j), 0) / 3600;
+const runningNow = phoneJobs.filter(j => !j.ended && begun(j) <= at);
+const waits = phoneJobs.filter(j => j.queued && j.claimed && j.claimed - j.queued > 30);
+const longest = Math.round(Math.max(0, ...waits.map(j => (j.claimed - j.queued) / 60)));
+const humans = notes.filter(n => n.who === 'human'), adopts = notes.filter(n => n.decision === 'adopt').length;
+const delivered = data.research.filter(r => r.state === 'delivered'), verified = (data.directions || []).filter(d => d.state === 'verified').length;
+const ok = jobs.filter(j => j.outcome === 'succeeded' && ids.has(j.research_id)).length, done = jobs.filter(j => j.ended && ids.has(j.research_id)).length;
+const commits = H ? Object.values(H.commits).reduce((a, b) => a + b, 0) : 0;
+$('src').textContent = `${data.source || '本节点'} · ${data.from === 'snapshot' ? '快照' : '实时'} · 截至 ${stamp(at)}`;
 
-// ── The tree of everything tried: eras from the repos (real commit counts), then the platform's tasks.
-const r = rng(21), tree = new THREE.Group(); tree.position.set(-9, 0, -2); scene.add(tree);
-const branch = (from, to, color, width, gain = 1) => {
-  const mid = from.clone().lerp(to, 0.5).add(new THREE.Vector3((r() - 0.5) * 0.8, 0.4, (r() - 0.5) * 0.8));
-  tree.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(from, mid, to), 20, width, 6, false),
-    new THREE.MeshBasicMaterial({color: color.clone().multiplyScalar(gain), toneMapped: gain <= 1})));
+// ── World
+let S = null;
+try { S = makeStage($('c'), $('stage')); } catch (error) { document.body.classList.add('flat'); }
+const W = S && S.scene, groups = {};
+const area = (name, x, z) => { const g = new THREE.Group(); g.position.set(x, 0, z); if (W) W.add(g); groups[name] = g; return g; };
+const tags = [];   // [object, steps it shows on]
+const tagFor = (steps, ...args) => { if (!W) return null; const t = label(...args); tags.push([t, steps]); return t; };
+const shadow = (w, d) => {
+  const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d'), grad = g.createRadialGradient(64, 64, 4, 64, 64, 64);
+  grad.addColorStop(0, 'rgba(0,0,0,.55)'); grad.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false}));
+  m.rotation.x = -Math.PI / 2; m.position.y = .005; return m;
 };
-const leaves = [];
-const leaf = (p, color, size, gain = 1) => leaves.push({p, color: color.clone().multiplyScalar(gain), size});
-const trunkTop = new THREE.Vector3(0, 3.2, 0);
-branch(new THREE.Vector3(0, 0, 0), trunkTop, STEEL, 0.13, 0.75);
-const H = data.history;
-const eras = [
-  {name: 'phonefarm 真机底座', n: 615, since: '8/29', twigs: 40},
-  {name: 'game_opt_loop 优化闭环', n: 168, since: '9/21', twigs: 24},
-  {name: 'sr_loop 超分进化', n: H.sr_networks, since: '9/09', unit: '个网络', twigs: H.sr_networks, kept: H.sr_networks_kept},
-  {name: 'experiments 研究线', n: 131, since: '10/21', twigs: 30},
-  {name: 'HGamey 平台', n: 291, since: '10/11', twigs: 18},
-];
-const eraTips = [];
-eras.forEach((era, i) => {
-  const a = -Math.PI * 0.95 + (i / (eras.length - 1)) * Math.PI * 0.9 + (r() - 0.5) * 0.2;
-  const base = new THREE.Vector3(0, 1.0 + i * 0.5, 0), end = new THREE.Vector3(Math.cos(a) * 4.2, 3.0 + i * 0.9 + r(), Math.sin(a) * 2.2 - 0.5);
-  branch(base, end, STEEL, 0.025 + Math.log10(era.n) * 0.02, 0.7);
-  for (let k = 0; k < era.twigs; k++) {
-    const b = a + (r() - 0.5) * 1.6, len = 0.7 + r() * 1.6;
-    const tip = end.clone().add(new THREE.Vector3(Math.cos(b) * len, r() * 1.4 - 0.2, Math.sin(b) * len * 0.6));
-    const kept = era.kept ? k < era.kept : r() < 0.18;
-    branch(end, tip, kept ? GOLD : ASH, 0.007, kept ? 1.15 : 1);
-    leaf(tip, kept ? GOLD : ASH, kept ? 0.34 : 0.18, kept ? 1.2 : 1);
+const moved = (m, x, y, z) => { m.position.set(x, y, z); return m; };
+const animate = [];   // per-frame updates (only for what is live)
+const sub = {};       // named subjects → objects whose box a step frames
+
+if (W) {
+  W.add(new THREE.HemisphereLight(0xbfd2e6, 0x0c1218, .5));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(-6, 12, 10); W.add(sun);
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(140, 64), new THREE.MeshStandardMaterial({color: BG, roughness: .92, metalness: 0}));
+  floor.rotation.x = -Math.PI / 2; floor.position.y = -.01; W.add(floor);
+
+  // Phones on a plinth, the agents using them above (live: glow and a flowing beam), idle agents further back.
+  const deck = area('deck', 0, 0), gap = 2.4, n = phones.length, plinthW = Math.max(4, n * gap + 1.2);
+  const plinth = new THREE.Mesh(new RoundedBoxGeometry(plinthW, .26, 2.4, 4, .08), new THREE.MeshPhysicalMaterial({color: 0x131b23, metalness: .35, roughness: .45, clearcoat: .3}));
+  plinth.position.y = .13; deck.add(plinth, shadow(plinthW + 3, 5));
+  const shot = data.from === 'snapshot' ? await textureFrom('/dash/api/showcase/screen/HONOR') : null;
+  sub.phones = []; sub.agents = []; sub.queue = []; sub.ghosts = [];
+  const phoneAt = {};
+  phones.forEach((p, i) => {
+    const running = runningNow.find(j => key(j.device) === p.key), temp = p.soc_c || p.temp_c, name = `${BRAND[p.key] || p.brand} ${p.model || ''}`.trim();
+    const m = phone(p.key === 'HONOR' && shot ? shot : statusScreen({name, busy: !!running, temp, doing: running ? `${agentOf(running.agent)[1]} · ${running.kind}` : ''}));
+    const x = (i - (n - 1) / 2) * gap; m.position.set(x, 1.82, 0); m.rotation.set(-.06, (i - (n - 1) / 2) * -.06, 0); deck.add(m);
+    phoneAt[p.key] = m; sub.phones.push(m);
+    tagFor([1], `${esc(name)}<small>${running ? '实验中' : '空闲'}${temp ? ` · ${temp.toFixed(0)}°C` : ''}</small>`, 'big', new THREE.Vector3(x, -.15, 1.3), deck);
+  });
+  // One bead per time a run waited for a phone, queued in front of the plinth (longer waits stand taller).
+  waits.sort((a, b) => a.queued - b.queued).forEach((j, k) => {
+    const mins = (j.claimed - j.queued) / 60, len = Math.min(1.2, .08 + Math.sqrt(mins) * .1);
+    const bead = new THREE.Mesh(new THREE.CapsuleGeometry(.1, len, 4, 12), new THREE.MeshStandardMaterial({color: COLOR.ice, roughness: .35, metalness: .1, emissive: COLOR.ice, emissiveIntensity: .18}));
+    bead.position.set((k - (waits.length - 1) / 2) * .36, .1 + len / 2 + .1, 3.1); bead.visible = false; deck.add(bead); sub.queue.push(bead);
+  });
+  if (waits.length) tagFor([4], `排队等手机<small class="mono">${waits.length} 次 · 最长 ${longest} 分钟</small>`, 'big', new THREE.Vector3(0, -.2, 3.75), deck);
+  const live = new Set(runningNow.map(j => j.agent)), idle = (data.agents || []).filter(a => !live.has(a));
+  for (const j of runningNow) {
+    const ph = phoneAt[key(j.device)]; if (!ph) continue;
+    const [c, short] = agentOf(j.agent), pos = new THREE.Vector3(ph.position.x + .2, 4.35, .5);
+    const orb = new THREE.Mesh(new THREE.SphereGeometry(.17, 32, 16), new THREE.MeshBasicMaterial({color: new THREE.Color(c).multiplyScalar(2.4), toneMapped: false}));
+    orb.position.copy(pos); deck.add(orb); sub.agents.push(orb);
+    const curve = new THREE.QuadraticBezierCurve3(pos.clone(), new THREE.Vector3(pos.x - .1, 4.0, .4), new THREE.Vector3(ph.position.x, 3.42, .1));
+    const mat = new THREE.ShaderMaterial({transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, uniforms: {color: {value: new THREE.Color(c).multiplyScalar(1.6)}, time: {value: 0}},
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader: 'uniform vec3 color; uniform float time; varying vec2 vUv; void main(){ float d = smoothstep(.3,.5,fract(vUv.x*6.-time*1.2)); float a = (.25+.75*d); gl_FragColor = vec4(color*a, a); }'});
+    deck.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 24, .018, 6, false), mat));
+    animate.push(t => { mat.uniforms.time.value = t; orb.position.y = pos.y + Math.sin(t * 1.3 + pos.x) * .05; });
+    tagFor([1], `<span class="mono">${esc(short)}</span><small>${esc(j.kind)}</small>`, '', new THREE.Vector3(pos.x, pos.y + .42, pos.z), deck);
   }
-  eraTips.push({era, end});
-});
-// The platform's tasks grow from the top: verified directions gold, rejected ash, to-do steel.
-const top = new THREE.Vector3(0, 7.2, 0); branch(trunkTop, top, STEEL, 0.1, 0.75);
-const tasks = [...data.research].sort((a, b) => a.updated_at - b.updated_at);
-tasks.forEach((task, i) => {
-  const a = (i / tasks.length) * Math.PI * 2, end = top.clone().add(new THREE.Vector3(Math.cos(a) * 2.6, 1.6 + r() * 1.4, Math.sin(a) * 1.6));
-  branch(top, end, task.state === 'delivered' ? GOLD : STEEL, 0.04, task.state === 'delivered' ? 0.9 : 0.8);
-  for (const d of data.directions.filter(x => x.research_id === task.id)) {
-    const b = a + (r() - 0.5) * 1.2, tip = end.clone().add(new THREE.Vector3(Math.cos(b) * 1.4, 1 + r(), Math.sin(b) * 0.9));
-    const c = d.state === 'verified' ? GOLD : d.state === 'rejected' ? ASH : STEEL;
-    branch(end, tip, c, 0.026, d.state === 'verified' ? 1.25 : 0.9);
-    leaf(tip, c, d.state === 'verified' ? 0.6 : 0.45, d.state === 'verified' ? 1.3 : 1);
+  idle.forEach((a, i) => {
+    const [c, short] = agentOf(a), pos = new THREE.Vector3((i - (idle.length - 1) / 2) * 1.5, 4.9, -1.6);
+    const orb = new THREE.Mesh(new THREE.SphereGeometry(.14, 24, 12), new THREE.MeshStandardMaterial({color: c, roughness: .5, metalness: .1}));
+    orb.position.copy(pos); deck.add(orb); sub.agents.push(orb);
+    tagFor([1], `<span class="mono">${esc(short)}</span>`, 'dim', new THREE.Vector3(pos.x, pos.y + .36, pos.z), deck);
+  });
+  for (let i = 0; i < Math.max(1, n); i++) {
+    const g = ghostPhone(), x = plinthW / 2 + .9 + i * gap; g.position.set(x, 1.82, 0); g.visible = false; deck.add(g); sub.ghosts.push(g);
   }
-  for (const j of data.jobs.filter(x => x.research_id === task.id)) {
-    const b = a + (r() - 0.5) * 2, tip = end.clone().add(new THREE.Vector3(Math.cos(b) * (0.5 + r()), r() * 1.1, Math.sin(b) * 0.6));
-    const ok = j.outcome === 'succeeded';
-    branch(end, tip, ok ? RUN : ASH, 0.009, 1); leaf(tip, ok ? TEAL : ASH, 0.16, ok ? 0.9 : 1);
+  const ext = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(Math.max(1, n) * gap, .26, 2.4)), new THREE.LineDashedMaterial({color: COLOR.gold, dashSize: .12, gapSize: .1, transparent: true, opacity: .6}));
+  ext.computeLineDistances(); ext.position.set(plinthW / 2 + Math.max(1, n) * gap / 2 + .1, .13, 0); ext.visible = false; deck.add(ext); sub.ghosts.push(ext);
+
+  // Commits since the start, one dot each, a block per repository.
+  if (H) {
+    const hist = area('history', -38, -8); sub.history = [];
+    const repos = Object.entries(H.commits).sort((a, b) => b[1] - a[1]), NAMES = {hgamey: '平台', docs: '记录', experiments: '实验线', sr_loop: '超分进化'};
+    let x = 0;
+    for (const [repo, count] of repos) {
+      const side = 6, s = .22, pts = [], tone = new THREE.Color(repo === 'sr_loop' ? COLOR.gold : COLOR.steel).lerp(new THREE.Color(COLOR.white), .25);
+      for (let i = 0; i < count; i++) {
+        const a = i % side, b = Math.floor(i / side) % side, c = Math.floor(i / side / side);
+        pts.push({x: x + a * s, y: .14 + c * s, z: b * s - side * s / 2, color: tone});
+      }
+      const block = dots(pts, {size: .17}); hist.add(block); sub.history.push(block);
+      hist.add(moved(shadow(side * s + 1.4, side * s + 1.4), x + side * s / 2, .005, 0));
+      tagFor([2], `${esc(NAMES[repo] || repo)}<small class="mono">${fmt(count)} 次提交</small>`, 'big', new THREE.Vector3(x + side * s / 2, -.2, side * s / 2 + .5), hist);
+      x += side * s + 1.4;
+    }
+    groups.history.position.x -= x / 2;
   }
-});
-{
-  const g = new THREE.BufferGeometry(), pos = [], col = [], size = [];
-  for (const l of leaves) { pos.push(l.p.x, l.p.y, l.p.z); col.push(l.color.r, l.color.g, l.color.b); size.push(l.size); }
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); g.setAttribute('size', new THREE.Float32BufferAttribute(size, 1));
-  tree.add(new THREE.Points(g, new THREE.ShaderMaterial({transparent: true, depthWrite: false, vertexColors: true,
-    vertexShader: 'attribute float size; varying vec3 vColor; void main(){ vColor = color; vec4 mv = modelViewMatrix * vec4(position,1.0); gl_PointSize = size * (320.0 / -mv.z); gl_Position = projectionMatrix * mv; }',
-    fragmentShader: 'varying vec3 vColor; void main(){ float d = length(gl_PointCoord - 0.5) * 2.0; float a = smoothstep(1.0, 0.55, d); gl_FragColor = vec4(vColor, a); }'})));
+
+  // The record: finished runs per hour (teal succeeded, grey not), gold pillars where a person replied, a white line
+  // stepping up at each delivery.
+  {
+    const rec = area('record', 0, -40); sub.record = [];
+    const t0 = Math.min(...data.research.map(r => r.created_at)) - 1800, hours = Math.max(1, Math.ceil((at - t0) / 3600)), step = .46, X = t => (t - t0) / 3600 * step;
+    const per = Array.from({length: hours}, (_, i) => jobs.filter(j => ids.has(j.research_id) && j.ended >= t0 + i * 3600 && j.ended < t0 + (i + 1) * 3600));
+    const top = Math.max(1, ...per.map(p => p.length)), unit = 3.6 / top, box = new THREE.BoxGeometry(.3, 1, .3);
+    const bars = (color, count) => new THREE.InstancedMesh(box, new THREE.MeshStandardMaterial({color, roughness: .45, metalness: .15}), Math.max(1, count));
+    const good = bars(COLOR.teal, hours), bad = bars(0x3a4552, hours), M = new THREE.Matrix4();
+    let gi = 0, bi = 0;
+    per.forEach((p, i) => {
+      const k = p.filter(j => j.outcome === 'succeeded').length, f = p.length - k;
+      if (k) good.setMatrixAt(gi++, M.compose(new THREE.Vector3(i * step, k * unit / 2, 0), new THREE.Quaternion(), new THREE.Vector3(1, k * unit, 1)));
+      if (f) bad.setMatrixAt(bi++, M.compose(new THREE.Vector3(i * step, k * unit + f * unit / 2 + .02, 0), new THREE.Quaternion(), new THREE.Vector3(1, f * unit, 1)));
+    });
+    good.count = gi; bad.count = bi; rec.add(good, bad); sub.record.push(good, bad);
+    const base = new THREE.Mesh(new THREE.BoxGeometry(hours * step + .6, .03, .9), new THREE.MeshStandardMaterial({color: 0x1a232d, roughness: .8}));
+    base.position.set((hours - 1) * step / 2, .015, 0); rec.add(base, moved(shadow(hours * step + 4, 6), (hours - 1) * step / 2, .004, 0));
+    const pillar = new THREE.CylinderGeometry(.025, .025, 1, 8), gold = new THREE.MeshStandardMaterial({color: COLOR.gold, emissive: COLOR.gold, emissiveIntensity: .35, roughness: .4, metalness: .3});
+    for (const n of humans) {
+      const x = X(n.at) - step / 2, p = new THREE.Mesh(pillar, gold); p.scale.y = 4.6; p.position.set(x, 2.3, .55); rec.add(p);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(.09, 16, 8), gold); cap.position.set(x, 4.65, .55); rec.add(cap);
+    }
+    const dl = delivered.map(r => r.updated_at).sort((a, b) => a - b), pts = [new THREE.Vector3(-step / 2, .05, -.55)];
+    dl.forEach((t, i) => { const x = X(t) - step / 2, y = .05 + (i + 1) / dl.length * 4.3; pts.push(new THREE.Vector3(x, pts.at(-1).y, -.55), new THREE.Vector3(x, y, -.55)); });
+    pts.push(new THREE.Vector3(hours * step - step / 2, pts.at(-1).y, -.55));
+    rec.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({color: COLOR.white})));
+    const tickStep = hours > 36 ? 12 : 6, first = Math.ceil(t0 / (tickStep * 3600)) * tickStep * 3600;
+    for (let t = first; t < at; t += tickStep * 3600) tagFor([3], `<span class="mono">${stamp(t)}</span>`, 'dim', new THREE.Vector3(X(t) - step / 2, -.25, .9), rec);
+  }
+
+  // Results: a gold card per delivered report, and the super-resolution networks tried (gold: kept).
+  {
+    const res = area('results', 38, -8); sub.results = [];
+    const card = new RoundedBoxGeometry(1.05, 1.45, .06, 3, .06), mat = new THREE.MeshPhysicalMaterial({color: COLOR.gold, metalness: .55, roughness: .28, clearcoat: .6, emissive: COLOR.gold, emissiveIntensity: .16});
+    const N = delivered.length, cols = Math.min(6, N), rows = Math.ceil(N / cols);
+    delivered.forEach((r, i) => {
+      const c = i % cols, row = Math.floor(i / cols), m = new THREE.Mesh(card, mat);
+      const a = (c - (cols - 1) / 2) * .2;
+      m.position.set(Math.sin(a) * 7 - 0, .8 + (rows - 1 - row) * 1.7, -Math.cos(a) * 7 + 7); m.rotation.y = -a; res.add(m); sub.results.push(m);
+    });
+    if (H?.sr_networks) {
+      const pts = [];
+      for (let i = 0; i < H.sr_networks; i++) { const a = -Math.PI / 2 + i / H.sr_networks * Math.PI * 2; pts.push({x: Math.cos(a) * 1.9, y: .14, z: 3 + Math.sin(a) * 1.9, color: i < H.sr_networks_kept ? COLOR.gold : 0x6b7c8e}); }
+      const ring = dots(pts, {size: .13}); res.add(ring); sub.results.push(ring);
+      tagFor([5], `超分网络<small class="mono">留下 ${H.sr_networks_kept} / ${H.sr_networks}</small>`, '', new THREE.Vector3(0, -.2, 5.3), res);
+    }
+    tagFor([5], `交付报告<small class="mono">${N} 份</small>`, 'gold', new THREE.Vector3(0, rows * 1.7 + .45, 0), res);
+    res.add(moved(shadow(10, 8), 0, .004, 1));
+  }
 }
 
-// ── Phones on a low shelf, gold when warm, and the agents above them.
-const names = {HONOR: '荣耀', REDMAGIC: '红魔', HUAWEI: '华为'};
-const latest = {}; for (const j of data.jobs) if (j.device && j.agent && (!latest[j.agent] || j.started > latest[j.agent].started)) latest[j.agent] = j;
-const holder = {}; for (const j of Object.values(latest)) holder[j.device] = j;
-const shelf = new THREE.Mesh(new THREE.BoxGeometry(9, 0.12, 2.2), new THREE.MeshStandardMaterial({color: 0x141c25, metalness: 0.6, roughness: 0.45}));
-shelf.position.set(5, 2.6, 2); scene.add(shelf);
-const honorShot = await textureFrom('/dash/api/showcase/screen/HONOR');
-const phones = {};
-data.phones.forEach((p, i) => {
-  const key = p.brand.toUpperCase(), name = `${names[key]} ${p.model}`, temp = p.soc_c || p.temp_c, busy = holder[key];
-  const task = busy ? (data.byResearch(busy.research_id)?.title || '').replace(/[，,；;].*$/, '') : '';
-  const m = phone({texture: key === 'HONOR' ? honorShot : statusScreen({name, state: busy ? 'testing' : 'idle', temp, task}), temp, state: busy ? 'testing' : 'cooling'});
-  m.userData.aura.material.uniforms.color.value.set(temp >= 40 ? 0xf0c36e : 0x6f8aa3);
-  m.userData.aura.material.uniforms.opacity.value = 0.22;
-  m.scale.setScalar(0.8); m.position.set(2.2 + i * 2.8, 3.95, 2); m.rotation.y = -0.12 + i * 0.06; scene.add(m);
-  tag(`${name}<small>${busy ? '实验中' : '空闲'} · ${temp.toFixed(1)}°C</small>`, 'b-phone', new THREE.Vector3(0, -2.3, 0), m);
-  phones[key] = m;
-});
-const agentAt = {'glm-researcher': new THREE.Vector3(3.2, 8.4, 1), 'kimi-researcher': new THREE.Vector3(7.6, 8.8, 1), 'claude-lead': new THREE.Vector3(-1.6, 9.6, 0), 'glm-ops': new THREE.Vector3(10.6, 9.4, 0)};
-const flowing = [], orbs = [];
-for (const name of data.agents) {
-  if (!agentAt[name]) continue;
-  const o = orb(AGENT[name] || 0xa3b3c2, 0.2, {glowSize: 3, bright: 1.05}); o.position.copy(agentAt[name]); scene.add(o); orbs.push(o);
-  const j = latest[name], doing = j && phones[j.device] ? `在${names[j.device]}上实验` : '写报告';
-  tag(`${name}<small>${doing}</small>`, 'b-agent', new THREE.Vector3(0, 0.75, 0), o);
-  if (j && phones[j.device]) {
-    const b = beam(o.position, phones[j.device].position.clone().add(new THREE.Vector3(0, 1.3, 0.2)), 0x5ccfc0, {width: 0.016});
-    b.userData.material.uniforms.color.value.set(0x5ccfc0).multiplyScalar(0.9); scene.add(b); flowing.push(b.userData.material);
-  }
-}
-const ghosts = [];
-for (let i = 0; i < 3; i++) {
-  const ghost = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.2, 2.48, 0.13)), new THREE.LineDashedMaterial({color: 0xf0c36e, dashSize: 0.12, gapSize: 0.1, transparent: true, opacity: 0.75}));
-  ghost.computeLineDistances(); ghost.position.set(10.6 + i * 2.6, 3.95, 2); ghost.rotation.y = 0.05 * i; ghost.visible = false; scene.add(ghost); ghosts.push(ghost);
-}
-eraTips.forEach(({era, end}) => tag(`${era.name}<small>${era.since} 起 · ${fmt(era.n)} ${era.unit || '次提交'}${era.kept ? ` · 留下 ${era.kept} 个` : ''}</small>`, 'b-era', end.clone().add(new THREE.Vector3(0, 0.5, 0)), tree));
+// ── Steps: what each says and what it frames
+const v = (x, y, z) => new THREE.Vector3(x, y, z);
+const AREA = {'此刻': 'deck', '来时路': 'history', '人和 Agent': 'record', '手机': 'deck', '成果': 'results', '下一步': 'deck'};
+const STEPS = [
+  {kicker: '此刻', title: `${(data.agents || []).length} 个 Agent，${phones.length} 台手机`, lead: '过去 24 小时',
+    facts: [[day.length, '次', '真机实验', 'teal'], [dayH.toFixed(1), '小时', '真机实验时长'], [runningNow.length, '个', `截至 ${stamp(at)} 正在用手机的 Agent`]],
+    frame: () => [...sub.phones, ...sub.agents], dir: v(.12, .34, 1)},
+  H && {kicker: '来时路', title: `${fmt(commits)} 次提交`, lead: `${H.since.replace(/^\d{4}-0?(\d+)-0?(\d+)$/, '$1 月 $2 日')}起`,
+    facts: [[H.experiment_lines.length, '条', '实验线'], [H.sr_loop_generations, '代', '超分进化'], [fmt(jobs.length), '次', '平台上的实验']],
+    frame: () => sub.history, dir: v(.55, .5, 1)},
+  {kicker: '人和 Agent', title: `${humans.length} 次人的回复，${adopts} 条采纳记录`, lead: '',
+    facts: [[ok, '次', '成功的实验', 'teal'], [done - ok, '次', '未成功的实验'], [humans.length, '次', '人的回复', 'gold'], [delivered.length, '份', '交付报告']],
+    quote: humans.find(n => /^指导/.test(n.text)) || humans[0], frame: () => sub.record, dir: v(-.3, .42, 1)},
+  {kicker: '手机', title: waits.length ? `${waits.length} 次实验排队等手机` : `${phones.length} 台手机`, lead: phones.map(p => `${BRAND[p.key] || p.brand} ${p.model || ''}`.trim()).join(' · '),
+    facts: [...(waits.length ? [[longest, '分钟', '最长一次等待', 'ice']] : []), [phoneJobs.length, '次', '真机实验'], [dayH.toFixed(1), '小时', '过去 24 小时真机实验时长']],
+    frame: () => [...sub.phones, ...sub.agents, ...sub.queue], dir: v(.1, .62, 1), show: on => sub.queue.forEach(b => { b.visible = on; })},
+  {kicker: '成果', title: `${delivered.length} 份交付报告`, lead: '',
+    facts: [[verified, '条', '验证有效的方向', 'gold'], ...(H ? [[H.sr_networks_kept, '个', `超分网络（从 ${H.sr_networks} 个里留下）`, 'gold']] : []), [phoneJobs.length, '次', `真机实验 · 共 ${jobs.length} 次`], [humans.length, '次', '人的回复']],
+    frame: () => sub.results, dir: v(0, .32, 1)},
+  {kicker: '下一步', title: '手机翻倍，实验线翻倍', lead: `现在 ${phones.length} 台手机${H ? ` · ${H.experiment_lines.length} 条实验线` : ''}`,
+    facts: [], frame: () => [...sub.phones, ...sub.ghosts], dir: v(.18, .3, 1), show: on => sub.ghosts.forEach(g => { g.visible = on; })},
+].filter(Boolean).filter(s => !W || s.frame().length);
 
-// ── Chapters: camera, what stays lit, one line of fact.
-const begun = j => j.claimed || j.started;  // started is the submit time
-const runH = data.jobs.filter(j => j.started && j.ended).reduce((s, j) => s + j.ended - begun(j), 0) / 3600;
-const day = data.jobs.filter(j => j.phone && j.started > data.at - 86400), dayH = day.filter(j => j.ended).reduce((s, j) => s + j.ended - begun(j), 0) / 3600;
-const waits = data.jobs.filter(j => j.phone && j.queued && j.claimed && j.claimed - j.queued > 30).map(j => (j.claimed - j.queued) / 60);
-const commits = Object.values(H.commits).reduce((a, b) => a + b, 0);
-const humans = data.notes.filter(n => n.who === 'human'), adopts = data.notes.filter(n => n.decision === 'adopt').length;
-const delivered = data.research.filter(x => x.state === 'delivered').length, verified = data.directions.filter(d => d.state === 'verified').length;
-const phoneLine = data.phones.map(p => `${names[p.brand.toUpperCase()]} ${p.model}`).join(' · ');
-const CH = {
-  1: {cam: [4.6, 6.4, 23], look: [4.6, 5.0, 1], kicker: '此刻', title: `${data.agents.length} 个 Agent，${data.phones.length} 台手机`, sub: `过去 24 小时 · ${day.length} 次真机实验 · 共 ${dayH.toFixed(1)} 小时`},
-  2: {cam: [-7.5, 7.5, 13], look: [-8.6, 5.4, -2], kicker: '来时路', title: `${fmt(commits)} 次提交`, sub: `8 月 29 日起 · ${H.experiment_lines.length} 条实验线 · ${data.jobs.length} 次平台实验`},
-  3: {cam: [0, 6, 22], look: [0, 5, 0], kicker: '人和 Agent', title: `${humans.length} 次人的回复，${adopts} 条采纳记录`, sub: '', chart: true},
-  4: {cam: [5.4, 4.2, 12.5], look: [5.4, 2.6, 2], kicker: '手机', title: `${data.phones.length} 台手机`,
-      sub: `${phoneLine}\n${waits.length} 次实验排队等手机，最长 ${Math.round(Math.max(0, ...waits))} 分钟`},
-  5: {cam: [0, 6, 22], look: [0, 5, 0], kicker: '成果', title: `${delivered} 份交付报告`, sub: '', wins: true},
-  6: {cam: [9, 4.4, 18], look: [8.4, 2.8, 1], kicker: '下一步', title: '手机翻倍，实验线翻倍', sub: '', more: true},
-};
-const N = Object.keys(CH).length;
-
-// Chapter 3 chart: hourly runs as bars, deliveries as a white step line, people's replies as gold pins.
-{
-  const box = document.getElementById('chart');
-  const t0 = Math.min(...humans.map(n => n.at)) - 6 * 3600, t1 = data.at, X = s => (s - t0) / (t1 - t0) * 1600;
-  const hours = Math.ceil((t1 - t0) / 3600), per = [...Array(hours).keys()].map(i => data.jobs.filter(j => j.ended >= t0 + i * 3600 && j.ended < t0 + (i + 1) * 3600));
-  const max = Math.max(1, ...per.map(p => p.length)), bw = 1600 / hours;
-  const bars = per.map((p, i) => { const ok = p.filter(j => j.outcome === 'succeeded').length, h1 = ok / max * 150, h2 = (p.length - ok) / max * 150;
-    return (ok ? `<rect x="${(i * bw + bw * .2).toFixed(1)}" y="${(430 - h1).toFixed(1)}" width="${(bw * .6).toFixed(1)}" height="${h1.toFixed(1)}" rx="2" fill="#5ccfc0" opacity=".8"/>` : '') +
-      (p.length - ok ? `<rect x="${(i * bw + bw * .2).toFixed(1)}" y="${(430 - h1 - h2 - 2).toFixed(1)}" width="${(bw * .6).toFixed(1)}" height="${h2.toFixed(1)}" rx="2" fill="#3d4854"/>` : ''); }).join('');
-  const dl = data.research.filter(x => x.state === 'delivered').map(x => x.updated_at).sort((a, b) => a - b);
-  let d = 'M0,430 '; dl.forEach((s, i) => { d += `H${X(s).toFixed(1)} V${(430 - (i + 1) / dl.length * 380).toFixed(1)} `; }); d += 'H1600';
-  const pins = humans.map(n => `<g transform="translate(${X(n.at).toFixed(1)},0)"><line y1="34" y2="430" stroke="#f0c36e" stroke-width="1.5" stroke-dasharray="3 6" opacity=".6"/><circle cy="30" r="7" fill="#f0c36e"/></g>`).join('');
-  box.querySelector('svg').innerHTML = `<line x1="0" x2="1600" y1="430" y2="430" stroke="rgba(150,175,200,.25)"/>${bars}${pins}<path d="${d}" fill="none" stroke="#e3eaf0" stroke-width="3" stroke-linejoin="round"/>`;
-  const note = humans.find(n => n.id === 'n-08e1844b4e04') || humans.find(n => n.text.startsWith('指导')) || humans[0];
-  box.querySelector('.quote').innerHTML = `<b>人</b>${note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text}`;
-  box.querySelector('.legend').innerHTML = `<span><i style="--c:#5ccfc0"></i>成功的实验</span><span><i style="--c:#3d4854"></i>未成功</span><span><i style="--c:#e3eaf0"></i>交付报告</span><span><i style="--c:#f0c36e"></i>人的回复</span>`;
+// ── Text
+const dotsBox = $('dots');
+STEPS.forEach((s, i) => { const b = document.createElement('button'); b.type = 'button'; b.setAttribute('aria-label', `第 ${i + 1} 步：${s.kicker}`); b.addEventListener('click', () => go(i)); const li = document.createElement('li'); li.append(b); dotsBox.append(li); });
+function writeCopy(s) {
+  $('kicker').textContent = s.kicker; $('title').textContent = s.title; $('lead').textContent = s.lead;
+  $('facts').innerHTML = s.facts.map(([n, unit, what, tone]) => `<div class="${tone || ''}"><dt>${esc(n)}<small>${esc(unit)}</small></dt><dd>${esc(what)}</dd></div>`).join('');
+  const q = s.quote; $('quote').hidden = !q;
+  if (q) $('quote').innerHTML = `<b>人 · ${stamp(q.at)}</b>${esc(q.text.length > 90 ? q.text.slice(0, 89) + '…' : q.text)}`;
 }
-document.getElementById('wins').innerHTML = [[delivered, '份', '交付报告'], [verified, '条', '验证有效的方向'], [H.sr_networks_kept, '个', `超分网络（从 ${H.sr_networks} 个里留下）`],
-  [data.jobs.filter(j => j.phone).length, '次', `真机实验 · 共 ${data.jobs.length} 次 · ${runH.toFixed(1)} 小时`], [humans.length, '次', '人的回复'], [fmt(commits), '次', '代码、实验与文档提交']]
-  .map(([n, u, t], i) => `<div class="${i === 0 ? 'gold' : ''}"><b>${n}<small>${u}</small></b><span>${t}</span></div>`).join('');
 
-// ── Showing a chapter: camera glides (or jumps for stills), text crossfades, overlays fade in over a dimmed world.
-const cam = {from: null, to: null, t0: 0, ms: 1800};
-const look = new THREE.Vector3();
-let current = 0;
-function show(n, instant = false) {
-  const c = CH[n]; current = n;
-  const target = {p: new THREE.Vector3(...c.cam), l: new THREE.Vector3(...c.look)};
-  if (instant || !cam.to) { camera.position.copy(target.p); look.copy(target.l); camera.lookAt(look); cam.to = target; cam.from = null; }
-  else { cam.from = {p: camera.position.clone(), l: look.clone()}; cam.to = target; cam.t0 = performance.now(); }
-  const cap = document.querySelector('.caption');
-  cap.classList.add('out');
-  setTimeout(() => {
-    document.getElementById('kicker').textContent = c.kicker;
-    document.getElementById('title').textContent = c.title;
-    document.getElementById('sub').textContent = c.sub;
-    cap.classList.remove('out');
-  }, instant ? 0 : 300);
-  document.querySelectorAll('.dots i').forEach((d, i) => d.classList.toggle('on', i + 1 === n));
-  document.body.className = `ch${n}` + (c.chart || c.wins ? ' overlay' : '');
-  document.getElementById('chart').hidden = !c.chart; document.getElementById('wins').hidden = !c.wins;
-  for (const g of ghosts) g.visible = !!c.more;
+// ── Camera
+const cam = {from: null, to: null, t0: 0, ms: 1300};
+function region() {
+  const w = innerWidth, h = innerHeight;
+  const pad = $('copy').getBoundingClientRect().left || 48, col = $('copy').getBoundingClientRect().width;
+  if (matchMedia('(max-aspect-ratio: 6/5)').matches) return {x: pad, y: 76, w: w - 2 * pad, h: Math.max(160, h * .52 - 76)};
+  const x = pad + col + Math.max(32, pad * .8);
+  return {x, y: 76, w: Math.max(200, w - x - pad * .6), h: h - 76 - 70};
 }
-const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-const timer = new THREE.Timer();
-let running = true, token = 0;
-(function tick(now) {
-  if (!running) { requestAnimationFrame(tick); return; }
-  timer.update(now); const e = timer.getElapsed();
-  if (cam.from) {
-    const p = Math.min(1, (performance.now() - cam.t0) / cam.ms), k = ease(p);
-    camera.position.lerpVectors(cam.from.p, cam.to.p, k); look.lerpVectors(cam.from.l, cam.to.l, k);
-    if (p >= 1) cam.from = null;
-  } else if (cam.to) {
-    // A slow drift keeps the held shot alive.
-    camera.position.copy(cam.to.p).add(new THREE.Vector3(Math.sin(e * .12) * .5, Math.sin(e * .09) * .2, 0)); look.copy(cam.to.l);
-  }
-  camera.lookAt(look);
-  for (const m of flowing) m.uniforms.time.value = e;
-  for (const p of Object.values(phones)) p.userData.aura.material.uniforms.time.value = e;
-  for (const o of orbs) o.userData.ring.rotation.z = e * .6;
-  S.frame(); requestAnimationFrame(tick);
-})(performance.now());
+function shot(i) {
+  const s = STEPS[i], box = new THREE.Box3();
+  for (const o of s.frame()) { o.updateWorldMatrix(true, true); box.expandByObject(o); }
+  box.expandByVector(new THREE.Vector3(.3, .5, .3));
+  return framing(S.camera, box, s.dir, region(), innerWidth, innerHeight);
+}
+function place(p) {
+  S.camera.position.copy(p.position); S.camera.lookAt(p.target);
+  S.camera.setViewOffset(innerWidth, innerHeight, p.offset[0], p.offset[1], innerWidth, innerHeight);
+}
+const easeIO = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 
-const start = Number(Q.get('ch') || 1);
-show(start, true);
-// Playback: ?auto=1 plays from the start chapter on load; a framing page can also send {cmd: 'play' | 'pause'}.
-// Paused means no rendering at all, so a hidden story costs nothing while the command view runs.
-async function playAll(from) {
-  const mine = ++token, wait = ms => new Promise(r => setTimeout(r, ms)), HOLD = Number(Q.get('hold') || 7000);
-  for (let n = from; n <= N; n++) {
-    if (mine !== token) return;
-    if (n !== from || current !== n) show(n);
-    await wait(HOLD + (CH[n].chart || CH[n].wins ? 2500 : 0));
-  }
-  if (mine !== token) return;
-  window.__done = true; parent.postMessage({showcase: 'b-done'}, '*');
-  // ?kiosk=go: the story once, then the command view; ?kiosk=loop: the story over and over.
-  if (Q.get('kiosk') === 'go') leave(`${PAGES.command}?kiosk=go`);
-  if (Q.get('kiosk') === 'loop') { document.body.classList.add('leaving'); await wait(800); show(1, true); document.body.classList.remove('leaving'); playAll(1); }
+// ── Navigation
+let current = -1, swap = 0;
+function go(i, instant = false) {
+  i = Math.max(0, Math.min(STEPS.length - 1, i));
+  if (i === current && !instant) return;
+  const prev = current; current = i;
+  const s = STEPS[i];
+  for (const [k, step] of STEPS.entries()) step.show?.(k === i);
+  // Only the subject on screen (and, while flying, the one being left) is drawn.
+  const keep = new Set([AREA[s.kicker], prev >= 0 && !instant ? AREA[STEPS[prev].kicker] : null]);
+  for (const [name, g] of Object.entries(groups)) g.visible = keep.has(name);
+  clearTimeout(go.hide); if (keep.size > 1) go.hide = setTimeout(() => { for (const [name, g] of Object.entries(groups)) g.visible = name === AREA[STEPS[current].kicker]; }, cam.ms + 50);
+  tagsFor(i);
+  const copy = $('copy');
+  clearTimeout(swap);
+  if (instant || prev < 0) writeCopy(s);
+  else { copy.classList.add('out'); swap = setTimeout(() => { writeCopy(s); copy.classList.remove('out'); }, 230); }
+  for (const [k, li] of [...dotsBox.children].entries()) { const b = li.firstChild; if (k === i) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current'); }
+  $('count').textContent = `${String(i + 1).padStart(2, '0')} / ${String(STEPS.length).padStart(2, '0')}`;
+  $('prev').disabled = i === 0; $('next').disabled = i === STEPS.length - 1;
+  if (location.hash !== `#${i + 1}`) history.replaceState(null, '', `${location.pathname}${location.search}#${i + 1}`);
+  if (!S) return;
+  const to = shot(i);
+  if (instant || prev < 0 || reduced) { cam.from = null; cam.to = to; place(to); }
+  else { cam.from = {position: S.camera.position.clone(), target: cam.to.target.clone(), offset: [...cam.to.offset]}; cam.to = to; cam.t0 = performance.now(); }
 }
-addEventListener('message', e => {
-  if (e.data?.cmd === 'play') { running = true; show(1, true); playAll(1); }
-  if (e.data?.cmd === 'pause') { running = false; token++; }
-});
-if (Q.get('auto') || Q.get('kiosk')) playAll(start);
+// Tags name the step they belong to by its place in the full story, so a story without history still matches them.
+const ORDER = STEPS.map(s => ['此刻', '来时路', '人和 Agent', '手机', '成果', '下一步'].indexOf(s.kicker) + 1);
+function tagsFor(i) { const n = ORDER[i]; for (const [t, steps] of tags) t.element.classList.toggle('off', !steps.includes(n)); }
+
+$('prev').addEventListener('click', () => { stopAuto(); go(current - 1); });
+$('next').addEventListener('click', () => { stopAuto(); go(current + 1); });
+$('full').addEventListener('click', () => fullscreen());
+function fullscreen() { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.().catch(() => {}); }
 addEventListener('keydown', e => {
-  if (e.key === 'ArrowRight' && current < N) show(current + 1);
-  if (e.key === 'ArrowLeft' && current > 1) show(current - 1);
-  if (e.key === 'a' || e.key === 'A') leave(PAGES.command);
+  if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  const next = ['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(e.key), back = ['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key);
+  if ((next || back) && e.target.closest?.('button, a') && e.key === ' ') return;
+  if (next) { e.preventDefault(); stopAuto(); go(current + 1); }
+  else if (back) { e.preventDefault(); stopAuto(); go(current - 1); }
+  else if (e.key === 'Home') { stopAuto(); go(0); } else if (e.key === 'End') { stopAuto(); go(STEPS.length - 1); }
+  else if (/^[1-9]$/.test(e.key)) { stopAuto(); go(Number(e.key) - 1); }
+  else if (e.key === 'f' || e.key === 'F') fullscreen();
 });
-document.querySelector('.brand small').textContent = `${data.source || '本节点'} · 截至 ${new Intl.DateTimeFormat('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false}).format(new Date(data.at * 1000))}`;
-setTimeout(() => { window.__ready = true; }, 1500);
+addEventListener('hashchange', () => { const n = Number(location.hash.slice(1)); if (n) go(n - 1); });
+addEventListener('resize', () => { if (!S) return; S.resize(); if (current >= 0) { cam.from = null; cam.to = shot(current); place(cam.to); } });
+
+// ── Frame loop (idle when the tab is hidden)
+const clock = new THREE.Timer();
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!S || document.visibilityState !== 'visible') return;
+  clock.update(now); const t = clock.getElapsed();
+  if (cam.from) {
+    const p = Math.min(1, (performance.now() - cam.t0) / cam.ms), k = easeIO(p), to = cam.to, from = cam.from;
+    const pos = from.position.clone().lerp(to.position, k), lift = from.position.distanceTo(to.position) * .12 * Math.sin(Math.PI * p);
+    pos.y += lift;
+    S.camera.position.copy(pos); S.camera.lookAt(from.target.clone().lerp(to.target, k));
+    S.camera.setViewOffset(innerWidth, innerHeight, from.offset[0] + (to.offset[0] - from.offset[0]) * k, from.offset[1] + (to.offset[1] - from.offset[1]) * k, innerWidth, innerHeight);
+    if (p >= 1) cam.from = null;
+  } else if (cam.to && !reduced) {
+    // A slow sway keeps a held shot alive without moving the subject out of its place.
+    const rel = cam.to.position.clone().sub(cam.to.target), a = Math.sin(t * .13) * .035;
+    rel.applyAxisAngle(new THREE.Vector3(0, 1, 0), a);
+    S.camera.position.copy(cam.to.target).add(rel); S.camera.lookAt(cam.to.target);
+  }
+  for (const f of animate) f(t);
+  S.render();
+}
+
+// ── Auto play (kiosk): hold each step, then hand over to the command view.
+let auto = 0;
+function stopAuto() { auto++; }
+async function play(from) {
+  const mine = ++auto, wait = ms => new Promise(r => setTimeout(r, ms)), HOLD = Number(Q.get('hold') || 9000);
+  for (let i = from; i < STEPS.length; i++) {
+    if (mine !== auto) return;
+    go(i); await wait(HOLD + (STEPS[i].quote || STEPS[i].facts.length > 3 ? 2500 : 0));
+  }
+  if (mine !== auto) return;
+  window.__done = true;
+  if (Q.get('kiosk')) { document.body.style.transition = 'opacity .7s'; document.body.style.opacity = 0; await wait(700); location.href = '/dash/showcase/command?kiosk=loop'; }
+}
+
+// ── Start
+const start = Number(location.hash.slice(1) || Q.get('ch') || 1) - 1;
+if (S) S.resize();   // now that every dot field exists
+go(start, true);
+if (S) { S.render(); $('c').classList.add('on'); }
+requestAnimationFrame(frame);
+if (Q.get('kiosk') || Q.get('auto')) play(start);
+window.__story = {go, steps: STEPS.length, get current() { return current; }};
+setTimeout(() => { window.__ready = true; }, 400);
