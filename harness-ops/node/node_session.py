@@ -5,7 +5,7 @@ import re
 import subprocess
 
 from artifact_io import relative_path
-from device_scope import binding, lease_problem
+from device_scope import binding, lease_problem, same_binding, same_bound_spec
 from runtime_identity import is_gray_session
 
 MAX_REQUEST = 64 << 10
@@ -77,7 +77,7 @@ def _source_binding(source, bound):
             raise SessionError(409, "session_recovery_binding", "source command did not record this device scope")
         return None
     original = binding(original)
-    if (bound.get("device_binding") != original or bound.get("lease_scope") != "device"
+    if (not same_binding(bound.get("device_binding"), original) or bound.get("lease_scope") != "device"
             or bound.get("serial") != original["serial"]):
         raise SessionError(409, "session_recovery_binding", "source session scope differs from its frozen command")
     return original
@@ -89,7 +89,7 @@ def validate_recovery_spec(jobs, spec):
     expected = {**_recovery_spec(jobs, source["job_id"], bound, spec["recovery_for"]),
                 "resources": source["resources"],
                 **({"priority": spec["priority"]} if "priority" in spec else {})}
-    if spec != expected:
+    if not same_bound_spec(spec, expected):
         raise SessionError(409, "session_recovery_binding", "bound recovery must inherit the exact original session and resources")
 
 
@@ -97,7 +97,7 @@ def _check_attempt(jobs, source, bound, child):
     expected = {**_recovery_spec(jobs, source["job_id"], bound, child["spec"]["recovery_for"]),
                 "resources": source["resources"],
                 **({"priority": child["spec"]["priority"]} if "priority" in child["spec"] else {})}
-    if child["spec"] != expected or child["resources"] != source["resources"]:
+    if not same_bound_spec(child["spec"], expected) or child["resources"] != source["resources"]:
         raise SessionError(409, "session_recovery_binding", "recovery command does not match its original session binding")
 
 
@@ -273,11 +273,6 @@ def session_call(jobs, jid, *, request_id=None, action=None):
     fixed_env = getattr(jobs, "pf_env", None)
     env = dict(fixed_env) if fixed_env is not None else {
         k: v for k, v in os.environ.items() if not k.startswith("PF_JOB_") and k != "DEVLOCK_LABEL"}
-    if action is None or meta.get("state") == "finished":
-        # Status only reads existing records/owner locks. Output can become
-        # node-private before terminal metadata is published; ordinary Unix
-        # access works across that handback without applying a stale write policy.
-        env.pop("PHONEFARM_SHARED_GID", None)
     try:
         result = subprocess.run(command, cwd=cwd, env=env, input=payload, capture_output=True,
                                 timeout=HELPER_TIMEOUT, check=False)

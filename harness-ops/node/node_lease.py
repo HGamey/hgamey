@@ -8,11 +8,8 @@ import time
 from device_scope import device_access, scopes
 
 
-def prepare_receipt_directory(store, jid, shared_gid=None):
-    """Also covers queued jobs prepared by an older node before the upgrade."""
-    if shared_gid is not None:
-        store.mkdir(jid + "/out", shared_gid=shared_gid)
-    store.mkdir(jid + "/out/lease-receipts", shared_gid=shared_gid)
+def prepare_receipt_directory(store, jid):
+    store.mkdir(jid + "/out/lease-receipts")
 
 
 def job_lease_receipts(store, jid):
@@ -99,29 +96,12 @@ def storage_root(value):
     storage = value.get("storage")
     if not isinstance(storage, dict) or storage.get("schema_version") != 1:
         raise ValueError("lease storage contract unavailable; upgrade phonefarm")
-    if storage.get("readiness") != "ready":
-        raise ValueError(storage.get("error") or "lease storage requires explicit initialization")
+    if storage.get("error"):
+        raise ValueError(storage["error"])
     root = storage.get("devlock_dir")
     if not isinstance(root, str) or not os.path.isabs(root):
         raise ValueError("phonefarm returned an invalid devlock directory")
     return root
-
-
-def queue_directory(value):
-    """Resolve readonly queue files without changing the execution domain root."""
-    root = storage_root(value)
-    storage = value["storage"]
-    layout = storage.get("layout_version", 1)
-    if type(layout) is not int or layout not in (1, 2):
-        raise ValueError("phonefarm returned an unsupported lease layout")
-    # Older PF explicitly uses the legacy root layout. A declared v2 layout
-    # must supply its actual queue path; the root now contains a permanent fence.
-    if layout == 1 and "queue_dir" not in storage:
-        return root
-    directory = storage.get("queue_dir")
-    if not isinstance(directory, str) or not os.path.isabs(directory):
-        raise ValueError("phonefarm returned an invalid storage.queue_dir")
-    return directory
 
 
 class LeaseState:

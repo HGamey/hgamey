@@ -53,8 +53,8 @@ job 的 status_revision 只覆盖 committed_status 小对象；原 SQLite 同事
 
 关键结束记录在worker释放flock、文件和目录同步后才提交SQLite终态。保存失败只保留该job资源并公开storage_blocked；retry-finalize仅重新保存，不重放命令，普通release不得绕过。准备失败/取消的未执行依据由SQL记录，查询不得通过缺文件猜执行结果。范围不含任意producer输出的断电持久性；合同见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-DURABILITY.md 。
 
-显式--worker-prefix让node lease/session reader共用可信安装中的PF路径与共享组配置，不开启contained准入。contained的lease-receipts由worker核空out后创建；普通process_group保留原准备流程。finished后的session查询按封存后的私有输出权限读取；配置不含服务凭据。
+显式--worker-prefix只选择独立 contained worker 的可信安装和 execution reconcile 入口，不再配置 PF 路径或共享组。普通 process_group 的 lease-receipts 由 Node 创建；finished 后的 session 查询读取原输出。
 
-显式PF共享profile也用于process_group的新out和lease-receipts，创建时设置同组2770；旧queued私有输出在启动前拒绝，不在线改权。未配置profile时仍使用原私有目录。
+PF 与 Node 使用同 UID 的普通输出和 lease-receipts；跨 UID/GID 的 PF 共享 profile 已退役。独立 contained worker 的 cgroup 隔离、私有输出交还和 HTTP 路径边界保留。
 
 显式execution reconcile仅由声明能力的固定安装提供，普通核查不杀进程；force只作用于核实boot/inode的绑定cgroup。保存handoff义务后才能改输出身份，下一次复用UID先核持久记录。宿主核查完成保留原lost/outcome与设备恢复义务；queue-release/session-recover共用宿主资格，不能以lease clear代替域空和私有输出交还。跨boot判断模型不等于真实主机重启验收。

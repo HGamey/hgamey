@@ -177,7 +177,7 @@ class HubTests(unittest.TestCase):
 
     def test_bound_capture_keeps_scope_cache_and_legacy_global(self):
         domain = "a" * 32
-        bound = {"schema": "phonefarm/device-binding@1", "domain_id": domain,
+        bound = {"schema": "phonefarm/device-binding@1",
                  "registry_revision": 1, "device_id": "B", "serial": "USB-B"}
         lease = {"status": "held", "entries": [{"label": "A task"}],
                  "storage": {"readiness": "ready", "layout_version": 2, "domain_id": domain},

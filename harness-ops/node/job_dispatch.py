@@ -11,7 +11,7 @@ import time
 import uuid
 
 from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, job_priority
-from device_scope import scope, lease_problem
+from device_scope import scope, lease_problem, same_binding, resource as device_resource
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
 from node_session import recovery_source_out, SessionError
@@ -86,9 +86,23 @@ class JobDispatch:
 
     def submit(self, spec, body, request_id, *, admit=None):
         key = self.request_key(uuid.uuid4().hex if request_id is None else request_id)
-        fingerprint = request_fingerprint(spec, body)
         with file_lock(self.intake_path):
             prior = self.queue.by_request(key)
+            if prior and prior["spec"].get("device_binding") and same_binding(
+                    prior["spec"]["device_binding"], spec.get("device_binding")):
+                # Replay hashes the original metadata; retiring lock fields
+                # must not turn an unchanged saved request into new content.
+                saved = prior["spec"]["device_binding"]
+                resources = set(spec["resources"])
+                current = device_resource(saved)
+                if saved.get("domain_id"):
+                    old = "device:" + saved["domain_id"] + ":" + saved["device_id"]
+                    if old in prior["resources"]:
+                        resources.add(old)
+                        if current not in prior["resources"]:
+                            resources.discard(current)
+                spec = {**spec, "device_binding": saved, "resources": sorted(resources)}
+            fingerprint = request_fingerprint(spec, body)
             if admit is not None and not prior:
                 admit()
             if spec.get("recovery_for") and not prior:
@@ -361,9 +375,7 @@ class JobDispatch:
             self.jobs.programs.require_session(spec, prepared)
             self.jobs.validate_prepared_scope(row, prepared)
             if policy == "process_group":
-                shared_gid = (int(self.jobs.pf_env["PHONEFARM_SHARED_GID"])
-                              if self.jobs.pf_env is not None else None)
-                prepare_receipt_directory(self.jobs._read_root, jid, shared_gid=shared_gid)
+                prepare_receipt_directory(self.jobs._read_root, jid)
             recovery_out = recovery_source_out(self.jobs, row)
         except (OSError, ValueError, AttributeError, KeyError, SessionError) as error:
             self.finish_unstarted(row, "failed", f"prepared input is unavailable: {error}")

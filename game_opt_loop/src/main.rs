@@ -516,7 +516,7 @@ fn run_serve(
     let phonefarm_bin = std::path::absolute(
         phonefarm_bin.unwrap_or_else(|| phonefarm_root.join("phonefarm")),
     )?;
-    let resolved_root = game_opt_loop::devlock::resolve_queue_dir(&phonefarm_bin, lock_root.as_deref())?;
+    let resolved_root = game_opt_loop::devlock::resolve_lock_dir(&phonefarm_bin, lock_root.as_deref())?;
     if lock_root.is_some() {
         eprintln!(
             "--lock-root: 历史文件只读目录覆盖 {}；实时 fleet 仍使用 phonefarm 自身锁目录，不授予设备写入权限",

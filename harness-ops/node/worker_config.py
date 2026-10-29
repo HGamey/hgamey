@@ -1,4 +1,4 @@
-"""Fixed worker installation and shared PF environment contract."""
+"""Fixed worker installation contract."""
 import json
 import os
 from pathlib import Path
@@ -39,7 +39,6 @@ def configuration(prefix):
     for key in ("jobs_root", "cgroup_root"):
         if not isinstance(config.get(key), str) or not os.path.isabs(config[key]):
             raise ValueError(key + " must be an absolute administrator-configured path")
-    phonefarm_environment(config)
     return config
 
 
@@ -55,46 +54,11 @@ def require_capability(entry, capability):
     return config
 
 
-PF_ROOTS = ("PHONEFARM_STATE_DIR", "DEVLOCK_DIR", "PHONEFARM_LEASE_DIR")
-PF_TOOLS = ("ADB_BIN", "DEVLOCK_BIN", "AAPT2_BIN")
-
-
-def phonefarm_environment(config):
-    """Only administrator-selected PF paths and the dedicated job group cross UIDs."""
-    value = config.get("pf_env")
-    if value is None:
-        return None
-    if not isinstance(value, dict) or set(value) - set((*PF_ROOTS, *PF_TOOLS, "PHONEFARM_SHARED_GID")):
-        raise ValueError("unsupported fixed phonefarm environment")
-    for key in PF_ROOTS:
-        if not isinstance(value.get(key), str) or not os.path.isabs(value[key]):
-            raise ValueError(key + " must be an explicit absolute path")
-    for key in PF_TOOLS:
-        if key in value and (not isinstance(value[key], str) or not os.path.isabs(value[key])):
-            raise ValueError(key + " must be an absolute administrator-selected tool")
-    if value.get("PHONEFARM_SHARED_GID") != str(config["gid"]):
-        raise ValueError("PF sharing group must be the dedicated job group")
-    jobs = os.path.realpath(config["jobs_root"])
-    for key in PF_ROOTS:
-        if os.path.commonpath((jobs, os.path.realpath(value[key]))) == jobs:
-            raise ValueError("persistent PF roots cannot be inside the jobs directory")
-    return {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", **value}
-
-
 def node_configuration(prefix, jobs_root=None):
     """Read the same immutable, non-secret configuration as the fixed worker."""
     config = configuration(Path(prefix))
     if os.geteuid() != config["node_uid"] or os.getegid() != config["node_gid"]:
         raise ValueError("node identity does not match installed worker configuration")
-    if config.get("pf_env") and config["gid"] not in {*os.getgroups(), os.getegid()}:
-        raise ValueError("node process must already belong to the dedicated PF sharing group")
     if jobs_root is not None and os.path.realpath(jobs_root) != os.path.realpath(config["jobs_root"]):
         raise ValueError("node jobs root does not match installed worker configuration")
     return config
-
-
-def node_environment(prefix, jobs_root=None):
-    env = phonefarm_environment(node_configuration(prefix, jobs_root))
-    if env is None:
-        raise ValueError("installed worker has no shared PF profile")
-    return env

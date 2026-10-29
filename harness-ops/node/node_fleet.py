@@ -5,7 +5,7 @@ import os
 import subprocess
 import threading
 import time
-from node_lease import LeaseState, queue_directory
+from node_lease import LeaseState, storage_root
 
 VIEW_IDLE_S = 90
 FLEET_EVERY_FREE_S = 30
@@ -99,7 +99,7 @@ class FleetState:
                     stale=False, queue=[], recent=[], free_for_s=None, error=lease.get("error"), lease=lease)
         # Existing logs remain history; they never decide current occupancy.
         try:
-            lock["recent"] = read_lock(queue_directory(lease))["recent"]
+            lock["recent"] = read_lock(storage_root(lease))["recent"]
         except ValueError:
             pass
         if lease["status"] == "clear":

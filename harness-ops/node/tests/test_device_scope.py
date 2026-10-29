@@ -21,7 +21,7 @@ DOMAIN = "a" * 32
 
 
 def bound(device, serial):
-    return {"schema": "phonefarm/device-binding@1", "domain_id": DOMAIN,
+    return {"schema": "phonefarm/device-binding@1",
             "registry_revision": 1, "device_id": device, "serial": serial}
 
 
@@ -40,7 +40,7 @@ with (root/'calls.jsonl').open('a') as log:
 if args[:2] == ['lease','resolve']:
     serial=args[args.index('--serial')+1]
     data=json.loads((root/'registry.json').read_text())
-    print(json.dumps({'schema':'phonefarm/device-binding@1','domain_id':'a'*32,
+    print(json.dumps({'schema':'phonefarm/device-binding@1',
         'registry_revision':data['revision'],'device_id':data['aliases'][serial],'serial':serial}))
     sys.exit(0)
 if args[:2] == ['lease','devices']:

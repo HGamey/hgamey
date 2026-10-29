@@ -56,10 +56,9 @@ class NodeDeployCLI(unittest.TestCase):
                         with patch.dict(os.environ, {**env, "HG_CONFIG_DIR": str(target)}, clear=True), \
                                 patch("job_dispatch.job_runtime.launch", side_effect=track_worker):
                             jobs = Jobs(str(home / "node"), {"install_secrets": (sys.executable, str(home / "node"))})
-                            # The installed profile filters the service environment;
-                            # use the fixture's own group, with no privileged entry.
-                            jobs.pf_env = {**env, "LANG": "C.UTF-8",
-                                           "PHONEFARM_SHARED_GID": str(os.getegid())}
+                            # The explicit worker environment still preserves the
+                            # selected config directory for secret installation.
+                            jobs.pf_env = {**env, "LANG": "C.UTF-8"}
                             self.assertNotIn("HG_CONFIG_DIR", jobs.pf_env)
                             try:
                                 value = jobs.start({"bin": "install_secrets",
