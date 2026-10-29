@@ -16,8 +16,7 @@
   let logOffset = 0, logText = '', logDecoder = new TextDecoder();
   let activeFilters = {query: '', state: ''};
   let currentJob = null, access = null, accessRevision = 0, accessBusy = false, accessError = '';
-  const cancelling = new Set(), cancelReceipts = new Map(), pauseReceipts = new Map(), releasing = new Set(), releaseReceipts = new Map();
-  const finalizing = new Set(), finalizeReceipts = new Map();
+  const cancelling = new Set(), cancelReceipts = new Map(), pauseReceipts = new Map(), resetting = new Set(), resetReceipts = new Map();
   const reconciling = new Set(), reconcileReceipts = new Map();
   let nodeInfo = null, leaseSnapshot = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
   let runtimeBusy = false;
@@ -27,7 +26,7 @@
   const jobEventPositions = new Map();
   let jobEventPosition = null, jobEventsController = null, jobEventsGeneration = 0, jobEventsBusy = false;
   let jobEventsTrimmed = 0, jobEventsStorageError = '', jobEventsDisposed = false;
-  const PHASES = {preparing: '准备中', queued: '排队中', blocked: '资源保留 · 待核查', starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finalizing: '正在保存结束记录', storage_blocked: '结果保存失败 · 资源保留', finished: '已结束', interrupted: '执行中断'};
+  const PHASES = {preparing: '准备中', queued: '排队中', blocked: '执行范围待核查', starting: '正在启动', running: '运行中', cancelling: '停止请求处理中', finalizing: '正在保存结束记录', finished: '已结束', interrupted: '执行中断'};
 
   const text = value => value == null ? '未记录' : String(value);
   function el(tag, value, className) {
@@ -319,11 +318,16 @@
   function diskGuardTriggered(job) { return Number.isFinite(job.execution?.disk_guard?.triggered_at); }
   function status(job) {
     if (job.observation === 'historical_readonly') return [`原记录：${job.recorded_phase || job.recorded_state || '状态未记录'}${Number.isInteger(job.recorded_exit) ? ` · exit ${job.recorded_exit}` : ''}`, 'unknown'];
+    let [label, kind] = runStatus(job);
+    if (job.queue?.state === 'done' && job.recovery?.status === 'required' && !label.includes('恢复')) [label, kind] = [`${label} · 设备恢复待核查`, 'unknown'];
+    if (job.storage_error) [label, kind] = [`${label} · 结果保存失败`, 'unknown'];
+    return [label, kind];
+  }
+  function runStatus(job) {
     const exceeded = budgetExceeded(job);
     const trigger = [exceeded ? '运行期限已触发' : '', diskGuardTriggered(job) ? '磁盘保护已触发' : ''].filter(Boolean).join('、');
-    if (storageFailed(job)) return [PHASES.storage_blocked, 'unknown'];
-    if (job.phase === 'finalizing') return [PHASES.finalizing, 'unknown'];
-    if (job.queue?.state === 'blocked' || job.phase === 'blocked') return [trigger ? `资源保留 · ${trigger}` : '资源保留 · 待核查', 'unknown'];
+    if (job.queue?.state === 'blocked' || job.phase === 'blocked') return [trigger ? `执行范围待核查 · ${trigger}` : '执行范围待核查', 'unknown'];
+    if (job.phase === 'finalizing' && job.queue?.state !== 'done') return [PHASES.finalizing, 'unknown'];
     if (['preparing', 'queued'].includes(job.phase)) return [PHASES[job.phase], ''];
     if (job.phase === 'interrupted' || job.outcome === 'interrupted') return [trigger ? `执行中断 · ${trigger}` : '执行中断 · 待核查', 'unknown'];
     if (job.phase === 'cancelling') return [trigger ? `${trigger} · 停止处理中` : '停止请求处理中', 'unknown'];
@@ -525,8 +529,7 @@
     const terminal = currentJob.state === 'finished' || ['finished', 'interrupted'].includes(currentJob.phase);
     const supported = currentJob.execution?.kind === 'supervised-v1';
     const pending = cancelling.has(currentJob.id);
-    const saving = currentJob.phase === 'finalizing' || storageFailed(currentJob);
-    const allowed = !!access?.steer && HGTarget.canWrite() && HGTarget.canWrite() && !accessBusy && !pending && !terminal && supported && !saving;
+    const allowed = !!access?.steer && HGTarget.canWrite() && !accessBusy && !pending && !terminal && supported;
     const queued = ['preparing', 'queued'].includes(currentJob.phase);
     const stopping = currentJob.phase === 'cancelling' && currentJob.cancel?.status !== 'not_applied';
     $('cancel-job').disabled = !allowed || !currentJob.controls?.cancel_supported || stopping;
@@ -539,7 +542,7 @@
     $('cancel-job').setAttribute('aria-busy', String(pending));
     $('cancel-job').textContent = pending ? '提交中…' : queued ? '撤销排队' : '请求停止';
     $('force-submit').setAttribute('aria-busy', String(pending));
-    let reason = saving ? '结束记录尚未提交；请核对下方结果保存状态，停止请求不能代替保存。' : !supported ? '旧版任务仅支持查看，当前没有可核验的停止接口。' : terminal ? '任务执行已结束，无法继续发送停止请求。' :
+    let reason = !supported ? '旧版任务仅支持查看，当前没有可核验的停止接口。' : terminal ? '任务执行已结束，无法继续发送停止请求。' :
       !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先在上方解锁任务操作权限。' : stopping ? '停止请求已记录，等待任务处理；刷新任务可核对进度。' :
       !currentJob.controls?.cancel_supported ? '当前任务不支持请求停止。' : queued ? '撤销尚未执行的任务，不发送进程信号。请以最新任务状态确认撤销结果。' : '请求停止只发送 SIGINT，不会自动升级终止。接受请求不代表任务已停止或设备已恢复。';
     if (currentJob.time_budget) reason += ' 另有本任务的运行预算，到期动作见预算记录；人工请求不重置既有升级时钟。';
@@ -552,35 +555,55 @@
     const pauseReceipt = pauseReceipts.get(currentJob.id);
     $('pause-result').hidden = !pauseReceipt;
     if (pauseReceipt) message('pause-result', pauseReceipt.message, pauseReceipt.error);
-    const blocked = currentJob.queue?.state === 'blocked';
-    $('queue-release-panel').hidden = !blocked;
-    const releaseBusy = releasing.has(currentJob.id);
-    const eligibility = currentJob.queue?.release_eligibility;
-    const releaseProblem = eligibility ? eligibility.eligible === true ? '' : eligibility.reason || '节点未确认此任务的释放资格。' : currentJob.device_binding ? '节点未返回此绑定任务的释放资格，请刷新任务；不会用全域摘要推断设备范围。' :
-      ['write', 'recovery'].includes(currentJob.device_access) && (leaseSnapshot?.status !== 'clear' || leaseStorageBlocked(leaseSnapshot)) ? '兼容全域任务尚未满足放行条件：实际 lease 需 clear，存储也需就绪。' : '';
-    const leaseBlocked = !!releaseProblem;
-    const hostProblem = hostCompletionProblem(currentJob);
-    $('recovery-prepare-panel').hidden = !blocked;
-    $('prepare-recovery').disabled = !blocked || saving || !access?.steer || !HGTarget.canWrite() || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
-    message('recovery-prepare-help', saving ? '结束记录尚未提交，暂不能以此任务创建恢复任务。请先处理存储问题并重试保存结果。' : !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : '只预填恢复目标和模式；请由人或 Agent 填写实际恢复命令，执行后仍需核查并解除资源保留。');
-    $('queue-release-note').disabled = releaseBusy;
-    $('queue-release-submit').disabled = !blocked || !access?.steer || !HGTarget.canWrite() || accessBusy || releaseBusy || saving || !!hostProblem || leaseBlocked || !$('queue-release-note').value.trim();
-    $('queue-release-submit').setAttribute('aria-busy', String(releaseBusy));
-    $('queue-release-submit').textContent = releaseBusy ? '提交中…' : '确认解除资源保留';
-    message('queue-release-help', saving ? '结束记录尚未保存，不能通过解除资源保留绕过。请先处理存储问题并重试保存结果。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : hostProblem || (releaseProblem ? `${releaseProblem} 请核查后刷新任务；填写说明不能绕过屏障。` : '节点已返回当前任务的释放资格，提交时仍会重新核查。请填写说明；解除只影响此任务保留的资源。'));
-    const released = releaseReceipts.get(currentJob.id);
-    $('queue-release-result').hidden = !released;
-    if (released) message('queue-release-result', released.message, released.error);
+    renderReset(currentJob);
+    const recovery = currentJob.state === 'finished' && currentJob.recovery?.status === 'required';
+    $('recovery-prepare-panel').hidden = !recovery;
+    $('prepare-recovery').disabled = !recovery || !access?.steer || !HGTarget.canWrite() || accessBusy || !recoverySupported() || !!pendingRequest || submissionBusy;
+    message('recovery-prepare-help', !recoverySupported() ? '此节点未提供恢复任务能力。' : pendingRequest ? '先找回或确认上方未决提交，再准备恢复任务。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先解锁任务操作权限。' : '设备还原用原 session 的恢复命令或 adb；这里只预填恢复目标，命令由人或 Agent 填写。重置只归还调度资源，不还原设备。');
     renderFinalization(currentJob);
     renderReconciliation(currentJob);
   }
-  function storageFailed(job) { return job.phase === 'storage_blocked' || job.queue?.state_reason?.kind === 'durability'; }
+  // One entry for stopping, releasing an unknown execution scope and retrying a failed save. Never replays the command.
+  function renderReset(job) {
+    const state = job.queue?.state, busyNow = resetting.has(job.id), receipt = resetReceipts.get(job.id);
+    const useful = state === 'claimed' || state === 'blocked' || !!job.storage_error;
+    $('reset-panel').hidden = !useful;
+    $('reset-note').disabled = busyNow;
+    const unlocked = !!access?.steer && HGTarget.canWrite() && !accessBusy;
+    $('reset-submit').disabled = !useful || !unlocked || busyNow || !$('reset-note').value.trim();
+    $('reset-submit').setAttribute('aria-busy', String(busyNow));
+    $('reset-submit').textContent = busyNow ? '重置中…' : '重置';
+    message('reset-help', !useful ? '' : !unlocked ? '请先解锁任务操作权限。' : state === 'blocked' ? '原进程组是否结束还没查清。重置会结束组内剩余进程，并释放本任务保留的原范围。' :
+      state === 'claimed' ? '重置会按停止的同一流程（INT → TERM → KILL）结束整个进程组，再释放资源。' : '结果保存失败。重置会重新保存原有结束记录。');
+    $('reset-result').hidden = !receipt;
+    if (receipt) message('reset-result', receipt.message, receipt.error);
+  }
+  async function resetJob() {
+    const job = currentJob;
+    if (!job || $('reset-submit').disabled) return;
+    const id = job.id, note = $('reset-note').value.trim();
+    resetting.add(id);
+    renderControls();
+    try {
+      const result = await post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note});
+      const saveError = result.job?.storage_error?.message;
+      resetReceipts.set(id, {message: result.released !== true ? '资源尚未释放，请以最新任务状态为准。' : result.storage_committed === true ? '已重置，资源已释放。设备是否还原需另行核对。' : `资源已释放，但结束记录仍未保存${saveError ? `：${saveError}` : ''}。修复后可再次重置。`,
+        error: result.released !== true || result.storage_committed !== true});
+      if (result.released === true) $('reset-note').value = '';
+    } catch (error) {
+      resetReceipts.set(id, {message: !error.status || error.status >= 500 ? `重置结果未确认，请刷新任务核对；不会自动重发。${errorText(error)}` : errorText(error), error: true});
+      if (error.status === 401 || error.status === 403) await loadAccess();
+    } finally {
+      resetting.delete(id);
+      await Promise.all([loadQueue(), !historical() && selected === id ? selectJob(id, true) : null]);
+    }
+  }
   function hostCompletionProblem(job, forSessionRecovery = false) {
     const execution = job.execution || {};
     const contained = job.execution_policy === 'contained' || execution.process_management?.policy === 'contained';
     if (!contained && !forSessionRecovery) return '';
     if ((forSessionRecovery && execution.kind !== 'supervised-v1') || execution.worker_alive !== false) return '原 worker 尚未确认结束，请先核查执行域；不能据此恢复会话或解除资源保留。';
-    if (!contained) return job.phase === 'finished' && !job.lost && execution.owned_process_group?.status === 'absent' ? '' : '原进程组结束尚未确认，不能提交会话恢复任务。';
+    if (!contained) return job.queue?.state === 'done' ? '' : '原任务的执行范围尚未确认结束；请先重置任务，再恢复会话。';
     const group = execution.owned_cgroup, reconciliation = execution.reconciliation;
     if (!execution.containment) {
       const noGroup = !group || Object.keys(group).length === 0;
@@ -595,7 +618,6 @@
   }
   function reconciliationProblem(job) {
     if (!nodeInfo?.capabilities?.includes('jobs.execution-reconcile-v1')) return '此节点未提供 jobs.execution-reconcile-v1，执行域核查入口不可用。';
-    if (storageFailed(job) || job.phase === 'finalizing') return '原任务结束记录尚未确认保存，请先处理结果保存。';
     if (['requested', 'running'].includes(job.execution?.reconciliation?.state)) return '核查请求仍在处理中，请读取原任务状态；不会重复提交。';
     if (job.state !== 'finished' || job.queue?.state !== 'blocked') return '原任务须已结束并保留队列资源，才能核查执行域。';
     if (job.execution_policy !== 'contained' && job.execution?.process_management?.policy !== 'contained') return '此任务未声明或实际使用 contained，不能按约束域核查。';
@@ -606,7 +628,8 @@
     const record = job.execution?.reconciliation, handoff = job.execution?.containment?.handoff;
     const receipt = reconcileReceipts.get(job.id), pending = reconciling.has(job.id);
     const supported = nodeInfo?.capabilities?.includes('jobs.execution-reconcile-v1'), problem = reconciliationProblem(job);
-    $('execution-reconcile-panel').hidden = !supported && !record && !handoff && !receipt;
+    const contained = job.execution_policy === 'contained' || job.execution?.process_management?.policy === 'contained';
+    $('execution-reconcile-panel').hidden = !contained || !supported && !record && !handoff && !receipt;
     const disabled = !!problem || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!receipt?.unconfirmed;
     $('execution-reconcile-check').disabled = disabled;
     $('execution-reconcile-force-open').disabled = disabled;
@@ -647,35 +670,11 @@
     } finally { reconciling.delete(id); if (selected === id && currentJob?.id === id) renderControls(); }
   }
   function renderFinalization(job) {
-    const failed = storageFailed(job), saving = job.phase === 'finalizing';
-    const receipt = finalizeReceipts.get(job.id), pending = finalizing.has(job.id);
-    const supported = nodeInfo?.capabilities?.includes('jobs.durability-v1');
-    $('finalize-panel').hidden = !failed && !saving && !receipt;
-    $('retry-finalize').disabled = !failed || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending;
-    $('retry-finalize').setAttribute('aria-busy', String(pending));
-    $('retry-finalize').textContent = pending ? '正在重试保存…' : '重试保存结果';
-    message('finalize-help', pending ? '正在同步原有结果记录，不会重新执行命令。' : saving ? '命令已返回结束记录，正在确认保存；当前仍未确认作业完成。' : failed ?
-      (!supported ? '此节点未提供 jobs.durability-v1，无法从本页重试保存；请升级节点。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '记录保存失败，资源继续保留。请先解锁任务操作权限，再重试保存。' : '记录保存失败，资源继续保留。修复存储问题后可重试；只保存原有结果，不重新执行命令。') : '保存回执仅说明存储提交情况；设备恢复与资源释放请另行核对。', failed);
-    const reason = job.queue?.state_reason;
-    facts('finalize-info', [['保存阶段', reason?.stage], ['失败原因', reason?.message], ['记录时间', time(reason?.at)], ...(reason?.unstarted != null ? [['未执行依据（节点记录）', structuredText(reason.unstarted)]] : []), ['原命令退出码（诊断）', job.exit], ['执行返回码（诊断）', job.execution?.returncode]]);
-    $('finalize-result').hidden = !receipt;
-    if (receipt) message('finalize-result', receipt.message, receipt.error);
-  }
-  async function retryFinalize() {
-    if (!currentJob || $('retry-finalize').disabled) return;
-    const id = currentJob.id, revision = detailRevision;
-    finalizing.add(id);
-    renderControls();
-    try {
-      const result = await post(`${API}/jobs/${encodeURIComponent(id)}/retry-finalize`, {});
-      finalizeReceipts.set(id, {message: result.storage_committed === true ? '结束记录的存储提交已确认；这不代表设备恢复完成，任务仍可能保留资源。' : `结束记录仍未保存，资源继续保留。${result.job?.queue?.state_reason?.message || '请核对最新存储错误后再重试。'}`, error: result.storage_committed !== true});
-    } catch (error) {
-      finalizeReceipts.set(id, {message: !error.status || error.status >= 500 ? `保存结果未确认，请刷新任务核对；不会自动重试。${errorText(error)}` : errorText(error), error: true});
-      if (error.status === 401 || error.status === 403) await loadAccess();
-    } finally {
-      finalizing.delete(id);
-      await Promise.all([loadQueue(), selected === id && detailRevision === revision ? selectJob(id, true) : null]);
-    }
+    const error = job.storage_error, saving = job.phase === 'finalizing' && job.queue?.state !== 'done';
+    $('finalize-panel').hidden = !error && !saving;
+    message('finalize-help', error ? '结束记录没有保存成功；资源不因此保留。可用下方「重置任务」重新保存，不会重新执行命令。' : saving ? '命令已返回，正在保存结束记录。' : '', !!error);
+    facts('finalize-info', error ? [['保存阶段', error.stage], ['失败原因', error.message], ['记录时间', time(error.at)], ...(error.unstarted != null ? [['未执行依据（节点记录）', structuredText(error.unstarted)]] : []), ['原命令退出码（诊断）', job.exit], ['执行返回码（诊断）', job.execution?.returncode]] : []);
+    $('finalize-result').hidden = true;
   }
   function budgetFacts(job) {
     const request = job.time_budget, record = job.execution?.time_budget;
@@ -751,7 +750,7 @@
       ['脱组后代', management?.detached_descendants === 'unverified' ? '未验证；不能据原进程组结束判断整棵进程树已结束。' : management?.detached_descendants || '未提供'],
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['声明设备范围', scopeText(job.queue?.device_scope || {scope: job.device_binding ? 'device' : job.device_access === 'none' ? 'none' : 'global', binding: job.device_binding})],
       ...(job.device_binding ? bindingFacts(job.device_binding) : []), ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
-      ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '已分配执行', blocked: '保留资源，待核查', done: '调度已结束'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
+      ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '执行中 · 占用名额与资源', blocked: '执行范围待核查 · 只保留原排他范围，名额已释放', done: '已结束 · 资源全部释放'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
       ...jobPriorityFacts(job),
       ['命令退出码', job.exit], ...jobCapacityFacts(job), ...budgetFacts(job), ...diskGuardFacts(job), ...stopIntentFacts(job), ...groupFacts, ['请求时间', time(cancellation?.requested_at)],
       ['首次停止来源', cancellation?.source === 'execution_deadline' ? '运行预算期限' : cancellation?.source || '未记录（可能为人工请求）'],
@@ -812,7 +811,7 @@
   function waitingText(waiting) {
     const reason = waiting?.reason;
     const capacityReason = ({max_running: '等待作业执行名额', slots_unavailable: '等待宿主 slots', request_exceeds_current_total: '原请求超过当前宿主容量'})[reason];
-    const label = waiting?.kind === 'capacity' ? capacityReason || '等待执行名额' : ({resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待核查并解除资源保留', durability: '等待保存结束记录', device_lease: '等待实际设备 lease'})[waiting?.kind] || '无等待原因';
+    const label = waiting?.kind === 'capacity' ? capacityReason || '等待执行名额' : ({resource: '等待独占资源', preparing: '正在准备任务', recovery: '等待原任务的执行范围核查（可重置）', durability: '等待原任务重置后重存结果', device_lease: '等待实际设备 lease'})[waiting?.kind] || '无等待原因';
     const shortage = shortageText(waiting?.shortages);
     return `${label}${reason && !capacityReason ? `：${reason}` : ''}${shortage ? `；${shortage}` : ''}${waiting?.lease_status ? `（${waiting.lease_status}）` : ''}${waiting?.scope ? ` · ${scopeText(waiting.scope)}` : ''}`;
   }
@@ -898,14 +897,14 @@
       if (revision !== queueRevision) return;
       renderLease(queue.lease);
       renderHostCapacity(queue.host_capacity);
-      $('queue-summary').replaceChildren(...[[queue.active_count, `已分配作业 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '保留资源']].map(([value, label]) => {
+      $('queue-summary').replaceChildren(...[[queue.active_count, `已分配作业 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '执行范围待核查']].map(([value, label]) => {
         const part = el('span'); part.append(el('strong', text(value)), el('span', label)); return part;
       }));
       $('queue-summary').hidden = false;
       for (const job of queue.items) {
         const item = el('li', null, 'queue-item');
         const identity = el('div');
-        identity.append(el('p', job.job_id, 'task-item-id'), el('span', job.state_reason?.kind === 'durability' ? PHASES.storage_blocked : PHASES[job.phase] || job.phase, `task-state ${job.phase === 'blocked' || job.state_reason?.kind === 'durability' ? 'unknown' : ''}`));
+        identity.append(el('p', job.job_id, 'task-item-id'), el('span', `${PHASES[job.phase] || job.phase}${job.state_reason?.kind === 'durability' ? ' · 结果保存失败' : ''}`, `task-state ${job.phase === 'blocked' || job.state_reason?.kind === 'durability' ? 'unknown' : ''}`));
         const wait = el('div');
         wait.append(el('p', waitingText(job.waiting)), el('p', job.resources.length ? `独占：${job.resources.join('、')}` : '未声明独占资源', 'queue-resource'));
         wait.append(el('p', `有效优先级：${priorityText(job.priority)}`, 'note'));
@@ -1376,23 +1375,6 @@
       submissionMessage(error.status === 404 ? '暂未找到此请求。若此前提交结果不确定，请保留原 ID 稍后再查；当前页面保有参数时也可用原 ID 重试。' : errorText(error), true, id);
     } finally { submissionBusy = false; renderSubmission(); }
   }
-  async function releaseQueue() {
-    const job = currentJob;
-    if (!job || $('queue-release-submit').disabled) return;
-    const note = $('queue-release-note').value.trim();
-    releasing.add(job.id);
-    renderControls();
-    try {
-      const result = await post(`${API}/jobs/${encodeURIComponent(job.id)}/queue-release`, {note});
-      releaseReceipts.set(job.id, {message: result.released === true ? '资源保留已解除，后续任务可继续调度。核查说明已记录；此操作不代表平台验证了设备恢复。' : result.job && storageFailed(result.job) ? `核查记录保存失败，资源仍然保留。请处理存储问题后重试保存结果。${result.job.queue?.state_reason?.message || ''}` : '资源未释放，请核对最新任务状态。', error: result.released !== true});
-    } catch (error) {
-      releaseReceipts.set(job.id, {message: !error.status || error.status >= 500 ? '释放结果尚未确认，请刷新任务和队列核对。' : error.status === 409 ? `资源未释放：当前条件不允许放行，请核查实际 lease 与任务状态。${errorText(error)}` : errorText(error), error: true});
-      if (error.status === 401 || error.status === 403) await loadAccess();
-    } finally {
-      releasing.delete(job.id);
-      await Promise.all([loadQueue(), !historical() && selected === job.id ? selectJob(job.id, true) : null]);
-    }
-  }
 
   async function loadNode(refreshRuntime = false) {
     if (runtimeBusy || refreshRuntime && $('refresh-runtime').disabled) return;
@@ -1532,8 +1514,8 @@
     $('force-confirm').checked = false;
     $('execution-reconcile-force-form').hidden = true;
     $('execution-reconcile-force-confirm').checked = false;
-    $('queue-release-panel').open = false;
-    $('queue-release-note').value = '';
+    $('reset-panel').open = false;
+    $('reset-note').value = '';
     $('detail-placeholder').hidden = false;
     $('detail-updated').textContent = '';
     $('refresh-detail').hidden = false;
@@ -1574,7 +1556,7 @@
         if (state) { state.textContent = label; state.className = `task-state ${kind}`; }
       }
       $('detail-updated').textContent = readTime();
-      facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['提交 / 旧开始字段', time(job.started)], [job.phase === 'finalizing' || storageFailed(job) ? '候选结束时间（未提交）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
+      facts('job-info', [['任务 ID', job.id], ...(job.request_id ? [['请求 ID', job.request_id]] : []), ['命令', job.bin], ['提交 / 旧开始字段', time(job.started)], [job.storage_error || job.phase === 'finalizing' && job.queue?.state !== 'done' ? '候选结束时间（未保存）' : '结束', time(job.ended)], ['记录说明', job.note || '无']]);
       renderCommitted(job);
       renderInputPreparation(job);
       $('job-command').textContent = JSON.stringify({bin: job.bin, argv: job.argv || []}, null, 2);
@@ -1689,8 +1671,7 @@
       if (!sessionRecoveryPlan.supported || !sessionRecoveryPlan.eligible) return sessionRecoveryPlan.reason || '节点报告当前不能继续恢复，请核查任务与收据。';
       return '';
     }
-    if (storageFailed(currentJob) || currentJob.phase === 'finalizing') return '原任务结束记录尚未确认保存，请先处理结果保存。';
-    if (currentJob.state !== 'finished' || currentJob.queue?.state !== 'blocked') return '原任务须已结束并保留资源；请先刷新任务核对状态。';
+    if (currentJob.state !== 'finished') return '原任务尚未结束；请先刷新任务核对状态。';
     const hostProblem = hostCompletionProblem(currentJob, true);
     if (hostProblem) return hostProblem;
     if (!sessionFresh || sessionBusy || !sessionState) return '请先成功读取最新会话状态。';
@@ -3030,7 +3011,6 @@
   $('cancel-job').addEventListener('click', () => cancelJob(false));
   $('pause-job').addEventListener('click', () => pauseResume('pause'));
   $('resume-job').addEventListener('click', () => pauseResume('resume'));
-  $('retry-finalize').addEventListener('click', retryFinalize);
   $('execution-reconcile-check').addEventListener('click', () => reconcileExecution(false));
   $('execution-reconcile-refresh').addEventListener('click', () => { if (selected && !$('execution-reconcile-refresh').disabled) selectJob(selected, true); });
   $('execution-reconcile-force-open').addEventListener('click', () => {
@@ -3095,12 +3075,12 @@
     $('submit-panel').open = true;
     submittedJob = '';
     $('submit-open-job').hidden = true;
-    submissionMessage('已准备恢复表单，尚未提交。请填写实际恢复命令和参数；原任务的屏障不会自动解除。');
+    submissionMessage('已准备恢复表单，尚未提交。请填写实际恢复命令和参数。');
     renderSubmission();
     $('submit-bin').focus();
   });
-  $('queue-release-note').addEventListener('input', renderControls);
-  $('queue-release-form').addEventListener('submit', event => { event.preventDefault(); releaseQueue(); });
+  $('reset-note').addEventListener('input', renderControls);
+  $('reset-form').addEventListener('submit', event => { event.preventDefault(); resetJob(); });
   try {
     const raw = sessionStorage.getItem(REQUEST_STORAGE);
     if (raw) {

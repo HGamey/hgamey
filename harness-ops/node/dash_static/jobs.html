@@ -393,7 +393,7 @@
           <p id="execution-reconcile-result" class="cancel-result" role="status" hidden></p>
         </section>
         <section id="finalize-panel" class="execution-panel" aria-labelledby="finalize-heading" hidden>
-          <div class="section-heading"><h3 id="finalize-heading">结果保存</h3><button id="retry-finalize" class="ghost" type="button" disabled>重试保存结果</button></div>
+          <div class="section-heading"><h3 id="finalize-heading">结果保存</h3></div>
           <p id="finalize-help" class="note"></p>
           <dl id="finalize-info" class="facts"></dl>
           <p id="finalize-result" class="cancel-result" role="status" hidden></p>
@@ -402,17 +402,16 @@
           <div class="section-heading"><h3>恢复任务</h3><button id="prepare-recovery" class="ghost" type="button" disabled>准备恢复任务</button></div>
           <p id="recovery-prepare-help" class="note"></p>
         </section>
-        <details id="queue-release-panel" class="queue-release-panel" hidden>
-          <summary>解除资源保留…</summary>
-          <p class="note">此任务仍有资源保留或核查义务。宿主 slots 释放与设备资源保留分别记录；恢复任务结束不会自动解除后者，管理员需核查证据后明确放行。设备写入或恢复任务还要求对应设备范围的实际 lease 屏障已清除。</p>
-          <form id="queue-release-form">
-            <label for="queue-release-note">核查说明 <span class="field-optional">必填</span></label>
-            <textarea id="queue-release-note" rows="3" required placeholder="记录已核查的进程、设备状态和恢复证据"></textarea>
-            <div class="submission-actions"><button id="queue-release-submit" class="ghost danger" type="submit" disabled>确认解除资源保留</button></div>
-            <p id="queue-release-help" class="note" role="status"></p>
+        <details id="reset-panel" class="queue-release-panel" hidden>
+          <summary>重置任务…</summary>
+          <form id="reset-form">
+            <label for="reset-note">说明 <span class="field-optional">必填</span></label>
+            <textarea id="reset-note" rows="3" maxlength="2000" required placeholder="为什么重置、看到了什么"></textarea>
+            <div class="submission-actions"><button id="reset-submit" class="ghost danger" type="submit" disabled>重置</button></div>
+            <p id="reset-help" class="note" role="status"></p>
           </form>
         </details>
-        <p id="queue-release-result" class="cancel-result" role="status" hidden></p>
+        <p id="reset-result" class="cancel-result" role="status" hidden></p>
         <p class="evidence-note"><strong>结果需核对证据</strong>退出码只说明命令执行情况。实验是否有效、是否有收益、设备是否已恢复，请核对报告和原始证据。</p>
         <section id="job-leases" class="job-leases" aria-labelledby="job-leases-heading">
           <div class="section-heading"><h3 id="job-leases-heading">本任务的 lease 证据</h3><button id="load-job-leases" class="ghost" type="button" disabled>读取 lease 证据</button></div>

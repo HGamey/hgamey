@@ -787,6 +787,23 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('agents = (await api(\'/agents\')', task)
         self.assertIn('renderDetail(detail)', research, "unlock must repaint the current task and its owner controls")
 
+    def test_the_jobs_page_resets_through_one_entry_and_never_replays(self):
+        # The page's only recovery action: POST /dash/api/jobs/<id>/reset {note}, steer required, repeatable.
+        script = (NODE / "dash_static/jobs.js").read_text(encoding="utf-8")
+        self.assertIn("post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note})", script)
+        for retired in ("queue-release", "retry-finalize", "release_eligibility", "storage_blocked"):
+            self.assertNotIn(retired, script)
+        path = f"/jobs/{self.jid}/reset"
+        self.assertEqual(self.web("POST", path, {"note": "页面重置"}, steer=False)[0], 403)
+        self.assertEqual(self.web("POST", path, {})[0], 400)
+        status, first = self.web("POST", path, {"note": "页面重置"})
+        self.assertEqual(status, 200, first)
+        self.assertEqual((first["released"], first["storage_committed"]), (True, True))
+        self.assertEqual((first["job"]["queue"]["state"], first["job"]["outcome"]), ("done", "cancelled"))
+        status, again = self.web("POST", path, {"note": "再按一次"})
+        self.assertEqual((status, again["released"], again["job"]["queue"]["state"]), (200, True, "done"))
+        self.assertFalse(os.path.exists(self.jobs.path(self.jid, "launch.json")), "reset must not start the command")
+
     def test_pages_link_versioned_assets_the_browser_may_keep(self):
         def get(path):
             connection = http.client.HTTPConnection(*self.address, timeout=10)

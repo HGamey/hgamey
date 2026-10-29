@@ -5,7 +5,7 @@
   const PENDING_KEY = 'hgamey.game-preparation.pending', REGISTRATION_KEY = 'hgamey.game-registration.pending';
   const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
   const STAGES = {missing: '缺失', waiting: '等待资源锁', preparing: '准备中', incomplete: '资源未齐', downloading: '下载中', importing: '导入中', verifying: '校验中', verified: '已校验', unavailable: '缺少可用来源', failed: '失败', cancelled: '已取消', unknown: '未知'};
-  const PHASES = {preparing: '任务准备中', queued: '已排队', starting: '正在启动', running: '执行中', cancelling: '停止请求处理中', finalizing: '正在保存结果', storage_blocked: '结果保存失败', interrupted: '执行中断', finished: '命令已结束'};
+  const PHASES = {preparing: '任务准备中', queued: '已排队', starting: '正在启动', running: '执行中', cancelling: '停止请求处理中', finalizing: '正在保存结果', interrupted: '执行中断', finished: '命令已结束'};
   let records = new Map(), selected = '', current = null, detailFresh = false, directoryReady = false;
   let access = null, accessBusy = false, accessError = '', listBusy = false, listRevision = 0, detailRevision = 0, detailController = null;
   let registrationBusy = false, registrationPending = null, lookupBusy = false, disposed = false;
@@ -49,10 +49,13 @@
   }
   function resourceState(state) { return ({verified: '本节点资源已校验', incomplete: '资源未齐', unknown: '资源状态未知'})[state] || '资源状态未知'; }
   function jobState(job) {
-    if (job.phase === 'storage_blocked' || job.queue?.state_reason?.kind === 'durability') return ['结果保存失败', 'unknown'];
-    if (job.phase === 'finalizing') return ['正在保存结果', 'unknown'];
+    const [label, kind] = runState(job);
+    return job.storage_error ? [`${label} · 结果保存失败`, 'unknown'] : [label, kind];
+  }
+  function runState(job) {
+    if (job.phase === 'finalizing' && job.queue?.state !== 'done') return ['正在保存结果', 'unknown'];
     if (job.lost || job.phase === 'interrupted' || job.outcome === 'interrupted') return ['执行中断 · 需核查', 'unknown'];
-    if (job.queue?.state === 'blocked') return ['资源保留 · 需核查', 'unknown'];
+    if (job.queue?.state === 'blocked') return ['执行范围待核查', 'unknown'];
     if (job.state === 'unknown') return ['任务状态未知 · 需核查', 'unknown'];
     if (job.state !== 'finished') return [PHASES[job.phase] || '执行状态未知', 'running'];
     return [({succeeded: '命令已完成', failed: '任务失败', cancelled: '任务已取消'})[job.outcome] || '命令已结束', job.outcome === 'failed' ? 'failed' : ''];
@@ -236,7 +239,7 @@
         item.append(write);
       }
       if (job.error || job.report_error) item.append(el('p', text(job.error || job.report_error), 'asset-error'));
-      if (job.queue?.state_reason?.kind === 'durability') item.append(el('p', `结果保存：${text(job.queue.state_reason.message)}`, 'asset-error'));
+      if (job.storage_error) item.append(el('p', `结果保存：${text(job.storage_error.message)}`, 'asset-error'));
       const links = el('div', null, 'preparation-links'), task = el('a', '查看任务、日志与输出'); task.href = jobLink(job); links.append(task);
       const reportURL = safeLink(job.report_url); if (reportURL && (job.report || job.report_error)) { const report = el('a', '准备报告原件'); report.href = reportURL; links.append(report); }
       item.append(links); return item;
