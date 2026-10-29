@@ -12,7 +12,7 @@ export {THREE, CSS2DObject};
 
 export async function loadData() {
   const response = await fetch('/dash/api/showcase', {credentials: 'same-origin'});
-  if (!response.ok) { document.body.innerHTML = '<p class="empty">此节点还没有展示数据快照。</p>'; throw new Error('no showcase data'); }
+  if (!response.ok) { document.body.innerHTML = '<p class="empty">此节点还没有展示数据快照。</p>'; await new Promise(() => {}); }  // stop here quietly
   const data = await response.json();
   data.byResearch = id => data.research.find(r => r.id === id);
   return data;

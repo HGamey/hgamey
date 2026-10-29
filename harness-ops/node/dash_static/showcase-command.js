@@ -1,7 +1,7 @@
 // Command view (concept A v2). One 2D tree per task on a pan/zoom field; phones in a dock; agents move between them.
 // Replays the real record (data.json, a read-only snapshot) at speed. Every mark on screen is a recorded event.
 const response = await fetch('/dash/api/showcase', {credentials: 'same-origin'});
-if (!response.ok) { document.body.innerHTML = '<p class="empty">此节点还没有展示数据快照。</p>'; throw new Error('no showcase data'); }
+if (!response.ok) { document.body.innerHTML = '<p class="empty">此节点还没有展示数据快照。</p>'; await new Promise(() => {}); }  // stop here quietly
 const data = await response.json();
 const Q = new URLSearchParams(location.search);
 const PAGES = {story: '/dash/showcase', command: '/dash/showcase/command'};
