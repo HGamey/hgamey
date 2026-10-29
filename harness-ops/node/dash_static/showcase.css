@@ -63,7 +63,12 @@ h1 { margin: .55em 0 0; font-size: clamp(2.4rem, -.5rem + 3.75vw, 4rem); line-he
 .tag.gold { color: var(--gold); } .tag.big { font-size: 15px; font-weight: 600; }
 .tag.off { opacity: 0; }
 
-.empty { position: fixed; inset: 0; display: grid; place-items: center; margin: 0; font-size: 18px; color: var(--ink2); z-index: 4; background: var(--bg); }
+.empty { position: fixed; inset: 0; display: grid; place-items: center; margin: 0; font-size: 18px; color: var(--ink2); z-index: 2; background: var(--bg); }
+.empty span { display: grid; gap: 16px; justify-items: center; }
+.facts dd .sw { display: inline-block; vertical-align: middle; margin: -2px 8px 0 0; }
+.sw-bar { width: 8px; height: 14px; border-radius: 2px; background: var(--teal); } .sw-bar.sw-ash { background: #3a4552; }
+.sw-pin { width: 3px; height: 16px; border-radius: 2px; background: var(--gold); box-shadow: 0 -3px 0 1px var(--gold); }
+.sw-line { width: 16px; height: 2px; background: var(--ink); }
 body.flat .stage::after { background: none; }
 body.flat .copy { width: min(48rem, calc(100vw - 2 * var(--pad))); }
 

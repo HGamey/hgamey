@@ -26,19 +26,24 @@ async function load() {
   return null;
 }
 const data = await load();
-if (!data || !(data.research || []).length) { $('empty').textContent = data ? '这个节点还没有任务。' : '读不到数据。'; $('empty').hidden = false; await new Promise(() => {}); }
+if (!data || !(data.research || []).length) {
+  $('empty').innerHTML = `<span>${data ? '这个节点还没有任务。' : '读不到数据。'}<button type="button" id="retry">重试</button></span>`;
+  $('empty').hidden = false; $('retry').addEventListener('click', () => location.reload()); await new Promise(() => {});
+}
 const at = data.at, H = data.history;
 const ids = new Set(data.research.map(r => r.id));
 const jobs = data.jobs || [], notes = (data.notes || []).filter(n => ids.has(n.research_id)), phones = (data.phones || []).map(p => ({...p, key: key(p.brand)}));
 const begun = j => j.claimed || (j.queued ? j.ended : j.started);
-const phoneJobs = jobs.filter(j => j.phone && begun(j));
-const day = phoneJobs.filter(j => begun(j) >= at - 86400), dayH = day.reduce((s, j) => s + Math.min(j.ended || at, at) - begun(j), 0) / 3600;
+// Every count on this page is of the same thing: runs filed under a task. Totals count finished runs.
+const taskJobs = jobs.filter(j => ids.has(j.research_id)), finished = taskJobs.filter(j => j.ended);
+const phoneJobs = taskJobs.filter(j => j.phone && begun(j)), phoneDone = phoneJobs.filter(j => j.ended);
+const day = phoneDone.filter(j => begun(j) >= at - 86400), dayH = day.reduce((s, j) => s + j.ended - begun(j), 0) / 3600;
 const runningNow = phoneJobs.filter(j => !j.ended && begun(j) <= at);
 const waits = phoneJobs.filter(j => j.queued && j.claimed && j.claimed - j.queued > 30);
 const longest = Math.round(Math.max(0, ...waits.map(j => (j.claimed - j.queued) / 60)));
 const humans = notes.filter(n => n.who === 'human'), adopts = notes.filter(n => n.decision === 'adopt').length;
 const delivered = data.research.filter(r => r.state === 'delivered'), verified = (data.directions || []).filter(d => d.state === 'verified').length;
-const ok = jobs.filter(j => j.outcome === 'succeeded' && ids.has(j.research_id)).length, done = jobs.filter(j => j.ended && ids.has(j.research_id)).length;
+const ok = finished.filter(j => j.outcome === 'succeeded').length, done = finished.length;
 const commits = H ? Object.values(H.commits).reduce((a, b) => a + b, 0) : 0;
 $('src').textContent = `${data.source || '本节点'} · ${data.from === 'snapshot' ? '快照' : '实时'} · 截至 ${stamp(at)}`;
 
@@ -73,16 +78,16 @@ if (W) {
   sub.phones = []; sub.agents = []; sub.queue = []; sub.ghosts = [];
   const phoneAt = {};
   phones.forEach((p, i) => {
-    const running = runningNow.find(j => key(j.device) === p.key), temp = p.soc_c || p.temp_c, name = `${BRAND[p.key] || p.brand} ${p.model || ''}`.trim();
+    const running = runningNow.find(j => key(j.device) === p.key), temp = p.temp_c ?? p.soc_c, name = `${BRAND[p.key] || p.brand} ${p.model || ''}`.trim();
     const m = phone(p.key === 'HONOR' && shot ? shot : statusScreen({name, busy: !!running, temp, doing: running ? `${agentOf(running.agent)[1]} · ${running.kind}` : ''}));
     const x = (i - (n - 1) / 2) * gap; m.position.set(x, 1.82, 0); m.rotation.set(-.06, (i - (n - 1) / 2) * -.06, 0); deck.add(m);
     phoneAt[p.key] = m; sub.phones.push(m);
-    tagFor([1], `${esc(name)}<small>${running ? '实验中' : '空闲'}${temp ? ` · ${temp.toFixed(0)}°C` : ''}</small>`, 'big', new THREE.Vector3(x, -.15, 1.3), deck);
+    tagFor([1], `${esc(name)}<small>${running ? '实验中' : '空闲'}${temp ? ` · 电池 ${temp.toFixed(0)}°C` : ''}</small>`, 'big', new THREE.Vector3(x, -.15, 1.3), deck);
   });
   // One bead per time a run waited for a phone, queued in front of the plinth (longer waits stand taller).
   waits.sort((a, b) => a.queued - b.queued).forEach((j, k) => {
     const mins = (j.claimed - j.queued) / 60, len = Math.min(1.2, .08 + Math.sqrt(mins) * .1);
-    const bead = new THREE.Mesh(new THREE.CapsuleGeometry(.1, len, 4, 12), new THREE.MeshStandardMaterial({color: COLOR.ice, roughness: .35, metalness: .1, emissive: COLOR.ice, emissiveIntensity: .18}));
+    const bead = new THREE.Mesh(new THREE.CapsuleGeometry(.1, len, 4, 12), new THREE.MeshStandardMaterial({color: COLOR.ice, roughness: .4, metalness: .1}));
     bead.position.set((k - (waits.length - 1) / 2) * .36, .1 + len / 2 + .1, 3.1); bead.visible = false; deck.add(bead); sub.queue.push(bead);
   });
   if (waits.length) tagFor([4], `排队等手机<small class="mono">${waits.length} 次 · 最长 ${longest} 分钟</small>`, 'big', new THREE.Vector3(0, -.2, 3.75), deck);
@@ -149,7 +154,7 @@ if (W) {
     good.count = gi; bad.count = bi; rec.add(good, bad); sub.record.push(good, bad);
     const base = new THREE.Mesh(new THREE.BoxGeometry(hours * step + .6, .03, .9), new THREE.MeshStandardMaterial({color: 0x1a232d, roughness: .8}));
     base.position.set((hours - 1) * step / 2, .015, 0); rec.add(base, moved(shadow(hours * step + 4, 6), (hours - 1) * step / 2, .004, 0));
-    const pillar = new THREE.CylinderGeometry(.025, .025, 1, 8), gold = new THREE.MeshStandardMaterial({color: COLOR.gold, emissive: COLOR.gold, emissiveIntensity: .35, roughness: .4, metalness: .3});
+    const pillar = new THREE.CylinderGeometry(.025, .025, 1, 8), gold = new THREE.MeshStandardMaterial({color: COLOR.gold, roughness: .55, metalness: .2});
     for (const n of humans) {
       const x = X(n.at) - step / 2, p = new THREE.Mesh(pillar, gold); p.scale.y = 4.6; p.position.set(x, 2.3, .55); rec.add(p);
       const cap = new THREE.Mesh(new THREE.SphereGeometry(.09, 16, 8), gold); cap.position.set(x, 4.65, .55); rec.add(cap);
@@ -159,18 +164,18 @@ if (W) {
     pts.push(new THREE.Vector3(hours * step - step / 2, pts.at(-1).y, -.55));
     rec.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({color: COLOR.white})));
     const tickStep = hours > 36 ? 12 : 6, first = Math.ceil(t0 / (tickStep * 3600)) * tickStep * 3600;
-    for (let t = first; t < at; t += tickStep * 3600) tagFor([3], `<span class="mono">${stamp(t)}</span>`, 'dim', new THREE.Vector3(X(t) - step / 2, -.25, .9), rec);
+    for (let t = first; t < at; t += tickStep * 3600) tagFor([3], `<span class="mono">${stamp(t)}</span>`, 'dim', new THREE.Vector3(X(t) - step / 2, -.1, 1.7), rec);
   }
 
   // Results: a gold card per delivered report, and the super-resolution networks tried (gold: kept).
   {
     const res = area('results', 38, -8); sub.results = [];
-    const card = new RoundedBoxGeometry(1.05, 1.45, .06, 3, .06), mat = new THREE.MeshPhysicalMaterial({color: COLOR.gold, metalness: .55, roughness: .28, clearcoat: .6, emissive: COLOR.gold, emissiveIntensity: .16});
-    const N = delivered.length, cols = Math.min(6, N), rows = Math.ceil(N / cols);
-    delivered.forEach((r, i) => {
-      const c = i % cols, row = Math.floor(i / cols), m = new THREE.Mesh(card, mat);
-      const a = (c - (cols - 1) / 2) * .2;
-      m.position.set(Math.sin(a) * 7 - 0, .8 + (rows - 1 - row) * 1.7, -Math.cos(a) * 7 + 7); m.rotation.y = -a; res.add(m); sub.results.push(m);
+    const card = new RoundedBoxGeometry(1.7, 1.1, .05, 3, .024), mat = new THREE.MeshStandardMaterial({color: COLOR.gold, metalness: .45, roughness: .5});   // history: no glow
+    const face = new THREE.PlaneGeometry(1.6, 1.0), N = delivered.length, cols = Math.min(4, N), rows = Math.ceil(N / cols);
+    [...delivered].sort((a, b) => a.updated_at - b.updated_at).forEach((r, i) => {
+      const c = i % cols, row = Math.floor(i / cols), m = new THREE.Mesh(card, mat), a = (c - (cols - 1) / 2) * .26;
+      const front = new THREE.Mesh(face, new THREE.MeshStandardMaterial({map: reportFace(r), roughness: .45, metalness: .25})); front.position.z = .027; m.add(front);
+      m.position.set(Math.sin(a) * 7, .75 + (rows - 1 - row) * 1.28, -Math.cos(a) * 7 + 7); m.rotation.y = -a; res.add(m); sub.results.push(m);
     });
     if (H?.sr_networks) {
       const pts = [];
@@ -178,31 +183,47 @@ if (W) {
       const ring = dots(pts, {size: .13}); res.add(ring); sub.results.push(ring);
       tagFor([5], `超分网络<small class="mono">留下 ${H.sr_networks_kept} / ${H.sr_networks}</small>`, '', new THREE.Vector3(0, -.2, 5.3), res);
     }
-    tagFor([5], `交付报告<small class="mono">${N} 份</small>`, 'gold', new THREE.Vector3(0, rows * 1.7 + .45, 0), res);
+    tagFor([5], `交付报告<small class="mono">${N} 份</small>`, 'gold', new THREE.Vector3(0, rows * 1.28 + .5, 0), res);
     res.add(moved(shadow(10, 8), 0, .004, 1));
   }
 }
 
+// A delivered report's card face: its title's first clause and the delivery date.
+function reportFace(r) {
+  const c = document.createElement('canvas'); c.width = 544; c.height = 340; const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 544, 340); grad.addColorStop(0, '#f3cf86'); grad.addColorStop(1, '#c99a45'); g.fillStyle = grad; g.fillRect(0, 0, 544, 340);
+  const font = w => `${w} "PingFang SC","HarmonyOS Sans SC","Noto Sans CJK SC",sans-serif`;
+  let title = (r.title || '').replace(/^\[[^\]]*\]\s*/, ''); const cut = [...title.matchAll(/[，,；;（(：:]/g)].map(m => m.index).find(i => i >= 10); if (cut) title = title.slice(0, cut);
+  g.fillStyle = '#2b1e07'; g.font = font('700 46px');
+  const lines = []; let line = '';
+  for (const ch of title) { if (g.measureText(line + ch).width > 470) { lines.push(line); line = ''; } line += ch; }
+  lines.push(line);
+  if (lines.length > 3) { lines.length = 3; lines[2] = lines[2].slice(0, -1) + '…'; }
+  lines.forEach((l, i) => g.fillText(l, 36, 84 + i * 62));
+  g.fillStyle = 'rgba(43,30,7,.7)'; g.font = font('500 30px'); g.fillText(`交付 · ${stamp(r.updated_at)}`, 36, 304);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+
 // ── Steps: what each says and what it frames
 const v = (x, y, z) => new THREE.Vector3(x, y, z);
-const AREA = {'此刻': 'deck', '来时路': 'history', '人和 Agent': 'record', '手机': 'deck', '成果': 'results', '下一步': 'deck'};
+const AREA = {now: 'deck', history: 'history', record: 'record', phones: 'deck', results: 'results', next: 'deck'}, KEYS = Object.keys(AREA);
 const STEPS = [
-  {kicker: '此刻', title: `${(data.agents || []).length} 个 Agent，${phones.length} 台手机`, lead: '过去 24 小时',
-    facts: [[day.length, '次', '真机实验', 'teal'], [dayH.toFixed(1), '小时', '真机实验时长'], [runningNow.length, '个', `截至 ${stamp(at)} 正在用手机的 Agent`]],
+  {key: 'now', kicker: data.from === 'snapshot' ? stamp(at) : '此刻', title: `${(data.agents || []).length} 个 Agent，${phones.length} 台手机`, lead: '此前 24 小时',
+    facts: [[day.length, '次', '完成的真机实验', 'teal'], [dayH.toFixed(1), '小时', '真机实验时长'], [runningNow.length, '个', '正在用手机的 Agent']],
     frame: () => [...sub.phones, ...sub.agents], dir: v(.12, .34, 1)},
-  H && {kicker: '来时路', title: `${fmt(commits)} 次提交`, lead: `${H.since.replace(/^\d{4}-0?(\d+)-0?(\d+)$/, '$1 月 $2 日')}起`,
-    facts: [[H.experiment_lines.length, '条', '实验线'], [H.sr_loop_generations, '代', '超分进化'], [fmt(jobs.length), '次', '平台上的实验']],
+  H && {key: 'history', kicker: '来时路', title: `${fmt(commits)} 次提交`, lead: `${H.since.replace(/^\d{4}-0?(\d+)-0?(\d+)$/, '$1 月 $2 日')}起`,
+    facts: [[H.experiment_lines.length, '条', '实验线'], [H.sr_loop_generations, '代', '超分进化'], [data.research.length, '个', '平台上的任务']],
     frame: () => sub.history, dir: v(.55, .5, 1)},
-  {kicker: '人和 Agent', title: `${humans.length} 次人的回复，${adopts} 条采纳记录`, lead: '',
-    facts: [[ok, '次', '成功的实验', 'teal'], [done - ok, '次', '未成功的实验'], [humans.length, '次', '人的回复', 'gold'], [delivered.length, '份', '交付报告']],
+  {key: 'record', kicker: '人和 Agent', title: `${humans.length} 次人的回复，${adopts} 条采纳记录`, lead: '',
+    facts: [[ok, '次', '成功的实验', 'teal', 'sw-bar'], [done - ok, '次', '未成功的实验', '', 'sw-bar sw-ash'], [humans.length, '次', '人的回复', 'gold', 'sw-pin'], [delivered.length, '份', '交付报告（累计）', '', 'sw-line']],
     quote: humans.find(n => /^指导/.test(n.text)) || humans[0], frame: () => sub.record, dir: v(-.3, .42, 1)},
-  {kicker: '手机', title: waits.length ? `${waits.length} 次实验排队等手机` : `${phones.length} 台手机`, lead: phones.map(p => `${BRAND[p.key] || p.brand} ${p.model || ''}`.trim()).join(' · '),
-    facts: [...(waits.length ? [[longest, '分钟', '最长一次等待', 'ice']] : []), [phoneJobs.length, '次', '真机实验'], [dayH.toFixed(1), '小时', '过去 24 小时真机实验时长']],
+  {key: 'phones', kicker: '手机', title: waits.length ? `${waits.length} 次实验排队等手机` : `${phones.length} 台手机`, lead: phones.map(p => `${BRAND[p.key] || p.brand} ${p.model || ''}`.trim()).join(' · '),
+    facts: [...(waits.length ? [[longest, '分钟', '最长一次等待', 'ice']] : []), [phoneDone.length, '次', '完成的真机实验'], [done, '次', '完成的实验（含宿主）']],
     frame: () => [...sub.phones, ...sub.agents, ...sub.queue], dir: v(.1, .62, 1), show: on => sub.queue.forEach(b => { b.visible = on; })},
-  {kicker: '成果', title: `${delivered.length} 份交付报告`, lead: '',
-    facts: [[verified, '条', '验证有效的方向', 'gold'], ...(H ? [[H.sr_networks_kept, '个', `超分网络（从 ${H.sr_networks} 个里留下）`, 'gold']] : []), [phoneJobs.length, '次', `真机实验 · 共 ${jobs.length} 次`], [humans.length, '次', '人的回复']],
+  {key: 'results', kicker: '成果', title: `${delivered.length} 份交付报告`, lead: '',
+    facts: [[verified, '条', '验证有效的方向', 'gold'], ...(H ? [[H.sr_networks_kept, '个', `超分网络（从 ${H.sr_networks} 个里留下）`, 'gold']] : []), [phoneDone.length, '次', `完成的真机实验 · 共 ${done} 次实验`], [humans.length, '次', '人的回复']],
     frame: () => sub.results, dir: v(0, .32, 1)},
-  {kicker: '下一步', title: '手机翻倍，实验线翻倍', lead: `现在 ${phones.length} 台手机${H ? ` · ${H.experiment_lines.length} 条实验线` : ''}`,
+  {key: 'next', kicker: '下一步', title: '手机翻倍，实验线翻倍', lead: `现在 ${phones.length} 台手机${H ? ` · ${H.experiment_lines.length} 条实验线` : ''}`,
     facts: [], frame: () => [...sub.phones, ...sub.ghosts], dir: v(.18, .3, 1), show: on => sub.ghosts.forEach(g => { g.visible = on; })},
 ].filter(Boolean).filter(s => !W || s.frame().length);
 
@@ -211,7 +232,7 @@ const dotsBox = $('dots');
 STEPS.forEach((s, i) => { const b = document.createElement('button'); b.type = 'button'; b.setAttribute('aria-label', `第 ${i + 1} 步：${s.kicker}`); b.addEventListener('click', () => go(i)); const li = document.createElement('li'); li.append(b); dotsBox.append(li); });
 function writeCopy(s) {
   $('kicker').textContent = s.kicker; $('title').textContent = s.title; $('lead').textContent = s.lead;
-  $('facts').innerHTML = s.facts.map(([n, unit, what, tone]) => `<div class="${tone || ''}"><dt>${esc(n)}<small>${esc(unit)}</small></dt><dd>${esc(what)}</dd></div>`).join('');
+  $('facts').innerHTML = s.facts.map(([n, unit, what, tone, mark]) => `<div class="${tone || ''}"><dt>${esc(n)}<small>${esc(unit)}</small></dt><dd>${mark ? `<i class="sw ${mark}" aria-hidden="true"></i>` : ''}${esc(what)}</dd></div>`).join('');
   const q = s.quote; $('quote').hidden = !q;
   if (q) $('quote').innerHTML = `<b>人 · ${stamp(q.at)}</b>${esc(q.text.length > 90 ? q.text.slice(0, 89) + '…' : q.text)}`;
 }
@@ -246,9 +267,9 @@ function go(i, instant = false) {
   const s = STEPS[i];
   for (const [k, step] of STEPS.entries()) step.show?.(k === i);
   // Only the subject on screen (and, while flying, the one being left) is drawn.
-  const keep = new Set([AREA[s.kicker], prev >= 0 && !instant ? AREA[STEPS[prev].kicker] : null]);
+  const keep = new Set([AREA[s.key], prev >= 0 && !instant ? AREA[STEPS[prev].key] : null]);
   for (const [name, g] of Object.entries(groups)) g.visible = keep.has(name);
-  clearTimeout(go.hide); if (keep.size > 1) go.hide = setTimeout(() => { for (const [name, g] of Object.entries(groups)) g.visible = name === AREA[STEPS[current].kicker]; }, cam.ms + 50);
+  clearTimeout(go.hide); if (keep.size > 1) go.hide = setTimeout(() => { for (const [name, g] of Object.entries(groups)) g.visible = name === AREA[STEPS[current].key]; }, cam.ms + 50);
   tagsFor(i);
   const copy = $('copy');
   clearTimeout(swap);
@@ -264,7 +285,7 @@ function go(i, instant = false) {
   else { cam.from = {position: S.camera.position.clone(), target: cam.to.target.clone(), offset: [...cam.to.offset]}; cam.to = to; cam.t0 = performance.now(); }
 }
 // Tags name the step they belong to by its place in the full story, so a story without history still matches them.
-const ORDER = STEPS.map(s => ['此刻', '来时路', '人和 Agent', '手机', '成果', '下一步'].indexOf(s.kicker) + 1);
+const ORDER = STEPS.map(s => KEYS.indexOf(s.key) + 1);
 function tagsFor(i) { const n = ORDER[i]; for (const [t, steps] of tags) t.element.classList.toggle('off', !steps.includes(n)); }
 
 $('prev').addEventListener('click', () => { stopAuto(); go(current - 1); });
