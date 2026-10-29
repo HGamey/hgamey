@@ -856,6 +856,52 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("job.storage_error?`${runLabel(job)} · 结果保存失败`:runLabel(job)", deploy)
         self.assertNotIn("job.storage_error?'结果保存失败'", deploy)
 
+    def test_only_contained_jobs_offer_a_forced_stop(self):
+        """An ordinary job's stop already goes INT → TERM → KILL; a second "升级终止" button would only suggest a faster path."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                seen = {}
+
+                def running(route, policy):  # the real job, shown as running under the given execution policy
+                    response = route.fetch()
+                    job = response.json()
+                    job.update(state="running", phase="running", execution_policy=policy,
+                               execution={**(job.get("execution") or {}), "kind": "supervised-v1"},
+                               controls={"cancel_supported": True, "force_supported": True, "reason": None})
+                    route.fulfill(response=response, json=job)
+
+                def serve(policy):
+                    return lambda route: running(route, policy)
+
+                for policy, shown in (("process_group", False), ("contained", True)):
+                    page.unroute(f"**/dash/api/jobs/{self.jid}")
+                    page.route(f"**/dash/api/jobs/{self.jid}", serve(policy))
+                    page.goto(f"{base}/dash/jobs#job={self.jid}")
+                    page.reload()
+                    page.wait_for_function("() => !document.getElementById('cancel-job').disabled")
+                    seen[policy] = page.is_visible("#force-open")
+                    self.assertEqual(seen[policy], shown, policy)
+                    self.assertIn("SIGINT", page.text_content("#cancel-help"))
+            finally:
+                browser.close()
+
     def test_pages_link_versioned_assets_the_browser_may_keep(self):
         def get(path):
             connection = http.client.HTTPConnection(*self.address, timeout=10)

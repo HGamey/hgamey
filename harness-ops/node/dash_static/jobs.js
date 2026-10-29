@@ -534,7 +534,11 @@
     const queued = ['preparing', 'queued'].includes(currentJob.phase);
     const stopping = currentJob.phase === 'cancelling' && currentJob.cancel?.status !== 'not_applied';
     $('cancel-job').disabled = !allowed || !currentJob.controls?.cancel_supported || stopping;
-    $('force-open').disabled = !allowed || !currentJob.controls?.force_supported;
+    // Only a contained job's stop differs when forced; elsewhere every stop already escalates on the same clock.
+    const forceable = contained(currentJob);
+    $('force-open').hidden = !forceable;
+    if (!forceable) { $('force-form').hidden = true; $('force-confirm').checked = false; }
+    $('force-open').disabled = !forceable || !allowed || !currentJob.controls?.force_supported;
     const paused = !!currentJob.paused;
     $('pause-job').disabled = !allowed || !currentJob.controls?.pause_supported;
     $('resume-job').disabled = !allowed || !currentJob.controls?.resume_supported;
