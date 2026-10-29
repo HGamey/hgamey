@@ -790,7 +790,7 @@ class CoreFlowTests(unittest.TestCase):
     def test_the_jobs_page_resets_through_one_entry_and_never_replays(self):
         # The page's only recovery action: POST /dash/api/jobs/<id>/reset {note}, steer required, repeatable.
         script = (NODE / "dash_static/jobs.js").read_text(encoding="utf-8")
-        self.assertIn("post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note})", script)
+        self.assertIn("post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note}, {}, undefined, {wait: true})", script)
         for retired in ("queue-release", "retry-finalize", "release_eligibility", "storage_blocked"):
             self.assertNotIn(retired, script)
         path = f"/jobs/{self.jid}/reset"
@@ -803,6 +803,49 @@ class CoreFlowTests(unittest.TestCase):
         status, again = self.web("POST", path, {"note": "再按一次"})
         self.assertEqual((status, again["released"], again["job"]["queue"]["state"]), (200, True, "done"))
         self.assertFalse(os.path.exists(self.jobs.path(self.jid, "launch.json")), "reset must not start the command")
+
+    def test_the_jobs_page_waits_for_a_reset_that_takes_longer_than_fifteen_seconds(self):
+        """The node answers a reset only after INT, 15 s, TERM, 15 s, KILL; the page must wait for that answer."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.jobs.dispatch.queue.set_state(self.jid, "claimed")
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.clock.install()
+                page.goto(f"{base}/dash/jobs#job={self.jid}")
+                page.wait_for_function("() => !document.getElementById('reset-panel').hidden")
+                held = []
+                page.route("**/dash/api/jobs/*/reset", lambda route: held.append(route))
+                page.click("#reset-panel summary")
+                page.fill("#reset-note", "长时间重置")
+                page.click("#reset-submit")
+                for _ in range(100):
+                    if held:
+                        break
+                    page.wait_for_timeout(20)
+                self.assertEqual(len(held), 1)
+                page.clock.run_for(31000)  # the page's own clock passes 31 s while the node is still answering
+                held[0].continue_()
+                page.wait_for_function("() => (document.getElementById('reset-result')?.textContent || '').length > 0")
+                self.assertIn("已重置", page.text_content("#reset-result"))
+                self.assertEqual(self.web("GET", f"/jobs/{self.jid}")[1]["queue"]["state"], "done")
+            finally:
+                browser.close()
 
     def test_pages_link_versioned_assets_the_browser_may_keep(self):
         def get(path):

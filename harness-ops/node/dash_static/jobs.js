@@ -451,9 +451,10 @@
       return response.json();
     }, target, options);
   }
-  async function post(url, body, headers = {}, target = undefined) {
+  // {wait: true} for writes the node answers only once the work is done (reset); no deadline of our own then.
+  async function post(url, body, headers = {}, target = undefined, {wait = false} = {}) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = wait ? null : setTimeout(() => controller.abort(), 15000);
     try {
       const response = await HGTarget.fetch(url, {method: 'POST', credentials: 'same-origin', signal: controller.signal,
         headers: {'Content-Type': 'application/json', 'X-HG': '1', ...headers}, body: JSON.stringify(body)}, target === undefined ? {} : {target});
@@ -472,7 +473,7 @@
       }
       if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error('请求结果未确认，节点未返回 JSON。');
       return data;
-    } finally { clearTimeout(timeout); }
+    } finally { if (timeout !== null) clearTimeout(timeout); }
   }
   function renderAccess() {
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定任务操作' : '解锁任务操作';
@@ -573,8 +574,8 @@
     $('reset-submit').disabled = !useful || !unlocked || busyNow || !$('reset-note').value.trim();
     $('reset-submit').setAttribute('aria-busy', String(busyNow));
     $('reset-submit').textContent = busyNow ? '重置中…' : '重置';
-    message('reset-help', !useful ? '' : !unlocked ? '请先解锁任务操作权限。' : state === 'blocked' ? '原进程组是否结束还没查清。重置会结束组内剩余进程，并释放本任务保留的原范围。' :
-      state === 'claimed' ? '重置会按停止的同一流程（INT → TERM → KILL）结束整个进程组，再释放资源。' : '结果保存失败。重置会重新保存原有结束记录。');
+    message('reset-help', !useful ? '' : busyNow ? '正在结束进程组：先 INT，15 秒后 TERM，再 15 秒后 KILL；完成后显示结果。' : !unlocked ? '请先解锁任务操作权限。' : state === 'blocked' ? '原进程组是否结束还没查清。重置会结束组内剩余进程，并释放本任务保留的原范围。' :
+      state === 'claimed' ? '重置会依次发送 INT、TERM、KILL（各隔 15 秒）结束整个进程组，再释放资源。' : '结果保存失败。重置会重新保存原有结束记录。');
     $('reset-result').hidden = !receipt;
     if (receipt) message('reset-result', receipt.message, receipt.error);
   }
@@ -585,7 +586,8 @@
     resetting.add(id);
     renderControls();
     try {
-      const result = await post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note});
+      // The node answers after the group is gone (INT, 15 s, TERM, 15 s, KILL), which can take well over 15 s.
+      const result = await post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note}, {}, undefined, {wait: true});
       const saveError = result.job?.storage_error?.message;
       resetReceipts.set(id, {message: result.released !== true ? '资源尚未释放，请以最新任务状态为准。' : result.storage_committed === true ? '已重置，资源已释放。设备是否还原需另行核对。' : `资源已释放，但结束记录仍未保存${saveError ? `：${saveError}` : ''}。修复后可再次重置。`,
         error: result.released !== true || result.storage_committed !== true});
