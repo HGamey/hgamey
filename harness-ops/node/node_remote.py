@@ -487,11 +487,8 @@ class Remote:
                     return {'reused': True, **self._refresh(sess)}
             if not self.policy.enabled(serial):
                 raise RemoteError(403, f'设备 {serial} 未开放远程控制')
-            if value is not None:
-                if not self.capabilities()['device_binding_v1']:
-                    raise RemoteError(503, 'configured PF remote owner does not support device binding; no global fallback')
-                if self.resolve(serial) != value:
-                    raise RemoteError(409, 'device registration no longer matches the frozen binding')
+            if value is not None and not self.capabilities()['device_binding_v1']:
+                raise RemoteError(503, 'configured PF remote owner does not support device binding; no global fallback')
             for sess in self.sessions.values():
                 state = self._refresh(sess)
                 if state.get('phase') != 'closed' and conflicts(requested_scope, sess.scope()):

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -30,6 +32,16 @@ raise SystemExit(response["exit"])
 
 
 class DeviceRegistryTests(unittest.TestCase):
+    def test_registry_write_wait_is_not_cut_off_by_read_helper_deadline(self):
+        from device_registry import DeviceRegistry
+        with tempfile.TemporaryDirectory() as directory:
+            program = Path(directory) / "pf"
+            program.write_text("#!" + sys.executable + "\nimport time, json\ntime.sleep(5.2)\nprint(json.dumps({'completed': True}))\n")
+            program.chmod(0o755)
+            jobs = SimpleNamespace(bins={"phonefarm": (str(program), directory)}, pf_env=None)
+            self.assertEqual(DeviceRegistry(jobs, "fixture")._run(
+                ["lease", "devices-set", "--request", "-", "--json"], b"{}"), (0, {"completed": True}))
+
     def test_http_cli_authority_target_and_single_pf_protocol(self):
         env = fixture.GameFlowTests()
         env.setUp()

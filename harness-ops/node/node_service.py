@@ -431,10 +431,8 @@ class Jobs:
         def admit():
             # submit() calls this only for a new request while holding intake.
             self.programs.require_session(spec)
-            if device_binding and access == "write":
-                if spec["argv"][:1] == ["game-deploy"]:
-                    self.deployments.require_device_binding()
-                self.device_scopes.admit(device_binding)
+            if device_binding and access == "write" and spec["argv"][:1] == ["game-deploy"]:
+                self.deployments.require_device_binding()
             if original_admit is not None:
                 original_admit()
         return self.dispatch.submit(spec, body, request_id, admit=admit)

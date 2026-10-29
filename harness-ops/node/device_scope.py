@@ -202,20 +202,14 @@ def lease_problem(spec, snapshot, mode=None):
     except ValueError as error:
         return str(error)
     target = declared["binding"]
-    if mode == "start" and current["registry_revision"] != target["registry_revision"]:
-        return "device registry changed; submit a new explicitly resolved binding"
-    if current["unknown"]:
-        return "device scope observation contains an unassigned or incomplete barrier"
-    if conflicts(declared, {"scope": "global"}) and current["global"]["status"] != "clear":
+    if current["global"]["status"] != "clear":
         return current["global"]["error"] or "global device lease is " + current["global"]["status"]
     entry = next((item for item in current["devices"] if item["device_id"] == target["device_id"]), None)
     if entry is None:
-        return "frozen device ID is absent from the complete scope observation"
+        return None  # PF acquires the original scope even without a current registry entry.
     allowed = {"clear", "blocked"} if mode == "recovery" else {"clear"}
     if entry["status"] not in allowed:
         return entry["error"] or "device " + target["device_id"] + " lease is " + entry["status"]
-    if mode == "start" and current["queue_waiting"]:
-        return "a global phonefarm queue participant is waiting"
     return None
 
 
@@ -275,7 +269,3 @@ class DeviceScope:
                 raise empty
             raise RegistryError("unavailable", "phonefarm did not resolve the requested serial")
         return result
-
-    def admit(self, value):
-        if not same_binding(self.resolve(value["serial"]), value):
-            raise RegistryError("conflict", "device registration no longer matches the frozen binding")

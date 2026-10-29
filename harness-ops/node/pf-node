@@ -54,7 +54,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node retry-finalize <id>                # 重试保存原有结束记录，不重新执行命令
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
-  pf-node cancel <id> [--force]            # 默认请求 SIGINT；--force 允许 15s 后 TERM、再 15s 后 KILL
+  pf-node cancel <id> [--force]            # 普通任务 SIGINT → 15s 后 TERM → 再 15s 后 KILL，清理剩余进程组
   pf-node node [--refresh-runtime]        # 服务启动观察、配置程序身份；显式刷新不改历史job
   pf-node devices                       # 本节点人工登记的稳定设备ID/连接别名；不探测设备
   pf-node devices-set FILE|-             # CAS登记/更新；写入未知先读devices，不自动重发
@@ -126,7 +126,7 @@ Agent 每轮从这里开始（最短完整路径）：
   written_bytes 只计成功返回的write，异常可能留未计入partial，不是磁盘实际占用；空间预检不是运行期配额。
   准备失败保留job/request ID，原ID不重准备，
   修正输入后显式新请求。服务端权威检查；客户端不额外改归档字节/指纹或据当前限值阻断旧ID查询。
-- 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 只请求柔性 SIGINT 并停止本地跟随（130）；
+- 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 请求取消并停止本地跟随（130）；普通任务仍按 INT → TERM → KILL 收尾；
   独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
 - 新建 phonefarm gray-layer session 需 node.protocol-compat-v1 且配置 PF 的 gray_control compatible；禁止 --exe。
   不按 SHA 猜兼容，不自动刷新程序或重试。已给 request_id 时先单次查回，再以原 ID 提交核同内容；不同内容仍冲突。
@@ -137,7 +137,7 @@ Agent 每轮从这里开始（最短完整路径）：
   这是声明调度slots，不是硬件数量或OS限额；0表示未预留。省略保持原spec，调度兼容CPU1/GPU0/I/O0。
   恢复任务暂不接受显式slots；未知宿主保留和设备恢复屏障分别核查，不自动释放或缩减需求。
 - --max-runtime-seconds N 声明 1–604800 整数秒运行期限；--timeout-action graceful（默认）或 escalate。
-  仅实际启动后计时，排队不计入；graceful只请求SIGINT，escalate沿15秒TERM/再15秒KILL。
+  仅实际启动后计时，排队不计入；普通任务到期发SIGINT，15秒后TERM、再15秒后KILL。
   恢复任务暂不支持；期限触发不代表已停止/恢复。原exit=0且确认超期限时CLI返回124，未知结束优先125。
 - --disk-guard FILE 读取最多4KiB闭合JSON：max_log_bytes/min_free_bytes 均为1–9007199254740991的整数字节，
   stop_action=graceful|escalate；缺省不发送，恢复任务不支持。需节点 jobs.disk-guard-v1，不删除原声明降级。
@@ -1407,7 +1407,7 @@ def main():
         TARGET.require_write()
         try:
             print(call("POST", "/node/devices", raw, {"Content-Type": "application/json"},
-                       attempts=1, raise_errors=True).decode())
+                       timeout=None, attempts=1, raise_errors=True).decode())
         except ClientError as error:
             sys.exit(f"pf-node: 设备登记请求失败：{error}；未自动重试，用 devices 核对当前 revision")
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):

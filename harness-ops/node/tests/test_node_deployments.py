@@ -69,6 +69,9 @@ sys.exit(0 if done else 2)
         env.jobs.deployments = NodeDeployments(env.jobs, env.jobs.games)
         self.assertIn("games.device-lanes-v1", env.call("GET", "/node")[1]["capabilities"])
         registry = env.root / "registry.json"
+        # New jobs no longer re-resolve a saved binding. Keep an empty query log
+        # so the existing replay/recovery assertions can check it stays empty.
+        (env.root / "resolves").touch()
         registry.write_text(json.dumps({"revision": 1, "aliases": {"usb-a": "A", "wifi-a": "A", "usb-b": "B"}}))
         current = {"schema_version": 1, "status": "clear", "bridge_held": False, "entries": [], "error": None,
             "storage": {"schema_version": 1, "layout_version": 2, "domain_id": DOMAIN,
