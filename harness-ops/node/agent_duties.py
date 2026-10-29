@@ -10,8 +10,8 @@ OPEN_RESEARCH = {"active", "idle", "paused"}
 NOTE_STYLE = "写留言：先说结论，再给依据（数字、任务号、提交号、文件）。一条只讲一件事，200 字以内，细节放报告或附件。用平常话和通用术语，不自造词，不用比喻和口号。不写客套、致谢，不复述对方，不写「我将……」式的预告。不确定就直说不确定。"
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
-    "设备锁序列化实际操作；任务预留只在执行中占调度资源，终态自动释放。宿主完成未知或设备仍待恢复时由负责人或管理员 reset，不代表恢复。",
-    "recovery required 的已结束任务先还原设备，再用自己的 token 执行 pf-node reset <id> --note；别人任务由负责人或管理员处理。",
+    "设备锁序列化实际操作；仅 claimed 扣运行名额，确认宿主完成的终态自动释放任务预留。完成未知时保留独占范围，由负责人或管理员 reset。",
+    "recovery required 的已结束任务用原 session 或 adb 还原设备；保存错误修好后用 pf-node reset <id> --note 重存，reset 不证明设备恢复，也不重跑实验。",
     "设备写任务只占一台：研究只有一台 device_requirements 时默认同机；已登记的手机默认走自己的 lane，否则用 --resource device:<串号>，显式参数优先，global 会占全部设备。",
     "typed 设备任务里的 devlock 只占本机 lane，嵌套会话沿用同一实例；全局范围任务仍用全农场 devlock。",
     "每轮开始先运行 pf-node checkin，按 duties 的顺序处理；duties 为空时再推进实验。",
@@ -102,21 +102,30 @@ def duties(jobs, name, now=None):
             continue
         item = {"job_id": row["job_id"], "label": row["spec"].get("label"), "bin": row["spec"].get("bin"),
                 "research_id": research_id}
+        if row["state"] not in {"blocked", "done"}:
+            active.append({**item, "state": row["state"]})
+            continue
+        changed = last is None or (row.get("status_committed_at") or 0) > last
         if row["state"] == "blocked":
             blocked.append(item)
-            try:
-                meta = jobs.status(row["job_id"])
-            except (OSError, ValueError, KeyError):
-                continue
-            if meta.get("state") == "finished" and (meta.get("recovery") or {}).get("status") == "required":
-                owed.insert(0, {"kind": "reset_job", "target": row["job_id"],
-                                "text": f"任务 {row['job_id']} 只待设备恢复；先还原设备，再重置",
-                                "command": f"pf-node reset {row['job_id']} --note \"<已还原内容与核查>\""})
-        elif row["state"] == "done":
-            if last is not None and (row.get("status_committed_at") or 0) > last:
-                finished.append(item)
-        else:
-            active.append({**item, "state": row["state"]})
+        elif last is not None and changed:
+            finished.append(item)
+        try:
+            meta = jobs.status(row["job_id"])
+        except (OSError, ValueError, KeyError):
+            continue
+        if row["state"] == "blocked":
+            owed.insert(0, {"kind": "reset_job", "target": row["job_id"],
+                            "text": f"任务 {row['job_id']} 的执行范围待核查；运行名额已释放，原独占范围保留到 reset",
+                            "command": f"pf-node reset {row['job_id']} --note \"<停止与核查说明>\""})
+        elif meta.get("storage_error"):
+            owed.insert(0, {"kind": "reset_job", "target": row["job_id"],
+                            "text": f"任务 {row['job_id']} 已结束并释放资源，但结果保存失败；修复存储后 reset 重存",
+                            "command": f"pf-node reset {row['job_id']} --note \"<存储修复说明>\""})
+        if row["state"] == "done" and changed and (meta.get("recovery") or {}).get("status") == "required":
+            owed.append({"kind": "restore_device", "target": row["job_id"],
+                         "text": f"任务 {row['job_id']} 已结束、资源已释放；设备恢复仍待核查，用原 session 恢复或 adb 还原",
+                         "command": f"pf-node status {row['job_id']}"})
 
     status = entry.get("status")
     if (mine or active) and (status is None or now - status["at"] > STATUS_STALE_SECONDS):

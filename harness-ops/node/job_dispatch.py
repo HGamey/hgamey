@@ -224,12 +224,6 @@ class JobDispatch:
                     if any(current[key] != previous.get(key) for key in ("status", "error")):
                         prior_observation = {**candidate, "execution": {**execution}}
                         execution["owned_process_group"] = current
-                if candidate.get("lost"):
-                    previous = ((candidate.get("execution") or {}).get("service_at_launch") or {}).get("service", {}).get("revision")
-                    current = (getattr(self.jobs, "service_at_launch", {}) or {}).get("service", {}).get("revision")
-                    if current and previous and current != previous:
-                        candidate["note"] = f"部署 {current} 中断"
-                        candidate["interruption"] = {"kind": "deployment", "revision": current}
                 if candidate.get("lost") or prior_observation is not None:
                     self.jobs._write_meta(jid, candidate)
                 stage = "records"

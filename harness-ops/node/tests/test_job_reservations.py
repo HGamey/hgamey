@@ -57,7 +57,7 @@ class ReservationTests(TestCase):
         recovery = self.submit({**spec, "device_access": "recovery", "recovery_for": jid}, "recover-terminal")
         self.assertEqual(self.jobs.dispatch.queue.get(recovery)["resources"], ["legacy-device"])
 
-    def test_lost_deploy_interruption_records_reason_and_unknown_can_reset_as_admin(self):
+    def test_lost_revision_difference_does_not_invent_a_cause_and_reset_is_idempotent(self):
         self.jobs.service_at_launch = {"node_id": self.jobs.node_id,
                                        "service": {"revision": "newsha", "dirty": False}}
         jid = self.submit({"bin": "phonefarm", "argv": ["-c", "pass"], "device_access": "write"},
@@ -66,7 +66,10 @@ class ReservationTests(TestCase):
         self.assertTrue(self.jobs.dispatch.finalize(self.jobs.dispatch.queue.get(jid)))
         row = self.jobs.dispatch.queue.get(jid)
         self.assertEqual(row["state"], "done")
-        self.assertEqual(self.jobs.status(jid)["note"], "部署 newsha 中断")
+        status = self.jobs.status(jid)
+        self.assertNotIn("interruption", status)
+        self.assertNotEqual(status.get("note"), "部署 newsha 中断")
+        self.assertEqual(status["execution"]["service_at_launch"]["service"]["revision"], "oldsha")
 
         unknown = self.submit({"bin": "phonefarm", "argv": ["-c", "pass"], "device_access": "write"},
                               "unknown-lost")
@@ -145,3 +148,32 @@ class ReservationTests(TestCase):
         self.assertEqual(self.jobs.dispatch.queue.get(jid)["state"], "done")
         duties = self.jobs.agents and __import__("agent_duties").duties(self.jobs, "glm-researcher")
         self.assertFalse(any(item["kind"] == "unblock_job" for item in duties["duties"]))
+
+    def test_checkin_distinguishes_unknown_execution_storage_and_device_recovery(self):
+        from agent_duties import checkin, duties
+        self.jobs.agents.create({"name": "owner"})
+        spec = {"bin": "phonefarm", "argv": ["-c", "pass"], "device_access": "write", "actor_id": "owner"}
+        ended = self.submit(spec, "ended-needs-device-recovery")
+        self.finish(ended)
+        self.jobs.dispatch.finalize(self.jobs.dispatch.queue.get(ended))
+        unknown = self.submit(spec, "unknown-without-device-report")
+        self.finish(unknown, group="unknown")
+        meta = self.jobs._read_meta(unknown)
+        meta["recovery"] = {"status": "not_reported"}
+        self.jobs._write_meta(unknown, meta)
+        self.jobs.dispatch.finalize(self.jobs.dispatch.queue.get(unknown))
+        self.jobs.dispatch.queue.set_state(ended, "done", {"kind": "durability", "message": "fixture: fsync failed"})
+        first = checkin(self.jobs, "owner")
+        actions = {(d["kind"], d.get("target")): d for d in first["duties"]}
+        self.assertIn(("reset_job", unknown), actions)
+        self.assertIn("执行范围", actions["reset_job", unknown]["text"])
+        self.assertIn(("reset_job", ended), actions)
+        self.assertIn("保存", actions["reset_job", ended]["text"])
+        self.assertIn(("restore_device", ended), actions)
+        self.assertNotIn("reset", actions["restore_device", ended].get("command", ""))
+        self.assertEqual([j["job_id"] for j in first["jobs"]["blocked"]], [unknown])
+        self.assertFalse(first["jobs"]["active"])
+        self.assertEqual(self.jobs.dispatch.queue.capacity_snapshot()["reserved"]["cpu"], 0)
+        second = duties(self.jobs, "owner")
+        self.assertFalse(any(d["kind"] == "restore_device" for d in second["duties"]))
+        self.assertTrue(any(d["kind"] == "reset_job" and d["target"] == unknown for d in second["duties"]))

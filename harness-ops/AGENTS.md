@@ -60,3 +60,5 @@ PF 与 Node 使用同 UID 的普通输出和 lease-receipts；跨 UID/GID 的 PF
 显式execution reconcile仅由声明能力的固定安装提供，普通核查不杀进程；force只作用于核实boot/inode的绑定cgroup。保存handoff义务后才能改输出身份，下一次复用UID先核持久记录。宿主核查完成保留原lost/outcome与设备恢复义务；contained的reset/session-recover共用宿主资格，不能以lease clear代替域空和私有输出交还。跨boot判断模型不等于真实主机重启验收。
 
 普通作业只用reset：负责人或管理员可停止活任务、明确释放未知范围、重试保存；重复调用返回原释放事实，不重放命令，不把设备恢复写成成功。运行中复用cancel的INT→15s→TERM→15s→KILL；等待时不占intake。恢复任务按普通范围/优先级排队，不借祖先预留；来源原件和恢复资格读同一done事实（含显式reset）。独立contained后端仍要求域空和私有输出交还。
+
+签到、页面与CLI按queue.state展示占用；blocked提示reset，done保存错误提示修盘后reset重存，done且recovery.required按已有签到游标提示设备还原，不再要求二次释放。版本不同只记录版本事实，不能据此推断部署中断；旧原件和失败历史保留。

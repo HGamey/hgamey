@@ -857,8 +857,6 @@ class Jobs:
             status = self.status(jid)
             if not row or row["state"] != "blocked" or status["state"] != "finished":
                 raise RequestConflict("execution reconciliation requires a finished job with a blocked reservation")
-            if status.get("phase") in {"finalizing", "storage_blocked"}:
-                raise RequestConflict("commit the source result before execution reconciliation")
             execution = status.get("execution") or {}
             if (execution.get("kind") != "supervised-v1" or execution.get("worker_alive") is not False
                     or row["spec"].get("execution_policy") != "contained"
