@@ -776,6 +776,77 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('agents = (await api(\'/agents\')', task)
         self.assertIn('renderDetail(detail)', research, "unlock must repaint the current task and its owner controls")
 
+    def test_web_writes_outlive_the_page_and_conflicts_are_read_back(self):
+        # 2026-10-29 mbp1: 改派 was clicked, the page was left while the POST was still crossing the Cloudflare hop,
+        # and the edge dropped it (b2f99486 stayed unowned). keepalive lets the browser finish a write after leaving.
+        task = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
+        self.assertIn("keepalive: new TextEncoder().encode(data).length < 60000", task)
+        self.assertIn("error.code !== 'research_revision_conflict'", task)
+        self.assertIn("if (shown?.record.id === record.id) await ctx.reload();", task)
+
+    def test_web_reassignment_is_read_back_from_the_api(self):
+        """A real browser clicks 改派; the owner must then have changed on the server, not just in the select."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest("playwright is not installed")
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-assign", self.write(
+            "create-assign", {"title": "改派读回", "objective": "改派后从接口读回负责人"}))[0], 201)
+        owner = lambda: self.cli("GET", "/research-state/research/sr-assign")[1]
+        base = "http://%s:%d" % self.address
+        status = ".task-owner [role=status]"
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{base}/dash/research?kind=research&id=sr-assign")
+                page.select_option("#task-owner", "agent-a")
+                page.click("#task-assign")
+                page.wait_for_function("s => /已改派|没有改派/.test(document.querySelector(s)?.textContent || '')", arg=status)
+                self.assertEqual((owner()["data"]["owner"], owner()["revision"]), ("agent-a", 2))
+                self.assertEqual(page.text_content(status), "已改派给 agent-a")
+                self.assertIn("agent-a", page.text_content(".task-owner .who"))
+                self.assertIn("agent-a", page.text_content(".research-choice[aria-current=true]"))
+
+                # Someone else reassigns while this page is open: the click must fail visibly and show the server's owner.
+                current = owner()
+                self.assertEqual(self.web("POST", "/research-state/research/sr-assign", dict(
+                    self.write("other-tab", {**current["data"], "owner": "agent-b"}), base_revision=current["revision"], reason="另一页改派"))[0], 201)
+                page.select_option("#task-owner", index=0)
+                page.click("#task-assign")
+                page.wait_for_function("s => /没有改派/.test(document.querySelector(s)?.textContent || '')", arg=status)
+                self.assertEqual(owner()["data"]["owner"], "agent-b")
+                page.wait_for_function("() => document.getElementById('task-owner')?.value === 'agent-b'")
+
+                # The write is still on its way (held here, as the mbp1 edge held it) when the page is left: it must land.
+                held = []
+                page.route("**/dash/api/research-state/research/*",
+                           lambda route: held.append(route) if route.request.method == "POST" else route.continue_())
+                page.select_option("#task-owner", "agent-a")
+                page.click("#task-assign")
+                for _ in range(100):
+                    if held:
+                        break
+                    page.wait_for_timeout(20)
+                page.goto(f"{base}/dash/research")
+                for route in held:
+                    route.continue_()
+                for _ in range(100):
+                    if owner()["data"]["owner"] == "agent-a":
+                        break
+                    page.wait_for_timeout(50)
+                self.assertEqual(owner()["data"]["owner"], "agent-a")
+            finally:
+                browser.close()
+
     def test_research_copy_criteria_filters_and_navigation_follow_task_terms(self):
         page = (NODE / "dash_static/research.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/research.js").read_text(encoding="utf-8")

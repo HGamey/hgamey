@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const API = '/dash/api';
-  let agents = null, shown = null, imageEpoch = 0;
+  let agents = null, shown = null, assigned = null, imageEpoch = 0;
   const imageURLs = new Set(), IMAGE_TYPES = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', svg: 'image/svg+xml', webp: 'image/webp'};
   const el = (tag, value, className) => { const item = document.createElement(tag); if (value != null) item.textContent = String(value); if (className) item.className = className; return item; };
   const FULL = new Intl.DateTimeFormat('zh-CN', {dateStyle: 'medium', timeStyle: 'medium', hour12: false});
@@ -11,11 +11,14 @@
   const speaker = note => note.auth_channel === 'dashboard_steer' ? '人工' : note.auth_channel === 'admin_token' ? note.actor_label || '管理员' : note.actor_label || note.auth_channel;
 
   async function api(path, body) {
-    const init = body === undefined ? {credentials: 'same-origin', cache: 'no-store'}
-      : {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify(body)};
+    // A write keeps going if the page is left while it is in flight (the browser caps keepalive bodies at 64 KiB).
+    const data = body === undefined ? null : JSON.stringify(body);
+    const init = data === null ? {credentials: 'same-origin', cache: 'no-store'}
+      : {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: data,
+         keepalive: new TextEncoder().encode(data).length < 60000};
     const response = await HGTarget.fetch(API + path, init);
     const value = await response.json().catch(() => ({}));
-    if (!response.ok) throw Object.assign(new Error(value.error || 'HTTP ' + response.status), {needSteer: value.need_steer === true});
+    if (!response.ok) throw Object.assign(new Error(value.error || 'HTTP ' + response.status), {needSteer: value.need_steer === true, code: value.code});
     return value;
   }
   const write = (kind, id, data, base, reason) => api(`/research-state/${kind}/${encodeURIComponent(id)}`,
@@ -168,16 +171,36 @@
     if (record.data.deliverable) {
       const jump = el('a', '查看交付报告', 'owner-jump'); jump.href = '#task-report'; row.append(jump);
     }
+    // The outcome of the last click outlives the repaint that follows it, and is judged on the owner just read back.
+    const outcome = assigned?.id === record.id && record.revision >= assigned.revision ? assigned : null;
+    if (outcome) {
+      assigned = null;
+      const ok = outcome.chosen === undefined || outcome.chosen === (owner || null);
+      status.textContent = outcome.text || (ok ? (owner ? `已改派给 ${owner}` : '已改为无人负责') : `负责人现在是 ${owner || '无人负责'}，请再确认一次`);
+      status.classList.toggle('task-error', !ok || !!outcome.bad);
+    }
     if (!ctx.writable()) return section;
     const select = el('select'), button = el('button', '改派', 'ghost');
     select.id = 'task-owner'; select.setAttribute('aria-label', '改派给'); button.type = 'button'; button.id = 'task-assign';
-    select.append(new Option('无人负责', ''), ...(agents || []).map(agent => new Option(agent.name, agent.name, false, agent.name === record.data.owner)));
+    select.append(new Option('无人负责', ''), ...(agents || []).map(agent => new Option(agent.name, agent.name, false, agent.name === owner)));
+    if (owner && select.value !== owner) select.append(new Option(owner, owner, false, true));
+    // Only a choice that differs from the saved owner can be sent, so a changed select never passes for a saved one.
+    const sync = () => { button.disabled = (select.value || null) === (owner || null); };
+    select.onchange = sync; sync();
     button.onclick = async () => {
-      button.disabled = true; button.textContent = '改派中…'; status.textContent = '';
+      const chosen = select.value || null;
+      select.disabled = button.disabled = true; button.textContent = '改派中…'; status.textContent = ''; status.classList.remove('task-error');
       try {
-        await write('research', record.id, {...record.data, owner: select.value || null}, record.revision, `改派给 ${select.value || '无人'}`);
-        await ctx.reload();
-      } catch (error) { status.textContent = failure(error); button.disabled = false; button.textContent = '改派'; }
+        const saved = await write('research', record.id, {...record.data, owner: chosen}, record.revision, `改派给 ${chosen || '无人'}`);
+        assigned = {id: record.id, revision: saved.object.revision, chosen};
+      } catch (error) {
+        if (error.code !== 'research_revision_conflict') {
+          status.textContent = '没有改派：' + failure(error); status.classList.add('task-error');
+          select.disabled = false; button.textContent = '改派'; sync(); return;
+        }
+        assigned = {id: record.id, revision: record.revision + 1, text: '没有改派：任务刚被别人改过，已重新读取，请再选一次', bad: true};
+      }
+      if (shown?.record.id === record.id) await ctx.reload();
     };
     const assign = el('div', null, 'owner-assign'); assign.append(select, button); row.append(assign);
     return section;

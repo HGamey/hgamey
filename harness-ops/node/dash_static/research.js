@@ -185,6 +185,14 @@
     }));
     $('more-objects').hidden = !listCursor; $('more-objects').disabled = listBusy;
   }
+  // A record just read from the server also refreshes its list row, so an owner change shows in both places.
+  function syncRow(record) {
+    const row = records.find(item => keyOf(item) === keyOf(record));
+    if (!row || row.revision === record.revision) return;
+    Object.assign(row, {revision: record.revision, updated_at: record.updated_at, title: record.data.title, state: record.data.state},
+      record.kind === 'research' ? {owner: record.data.owner ?? null} : {});
+    renderList();
+  }
   async function loadList(append = false) {
     syncEventScope();
     if (!capable() || disposed) return;
@@ -303,7 +311,7 @@
     try {
       const value = checkedObject(await request(objectPath(kind, id) + (revision ? `?revision=${revision}` : ''), {target, signal: detailController.signal}), kind, id, target, revision);
       if (disposed || epoch !== detailEpoch) return;
-      detail = value; detailFresh = true; renderDetail(value);
+      detail = value; detailFresh = true; renderDetail(value); if (value.revision === value.current_revision) syncRow(value);
       message('detail-message', value.revision !== value.current_revision ? '这是历史版本。编辑以此版本为基础，若当前已更新会返回冲突。' : '');
     } catch (error) { if (!disposed && epoch === detailEpoch) message('detail-message', failText(error), true); }
     finally { if (!disposed && epoch === detailEpoch) renderControls(); }
