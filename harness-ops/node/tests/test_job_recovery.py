@@ -175,7 +175,7 @@ sys.exit(0 if released else 1)
                              ("original_process_group", "present", ready["pgid"]))
             self.assertIsInstance(group["checked_at"], (int, float))
             self.assertEqual(meta["queue"]["state"], "blocked")
-            self.assertEqual(meta["queue"]["host_capacity"]["state"], "reserved")
+            self.assertEqual(meta["queue"]["host_capacity"]["state"], "released")
             self.assertIsNone(queue.get(jid)["host_capacity_release"])
             checked_jobs.append({"id": jid, "device_access": meta["device_access"], "exit": meta["exit"],
                                  "phase": meta["phase"], "outcome": meta["outcome"],
@@ -208,12 +208,12 @@ sys.exit(0 if released else 1)
                 self.assertEqual(queue.get(waiting)["state"], "queued")
                 self.assertFalse(Path(jobs.path(waiting, "launch.json")).exists())
 
-                # Recovery borrows the exclusive resource, not the parent's CPU;
-                # the second CPU is free only because the other job completed.
+                # The unknown task retains its named exclusion, but its CPU
+                # slots are available independently of the recovery chain.
                 recovery = submit(leader, device_access="recovery", recovery_for=parent)
                 jobs_with_descendants.append(recovery)
                 check_group_failure(recovery)
-                self.assertEqual(queue.capacity_snapshot()["reserved"], {"cpu": 2, "gpu": 0, "io": 0})
+                self.assertEqual(queue.capacity_snapshot()["reserved"], {"cpu": 0, "gpu": 0, "io": 0})
                 sibling = submit("raise RuntimeError('recovery sibling must wait')",
                                  device_access="recovery", recovery_for=parent)
                 jobs.dispatch.tick()

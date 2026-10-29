@@ -531,13 +531,16 @@ class Jobs:
                 meta = self.dispatch.unstarted_meta(row, reason["unstarted"])
             else:
                 try:
-                    meta = self._execution_status(jid)
+                    meta = self._execution_status(jid, worker_alive=False if row["state"] == "done" else None)
                 except (OSError, ValueError):
                     meta = self.dispatch.base_meta(row)
-                    meta["recovery"] = {"status": "required", "reason": "execution record is unavailable"}
-            meta.update(state="running", phase="storage_blocked")
-            meta["controls"] = {"cancel_supported": False, "force_supported": False,
-                                "reason": "retry-finalize to commit the job record; command is not replayed"}
+                    saved = row.get("status_projection") or {}
+                    meta.update(state="running" if row["state"] == "claimed" else "finished",
+                                phase=saved.get("phase") or "interrupted", outcome=saved.get("outcome"),
+                                exit=saved.get("exit"), lost=saved.get("lost"),
+                                recovery={"status": "required", "reason": "execution record is unavailable"})
+                    meta["execution"]["worker_alive"] = row["state"] == "claimed"
+            meta["storage_error"] = reason
         elif row and row["state"] in {"preparing", "queued"}:
             meta = self.dispatch.base_meta(row)
             # Projection only: worker launch still requires the persisted running/preparing record.
@@ -791,8 +794,8 @@ class Jobs:
             row = self.dispatch.queue.get(jid)
             if not row:
                 raise KeyError(jid)
-            if row["state"] != "blocked" or (row.get("state_reason") or {}).get("kind") != "durability":
-                raise RequestConflict("only a job blocked on result storage can retry-finalize")
+            if (row.get("state_reason") or {}).get("kind") != "durability":
+                raise RequestConflict("only a job with a result storage error can retry-finalize")
             self._check_recovery_children(jid)
             committed = self.dispatch.finalize(row)
         self.dispatch.start()
@@ -898,7 +901,7 @@ class Jobs:
             eligibility = self.queue_release_eligibility(row, status, lease=lease)
             if not eligibility["eligible"]:
                 raise RequestConflict(eligibility["reason"])
-            if not self.dispatch.release_host_capacity(row):
+            if not self.dispatch.finalize(row):
                 raise RequestConflict("host capacity release could not be confirmed; inspect execution and storage before releasing the reservation")
             try:
                 self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease,

@@ -101,7 +101,7 @@ class ReservationTests(TestCase):
         self.assertTrue(self.jobs.dispatch.finalize(self.jobs.dispatch.queue.get(jid)))
         row = self.jobs.dispatch.queue.get(jid)
         self.assertEqual(row["state"], "blocked")
-        self.assertEqual((row.get("state_reason") or {}).get("kind"), "device_recovery_pending")
+        self.assertEqual((row.get("state_reason") or {}).get("kind"), "execution_unknown")
         self.assertIsNone(row["host_capacity_release"])
         self.assertFalse(self.jobs.queue_release_eligibility(row, self.jobs.status(jid))["eligible"])
 

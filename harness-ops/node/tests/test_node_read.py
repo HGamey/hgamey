@@ -407,7 +407,8 @@ class NodeReadTests(unittest.TestCase):
                 maintained = next(m for m in self.board.jobs() if m["id"] == fid)
                 self.assertEqual(listed["queue"]["state_reason"]["kind"], "durability")
                 for view in (listed, mirrored, maintained):
-                    self.assertEqual((view["phase"], view["state"]), ("storage_blocked", "running"))
+                    self.assertEqual((view["phase"], view["state"]), ("finished", "finished"))
+                    self.assertEqual(view["storage_error"]["kind"], "durability")
                     self.assertEqual(view["recovery"], maintained["recovery"])
                 suffix = f"/jobs/{fid}/retry-finalize"
                 self.assertEqual(self.request(suffix, method="POST", body=b'{}')[0], 401)

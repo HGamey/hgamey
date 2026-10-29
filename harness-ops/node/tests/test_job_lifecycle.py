@@ -1,0 +1,81 @@
+"""One scheduling outcome for unknown completion and failed result storage."""
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import job_runtime
+from node_service import Jobs
+from test_job_group_observation import until
+
+
+class JobLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.jobs = Jobs(temporary.name, {'host': (sys.executable, temporary.name)}, max_running=1)
+        self.addCleanup(self.jobs._read_root.close)
+        self.jobs.dispatch.start = lambda: None
+        self.jobs.leases.snapshot = lambda **kwargs: {'status': 'clear', 'entries': [], 'error': None}
+        self.queue = self.jobs.dispatch.queue
+
+    def submit(self, device, program='pass'):
+        return self.jobs.start({'bin': 'host', 'argv': ['-c', program, '@out'],
+                               'device_access': 'write', 'resources': ['device:' + device]}, b'')['id']
+
+    def ended(self, jid):
+        self.jobs.dispatch.tick()
+        until(lambda: self.jobs._read_meta(jid).get('phase') == 'finished'
+              and not job_runtime.runner_alive(self.jobs._read_root, jid))
+
+    def test_unknown_without_lost_releases_slots_and_explains_its_reservation(self):
+        for lost in (False, True):
+            with self.subTest(lost=lost):
+                jid = self.submit('usb-a')
+                self.ended(jid)
+                meta = self.jobs._read_meta(jid)
+                meta.update(phase='interrupted', outcome='interrupted', lost=lost,
+                            recovery={'status': 'required', 'reason': 'device state unknown'})
+                meta['execution']['owned_process_group'].update(status='unknown', error='prior query failed')
+                self.jobs._write_meta(jid, meta)
+                with patch('job_runtime.subprocess.run', side_effect=OSError('fixture: current query unavailable')):
+                    self.jobs.dispatch.finalize(self.queue.get(jid))
+                view = self.jobs.status(jid)
+                self.assertEqual(view['queue']['state'], 'blocked')
+                self.assertEqual(view['queue']['host_capacity']['state'], 'released')
+                self.assertEqual(self.queue.capacity_snapshot()['reserved']['cpu'], 0)
+                same, other = self.submit('usb-a'), self.submit('usb-b')
+                self.assertIn(jid, self.jobs.status(same)['queue']['waiting']['blocking_jobs'])
+                self.assertEqual(self.queue.claim_next(1)['job_id'], other)
+                for ended in (jid, same, other):
+                    self.queue.set_state(ended, 'done')
+
+    def test_result_sync_failure_does_not_reserve_a_finished_job(self):
+        program = "import pathlib,sys;pathlib.Path(sys.argv[1],'executions').write_text('once')"
+        jid = self.submit('usb-a', program)
+        self.ended(jid)
+        original = self.jobs._read_root.sync
+
+        def failed_sync(rel, directory=None):
+            if rel == jid + '/meta.json':
+                raise OSError('fixture: result fsync failed')
+            return original(rel, directory=directory)
+
+        with patch.object(self.jobs._read_root, 'sync', side_effect=failed_sync):
+            self.assertFalse(self.jobs.dispatch.finalize(self.queue.get(jid)))
+        view = self.jobs.status(jid)
+        self.assertEqual((view['state'], view['queue']['state'], view['exit']), ('finished', 'done', 0))
+        self.assertIn('result fsync failed', view['storage_error']['message'])
+        self.assertEqual(view['queue']['host_capacity']['state'], 'released')
+        following = self.submit('usb-a')
+        self.assertEqual(self.queue.claim_next(1)['job_id'], following)
+        self.assertEqual(Path(self.jobs.path(jid, 'out', 'executions')).read_text(), 'once')
+        self.assertEqual(view['committed_status']['queue_state'], 'done')
+        self.assertEqual(view['committed_status']['storage_kind'], 'durability')
+
+
+if __name__ == '__main__':
+    unittest.main()

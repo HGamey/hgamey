@@ -154,7 +154,7 @@ if operation.startswith('finalize-'):
     if role=='source':
         assert meta.get('lost') is True and meta['phase']=='interrupted' and meta['outcome']=='interrupted',meta
         assert meta['exit']==-1 and meta['recovery']['status']=='required' and row['state']=='blocked',meta
-        assert row['host_capacity_release'] is None and meta['queue']['host_capacity']['state']=='reserved',meta
+        assert row['host_capacity_release'] is None and meta['queue']['host_capacity']['state']=='released',meta
         keep('original-accident',accident(meta))
     else:
         assert row['host_capacity_release'] is not None and meta['queue']['host_capacity']['state']=='released',meta
@@ -220,7 +220,7 @@ try:
         assert not (source/'queue-release.json').exists()
         assert meta['execution']['containment']['handoff']['status']=='pending'
         assert jobs.dispatch.queue.get(plan['jid'])['host_capacity_release'] is None
-        assert meta['queue']['host_capacity']['state']=='reserved',meta
+        assert meta['queue']['host_capacity']['state']=='released',meta
     else:
         assert meta['execution']['owned_cgroup']['status']=='absent'
         assert meta['execution']['containment']['handoff']['status']=='returned'

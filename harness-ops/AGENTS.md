@@ -19,7 +19,7 @@
 
 results.cross-compare-v1从冻结目录目标有界读取详情，沿共享四槽/8秒截止，不代理原件。新schema显式每列node与基线，按(node_id,result_id)去重，复用原登记值算术；字段一致不等于同实验，旧比较/研究revision不升级。Web/CLI同级，合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/RESULT-CROSS-COMPARE.md 。
 
-可选 host_slots 与管理员 --host-capacity 在原队列 SQLite 中原子计账；CPU/GPU/IO 是声明调度容量，不是操作系统硬限制。未知宿主执行保留占位，已有宿主完成收据持久提交后才归还；设备恢复屏障独立。旧请求省略保持原内容并按 cpu1/gpu0/io0 计账，恢复任务不借祖先计算容量。Web/CLI同级，合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-HOST-CAPACITY.md 。
+可选 host_slots 与管理员 --host-capacity 在原队列 SQLite 中原子计账；CPU/GPU/IO 是声明调度容量，不是操作系统硬限制。仅claimed扣运行名额和slots；worker结束而原进程组未知的blocked保留原排他范围，已确认结束done释放全部。waiting与claim共用冲突判断；恢复required和保存错误不另占资源。旧请求省略保持原内容并按cpu1/gpu0/io0计账，恢复任务不借祖先计算容量。Web/CLI同级。
 
 可选 time_budget 由独立 worker 从实际命令启动后用单调时钟执行，复用原取消与升级链。排队不计时，HTTP重启不重置；期限触发与实际退出、设备恢复分别记录。旧请求省略保持原幂等内容，恢复任务暂不支持；Web/CLI同级，CLI可信exit0且期限触发返回124、未知125优先。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-TIME-BUDGET.md 。
 
@@ -51,7 +51,7 @@ jobs.input-limits-v1 只约束 Node 准备的输入文件：tar、同节点引�
 
 job 的 status_revision 只覆盖 committed_status 小对象；原 SQLite 同事务保存状态、版本和事件，GET 不补历史。独立 worker 离线阶段可合并，dispatcher恢复后提交已观察事实；实时 worker/lease/waiting/controls 仍须独立读取。事件 cursor、列表 cursor、日志字节 offset 分开，不能以版本未变跳过安全资格核查。合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-STATE-EVENTS.md 。
 
-关键结束记录在worker释放flock、文件和目录同步后才提交SQLite终态。保存失败只保留该job资源并公开storage_blocked；retry-finalize仅重新保存，不重放命令，普通release不得绕过。准备失败/取消的未执行依据由SQL记录，查询不得通过缺文件猜执行结果。范围不含任意producer输出的断电持久性；合同见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-DURABILITY.md 。
+关键结束记录在worker释放flock后同步文件和目录，保存错误通过storage_error及SQL事件公开，不把已结束任务伪装running或另扣资源；重新保存不重放命令，SQL提交失败仍报错。准备失败/取消的未执行依据由SQL记录，查询不得通过缺文件猜执行结果。范围不含任意producer输出的断电持久性。
 
 显式--worker-prefix只选择独立 contained worker 的可信安装和 execution reconcile 入口，不再配置 PF 路径或共享组。普通 process_group 的 lease-receipts 由 Node 创建；finished 后的 session 查询读取原输出。
 

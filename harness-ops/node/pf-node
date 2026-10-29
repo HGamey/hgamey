@@ -151,7 +151,7 @@ Agent 每轮从这里开始（最短完整路径）：
   owner_record_error 独立发起停止时，即使命令exit=0仍按interrupted返回125；期限124规则保持。
 - --execution-policy process_group 显式要求原进程组管理；先核节点能力，不支持时不打包/提交。
   省略保留兼容默认，不替旧任务补全树结束证明。
-- finalizing 表示结束记录尚在保存；storage_blocked 表示保存失败，wait/跟随以125退出并保留命令诊断。
+- finalizing 表示结束记录尚在保存；storage_error 表示保存失败，wait/跟随以125退出并保留命令诊断；已结束任务不因此占资源。
   修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
 - 历史 --source 与 --source-revision 必须同时显式提供，只用于 jobs/status/log/artifacts/out；
   不支持 wait/kill/恢复或写入。来源变化保留原 revision 并报错，不自动选择新目录或退回当前作业。
@@ -679,7 +679,7 @@ def retry_finalize(jid):
         print(f"pf-node: 任务 {jid} 的结束记录已提交存储；不代表设备恢复或资源已释放。", file=sys.stderr)
     else:
         reason = ((result.get("job") or {}).get("queue") or {}).get("state_reason")
-        print(f"pf-node: 任务 {jid} 结束记录仍未保存，资源保留；原因={json.dumps(reason, ensure_ascii=False)}", file=sys.stderr)
+        print(f"pf-node: 任务 {jid} 结束记录仍未保存；原因={json.dumps(reason, ensure_ascii=False)}", file=sys.stderr)
     return result
 
 
@@ -688,7 +688,7 @@ def follow(jid):
     try:
         while True:
             st = json.loads(call("GET", f"/jobs/{jid}"))
-            if st.get("phase") == "storage_blocked":
+            if (st.get("queue", {}).get("state_reason") or {}).get("kind") == "durability":
                 print(f"pf-node: 任务 {jid} 结果保存失败（storage_blocked），停止本地跟随并返回125；"
                       f"命令 exit={st.get('exit')}，execution.returncode={(st.get('execution') or {}).get('returncode')}，"
                       f"state_reason={json.dumps((st.get('queue') or {}).get('state_reason'), ensure_ascii=False)}，"

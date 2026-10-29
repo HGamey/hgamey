@@ -35,11 +35,6 @@ def recovery_reservations(row, owners):
 
 
 def reservation_conflicts(row, owner, snapshot=None):
-    if owner["state"] == "blocked" and (owner.get("state_reason") or {}).get("kind") != "device_recovery_pending":
-        # Unknown completion can retain declared host slots, never a phone.
-        row_resources = {r for r in row["resources"] if r.startswith("host:")}
-        owner_resources = {r for r in owner["resources"] if r.startswith("host:")}
-        return bool(row_resources & owner_resources)
     left, right = scope(row["spec"], snapshot), scope(owner["spec"], snapshot)
     if left["scope"] == right["scope"] == "device":
         return conflicts(left, right)
@@ -66,6 +61,13 @@ def recovery_sibling_conflicts(row, owner):
         return False
     return (bool(set(row["resources"]) & set(owner["resources"]))
             or conflicts(scope(row["spec"]), scope(owner["spec"])))
+
+
+def blocking_owners(row, owners, snapshot=None):
+    borrowed = recovery_reservations(row, owners)
+    return [owner for owner in owners if recovery_sibling_conflicts(row, owner) or
+            owner["job_id"] not in borrowed and (reservation_conflicts(row, owner, snapshot)
+                                                or recovery_conflicts(row, owner))]
 
 
 class JobQueue:
@@ -255,11 +257,7 @@ class JobQueue:
                     continue
                 if job_capacity.waiting(value["spec"], capacity, active):
                     continue
-                borrowed = recovery_reservations(value, active)
-                if any(recovery_sibling_conflicts(value, owner) for owner in active):
-                    continue
-                if not any(reservation_conflicts(value, owner, lease_snapshot) or recovery_conflicts(value, owner)
-                           for owner in active if owner["job_id"] not in borrowed):
+                if not blocking_owners(value, active, lease_snapshot):
                     db.execute("UPDATE jobs SET state='claimed' WHERE job_id=?", (value["job_id"],))
                     return self._publish(db, value["job_id"])
             return None

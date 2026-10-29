@@ -10,7 +10,7 @@ import tarfile
 import time
 import uuid
 
-from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, job_priority
+from job_queue import JobQueue, RequestConflict, blocking_owners, job_priority
 from device_scope import scope, lease_problem, same_binding, resource as device_resource
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
@@ -162,25 +162,46 @@ class JobDispatch:
             return
         self.finalize(row)
 
-    def block_storage(self, row, stage, error):
-        current = self.queue.get(row["job_id"])
-        if current["state"] == "done":
-            return
+    def _commit_completion(self, row, observation, error=None):
+        execution = observation.get("execution") or {}
+        problem = self.jobs.host_execution_problem(row["job_id"], observation)
+        release = row.get("host_capacity_release")
+        state = ("claimed" if execution.get("worker_alive") is True else
+                 "done" if problem is None or release is not None or row["state"] == "done" else "blocked")
+        if state == "done" and release is None:
+            policy = (execution.get("process_management") or {}).get("policy")
+            basis = ("owned_cgroup_completed" if policy == "contained" else
+                     "not_started" if execution.get("child_pid") is None else "original_process_group_completed")
+            release = {"at": time.time(), "basis": basis}
+        reason = error or ({"kind": "execution_unknown", "message": problem} if state == "blocked" else None)
+        return self.queue.set_state(row["job_id"], state, reason,
+                                    host_capacity_release=release, observation=observation)
+
+    def block_storage(self, row, stage, error, observation=None):
+        row = self.queue.get(row["job_id"])
         reason = {"kind": "durability", "stage": stage,
                   "message": f"{type(error).__name__}: {error}", "at": time.time()}
-        unstarted = (current.get("state_reason") or {}).get("unstarted")
+        unstarted = (row.get("state_reason") or {}).get("unstarted")
         if unstarted:
             reason["unstarted"] = unstarted
-        # If SQLite itself fails, this raises and retains the previous reservation.
-        self.queue.set_state(row["job_id"], "blocked", reason)
+            observation = self.unstarted_meta(row, unstarted)
+        if observation is None:
+            observation = self.base_meta(row)
+            alive = job_runtime.runner_alive(self.jobs._read_root, row["job_id"])
+            observation["execution"]["worker_alive"] = alive
+            if not alive:
+                observation.update(state="finished", phase="interrupted", outcome="interrupted", lost=True,
+                                   recovery={"status": "required", "reason": "execution record is unavailable"})
+        # SQLite failure still propagates; a file sync error is not a reservation.
+        self._commit_completion(row, observation, reason)
 
     def finalize(self, row, groups=None):
         """Caller holds intake; commit a stable candidate, never launch/replay it."""
         row = self.queue.get(row["job_id"])
-        if row["state"] == "done":
+        if row["state"] == "done" and (row.get("state_reason") or {}).get("kind") != "durability":
             return True
         jid, store = row["job_id"], self.jobs._read_root
-        stage = "candidate"
+        stage, candidate = "candidate", None
         try:
             fact = (row.get("state_reason") or {}).get("unstarted")
             if fact:
@@ -198,7 +219,7 @@ class JobDispatch:
                 prior_observation = None
                 contained = (row["spec"].get("execution_policy") == "contained" or
                              (execution.get("process_management") or {}).get("policy") == "contained")
-                if (execution.get("kind") == "supervised-v1" and not contained
+                if (row["state"] != "done" and execution.get("kind") == "supervised-v1" and not contained
                         and self.jobs.host_execution_problem(jid, candidate) is not None):
                     previous = execution.get("owned_process_group") or {}
                     current = job_runtime._group_completion(previous.get("pgid"), groups)
@@ -228,72 +249,20 @@ class JobDispatch:
                 if prior_observation is not None:
                     # Keep the previous query error in the existing event stream.
                     self.queue.observe(jid, prior_observation)
-                release = self._capacity_release_fact(row, candidate)
-                # Known terminal jobs release scheduling reservations. Unknown
-                # host completion stays blocked until an administrator resets it.
-                self.queue.set_state(jid, "blocked" if release is None else "done",
-                                     host_capacity_release=release, observation=candidate)
-                current = self.queue.get(jid)
-                group_status = (candidate.get("execution") or {}).get("owned_process_group", {}).get("status")
-                if (current["state"] == "blocked" and current.get("host_capacity_release") is None
-                        and candidate.get("lost") is True and group_status in {"unknown", "pending"}
-                        and (current.get("state_reason") or {}).get("kind") != "durability"):
-                    self.queue.set_state(jid, "blocked", {"kind": "device_recovery_pending", "at": time.time()},
-                                         observation=candidate)
+                self._commit_completion(row, candidate)
                 return True
         except (OSError, ValueError) as error:
-            self.block_storage(row, stage, error)
-            return False
-
-    def _capacity_release_fact(self, row, meta):
-        prior = row.get("host_capacity_release")
-        if prior is not None:
-            return prior
-        if self.jobs.host_execution_problem(row["job_id"], meta) is not None:
-            return None
-        execution = meta.get("execution") or {}
-        policy = (execution.get("process_management") or {}).get("policy")
-        basis = ("owned_cgroup_completed" if policy == "contained" or execution.get("containment") else
-                 "not_started" if execution.get("child_pid") is None else "original_process_group_completed")
-        return {"at": time.time(), "basis": basis}
-
-    def release_host_capacity(self, row):
-        """Caller holds intake. Persist host completion without releasing device resources."""
-        row = self.queue.get(row["job_id"])
-        if row.get("host_capacity_release") is not None:
-            return True
-        if row["state"] != "blocked" or (row.get("state_reason") or {}).get("kind") == "durability":
-            return False
-        jid, store = row["job_id"], self.jobs._read_root
-        try:
-            with job_runtime.runner_lock(store, jid) as acquired:
-                if not acquired:
-                    return False
-                meta = self.jobs._execution_status(jid, worker_alive=False)
-                release = self._capacity_release_fact(row, meta)
-                if release is None:
-                    return False
-                store.sync(jid + "/meta.json", directory=False)
-                store.sync(jid, directory=True)
-                store.sync("", directory=True)
-                self.queue.release_capacity(jid, release, observation=meta)
-                return True
-        except (OSError, ValueError) as error:
-            self.block_storage(row, "host-capacity-release", error)
+            self.block_storage(row, stage, error, candidate)
             return False
 
     def _refresh_host_capacity(self, groups=None):
         groups = {} if groups is None else groups
         for row in self.queue.rows(("blocked",)):
-            if (row.get("state_reason") or {}).get("kind") == "durability":
-                continue
             with file_lock(self.intake_path):
                 self.finalize(row, groups)
 
     def _pending(self):
-        return bool(self.queue.rows(("preparing", "queued", "claimed"))) or any(
-            (row.get("state_reason") or {}).get("kind") != "durability"
-            for row in self.queue.rows(("blocked",)))
+        return bool(self.queue.rows(("preparing", "queued", "claimed", "blocked")))
 
     def start(self):
         with self.guard:
@@ -461,17 +430,16 @@ class JobDispatch:
                     (row.get("state_reason") or {}).get("kind") == "durability" else "recovery", "blocking_jobs": []}
         if state != "queued":
             return {"kind": None, "blocking_jobs": []}
-        borrowed = recovery_reservations(row, rows)
-        owners = [r for r in rows if (r["state"] == "claimed" or
-                    (r.get("state_reason") or {}).get("kind") == "durability") and r["job_id"] not in borrowed]
+        owners = [r for r in rows if r["state"] in {"claimed", "blocked"}]
         lease = self.jobs.leases.snapshot()
         declared = scope(row["spec"], lease)
         resources = set(row["resources"])
-        collisions = [r["job_id"] for r in owners if resources.intersection(r["resources"])]
+        blockers = blocking_owners(row, owners, lease)
+        collisions = [r["job_id"] for r in blockers if resources.intersection(r["resources"])]
         if collisions:
             return {"kind": "resource", "blocking_jobs": collisions, "scope": declared,
                     "reason": "declared resources overlap an active reservation"}
-        scope_collisions = [r["job_id"] for r in owners if reservation_conflicts(row, r, lease)]
+        scope_collisions = [r["job_id"] for r in blockers]
         if scope_collisions:
             # A global/device scope barrier is not an overlap in user-named
             # resources. Keep that distinction for legacy queue consumers.
