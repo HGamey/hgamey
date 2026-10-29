@@ -303,10 +303,8 @@ class LiveHub:
                     or sum(s.viewers for s in self.streams.values() if s.serial == serial) >= MAX_VIEWERS_PER_DEVICE):
                 raise LiveBusy("观看人数已满")
             if stream is None:
-                if device_binding is not None:
-                    if not self.policy()["device_binding_v1"]:
-                        raise CaptureError("unavailable", "configured PF screen capture does not support device binding; no global fallback")
-                    self.device_scopes.admit(device_binding)
+                if device_binding is not None and not self.policy()["device_binding_v1"]:
+                    raise CaptureError("unavailable", "configured PF screen capture does not support device binding; no global fallback")
                 stream = self.streams[key] = DeviceStream(self, serial, device_binding)
             stream.join()
             return stream

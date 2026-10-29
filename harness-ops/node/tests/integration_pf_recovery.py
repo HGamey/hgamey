@@ -29,7 +29,7 @@ def save(path, value):
 CHARGE_NODE = '/sys/class/power_supply/battery/input_suspend'
 
 NODE_HELPER = r'''
-import errno,hashlib,http.client,io,json,os,pathlib,stat,sys,tarfile,threading,time
+import errno,hashlib,http.client,io,json,os,pathlib,stat,subprocess,sys,tarfile,threading,time
 from http.server import ThreadingHTTPServer
 from urllib.parse import quote
 operation, plan_path = sys.argv[1:]
@@ -79,12 +79,21 @@ def terminal(jid):
     return jobs.status(jid)
 
 if operation=='prepare':
+    def register(revision, device):
+        result=subprocess.run([plan['phonefarm'],'lease','devices-set','--request','-','--json'],
+            input=json.dumps({'expected_revision':revision,'device':device}),text=True,capture_output=True,env=env,check=True)
+        return json.loads(result.stdout)
+    register(0,{'device_id':plan['serial'],'label':'A','aliases':[plan['serial']],'enabled':True})
+    binding=json.loads(subprocess.check_output([plan['phonefarm'],'lease','resolve','--serial',plan['serial'],'--json'],env=env))
+    assert binding['registry_revision']==1
+    register(1,{'device_id':'unrelated-B','label':'B','aliases':['FAKE-B'],'enabled':True})
     argv=['gray-layer','session','--mode','frameaudit','--serial',plan['serial'],
           '--package',plan['package'],'--out','@out','--so','@in/synthetic.so',
           '--actor-id','agent','--max-seconds','90','--power-policy','battery',
           '--evidence-origin','synthetic','--lock-wait','0s','--json']
     spec={'bin':'phonefarm','argv':argv,'label':'isolated battery recovery source',
-          'execution_policy':'process_group','device_access':'write','resources':['fixture-device:'+plan['serial']]}
+          'execution_policy':'process_group','device_access':'write','resources':['fixture-device:'+plan['serial']],
+          'device_binding':binding}
     body=io.BytesIO()
     with tarfile.open(fileobj=body,mode='w:gz') as archive:
         payload=b'explicit synthetic SO fixture'
@@ -433,6 +442,17 @@ class RecoveryFixture:
         mismatch=next(i for i,c in enumerate(calls) if c['kind']=='known-charge-readback-mismatch')
         assert not any(c['kind'] in ('sampling-close','sampling-trace-remove') for c in calls[mismatch:])
         before_recovery=len(calls)
+        source_binding=self.report['checks']['failed_source_handed_back']['descriptor']['device_binding']
+        assert source_binding['registry_revision']==1 and source_binding['serial']==plan['serial']
+        # Remove the old registry archive and change today's alias mapping. The
+        # recovery must still use the source serial and binding, not this name.
+        registry=roots['locks']/'device-registry.json'
+        current=json.loads(registry.read_text())
+        current['revision']+=1
+        next(d for d in current['devices'] if d['device_id']==plan['serial'])['aliases']=['NEW-UNUSED-ALIAS']
+        save(registry,current)
+        history=roots['locks']/'device-registry-history'
+        if history.exists(): shutil.rmtree(history)
         self.report['checks']['failed_typed_recovery']=self.helper('recover-fail')
         calls=[json.loads(line) for line in self.transport_log.read_text().splitlines()]
         before_success=len(calls)
@@ -443,6 +463,8 @@ class RecoveryFixture:
         # never a PF record or a queue state, and recover the same source via R1.
         (device/'restore-mismatch').unlink()
         self.report['checks']['typed_recovery']=self.helper('recover')
+        for name in ('failed_typed_recovery','typed_recovery'):
+            assert self.report['checks'][name]['descriptor']['device_binding']==source_binding
         calls=[json.loads(line) for line in self.transport_log.read_text().splitlines()]
         recovery=calls[before_recovery:]
         success=calls[before_success:]

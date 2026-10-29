@@ -73,7 +73,7 @@ class DeviceRegistry:
         return {**value, "node_id": self.node_id}
 
     def _run(self, arguments, body=None):
-        """One bounded configured host helper, shared by registry and scope reads."""
+        """Reads are bounded; a registry write waits for the ordinary global lock."""
         configured = self.jobs.bins.get("phonefarm")
         if not configured:
             raise RegistryError("unavailable", "phonefarm is not configured for this node")
@@ -94,11 +94,11 @@ class DeviceRegistry:
                                         stdout=output, stderr=error, start_new_session=True)
             except (OSError, ValueError):
                 raise RegistryError("unavailable", "configured phonefarm registry helper could not start") from None
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + 5 if body is None else None
             while True:
                 code = proc.poll()
                 exceeded = max(os.fstat(output.fileno()).st_size, os.fstat(error.fileno()).st_size) > LIMIT
-                if exceeded or code is None and time.monotonic() >= deadline:
+                if exceeded or code is None and deadline is not None and time.monotonic() >= deadline:
                     # Never signal a PID after poll has reaped its owned leader.
                     if code is None:
                         try:

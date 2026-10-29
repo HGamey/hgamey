@@ -129,13 +129,26 @@ class DeviceScopeTests(unittest.TestCase):
         snapshot["device_scopes"]["global"]["status"] = "held"
         self.assertIsNotNone(lease_problem(original, snapshot))
 
+    def test_unrelated_revision_and_unknown_device_do_not_block_original_binding(self):
+        snapshot = {"status": "unknown", "device_scopes": {
+            "schema": "phonefarm/device-scopes@1", "registry_revision": 2,
+            "unknown": True, "queue_waiting": False,
+            "global": {"status": "clear", "error": None}, "devices": [
+                {"device_id": "A", "status": "clear", "error": None},
+                {"device_id": "B", "status": "unknown", "error": "B metadata"}]}}
+        spec = {"device_access": "write", "device_binding": bound("A", "usb-A")}
+        self.assertIsNone(lease_problem(spec, snapshot))
+        snapshot["device_scopes"]["devices"] = []
+        self.assertIsNone(lease_problem(spec, snapshot), "PF acquires the saved scope even if it is no longer registered")
+        snapshot["device_scopes"]["global"]["status"] = "held"
+        self.assertIsNotNone(lease_problem(spec, snapshot))
+
     def test_auto_bound_perf_prepares_without_a_session_only_flag(self):
         env = fixture.GameFlowTests()
         env.setUp()
         self.addCleanup(env.tearDown)
         env.jobs.bins["phonefarm"] = ("/usr/bin/false", str(env.root))
         with mock.patch.object(env.jobs.device_scopes, "registered", return_value=bound("A", "usb-a")), \
-                mock.patch.object(env.jobs.device_scopes, "admit"), \
                 mock.patch.object(env.jobs.dispatch, "start"):
             job = env.jobs.start({"bin": "phonefarm", "argv": ["perf", "--serial", "usb-a", "--rounds", "1"]}, b"")
             explicit = env.jobs.start({"bin": "phonefarm", "argv": ["perf", "--serial", "usb-a", "--rounds", "1"],

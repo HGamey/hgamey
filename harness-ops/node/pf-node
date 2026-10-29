@@ -1407,7 +1407,7 @@ def main():
         TARGET.require_write()
         try:
             print(call("POST", "/node/devices", raw, {"Content-Type": "application/json"},
-                       attempts=1, raise_errors=True).decode())
+                       timeout=None, attempts=1, raise_errors=True).decode())
         except ClientError as error:
             sys.exit(f"pf-node: 设备登记请求失败：{error}；未自动重试，用 devices 核对当前 revision")
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):

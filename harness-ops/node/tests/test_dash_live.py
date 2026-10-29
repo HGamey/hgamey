@@ -208,7 +208,7 @@ else:
             exe.chmod(0o755)
             backend = PFBackend(SimpleNamespace(request=lambda **kw: {"devices": None}),
                                 str(exe), directory, None, root / "frames")
-            scopes = SimpleNamespace(admit=Mock())
+            scopes = SimpleNamespace()
             hub = LiveHub(lambda: {"status": "held", "lease": lease}, backend,
                           device_scopes=scopes, free_grace_s=0, linger_s=60,
                           policy_every_s=.01, interval_s=60)
@@ -218,7 +218,6 @@ else:
             try:
                 handle(dash, None, ["api", "live", "status"], query)
                 self.assertEqual(responses[-1][0][1]["devices"][0]["state"], "unknown")
-                scopes.admit.assert_not_called()
                 self.assertFalse(hub.streams)
                 handle(dash, None, ["api", "live", "frame"], query)
                 self.assertEqual(responses[-1][0][:2], (200, JPEG))
@@ -226,7 +225,6 @@ else:
                 self.assertEqual((original.frame.seq, original.frame.at), (1, CAPTURED_AT))
                 handle(dash, None, ["api", "live", "status"], query)
                 self.assertEqual(responses[-1][0][1]["devices"][0]["device_binding"], bound)
-                scopes.admit.assert_called_once_with(bound)
                 self.assertEqual([json.loads(x) for x in (root / "calls").read_text().splitlines()], [bound])
 
                 legacy = hub.open("USB-B")

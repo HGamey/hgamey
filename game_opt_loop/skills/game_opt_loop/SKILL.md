@@ -112,7 +112,7 @@ cargo run --release -- optimize --game com.example.game --package com.example.ga
 | `--frame-audit <analysis.json>` | Frame-audit result; layer ② knobs are its certain dead stores. Without it ② does not run |
 | `--layers <sysparam,gray>` | Only these layers (also `3,2`). The others are listed as "not selected". Use it to split a long run into ≤45-minute lock holds |
 | `--generations N` / `--children N` | Fix the shape of every selected open layer (the other one defaults to 1); the budget no longer cuts layers. The estimate is recomputed; the plan says so when it exceeds the budget |
-| `--lock-label <label>` / `--lock-wait 2h` / `--no-devlock` | Device lock (see below). `optimize` queues and releases by itself |
+| `--lock-label <label>` / `--lock-wait 2h` | Device lock (see below). `optimize` queues and releases by itself |
 
 Artifacts:
 

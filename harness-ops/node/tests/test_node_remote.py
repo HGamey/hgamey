@@ -420,6 +420,8 @@ class RemoteHttpTests(Base):
             code, _, raw = self.req("POST", path + (serial or value["serial"]) + "/session", body, auth)
             return code, json.loads(raw)
 
+        current["device_scopes"]["registry_revision"] = 2
+        resolver.side_effect = AssertionError("saved binding must not be re-resolved at admission")
         code, first = acquire("lane-a", a); self.assertEqual(code, 200, first)
         current["device_scopes"]["devices"][0]["status"] = "held"
         code, second = acquire("lane-b", b); self.assertEqual(code, 200, second)
