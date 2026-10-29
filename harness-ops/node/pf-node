@@ -127,7 +127,8 @@ Agent 每轮从这里开始（最短完整路径）：
   准备失败保留job/request ID，原ID不重准备，
   修正输入后显式新请求。服务端权威检查；客户端不额外改归档字节/指纹或据当前限值阻断旧ID查询。
 - 日志实时回显；已知退出码沿用节点命令，未知退出码用 125。Ctrl-C 请求取消并停止本地跟随（130）；普通任务仍按 INT → TERM → KILL 收尾；
-  独立 worker 继续收尾，取消请求不代表设备已恢复。cancel/kill 需要管理 token；旧 kill 保留强制升级语义。
+  主进程已退出时，残留进程组直接 TERM → KILL。独立 worker 继续收尾，取消请求不代表设备已恢复。
+  cancel/kill 需要管理 token；普通任务加 --force 不改变信号或宽限期，只显式记录升级请求；旧 kill 同 cancel --force。
 - 新建 phonefarm gray-layer session 需 node.protocol-compat-v1 且配置 PF 的 gray_control compatible；禁止 --exe。
   不按 SHA 猜兼容，不自动刷新程序或重试。已给 request_id 时先单次查回，再以原 ID 提交核同内容；不同内容仍冲突。
   已记录请求不受当前新建兼容门禁影响；旧 status/action/stop/recovery 不受此门禁影响。
@@ -508,7 +509,7 @@ def submit_job(spec, body, request_id):
 
 def cancel_job(jid, force=False):
     if force:
-        print("pf-node: 强制取消将请求 SIGINT，15 秒后可升级 TERM，再 15 秒后可升级 KILL；可能打断恢复。",
+        print("pf-node: --force 显式请求升级；普通任务与默认 cancel 相同：SIGINT → 15 秒后 TERM → 再 15 秒后 KILL；可能打断恢复。",
               file=sys.stderr)
     try:
         result = json.loads(call("POST", f"/jobs/{jid}/cancel", json.dumps({"force": force}).encode(),
