@@ -39,6 +39,7 @@
       ['text', '答复内容', 'long', true], ['supersedes', '修正的旧答复 ID（可空）', 'id']
     ]
   };
+  const SHOWN = {objective: '目标', constraints: '约束', device_requirements: '设备', state_reason: '状态说明'};
   const EVIDENCE = ['evidence_refs', '证据引用', 'json', false, '[{"kind":"result_source","node_id":"当前节点ID","result_id":"结果ID","source_name":"来源名"}]。也支持 job、result 和纯文字 external；评价请求至少引用一个 result_source。'];
   let node = null, access = null, accessBusy = false, accessError = '', disposed = false;
   let records = [], listKind = 'research', listQuery = '', listCursor = null, listBusy = false, listEpoch = 0, listController = null;
@@ -53,7 +54,8 @@
   const capable = () => node?.capabilities?.includes('research.state-v1') === true;
   const writable = () => capable() && access?.steer === true && !accessBusy && HGTarget.canWrite();
   const text = value => value == null || value === '' ? '未提供' : String(value);
-  const time = value => Number.isFinite(value) ? new Date(value * 1000).toLocaleString() : '未记录';
+  const TIME = new Intl.DateTimeFormat('zh-CN', {year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
+  const time = value => Number.isFinite(value) ? TIME.format(new Date(value * 1000)) : '未记录';
   const stateText = (kind, value) => STATES[kind]?.[value] || (kind === 'feedback' ? '追加答复' : text(value));
   const objectPath = (kind, id) => `${API}/research-state/${kind}/${encodeURIComponent(id)}`;
   const clone = value => JSON.parse(JSON.stringify(value));
@@ -175,10 +177,11 @@
     $('objects-heading').textContent = listKind === 'research' ? '任务' : KINDS[listKind]; $('object-count').textContent = `${records.length} 条已载入`;
     $('object-list').replaceChildren(...records.map(item => {
       const li = el('li'), button = el('button', null, 'research-choice'); button.type = 'button'; button.setAttribute('aria-current', String(keyOf(item) === keyOf(selection)));
-      button.append(el('strong', item.title || item.id), el('span', `${item.id} · v${item.revision} · ${stateText(item.kind, item.state)}`, 'research-meta'), el('span', `记录于 ${time(item.updated_at)}`, 'research-meta'));
+      if (item.kind === 'research') button.append(el('strong', item.title || item.id), el('span', `${stateText(item.kind, item.state)} · ${item.owner || '无人负责'} · ${time(item.updated_at)}`, 'research-meta'));
+      else button.append(el('strong', item.title || item.id), el('span', `${item.id} · v${item.revision} · ${stateText(item.kind, item.state)}`, 'research-meta'), el('span', `记录于 ${time(item.updated_at)}`, 'research-meta'));
       if (item.kind === 'direction') button.append(el('span', item.metadata_blocked === true ? '存在未解的局部阻断依赖' : item.metadata_blocked === false ? '未解的阻断依赖：无；设备资格另核' : '依赖摘要未提供', 'research-meta'));
       if (item.kind === 'request') button.append(el('span', `${Number.isInteger(item.feedback_count) ? item.feedback_count : '未知'} 条答复；依赖是否解除另记`, 'research-meta'));
-      button.addEventListener('click', () => { selectObject(item.kind, item.id); $('object-title').focus(); }); li.append(button); return li;
+      button.addEventListener('click', () => { syncURL(item.kind, item.id, true); selectObject(item.kind, item.id); $('object-title').focus(); }); li.append(button); return li;
     }));
     $('more-objects').hidden = !listCursor; $('more-objects').disabled = listBusy;
   }
@@ -258,8 +261,10 @@
     for (const [key, label, type] of FIELDS[record.kind]) {
       if (['title', 'state'].includes(key)) continue;
       const value = record.data[key]; if (value == null || value === '' || Array.isArray(value) && !value.length) continue;
-      if (type === 'json') body.append(jsonDetails(label, value));
-      else body.append(el('h4', label), el('p', type === 'lines' ? value.join('\n') : key === 'type' ? TYPES[value] || value : value));
+      if (record.kind === 'research' && key === 'objective' && String(value).trim() === String(record.data.title || '').trim()) continue;
+      const shown = record.kind === 'research' ? SHOWN[key] || label : label;
+      if (type === 'json') body.append(jsonDetails(shown, value));
+      else body.append(el('h4', shown), el('p', type === 'lines' ? value.join('\n') : key === 'type' ? TYPES[value] || value : value));
     }
     const ab = !!record.data.evaluation;
     $('evidence-details').open = !ab;
@@ -278,9 +283,19 @@
       readAssessment: (id, revision, signal) => request(`${objectPath('research', id)}/assessment?revision=${revision}`, {target, signal})});
     renderControls();
   }
+  function syncURL(kind, id, push) {
+    const url = new URL(location.href);
+    if (kind) { url.searchParams.set('kind', kind); url.searchParams.set('id', id); } else url.searchParams.delete('id');
+    url.searchParams.delete('revision'); url.hash = '';
+    if (url.href !== location.href) history[push ? 'pushState' : 'replaceState']({kind, id}, '', url);
+  }
+  function showList() {
+    document.querySelector('.research-layout').classList.remove('has-selection');
+    syncURL(null, null, false); $('objects-heading').focus();
+  }
   async function selectObject(kind, id, revision = null) {
     if (!KINDS[kind] || !validID(id) || !capable() || disposed) return;
-    selection = {kind, id, revision}; const epoch = ++detailEpoch, target = HGTarget.binding();
+    selection = {kind, id, revision}; document.querySelector('.research-layout').classList.add('has-selection'); const epoch = ++detailEpoch, target = HGTarget.binding();
     HGResearchEvaluation.unloadAll('记录已切换，媒体已卸下；再次查看需明确加载。'); HGResearchEvaluation.clearDetail(); HGResearchCriteria.clearDetail(); HGResearchTask.clearDetail($('task-detail'));
     detailController?.abort(); detailController = new AbortController(); detailFresh = false;
     ++historyEpoch; historyCursor = null; historyBusy = false; $('history-list').replaceChildren(); $('more-history').hidden = true; $('load-history').disabled = false; message('history-message', '');
@@ -777,7 +792,15 @@
     if (saved && KINDS[saved.kind] && validID(saved.id) && validID(saved.operation_id) && (saved.base_revision == null || Number.isInteger(saved.base_revision) && saved.base_revision > 0)) pending = {...saved, target: saved.target || null};
   } catch (_) { /* Corrupt browser state establishes no operation identity. */ }
   const query = new URLSearchParams(location.search);
-  if (location.hash === '#agents-directory') { $('agents-directory').open = true; $('agents-directory').scrollIntoView({block: 'start'}); }
+  // The Agent tab is this page's agent directory on its own.
+  const syncMode = () => { const on = location.hash === '#agents-directory'; document.body.classList.toggle('agents-mode', on); if (on) $('agents-directory').open = true; };
+  window.addEventListener('hashchange', syncMode); syncMode();
+  window.addEventListener('popstate', () => {
+    const now = new URLSearchParams(location.search);
+    if (KINDS[now.get('kind')] && validID(now.get('id'))) selectObject(now.get('kind'), now.get('id'));
+    else document.querySelector('.research-layout').classList.remove('has-selection');
+  });
+  $('back-to-list').addEventListener('click', showList);
   if (KINDS[query.get('kind')]) $('filter-kind').value = query.get('kind'); changeKind();
   if (query.has('research_id')) $('filter-research').value = query.get('research_id');
   syncEventScope();

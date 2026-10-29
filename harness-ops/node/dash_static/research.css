@@ -95,3 +95,179 @@
 .criteria-detail .research-json .facts { margin:16px 0; }
 .criteria-detail a { display:inline-block; margin:8px 0; font-size:13px; overflow-wrap:anywhere; }
 @media(max-width:600px){.criteria-editor{padding:14px}.criteria-axis-grid{grid-template-columns:minmax(0,1fr)}.criteria-axis,.criteria-pareto,.criteria-candidate{padding:12px}.criteria-detail .facts{grid-template-columns:80px minmax(0,1fr);gap:8px}.criteria-axis .section-heading{align-items:center}.criteria-axis h4{margin:0}}
+
+/* ══ 任务页（2026-10-29）：左列任务列表，右列一个任务从上到下：标题、负责人、方向、运行、留言、交付 ══ */
+.research-view .jobs-page { max-width: 1320px; padding: var(--sp-6) var(--sp-6) var(--sp-7); }
+.research-view .page-heading { margin-bottom: var(--sp-4); }
+.research-view .jobs-page h1 { font-size: var(--fs-xl); letter-spacing: 0; }
+.research-view .page-heading button.ghost.primary, .research-view #task-note-submit, .research-view .reply-btn.primary { font-weight: 600; }
+.research-view .research-layout { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); border-radius: var(--radius-lg); }
+.research-view .research-browser { padding: var(--sp-4) var(--sp-3); background: var(--card); }
+.research-view .research-browser > .section-heading { padding: 0 var(--sp-2); min-height: 28px; }
+.research-view .research-browser > .section-heading h2 { font-size: var(--fs-md); }
+.research-view .research-browser details.research-filters { margin: var(--sp-2) 0 0; padding: 0 var(--sp-2); border: 0; background: none; }
+.research-view .research-browser details.research-filters > summary { font-size: var(--fs-sm); color: var(--muted); padding: 2px 0; }
+.research-view .research-browser form.research-filters { padding: var(--sp-3) 0 0; margin: 0; border: 0; background: none; }
+.research-view .research-browser .research-filter-grid { grid-template-columns: minmax(0, 1fr); gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.research-view .research-list { margin: var(--sp-2) 0; }
+.research-view .research-list > li + li { border-top: 0; }
+.research-view .research-choice { padding: 10px var(--sp-2); margin: 1px 0; border-radius: var(--radius); }
+.research-view .research-choice strong { font-size: var(--fs-base); font-weight: 600; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.research-view .research-choice .research-meta { margin-top: 2px; }
+.research-view .research-choice[aria-current="true"] { background: var(--wash); border-color: transparent; box-shadow: none; }
+.research-view .research-choice[aria-current="true"] strong { color: var(--ink); }
+.research-view .research-detail { padding: var(--sp-5) var(--sp-7) var(--sp-7); }
+.research-view .back-link { display: none; align-items: center; gap: 4px; margin: 0 0 var(--sp-3) -6px; padding: 4px 6px; border: 0; border-radius: var(--radius-sm);
+  background: none; color: var(--muted); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+.research-view .back-link:hover { color: var(--ink); background: var(--wash); }
+.research-view .research-title { margin-top: 0; gap: var(--sp-2) var(--sp-3); align-items: center; }
+.research-view .research-title h3 { font-size: var(--fs-xl); line-height: 1.45; font-weight: 650; flex: 1 1 420px; min-width: 0; }
+.research-view .research-title h3:focus { outline: none; }
+.research-view #object-state { font-size: var(--fs-xs); border-radius: 999px; padding: 1px 9px; }
+.research-view #detail-actions { margin-top: var(--sp-3); gap: 6px; }
+.research-view #detail-actions button.ghost { min-height: 30px; padding: 0 10px; font-size: var(--fs-sm); color: var(--muted); }
+.research-view #detail-actions button.ghost:hover:not(:disabled) { color: var(--ink); }
+.research-view #detail-actions button.ghost.primary { color: var(--on-acc); }
+.research-view .research-body { margin-top: var(--sp-4); display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px var(--sp-4); align-items: baseline; }
+.research-view .research-body h4 { margin: 0; font-size: var(--fs-sm); font-weight: 400; color: var(--muted); }
+.research-view .research-body p { margin: 0; font-size: var(--fs-base); line-height: 1.65; }
+.research-view .research-body > details { grid-column: 1 / -1; }
+.research-view .note:empty { display: none; }
+.research-view .section-head { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.research-view .section-head h2, .research-view .section-head h3 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
+.research-view .section-head .count { color: var(--muted); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.research-view .section-head .link-btn { margin-left: auto; font-size: var(--fs-sm); }
+.research-view .research-section { margin-top: var(--sp-6); padding-top: var(--sp-5); border-top: 1px solid var(--grid); }
+.research-view .empty { padding: var(--sp-2) 0; font-size: var(--fs-sm); color: var(--muted); }
+.research-view .link-btn { appearance: none; background: none; border: 0; padding: 0; font: inherit; font-size: var(--fs-sm); color: var(--acc-ink); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.research-view .who { display: inline-flex; align-items: center; gap: 8px; color: var(--ink); min-width: 0; }
+.research-view .who.nobody { color: var(--warn); }
+.research-view .av { width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-items: center; flex: none; background: var(--panel);
+  border: 1px solid var(--line); color: var(--ink2); font: 600 11px/1 var(--font); }
+.research-view .av.human { background: var(--acc-soft); border-color: color-mix(in srgb, var(--acc) 30%, var(--line)); color: var(--acc-ink); }
+
+/* 负责人：一行事实，不是一个大区块 */
+.research-view .task-owner { margin-top: var(--sp-4); padding-top: 0; border-top: 0; display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.research-view .task-owner h3 { font-size: var(--fs-sm); font-weight: 400; color: var(--muted); margin: 0; }
+.research-view .owner-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); min-width: 0; }
+.research-view .owner-assign { display: flex; gap: 6px; align-items: center; }
+.research-view .owner-assign select { width: auto; min-width: 140px; padding: 5px 8px; font-size: var(--fs-sm); }
+.research-view .owner-assign button.ghost { min-height: 32px; }
+.research-view .owner-jump { font-size: var(--fs-sm); }
+.research-view .task-owner > .note { flex-basis: 100%; margin: 0; }
+
+/* 探索过程 */
+.research-view .research-directions { display: grid; gap: 10px; }
+.research-view .research-direction { border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px var(--sp-4); background: var(--card); min-width: 0; }
+.research-view .direction-head { display: flex; align-items: baseline; gap: 10px; justify-content: space-between; }
+.research-view .direction-title { color: var(--ink); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+.research-view .direction-title:hover { text-decoration: underline; }
+.research-view .direction-hypothesis { margin: 6px 0 0; color: var(--ink2); font-size: var(--fs-sm); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 80ch; }
+.research-view .direction-hypothesis.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.research-view .research-direction > .link-btn { margin-top: 2px; }
+.research-view .direction-runs { list-style: none; margin: 10px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--line); }
+
+/* 运行：状态 · 名称 · agent · 时间，一行一条 */
+.research-view .run-list { list-style: none; margin: 0; padding: 0; }
+.research-view .run-list > li + li { border-top: 1px solid var(--grid); }
+.research-view .run-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: var(--fs-sm); }
+.research-view .run-row .tag { min-width: 64px; }
+.research-view .run-row a { flex: 1; min-width: 0; color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.research-view .run-row a:hover { text-decoration: underline; }
+.research-view .run-facts { display: flex; flex: none; gap: var(--sp-3); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.research-view .runs-more { margin-top: var(--sp-2); }
+
+/* 留言 */
+.research-view .discuss-list { display: block; margin: 0; }
+.research-view .discuss-entry { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 14px 0; border-top: 1px solid var(--grid); }
+.research-view .discuss-list > .discuss-entry:first-child { border-top: 0; padding-top: 4px; }
+.research-view .discuss-main { min-width: 0; }
+.research-view .discuss-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--sp-2); min-height: 24px; }
+.research-view .discuss-from { font-weight: 600; color: var(--ink); margin: 0; }
+.research-view .discuss-head time { font-size: var(--fs-xs); }
+.research-view .discuss-head .reply-btn { margin-left: auto; }
+.research-view .discuss-head button.reply-btn.ghost { min-height: 28px; padding: 0 10px; }
+.research-view .discuss-via { font-size: var(--fs-xs); color: var(--muted); border: 0; padding: 0; margin: 0; }
+.research-view .discuss-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-base); line-height: 1.75; color: var(--ink2); max-width: 80ch; }
+.research-view .discuss-entry.human > .discuss-main > .discuss-text { background: var(--acc-soft); color: var(--ink); padding: 8px 12px; border-radius: var(--radius); }
+.research-view .discuss-entry.asking > .discuss-main > .discuss-text { background: var(--warn-soft); color: var(--ink); padding: 8px 12px; border-radius: var(--radius); }
+.research-view .discuss-replies { margin: 10px 0 0; padding-left: 14px; border-left: 1px solid var(--line); }
+.research-view .discuss-replies > .discuss-entry { padding: 10px 0; }
+.research-view .discuss-replies > .discuss-entry:first-child { border-top: 0; padding-top: 2px; }
+.research-view .discuss-main .research-evidence { margin: 8px 0 0; }
+.research-view .composer { position: sticky; bottom: 12px; z-index: 5; margin-top: var(--sp-3); padding: 8px 10px 8px 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); }
+.research-view .composer:focus-within { border-color: var(--acc); }
+.research-view .composer textarea { display: block; width: 100%; min-height: 44px; max-height: 320px; padding: 4px 0; border: 0; border-radius: 0; background: none;
+  resize: none; outline: none; line-height: 1.6; font-size: var(--fs-base); }
+.research-view .composer-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.research-view .composer-hint { font-size: var(--fs-xs); color: var(--muted); }
+.research-view .composer button.ghost.primary { min-height: 32px; padding: 0 16px; }
+.research-view .reply-chip { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: 6px; padding: 4px 4px 4px 10px; border-radius: var(--radius);
+  background: var(--wash); font-size: var(--fs-xs); color: var(--ink2); }
+.research-view .reply-chip span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.research-view .chip-x { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--muted); cursor: pointer; flex: none; }
+.research-view .chip-x:hover { background: var(--grid); color: var(--ink); }
+.research-view #task-thread > .note { margin-top: var(--sp-2); color: var(--bad); font-size: var(--fs-sm); }
+
+/* 交付报告：读起来像一份文档 */
+.research-view .task-report .section-head h2 { font-size: var(--fs-lg); }
+.research-view .report-scope { margin: -4px 0 var(--sp-3); font-size: var(--fs-sm); color: var(--muted); }
+.research-view .research-report { max-width: 78ch; font-size: var(--fs-md); line-height: 1.8; color: var(--ink); }
+.research-view .research-report :is(h1, h2, h3, h4) { line-height: 1.45; margin: 1.4em 0 .5em; font-weight: 650; }
+.research-view .research-report h1 { font-size: var(--fs-xl); } .research-view .research-report h2 { font-size: var(--fs-lg); } .research-view .research-report :is(h3, h4) { font-size: var(--fs-md); }
+.research-view .research-report > :first-child { margin-top: 0; }
+.research-view .research-report p, .research-view .research-report :is(ul, ol) { margin: .6em 0; }
+.research-view .research-report table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: var(--sp-3) 0; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.research-view .research-report th { background: var(--wash); font-weight: 600; }
+.research-view .research-report :is(th, td) { padding: 6px 12px; border: 1px solid var(--line); }
+.research-view .research-report pre { padding: var(--sp-3); background: var(--panel); border-radius: var(--radius); font: 12px/1.6 var(--mono); }
+.research-view .task-report > h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: var(--fs-base); }
+.research-view .research-artifact { margin: var(--sp-2) 0; }
+.research-view .research-artifact img { max-height: 480px; background: var(--panel); border-radius: var(--radius); border: 1px solid var(--line); }
+
+/* 工程详情与页底的维护入口：安静的折叠行 */
+.research-view .research-detail > #detail-content > .research-json { margin-top: var(--sp-7); padding-top: var(--sp-4); border-top: 1px solid var(--grid); }
+.research-view .research-json > summary { font-size: var(--fs-sm); color: var(--muted); }
+.research-view .jobs-page > details.research-events, .research-view .jobs-page > details.research-lookup { margin: var(--sp-4) 0 0; padding: var(--sp-3) var(--sp-4); border-radius: var(--radius-lg); }
+.research-view .jobs-page > details > summary { font-size: var(--fs-sm); color: var(--ink2); }
+.research-view #agents-list { overflow-x: auto; }
+
+/* Agent 标签：同一页只显示 agent 目录 */
+.agents-mode .page-heading, .agents-mode .research-layout, .agents-mode #capability-message, .agents-mode .research-lookup, .agents-mode #events-panel { display: none !important; }
+.agents-mode #agents-directory { margin: 0; padding: 0; border: 0; background: none; }
+.agents-mode #agents-directory > summary { list-style: none; pointer-events: none; font-size: var(--fs-xl); font-weight: 650; color: var(--ink); padding: 0 0 var(--sp-4); }
+.agents-mode #agents-directory > summary::-webkit-details-marker { display: none; }
+.agents-mode #agents-directory .card { padding: var(--sp-4) var(--sp-5); margin-bottom: var(--sp-4); }
+
+@media (max-width: 900px) {
+  .research-view .jobs-page { padding: var(--sp-4) var(--sp-4) var(--sp-7); }
+  .research-view .research-layout { grid-template-columns: minmax(0, 1fr); }
+  .research-view .research-layout.has-selection .research-browser { display: none; }
+  .research-view .research-layout:not(.has-selection) .research-detail { display: none; }
+  .research-view .research-layout.has-selection .back-link { display: inline-flex; }
+  .research-view .research-browser { border-right: 0; border-bottom: 0; }
+  .research-view .research-detail { padding: var(--sp-4); }
+  .research-view .research-title h3 { font-size: var(--fs-lg); flex-basis: 100%; }
+}
+@media (max-width: 600px) {
+  .research-view .research-body { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .research-view .research-body p + h4 { margin-top: var(--sp-2); }
+  .research-view .run-row { flex-wrap: wrap; row-gap: 2px; }
+  .research-view .run-facts { flex-basis: 100%; padding-left: 74px; }
+  .research-view .composer-hint { display: none; }
+  .research-view .composer { bottom: 8px; }
+}
+.research-view .research-report code { font: .88em/1.5 var(--mono); padding: 1px 5px; border-radius: 4px; background: var(--wash); overflow-wrap: anywhere; }
+.research-view .research-report strong { font-weight: 650; }
+.agents-mode #agents-card .card-h h2 { display: none; }
+.agents-mode #agents-card .card-h { justify-content: flex-end; }
+.research-view #agents-list th { white-space: nowrap; }
+.research-view #agents-list .agent-name { text-align: left; }
+@media (max-width: 600px) {
+  .research-view .page-heading { flex-direction: row; align-items: center; }
+  .research-view #detail-actions { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-right: calc(-1 * var(--sp-4)); padding-right: var(--sp-4); }
+  .research-view #detail-actions::-webkit-scrollbar { display: none; }
+  .research-view #detail-actions button { flex: none; }
+}
