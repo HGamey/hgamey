@@ -19,7 +19,7 @@
     <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/doctor" aria-current="page">环境诊断</a><a href="/dash/maint">维护</a></nav>
   </div>
   <div class="top-right"><form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form></div>
-</header>
+</header><script src="/dash/static/shell.js"></script>
 <main class="jobs-page doctor-page">
   <div class="page-heading">
     <div><h1 id="doctor-heading" tabindex="-1">环境诊断</h1><p class="page-description">核对程序、工具、磁盘和目录权限，找到下一步需要修复的项目。</p></div>
@@ -44,6 +44,5 @@
 <footer class="foot">网页与 CLI 读取同一诊断记录结构。若需要诊断另一节点，请进入该节点自己的后台并核对身份。</footer>
 <script src="/dash/static/target.js"></script>
 <script src="/dash/static/doctor.js"></script>
-<script src="/dash/static/shell.js"></script>
 </body>
 </html>

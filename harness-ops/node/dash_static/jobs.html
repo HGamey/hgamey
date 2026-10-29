@@ -22,7 +22,7 @@
     <button id="refresh-all" class="ghost" type="button">刷新页面数据</button>
     <form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form>
   </div>
-</header>
+</header><script src="/dash/static/shell.js"></script>
 <main class="jobs-page">
   <div class="page-heading">
     <div><h1>运行</h1><p class="page-description">提交本节点任务，查看排队进度，并沿着日志与原始文件核对结果。</p></div>
@@ -482,6 +482,5 @@
 <footer class="foot">文件保存在当前节点。读取记录不启动设备采样；显式会话采集与输入由原 owner 执行，需掌舵权限。提交、停止和资源释放也需掌舵权限；运行中的日志和输出可能仍在更新。</footer>
 <script src="/dash/static/target.js"></script>
 <script src="/dash/static/jobs.js"></script>
-<script src="/dash/static/shell.js"></script>
 </body>
 </html>

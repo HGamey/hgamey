@@ -23,7 +23,7 @@
     <button id="refresh-fleet" class="ghost" type="button">刷新目录与快照</button>
     <form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form>
   </div>
-</header>
+</header><script src="/dash/static/shell.js"></script>
 <main class="jobs-page fleet-page">
   <div class="page-heading">
     <div><h1>节点与设备</h1><p class="page-description">选择节点，查看已有设备、队列与租约观测。节点可达不代表设备存在或可用。</p></div>
@@ -130,6 +130,5 @@
 <footer class="foot">远端日常读取目录缓存；设备采样需明确请求。登记不会分发任务或迁移数据。能力声明、节点可达与设备观测分开展示。</footer>
 <script src="/dash/static/target.js"></script>
 <script src="/dash/static/fleet.js"></script>
-<script src="/dash/static/shell.js"></script>
 </body>
 </html>
