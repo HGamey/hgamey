@@ -144,21 +144,23 @@ class JobQueueTests(unittest.TestCase):
         with self.queue._transaction() as db:
             self.assertEqual([r[0] for r in db.execute("SELECT revision FROM job_events WHERE job_id=? ORDER BY sequence", (jid,))], [1, 2, 3])
 
-    def test_recovery_borrows_only_its_blocked_ancestor_chain(self):
+    def test_recovery_uses_ordinary_resources_after_parent_reset(self):
         parent = self.submit("parent", ["phone:a"])
         self.settle_fixture(parent)
         failed = self.submit("failed-recovery", ["phone:a"], recovery_for=parent)
+        self.assertIsNone(self.queue.claim_next(1))
+        self.settle_fixture(parent, "done")
         self.assertEqual(self.queue.claim_next(1)["job_id"], failed)
         sibling = self.submit("sibling-recovery", ["phone:a"], recovery_for=parent)
         self.settle_fixture(failed)
-        self.assertIsNone(self.queue.claim_next(1))
         nested = self.submit("recover-failed", ["phone:a"], recovery_for=failed)
-        self.assertEqual(self.queue.claim_next(1)["job_id"], nested)
         self.assertIsNone(self.queue.claim_next(2))
-        self.settle_fixture(nested, "done")
-        self.assertIsNone(self.queue.claim_next(1))
         self.settle_fixture(failed, "done")
-        self.assertEqual(self.queue.claim_next(1)["job_id"], sibling)
+        self.assertEqual(self.queue.claim_next(2)["job_id"], sibling)
+        self.assertIsNone(self.queue.claim_next(2))
+        self.settle_fixture(sibling, "done")
+        self.assertEqual(self.queue.claim_next(2)["job_id"], nested)
+        self.assertEqual(self.queue.get(nested)["spec"]["recovery_for"], failed)
 
     def test_blocked_jobs_hold_resources_without_consuming_execution_slots(self):
         first = self.submit("first", ["phone:a"])

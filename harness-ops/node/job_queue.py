@@ -24,16 +24,6 @@ def job_priority(spec):
     return value
 
 
-def recovery_reservations(row, owners):
-    """Borrow the blocked target's ancestor chain, never a sibling's reservation."""
-    blocked = {r["job_id"]: r for r in owners if r["state"] in {"blocked", "done"}}
-    borrowed, target = set(), row["spec"].get("recovery_for")
-    while target in blocked and target not in borrowed:
-        borrowed.add(target)
-        target = blocked[target]["spec"].get("recovery_for")
-    return borrowed
-
-
 def reservation_conflicts(row, owner, snapshot=None):
     left, right = scope(row["spec"], snapshot), scope(owner["spec"], snapshot)
     if left["scope"] == right["scope"] == "device":
@@ -42,32 +32,8 @@ def reservation_conflicts(row, owner, snapshot=None):
             or conflicts(left, right))
 
 
-def recovery_conflicts(row, owner):
-    """Only another recovery in the same active chain can block a recovery."""
-    if not row["spec"].get("recovery_for") or not owner["spec"].get("recovery_for"):
-        return False
-    left, right = scope(row["spec"]), scope(owner["spec"])
-    if left["scope"] == right["scope"] == "device":
-        return conflicts(left, right)
-    return (bool(set(row["resources"]) & set(owner["resources"]))
-            or conflicts(left, right))
-
-
-def recovery_sibling_conflicts(row, owner):
-    """Sibling attempts with the same direct parent serialize even when borrowing."""
-    if not row["spec"].get("recovery_for") or not owner["spec"].get("recovery_for"):
-        return False
-    if row["spec"].get("recovery_for") != owner["spec"].get("recovery_for"):
-        return False
-    return (bool(set(row["resources"]) & set(owner["resources"]))
-            or conflicts(scope(row["spec"]), scope(owner["spec"])))
-
-
 def blocking_owners(row, owners, snapshot=None):
-    borrowed = recovery_reservations(row, owners)
-    return [owner for owner in owners if recovery_sibling_conflicts(row, owner) or
-            owner["job_id"] not in borrowed and (reservation_conflicts(row, owner, snapshot)
-                                                or recovery_conflicts(row, owner))]
+    return [owner for owner in owners if reservation_conflicts(row, owner, snapshot)]
 
 
 class JobQueue:
@@ -251,8 +217,7 @@ class JobQueue:
                 "SELECT * FROM jobs WHERE state='queued' ORDER BY sequence") if not row["paused"]]
             # Stable sorting keeps SQL insertion order within each priority,
             # including legacy requests that omit the field (effective zero).
-            for value in sorted(candidates, key=lambda row: (
-                    -len(recovery_reservations(row, active)), -job_priority(row["spec"]))):
+            for value in sorted(candidates, key=lambda row: -job_priority(row["spec"])):
                 if admit and not admit(value):
                     continue
                 if job_capacity.waiting(value["spec"], capacity, active):
@@ -270,12 +235,6 @@ class JobQueue:
                        (state, json.dumps(reason) if reason else None,
                         json.dumps(host_capacity_release) if host_capacity_release else None, jid))
             return self._publish(db, jid, observation=observation)
-
-    def release_capacity(self, jid, fact, observation=None):
-        with self._transaction(write=True) as db:
-            db.execute("UPDATE jobs SET host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state IN ('blocked','done')",
-                       (json.dumps(fact), jid))
-            self._publish(db, jid, observation=observation)
 
     def record_unstarted(self, jid, outcome, note, *, input_preparation_expected=False):
         """Persist caller-confirmed no-launch intent without overriding cancellation."""

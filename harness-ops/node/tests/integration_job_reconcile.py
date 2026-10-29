@@ -215,7 +215,7 @@ try:
     assert accident(meta)==json.loads((control/'original-accident.json').read_text()),meta
     assert jobs.dispatch.queue.get(plan['jid'])['state']=='blocked'
     if not force:
-        code,rejected=request('POST',route+'/queue-release',{'note':'isolated fixture: live domain has not been recovered'})
+        code,rejected=request('POST',route+'/reset',{'note':'isolated fixture: live domain has not been recovered'})
         assert code==409,(code,rejected)
         assert not (source/'queue-release.json').exists()
         assert meta['execution']['containment']['handoff']['status']=='pending'

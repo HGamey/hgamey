@@ -394,17 +394,37 @@ class JobInputsTests(unittest.TestCase):
             self.assertFalse(sentinel.exists())
             return job, receipt
 
-        # Raw finished/exit=0 does not substitute for verified host completion.
+        # A committed completion remains usable despite old lost/group errors;
+        # neither input access nor reset changes the original outcome or exit.
         saved = self.jobs._read_meta(source)
         unknown = copy.deepcopy(saved)
+        unknown.update(lost=True, outcome="interrupted", exit=None)
         unknown["execution"]["owned_process_group"]["status"] = "unknown"
         self.jobs._write_meta(source, unknown)
+        self.jobs.dispatch.queue.set_state(source, "done", {"kind": "durability", "message": "fsync unavailable"})
         try:
-            status, error = self.call("GET", f"/jobs/{source}/input-reference?path=model.bin")
-            self.assertEqual((status, error["code"]), (409, "source_unavailable"))
-            refused("unknown-host", manifest)
+            status, reference = self.call("GET", f"/jobs/{source}/input-reference?path=model.bin")
+            self.assertEqual(status, 200, reference)
+            self.assertEqual(self.jobs.status(source)["outcome"], "interrupted")
+            self.assertIsNone(self.jobs.status(source)["exit"])
         finally:
             self.jobs._write_meta(source, saved)
+            self.jobs.dispatch.queue.set_state(source, "done")
+
+        # A real live writer still makes its source unavailable.
+        live = self.submit("live-source", {"bin": "fixture", "device_access": "none", "argv": ["-c",
+            "import pathlib,sys,time;pathlib.Path(sys.argv[1],'model.bin').write_bytes(b'live');time.sleep(30)", "@out"]})
+        try:
+            from test_job_group_observation import until
+            until(lambda: Path(self.jobs.path(live["id"], "out", "model.bin")).exists())
+            status, error = self.call("GET", f"/jobs/{live['id']}/input-reference?path=model.bin")
+            self.assertEqual((status, error["code"]), (409, "source_unavailable"))
+            live_manifest = copy.deepcopy(manifest)
+            live_manifest["files"][1]["source"]["job_id"] = live["id"]
+            refused("live-writer", live_manifest)
+        finally:
+            self.jobs.cancel(live["id"])
+            self.finished(live["id"])
 
         missing = copy.deepcopy(manifest)
         missing["files"][1]["source"]["path"] = "missing.bin"
@@ -501,7 +521,7 @@ class JobInputsTests(unittest.TestCase):
         self.assertEqual(Path(self.jobs.path(source, "out", "request.json")).read_bytes(), original)
         self.assertEqual(Path(self.jobs.path(source, "out", "model.bin")).read_bytes(), data)
         self.assertFalse(sentinel.exists())
-        self.assertEqual(len(self.workers), 1, "refused preparations must not launch workers")
+        self.assertEqual(len(self.workers), 2, "only the completed source and live writer fixtures launch workers")
         self.checks.update(consumer_executions=0, source_worker_count=1, source_bytes_unchanged=True,
                            enospc_prefix_bytes=len(kept), failed_id_not_replayed=True,
                            initial_receipt_failure_unknown=True)

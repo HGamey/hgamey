@@ -56,7 +56,7 @@ class JobCLI(unittest.TestCase):
                 value = {"accepted": allowed, "reason": None if allowed else "management token required",
                          "job": {"id": JOB, "state": "running", "phase": "cancelling",
                                  "outcome": None, "recovery": "unknown", "exit": None}}
-                if self.path.endswith("/queue-release"):
+                if self.path.endswith("/reset"):
                     value["released"] = allowed
                 data = json.dumps(value).encode()
                 self.send_response(200 if allowed else 403)
@@ -92,7 +92,7 @@ class JobCLI(unittest.TestCase):
         self.assertIn("管理 token", denied.stderr)
         legacy = run("kill", JOB)
         self.assertEqual(legacy.returncode, 0, legacy.stderr)
-        released = run("release", JOB, "--note", "checked device state")
+        released = run("reset", JOB, "--note", "checked device state")
         self.assertEqual(released.returncode, 0, released.stderr)
         self.assertTrue(json.loads(released.stdout)["released"])
         self.assertIn("不证明设备已恢复", released.stderr)
@@ -100,7 +100,7 @@ class JobCLI(unittest.TestCase):
                                     (f"/jobs/{JOB}/cancel", {"force": True}),
                                     (f"/jobs/{JOB}/cancel", {"force": False}),
                                     (f"/jobs/{JOB}/kill", None),
-                                    (f"/jobs/{JOB}/queue-release", {"note": "checked device state"})])
+                                    (f"/jobs/{JOB}/reset", {"note": "checked device state"})])
 
     def test_direct_adb_defaults_no_reservation_supports_research_and_interrupt_guidance(self):
         cli = self.load_cli()
@@ -178,15 +178,16 @@ class JobCLI(unittest.TestCase):
         self.assertIn("--experiment 不能与 --inputs", cli["main"].__globals__["__doc__"])
         self.assertIn("本机存在的文件会自动上传", cli["main"].__globals__["__doc__"])
 
-    def test_release_rejection_points_to_owner_reset(self):
+    def test_reset_rejection_reports_owner_authority_and_preserves_job_id(self):
         cli = self.load_cli()
-        error = cli["ClientError"](409, b'{"error":"host completion is unknown"}')
-        with mock.patch.dict(cli["release_job"].__globals__, call=mock.Mock(side_effect=error)), \
-                contextlib.redirect_stderr(io.StringIO()) as stderr:
+        error = cli["ClientError"](403, b'{"error":"reset needs the task owner or admin token"}')
+        call = mock.Mock(side_effect=error)
+        with mock.patch.dict(cli["reset_job"].__globals__, call=call):
             with self.assertRaises(SystemExit) as rejected:
-                cli["release_job"](JOB, "review")
-        self.assertIn(f"pf-node reset {JOB} --note", str(rejected.exception))
+                cli["reset_job"](JOB, "review")
+        self.assertIn(f"status {JOB}", str(rejected.exception))
         self.assertIn("负责人或管理员", str(rejected.exception))
+        self.assertEqual(call.call_count, 1)
 
     def test_global_write_warning_names_count_and_scoped_jobs_skip(self):
         cli = self.load_cli()
@@ -794,44 +795,33 @@ class JobCLI(unittest.TestCase):
                 if not status.get("execution") or status["exit"] != 0:
                     self.assertIn("recovery=", stderr.getvalue())
 
-    def test_retry_finalize_checks_capability_and_posts_once_without_claiming_recovery(self):
+    def test_reset_posts_once_and_reports_storage_without_claiming_recovery(self):
         cli = self.load_cli()
-        blocked = {"id": JOB, "state": "running", "phase": "storage_blocked", "exit": 0,
-                   "queue": {"state": "blocked", "state_reason": {"kind": "durability", "message": "fsync failed"}}}
-        still_recovery = {"id": JOB, "state": "finished", "exit": 0, "queue": {"state": "blocked"},
-                          "recovery": {"status": "required"}}
-        scenarios = [([], None, "未提供 jobs.durability-v1"),
-                     (["jobs.durability-v1"], {"storage_committed": False, "job": blocked}, "fsync failed"),
-                     (["jobs.durability-v1"], {"storage_committed": True, "job": still_recovery}, "不代表设备恢复"),
-                     (["jobs.durability-v1"], cli["ClientError"](503, b"storage unavailable"), "不会自动重试"),
-                     (["jobs.durability-v1"], urllib.error.URLError("offline"), "不会自动重试")]
-        for caps, result, diagnostic in scenarios:
+        job = {"id": JOB, "state": "finished", "exit": 0, "queue": {"state": "done"},
+               "recovery": {"status": "required"}, "storage_error": {"message": "fsync failed"}}
+        scenarios = [({"released": True, "storage_committed": False, "job": job}, "fsync failed"),
+                     ({"released": True, "storage_committed": True, "job": job}, "不证明设备已恢复"),
+                     (cli["ClientError"](503, b"storage unavailable"), "不会自动重试"),
+                     (urllib.error.URLError("offline"), "不会自动重试")]
+        for result, diagnostic in scenarios:
             with self.subTest(result=result):
-                replies = [json.dumps({"capabilities": caps}).encode()]
-                if result is not None:
-                    replies.append(result if isinstance(result, Exception) else json.dumps(result).encode())
-                call, stdout, stderr = mock.Mock(side_effect=replies), io.StringIO(), io.StringIO()
+                call = mock.Mock(side_effect=[result if isinstance(result, Exception) else json.dumps(result).encode()])
+                stdout, stderr = io.StringIO(), io.StringIO()
                 with mock.patch.dict(cli["main"].__globals__, call=call), \
-                        mock.patch.object(sys, "argv", [str(CLI), "retry-finalize", JOB]), \
+                        mock.patch.object(sys, "argv", [str(CLI), "reset", JOB, "--note", "storage repaired"]), \
                         contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
                         self.assertRaises(SystemExit) as stopped:
                     cli["main"]()
-                self.assertEqual(call.call_args_list[0].args, ("GET", "/node"))
-                for request in call.call_args_list:
-                    self.assertEqual(request.kwargs["attempts"], 1)
-                    self.assertTrue(request.kwargs["raise_errors"])
-                if result is None:
-                    self.assertEqual(call.call_count, 1)
-                else:
-                    self.assertEqual(call.call_count, 2)
-                    self.assertEqual(call.call_args.args, ("POST", f"/jobs/{JOB}/retry-finalize", b"{}",
-                                                         {"Content-Type": "application/json"}))
+                self.assertEqual(call.call_count, 1)
+                self.assertEqual(call.call_args.args[:2], ("POST", f"/jobs/{JOB}/reset"))
+                self.assertEqual(json.loads(call.call_args.args[2]), {"note": "storage repaired"})
+                self.assertEqual(call.call_args.kwargs["attempts"], 1)
+                self.assertTrue(call.call_args.kwargs["raise_errors"])
+                self.assertIn(diagnostic, stderr.getvalue() + str(stopped.exception))
                 if isinstance(result, dict):
-                    self.assertEqual(json.loads(stdout.getvalue()), result)
                     self.assertEqual(stopped.exception.code, 0 if result["storage_committed"] else 1)
-                else:
-                    self.assertNotEqual(stopped.exception.code, 0)
-                self.assertIn(diagnostic, stderr.getvalue() + str(stopped.exception.code))
+                    self.assertEqual(json.loads(stdout.getvalue()), result)
+
 
     def test_wait_storage_failure_and_explicit_unstarted_terminal_need_no_log_or_output(self):
         cli = self.load_cli()
@@ -866,7 +856,7 @@ class JobCLI(unittest.TestCase):
                 self.assertEqual(reads[0], ("GET", f"/jobs/{JOB}"))
                 self.assertEqual(len(reads), 3 if len(states) == 2 else 1)
                 if states[-1] is blocked:
-                    for text in ("storage_blocked", "exit=7", "execution.returncode=7", "directory fsync failed", "retry-finalize"):
+                    for text in ("storage_error", "exit=7", "execution.returncode=7", "directory fsync failed", "reset"):
                         self.assertIn(text, stderr.getvalue())
                 else:
                     self.assertIn(f"outcome={states[-1]['outcome']}", stderr.getvalue())

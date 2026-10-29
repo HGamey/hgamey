@@ -17,7 +17,7 @@ from node_service import Jobs
 
 class TaskProcessCleanupTests(unittest.TestCase):
     def test_reset_and_cancel_terminate_then_kill_remaining_group(self):
-        for action in ("reset", "cancel", "cancel-running"):
+        for action in ("normal", "reset", "reset-running", "cancel", "cancel-running"):
             with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
                 jobs = Jobs(directory, {"host": (sys.executable, directory)}, max_running=1)
                 jobs.dispatch.start = lambda: None
@@ -38,7 +38,7 @@ while True: time.sleep(.01)
                           f"subprocess.Popen([sys.executable,'-c',{descendant!r},str(out)]);"
                           "signal.signal(signal.SIGINT,lambda *_:sys.exit(0))\n"
                           "while not (out/'ready.json').exists(): time.sleep(.01)\n")
-                if action.startswith("cancel"):
+                if action.startswith("cancel") or action == "reset-running":
                     leader += "while True: time.sleep(.01)\n"
                 if action == "cancel-running":
                     leader = leader.replace("lambda *_:sys.exit(0)", "signal.SIG_IGN")
@@ -75,9 +75,15 @@ while True: time.sleep(.01)
                     until(lambda: (out / "ready.json").exists())
                     pgid = json.loads((out / "ready.json").read_text())["pgid"]
                     self.assertFalse(lock_free())
-                    if action == "reset":
+                    if action == "normal":
+                        until(lambda: jobs.status(jid)["queue"]["state"] == "done")
+                        self.assertEqual(jobs.status(jid)["exit"], 0)
+                        self.assertEqual(jobs.status(jid)["recovery"]["status"], "required")
+                    elif action == "reset":
                         until(lambda: jobs.status(jid)["state"] == "finished")
                         self.assertTrue(jobs.reset_queue(jid, "fixture: stop leftover task processes")["released"])
+                    elif action == "reset-running":
+                        self.assertTrue(jobs.reset_queue(jid, "fixture: stop active task and its children")["released"])
                     else:
                         self.assertTrue(jobs.cancel(jid)["accepted"])
                     until(lock_free)

@@ -221,9 +221,7 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
             self.assertEqual(self.queue.get(waiting)["state"], "done")
             self.assertEqual(self.jobs.status(waiting)["exit"], 0)
             self.assertTrue(Path(self.jobs.path(waiting, "launch.json")).exists())
-            with self.assertRaises(RequestConflict):
-                self.jobs.release_queue(jid, "cannot replace a failed storage barrier")
-            retry = self.jobs.retry_finalize(jid)
+            retry = self.jobs.reset_queue(jid, "fixture: retry result storage")
             self.assertFalse(retry["storage_committed"])
             self.assertEqual(retry["job"]["phase"], "finished")
             self.assertIn("storage remains unavailable", retry["job"]["storage_error"]["message"])
@@ -240,7 +238,7 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
         armed.unlink()
         before = Path(job_dir, "launch.json").read_bytes()
         with patch.object(job_runtime, "launch", side_effect=AssertionError("finalize must not launch")) as launch:
-            retry = self.jobs.retry_finalize(jid)
+            retry = self.jobs.reset_queue(jid, "fixture: retry result storage")
         launch.assert_not_called()
         self.assertTrue(retry["storage_committed"])
         self.assertEqual((retry["job"]["state"], retry["job"]["phase"], retry["job"]["exit"],
@@ -289,7 +287,7 @@ sys.exit(job_runtime._worker({directory!r}, {lock_fd}))
             self.assertEqual(status["queue"]["host_capacity"]["state"], "released")
             self.assertFalse(Path(self.jobs.path(jid, "meta.json")).exists())
         with patch.object(job_runtime, "launch", side_effect=AssertionError("unstarted finalize must not launch")) as launch:
-            retry = self.jobs.retry_finalize(jid)
+            retry = self.jobs.reset_queue(jid, "fixture: retry result storage")
         launch.assert_not_called()
         self.assertTrue(retry["storage_committed"])
         self.assertEqual((retry["job"]["outcome"], retry["job"]["recovery"]["status"],

@@ -453,17 +453,23 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             returncode = child.poll()
             if returncode is not None:
                 owner.poll()
+                group = _group_completion(child.pid)
+                cleanup = terminate_group(child.pid) if group["status"] == "present" or owner.request and group["status"] != "absent" else []
                 if owner.request:
-                    meta["cancel"]["signals"].extend(terminate_group(child.pid))
+                    meta["cancel"]["signals"].extend(cleanup)
+                elif cleanup:
+                    meta["execution"]["cleanup_signals"] = cleanup
                 budget.finish()
                 disk.finish()
                 signals = (meta.get("cancel") or {}).get("signals", [])
                 outcome = "interrupted" if owner.interrupted else "cancelled" if signals else "succeeded" if returncode == 0 else "failed"
-                escalated = any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)
+                escalated = bool(cleanup) or any(s["name"] in ("SIGTERM", "SIGKILL") for s in signals)
                 recovery = {"status": "required" if escalated else "not_reported",
                             "reason": "command received TERM/KILL" if escalated else "command did not report device recovery"}
                 group = _group_completion(child.pid)
                 meta["execution"]["owned_process_group"] = group
+                if cleanup and not owner.request:
+                    outcome = "interrupted"
                 if group["status"] != "absent":
                     outcome = "interrupted"
                     recovery = {"status": "required", "reason":

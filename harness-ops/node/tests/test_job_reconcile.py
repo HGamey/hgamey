@@ -16,7 +16,7 @@ class JobReconcileTests(TestCase):
     request = read_fixture.NodeReadTests.request
     get_json = read_fixture.NodeReadTests.get_json
 
-    def test_lost_job_without_privileged_worker_releases_on_attested_stop(self):
+    def test_lost_job_without_privileged_worker_releases_on_reset(self):
         # The runner died before starting anything (on rhodes1 its release had been pruned), so no
         # process group was ever recorded and only an administrator can say the job is gone.
         self.jobs.dispatch.start = lambda: None
@@ -28,24 +28,15 @@ class JobReconcileTests(TestCase):
                     execution={"kind": "supervised-v1", "worker_alive": False})
         self.jobs._write_meta(jid, meta)
         self.jobs.dispatch.queue.set_state(jid, "blocked")
-        with self.assertRaises(RequestConflict):
-            self.jobs.release_queue(jid, "a note alone does not release a lost job")
-        meta["execution"]["owned_process_group"] = {"scope": "original_process_group", "status": "pending",
-                                                    "pgid": os.getpgid(0)}
-        self.jobs._write_meta(jid, meta)
-        with self.assertRaises(RequestConflict):  # that group is this test process: still present
-            self.jobs.release_queue(jid, "stopped", attest_stopped=True)
-        self.assertIsNone(self.jobs.dispatch.queue.get(jid)["host_capacity_release"])
-        del meta["execution"]["owned_process_group"]
-        self.jobs._write_meta(jid, meta)
-        status, _, raw = self.request(f"/jobs/{jid}/queue-release", token=self.admin, method="POST",
-                                      body=json.dumps({"note": "runner never started", "attest_stopped": True}).encode(),
+        status, _, raw = self.request(f"/jobs/{jid}/reset", token=self.admin, method="POST",
+                                      body=json.dumps({"note": "runner never started"}).encode(),
                                       headers={"Content-Type": "application/json"})
         self.assertEqual(status, 200, raw)
         self.assertTrue(json.loads(raw)["released"])
         row = self.jobs.dispatch.queue.get(jid)
-        self.assertEqual((row["state"], row["host_capacity_release"]["basis"]), ("done", "administrator_attested_stopped"))
-        self.assertTrue(json.loads(Path(self.jobs.path(jid, "queue-release.json")).read_text())["attested_stopped"])
+        self.assertEqual((row["state"], row["host_capacity_release"]["basis"]), ("done", "administrator_reset"))
+        self.assertEqual(row["host_capacity_release"]["note"], "runner never started")
+        self.assertTrue(self.jobs.status(jid)["lost"])
 
     def test_reconciliation_auth_async_receipt_and_release_barrier(self):
         self.jobs.dispatch.start = lambda: None
@@ -71,7 +62,7 @@ class JobReconcileTests(TestCase):
         for body in (b'{"force":1}', b'{"pid":1}', b'[]'):
             self.assertEqual(self.request(path, token=self.admin, **{**post, "body": body})[0], 400)
         with self.assertRaises(RequestConflict):
-            self.jobs.release_queue(jid, "review alone cannot clear a populated domain")
+            self.jobs.reset_queue(jid, "review alone cannot clear a populated domain")
         # Hold the fake helper response to verify HTTP returns before it finishes.
         done = threading.Event()
         def launch(store, job_id, entry, force):

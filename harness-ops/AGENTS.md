@@ -31,7 +31,7 @@ results.cross-compare-v1从冻结目录目标有界读取详情，沿共享四�
 不从新登记选另一连接。网页与 CLI 同级；隔离宿主验证不能写成真机或部署已完成。
 合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/DEVICE-LANES.md 。
 
-独立worker在直接命令退出后用ps核查原进程组活成员，zombie不算执行中；dispatcher在worker退出后刷新旧的present/unknown，确认组消失即自动释放，真实退出码和恢复结果不改。每轮共享一次组快照，仅blocked时仍继续观察；已done不重新探测旧PGID。Web与CLI展示同一owned_process_group记录，不能将absent解释为setsid脱组后代或设备恢复。合同与验收范围见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-GROUP-COMPLETION.md 。
+独立worker在直接命令退出后清理同组残留（TERM→KILL），再用ps核查原进程组活成员，zombie不算执行中；dispatcher在worker退出后刷新旧的present/unknown，确认组消失即自动释放，真实退出码和恢复结果不改。每轮共享一次组快照，仅blocked时仍继续观察；已done不重新探测旧PGID。Web与CLI展示同一owned_process_group记录，不能将absent解释为setsid脱组后代或设备恢复。合同与验收范围见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-GROUP-COMPLETION.md 。
 
 请求可显式声明execution_policy；当前仅process_group可用，contained在上传/准备/启动前拒绝，不按OS推断支持。旧请求省略字段保持原幂等内容；请求策略与worker实际process_management分别记录，缺证据不回填。Web/CLI/API必须同步准入与范围。节点启用containment仍待生产权限与恢复边界验收，见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-CONTAINMENT.md 。
 
@@ -57,4 +57,6 @@ job 的 status_revision 只覆盖 committed_status 小对象；原 SQLite 同事
 
 PF 与 Node 使用同 UID 的普通输出和 lease-receipts；跨 UID/GID 的 PF 共享 profile 已退役。独立 contained worker 的 cgroup 隔离、私有输出交还和 HTTP 路径边界保留。
 
-显式execution reconcile仅由声明能力的固定安装提供，普通核查不杀进程；force只作用于核实boot/inode的绑定cgroup。保存handoff义务后才能改输出身份，下一次复用UID先核持久记录。宿主核查完成保留原lost/outcome与设备恢复义务；queue-release/session-recover共用宿主资格，不能以lease clear代替域空和私有输出交还。跨boot判断模型不等于真实主机重启验收。
+显式execution reconcile仅由声明能力的固定安装提供，普通核查不杀进程；force只作用于核实boot/inode的绑定cgroup。保存handoff义务后才能改输出身份，下一次复用UID先核持久记录。宿主核查完成保留原lost/outcome与设备恢复义务；contained的reset/session-recover共用宿主资格，不能以lease clear代替域空和私有输出交还。跨boot判断模型不等于真实主机重启验收。
+
+普通作业只用reset：负责人或管理员可停止活任务、明确释放未知范围、重试保存；重复调用返回原释放事实，不重放命令，不把设备恢复写成成功。运行中复用cancel的INT→15s→TERM→15s→KILL；等待时不占intake。恢复任务按普通范围/优先级排队，不借祖先预留；来源原件和恢复资格读同一done事实（含显式reset）。独立contained后端仍要求域空和私有输出交还。

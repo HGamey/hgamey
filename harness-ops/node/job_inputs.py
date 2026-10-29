@@ -134,9 +134,7 @@ def _source_ready(jobs, jid):
         if not isinstance(raw, dict) or (raw.get("execution") or {}).get("kind") != "supervised-v1":
             raise InputError(409, "source_unavailable", "source job lacks verifiable host completion evidence")
         meta = jobs.status(jid)
-        if meta.get("lost"):
-            raise InputError(409, "source_unavailable", "source job is lost and cannot be consumed as an input")
-        problem = jobs.host_execution_problem(jid, meta)
+        problem = jobs.source_completion_problem(jid, meta)
         if problem:
             raise InputError(409, "source_unavailable", problem)
     except (FileNotFoundError, KeyError) as error:

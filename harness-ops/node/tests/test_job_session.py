@@ -317,7 +317,7 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
         self.assertEqual(self.request("/dash/api" + path, **{**post, "headers": auth})[0], 403)
         self.assertEqual(self.request(path, token=self.admin, **{**post, "headers": {"Content-Type": "application/json"}})[0], 400)
         self.assertEqual(self.request(path, token=self.admin, **{**post, "body": b'{"serial":"other"}'})[0], 400)
-        for change in ("domain", "handback", "owner", "storage", "lost"):
+        for change in ("domain", "handback", "owner", "lost"):
             with self.subTest(change=change):
                 if change == "domain":
                     meta["execution"]["owned_cgroup"]["status"] = "unknown"
@@ -325,8 +325,6 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                     out.chmod(0o2770)
                 elif change == "owner":
                     self.value["live_owner"] = True
-                elif change == "storage":
-                    self.jobs.dispatch.queue.set_state(jid, "blocked", {"kind": "durability"})
                 else:
                     meta["phase"] = "starting"
                     meta["execution"]["launch_deadline"] = 0
@@ -340,6 +338,7 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 self.jobs.dispatch.queue.set_state(jid, "blocked")
         self.jobs._write_meta(jid, meta)
         (out / "session-control.json").write_text(json.dumps(self.value))
+        self.jobs.dispatch.queue.set_state(jid, "blocked", {"kind": "durability", "message": "fixture fsync error"})
         status, _, raw = self.request(path, token=self.admin, **post)
         self.assertEqual(status, 200, raw)
         recovery = json.loads(raw)
@@ -459,7 +458,10 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 self.assertEqual(len(self.jobs.dispatch.queue.rows()), before + 1)
                 denial = next(value for code, value in responses if code == 409)
                 self.assertIn(denial["code"], ("session_recovery_leaf", "session_recovery_blocked"))
-                self.assertEqual(post(f"/jobs/{r1}/queue-release", "early-release", {"note": "must not bypass child"})[0], 409)
+                from test_job_group_observation import until
+                until(lambda: Path(self.jobs.path(r2, "out", "observed.json")).exists())
+                self.assertEqual(post(f"/jobs/{r1}/reset", "repeat-reset", {"note": "does not stop recovery child"})[0], 200)
+                self.assertEqual(self.jobs.dispatch.queue.get(r2)["state"], "claimed")
                 (self.root / "release-r2").touch()
                 recovered = finished(r2, "done")
                 self.assertEqual((recovered["outcome"], recovered["exit"]), ("succeeded", 0))
@@ -483,7 +485,7 @@ print(json.dumps({'schema':'phonefarm/gray-control-action-result@1','session_id'
                 self.assertEqual(settled["target_job_id"], r2)
                 self.assertEqual([item["job_id"] for item in settled["attempts"]], [r1, r2])
                 self.assertTrue(all(self.jobs.dispatch.queue.get(jid)["state"] == "done" for jid in (source, r1, r2)))
-                self.assertEqual(post(f"/jobs/{r2}/queue-release", "lease-not-clear", {"note": "already settled"})[0], 409)
+                self.assertEqual(post(f"/jobs/{r2}/reset", "repeat-settled", {"note": "already settled"})[0], 200)
                 self.assertFalse(post(f"/jobs/{same}/cancel", "cancel-waiter")[1]["accepted"])
                 lease["status"] = "clear"
                 self.assertTrue(all(self.jobs.dispatch.queue.get(jid)["state"] == "done" for jid in (r2, r1, source)))

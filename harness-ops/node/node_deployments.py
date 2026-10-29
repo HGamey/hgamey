@@ -289,11 +289,9 @@ class NodeDeployments:
             return None, "deployment report is unavailable or its identity does not match this job"
 
     def _qualification(self, row, status, report):
-        if status.get("phase") in {"finalizing", "storage_blocked"}:
-            return "commit the source result first; use retry-finalize if storage is blocked"
         if row["state"] not in {"blocked", "done"} or status.get("state") != "finished":
             return "recovery requires a finished job"
-        problem = self.jobs.host_execution_problem(row["job_id"], status)
+        problem = self.jobs.source_completion_problem(row["job_id"], status)
         if problem:
             return problem
         if (not report or report.get("phase") != "recovery_required"

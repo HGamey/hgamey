@@ -109,8 +109,6 @@ class JobDispatch:
                 parent = self.queue.get(spec["recovery_for"])
                 if not parent or parent["state"] not in {"blocked", "done"}:
                     raise RequestConflict("recovery_for must name a finished job")
-                if (parent.get("state_reason") or {}).get("kind") == "durability":
-                    raise RequestConflict("retry-finalize the target before submitting a recovery job")
             row, created = self.queue.reserve(key, fingerprint, spec, spec["resources"])
             if created:
                 jid = row["job_id"]
@@ -347,6 +345,9 @@ class JobDispatch:
             self.queue.observe(jid, observation)
 
     def _launch(self, row):
+        row = self.queue.get(row["job_id"])
+        if row["state"] != "claimed":
+            return
         jid = row["job_id"]
         try:
             policy = require_policy(row["spec"])
@@ -473,7 +474,6 @@ class JobDispatch:
                              "resources": row["resources"], "waiting": self.waiting(row),
                              "device_scope": scope(row["spec"]),
                              "host_capacity": job_capacity.job_facts(row),
-                             "release_eligibility": self.jobs.queue_release_eligibility(row, meta),
                              "state_reason": row.get("state_reason"),
                              "recovery_for": row["spec"].get("recovery_for")}
             if row["state"] == "done":

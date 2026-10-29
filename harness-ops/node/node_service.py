@@ -39,7 +39,7 @@ from node_history import JobHistory, HistoryError, load_history_config
 from job_export_cache import ExportCache, validate_root as validate_export_cache_root
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
 from device_scope import (DeviceScope, validate_job as validate_device_job, resource as device_resource,
-                          scope as job_scope, lease_problem, serial_from_argv, binding_argument, same_binding)
+                          serial_from_argv, binding_argument, same_binding)
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
@@ -788,19 +788,6 @@ class Jobs:
     def recover_session(self, jid, request_id):
         return recover_session(self, jid, request_id)
 
-    def retry_finalize(self, jid):
-        self.path(jid)
-        with file_lock(self.dispatch.intake_path):
-            row = self.dispatch.queue.get(jid)
-            if not row:
-                raise KeyError(jid)
-            if (row.get("state_reason") or {}).get("kind") != "durability":
-                raise RequestConflict("only a job with a result storage error can retry-finalize")
-            self._check_recovery_children(jid)
-            committed = self.dispatch.finalize(row)
-        self.dispatch.start()
-        return {"storage_committed": committed, "job": self.status(jid)}
-
     def _check_recovery_children(self, jid):
         children = [r["job_id"] for r in self.dispatch.queue.rows(("preparing", "queued", "claimed", "blocked"))
                     if r["spec"].get("recovery_for") == jid]
@@ -825,6 +812,17 @@ class Jobs:
         if meta.get("phase") not in {"finished", "interrupted"} or group_status != "absent" and not not_started:
             return "source original process group completion is unconfirmed"
         return None
+
+    def source_completion_problem(self, jid, meta):
+        row = self.dispatch.queue.get(jid)
+        execution = meta.get("execution") or {}
+        contained = ((row or {}).get("spec", {}).get("execution_policy") == "contained"
+                     or (execution.get("process_management") or {}).get("policy") == "contained")
+        if contained:
+            return self.host_completion_problem(jid, meta)
+        if row and row["state"] == "done":
+            return None
+        return self.host_execution_problem(jid, meta)
 
     def host_completion_problem(self, jid, meta):
         """Qualify contained handback for queue release and session recovery."""
@@ -882,122 +880,56 @@ class Jobs:
         threading.Thread(target=finish, daemon=True).start()
         return {"accepted": True, "job": self.status(jid)}
 
-    def release_queue(self, jid, note, attest_stopped=False):
-        if not isinstance(note, str) or not note.strip() or len(note) > 2000:
-            raise ValueError("release requires a nonempty review note (at most 2000 characters)")
-        if type(attest_stopped) is not bool:
-            raise ValueError("attest_stopped must be a boolean")
-        with file_lock(self.dispatch.intake_path):
-            row = self.dispatch.queue.get(jid)
-            if not row:
-                raise KeyError(jid)
-            if row["state"] != "blocked":
-                raise RequestConflict("only a blocked reservation can be released")
-            status = self.status(jid)
-            if attest_stopped:
-                self._attest_stopped(row, status, note.strip())
-                row = self.dispatch.queue.get(jid)
-            lease = self.leases.snapshot(refresh=True, force=True) if device_access(row["spec"]) != "none" else None
-            eligibility = self.queue_release_eligibility(row, status, lease=lease)
-            if not eligibility["eligible"]:
-                raise RequestConflict(eligibility["reason"])
-            if not self.dispatch.finalize(row):
-                raise RequestConflict("host capacity release could not be confirmed; inspect execution and storage before releasing the reservation")
-            try:
-                self._read_root.write_json(jid + "/queue-release.json", {"note": note.strip(), "at": time.time(), "lease_observation": lease,
-                                                                         "attested_stopped": attest_stopped})
-                self._read_root.sync(jid, directory=True)
-                self._read_root.sync("", directory=True)
-            except (OSError, ValueError) as error:
-                self.dispatch.block_storage(row, "queue-release", error)
-                return {"released": False, "job": self.status(jid)}
-            self.dispatch.queue.set_state(jid, "done")
-        self.dispatch.start()
-        return {"released": True, "job": self.status(jid)}
-
     def reset_queue(self, jid, note):
-        """One-step administrator reset for a finished job with unknown host evidence."""
+        """Stop, release and retry saving this task without replaying its command."""
         if not isinstance(note, str) or not note.strip() or len(note) > 2000:
             raise ValueError("reset requires a nonempty review note (at most 2000 characters)")
         with file_lock(self.dispatch.intake_path):
             row = self.dispatch.queue.get(jid)
-            if not row or row["state"] not in {"blocked", "done"}:
-                raise RequestConflict("reset requires a finished reservation")
-            if (row.get("state_reason") or {}).get("kind") == "durability":
-                raise RequestConflict("retry-finalize must commit the result before resetting resources")
+            if not row:
+                raise KeyError(jid)
+            if self.dispatch.queue.cancel_pending(jid):
+                self.dispatch.finish_unstarted(row, "cancelled", "reset before execution")
+            elif row["state"] == "claimed" and not os.path.exists(self.path(jid, "launch.json")):
+                self.dispatch.finish_unstarted(row, "cancelled", "reset before worker launch")
+            elif row["state"] != "done" and job_runtime.runner_alive(self._read_root, jid):
+                job_runtime.request_cancel(self._read_root, jid)
+        # The independent worker applies the same INT/TERM/KILL sequence as cancel.
+        # Do not hold intake while it stops: other phones can continue to launch.
+        while job_runtime.runner_alive(self._read_root, jid):
+            time.sleep(0.05)
+        with file_lock(self.dispatch.intake_path):
+            row = self.dispatch.queue.get(jid)
+            self.dispatch.finalize(row)
+            row = self.dispatch.queue.get(jid)
             status = self.status(jid)
-            if status.get("state") != "finished":
-                raise RequestConflict("reset requires a finished job")
-            if row["state"] == "done" and row.get("host_capacity_release") is not None:
-                raise RequestConflict("host completion is already recorded; reset is only for unknown host state")
-            from pathlib import Path
-            if Path(self.path(jid, "queue-release.json")).exists():
-                raise RequestConflict("a review receipt already exists; reset cannot overwrite it")
-            group = (status.get("execution") or {}).get("owned_process_group") or {}
-            signals = job_runtime.terminate_group(group.get("pgid")) if group.get("status") != "absent" else []
-            fact = {
-                "at": time.time(), "basis": "administrator_reset", "note": note.strip(),
-                "process_group_signals": signals}
-            self.dispatch.queue.release_capacity(jid, fact, observation=status)
-            try:
-                self._read_root.write_json(jid + "/queue-release.json", {
-                    "note": note.strip(), "at": time.time(), "basis": fact["basis"], "reset": True,
-                    "process_group_signals": signals})
-                self._read_root.sync(jid, directory=True)
-                self._read_root.sync("", directory=True)
-            except (OSError, ValueError) as error:
-                self.dispatch.block_storage(row, "queue-reset", error)
-                return {"released": False, "job": self.status(jid)}
-            self.dispatch.queue.set_state(jid, "done")
+            if row["state"] != "done":
+                execution = status.get("execution") or {}
+                if (row["spec"].get("execution_policy") == "contained"
+                        or (execution.get("process_management") or {}).get("policy") == "contained"):
+                    problem = self.host_completion_problem(jid, status)
+                    if problem:
+                        raise RequestConflict(problem)
+                group = execution.get("owned_process_group") or {}
+                signals = job_runtime.terminate_group(group.get("pgid")) if group.get("status") != "absent" else []
+                if signals:
+                    execution["owned_process_group"] = job_runtime._group_completion(group.get("pgid"))
+                fact = {"at": time.time(), "basis": "administrator_reset", "note": note.strip(),
+                        "process_group_signals": signals}
+                self.dispatch.queue.set_state(jid, "done", row.get("state_reason") if
+                    (row.get("state_reason") or {}).get("kind") == "durability" else None,
+                    host_capacity_release=fact, observation=status)
+                if signals:
+                    try:
+                        original = self._read_meta(jid)
+                        original.setdefault("execution", {})["owned_process_group"] = execution["owned_process_group"]
+                        self._write_meta(jid, original)
+                    except (OSError, ValueError) as error:
+                        self.dispatch.block_storage(row, "reset-observation", error, status)
         self.dispatch.start()
-        return {"released": True, "job": self.status(jid)}
-
-    def _attest_stopped(self, row, meta, note):
-        """Administrator statement that a lost job's original process group is gone.
-
-        Nodes without the privileged worker cannot prove that themselves, so a lost job
-        would hold its capacity forever. The statement becomes the capacity release basis;
-        a recorded process group that still exists refuses it, and device lease checks
-        still apply afterwards.
-        """
-        if row.get("host_capacity_release") is not None:
-            return
-        if (row.get("state_reason") or {}).get("kind") == "durability":
-            raise RequestConflict("retry-finalize must commit the result before releasing resources")
-        execution = meta.get("execution") or {}
-        if ("contained" in (row["spec"].get("execution_policy"), meta.get("execution_policy"))
-                or (execution.get("process_management") or {}).get("policy") == "contained"):
-            raise RequestConflict("contained jobs are released through their cgroup handback, not an attestation")
-        if execution.get("worker_alive") is not False:
-            raise RequestConflict("the job's worker is still alive; cancel it first")
-        pgid = (execution.get("owned_process_group") or {}).get("pgid")
-        if pgid is not None and job_runtime._group_completion(pgid)["status"] != "absent":
-            raise RequestConflict(f"process group {pgid} still exists; stop it before attesting")
-        self.dispatch.queue.release_capacity(row["job_id"], {"at": time.time(), "basis": "administrator_attested_stopped",
-                                                             "note": note}, observation=meta)
-
-    def queue_release_eligibility(self, row, meta, *, lease=None):
-        """Same advisory decision shown by GET and rechecked fresh by release."""
-        reason = None
-        if row["state"] != "blocked":
-            reason = "only a blocked reservation can be released"
-        elif (row.get("state_reason") or {}).get("kind") == "durability":
-            reason = "retry-finalize must commit the result before releasing resources"
-        else:
-            try:
-                self._check_recovery_children(row["job_id"])
-            except RequestConflict as error:
-                reason = str(error)
-        execution = meta.get("execution") or {}
-        if reason is None and row.get("host_capacity_release") is None:
-            reason = self.host_execution_problem(row["job_id"], meta)
-        elif reason is None and (row["spec"].get("execution_policy") == "contained"
-                               or (execution.get("process_management") or {}).get("policy") == "contained"):
-            reason = self.host_completion_problem(row["job_id"], meta)
-        if reason is None and device_access(row["spec"]) != "none":
-            observation = self.leases.snapshot() if lease is None else lease
-            reason = lease_problem(row["spec"], observation, "release")
-        return {"eligible": reason is None, "reason": reason, "scope": job_scope(row["spec"])}
+        status = self.status(jid)
+        return {"released": status["queue"]["state"] == "done",
+                "storage_committed": "storage_error" not in status, "job": status}
 
     def kill(self, jid):
         """Compatibility: true means escalation was requested, not completed."""
@@ -2077,11 +2009,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if len(parts) == 2 and parts[0] == "agents":
                     return self._agents_put(parts[1], False, body)
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "retry-finalize":
-                    data = json.loads(body or b"{}")
-                    if not isinstance(data, dict):
-                        raise ValueError("retry-finalize body must be an object")
-                    return self._send(200, jobs.retry_finalize(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reset":
                     if self.agent:
                         row = jobs.dispatch.queue.get(parts[1])
@@ -2098,11 +2025,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if not isinstance(data, dict):
                         raise ValueError("reset body must be an object")
                     return self._send(200, jobs.reset_queue(parts[1], data.get("note")))
-                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "queue-release":
-                    data = json.loads(body or b"{}")
-                    if not isinstance(data, dict):
-                        raise ValueError("release body must be an object")
-                    return self._send(200, jobs.release_queue(parts[1], data.get("note"), data.get("attest_stopped", False)))
             except RegistryError as e:
                 return self._send(e.status, e.payload)
             except (DirectoryError, GameError) as e:

@@ -149,11 +149,9 @@ def recovery_source_out(jobs, row):
 def _recovery_qualification(jobs, row):
     jid = row["job_id"]
     status = jobs.status(jid)
-    if status.get("phase") in {"finalizing", "storage_blocked"}:
-        return "commit the source result first; use retry-finalize if storage is blocked"
     if row["state"] not in {"blocked", "done"} or status.get("state") != "finished":
         return "session recovery requires a finished job"
-    return jobs.host_execution_problem(jid, status)
+    return jobs.source_completion_problem(jid, status)
 
 
 def recovery_plan(jobs, jid):

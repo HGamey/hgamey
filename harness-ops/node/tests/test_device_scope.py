@@ -385,12 +385,12 @@ class DeviceScopeTests(unittest.TestCase):
                 self.assertNotIn("--device-binding", actual["argv"])
                 self.assertIsNone(actual["inherited_instance"])
                 attempts.append(attempt)
-            self.assertEqual(env.call("POST", "/jobs/" + first["id"] + "/queue-release",
-                                     {"note": "premature ancestor"}, headers=pin)[0], 409)
+            self.assertEqual(env.call("POST", "/jobs/" + first["id"] + "/reset",
+                                     {"note": "repeat completed ancestor reset"}, headers=pin)[0], 200)
             current["device_scopes"]["devices"][0]["status"] = "clear"
             for item in [*reversed(attempts), first]:
                 view = env.jobs.status(item["id"])
-                self.assertFalse(view["queue"]["release_eligibility"]["eligible"], view)
+                self.assertEqual(view["queue"]["host_capacity"]["state"], "released", view)
                 self.assertEqual(env.jobs.dispatch.queue.get(item["id"])["state"], "done")
             self.assertEqual(env.jobs.status(other["id"])["state"], "running")
             (env.root / "finish-usb-b").touch(); terminal(other["id"])
@@ -430,18 +430,22 @@ class DeviceScopeTests(unittest.TestCase):
             settled(b, "done")
             settled(a, "blocked")
             recovery = add("recover-a", bound("A", "usb-a"), access="recovery", parent=a)
-            self.assertEqual(queue.claim_next(3)["job_id"], recovery, "recovery borrows the original reservation")
-            settled(recovery, "blocked")
-            sibling = add("sibling", bound("A", "wifi-a"), access="recovery", parent=a)
-            leaf = add("leaf", bound("A", "usb-a"), access="recovery", parent=recovery)
-            self.assertEqual(queue.claim_next(3)["job_id"], leaf)
-            self.assertIsNone(queue.claim_next(4), "a sibling may not borrow the failed recovery reservation")
-            for jid in (leaf, recovery, a):
-                settled(jid, "done")
+            self.assertIsNone(queue.claim_next(3), "blocked parent retains the device")
+            settled(a, "done")
             self.assertEqual(queue.claim_next(3)["job_id"], global_job)
             self.assertIsNone(queue.claim_next(4), "claimed global covers every device before PF starts")
             settled(global_job, "done")
+            self.assertEqual(queue.claim_next(3)["job_id"], recovery)
+            settled(recovery, "blocked")
+            sibling = add("sibling", bound("A", "wifi-a"), access="recovery", parent=a)
+            leaf = add("leaf", bound("A", "usb-a"), access="recovery", parent=recovery)
+            self.assertIsNone(queue.claim_next(4), "neither sibling nor leaf borrows the failed reservation")
+            settled(recovery, "done")
             self.assertEqual(queue.claim_next(3)["job_id"], sibling)
+            self.assertIsNone(queue.claim_next(4), "same device aliases remain exclusive")
+            settled(sibling, "done")
+            self.assertEqual(queue.claim_next(3)["job_id"], leaf)
+
 
 
 if __name__ == "__main__":

@@ -85,11 +85,11 @@ class ReservationTests(TestCase):
         self.assertEqual(code, 200, raw)
         value = json.loads(raw)
         self.assertTrue(value["released"])
-        self.assertEqual(value["job"]["queue"]["release"]["basis"], "administrator_reset")
+        self.assertEqual(value["job"]["queue"]["host_capacity"]["release"]["basis"], "administrator_reset")
         row = self.jobs.dispatch.queue.get(unknown)
         self.assertEqual((row["state"], row["host_capacity_release"]["basis"]), ("done", "administrator_reset"))
         self.assertEqual(self.request(f"/jobs/{unknown}/reset", token=self.admin, method="POST", body=body,
-                                      headers={"Content-Type": "application/json"})[0], 409)
+                                      headers={"Content-Type": "application/json"})[0], 200)
 
     def test_unknown_host_recovery_frees_capacity_but_waits_for_owner_reset(self):
         self.jobs.agents.create({"name": "glm-researcher"})
@@ -103,7 +103,7 @@ class ReservationTests(TestCase):
         self.assertEqual(row["state"], "blocked")
         self.assertEqual((row.get("state_reason") or {}).get("kind"), "execution_unknown")
         self.assertIsNone(row["host_capacity_release"])
-        self.assertFalse(self.jobs.queue_release_eligibility(row, self.jobs.status(jid))["eligible"])
+        self.assertIsNotNone(self.jobs.source_completion_problem(jid, self.jobs.status(jid)))
 
         other = self.submit({**spec, "argv": ["-c", "pass", "usb-b"], "resources": ["device:usb-b"]}, "other-phone")
         self.assertEqual(self.jobs.dispatch.queue.claim_next(2)["job_id"], other)

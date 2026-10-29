@@ -255,7 +255,7 @@ class NodeReadTests(unittest.TestCase):
 
     def test_readonly_and_dash_password_cannot_mutate(self):
         jid = self.fixture(1)
-        for path in ("/jobs", f"/jobs/{jid}/kill", f"/jobs/{jid}/cancel", f"/jobs/{jid}/queue-release", "/admin/restart"):
+        for path in ("/jobs", f"/jobs/{jid}/kill", f"/jobs/{jid}/cancel", f"/jobs/{jid}/reset", "/admin/restart"):
             self.assertEqual(self.request(path, method="POST", body=b"")[0], 401)
         self.assertEqual(self.request("/node", token="wrong")[0], 401)
         self.assertEqual(self.request("/jobs", method="DELETE")[0], 401)
@@ -347,23 +347,18 @@ class NodeReadTests(unittest.TestCase):
                 self.assertEqual(self.get_json(prefix + "/leases", headers=headers)["status"], "unknown")
             self.assertEqual(self.request("/dash/api/leases")[0], 401)
             self.assertEqual(self.request("/leases", token="wrong")[0], 401)
-            for path, headers in ((f"/jobs/{jid}/queue-release", {}),
-                                  (f"/dash/api/jobs/{jid}/queue-release", {**auth, "X-HG": "1", "Content-Type": "application/json"})):
+            for path, headers in ((f"/jobs/{jid}/reset", {}),
+                                  (f"/dash/api/jobs/{jid}/reset", {**auth, "X-HG": "1", "Content-Type": "application/json"})):
                 self.assertIn(self.request(path, method="POST", headers=headers, body=b'{"note":"checked"}')[0], (401, 403))
-            self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write, body=b'{}')[0], 400)
-            self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write,
-                body=b'{"note":"note alone is insufficient"}')[0], 409)
+            self.assertEqual(self.request(f"/dash/api/jobs/{jid}/reset", method="POST", headers=write, body=b'{}')[0], 400)
             recovery = {"bin": "phonefarm", "argv": ["-c", "pass"], "device_access": "recovery", "recovery_for": jid}
             child = self.get_json("/jobs", method="POST", token=self.admin,
                 headers={"X-Job": json.dumps(recovery), "X-Request-ID": "recovery:fixture"})
             self.assertEqual(child["queue"]["resources"], job["queue"]["resources"])
             self.assertEqual(child["recovery_for"], jid)
             with patch.object(self.jobs.leases, "snapshot", return_value={"schema_version": 1, "status": "clear", "entries": []}):
-                self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write,
-                    body=b'{"note":"child still pending"}')[0], 409)
                 self.get_json(f"/jobs/{child['id']}/cancel", method="POST", token=self.admin, body=b'{}')
-                self.assertEqual(self.request(f"/dash/api/jobs/{jid}/queue-release", method="POST", headers=write,
-                    body=b'{"note":"lease clear cannot prove lost host finished"}')[0], 409)
+                self.assertEqual(self.jobs.dispatch.queue.get(jid)["state"], "blocked")
                 unknown_id = jid
                 self.assertIsNone(self.jobs.dispatch.queue.get(jid)["host_capacity_release"])
                 # A separate synthetic completed-worker receipt exercises the
@@ -391,8 +386,8 @@ class NodeReadTests(unittest.TestCase):
                 headers={"X-Job": json.dumps({**recovery, "recovery_for": jid}), "X-Request-ID": "new-recovery"})[0], 200)
             self.assertEqual(self.get_json("/jobs", method="POST", token=self.admin,
                 headers={"X-Job": json.dumps(recovery), "X-Request-ID": "recovery:fixture"})["id"], child["id"])
-            self.assertEqual(self.request(f"/jobs/{jid}/queue-release", method="POST", token=self.admin,
-                body=b'{"note":"already released"}')[0], 409)
+            self.assertEqual(self.request(f"/jobs/{jid}/reset", method="POST", token=self.admin,
+                body=b'{"note":"already released"}')[0], 200)
             # SQLite-only failed preparation remains visible and can only be finalized by writers.
             self.board.jobs_dir = self.jobs.dir
             self.assertIn("jobs.durability-v1", self.get_json("/node")["capabilities"])
@@ -410,12 +405,12 @@ class NodeReadTests(unittest.TestCase):
                     self.assertEqual((view["phase"], view["state"]), ("finished", "finished"))
                     self.assertEqual(view["storage_error"]["kind"], "durability")
                     self.assertEqual(view["recovery"], maintained["recovery"])
-                suffix = f"/jobs/{fid}/retry-finalize"
+                suffix = f"/jobs/{fid}/reset"
                 self.assertEqual(self.request(suffix, method="POST", body=b'{}')[0], 401)
                 self.assertEqual(self.request("/dash/api" + suffix, method="POST",
                     headers={**auth, "X-HG": "1", "Content-Type": "application/json"}, body=b'{}')[0], 403)
                 credentials = {"token": self.admin} if not prefix else {"headers": write}
-                finalized = self.get_json(prefix + suffix, method="POST", body=b'{}', **credentials)
+                finalized = self.get_json(prefix + suffix, method="POST", body=b'{"note":"retry saving original records"}', **credentials)
                 self.assertTrue(finalized["storage_committed"])
                 self.assertEqual(finalized["job"]["outcome"], "failed")
                 self.assertEqual(finalized["job"]["recovery"]["status"], "not_needed")

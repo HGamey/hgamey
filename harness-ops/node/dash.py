@@ -361,10 +361,8 @@ class Dash:
                 return self._send(h, 200, self.job_service.session(sub[2], action=data))
             if sub == ["api", "jobs"]:
                 return self._send(h, 200, self.job_service.start(data, b"", request_id=h.headers.get("X-Request-ID")))
-            if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "retry-finalize":
-                return self._send(h, 200, self.job_service.retry_finalize(sub[2]))
-            if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "queue-release":
-                return self._send(h, 200, self.job_service.release_queue(sub[2], data.get("note"), data.get("attest_stopped", False)))
+            if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] == "reset":
+                return self._send(h, 200, self.job_service.reset_queue(sub[2], data.get("note")))
             if len(sub) == 4 and sub[:2] == ["api", "jobs"] and sub[3] in ("pause", "resume"):
                 if not self.job_service:
                     return self._send(h, 503, {"error": "作业服务不可用"})

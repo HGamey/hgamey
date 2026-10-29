@@ -12,7 +12,7 @@ Agent 每轮从这里开始（最短完整路径）：
      图片/附件引用 job:<任务>:<路径>；需要人定的事用 --ask 提问，然后继续做其他方向。
   7. pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>
   设备锁序列化实际设备操作；任务预留只在执行中占调度资源，终态自动释放。
-  宿主完成未知或设备仍待恢复时由负责人或管理员用 reset 一步重置，不代表设备已恢复。
+  宿主完成未知时由负责人或管理员用 reset 一步停止并释放预留；保存错误修复后也用 reset 重存，不重跑实验。
 
   pf-node checkin                            # 用你自己的 token：现在该做的事，以及每轮做法
   pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
@@ -46,12 +46,11 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node session-recovery <id>             # 只读原会话来源、阻断叶子与恢复尝试计划
   pf-node session-action <id> --request FILE|- # 提交完整动作 JSON；不会自动重发
   pf-node session-recover <id> [--request-id ID] # 根据原任务绑定创建异步恢复任务，不等待完成
-  pf-node execution-reconcile <id> [--force]   # 异步核查原任务绑定域；force会结束域内残留进程
+  pf-node execution-reconcile <id> [--force]   # 仅管理员隔离 contained 后端：核查 cgroup 与输出交还
   pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
   pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
-  pf-node reset <id> --note "核查结果"       # 负责人或管理员：无法确认宿主/恢复状态时一步重置并释放预留，不证明已恢复
-  pf-node retry-finalize <id>                # 重试保存原有结束记录，不重新执行命令
+  pf-node reset <id> --note "核查结果"       # 负责人或管理员：一步停止任务、释放预留或重存结果，不证明设备已恢复
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
   pf-node cancel <id> [--force]            # 普通任务 SIGINT → 15s 后 TERM → 再 15s 后 KILL，清理剩余进程组
@@ -152,7 +151,7 @@ Agent 每轮从这里开始（最短完整路径）：
 - --execution-policy process_group 显式要求原进程组管理；先核节点能力，不支持时不打包/提交。
   省略保留兼容默认，不替旧任务补全树结束证明。
 - finalizing 表示结束记录尚在保存；storage_error 表示保存失败，wait/跟随以125退出并保留命令诊断；已结束任务不因此占资源。
-  修复存储后用 retry-finalize；它只重新同步原有记录，返回 storage_committed 不代表设备恢复或资源已释放。
+  修复存储后用 reset；它重存原有记录，不重放命令，不代表设备恢复。
 - 历史 --source 与 --source-revision 必须同时显式提供，只用于 jobs/status/log/artifacts/out；
   不支持 wait/kill/恢复或写入。来源变化保留原 revision 并报错，不自动选择新目录或退回当前作业。
   历史 out 仅单文件；默认写到 pf-node-out/SOURCE/revision-N/JOB，下载 partial 绑定节点/来源/revision/job。
@@ -162,7 +161,7 @@ Agent 每轮从这里开始（最短完整路径）：
   事件不是无损执行历史；head 不是已处理位置，消费者处理后自行保存 next_cursor。Ctrl-C 不取消任务。
 - --device-access none|write|recovery 显式声明设备访问；adb 未声明时按 none 提交，不预留整机，
   写设备必须显式 write；其他命令未声明保持原默认。recovery 必须配 --recovery-for 原资源保留任务 ID，
-  资源由父任务继承，不能同时传 --resource。设备恢复由任务自身步骤负责并记录结果，终态自动释放；宿主完成未知或设备仍待恢复时由负责人或管理员 reset。
+  资源由父任务继承，不能同时传 --resource。设备恢复由任务自身步骤负责并记录结果，终态自动释放；宿主完成未知时由负责人或管理员 reset；设备仍用原 session 或 adb 还原。
 - --device-binding FILE 只读 devices-resolve 保存的 JSON 文件，核其 node_id 与当前目标；只将 binding 放入 job spec，
   不自行给 argv 注入参数。仅配置 phonefarm 的 gray-layer session 支持，禁止 --exe 和 none/recovery 覆盖；
   缺省不发送字段，保持兼容全域。登记/布局变化明确拒绝，不换 alias、不自动降级；typed 恢复继承原绑定。
@@ -180,8 +179,8 @@ Agent 每轮从这里开始（最短完整路径）：
   或 session-recover 原任务 --request-id 原ID 重试，不换 ID 重复创建。新任务仍需核查恢复结果与原资源保留。
 - session-recovery 只读恢复链计划，需 jobs.session-recovery-chain-v1；eligible=false 也是有效计划。
   session-recover 不自动切换叶子；409 时先查计划，原 request_id 始终绑定原入口。
-  原 session 来源与 recovery_for 队列父分别核对；限定恢复成功仍须审收据并由叶子向祖先显式 release。
-- execution-reconcile 只核查原任务绑定域，不重放命令、不新建实验任务；普通核查不杀进程。
+  原 session 来源与 recovery_for 队列父分别核对；恢复结束自动释放；原组完成未知的任务先 reset，不借祖先预留。
+- execution-reconcile 仅用于管理员隔离 contained 后端，只核查原任务绑定域，不重放命令、不新建实验任务；普通核查不杀进程。
   --force 明确允许结束域内残留进程，再核查域空与输出交还。只POST一次，超时仅用 status 原任务核对，
   不自动重发或等待。complete仅为宿主收尾，不代表设备恢复、队列释放，原失联/失败事实保留。
 - 画质检查点沿 session-action，需 action_capabilities.quality=1 与当前 controller/epoch：
@@ -531,31 +530,17 @@ def cancel_job(jid, force=False):
 def reset_job(jid, note):
     try:
         result = json.loads(call("POST", f"/jobs/{jid}/reset", json.dumps({"note": note}).encode(),
-                                 {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
+                                 {"Content-Type": "application/json"}, attempts=1, raise_errors=True))
     except ClientError as e:
         reason = response_error_text(e.body)
-        sys.exit(f"pf-node: 重置请求被拒绝：{e}" + (f"：{reason}" if reason else ""))
+        sys.exit(f"pf-node: 重置未确认：{reason or e}；负责人或管理员可执行。"
+                 f"先用 {continuation()} status {jid} 核对，不会自动重试")
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
+        sys.exit(f"pf-node: 重置未确认：{e}；先用 {continuation()} status {jid} 核对，不会自动重试")
     if result.get("released") is True:
-        print(f"pf-node: 任务 {jid} 已由负责人或管理员重置并释放预留；不证明原进程或设备状态。", file=sys.stderr)
-    return result
-
-
-def release_job(jid, note, attest_stopped=False):
-    try:
-        body = {"note": note, "attest_stopped": True} if attest_stopped else {"note": note}
-        result = json.loads(call("POST", f"/jobs/{jid}/queue-release", json.dumps(body).encode(),
-                                 {"Content-Type": "application/json"}, attempts=1, raise_4xx=True))
-    except ClientError as e:
-        if e.code in (401, 403):
-            sys.exit("pf-node: 释放请求被拒绝；需要有效的管理 token")
-        if e.code == 409:
-            reason = response_error_text(e.body)
-            sys.exit(f"pf-node: 释放请求被拒绝：{reason or e}；这个任务要用 pf-node reset {jid} --note \"<还原说明>\"，负责人或管理员可以做")
-        sys.exit(f"pf-node: 释放请求被拒绝：{e}")
-    if result.get("released") is True:
-        print(f"pf-node: 任务 {jid} 的核查记录已保存，已允许再次调度；这不证明设备已恢复。", file=sys.stderr)
-    else:
-        print(f"pf-node: 释放请求被拒绝：{result.get('reason') or '未说明原因'}", file=sys.stderr)
+        print(f"pf-node: 任务 {jid} 已重置并释放预留；不证明设备已恢复。", file=sys.stderr)
+    if result.get("storage_committed") is False:
+        print(f"pf-node: 结束记录仍未保存：{json.dumps(result.get('job', {}).get('storage_error'), ensure_ascii=False)}", file=sys.stderr)
     return result
 
 
@@ -657,43 +642,17 @@ def export_caches(clear=False):
     return 0 if value.get("complete") is True else 2
 
 
-def retry_finalize(jid):
-    try:
-        node = json.loads(call("GET", "/node", attempts=1, raise_errors=True))
-    except ClientError as e:
-        sys.exit(f"pf-node: 无法核对 jobs.durability-v1，请核对访问权限或升级节点：{e}")
-    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
-        sys.exit(f"pf-node: 无法读取节点保存能力：{e}")
-    if "jobs.durability-v1" not in node.get("capabilities", []):
-        sys.exit("pf-node: 节点未提供 jobs.durability-v1，请升级；尚未发送保存重试")
-    try:
-        result = json.loads(call("POST", f"/jobs/{jid}/retry-finalize", b"{}",
-                                 {"Content-Type": "application/json"}, attempts=1, raise_errors=True))
-    except ClientError as e:
-        if e.code in (401, 403):
-            sys.exit("pf-node: 保存重试被拒绝；需要有效的管理 token")
-        sys.exit(f"pf-node: 保存重试未确认：{e}；请先用 {continuation()} status {jid} 核对，不会自动重试")
-    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
-        sys.exit(f"pf-node: 保存结果未确认：{e}；请先用 {continuation()} status {jid} 核对，不会自动重试")
-    if result.get("storage_committed") is True:
-        print(f"pf-node: 任务 {jid} 的结束记录已提交存储；不代表设备恢复或资源已释放。", file=sys.stderr)
-    else:
-        reason = ((result.get("job") or {}).get("queue") or {}).get("state_reason")
-        print(f"pf-node: 任务 {jid} 结束记录仍未保存；原因={json.dumps(reason, ensure_ascii=False)}", file=sys.stderr)
-    return result
-
-
 def follow(jid):
     off = 0
     try:
         while True:
             st = json.loads(call("GET", f"/jobs/{jid}"))
             if (st.get("queue", {}).get("state_reason") or {}).get("kind") == "durability":
-                print(f"pf-node: 任务 {jid} 结果保存失败（storage_blocked），停止本地跟随并返回125；"
+                print(f"pf-node: 任务 {jid} 结果保存失败（storage_error），停止本地跟随并返回125；"
                       f"命令 exit={st.get('exit')}，execution.returncode={(st.get('execution') or {}).get('returncode')}，"
                       f"state_reason={json.dumps((st.get('queue') or {}).get('state_reason'), ensure_ascii=False)}，"
                       f"recovery={json.dumps(st.get('recovery'), ensure_ascii=False)}。"
-                      f"原命令不会重跑；核查存储后用 {continuation()} retry-finalize {jid}，不自动下载未提交结果。", file=sys.stderr)
+                      f"原命令不会重跑；核查存储后用 {continuation()} reset {jid} --note '存储已修复'，不自动下载未提交结果。", file=sys.stderr)
                 raise SystemExit(125)
             group = (st.get("execution") or {}).get("owned_process_group") or {}
             reason = (st.get("queue") or {}).get("state_reason") or {}
@@ -1346,7 +1305,7 @@ def main():
             sys.exit("pf-node: live 不接收作业选项；--device-binding 放在 live 子命令后")
         from live_client import main as live_main
         return live_main(TARGET, args[1:])
-    history_commands = ("jobs", "status", "log", "artifacts", "out", "wait", "kill", "cancel", "release", "session-recover", "retry-finalize")
+    history_commands = ("jobs", "status", "log", "artifacts", "out", "wait", "kill", "cancel", "reset", "session-recover")
     if args[0] == "job-sources" or (args[0] in history_commands and any(value in ("--source", "--source-revision") for value in args[1:])):
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None
@@ -1566,24 +1525,10 @@ def main():
         return
     if args[0] == "reset":
         if len(args) != 4 or not re.fullmatch(r"[0-9a-f]{12}", args[1]) or args[2] != "--note" or not args[3].strip():
-            sys.exit("用法: pf-node reset <12 位任务 id> --note TEXT（负责人或管理员记录无法确认宿主/恢复状态后的重置）")
+            sys.exit("用法: pf-node reset <12 位任务 id> --note TEXT（负责人或管理员停止并释放，或重存结果）")
         result = reset_job(args[1], args[3])
         print(json.dumps(result, ensure_ascii=False))
-        sys.exit(0 if result.get("released") is True else 1)
-    if args[0] == "release":
-        attest = args[4:] == ["--attest-stopped"]
-        if (len(args) != (5 if attest else 4) or not re.fullmatch(r"[0-9a-f]{12}", args[1])
-                or args[2] != "--note" or not args[3].strip()):
-            sys.exit("用法: pf-node release <12 位任务 id> --note TEXT [--attest-stopped]（填写管理员核查结果）")
-        result = release_job(args[1], args[3], attest_stopped=attest)
-        print(json.dumps(result, ensure_ascii=False))
-        sys.exit(0 if result.get("released") is True else 1)
-    if args[0] == "retry-finalize":
-        if len(args) != 2 or not re.fullmatch(r"[0-9a-f]{12}", args[1]):
-            sys.exit("用法: pf-node retry-finalize <12 位任务 id>")
-        result = retry_finalize(args[1])
-        print(json.dumps(result, ensure_ascii=False))
-        sys.exit(0 if result.get("storage_committed") is True else 1)
+        sys.exit(0 if result.get("released") is True and result.get("storage_committed") is not False else 1)
     if args[0] == "cancel":
         if (len(args) not in (2, 3) or (len(args) == 3 and args[2] != "--force")
                 or not __import__("re").fullmatch(r"[0-9a-f]{12}", args[1])):
