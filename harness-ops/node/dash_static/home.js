@@ -54,15 +54,17 @@
       const st = !s.online ? (s.state || "离线") : s.busy ? "在线 · 占用" : "在线 · 锁记录空闲";
       const thumb = s.shot_at && HGTarget.canWrite() ? `<img alt="${esc(s.model || s.serial)} 的画面" src="${esc(HGTarget.url(`/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}`))}">`
         : `<div class="ph">${s.busy ? "占用中，暂缓截图" : "暂无画面"}</div>`;
-      const job = ["job", "global"].includes(s.holder?.kind) ? s.holder : null;
-      const task = job && (job.research_id
-        ? `${esc(job.label || job.job_id)} · <a href="${esc(HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(job.research_id)}`))}">${esc(job.research_title || job.research_id)}</a>`
-        : `<a href="${esc(HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.job_id)}`))}">${esc(job.label || job.job_id)}</a>`);
-      const doing = job ? `<div class="doing${job.kind === "job" ? " on" : ""}">${job.kind === "job" ? "任务" : job.reserved ? "全局预留" : "全局锁"}：${task}${job.actor_id ? " · " + esc(job.actor_id) : ""}${job.state && job.state !== "running" ? " · " + esc(job.state) : ""}</div>`
-        : s.holder?.kind === "external" ? `<div class="doing on">外部占用：${esc(s.holder.label)}</div>`
-        : s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
-        : s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`
-        : `<div class="doing">${s.busy ? "已占用，未记录占用者" : "未记录占用；运行前仍需调度与租约核验"}</div>`;
+      const job = s.holder?.kind === "job" ? s.holder : null;
+      const taskFor = entry => entry.research_id
+        ? `${esc(entry.label || entry.job_id)} · <a href="${esc(HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(entry.research_id)}`))}">${esc(entry.research_title || entry.research_id)}</a>`
+        : `<a href="${esc(HGTarget.url(`/dash/jobs#job=${encodeURIComponent(entry.job_id)}`))}">${esc(entry.label || entry.job_id)}</a>`;
+      const localDoing = job ? `<div class="doing on">${job.reserved ? "设备预留" : "任务"}：${taskFor(job)}${job.actor_id ? " · " + esc(job.actor_id) : ""}${job.state && job.state !== "running" ? " · " + esc(job.state) : ""}</div>` : "";
+      const global = s.global_holder;
+      const globalDoing = global ? `<div class="doing">${global.reserved ? "全局预留" : "全局锁"}：${taskFor(global)}${global.actor_id ? " · " + esc(global.actor_id) : ""}${global.state && global.state !== "running" ? " · " + esc(global.state) : ""}</div>` : "";
+      const doing = localDoing + globalDoing + (s.holder?.kind === "external" ? `<div class="doing on">外部占用：${esc(s.holder.label)}</div>`
+        : !job && s.goal ? `<div class="doing on">关联目标：${esc(s.goal.summary)}</div>`
+        : !job && s.waiting_goal ? `<div class="doing">目标记录：${esc(s.waiting_goal.summary)} · 设备归属未确认</div>`
+        : !job && !global ? `<div class="doing">${s.busy ? "已占用，未记录占用者" : "未记录占用；运行前仍需调度与租约核验"}</div>` : "");
       return `<div class="phone-card"><a class="thumb" href="/dash/live?serial=${encodeURIComponent(s.serial)}" title="看实时画面">${thumb}</a><div class="meta">
         <div class="name" title="${esc(s.serial)}">${esc(s.model || "未知型号")}</div><span class="status ${cls}"><i></i>${esc(st)}</span>
         <div class="nums"><div><b>${s.soc_c == null ? "—" : num(s.soc_c, 0) + "°"}</b><span>芯片温度</span></div><div><b>${s.battery_pct == null ? "—" : s.battery_pct + "%"}</b><span>电量</span></div><div><b>${s.battery_c == null ? "—" : num(s.battery_c, 0) + "°"}</b><span>电池温度</span></div></div>

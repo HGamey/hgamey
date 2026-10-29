@@ -864,6 +864,18 @@ class Dash:
                 return self._job_holder(meta, jid, serial, bool(global_job), aimed, known)
         return {"kind": "external", "label": label} if label else None
 
+    def _global_holder(self, serial, lock, known=()):
+        if lock.get("status") != "held":
+            return None
+        held = lock.get("held_by")
+        match = re.fullmatch(r"job-([0-9a-f]{12})(?:-[^@]*)?(?:@(.+))?", held or "")
+        if not match or not self.job_service:
+            return None
+        jid, aimed = match.groups()
+        meta = self._job_meta(jid)
+        entry = self._job_holder(meta, jid, serial, True, aimed, known) if meta else None
+        return {**entry, "kind": "global"} if entry else None
+
     def _reservations(self):
         """Only actively running device-write jobs hold a scheduling reservation."""
         queue = getattr(getattr(self.job_service, "dispatch", None), "queue", None)
@@ -967,12 +979,16 @@ class Dash:
                 waiting = next((r for r in running if r["state"].get("device") in (serial, None, "any")), None)
             shot = os.path.join(self.shot_dir, re.sub(r"[^0-9A-Za-z_-]", "_", serial or "") + ".jpg")
             b, t = d.get("battery") or {}, d.get("thermal") or {}
+            holder = self._holder(serial, lock, known) or self._reserved(serial, owners, known)
+            global_holder = self._global_holder(serial, lock, known)
+            if holder and holder.get("kind") == "global":
+                global_holder, holder = holder, None
             slots.append({"serial": serial, "online": d.get("online"), "state": d.get("state"),
                           "model": " ".join(x for x in (d.get("brand"), d.get("model")) if x) or None, "os": d.get("os"),
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
                           "busy": lock["status"] != "free", "light": d.get("probe_depth") == "light",
-                          "holder": self._holder(serial, lock, known) or self._reserved(serial, owners, known),
+                          "holder": holder, "global_holder": global_holder,
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
                                             "demo": goal["demo"]},

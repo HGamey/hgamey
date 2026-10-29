@@ -630,8 +630,8 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(tasks[rid]["owner"], agent)
             self.assertEqual([(job["job_id"], job["actor_id"]) for job in tasks[rid]["jobs"]], [(jid, agent)])
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
-        research_branch = script.split("job.research_id", 1)[1].split(": `<a", 1)[0]
-        self.assertIn("esc(job.label || job.job_id)", research_branch,
+        research_branch = script.split("entry.research_id", 1)[1].split(": `<a", 1)[0]
+        self.assertIn("esc(entry.label || entry.job_id)", research_branch,
                       "a research-linked phone must retain the job label as well as the research and agent")
 
     def test_home_tasks_keep_public_job_phase_with_queue_state(self):
@@ -820,6 +820,23 @@ class CoreFlowTests(unittest.TestCase):
             **self.write("web-close", {**current["data"], "state": "closed", "state_reason": "人工结束"}),
             "base_revision": current["revision"], "reason": "人工结束"})
         self.assertEqual(status, 201, closed)
+
+    def test_home_keeps_lane_holder_visible_with_global_owner(self):
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        global_job = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "write",
+                                                "resources": ["legacy-device"], "label": "glm 全局", "actor_id": "glm-researcher"}, b"", "global-owner")
+        lane_job = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass", "HONOR"], "device_access": "write",
+                                              "resources": ["device:HONOR"], "label": "kimi HONOR", "actor_id": "kimi-researcher"}, b"", "lane-owner")
+        global_id = global_job["job"]["id"] if "job" in global_job else global_job["id"]
+        lane_id = lane_job["job"]["id"] if "job" in lane_job else lane_job["id"]
+        lock = {"status": "held", "held_by": f"job-{global_id}", "lease": {"entries": [
+            {"serial": "HONOR", "job_id": lane_id, "label": f"job-{lane_id}", "state": "active"}]}}
+        local = board._holder("HONOR", lock, {"HONOR"})
+        global_holder = board._global_holder("HONOR", lock, {"HONOR"})
+        self.assertEqual((local["kind"], local["job_id"], local["actor_id"]), ("job", lane_id, "kimi-researcher"))
+        self.assertEqual((global_holder["kind"], global_holder["job_id"], global_holder["actor_id"]),
+                         ("global", global_id, "glm-researcher"))
 
     def test_a_device_write_job_keeps_its_phone_between_its_locks(self):
         # A device-write job reserves the node's phones from claim until someone releases it. Between its
