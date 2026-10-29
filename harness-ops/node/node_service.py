@@ -1796,6 +1796,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Disposition", "inline" if media_type else "attachment")
+            if media_type:
+                self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("ETag", f'"{etag}"')
             self.send_header("X-Content-SHA256", info["sha256"])

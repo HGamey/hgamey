@@ -403,6 +403,8 @@ class CoreFlowTests(unittest.TestCase):
         body = response.read()
         self.assertEqual(response.status, 200, body.decode(errors="replace"))
         self.assertEqual(response.getheader("Content-Type"), "image/svg+xml")
+        self.assertEqual(response.getheader("Content-Security-Policy"),
+                         "default-src 'none'; style-src 'unsafe-inline'; sandbox")
         self.assertEqual(body, svg.read_bytes())
         connection.close()
         oversized = self.tmp / "oversized.svg"
