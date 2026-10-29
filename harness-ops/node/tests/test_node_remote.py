@@ -151,7 +151,7 @@ class Base(unittest.TestCase):
         self.bob = self.remote.operators.verify(self.bob_token)
 
     def new_remote(self, backend):
-        remote = node_remote.Remote(lambda: (str(self.leases), str(self.locks)),
+        remote = node_remote.Remote(lambda: {"status": "clear", "entries": []},
                                     adb="/fixture-no-real-adb", config_dir=str(self.cfg),
                                     reaper=False, backend=backend)
         # Host transport inventory only; no tool/phone process is spawned here.
@@ -178,36 +178,42 @@ class Base(unittest.TestCase):
 
 
 class RemoteTests(Base):
-    def test_occupancy_follows_current_queue_and_rejects_incomplete_v2_layout(self):
-        self.locks.mkdir()
-        storage = {"schema_version": 1, "readiness": "ready", "devlock_dir": str(self.locks),
-                   "device_lease_dir": str(self.leases)}
+    def test_inventory_places_a_device_holder_only_on_matching_aliases(self):
+        snapshot = {"status": "held", "entries": [{"scope": "device", "device_id": "a",
+            "serial": "usb-a", "label": "live-a"}], "device_scopes": {"devices": [
+                {"device_id": "a", "aliases": ["usb-a", SERIAL]}]}}
         leases = mock.Mock()
-        leases.snapshot.return_value = {"schema_version": 1, "status": "clear", "storage": storage}
+        leases.snapshot.side_effect = lambda **kw: snapshot
         self.remote.occupancy = node_remote.Occupancy(node_remote.storage_from_leases(leases))
-        self.assertEqual(self.remote.occupancy.holders(), [])  # Legacy PF, no new fields.
-        (self.locks / "devlock.d").write_text('{"schema":"phonefarm/lease-domain-fence@2"}')
-        queue = self.locks / "v2" / "global"
-        owner = queue / "devlock.d"
-        owner.mkdir(parents=True)
-        (owner / "owner").write_text("fixture-owner since 2026-10-25 10:00:00\n")
-        storage.update(layout_version=2, domain_id="d" * 32, queue_dir=str(queue))
+        devices = {item["serial"]: item for item in self.remote.devices()["devices"]}
+        self.assertEqual(devices[SERIAL]["holder"]["label"], "live-a")
+        self.assertFalse(devices[SERIAL]["holder"]["global"])
+        self.assertIsNone(devices["fixture-phone"]["holder"])
+        snapshot["entries"] = [{"scope": "global", "label": "live-global"}]
+        self.assertTrue(all(item["holder"]["global"] for item in self.remote.devices()["devices"]))
+
+    def test_occupancy_follows_current_fd_status_and_preserves_old_records(self):
+        self.locks.mkdir()
+        old = self.locks / "devlock.d"
+        old.write_text('old fence and owner evidence')
+        snapshot = {"status": "held", "entries": [{"scope": "global", "label": "fixture-owner"}]}
+        leases = mock.Mock()
+        leases.snapshot.side_effect = lambda **kw: snapshot
+        self.remote.occupancy = node_remote.Occupancy(node_remote.storage_from_leases(leases))
         with self.assertRaises(node_remote.RemoteError) as held:
             self.acquire()
         self.assertEqual(held.exception.status, 409)
         self.assertEqual(self.remote.occupancy.holders()[0]["label"], "fixture-owner")
         self.assertEqual(self.backend.mutations(), [])
-        storage["queue_dir"] = "relative-is-not-a-domain"
+        snapshot.update(status="unknown", error="fd status unavailable", entries=[])
         with self.assertRaises(node_remote.RemoteError) as unknown:
             self.acquire()
         self.assertEqual(unknown.exception.status, 503)
         self.assertEqual(self.backend.mutations(), [])
-        storage["queue_dir"] = str(queue)
-        (owner / "owner").unlink()
-        owner.rmdir()
+        snapshot.update(status="clear", error=None)
         self.assertEqual(self.acquire()["phase"], "ready")
         self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
-        self.assertTrue((self.locks / "devlock.d").is_file())
+        self.assertEqual(old.read_text(), 'old fence and owner evidence')
 
     def test_tokens_are_hashed_and_revocable(self):
         stored = (self.cfg / "remote.operators.json").read_text()

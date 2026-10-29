@@ -230,67 +230,24 @@ class RateLimit:
 
 # ═════════════ 设备占用 ═════════════
 
-def _since(owner_text):
-    m = re.search(r" since (\S+(?: \d\d:\d\d:\d\d)?)", owner_text or "")
-    return m.group(1) if m else None
-
-
 class Occupancy:
-    """只读当前 global 两槽。storage() 返回 (device_lease_dir, queue_dir)，不授予所有权。"""
+    """PF status describes current fd holders; this reader never grants ownership."""
 
     def __init__(self, storage):
         self._storage = storage
 
-    def paths(self):
-        paths = self._storage()
-        if not paths or not all(isinstance(p, str) and os.path.isabs(p) for p in paths):
-            raise RemoteError(503, "phonefarm 锁目录不可用，暂停远程写操作（phonefarm lease status --json）")
-        return paths
-
-    @staticmethod
-    def _read(path, limit):
-        try:
-            if os.path.islink(path):
-                return None
-            with open(path, "rb") as f:
-                return f.read(limit).decode(errors="replace")
-        except (FileNotFoundError, NotADirectoryError):
-            return None
-        except OSError:
-            return ""
-
     def holders(self):
-        """所有锁记录：[{dir, label, serial, since, heartbeat_age_s, kind}]；看不懂的记录也列出来（serial=None）。"""
-        _, devlock = self.paths()
-        found = []
-        for name in ("devlock.d", "phonefarm-lease.d"):
-            d = os.path.join(devlock, name)
-            if not os.path.lexists(d):
-                continue
-            owner = self._read(os.path.join(d, "owner"), 4096) or ""
-            raw = self._read(os.path.join(d, "phonefarm-lease.json"), 64 << 10)
-            try:
-                marker = json.loads(raw) if raw else {}
-            except ValueError:
-                marker = {}
-            marker = marker if isinstance(marker, dict) else {}
-            label, serial = marker.get("label"), marker.get("serial") if isinstance(marker.get("serial"), str) else None
-            if not label:
-                m = re.match(r"phonefarm:([^:\s]+):(\S+) since", owner)
-                if m:
-                    label, serial = m.group(1), serial or m.group(2)
-                else:
-                    label = owner.split(" ", 1)[0].strip() or None
-            try:
-                age = round(_now() - os.stat(os.path.join(d, "owner")).st_mtime, 1)
-            except OSError:
-                age = None
-            kind = ("recovery" if marker.get("recovery_required") or marker.get("command_pending") else
-                    "phonefarm-lease" if marker.get("format") == 1 else
-                    "devlock" if marker.get("schema") == "phonefarm/devlock-owner@1" or not marker else "unknown")
-            found.append({"dir": name, "label": label, "serial": serial, "since": _since(owner),
-                          "heartbeat_age_s": age, "kind": kind, "job_id": marker.get("job_id")})
-        return found
+        snapshot = self._storage()
+        if snapshot.get("status") not in {"clear", "held"}:
+            raise RemoteError(503, snapshot.get("error") or "phonefarm 当前锁状态不可用")
+        devices = {d["device_id"]: d.get("aliases", [])
+                   for d in (snapshot.get("device_scopes") or {}).get("devices", [])}
+        return [{"dir": entry.get("scope"), "label": entry.get("label"),
+                 "serial": entry.get("serial"), "since": entry.get("since"),
+                 "heartbeat_age_s": None, "kind": "device-lock", "job_id": entry.get("job_id"),
+                 "global": entry.get("scope") == "global",
+                 "aliases": devices.get(entry.get("device_id"), [entry.get("serial")])}
+                for entry in snapshot.get("entries", [])]
 
 
 def describe_holders(serial, holders):
@@ -491,8 +448,10 @@ class Remote:
             matches = [s for s in active if s['device_scope']['scope'] == 'global' or s['serial'] in names]
             if matches:
                 item['holder'] = {'kind': 'remote', **matches[-1]}
-            elif holders:
-                item['holder'] = {'kind': 'experiment', **holders[0], 'global': True}
+            else:
+                matching = next((h for h in holders if h['global'] or any(alias in names for alias in h['aliases'])), None)
+                if matching:
+                    item['holder'] = {'kind': 'experiment', **matching}
             out.append(item)
         # Old/offline references remain visible even if host enumeration lost
         # the device. Missing enumeration cannot erase a recovery obligation.
@@ -986,16 +945,8 @@ def handle(remote, h, method, parts, query, board=None, node=None):
 
 
 def storage_from_leases(leases):
-    """Follow each current PF snapshot; never cache a pre-migration queue root."""
-    from node_lease import queue_directory
-
-    def get():
-        snap = leases.snapshot(refresh=True) if leases else {}
-        try:
-            return (snap.get("storage", {}).get("device_lease_dir"), queue_directory(snap))
-        except (ValueError, AttributeError):
-            return None
-    return get
+    """Read the current selected PF snapshot on every occupancy check."""
+    return lambda: leases.snapshot(refresh=True)
 
 
 # ═════════════ CLI ═════════════

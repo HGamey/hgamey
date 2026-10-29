@@ -14,19 +14,18 @@ from node_lease import LeaseState
 
 
 class FleetStateTests(unittest.TestCase):
-    def test_incomplete_or_stale_lock_is_never_free_and_queue_is_separate(self):
+    def test_static_records_are_only_history_without_current_pf_status(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "devlock.queue").write_text("waiting-agent\n")
-            self.assertEqual(read_lock(directory)["queue"], ["waiting-agent"])
-            self.assertEqual(read_lock(directory)["status"], "free")
             (root / "devlock.d").mkdir()
-            self.assertEqual(read_lock(directory)["status"], "unknown")
-            owner = root / "devlock.d" / "owner"
-            owner.write_text("measuring since 2026-10-22 10:00:00\n")
-            os.utime(owner, (time.time() - 700, time.time() - 700))
+            (root / "devlock.d/owner").write_text("measuring since 2026-10-22 10:00:00\n")
+            (root / "devlock.log").write_text("2026-10-22 10:00:00 release old-measurement\n")
             lock = read_lock(directory)
-            self.assertEqual((lock["status"], lock["held_by"], lock["stale"]), ("held", "measuring", True))
+            self.assertEqual(lock["status"], "unknown")
+            self.assertIsNone(lock["held_by"])
+            self.assertEqual(lock["queue"], [])
+            self.assertEqual(lock["recent"][0]["label"], "old-measurement")
 
     def test_unknown_lock_allows_bounded_light_sample(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -72,7 +71,7 @@ class FleetStateTests(unittest.TestCase):
             finally:
                 state.close()
             # The root's permanent v2 fence is not the active global owner.
-            # Only PF's resolved queue directory supplies current queue/history.
+            # Old queue files are history, never current ownership.
             (root / "persistent").mkdir()
             (root / "persistent" / "devlock.d").write_text('{"schema":"phonefarm/lease-domain-fence@2"}')
             queue_dir = root / "persistent" / "v2" / "global"
@@ -87,7 +86,7 @@ class FleetStateTests(unittest.TestCase):
                 with patch("node_fleet.subprocess.run", return_value=Mock(
                         returncode=1, stdout='{"schema":"phonefarm/fleet@1","devices": []}')) as run:
                     result = state.request(wait=1)
-                    self.assertEqual(result["lock"]["queue"], ["waiting"])
+                    self.assertEqual(result["lock"]["queue"], [])
                     self.assertEqual(result["lock"]["status"], "free")
                     self.assertEqual(result["lock"]["lease"]["storage"]["devlock_dir"], str(root / "persistent"))
                     self.assertEqual(run.call_args.args[0], [str(root / "selected-phonefarm"), "fleet", "--json"])
@@ -119,8 +118,8 @@ class FleetStateTests(unittest.TestCase):
                 empty = Mock(returncode=1, stdout='{"schema":"phonefarm/fleet@1","devices": []}')
                 with patch("node_fleet.subprocess.run", return_value=empty) as run:
                     result = state.request(wait=1)
-                    self.assertEqual(result["lock"]["status"], "unknown")
-                    self.assertIn("queue_dir", result["lock"]["error"])
+                    self.assertEqual(result["lock"]["status"], "free")
+                    self.assertIsNone(result["lock"]["error"])
                     self.assertEqual(result["devices"], [])
                     run.assert_called_once()
             finally:
