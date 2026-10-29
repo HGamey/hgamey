@@ -31,6 +31,9 @@ jobs:
             cache_workspace: game_opt_loop
     steps:
       - uses: actions/checkout@v4
+      - name: Install node test tools
+        if: matrix.name == 'harness-ops node tests'
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Install phonefarm test tools
         if: matrix.name == 'phonefarm tests'
         run: sudo apt-get update && sudo apt-get install -y zsh adb
