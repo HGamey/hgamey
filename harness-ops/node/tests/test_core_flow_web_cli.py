@@ -818,6 +818,34 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("const held = state.waiting ? [['等待', `${waitingText(state.waiting)}", script,
                       "the jobs page's event history names what held the job")
 
+    def test_the_command_view_model_is_this_nodes_own_state(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-cmd", self.write(
+            "cmd-task", {"title": "指挥中心任务", "objective": "从本节点读出"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-cmd", self.write(
+            "cmd-dir", {"research_id": "sr-cmd", "title": "一个方向", "hypothesis": "会更快"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/note/n-cmd", self.write(
+            "cmd-note", {"research_id": "sr-cmd", "text": "先看规划", "reply_to": None, "decision": None}))[0], 201)
+        submit = lambda key, argv: self.jobs.dispatch.submit({"bin": "fixture", "argv": argv, "device_access": "none",
+                                                             "resources": ["phone-a"], "actor_id": "agent-a", "research_id": "sr-cmd"}, b"", key)
+        first, second = (v["job"]["id"] if "job" in v else v["id"] for v in (submit("cmd-1", ["honor_refresh/refresh_ab.py"]),
+                                                                             submit("cmd-2", ["selfsr/soak30.sh"])))
+        self.jobs.dispatch.queue.set_state(first, "claimed")
+        self.jobs.dispatch.record_waiting()
+        status, model = self.web("GET", "/command")
+        self.assertEqual(status, 200, model)
+        self.assertTrue(model["live"])
+        self.assertEqual([t["title"] for t in model["research"] if t["id"] == "sr-cmd"], ["指挥中心任务"])
+        self.assertIsNotNone(next(t for t in model["research"] if t["id"] == "sr-cmd")["created_at"])
+        self.assertEqual([d["id"] for d in model["directions"]], ["d-cmd"])
+        self.assertEqual(next(n for n in model["notes"] if n["id"] == "n-cmd")["who"], "human")
+        jobs = {j["id"]: j for j in model["jobs"]}
+        self.assertEqual((jobs[first]["kind"], jobs[second]["kind"]), ("刷新率 A/B", "30 分钟长测"))
+        self.assertIsNotNone(jobs[second]["queued"])
+        self.assertEqual([(w["kind"], w["blocking_jobs"]) for w in jobs[second]["waits"]], [("resource", [first])])
+        self.assertIsNotNone(jobs[first]["claimed"])
+        self.assertEqual(self.request("GET", "/dash/api/command")[0], 401, "the model needs the dashboard login")
+        self.assertEqual(self.raw("/dash/command")[0], 200)
+
     def test_the_jobs_page_resets_through_one_entry_and_never_replays(self):
         # The page's only recovery action: POST /dash/api/jobs/<id>/reset {note}, steer required, repeatable.
         script = (NODE / "dash_static/jobs.js").read_text(encoding="utf-8")
@@ -1024,6 +1052,48 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertIn("刷新率 A/B", page.text_content(".leaf"))
                 self.assertIn("8m", page.text_content(".leaf"), "run time counts from the claim (8 min), not the submit (10 min)")
                 self.assertIn("测试快照", page.text_content("#source"))
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
+    def test_the_command_view_follows_this_node_live_and_holds_when_left(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.assertEqual(self.web("POST", "/research-state/research/sr-live", self.write(
+            "live-task", {"title": "直播里的任务", "objective": "从本节点读出"}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/command")
+                page.wait_for_function("() => window.__ready === true")
+                self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "true", "this node's own view opens live")
+                self.assertIn("直播", page.text_content("#status"))
+                self.assertTrue(page.is_visible('.tree[data-tree="sr-live"] .root'))
+                self.assertEqual(page.get_attribute("#b-follow", "aria-pressed"), "true")
+                page.mouse.move(800, 400)
+                page.mouse.wheel(0, -200)
+                self.assertEqual(page.get_attribute("#b-follow", "aria-pressed"), "false", "moving the map by hand stops following")
+                page.keyboard.press("l")
+                self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "false")
+                self.assertEqual(page.get_attribute("#t-play", "aria-label"), "播放", "leaving live holds the moment")
+                page.click("#t-live")
+                self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "true")
+                self.assertTrue(page.is_visible('a.back[href="/dash"]'))
                 self.assertEqual(errors, [])
             finally:
                 browser.close()

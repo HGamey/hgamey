@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>指挥中心 · HGamey</title>
+<link rel="stylesheet" href="/dash/static/command.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="rail" id="rail" aria-label="概况">
+    <header class="rail-head">
+      <a class="back" href="/dash" title="返回控制台"><span aria-hidden="true">‹</span>控制台</a>
+      <span class="mark" aria-hidden="true">HG</span>
+      <button type="button" class="icon" id="rail-toggle" aria-label="收起侧栏" aria-expanded="true" title="收起侧栏（[）">⟨</button>
+    </header>
+    <section class="clock" aria-live="off"><b id="clock">--:--</b><span id="date"></span><small id="source"></small>
+      <div class="status" id="status" role="status"></div>
+      <div class="seg" id="src" role="group" aria-label="数据" hidden><button type="button" data-src="live" title="本节点的实时数据">本节点</button><button type="button" data-src="snapshot" title="展示用的只读快照">快照</button></div>
+    </section>
+    <section class="block"><h2>Agent<span id="agents-n"></span></h2><ul class="roster" id="roster"></ul></section>
+    <section class="block asks-block" hidden><h2>等你回复<span id="asks-n"></span></h2><ul class="asks" id="asks"></ul></section>
+    <section class="block"><h2>手机<span id="phones-n"></span></h2><ul class="phones" id="phones"></ul><div class="queue" id="queue" hidden></div></section>
+    <section class="block feed-block"><h2>记录</h2><ol class="feed" id="feed" aria-live="polite"></ol></section>
+  </aside>
+
+  <header class="top" id="top">
+    <div class="counts" id="counts"></div>
+    <div class="actions">
+      <button type="button" class="follow" id="b-follow" aria-pressed="true" title="镜头跟随正在发生的事（F 看全部，C 跟随）">跟随</button>
+      <button type="button" id="b-fit" title="看全部任务（F）">全部</button>
+      <button type="button" id="b-wins" aria-pressed="false" title="成果（W）">成果</button>
+      <a class="button" id="b-story" href="/dash/showcase" title="讲解页">讲解</a>
+      <button type="button" class="icon" id="b-help" aria-label="快捷键" title="快捷键（?）">?</button>
+    </div>
+  </header>
+
+  <main class="stage" id="stage" aria-label="任务地图（拖动平移，滚轮缩放，双击聚焦）">
+    <div class="world" id="world"></div>
+    <div class="overlay" id="overlay"></div>
+    <svg class="minimap" id="minimap" aria-label="小地图（点击跳转）"></svg>
+    <div class="empty" id="empty" hidden></div>
+  </main>
+
+  <section class="timeline" id="timeline" aria-label="时间轴">
+    <div class="tl-controls">
+      <button type="button" class="icon play" id="t-play" aria-label="暂停" title="播放 / 暂停（空格）">❚❚</button>
+      <select id="t-speed" aria-label="回放速度" title="回放速度">
+        <option value="1">1×</option><option value="60">60×</option><option value="300">300×</option><option value="900" selected>900×</option><option value="3600">3600×</option>
+      </select>
+      <select id="t-range" aria-label="回放范围" title="回放范围">
+        <option value="all">全部</option><option value="24">最近 24 小时</option><option value="6">最近 6 小时</option><option value="today">今天</option><option value="custom" hidden>自定义</option>
+      </select>
+      <button type="button" id="t-live" class="live" aria-pressed="false" title="直播：跟着本节点实时走（L）"><i></i>直播</button>
+    </div>
+    <div class="tl-track" id="t-track">
+      <svg id="t-chart" preserveAspectRatio="none"></svg>
+      <div class="tl-window" id="t-window"></div>
+      <div class="tl-head" id="t-head"><span id="t-head-label"></span></div>
+      <div class="tl-hover" id="t-hover" hidden></div>
+      <div class="tl-axis" id="t-axis"></div>
+    </div>
+  </section>
+
+  <aside class="panel" id="panel" hidden aria-label="详情">
+    <header><h2 id="panel-title"></h2><button type="button" class="icon" id="panel-close" aria-label="关闭" title="关闭（Esc）">×</button></header>
+    <div class="panel-body" id="panel-body"></div>
+  </aside>
+</div>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+<dialog class="help" id="help">
+  <h2>快捷键</h2>
+  <dl>
+    <dt>拖动 / 方向键</dt><dd>平移</dd><dt>滚轮 / + −</dt><dd>缩放（对准光标）</dd><dt>双击任务</dt><dd>聚焦并打开详情</dd>
+    <dt>F</dt><dd>看全部任务</dd><dt>C</dt><dd>恢复镜头跟随</dd><dt>空格 / K</dt><dd>播放 / 暂停</dd><dt>L</dt><dd>直播</dd>
+    <dt>, .</dt><dd>后退 / 前进 10 分钟（Shift：1 小时）</dd><dt>&lt; &gt;</dt><dd>减速 / 加速</dd><dt>时间轴上滚轮</dt><dd>缩放时间范围；双击还原</dd><dt>W</dt><dd>成果</dd><dt>[</dt><dd>收起 / 展开侧栏</dd><dt>Esc</dt><dd>关闭详情 / 取消选择</dd>
+  </dl>
+  <form method="dialog"><button>知道了</button></form>
+</dialog>
+<script type="module" src="/dash/static/command.js"></script>
+</body>
+</html>

@@ -44,6 +44,7 @@ import sqlite3
 from job_queue import RequestConflict
 from job_capacity import CapacityExceeded
 from job_events import public_fields
+import dash_command
 from node_session import SessionError, MAX_REQUEST
 from node_deployments import DeploymentError
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
@@ -84,9 +85,11 @@ def _versioned_links(html):
     return ASSET_LINK.sub(link, html.decode()).encode()
 STATIC_TYPES = {".json": "application/json; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
-# The showcase (/dash/showcase): a story page and a command view, plus three.js r186 flattened for the CSP.
+# The command view (/dash/command) and the showcase story (/dash/showcase), plus three.js r186 flattened for the CSP.
 SHOWCASE_STATIC = frozenset((
-    "showcase.css", "showcase.js", "showcase-parts.js", "showcase-command.css", "showcase-command.js",
+    "command.css", "command.js", "command-util.js", "command-layout.js", "command-camera.js", "command-timeline.js",
+    "command-world.js", "command-overlay.js",
+    "showcase.css", "showcase.js", "showcase-parts.js",
     "three.module.js", "three.core.js", "three-effect-composer.js", "three-render-pass.js", "three-unreal-bloom-pass.js",
     "three-output-pass.js", "three-pass.js", "three-shader-pass.js", "three-mask-pass.js", "three-copy-shader.js",
     "three-luminosity-high-pass-shader.js", "three-output-shader.js", "three-rounded-box-geometry.js", "three-css2d-renderer.js"))
@@ -252,8 +255,10 @@ class Dash:
             return self._static(h, sub[0] + ".html")
         if sub == ["showcase"]:
             return self._static(h, "showcase.html")
-        if sub == ["showcase", "command"]:
-            return self._static(h, "showcase-command.html")
+        if sub in (["command"], ["showcase", "command"]):
+            return self._static(h, "command.html")
+        if sub == ["api", "command"]:
+            return self._command(h)
         if sub == ["api", "showcase"] or sub[:3] == ["api", "showcase", "screen"] and len(sub) == 4:
             return self._showcase(h, sub[3] if len(sub) == 4 else None)
         if len(sub) == 2 and sub[0] == "static" and sub[1] in SHOWCASE_STATIC:
@@ -449,6 +454,16 @@ class Dash:
             data = _versioned_links(data)
         cached = ext in (".js", ".css") and parse_qs(query).get("v") == [_asset_version(name)]
         self._send(h, 200, data, STATIC_TYPES[ext], ASSET_CACHE if cached else None)
+
+    def _command(self, h):
+        """The command view's live model, built from this node's own stores (read-only, cached a few seconds)."""
+        model = getattr(self, "_command_model", None)
+        if model is None:
+            model = self._command_model = dash_command.CommandModel(self.job_service, getattr(self, "monitor", None))
+        try:
+            return self._send(h, 200, model.get())
+        except Exception as error:  # the page shows this and keeps its last good model
+            return self._send(h, 503, {"error": f"指挥中心数据暂不可用：{type(error).__name__}: {error}"[:300]})
 
     def _showcase(self, h, brand=None):
         """Serve the node-local showcase snapshot as written; this node's own state is not consulted."""
