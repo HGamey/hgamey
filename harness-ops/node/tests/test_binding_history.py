@@ -101,7 +101,8 @@ class BindingHistory(unittest.TestCase):
                         "device_access": "recovery", "recovery_for": source["job_id"], "device_binding": self.current}
                 saved = jobs.start(spec, b"", "old-recovery-id")
                 self.assertEqual(saved["device_binding"], self.old)
-                self.assertEqual(saved["resources"], source["resources"])
+                self.assertEqual(saved["resources"], ["device:a"])
+                self.assertEqual(source["resources"], ["device:" + "a" * 32 + ":a"])
             finally:
                 jobs._read_root.close()
 

@@ -11,7 +11,7 @@ import time
 import uuid
 
 from job_queue import JobQueue, RequestConflict, blocking_owners, job_priority
-from device_scope import scope, lease_problem, same_binding, resource as device_resource
+from device_scope import scope, lease_problem, same_binding, canonical_resources
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
 from node_session import recovery_source_out, SessionError
@@ -93,15 +93,10 @@ class JobDispatch:
                 # Replay hashes the original metadata; retiring lock fields
                 # must not turn an unchanged saved request into new content.
                 saved = prior["spec"]["device_binding"]
-                resources = set(spec["resources"])
-                current = device_resource(saved)
-                if saved.get("domain_id"):
-                    old = "device:" + saved["domain_id"] + ":" + saved["device_id"]
-                    if old in prior["resources"]:
-                        resources.add(old)
-                        if current not in prior["resources"]:
-                            resources.discard(current)
-                spec = {**spec, "device_binding": saved, "resources": sorted(resources)}
+                resources = spec["resources"]
+                if canonical_resources(resources, saved) == prior["resources"]:
+                    resources = prior["spec"]["resources"]
+                spec = {**spec, "device_binding": saved, "resources": resources}
             fingerprint = request_fingerprint(spec, body)
             if admit is not None and not prior:
                 admit()
@@ -456,6 +451,7 @@ class JobDispatch:
     def attach(self, meta, row):
         meta.update(job_events.public_fields(row))
         if row:
+            meta["resources"] = row["resources"]
             meta["request_id"] = row["request_id"]
             meta["device_access"] = device_access(row["spec"])
             meta["recovery_for"] = row["spec"].get("recovery_for")

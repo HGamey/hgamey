@@ -37,6 +37,21 @@ def resource(value):
     return "device:" + value["device_id"]
 
 
+def canonical_resources(values, device_binding=None, registry=None):
+    aliases = {alias: device["device_id"] for device in (registry or {}).get("devices", [])
+               for alias in [device["device_id"], *device.get("aliases", [])]}
+    if device_binding:
+        device_id = device_binding["device_id"]
+        aliases.update({device_id: device_id, device_binding["serial"]: device_id})
+        if device_binding.get("domain_id"):
+            aliases[device_binding["domain_id"] + ":" + device_id] = device_id
+    result = {"device:" + aliases.get(value[7:], value[7:]) if value.startswith("device:") else value
+              for value in values}
+    if device_binding:
+        result.add(resource(device_binding))
+    return sorted(result)
+
+
 def same_binding(left, right):
     """Compare device identity without rewriting saved producer metadata."""
     if left is None or right is None:
@@ -227,14 +242,19 @@ class DeviceScope:
                                                "--resource device:<serial> instead of --device-binding")
         return None
 
-    def registered(self, serial):
+    def registry(self):
         try:
-            value = DeviceRegistry(self.jobs, getattr(self.jobs, "node_id", None)).read()
+            return DeviceRegistry(self.jobs, getattr(self.jobs, "node_id", None)).read()
         except RegistryError:
+            return {}
+
+    def registered(self, serial, registry):
+        device = next((device for device in registry.get("devices", []) if device.get("enabled") is True
+                       and (serial == device["device_id"] or serial in device.get("aliases", []))), None)
+        if device is None:
             return None
-        if not any(device.get("enabled") is True and serial in (device.get("aliases") or [])
-                   for device in value.get("devices", [])):
-            return None
+        if serial == device["device_id"]:
+            serial = device["aliases"][0]
         try:
             return self.resolve(serial)
         except RegistryError:

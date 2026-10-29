@@ -5,7 +5,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import time
-from device_scope import conflicts, scope, device_access
+from device_scope import conflicts, scope, device_access, canonical_resources
 import job_capacity
 import job_events
 
@@ -123,7 +123,7 @@ class JobQueue:
         value = dict(row)
         value.pop("sequence")
         value["spec"] = json.loads(value["spec"])
-        value["resources"] = json.loads(value["resources"])
+        value["resources"] = canonical_resources(json.loads(value["resources"]), value["spec"].get("device_binding"))
         value["state_reason"] = json.loads(value["state_reason"]) if value["state_reason"] else None
         value["host_capacity_release"] = json.loads(value["host_capacity_release"]) if value["host_capacity_release"] else None
         value["status_projection"] = json.loads(value["status_projection"]) if value["status_projection"] else None

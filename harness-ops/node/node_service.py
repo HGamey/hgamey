@@ -38,8 +38,8 @@ from node_read import NodeRead
 from node_history import JobHistory, HistoryError, load_history_config
 from job_export_cache import ExportCache, validate_root as validate_export_cache_root
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
-from device_scope import (DeviceScope, validate_job as validate_device_job, resource as device_resource,
-                          serial_from_argv, binding_argument, same_binding)
+from device_scope import (DeviceScope, validate_job as validate_device_job,
+                          serial_from_argv, binding_argument, same_binding, canonical_resources)
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
@@ -384,11 +384,13 @@ class Jobs:
                              [] if device_binding or access == "none" else ["legacy-device"] if legacy_device_bin else [])
         candidates = [value[len("device:"):] for value in resources if isinstance(value, str) and value.startswith("device:")]
         scope_serial = serial_from_argv(argv) or research_serial or (candidates[0] if len(candidates) == 1 else None)
+        registry = self.device_scopes.registry() if candidates or access == "write" and scope_serial else {}
+        canonical = canonical_resources(["device:" + candidate for candidate in candidates], registry=registry)
+        if scope_serial is None and len(canonical) == 1:
+            scope_serial = canonical[0][len("device:"):]
         if (access == "write" and not device_binding and recovery_for is None and scope_serial
                 and not (binname == "phonefarm" and argv[:1] == ["game-deploy"])):
-            device_binding = self.device_scopes.registered(scope_serial)
-            if device_binding:
-                resources = sorted(set(resources) | {device_resource(device_binding)})
+            device_binding = self.device_scopes.registered(scope_serial, registry)
         if access == "recovery":
             self.path(recovery_for)
             parent = self.dispatch.queue.get(recovery_for)
@@ -403,10 +405,9 @@ class Jobs:
         if not isinstance(resources, list) or len(resources) > 32 or any(
                 not isinstance(r, str) or not r or len(r) > 160 or any(ord(c) < 32 for c in r) for r in resources):
             raise ValueError("resources must be at most 32 nonempty resource names")
-        if device_binding and access != "recovery":
-            resources = sorted(set(resources) | {device_resource(device_binding)})
-            if len(resources) > 32:
-                raise ValueError("resources including the required device reservation must fit within 32 names")
+        resources = canonical_resources(resources, device_binding, registry)
+        if len(resources) > 32:
+            raise ValueError("resources including the required device reservation must fit within 32 names")
         inputs = (job_inputs.validate(spec["inputs"], getattr(self, "node_id", None))
                   if "inputs" in spec else None)
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"),
