@@ -529,6 +529,9 @@ class Jobs:
             meta = self._read_meta(jid)
             meta.update(state="unknown", phase="interrupted", outcome="unknown", lost=True)
             meta["execution"]["worker_alive"] = False
+            meta["controls"] = {"cancel_supported": False, "force_supported": False,
+                                "reason": "execution is unknown and its reservation was manually released"}
+            meta["recovery"] = {"status": "required", "reason": "launch completion was not observed"}
         elif reason.get("kind") == "cancelled_before_launch":
             meta = self.dispatch.unstarted_meta(row, {"outcome": "cancelled", "at": reason["at"],
                                                      "note": "cancelled before execution"})

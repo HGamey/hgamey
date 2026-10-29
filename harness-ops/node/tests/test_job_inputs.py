@@ -69,6 +69,9 @@ class JobInputsTests(unittest.TestCase):
             with self.subTest("manual acceptance is not execution completion"):
                 self.assertEqual(reset["job"]["state"], "unknown")
                 self.assertEqual(reset["job"]["queue"]["state_reason"]["kind"], "manual_unknown")
+            self.assertFalse(reset["job"]["controls"]["cancel_supported"])
+            self.assertEqual(reset["job"]["recovery"]["status"], "required")
+            self.assertFalse(self.jobs.cancel(jid)["accepted"])
             self.assertEqual(Path(self.jobs.path(jid, "meta.json")).read_bytes(), original)
             writer.stdin.write("continue\n")
             writer.stdin.flush()
