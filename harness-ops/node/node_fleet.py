@@ -16,33 +16,9 @@ STALE_AFTER_S = 90
 
 
 def read_lock(directory):
-    """Read global queue files; stale or incomplete ownership is not free."""
-    now = time.time()
-    lock_dir = os.path.join(directory, "devlock.d")
-    out = dict(status="free", held_by=None, since=None, heartbeat_age_s=None,
-               stale=False, queue=[], recent=[], free_for_s=None, error=None)
-    try:
-        with open(os.path.join(lock_dir, "owner")) as f:
-            text = f.read().strip()
-            age = max(0, int(now - os.fstat(f.fileno()).st_mtime))
-        label, _, since = text.partition(" since ")
-        if not label:
-            raise ValueError("empty lock owner")
-        out.update(status="held", held_by=label.split()[0], since=since or None,
-                   heartbeat_age_s=age, stale=age > 600)
-    except FileNotFoundError:
-        # A lock directory without its owner may be in the middle of acquisition.
-        if os.path.lexists(lock_dir):
-            out.update(status="unknown", error="lock owner unavailable")
-    except (OSError, ValueError) as e:
-        out.update(status="unknown", error=f"lock owner unavailable: {type(e).__name__}")
-    try:
-        with open(os.path.join(directory, "devlock.queue")) as f:
-            out["queue"] = [line.strip() for line in f if line.strip()]
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        out.update(status="unknown", error=f"lock queue unavailable: {type(e).__name__}")
+    """Read historical events only; static owner and queue files are retired."""
+    out = dict(status="unknown", held_by=None, since=None, heartbeat_age_s=None,
+               stale=False, queue=[], recent=[], free_for_s=None, error="current PF lock status unavailable")
     try:
         with open(os.path.join(directory, "devlock.log"), "rb") as f:
             offset = max(0, f.seek(0, 2) - 4096)
@@ -55,11 +31,6 @@ def read_lock(directory):
                 label = parts[4] if parts[2:4] == ["steal", "by"] and len(parts) > 4 else parts[3]
                 events.append(dict(at=f"{parts[0]} {parts[1]}", action=parts[2], label=label))
         out["recent"] = events[::-1][:12]
-        if out["status"] == "free":
-            release = next((e for e in out["recent"] if e["action"] == "release"), None)
-            if release:
-                released_at = time.mktime(time.strptime(release["at"], "%Y-%m-%d %H:%M:%S"))
-                out["free_for_s"] = max(0, int(now - released_at))
     except (OSError, ValueError):
         pass
     return out
@@ -122,19 +93,20 @@ class FleetState:
 
     def _read_lock(self):
         if self.leases is None:
-            return read_lock(self.lock_dir)  # Explicit legacy history/test directory.
+            return read_lock(self.lock_dir)
         lease = self.leases.snapshot(refresh=True)
+        lock = dict(status="unknown", held_by=None, since=None, heartbeat_age_s=None,
+                    stale=False, queue=[], recent=[], free_for_s=None, error=lease.get("error"), lease=lease)
+        # Existing logs remain history; they never decide current occupancy.
         try:
-            lock = read_lock(queue_directory(lease))
-        except ValueError as error:
-            lock = dict(status="unknown", held_by=None, since=None, heartbeat_age_s=None,
-                        stale=False, queue=[], recent=[], free_for_s=None, error=str(error))
-        lock["lease"] = lease
-        if lease["status"] in {"blocked", "unknown"}:
-            lock.update(status="unknown", error=lease.get("error") or "device lease requires reconciliation")
-        elif lease["status"] == "held" and lock["status"] == "free":
-            lock.update(status="held", held_by=next((e.get("label") for e in lease.get("entries", [])
-                                                     if e.get("label")), None))
+            lock["recent"] = read_lock(queue_directory(lease))["recent"]
+        except ValueError:
+            pass
+        if lease["status"] == "clear":
+            lock.update(status="free", error=None)
+        elif lease["status"] == "held":
+            owner = next(iter(lease.get("entries", [])), {})
+            lock.update(status="held", held_by=owner.get("label"), since=owner.get("since"))
         return lock
 
     def history(self):

@@ -373,7 +373,7 @@ pub struct RunOpts<'a> {
     pub sysparam_probe: Option<PathBuf>,
     pub frame_audit: Option<PathBuf>,
     pub profiles_dir: PathBuf,
-    /// 设备锁: None = 不拿 (--no-devlock / 测试)。
+    /// 设备锁: 人工暂停时释放，继续后重新获取。
     pub lock: Option<LockOpts>,
     /// 暂停时多久看一次 human.md。
     pub poll: Duration,
@@ -446,8 +446,7 @@ pub fn proposer_spec_for(p: &str) -> Result<String> {
 }
 
 pub struct LockOpts {
-    pub script: PathBuf,
-    pub wait: Duration,
+    pub wait: Option<Duration>,
 }
 
 /// 一代的结算。
@@ -615,11 +614,10 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     };
 
     let label = format!("goal-{}", rd.run_id());
-    let _scope = crate::devlock::select_device(&opts.phonefarm,
-        (spec.device != "any").then_some(spec.device.as_str()));
+    let serial = (spec.device != "any").then_some(spec.device.as_str());
     let mut guard = match &opts.lock {
         Some(l) => match crate::devlock::Guard::acquire(
-            l.script.clone(), opts.phonefarm.clone(), label.clone(), l.wait,
+            opts.phonefarm.clone(), serial, label.clone(), l.wait,
         ) {
             Ok(g) => Some(g),
             Err(e) if optimize::interrupted() => {
@@ -730,7 +728,7 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
             }
             if let Some(l) = &opts.lock {
                 guard = Some(crate::devlock::Guard::acquire(
-                    l.script.clone(), opts.phonefarm.clone(), label.clone(), l.wait,
+                    opts.phonefarm.clone(), serial, label.clone(), l.wait,
                 )?);
             }
             st.status = "running".into();

@@ -16,6 +16,12 @@ fn field(text: &str, key: &str) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("__lease-handoff") => {
+            use std::os::unix::process::CommandExt;
+            let code = format!("__file__={:?}\n{}", std::env::current_exe().unwrap().to_str().unwrap(), include_str!("../fd_phonefarm.py"));
+            let error = std::process::Command::new("python3").args(["-c", &code]).args(&args).exec();
+            panic!("{error}");
+        },
         Some("devices") => println!("List of devices attached\nTEST0001\tdevice"),
         // 黑盒游戏上机前的进门 (`onboard --enter-only`): 夹具直接当已在游戏场景。
         Some("onboard") => {}

@@ -123,7 +123,7 @@ pub fn build(paths: &VizPaths) -> Dashboard {
             sysparam_layer(paths),
         ],
         carriers: carrier::collect(&paths.phonefarm_root),
-        device: device::load(&paths.lock_root, &paths.phonefarm_root, 8),
+        device: device::load(&paths.lock_root, &paths.phonefarm_root, paths.fleet.as_ref().map(|cfg| cfg.bin.as_path()), 8),
         fleet: paths.fleet.as_ref().and_then(fleet::get),
         notices: notices(paths),
         cases: cases::collect(&paths.gol_root, &paths.phonefarm_root),

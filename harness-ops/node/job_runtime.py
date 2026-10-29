@@ -322,6 +322,28 @@ def _group_completion(pgid):
         time.sleep(0.025)
 
 
+def terminate_group(pgid, grace=1.0):
+    """Finish a recorded task group, including children left after its leader exited."""
+    if not isinstance(pgid, int) or pgid <= 1:
+        return []  # A job that never launched has no process group to stop.
+    signals = []
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            break
+        signals.append({"name": sig.name, "at": time.time()})
+        if sig == signal.SIGTERM:
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                try:
+                    os.killpg(pgid, 0)
+                except ProcessLookupError:
+                    return signals
+                time.sleep(0.025)
+    return signals
+
+
 def _program_identity(store, jid, meta, final=False):
     execution = meta["execution"]
     previous = execution.get("program_identity") or {}
@@ -432,6 +454,9 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
         while True:
             returncode = child.poll()
             if returncode is not None:
+                owner.poll()
+                if owner.request:
+                    meta["cancel"]["signals"].extend(terminate_group(child.pid))
                 budget.finish()
                 disk.finish()
                 signals = (meta.get("cancel") or {}).get("signals", [])
@@ -457,7 +482,7 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
                 sig = None
                 if not signals:
                     sig = signal.SIGINT
-                elif request["mode"] == "escalate":
+                else:
                     delay = escalation_delays[0] if len(signals) == 1 else escalation_delays[1]
                     if len(signals) < 3 and time.monotonic() - last_signal_at >= delay:
                         sig = signal.SIGTERM if len(signals) == 1 else signal.SIGKILL

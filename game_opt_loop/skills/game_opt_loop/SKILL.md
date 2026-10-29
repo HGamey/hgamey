@@ -151,77 +151,29 @@ Read the output top down:
 
 ## Sharing one phone: the device lock
 
-Several agents work against one phone. Everything that touches the device —
-including `--plan` — goes through the phonefarm repo's `tools/devlock`.
-Use the same phonefarm binary and lock storage as the node. The script resolves
-storage through `PHONEFARM_BIN`; `phonefarm lease status --json` reports the
-resolved directories and readiness. Do not choose a different directory to
-bypass a migration error or a recovery barrier.
+`optimize` and `goal` acquire through the selected phonefarm binary and hold its
+kernel lock fds. One device uses its registered ID (or raw serial); multi-device
+work takes the farm scope. Nested work must inherit the actual fds, including
+`pass_fds` in Python launchers. Labels identify work but grant no ownership.
 
-**`optimize` takes the lock itself** (acquire, 60 s heartbeat, release on exit):
-pass `--lock-label <label>` (default: `$DEVLOCK_LABEL`, else `game_opt_loop`)
-and optionally `--lock-wait 2h`. It queues and retries on its own; if the wait
-runs out it exits without touching the device. Do **not** wrap it in
-`devlock run <other-label>` — it would wait on itself. Wrapping with the *same*
-label is harmless. phonefarm's device subcommands do the same (`--lock-label`).
-The manual `devlock run` loop below is still how you guard ad-hoc `adb` commands.
+Waiting lasts until acquisition or cancellation. `--lock-wait 2h` supplies an
+explicit limit. `tools/devlock run LABEL -- COMMAND` remains the shell entrypoint;
+`DEVLOCK_WAIT_SECONDS` supplies its optional limit (0 means try once). There is
+no heartbeat, FIFO label queue, stale takeover, or `--no-devlock` bypass.
 
 ```bash
 export PHONEFARM_BIN=/path/to/phonefarm/phonefarm
-DEVLOCK_BIN=/path/to/phonefarm/tools/devlock
 "$PHONEFARM_BIN" lease status --json
-"$DEVLOCK_BIN" status               # who holds it, who is queued
-"$DEVLOCK_BIN" run <label> -- <cmd> # take it, run, release
-```
-
-**Read `status` before you do anything else, and take your label from it.**
-
-```
-held: wb-vksamples since 2026-09-23 10:56:13 (heartbeat 45s ago)
-queue: gol-probe sysknob-loop knobs-layer
-```
-
-That `queue:` line is not a record of who happened to show up — a lead can
-pre-assign it with `devlock queue <l1> <l2> …`. While the queue is non-empty,
-**only the label at its head may acquire, even when the lock is completely
-free.** So:
-
-- If a label in the queue is obviously the slot for your job, **use exactly
-  that label**. Inventing a new one appends you to the back and can cost hours.
-  In the run this section was written from, the queue already held `gol-probe`;
-  using `gol` instead meant waiting ~1 h 50 m.
-- If the queue is empty and the lock is free, any label works.
-- `run` acquires, heartbeats every 60 s in the background, runs your command,
-  and releases.
-- `run` waits while busy (default `DEVLOCK_WAIT_SECONDS=900`). During the wait
-  its label retains its FIFO place; on final timeout it removes its own label
-  and exits 1. Use 0 for an immediate attempt.
-- Re-issuing while the caller is still waiting does not duplicate its label.
-  After the caller has abandoned, its slot is gone; do not assume it was saved.
-  Do not add a second retry loop around the built-in wait.
-- On a shared phone a single holder legitimately runs 45 minutes or more. Do not steal the lock.
-  A strong lease or pending recovery cannot be cleared by heartbeat age;
-  follow phonefarm's explicit recovery workflow when it reports a barrier.
-
-```bash
-# Take the label from `status`; retry until it is your turn.
-for i in $(seq 1 90); do
-  "$DEVLOCK_BIN" run gol-probe -- \
-    adb -s "$SERIAL" shell dumpsys battery && break
-  sleep 40
-done
-# optimize queues by itself:
+"$PHONEFARM_BIN" lease --serial "$SERIAL" --label gol-probe -- adb -s "$SERIAL" shell dumpsys battery
 ./target/release/game_opt_loop optimize --game 原神 --plan --lock-label gol-probe
 ```
 
-The read-only `serve` page resolves the current global `storage.queue_dir` from
-its selected `--phonefarm-bin` and refuses unavailable or unmigrated storage.
-`storage.devlock_dir` remains the original execution lock-domain root; layout 2
-does not enable per-device concurrency. The dashboard's compatibility field
-`paths.lock_root` is only the queue/log read directory. `--lock-root` explicitly
-overrides those historical reads; it is not passed to PF fleet sampling or the
-execution Guard. Do not set `DEVLOCK_DIR` to this queue directory to bypass a
-recovery barrier or create another execution domain.
+A released lock says nothing about device restoration. Keep original experiment
+artifacts, use reset to stop remaining task processes and release reservations,
+and restore the phone through adb or the operation's recovery command.
+
+The read-only dashboard obtains current ownership from its selected phonefarm.
+`--lock-root` affects historical log reads only and never changes execution scope.
 
 ### Picking the device
 

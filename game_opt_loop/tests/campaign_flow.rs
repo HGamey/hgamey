@@ -129,7 +129,6 @@ impl Fixture {
         let probe = self.root.join("probe.txt");
         let mut args = vec![
             "optimize",
-            "--no-devlock",
             "--game",
             "原神",
             "--device",

@@ -932,12 +932,16 @@ class Jobs:
             from pathlib import Path
             if Path(self.path(jid, "queue-release.json")).exists():
                 raise RequestConflict("a review receipt already exists; reset cannot overwrite it")
+            group = (status.get("execution") or {}).get("owned_process_group") or {}
+            signals = job_runtime.terminate_group(group.get("pgid")) if group.get("status") != "absent" else []
             fact = {
-                "at": time.time(), "basis": "administrator_reset", "note": note.strip()}
+                "at": time.time(), "basis": "administrator_reset", "note": note.strip(),
+                "process_group_signals": signals}
             self.dispatch.queue.release_capacity(jid, fact, observation=status)
             try:
                 self._read_root.write_json(jid + "/queue-release.json", {
-                    "note": note.strip(), "at": time.time(), "basis": fact["basis"], "reset": True})
+                    "note": note.strip(), "at": time.time(), "basis": fact["basis"], "reset": True,
+                    "process_group_signals": signals})
                 self._read_root.sync(jid, directory=True)
                 self._read_root.sync("", directory=True)
             except (OSError, ValueError) as error:

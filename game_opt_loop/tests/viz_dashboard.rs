@@ -314,13 +314,10 @@ fn carrier_dispersion_matches_the_numbers_in_the_reports() {
 // ───────────────────────── 设备 ─────────────────────────
 
 #[test]
-fn the_device_lock_is_read_from_its_files_and_not_by_running_the_script() {
+fn retired_owner_files_are_history_and_never_current_occupancy() {
     let d = dashboard();
-    let holder = d.device.holder.as_ref().expect("夹具里锁是被持有的");
-    assert_eq!(holder.label, "sysknob-loop");
-    assert_eq!(holder.since.as_deref(), Some("2026-09-23 10:12:31"));
-    assert!(!d.device.queue.is_empty(), "夹具里排着队");
-    assert_eq!(d.device.queue[0], "knobs-layer");
+    assert!(d.device.holder.is_none(), "historical owner is not a current fd holder");
+    assert!(d.device.queue.is_empty(), "the label FIFO has been retired");
     assert!(d.device.problems.is_empty());
 
     // 锁日志按时间倒序, 最新的排最前。
@@ -681,4 +678,29 @@ fn ab_view_retains_raw_negative_and_unknown_fields_and_checks_qualification() {
         );
     }
     std::fs::remove_dir_all(temporary).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn current_occupancy_comes_from_the_selected_phonefarm_status() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("gol-viz-fd-status-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pf = dir.join("selected-phonefarm");
+    std::fs::write(&pf, "#!/bin/sh\n[ \"$*\" = 'lease status --json' ] || exit 9\ncat \"$(dirname \"$0\")/status.json\"\n").unwrap();
+    std::fs::set_permissions(&pf, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let paths = fixture_paths();
+    let load = || viz::device::load(&paths.lock_root, &paths.phonefarm_root, Some(&pf), 5);
+    std::fs::write(dir.join("status.json"), r#"{"status":"held","entries":[{"label":"live-A","since":"now"},{"label":"live-B"}]}"#).unwrap();
+    let view = load();
+    assert_eq!(view.holder.unwrap().label, "live-A, live-B");
+    assert!(view.queue.is_empty());
+    assert!(view.problems.is_empty());
+    std::fs::write(dir.join("status.json"), r#"{"status":"clear","entries":[]}"#).unwrap();
+    assert!(load().holder.is_none());
+    std::fs::write(&pf, "#!/bin/sh\necho 'cannot read kernel lock' >&2\nexit 7\n").unwrap();
+    let view = load();
+    assert!(view.holder.is_none());
+    assert!(view.problems.iter().any(|p| p.contains("cannot read kernel lock")));
+    std::fs::remove_dir_all(dir).unwrap();
 }

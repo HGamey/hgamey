@@ -389,7 +389,7 @@ class DeviceScopeTests(unittest.TestCase):
             for jid in set(submitted):
                 terminal(jid)
 
-    def test_claim_global_fifo_and_ancestor_scope_conflicts(self):
+    def test_claim_live_global_and_ancestor_scope_conflicts(self):
         with tempfile.TemporaryDirectory() as temporary:
             queue = JobQueue(Path(temporary) / "queue.sqlite3", default_cpu=3)
             def settled(jid, state):
@@ -411,11 +411,13 @@ class DeviceScopeTests(unittest.TestCase):
             global_job = add("global")
             b = add("b", bound("B", "usb-b"))
             host = add("host", access="none")
+            self.assertEqual(queue.claim_next(3)["job_id"], b, "a waiting global job must not pre-drain another device")
             self.assertEqual(queue.claim_next(3)["job_id"], host)
-            self.assertIsNone(queue.claim_next(3), "an earlier global wait must drain lanes")
+            self.assertIsNone(queue.claim_next(3))
+            settled(b, "done")
             settled(a, "blocked")
             recovery = add("recover-a", bound("A", "usb-a"), access="recovery", parent=a)
-            self.assertEqual(queue.claim_next(3)["job_id"], recovery, "recovery must not deadlock behind global FIFO")
+            self.assertEqual(queue.claim_next(3)["job_id"], recovery, "recovery borrows the original reservation")
             settled(recovery, "blocked")
             sibling = add("sibling", bound("A", "wifi-a"), access="recovery", parent=a)
             leaf = add("leaf", bound("A", "usb-a"), access="recovery", parent=recovery)
@@ -426,7 +428,6 @@ class DeviceScopeTests(unittest.TestCase):
             self.assertEqual(queue.claim_next(3)["job_id"], global_job)
             self.assertIsNone(queue.claim_next(4), "claimed global covers every device before PF starts")
             settled(global_job, "done")
-            self.assertEqual(queue.claim_next(3)["job_id"], b)
             self.assertEqual(queue.claim_next(3)["job_id"], sibling)
 
 

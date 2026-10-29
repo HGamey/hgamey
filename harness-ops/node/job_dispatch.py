@@ -10,7 +10,7 @@ import tarfile
 import time
 import uuid
 
-from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, global_waiter, job_priority
+from job_queue import JobQueue, RequestConflict, recovery_reservations, reservation_conflicts, job_priority
 from device_scope import scope, lease_problem
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
@@ -444,16 +444,6 @@ class JobDispatch:
             return {"kind": "device_lease", "blocking_jobs": scope_collisions, "scope": declared,
                     "lease_status": lease["status"],
                     "reason": "device scope overlaps an active reservation"}
-        if device_access(row["spec"]) == "write" and declared["scope"] == "device":
-            earlier = []
-            for prior in rows:
-                if prior["job_id"] == row["job_id"]:
-                    break
-                if prior["state"] == "queued" and global_waiter(prior):
-                    earlier.append(prior["job_id"])
-            if earlier:
-                return {"kind": "device_lease", "blocking_jobs": earlier, "scope": declared,
-                        "reason": "an earlier global device job is waiting"}
         problem = lease_problem(row["spec"], lease)
         if problem:
             return {"kind": "device_lease", "blocking_jobs": [], "lease_status": lease["status"],

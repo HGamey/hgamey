@@ -1,21 +1,8 @@
-//! 设备页: 谁在用手机、心跳多久没动、后面排了谁。
-//!
-//! 数据就是 `devlock` 那三个文件, **直接读, 不去 exec 那个脚本**:
-//! 面板是只读的, 不该有任何机会去动锁。
-//!
-//! ```text
-//! devlock.d/owner   "<label> since YYYY-MM-DD HH:MM:SS"; 文件 mtime 就是心跳
-//! devlock.queue     一行一个 label, 排第一的才轮到它拿锁
-//! devlock.log       "YYYY-MM-DD HH:MM:SS acquire|release|steal …"
-//! ```
-
+//! Device occupancy comes from the selected phonefarm; task/log history remains read-only.
 use serde::Serialize;
+use std::time::SystemTime;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::SystemTime;
-
-/// `devlock` 认为心跳多久没动就算废弃 (脚本里的 `STALE` 缺省值)。
-pub const STALE_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceView {
@@ -111,47 +98,36 @@ pub fn parse_log_line(line: &str) -> Option<LockEvent> {
     })
 }
 
-fn age_secs(path: &Path) -> Option<u64> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    SystemTime::now().duration_since(modified).ok().map(|d| d.as_secs())
-}
-
 fn mtime_rfc3339(path: &Path) -> Option<String> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     let dt: chrono::DateTime<chrono::Local> = modified.into();
     Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
 }
 
-/// 读锁状态。`lock_dir` 是已解析的 `devlock.d` 父目录。
-pub fn load(lock_root: &Path, phonefarm_root: &Path, max_tasks: usize) -> DeviceView {
+/// Query actual occupancy; lock_root is used only for historical logs.
+pub fn load(lock_root: &Path, phonefarm_root: &Path, phonefarm: Option<&Path>, max_tasks: usize) -> DeviceView {
     let mut problems = Vec::new();
-    let owner_path = lock_root.join("devlock.d/owner");
-    let holder = match std::fs::read_to_string(&owner_path) {
-        Ok(text) => parse_owner(&text).map(|(label, since)| {
-            let heartbeat_age_s = age_secs(&owner_path);
-            LockHolder {
-                label,
-                since,
-                stale: heartbeat_age_s.is_some_and(|a| a > STALE_SECS),
-                heartbeat_age_s,
-            }
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            problems.push(format!("{} 读不出来: {e}", owner_path.display()));
-            None
+    let holder = phonefarm.and_then(|program| {
+        let status = std::process::Command::new(program).args(["lease", "status", "--json"]).output()
+            .map_err(|e| e.to_string()).and_then(|output| {
+                if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).into_owned()); }
+                serde_json::from_slice::<serde_json::Value>(&output.stdout).map_err(|e| e.to_string())
+            });
+        match status {
+            Ok(status) => {
+                if let Some(error) = status["error"].as_str() { problems.push(error.into()); }
+                if status["status"] != "held" { return None; }
+                let entries = status["entries"].as_array()?;
+                Some(LockHolder {
+                    label: entries.iter().map(|entry| entry["label"].as_str().unwrap_or("unknown holder")).collect::<Vec<_>>().join(", "),
+                    since: entries.first().and_then(|entry| entry["since"].as_str().map(str::to_owned)),
+                    heartbeat_age_s: None, stale: false,
+                })
+            },
+            Err(error) => { problems.push(format!("phonefarm lock status: {error}")); None }
         }
-    };
-
-    let queue = std::fs::read_to_string(lock_root.join("devlock.queue"))
-        .map(|t| {
-            t.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
+    });
+    let queue = vec![];
 
     let mut history: Vec<LockEvent> = std::fs::read_to_string(lock_root.join("devlock.log"))
         .map(|t| t.lines().filter_map(parse_log_line).collect())
@@ -383,7 +359,7 @@ mod tests {
         let view = load(
             Path::new("/nonexistent/lock"),
             Path::new("/nonexistent/phonefarm"),
-            5,
+            None, 5,
         );
         assert!(view.holder.is_none());
         assert!(view.queue.is_empty());

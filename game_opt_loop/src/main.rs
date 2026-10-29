@@ -375,12 +375,9 @@ pub struct OptimizeArgs {
     lock_label: Option<String>,
 
     /// 最多排多久队: `45m` / `2h` / `900s`。等满还没轮到就退出, 不碰设备。
-    #[arg(long, default_value = "2h")]
-    lock_wait: String,
+    #[arg(long)]
+    lock_wait: Option<String>,
 
-    /// 不拿设备锁 (只在确定没人共用这台手机时用)。
-    #[arg(long, default_value_t = false)]
-    no_devlock: bool,
 
     /// 游戏档案库目录 (`<目录>/<包名>/profile.json`, 由 `phonefarm onboard` 实测产出)。
     /// 目标包名有 PASS 的档案就用它的负载、渲染线程和坑。
@@ -927,11 +924,8 @@ pub enum GoalCmd {
         #[arg(long, default_value = "profiles")]
         profiles: PathBuf,
         /// 最多排多久队。
-        #[arg(long, default_value = "4h")]
-        lock_wait: String,
-        /// 不拿设备锁 (只在确定没人共用这台手机时用)。
-        #[arg(long, default_value_t = false)]
-        no_devlock: bool,
+        #[arg(long)]
+        lock_wait: Option<String>,
         /// 暂停时多久看一次 human.md (秒)。
         #[arg(long, default_value_t = 30)]
         poll_s: u64,
@@ -955,11 +949,8 @@ pub enum GoalCmd {
         #[arg(long, default_value = "profiles")]
         profiles: PathBuf,
         /// 最多排多久队。
-        #[arg(long, default_value = "4h")]
-        lock_wait: String,
-        /// 不拿设备锁 (只在确定没人共用这台手机时用)。
-        #[arg(long, default_value_t = false)]
-        no_devlock: bool,
+        #[arg(long)]
+        lock_wait: Option<String>,
         /// 暂停时多久看一次 human.md (秒)。
         #[arg(long, default_value_t = 30)]
         poll_s: u64,
@@ -1023,9 +1014,8 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
             frame_audit,
             profiles,
             lock_wait,
-            no_devlock,
             poll_s,
-        } => run_goal_run(dir, phonefarm, secrets, llm_provider, sysparam_probe, frame_audit, profiles, lock_wait, no_devlock, poll_s, false),
+        } => run_goal_run(dir, phonefarm, secrets, llm_provider, sysparam_probe, frame_audit, profiles, lock_wait, poll_s, false),
         GoalCmd::Resume {
             dir,
             phonefarm,
@@ -1035,9 +1025,8 @@ fn run_goal(cmd: GoalCmd) -> Result<()> {
             frame_audit,
             profiles,
             lock_wait,
-            no_devlock,
             poll_s,
-        } => run_goal_run(dir, phonefarm, secrets, llm_provider, sysparam_probe, frame_audit, profiles, lock_wait, no_devlock, poll_s, true),
+        } => run_goal_run(dir, phonefarm, secrets, llm_provider, sysparam_probe, frame_audit, profiles, lock_wait, poll_s, true),
     }
 }
 
@@ -1050,8 +1039,7 @@ fn run_goal_run(
     sysparam_probe: Option<PathBuf>,
     frame_audit: Option<PathBuf>,
     profiles: PathBuf,
-    lock_wait: String,
-    no_devlock: bool,
+    lock_wait: Option<String>,
     poll_s: u64,
     resume: bool,
 ) -> Result<()> {
@@ -1060,15 +1048,7 @@ fn run_goal_run(
             let pick = |given: Option<PathBuf>, name: &str| {
                 given.or_else(|| Some(dir.join("inputs").join(name)).filter(|p| p.is_file()))
             };
-            let lock = if no_devlock {
-                eprintln!("⚠ --no-devlock: 不拿设备锁直接碰设备。");
-                None
-            } else {
-                let Some(script) = game_opt_loop::devlock::script_path(&phonefarm) else {
-                    anyhow::bail!("找不到设备锁脚本; 没拿到锁不碰设备 (确实没人共用时加 --no-devlock)");
-                };
-                Some(goal::LockOpts { script, wait: game_opt_loop::devlock::parse_wait(&lock_wait)? })
-            };
+            let lock = Some(goal::LockOpts { wait: lock_wait.as_deref().map(game_opt_loop::devlock::parse_wait).transpose()? });
             let opts = goal::RunOpts {
                 phonefarm,
                 secrets,
@@ -1149,23 +1129,10 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
 
     // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——
     // 正常结束、`?` 提前返回、panic 展开都会释放。
-    let _scope = if cfg.extra_devices.is_empty() {
-        game_opt_loop::devlock::select_device(&cfg.phonefarm, cfg.serial.as_deref())
-    } else { None };
-    let _lock = if args.no_devlock {
-        game_opt_loop::devlock::Guard::disabled()
-    } else {
-        let wait = game_opt_loop::devlock::parse_wait(&args.lock_wait)?;
-        let label = game_opt_loop::devlock::resolve_label(args.lock_label.as_deref());
-        let Some(script) = game_opt_loop::devlock::script_path(&cfg.phonefarm) else {
-            anyhow::bail!(
-                "找不到设备锁脚本 (DEVLOCK_BIN 未设, {} 旁边没有 tools/devlock, PATH 上也没有 devlock)。\
-                 没拿到锁不碰设备; 确实没人共用这台手机时可加 --no-devlock",
-                cfg.phonefarm.display()
-            );
-        };
-        game_opt_loop::devlock::Guard::acquire(script, cfg.phonefarm.clone(), label, wait)?
-    };
+    let serial = cfg.extra_devices.is_empty().then_some(cfg.serial.as_deref()).flatten();
+    let wait = args.lock_wait.as_deref().map(game_opt_loop::devlock::parse_wait).transpose()?;
+    let label = game_opt_loop::devlock::resolve_label(args.lock_label.as_deref());
+    let _lock = game_opt_loop::devlock::Guard::acquire(cfg.phonefarm.clone(), serial, label, wait)?;
 
     // 给了两个以上 --proposer 就是对比模式: 同一游戏 / 设备 / 预算依次跑, 出 compare.md。
     if cfg.proposer.specs.len() >= 2 {
