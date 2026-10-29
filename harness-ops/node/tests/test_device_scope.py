@@ -43,6 +43,13 @@ if args[:2] == ['lease','resolve']:
     print(json.dumps({'schema':'phonefarm/device-binding@1','domain_id':'a'*32,
         'registry_revision':data['revision'],'device_id':data['aliases'][serial],'serial':serial}))
     sys.exit(0)
+if args[:2] == ['lease','devices']:
+    data=json.loads((root/'registry.json').read_text())
+    print(json.dumps({'schema':'phonefarm/device-registry@1','revision':data['revision'],
+        'identity_basis':'operator_declared','physical_identity_verified':False,'execution_scope':'global',
+        'updated_at':None,'devices':[{'device_id':device,'label':device,'aliases':[serial],'enabled':True}
+                                      for serial,device in data['aliases'].items()]}))
+    sys.exit(0)
 if args[:2] == ['gray-layer','session-status']:
     out=pathlib.Path(args[args.index('--out')+1])
     print(json.dumps(dict(json.loads((out/'session-control.json').read_text()),live_owner=False)))

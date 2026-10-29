@@ -212,6 +212,19 @@ class DeviceScope:
                                                "--resource device:<serial> instead of --device-binding")
         return None
 
+    def registered(self, serial):
+        try:
+            value = DeviceRegistry(self.jobs, getattr(self.jobs, "node_id", None)).read()
+        except RegistryError:
+            return None
+        if not any(device.get("enabled") is True and serial in (device.get("aliases") or [])
+                   for device in value.get("devices", [])):
+            return None
+        try:
+            return self.resolve(serial)
+        except RegistryError:
+            return None
+
     def resolve(self, serial):
         if not valid_serial(serial):
             raise RegistryError("invalid_request", "serial must be one explicit nonempty transport identifier")

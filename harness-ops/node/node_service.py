@@ -373,12 +373,11 @@ class Jobs:
                              [] if device_binding or access == "none" else ["legacy-device"] if legacy_device_bin else [])
         candidates = [value[len("device:"):] for value in resources if isinstance(value, str) and value.startswith("device:")]
         scope_serial = serial_from_argv(argv) or research_serial or (candidates[0] if len(candidates) == 1 else None)
-        if access == "write" and not device_binding and recovery_for is None and scope_serial:
-            try:
-                device_binding = self.device_scopes.resolve(scope_serial)
+        if (access == "write" and not device_binding and recovery_for is None and scope_serial
+                and not (binname == "phonefarm" and argv[:1] == ["game-deploy"])):
+            device_binding = self.device_scopes.registered(scope_serial)
+            if device_binding:
                 resources = sorted(set(resources) | {device_resource(device_binding)})
-            except RegistryError:
-                pass
         if access == "recovery":
             self.path(recovery_for)
             parent = self.dispatch.queue.get(recovery_for)
