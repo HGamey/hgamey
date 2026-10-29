@@ -123,6 +123,44 @@ class DeviceScopeTests(unittest.TestCase):
             self.assertEqual(queue.claim_next(3)["job_id"], ids[1])
             self.assertIsNone(queue.claim_next(3), "only the same serial remains reserved")
 
+    def test_research_single_device_requirement_scopes_write_job(self):
+        env = fixture.GameFlowTests()
+        env.setUp()
+        self.addCleanup(env.tearDown)
+        pin = {"X-Expected-Node-ID": env.jobs.node_id}
+
+        def research(rid, devices):
+            write = {"schema": "phonefarm/research-write@1", "operation_id": "create-" + rid,
+                     "base_revision": None, "actor_label": None, "reason": None,
+                     "data": {"title": rid, "objective": "只占用指定手机", "device_requirements": devices}}
+            env.jobs.research.write("research", rid, write, "fixture")
+
+        def submit(request, spec):
+            status, response = env.call("POST", "/jobs", headers={**pin, "X-Request-ID": request,
+                                                                  "X-Job": json.dumps(spec)})
+            self.assertEqual(status, 200, response)
+            return response
+
+        research("sr-redmagic", ["91253241019A"])
+        scoped = submit("research-scoped", {"bin": "bundle_prepare", "argv": ["selfsr/repro.sh", "91253241019A"],
+                                            "device_access": "write", "research_id": "sr-redmagic"})
+        self.assertEqual(scoped["resources"], ["device:91253241019A"])
+        self.assertEqual((scope(scoped)["scope"], scope(scoped)["binding"]["device_id"]), ("device", "91253241019A"))
+        self.assertFalse(conflicts(scope(scoped), scope({"bin": "adb", "device_access": "write", "argv": ["-s", "HONOR"]})))
+
+        explicit = submit("explicit-resource", {"bin": "bundle_prepare", "argv": ["selfsr/repro.sh", "91253241019A"],
+                                                "device_access": "write", "research_id": "sr-redmagic",
+                                                "resources": ["device:custom-serial"]})
+        self.assertEqual((explicit["resources"], scope(explicit)["binding"]["device_id"]),
+                         (["device:custom-serial"], "custom-serial"))
+        argv_scoped = submit("explicit-argv", {"bin": "bundle_prepare", "argv": ["-s", "HONOR", "shell", "getprop"],
+                                               "device_access": "write", "research_id": "sr-redmagic"})
+        self.assertEqual(scope(argv_scoped)["binding"]["device_id"], "HONOR")
+        research("sr-multiple", ["91253241019A", "HONOR"])
+        global_job = submit("multiple-devices", {"bin": "bundle_prepare", "argv": ["selfsr/repro.sh", "91253241019A"],
+                                                 "device_access": "write", "research_id": "sr-multiple"})
+        self.assertEqual(scope(global_job)["scope"], "global")
+
     def test_bound_http_workers_recovery_and_original_request(self):
         env = fixture.GameFlowTests()
         env.setUp()

@@ -111,6 +111,10 @@ def scope(spec):
     if access == "recovery":
         return {"scope": "global"}
     serial = serial_from_argv(spec.get("argv") or [])
+    if not serial:
+        declared = {value[len("device:"):] for value in spec.get("resources") or [] if value.startswith("device:")}
+        if len(declared) == 1:
+            serial = declared.pop()
     if serial:
         # A raw serial is a legacy scope, not a registry binding. Use it only
         # for conflict identity; typed bindings retain their complete schema.

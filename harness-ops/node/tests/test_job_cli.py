@@ -163,6 +163,22 @@ class JobCLI(unittest.TestCase):
             main()
         self.assertEqual(json.loads(stdout.getvalue()), payload)
 
+    def test_global_write_warning_names_count_and_scoped_jobs_skip(self):
+        cli = self.load_cli()
+        meta = {"id": JOB, "bin": "fixture", "argv": [], "device_access": "write", "resources": ["legacy-device"]}
+        call = mock.Mock(return_value=json.dumps({"devices": [{}, {}]}).encode())
+        with mock.patch.dict(cli["warn_global_job"].__globals__, call=call), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            cli["warn_global_job"](meta)
+        self.assertIn("这个任务会占住全部 2 台手机；只用一台请加 --resource device:<串号>", stderr.getvalue())
+        call.assert_called_once_with("GET", "/fleet?cached=1", attempts=1)
+
+        scoped = {**meta, "resources": ["device:91253241019A"]}
+        with mock.patch.dict(cli["warn_global_job"].__globals__, call=call), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            cli["warn_global_job"](scoped)
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_connection_error_retry_guidance_distinguishes_read_and_submit(self):
         cli = self.load_cli()
         target = cli["Target"]("http://fixture.invalid", "fixture-token", NODE_ID)

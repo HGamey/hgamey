@@ -18,6 +18,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
   pf-node --research <研究> --detach phonefarm ... # 为研究跑的任务带上研究 ID：手机占用和任务页据此显示
+  设备写任务只占一台：研究只有一台 device_requirements 时默认同机；否则显式 --resource device:<串号>，参数优先于研究默认。
   pf-node --experiment <分支|提交> --research <研究> --detach experiment <脚本.py|.sh> ...  # 跑实验仓库里固定提交的脚本
 
   pf-node phonefarm eval --request r.json --json --lock-label judge
@@ -200,6 +201,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from target_client import Target, TargetError
 from runtime_identity import is_gray_session
+from device_scope import scope as job_scope, device_access
 
 URL = TOKEN = TARGET = None
 CHUNK = 2 << 20
@@ -223,6 +225,20 @@ def brief_job_line(job):
         started = "-"
     return "\t".join([clean(job.get("id")), clean(state), clean(job.get("actor_id")),
                       clean(job.get("research_id")), clean(job.get("label") or command), clean(started)])
+
+
+def warn_global_job(meta):
+    if device_access(meta) != "write" or job_scope(meta)["scope"] != "global":
+        return
+    count = None
+    try:
+        fleet = json.loads(call("GET", "/fleet?cached=1", attempts=1))
+        if isinstance(fleet.get("devices"), list):
+            count = len(fleet["devices"])
+    except (ClientError, urllib.error.URLError, http.client.HTTPException, OSError, ValueError, AttributeError, SystemExit):
+        pass
+    suffix = f"全部 {count} 台手机" if count is not None else "全部手机"
+    print(f"pf-node: 这个任务会占住{suffix}；只用一台请加 --resource device:<串号>", file=sys.stderr)
 
 
 def print_jobs_brief(value):
@@ -1728,6 +1744,7 @@ def main():
     jid = meta["id"]
     print(f"pf-node: 提交已记录 job={jid} phase={meta.get('phase', 'unknown')} request_id={request_id}",
           file=sys.stderr)
+    warn_global_job(meta)
     if detach:
         print(jid)
         return

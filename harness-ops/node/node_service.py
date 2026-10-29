@@ -38,7 +38,8 @@ from node_read import NodeRead
 from node_history import JobHistory, HistoryError, load_history_config
 from job_export_cache import ExportCache, validate_root as validate_export_cache_root
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
-from device_scope import DeviceScope, validate_job as validate_device_job, resource as device_resource, scope as job_scope, lease_problem
+from device_scope import (DeviceScope, validate_job as validate_device_job, resource as device_resource,
+                          scope as job_scope, lease_problem, serial_from_argv)
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
@@ -338,12 +339,13 @@ class Jobs:
                 raise ValueError("actor_id 必须是 1-64 字符的非空字符串")
             actor_id = actor_id.strip()
         research_id = spec.get("research_id")
+        research_devices = []
         if research_id is not None:
             store = getattr(self, "research", None)
             try:
                 if store is None:
                     raise ValueError("this node keeps no research records")
-                store.get("research", research_id)
+                research_devices = store.get("research", research_id)["data"].get("device_requirements") or []
             except ValueError as error:  # ResearchError is a ValueError: malformed id or no such research
                 raise ValueError(f"research_id must name a research on this node: {error}") from None
         external_lock = binname in {"adb", "fetch_apk"}
@@ -365,8 +367,10 @@ class Jobs:
             raise ValueError(
                 "this node requires device_binding for device-access jobs; resolve one via devices-resolve")
         legacy_device_bin = binname in {"phonefarm", "game_opt_loop", "adb", "fetch_apk"}
-        resources = spec.get("resources", [] if device_binding or access == "none" else
-                             ["legacy-device"] if legacy_device_bin else [])
+        research_serial = (research_devices[0] if len(research_devices) == 1 and access == "write"
+                           and not device_binding and "resources" not in spec and not serial_from_argv(argv) and recovery_for is None else None)
+        resources = spec.get("resources", ["device:" + research_serial] if research_serial else
+                             [] if device_binding or access == "none" else ["legacy-device"] if legacy_device_bin else [])
         if access == "recovery":
             self.path(recovery_for)
             parent = self.dispatch.queue.get(recovery_for)

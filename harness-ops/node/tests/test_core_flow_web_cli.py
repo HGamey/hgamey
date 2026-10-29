@@ -327,6 +327,29 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.pf(token, "research", "conclude", "d-open", "no_gain", "--reason", "没有收益")[0], 0)
         self.assertNotIn("conclude_direction", [item["kind"] for item in self.duties(token)["duties"]])
 
+    def test_delivered_human_note_is_owner_duty_and_list_help_names_kind(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-after-delivery", self.write(
+            "create-after-delivery", {"title": "交付后指导", "objective": "交付后留言仍回应"}))[0], 201)
+        tokens = {}
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+            tokens[name] = self.cli("POST", f"/agents/{name}/token", {})[1]["token"]
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "claim", "sr-after-delivery")[0], 0)
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "deliver", "sr-after-delivery",
+                                 "--summary", "先交付", "--artifact", f"job:{self.jid}")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-after-delivery", self.write(
+            "human-after-delivery", {"research_id": "sr-after-delivery", "text": "交付后请补充复测",
+                                      "reply_to": None, "decision": None}))[0], 201)
+        owed = [item for item in self.duties(tokens["agent-a"])["duties"] if item["kind"] == "answer_note"]
+        self.assertEqual([(item["target"], item["research_id"]) for item in owed], [("n-after-delivery", "sr-after-delivery")])
+        self.assertNotIn("answer_note", [item["kind"] for item in self.duties(tokens["agent-b"])["duties"]])
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "note", "sr-after-delivery", "补充后重新交付",
+                                 "--reply-to", "n-after-delivery", "--decision", "adopt")[0], 0)
+        self.assertNotIn("answer_note", [item["kind"] for item in self.duties(tokens["agent-a"])["duties"]])
+        code, help_text, _ = self.pf(tokens["agent-a"], "research", "--help")
+        self.assertIn("research list 必须带 KIND", help_text)
+        self.assertIn("research/direction/request/feedback/note", help_text)
+
     def test_agent_loop_claim_guidance_and_delivery_through_cli(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
             "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)

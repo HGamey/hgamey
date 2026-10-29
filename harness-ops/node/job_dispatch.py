@@ -70,6 +70,7 @@ class JobDispatch:
                 **request_facts(spec),
                 "request_id": row["request_id"], "started": row["submitted_at"],
                 "device_access": device_access(spec), "recovery_for": spec.get("recovery_for"),
+                "resources": list(row["resources"]),
                 **({"device_binding": spec["device_binding"]} if "device_binding" in spec else {}),
                 **({"time_budget": dict(spec["time_budget"])} if "time_budget" in spec else {}),
                 **({"disk_guard": dict(spec["disk_guard"])} if "disk_guard" in spec else {}),

@@ -10,6 +10,7 @@ OPEN_RESEARCH = {"active", "idle", "paused"}
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
     "设备锁序列化实际操作；任务预留只在执行中占调度资源，终态自动释放。宿主完成未知时由管理员 reset，不代表恢复。",
+    "设备写任务只占一台：研究只有一台 device_requirements 时默认同机；否则用 --resource device:<串号>，显式参数优先，global 会占全部设备。",
     "每轮开始先运行 pf-node checkin，按 duties 的顺序处理；duties 为空时再推进实验。",
     "人工在 research 里的留言要回应：pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject。没回应之前，这个研究不能交付，方向也不能下结论。",
     "需要人判断时发 request，然后继续做其他方向，不要停下来等人。",
@@ -38,7 +39,7 @@ def duties(jobs, name, now=None):
         owned = {row["id"]: data for row, data in studies if data.get("owner") == name}
         mine = {rid: data for rid, data in owned.items() if data["state"] in OPEN_RESEARCH}
         notes = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "note")
-                 if row["research_id"] in mine]
+                 if row["research_id"] in owned]
         requests = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "request")
                     if row["research_id"] in mine]
         feedback = {}
