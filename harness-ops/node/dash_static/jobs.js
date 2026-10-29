@@ -545,7 +545,9 @@
     $('force-submit').setAttribute('aria-busy', String(pending));
     let reason = !supported ? '旧版任务仅支持查看，当前没有可核验的停止接口。' : terminal ? '任务执行已结束，无法继续发送停止请求。' :
       !access?.steer || !HGTarget.canWrite() || accessBusy ? '请先在上方解锁任务操作权限。' : stopping ? '停止请求已记录，等待任务处理；刷新任务可核对进度。' :
-      !currentJob.controls?.cancel_supported ? '当前任务不支持请求停止。' : queued ? '撤销尚未执行的任务，不发送进程信号。请以最新任务状态确认撤销结果。' : '请求停止只发送 SIGINT，不会自动升级终止。接受请求不代表任务已停止或设备已恢复。';
+      !currentJob.controls?.cancel_supported ? '当前任务不支持请求停止。' : queued ? '撤销尚未执行的任务，不发送进程信号。请以最新任务状态确认撤销结果。' :
+      contained(currentJob) ? '请求停止只发送 SIGINT，不会自动升级终止。接受请求不代表任务已停止或设备已恢复。' :
+      '请求停止先发送 SIGINT；15 秒后仍在运行发送 SIGTERM，再 15 秒后发送 SIGKILL。接受请求不代表任务已停止或设备已恢复。';
     if (currentJob.time_budget) reason += ' 另有本任务的运行预算，到期动作见预算记录；人工请求不重置既有升级时钟。';
     if (currentJob.disk_guard) reason += ' 另有磁盘软保护；触发动作与最近保存观察见下方，已有停止意图和信号计时不会重置。';
     if (currentJob.controls?.reason) reason += ` ${currentJob.controls.reason}`;
@@ -600,12 +602,14 @@
       await Promise.all([loadQueue(), !historical() && selected === id ? selectJob(id, true) : null]);
     }
   }
+  // Contained jobs (job_cgroup) only escalate a stop when forced; the others escalate INT → TERM → KILL on their own.
+  function contained(job) { return job.execution_policy === 'contained' || job.execution?.process_management?.policy === 'contained'; }
   function hostCompletionProblem(job, forSessionRecovery = false) {
     const execution = job.execution || {};
-    const contained = job.execution_policy === 'contained' || execution.process_management?.policy === 'contained';
-    if (!contained && !forSessionRecovery) return '';
+    const isContained = contained(job);
+    if (!isContained && !forSessionRecovery) return '';
     if ((forSessionRecovery && execution.kind !== 'supervised-v1') || execution.worker_alive !== false) return '原 worker 尚未确认结束，请先核查执行域；不能据此恢复会话或解除资源保留。';
-    if (!contained) return job.queue?.state === 'done' ? '' : '原任务的执行范围尚未确认结束；请先重置任务，再恢复会话。';
+    if (!isContained) return job.queue?.state === 'done' ? '' : '原任务的执行范围尚未确认结束；请先重置任务，再恢复会话。';
     const group = execution.owned_cgroup, reconciliation = execution.reconciliation;
     if (!execution.containment) {
       const noGroup = !group || Object.keys(group).length === 0;
@@ -630,8 +634,7 @@
     const record = job.execution?.reconciliation, handoff = job.execution?.containment?.handoff;
     const receipt = reconcileReceipts.get(job.id), pending = reconciling.has(job.id);
     const supported = nodeInfo?.capabilities?.includes('jobs.execution-reconcile-v1'), problem = reconciliationProblem(job);
-    const contained = job.execution_policy === 'contained' || job.execution?.process_management?.policy === 'contained';
-    $('execution-reconcile-panel').hidden = !contained || !supported && !record && !handoff && !receipt;
+    $('execution-reconcile-panel').hidden = !contained(job) || !supported && !record && !handoff && !receipt;
     const disabled = !!problem || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!receipt?.unconfirmed;
     $('execution-reconcile-check').disabled = disabled;
     $('execution-reconcile-force-open').disabled = disabled;

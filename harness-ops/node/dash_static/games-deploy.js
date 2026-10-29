@@ -30,7 +30,8 @@
   function el(tag,value,className) { const n=document.createElement(tag); if(value!=null)n.textContent=String(value); if(className)n.className=className; return n; }
   function link(label,path) { if(!path)return null; const a=el('a',label); try { const u=new URL(path,location.origin); if(u.origin!==location.origin||u.username||u.password)return null; a.href=u.pathname+u.search+u.hash; return a; } catch(_){return null;} }
   const jobURL = job => `/dash/jobs#job=${encodeURIComponent(job.id)}`;
-  const jobLabel = job => job.storage_error?'结果保存失败':job.phase==='finalizing'&&job.queue?.state!=='done'?'正在保存结果':job.queue?.state==='blocked'?'执行范围待核查':job.phase==='interrupted'?'执行中断':job.state==='finished'?({failed:'任务失败',cancelled:'任务已取消'})[job.outcome]||'命令已结束':({queued:'已排队',preparing:'正在准备',starting:'正在启动',running:'执行中',cancelling:'请求停止中'})[job.phase]||'执行状态待核对';
+  const runLabel = job => job.phase==='finalizing'&&job.queue?.state!=='done'?'正在保存结果':job.queue?.state==='blocked'?'执行范围待核查':job.phase==='interrupted'?'执行中断':job.state==='finished'?({failed:'任务失败',cancelled:'任务已取消'})[job.outcome]||'命令已结束':({queued:'已排队',preparing:'正在准备',starting:'正在启动',running:'执行中',cancelling:'请求停止中'})[job.phase]||'执行状态待核对';
+  const jobLabel = job => job.storage_error?`${runLabel(job)} · 结果保存失败`:runLabel(job);
 
   window.createGameDeployments = function({context,refresh,auth}) {
     const views=new Map(), saved=new Map(), details=new Map(), reading=new Set(), expanded=new Set();

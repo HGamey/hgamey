@@ -847,6 +847,15 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_job_pages_describe_the_stop_the_node_sends_and_keep_the_real_state_beside_save_errors(self):
+        jobs = (NODE / "dash_static/jobs.js").read_text(encoding="utf-8")
+        deploy = (NODE / "dash_static/games-deploy.js").read_text(encoding="utf-8")
+        self.assertIn("请求停止先发送 SIGINT；15 秒后仍在运行发送 SIGTERM，再 15 秒后发送 SIGKILL。", jobs)
+        self.assertIn("contained(currentJob) ? '请求停止只发送 SIGINT，不会自动升级终止。", jobs,
+                      "only contained jobs keep a stop at SIGINT unless forced")
+        self.assertIn("job.storage_error?`${runLabel(job)} · 结果保存失败`:runLabel(job)", deploy)
+        self.assertNotIn("job.storage_error?'结果保存失败'", deploy)
+
     def test_pages_link_versioned_assets_the_browser_may_keep(self):
         def get(path):
             connection = http.client.HTTPConnection(*self.address, timeout=10)
