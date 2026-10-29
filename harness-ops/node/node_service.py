@@ -524,7 +524,12 @@ class Jobs:
     def status(self, jid):
         row = self.dispatch.queue.get(jid)
         reason = (row or {}).get("state_reason") or {}
-        if reason.get("kind") == "cancelled_before_launch":
+        if reason.get("kind") == "manual_unknown":
+            # Releasing the reservation cannot seal output from an unobserved launch.
+            meta = self._read_meta(jid)
+            meta.update(state="unknown", phase="interrupted", outcome="unknown", lost=True)
+            meta["execution"]["worker_alive"] = False
+        elif reason.get("kind") == "cancelled_before_launch":
             meta = self.dispatch.unstarted_meta(row, {"outcome": "cancelled", "at": reason["at"],
                                                      "note": "cancelled before execution"})
         elif reason.get("kind") == "durability":
@@ -815,6 +820,8 @@ class Jobs:
         return None
 
     def source_completion_problem(self, jid, meta):
+        if meta.get("state") != "finished":
+            return "source job has not finished"
         row = self.dispatch.queue.get(jid)
         execution = meta.get("execution") or {}
         contained = ((row or {}).get("spec", {}).get("execution_policy") == "contained"
@@ -915,8 +922,11 @@ class Jobs:
                     execution["owned_process_group"] = job_runtime._group_completion(group.get("pgid"))
                 fact = {"at": time.time(), "basis": "administrator_reset", "note": note.strip(),
                         "process_group_signals": signals}
-                self.dispatch.queue.set_state(jid, "done", row.get("state_reason") if
-                    (row.get("state_reason") or {}).get("kind") == "durability" else None,
+                reason = row.get("state_reason") if (row.get("state_reason") or {}).get("kind") == "durability" else None
+                if status.get("state") != "finished":
+                    reason = {"kind": "manual_unknown", "message": "reset accepted unknown execution; output is not complete"}
+                    status.update(state="unknown", phase="interrupted", outcome="unknown", lost=True)
+                self.dispatch.queue.set_state(jid, "done", reason,
                     host_capacity_release=fact, observation=status)
                 if signals:
                     try:

@@ -43,6 +43,50 @@ def tar_bytes(members, *, raw=False):
 
 
 class JobInputsTests(unittest.TestCase):
+    def test_reset_accepts_unknown_launch_without_publishing_partial_input(self):
+        with patch.object(self.jobs.dispatch, "start"):
+            job = self.jobs.start({"bin": "fixture", "argv": ["-c", "pass"],
+                                   "device_access": "none"}, b"", "crashed-launch")
+        jid = job["id"]
+        self.jobs.dispatch.queue.claim_next(1)
+        meta = self.jobs._read_meta(jid)
+        meta.update(state="running", phase="starting")
+        meta["execution"].update(child_pid=None, launch_deadline=time.time() + 60,
+            owned_process_group={"status": "unknown", "pgid": None})
+        self.jobs._write_meta(jid, meta)
+        self.jobs._read_root.write_json(jid + "/launch.json", {})
+        original = Path(self.jobs.path(jid, "meta.json")).read_bytes()
+        writer = subprocess.Popen([sys.executable, "-u", "-c",
+            "import pathlib,sys;p=pathlib.Path(sys.argv[1]);p.write_bytes(b'partial');"
+            "print('ready');sys.stdin.readline();p.write_bytes(b'still writing');print('written');sys.stdin.readline()",
+            self.jobs.path(jid, "out", "model.bin")], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            text=True, start_new_session=True)
+        try:
+            self.assertEqual(writer.stdout.readline().strip(), "ready")
+            with patch.object(self.jobs.dispatch, "start"):
+                reset = self.jobs.reset_queue(jid, "accept the unknown launch, not its output")
+            self.assertTrue(reset["released"])
+            with self.subTest("manual acceptance is not execution completion"):
+                self.assertEqual(reset["job"]["state"], "unknown")
+                self.assertEqual(reset["job"]["queue"]["state_reason"]["kind"], "manual_unknown")
+            self.assertEqual(Path(self.jobs.path(jid, "meta.json")).read_bytes(), original)
+            writer.stdin.write("continue\n")
+            writer.stdin.flush()
+            self.assertEqual(writer.stdout.readline().strip(), "written")
+            for deadline in (time.time() + 60, 0):
+                meta["execution"]["launch_deadline"] = deadline
+                self.jobs._write_meta(jid, meta)
+                status, error = self.call("GET", f"/jobs/{jid}/input-reference?path=model.bin")
+                with self.subTest(launch_deadline=deadline):
+                    self.assertEqual((status, error.get("code")), (409, "source_unavailable"))
+            with patch.object(self.jobs.dispatch, "start"):
+                self.assertEqual(self.jobs.reset_queue(jid, "repeat")["job"]["state"], "unknown")
+        finally:
+            writer.kill()
+            writer.wait(timeout=5)
+            writer.stdin.close()
+            writer.stdout.close()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
