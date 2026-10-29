@@ -39,7 +39,7 @@ from node_history import JobHistory, HistoryError, load_history_config
 from job_export_cache import ExportCache, validate_root as validate_export_cache_root
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
 from device_scope import (DeviceScope, validate_job as validate_device_job, resource as device_resource,
-                          scope as job_scope, lease_problem, serial_from_argv)
+                          scope as job_scope, lease_problem, serial_from_argv, binding_argument)
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
@@ -464,7 +464,7 @@ class Jobs:
             checkout = os.path.join(jin, job_experiment.CHECKOUT)
             job_experiment.materialize(self.experiment_mirror, self.experiment_url, spec["experiment"]["commit"], checkout)
             command, cwd = job_experiment.command(checkout, [argv[0]] + [sub(a) for a in argv[1:]]), checkout
-        if binname == "phonefarm" and "device_binding" in spec and spec.get("device_access") != "recovery":
+        if binding_argument(spec) and "device_binding" in spec and spec.get("device_access") != "recovery":
             # Binding is opaque JSON, not an @in/@out template. Check serial
             # after ordinary argument expansion before adding the owned flag.
             validate_device_job({**spec, "argv": command[1:]})
@@ -494,13 +494,13 @@ class Jobs:
             cwd = self.path(jid, "in")
         argv = [re.sub(r"@in/", self.path(jid, "in") + "/", arg.replace("@out", self.path(jid, "out")))
                 for arg in _job_lock_args(spec["argv"], f"job-{jid}")]
-        if spec.get("device_access") != "recovery":
-            argv += ["--device-binding", json.dumps(spec["device_binding"], separators=(",", ":"))]
-        else:
+        if spec.get("device_access") == "recovery":
             try:
                 self.validate_bound_recovery(spec)
             except DeploymentError as error:
                 raise ValueError(str(error)) from error
+        elif binding_argument(spec):
+            argv += ["--device-binding", json.dumps(spec["device_binding"], separators=(",", ":"))]
         if prepared["command"] != [exe, *argv] or prepared["cwd"] != cwd:
             raise ValueError("prepared scoped command differs from its frozen job binding")
 

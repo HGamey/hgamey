@@ -29,6 +29,23 @@ pub const DEFAULT_LABEL: &str = "game_opt_loop";
 const POLL: Duration = Duration::from_secs(45);
 const HEARTBEAT: Duration = Duration::from_secs(60);
 
+/// Keep the registered execution scope through the whole optimization, including
+/// pauses and reacquisition. An inherited outer scope remains the authority.
+pub struct DeviceScope;
+impl Drop for DeviceScope {
+    fn drop(&mut self) { std::env::remove_var("PF_JOB_DEVICE_BINDING"); }
+}
+pub fn select_device(phonefarm: &Path, serial: Option<&str>) -> Option<DeviceScope> {
+    if std::env::var_os("DEVLOCK_INSTANCE_ID").is_some()
+        || std::env::var_os("PF_JOB_DEVICE_BINDING").is_some() { return None; }
+    let output = Command::new(phonefarm)
+        .args(["lease", "resolve", "--serial", serial?, "--json"]).output().ok()?;
+    if !output.status.success() { return None; }
+    let binding: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    std::env::set_var("PF_JOB_DEVICE_BINDING", binding.to_string());
+    Some(DeviceScope)
+}
+
 /// 锁脚本在哪: `DEVLOCK_BIN` > `<phonefarm 二进制所在目录>/tools/devlock` > PATH 上的 `devlock`。
 pub fn script_path(phonefarm_bin: &Path) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("DEVLOCK_BIN") {

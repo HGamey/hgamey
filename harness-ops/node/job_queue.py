@@ -34,13 +34,13 @@ def recovery_reservations(row, owners):
     return borrowed
 
 
-def reservation_conflicts(row, owner):
+def reservation_conflicts(row, owner, snapshot=None):
     if owner["state"] == "blocked" and (owner.get("state_reason") or {}).get("kind") != "device_recovery_pending":
         # Unknown completion can retain declared host slots, never a phone.
         row_resources = {r for r in row["resources"] if r.startswith("host:")}
         owner_resources = {r for r in owner["resources"] if r.startswith("host:")}
         return bool(row_resources & owner_resources)
-    left, right = scope(row["spec"]), scope(owner["spec"])
+    left, right = scope(row["spec"], snapshot), scope(owner["spec"], snapshot)
     if left["scope"] == right["scope"] == "device":
         return conflicts(left, right)
     return (bool(set(row["resources"]) & set(owner["resources"]))
@@ -243,7 +243,7 @@ class JobQueue:
                 self._publish(db, jid)
             return result.rowcount == 1
 
-    def claim_next(self, max_running, admit=None):
+    def claim_next(self, max_running, admit=None, lease_snapshot=None):
         with self._transaction(write=True) as db:
             active = [self._row(row) for row in db.execute("SELECT * FROM jobs WHERE state IN ('claimed', 'blocked')")]
             if sum(row["state"] == "claimed" for row in active) >= max_running:
@@ -275,7 +275,7 @@ class JobQueue:
                 borrowed = recovery_reservations(value, active)
                 if any(recovery_sibling_conflicts(value, owner) for owner in active):
                     continue
-                if not any(reservation_conflicts(value, owner) or recovery_conflicts(value, owner)
+                if not any(reservation_conflicts(value, owner, lease_snapshot) or recovery_conflicts(value, owner)
                            for owner in active if owner["job_id"] not in borrowed):
                     db.execute("UPDATE jobs SET state='claimed' WHERE job_id=?", (value["job_id"],))
                     return self._publish(db, value["job_id"])

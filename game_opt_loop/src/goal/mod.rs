@@ -615,6 +615,8 @@ pub fn run(dir: &Path, opts: &RunOpts<'_>) -> Result<State> {
     };
 
     let label = format!("goal-{}", rd.run_id());
+    let _scope = crate::devlock::select_device(&opts.phonefarm,
+        (spec.device != "any").then_some(spec.device.as_str()));
     let mut guard = match &opts.lock {
         Some(l) => match crate::devlock::Guard::acquire(
             l.script.clone(), opts.phonefarm.clone(), label.clone(), l.wait,

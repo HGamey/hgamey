@@ -1149,6 +1149,9 @@ fn run_optimize(args: OptimizeArgs) -> Result<()> {
 
     // 摸底 (含 --plan) 就要问设备, 所以锁在最前面拿。守卫活到 run 返回 ——
     // 正常结束、`?` 提前返回、panic 展开都会释放。
+    let _scope = if cfg.extra_devices.is_empty() {
+        game_opt_loop::devlock::select_device(&cfg.phonefarm, cfg.serial.as_deref())
+    } else { None };
     let _lock = if args.no_devlock {
         game_opt_loop::devlock::Guard::disabled()
     } else {

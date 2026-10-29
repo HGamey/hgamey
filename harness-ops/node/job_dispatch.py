@@ -316,7 +316,7 @@ class JobDispatch:
         if lease.get("status") == "blocked" and self.jobs.leases.reclaim_observation(lease):
             lease = self.jobs.leases.snapshot()  # reclaim already refreshed; a dead fleet observation no longer holds the phones
         while True:
-            row = self.queue.claim_next(self.max_running, admit=lambda r:
+            row = self.queue.claim_next(self.max_running, lease_snapshot=lease, admit=lambda r:
                 lease_problem(r["spec"], lease, mode="recovery" if device_access(r["spec"]) == "recovery" else "start") is None)
             if row is None:
                 break
@@ -385,8 +385,10 @@ class JobDispatch:
             env["PF_JOB_ACTOR"] = spec["actor_id"]
         if spec.get("research_id"):
             env["PF_JOB_RESEARCH"] = spec["research_id"]
-        if spec.get("device_binding"):
-            env["PF_JOB_DEVICE_BINDING"] = json.dumps(spec["device_binding"], separators=(",", ":"))
+        execution_scope = scope(spec, observation)
+        execution_binding = execution_scope.get("binding", {})
+        if execution_binding and not execution_binding.get("legacy_serial"):
+            env["PF_JOB_DEVICE_BINDING"] = json.dumps(execution_binding, separators=(",", ":"))
         if spec["bin"] == "experiment":
             # Experiments reach the node's programs through these, not through paths of their own checkout.
             bins = self.jobs.bins
@@ -401,7 +403,7 @@ class JobDispatch:
             # The fixed PF profile omits service credentials and ambient paths.
             env["HG_CONFIG_DIR"] = self.jobs.update_config_dir
         env.pop("PF_RECOVERY_OUT", None)
-        if "device_binding" in spec:
+        if execution_binding and not execution_binding.get("legacy_serial"):
             env.pop("DEVLOCK_INSTANCE_ID", None)
         if recovery_out is not None:
             env["PF_RECOVERY_OUT"] = recovery_out
@@ -429,18 +431,19 @@ class JobDispatch:
         borrowed = recovery_reservations(row, rows)
         owners = [r for r in rows if (r["state"] == "claimed" or
                     (r.get("state_reason") or {}).get("kind") == "durability") and r["job_id"] not in borrowed]
-        declared = scope(row["spec"])
+        lease = self.jobs.leases.snapshot()
+        declared = scope(row["spec"], lease)
         resources = set(row["resources"])
         collisions = [r["job_id"] for r in owners if resources.intersection(r["resources"])]
         if collisions:
             return {"kind": "resource", "blocking_jobs": collisions, "scope": declared,
                     "reason": "declared resources overlap an active reservation"}
-        scope_collisions = [r["job_id"] for r in owners if reservation_conflicts(row, r)]
+        scope_collisions = [r["job_id"] for r in owners if reservation_conflicts(row, r, lease)]
         if scope_collisions:
             # A global/device scope barrier is not an overlap in user-named
             # resources. Keep that distinction for legacy queue consumers.
             return {"kind": "device_lease", "blocking_jobs": scope_collisions, "scope": declared,
-                    "lease_status": self.jobs.leases.snapshot()["status"],
+                    "lease_status": lease["status"],
                     "reason": "device scope overlaps an active reservation"}
         if device_access(row["spec"]) == "write" and declared["scope"] == "device":
             earlier = []
@@ -452,7 +455,6 @@ class JobDispatch:
             if earlier:
                 return {"kind": "device_lease", "blocking_jobs": earlier, "scope": declared,
                         "reason": "an earlier global device job is waiting"}
-        lease = self.jobs.leases.snapshot()
         problem = lease_problem(row["spec"], lease)
         if problem:
             return {"kind": "device_lease", "blocking_jobs": [], "lease_status": lease["status"],

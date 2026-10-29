@@ -40,6 +40,12 @@ def resource(value):
     return "device:" + value["domain_id"] + ":" + value["device_id"]
 
 
+def binding_argument(spec):
+    """Only producers recording a recovery scope take a binding CLI argument."""
+    argv = spec.get("argv") or []
+    return spec.get("bin") == "phonefarm" and (argv[:2] == ["gray-layer", "session"] or argv[:1] == ["game-deploy"])
+
+
 def validate_job(spec, *, typed_recovery=False):
     """Pure early validation; no registry lookup before original-ID replay."""
     argv = spec.get("argv") or []
@@ -67,7 +73,7 @@ def validate_job(spec, *, typed_recovery=False):
                 serials.append(argv[i + 1])
             i += 2
         else:
-            if scoped and key not in {"--json", "--keep-prop"}:
+            if scoped and binding_argument(spec) and key not in {"--json", "--keep-prop"}:
                 raise ValueError("unsupported scoped device argument: " + key)
             i += 1
     if not scoped:
@@ -79,9 +85,8 @@ def validate_job(spec, *, typed_recovery=False):
             raise ValueError("bound recovery requires the original typed session or game recovery command")
         return value  # The typed producer also verifies the complete source/attempt spec.
     if (spec.get("bin") != "phonefarm" or spec.get("exe") is not None
-            or device_access(spec) != "write" or spec.get("recovery_for") is not None
-            or not (argv[:2] == ["gray-layer", "session"] or game and not recovering)):
-        raise ValueError("device_binding requires a configured phonefarm session or game-deploy with write access and no exe")
+            or device_access(spec) != "write" or spec.get("recovery_for") is not None):
+        raise ValueError("device_binding requires configured phonefarm with write access and no exe")
     if serials != [value["serial"]]:
         raise ValueError("scoped session requires exactly one explicit serial matching device_binding")
     return value
@@ -102,7 +107,7 @@ def serial_from_argv(argv):
     return serials[0] if len(set(serials)) == 1 else None
 
 
-def scope(spec):
+def scope(spec, snapshot=None):
     if "device_binding" in spec:
         return {"scope": "device", "binding": binding(spec["device_binding"])}
     access = device_access(spec)
@@ -116,6 +121,16 @@ def scope(spec):
         if len(declared) == 1:
             serial = declared.pop()
     if serial:
+        # Keep historical producer recovery contracts unchanged. Other raw
+        # requests use the same alias map as the PF execution gate.
+        if snapshot and not binding_argument(spec):
+            current = snapshot.get("device_scopes") or {}
+            for entry in current.get("devices", []):
+                if serial in entry.get("aliases", []):
+                    return {"scope": "device", "binding": {
+                        "schema": BINDING_SCHEMA, "domain_id": current["domain_id"],
+                        "registry_revision": current["registry_revision"],
+                        "device_id": entry["device_id"], "serial": serial}}
         # A raw serial is a legacy scope, not a registry binding. Use it only
         # for conflict identity; typed bindings retain their complete schema.
         return {"scope": "device", "binding": {"domain_id": "serial", "device_id": serial,
@@ -162,7 +177,7 @@ def lease_problem(spec, snapshot, mode=None):
     """Combine PF facts only; recovery ownership is still checked by typed PF."""
     access = device_access(spec)
     mode = mode or ("recovery" if access == "recovery" else "start")
-    declared = scope(spec)
+    declared = scope(spec, snapshot)
     if declared["scope"] == "none":
         return None
     if declared["scope"] == "global":

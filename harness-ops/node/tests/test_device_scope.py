@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import test_node_games as fixture
-from device_scope import conflicts, resource, scope, DeviceScope
+from device_scope import conflicts, resource, scope, lease_problem, DeviceScope
 from device_registry import DeviceRegistry, RegistryError, ERROR_SCHEMA
 from job_queue import JobQueue
 from node_service import readonly_token
@@ -106,6 +106,47 @@ sys.exit(0 if done else 2)
 
 
 class DeviceScopeTests(unittest.TestCase):
+    def test_raw_serial_uses_its_lane_in_a_busy_snapshot(self):
+        snapshot = {"status": "held", "storage": {"readiness": "ready", "layout_version": 2,
+                    "domain_id": DOMAIN}, "device_scopes": {"schema": "phonefarm/device-scopes@1",
+                    "domain_id": DOMAIN, "registry_revision": 1, "unknown": False, "queue_waiting": False,
+                    "global": {"status": "clear", "error": None}, "devices": [
+                        {"device_id": "A", "aliases": ["usb-a", "wifi-a"], "status": "clear", "error": None},
+                        {"device_id": "B", "aliases": ["usb-b"], "status": "held", "error": None}]}}
+        original = {"bin": "adb", "argv": ["-s", "usb-a", "shell", "getprop"]}
+        self.assertIsNone(lease_problem(original, snapshot))
+        self.assertNotIn("device_binding", original, "historical job input stays frozen")
+        with tempfile.TemporaryDirectory() as directory:
+            queue = JobQueue(Path(directory) / "queue.sqlite3", default_cpu=3)
+            for key, spec in (("b", {"bin": "adb", "device_binding": bound("B", "usb-b")}),
+                              ("a", original), ("alias", {**original, "argv": ["-s", "wifi-a"]})):
+                row, _ = queue.reserve(key, key, spec, [])
+                queue.ready(row["job_id"])
+            self.assertEqual(queue.claim_next(3, lease_snapshot=snapshot)["request_id"], "b")
+            self.assertEqual(queue.claim_next(3, lease_snapshot=snapshot)["request_id"], "a")
+            self.assertIsNone(queue.claim_next(3, lease_snapshot=snapshot), "aliases still serialize")
+        self.assertIsNotNone(lease_problem({**original, "argv": ["-s", "usb-b"]}, snapshot))
+        snapshot["device_scopes"]["global"]["status"] = "held"
+        self.assertIsNotNone(lease_problem(original, snapshot))
+
+    def test_auto_bound_perf_prepares_without_a_session_only_flag(self):
+        env = fixture.GameFlowTests()
+        env.setUp()
+        self.addCleanup(env.tearDown)
+        env.jobs.bins["phonefarm"] = ("/usr/bin/false", str(env.root))
+        with mock.patch.object(env.jobs.device_scopes, "registered", return_value=bound("A", "usb-a")), \
+                mock.patch.object(env.jobs.device_scopes, "admit"), \
+                mock.patch.object(env.jobs.dispatch, "start"):
+            job = env.jobs.start({"bin": "phonefarm", "argv": ["perf", "--serial", "usb-a", "--rounds", "1"]}, b"")
+            explicit = env.jobs.start({"bin": "phonefarm", "argv": ["perf", "--serial", "usb-a", "--rounds", "1"],
+                                       "device_binding": bound("A", "usb-a")}, b"")
+        path = Path(env.jobs.path(job["id"], "prepared.json"))
+        self.assertTrue(path.exists(), job)
+        prepared = json.loads(path.read_text())
+        self.assertNotIn("--device-binding", prepared["command"])
+        self.assertEqual(job["device_binding"], bound("A", "usb-a"))
+        self.assertEqual(explicit["device_binding"], bound("A", "usb-a"))
+
     def test_serial_scopes_write_jobs_to_one_device(self):
         first = scope({"bin": "adb", "device_access": "write", "argv": ["-s", "redmagic", "shell", "getprop"]})
         second = scope({"bin": "adb", "device_access": "write", "argv": ["--serial=huawei", "shell", "getprop"]})
