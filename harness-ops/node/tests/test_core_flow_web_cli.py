@@ -658,6 +658,52 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("esc(entry.label || entry.job_id)", research_branch,
                       "a research-linked phone must retain the job label as well as the research and agent")
 
+    def test_home_task_carries_its_latest_note_and_delivered_ones_do_not(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-latest", self.write(
+            "create-latest", {"title": "最新进展", "objective": "首页一眼看到任务最近说了什么"}))[0], 201)
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        self.assertIsNone(board._tasks()[0]["latest_note"])
+        for operation, nid, text in (("note-1", "n-first", "先测 1080p"), ("note-2", "n-second", "1080p 帧率 +18%，开始复测")):
+            self.assertEqual(self.web("POST", f"/research-state/note/{nid}", self.write(
+                operation, {"research_id": "sr-latest", "text": text, "reply_to": None, "decision": None}))[0], 201)
+        latest = board._tasks()[0]["latest_note"]
+        self.assertEqual((latest["id"], latest["text"], latest["auth_channel"]),
+                         ("n-second", "1080p 帧率 +18%，开始复测", "dashboard_steer"))
+        self.assertEqual(self.web("POST", "/research-state/research/sr-latest-done", self.write(
+            "create-latest-done", {"title": "已交付", "objective": "交付后首页只给报告入口"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-latest-done")[0], 0)
+        summary = self.tmp / "latest-summary.md"
+        summary.write_text("结论：1080p 可用", encoding="utf-8")
+        code, _, err = self.pf(token, "research", "deliver", "sr-latest-done", "--summary", "@" + str(summary),
+                               "--artifact", "url:https://example.invalid/report")
+        self.assertEqual(code, 0, err)
+        delivered = {task["id"]: task for task in board._tasks()}["sr-latest-done"]
+        self.assertEqual(delivered["state"], "delivered")
+        self.assertNotIn("latest_note", delivered)
+
+    def test_home_keeps_delivered_reports_when_many_tasks_are_active(self):
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.web("POST", "/research-state/research/sr-old-report", self.write(
+            "create-old-report", {"title": "较早交付", "objective": "很多进行中的任务之后仍在首页"}))[0], 201)
+        self.assertEqual(self.pf(token, "research", "claim", "sr-old-report")[0], 0)
+        summary = self.tmp / "old-report.md"
+        summary.write_text("结论", encoding="utf-8")
+        code, _, err = self.pf(token, "research", "deliver", "sr-old-report", "--summary", "@" + str(summary),
+                               "--artifact", "url:https://example.invalid/report")
+        self.assertEqual(code, 0, err)
+        for i in range(12):
+            self.assertEqual(self.web("POST", f"/research-state/research/sr-busy-{i}", self.write(
+                f"create-busy-{i}", {"title": f"进行中 {i}", "objective": "占满首页"}))[0], 201)
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        tasks = board._tasks()
+        self.assertEqual(sum(task["state"] == "active" for task in tasks), 10)
+        self.assertIn("sr-old-report", [task["id"] for task in tasks if task["state"] == "delivered"])
+
     def test_home_tasks_keep_public_job_phase_with_queue_state(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-phase", self.write(
             "create-phase", {"title": "状态口径", "objective": "queued 不被误报为运行中"}))[0], 201)

@@ -10,34 +10,59 @@
 <link rel="stylesheet" href="/dash/static/home.css">
 <link rel="stylesheet" href="/dash/static/shell.css">
 </head>
-<body>
+<body class="home-view">
+<a class="skip-link" href="#h-tasks">跳到任务</a>
 <header class="top">
   <div class="brand-row">
     <a class="logo" href="/dash" aria-label="首页">HG</a>
     <div class="brand"><h1>HGamey</h1></div>
-    <nav class="nav" style="flex-wrap:wrap"><a href="/dash" aria-current="page">首页</a><a href="/dash/live">实时画面</a> <a href="/dash/control">远程调试</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/doctor">环境诊断</a><a href="/dash/maint">维护</a></nav>
   </div>
   <div class="top-right">
-    <span id="live" class="live"><i></i><span id="live-text">连接中</span></span>
-    <button id="steer-btn" class="btn sm" type="button">操作权限</button>
+    <span id="live" class="live" role="status"><i aria-hidden="true"></i><span id="live-text">连接中</span></span>
+    <button id="steer-btn" class="btn sm steer-btn" type="button" aria-pressed="false" aria-label="只读，点一下解锁操作"><svg class="ic" aria-hidden="true" viewBox="0 0 16 16" width="14" height="14"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span class="steer-label">只读</span></button>
+    <a id="goal-btn" class="btn sm" href="/dash/gol">GOL 目标</a>
     <button id="new-btn" class="btn primary" type="button">＋ 新任务</button>
-    <a id="goal-btn" class="btn" href="/dash/gol">GOL 目标</a>
     <form method="post" action="/dash/logout"><button class="ghost" title="退出">退出</button></form>
   </div>
 </header>
-<main class="home">
-  <section aria-labelledby="h-tasks"><h2 id="h-tasks" class="sec-title">任务</h2><ul id="tasks" class="tasks"></ul></section>
-  <section aria-labelledby="h-phones"><h2 id="h-phones" class="sec-title">手机</h2><div id="phones" class="phones"></div><p id="phones-more" class="phones-more"></p></section>
-  <section aria-labelledby="h-agents"><h2 id="h-agents" class="sec-title">Agent</h2><ul id="agents" class="tasks"></ul></section>
-  <section aria-labelledby="h-questions"><h2 id="h-questions" class="sec-title">待回复问题</h2><ul id="questions" class="tasks"></ul></section>
-  <section aria-labelledby="h-reports"><h2 id="h-reports" class="sec-title">已交付的报告</h2><ul id="reports" class="tasks"></ul></section>
+<main class="home" aria-busy="true">
+  <h1 class="visually-hidden">总览</h1>
+  <section id="ask-sec" class="home-ask" aria-labelledby="h-questions" hidden>
+    <div class="sec-head"><h2 id="h-questions">待你回复</h2><span id="questions-count" class="count"></span></div>
+    <ul id="questions" class="q-list"></ul>
+  </section>
+  <div class="home-grid">
+    <div class="home-main">
+      <section aria-labelledby="h-tasks">
+        <div class="sec-head"><h2 id="h-tasks" tabindex="-1">进行中</h2><span id="tasks-count" class="count"></span><a class="sec-link" href="/dash/research">全部任务</a></div>
+        <ul id="tasks" class="task-list"><li class="loading-row">读取中…</li></ul>
+      </section>
+      <section aria-labelledby="h-reports">
+        <div class="sec-head"><h2 id="h-reports">已交付</h2><span id="reports-count" class="count"></span></div>
+        <ul id="reports" class="report-list"></ul>
+      </section>
+    </div>
+    <aside class="home-side">
+      <section aria-labelledby="h-phones">
+        <div class="sec-head"><h2 id="h-phones">手机</h2><span id="phones-more" class="count"></span></div>
+        <div id="phones" class="phone-list"></div>
+      </section>
+      <section aria-labelledby="h-agents">
+        <div class="sec-head"><h2 id="h-agents">Agent</h2><span id="agents-count" class="count"></span></div>
+        <ul id="agents" class="agent-list"></ul>
+      </section>
+    </aside>
+  </div>
 </main>
-<dialog id="dlg-unlock" class="dlg"><form id="f-unlock"><h3>输入操作密码</h3><p class="note2">新建任务需要操作密码。</p><input type="password" id="steer-pw" placeholder="操作密码" autocomplete="current-password" required><div class="row-btns"><button class="btn primary" type="submit">解锁</button><button class="btn" type="button" data-close>取消</button><span id="unlock-msg" class="msg err"></span></div></form></dialog>
-<dialog id="dlg-research" class="dlg"><form id="research-form"><h3>新建任务</h3>
-  <label>一句话目标<textarea id="research-objective" rows="3" maxlength="2000" required></textarea></label>
-  <label>游戏（可选）<select id="research-game"><option value="">不限游戏</option><option value="com.miHoYo.Yuanshen">原神</option><option value="com.unity.megacity.metro">Megacity</option><option value="com.miHoYo.hkrpg">崩坏：星穹铁道</option><option value="com.miHoYo.Nap">绝区零</option><option value="com.tencent.tmgp.sgame">王者荣耀</option><option value="com.tencent.tmgp.pubgmhd">和平精英</option></select></label>
-  <label>设备（可选）<select id="research-device"></select></label>
-  <div class="row-btns"><button id="research-submit" class="btn primary" type="submit">创建任务</button><button class="btn" type="button" data-close>取消</button><span id="research-msg" class="msg"></span></div>
+<dialog id="dlg-unlock" class="dlg dlg-sm" aria-labelledby="unlock-title"><form id="f-unlock"><h3 id="unlock-title">解锁操作</h3><label for="steer-pw">掌舵密码</label><input type="password" id="steer-pw" name="steer-pw" autocomplete="current-password" required><p id="unlock-msg" class="msg err" role="alert"></p><div class="row-btns"><button class="btn" type="button" data-close>取消</button><button id="unlock-submit-home" class="btn primary" type="submit">解锁</button></div></form></dialog>
+<dialog id="dlg-research" class="dlg" aria-labelledby="research-title"><form id="research-form"><h3 id="research-title">新建任务</h3>
+  <label for="research-objective">目标</label><textarea id="research-objective" name="objective" rows="4" maxlength="2000" required placeholder="例如：优化原神的超分方向，画质不明显下降时提高帧率…"></textarea>
+  <div class="dlg-grid">
+    <label>游戏<select id="research-game" name="game"><option value="">不限游戏</option><option value="com.miHoYo.Yuanshen">原神</option><option value="com.unity.megacity.metro">Megacity</option><option value="com.miHoYo.hkrpg">崩坏：星穹铁道</option><option value="com.miHoYo.Nap">绝区零</option><option value="com.tencent.tmgp.sgame">王者荣耀</option><option value="com.tencent.tmgp.pubgmhd">和平精英</option></select></label>
+    <label>设备<select id="research-device" name="device"></select></label>
+  </div>
+  <p id="research-msg" class="msg" role="status"></p>
+  <div class="row-btns"><button class="btn" type="button" data-close>取消</button><button id="research-submit" class="btn primary" type="submit">创建任务</button></div>
 </form></dialog>
 <script src="/dash/static/target.js"></script><script src="/dash/static/job-state.js"></script><script src="/dash/static/home.js"></script><script src="/dash/static/shell.js"></script>
 </body></html>

@@ -596,8 +596,9 @@ class Dash:
         if research is None:
             return []
         try:
-            items = [item for state in ("active", "delivered")
-                     for item in research.list("research", {"state": [state], "limit": ["10"]})["items"]]
+            # Each state keeps its own quota: many active tasks must not push every delivered report off the page.
+            items = [item for state, limit in (("active", 10), ("delivered", 5))
+                     for item in research.list("research", {"state": [state], "limit": [str(limit)]})["items"]]
             items.sort(key=lambda item: item["updated_at"], reverse=True)
             rows = queue.rows(("queued", "claimed", "blocked")) if queue is not None else []
         except (OSError, ValueError, sqlite3.Error):
@@ -613,13 +614,28 @@ class Dash:
                                              "outcome": meta.get("outcome"), "lost": meta.get("lost"),
                                              "queue": {"state": row["state"]}}})
         tasks = []
-        for item in items[:10]:
+        for item in items:
             task = {"id": item["id"], "title": item["title"], "owner": item.get("owner"), "state": item["state"],
                     "updated_at": item["updated_at"], "jobs": jobs.get(item["id"], [])}
             if item["state"] == "delivered":
                 task["report_url"] = "/dash/research?" + urlencode({"kind": "research", "id": item["id"]}) + "#task-report"
+            else:
+                task["latest_note"] = self._latest_note(research, item["id"])
             tasks.append(task)
         return tasks
+
+    @staticmethod
+    def _latest_note(research, rid):
+        """The newest note of a task, so the home page can say what is happening without opening it."""
+        try:
+            items = research.list("note", {"research_id": [rid], "limit": ["1"]})["items"]
+        except (OSError, ValueError, sqlite3.Error):
+            return None
+        if not items:
+            return None
+        note = items[0]
+        return {"id": note["id"], "text": note["text"][:280], "actor_label": note.get("actor_label"),
+                "auth_channel": note.get("auth_channel"), "updated_at": note["updated_at"]}
 
     def _questions(self):
         research = getattr(self.job_service, "research", None) if self.job_service else None
