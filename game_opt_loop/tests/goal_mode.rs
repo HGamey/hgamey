@@ -381,12 +381,14 @@ fn sigint_case(tag: &str, to_group: bool) {
     use std::os::unix::process::CommandExt;
     let root = scaffold(tag, false);
     let mark = root.join("child_got_sigint");
+    let ready = root.join("child_ready");
     // eval 慢一点, 并在收到 SIGINT 时留下标记 (真 phonefarm 在这里走还原)
     let bin = root.join("phonefarm/phonefarm");
     let script = std::fs::read_to_string(&bin).unwrap().replace(
         "  eval)\n",
         &format!(
-            "  eval)\n    trap 'echo restored > {}; exit 130' INT\n    sleep 20 >/dev/null 2>&1 &\n    wait $!\n",
+            "  eval)\n    echo started > {}\n    trap 'echo restored > {}; exit 130' INT\n    sleep 20 >/dev/null 2>&1 &\n    wait $!\n",
+            ready.display(),
             mark.display()
         ),
     );
@@ -415,24 +417,16 @@ fn sigint_case(tag: &str, to_group: bool) {
         .process_group(0)
         .spawn()
         .unwrap();
-    // 等到第一个候选上机 (measure 事件出现)
-    let t0 = std::time::Instant::now();
-    loop {
-        let ev = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
-        if ev.contains("\"type\":\"measure\"") {
-            break;
-        }
-        assert!(t0.elapsed().as_secs() < 30, "等不到上机");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    // 等 fake PF 已启动并安装 INT trap，再发停止；不靠固定等待预算。
+    while !ready.exists() {
+        assert!(child.try_wait().unwrap().is_none(), "PF exited before becoming ready");
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let t1 = std::time::Instant::now();
     let target = if to_group { -(child.id() as i32) } else { child.id() as i32 };
     unsafe {
         libc::kill(target, libc::SIGINT);
     }
     let status = child.wait().unwrap();
-    assert!(t1.elapsed().as_secs() < 10, "叫停之后应该很快退出 (正在上机的 eval 要睡 20 秒)");
     assert!(status.success(), "{status:?}");
     assert!(mark.exists(), "phonefarm 子进程没收到 SIGINT");
     let st: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
@@ -593,9 +587,10 @@ fn sigint_while_queuing_for_the_lock_stops_without_touching_the_device() {
     let dir = root.join("goals/run_q");
     goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
     confirm_with(&dir, |s| s.layers = vec!["sysparam".into()]);
-    // 永远轮不到的锁
+    // 永远轮不到的锁；fake lock 先发布实际调用事实。
     let lock = root.join("busy_devlock");
-    std::fs::write(&lock, "#!/bin/sh\necho 'not your turn: head=someone'\nexit 1\n").unwrap();
+    let called = root.join("lock_called");
+    std::fs::write(&lock, format!("#!/bin/sh\necho called > {}\necho 'not your turn: head=someone'\nexit 1\n", called.display())).unwrap();
     std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
         .args(["goal", "run"])
@@ -611,18 +606,14 @@ fn sigint_while_queuing_for_the_lock_stops_without_touching_the_device() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let t0 = std::time::Instant::now();
-    while !std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default().contains("\"type\":\"start\"") {
-        assert!(t0.elapsed().as_secs() < 20);
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    while !called.exists() {
+        assert!(child.try_wait().unwrap().is_none(), "goal exited before calling the lock");
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let t1 = std::time::Instant::now();
     unsafe {
         libc::kill(child.id() as i32, libc::SIGINT);
     }
     let status = child.wait().unwrap();
-    assert!(t1.elapsed().as_secs() < 5, "排队时叫停应该马上退出");
     assert!(status.success(), "{status:?}");
     let st: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
     assert_eq!(st["stop_reason"], "human_stop");

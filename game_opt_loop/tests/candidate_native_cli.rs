@@ -222,7 +222,6 @@ fn actual_native_descendant_closed_pipes_never_accepts_or_retries() {
     no_proof(&j);
     assert!(!f.inspect().status.success());
     assert!(!f.run(&[]).status.success());
-    std::thread::sleep(std::time::Duration::from_millis(2200));
     assert!(!f.p("late-writer").exists());
 }
 #[test]

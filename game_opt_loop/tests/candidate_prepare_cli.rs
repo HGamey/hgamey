@@ -420,7 +420,6 @@ fn actual_host_interruption_leaves_unknown_owned_child_and_no_replay() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let limit = Instant::now() + Duration::from_secs(50);
     let group = loop {
         if let Ok(bytes) = fs::read(f.path("session/journal.json")) {
             if let Ok(j) = serde_json::from_slice::<Value>(&bytes) {
@@ -433,18 +432,10 @@ fn actual_host_interruption_leaves_unknown_owned_child_and_no_replay() {
             host.try_wait().unwrap().is_none(),
             "host failed before PF child entered"
         );
-        assert!(
-            Instant::now() < limit,
-            "PF child did not enter before test deadline"
-        );
         std::thread::sleep(Duration::from_millis(20));
     };
     host.kill().unwrap();
-    let until = Instant::now() + Duration::from_secs(2);
-    while host.try_wait().unwrap().is_none() {
-        assert!(Instant::now() < until);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    host.wait().unwrap();
     let before = fs::read(f.path("session/journal.json")).unwrap();
     let inspected = f.inspect();
     assert!(!inspected.status.success());
