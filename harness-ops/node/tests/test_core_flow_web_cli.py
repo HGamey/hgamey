@@ -19,6 +19,7 @@ sys.path.insert(0, str(NODE))
 import dash
 from http_server_fixture import start_http_server
 from node_service import Jobs, make_handler
+from agent_duties import NOTE_STYLE
 
 ADMIN = "core-flow-fixture-admin-token"
 VIEW = "core-flow-view-password"
@@ -233,6 +234,23 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("direction_id", err)
         script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
         self.assertIn("job.direction_id === direction.id", script)
+
+    def test_note_style_is_shared_by_checkin_help_and_skill(self):
+        self.assertLessEqual(len(NOTE_STYLE), 200)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-note-style", self.write(
+            "create-note-style", {"title": "留言风格", "objective": "简洁说人话"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-note-style")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-note-style", self.write(
+            "human-note-style", {"research_id": "sr-note-style", "text": "请回复", "reply_to": None, "decision": None}))[0], 201)
+        value = self.duties(token)
+        self.assertIn(NOTE_STYLE, json.dumps(value, ensure_ascii=False))
+        note = next(item for item in value["duties"] if item["kind"] == "answer_note")
+        self.assertEqual(note["style"], NOTE_STYLE)
+        self.assertIn(NOTE_STYLE, self.pf(token, "research", "--help")[1])
+        self.assertIn(NOTE_STYLE, self.pf(token, "--help")[1])
+        self.assertIn(NOTE_STYLE, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
 
     def test_cli_times_are_utc_and_checkin_declares_timezone(self):
         from agent_client import render_checkin

@@ -206,6 +206,9 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from target_client import Target, TargetError
 from runtime_identity import is_gray_session
 from device_scope import scope as job_scope, device_access
+from agent_duties import NOTE_STYLE
+
+__doc__ += "\n" + NOTE_STYLE
 
 URL = TOKEN = TARGET = None
 CHUNK = 2 << 20

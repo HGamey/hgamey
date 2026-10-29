@@ -7,6 +7,7 @@ SCHEMA = "hgamey/agent-checkin@1"
 STATUS_STALE_SECONDS = 30 * 60
 TERMINAL_DIRECTIONS = {"verified", "no_gain", "rejected", "deferred"}
 OPEN_RESEARCH = {"active", "idle", "paused"}
+NOTE_STYLE = "写留言：先说结论，再给依据（数字、任务号、提交号、文件）。一条只讲一件事，200 字以内，细节放报告或附件。用平常话和通用术语，不自造词，不用比喻和口号。不写客套、致谢，不复述对方，不写「我将……」式的预告。不确定就直说不确定。"
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
     "设备锁序列化实际操作；任务预留只在执行中占调度资源，终态自动释放。宿主完成未知或设备仍待恢复时由负责人或管理员 reset，不代表恢复。",
@@ -17,6 +18,7 @@ LOOP = [
     "只处理自己负责的研究；别人研究里的留言是写给那个研究的负责人的。",
     "人工在 research 里的留言要回应：pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject。没回应之前，这个研究不能交付，方向也不能下结论。",
     "其他 agent 和维护者的留言也会进待办，同样要回应，但不挡交付。",
+    NOTE_STYLE,
     "图在自己机器上画，用 research note --attach 附上；实验 Python 只保证有标准库。",
     "devlock busy 默认等 DEVLOCK_WAIT_SECONDS=900 秒，超时清自己的队列标签并记录阻塞者；立即失败设 0。单机用 phonefarm lease --serial <串号>（已注册设备走 lane），多机才用全局 devlock。",
     "需要人判断时发 request，然后继续做其他方向，不要停下来等人。",
@@ -76,7 +78,7 @@ def duties(jobs, name, now=None):
             continue
         speaker = "human" if audit.get("auth_channel") == "dashboard_steer" else audit.get("actor_label") or "admin token"
         owed.append({"kind": "answer_note", "research_id": row["research_id"], "target": row["id"],
-                     "unread": row["sequence"] > seen,
+                     "unread": row["sequence"] > seen, "style": NOTE_STYLE,
                      "text": f"{speaker} 在 {row['research_id']} 留言：{data['text'][:200]}",
                      "command": f"pf-node research note {row['research_id']} \"<回复>\" --reply-to {row['id']} "
                                 "--decision adopt|defer|reject"})
