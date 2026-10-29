@@ -9,7 +9,7 @@ from job_capacity import job_facts
 OBSERVATION_FIELDS = (
     "phase", "outcome", "exit", "lost", "recovery_status", "cancel_mode",
     "cancel_status", "cancel_signals", "time_budget_status", "time_budget_exceeded_at",
-    "owned_scope", "owned_status", "reconciliation_state",
+    "owned_scope", "owned_status", "owned_error", "reconciliation_state",
 )
 DISK_FIELDS = ("disk_guard_status", "disk_guard_trigger_reason", "disk_guard_triggered_at")
 
@@ -46,7 +46,7 @@ def projection(row, observation=None):
                                if isinstance(s, dict) and isinstance(s.get("name"), str)],
             "time_budget_status": budget.get("status"),
             "time_budget_exceeded_at": budget.get("exceeded_at"),
-            "owned_scope": group.get("scope"), "owned_status": group.get("status"),
+            "owned_scope": group.get("scope"), "owned_status": group.get("status"), "owned_error": group.get("error"),
             "reconciliation_state": _object(execution.get("reconciliation")).get("state"),
         }
     reason = _object(row.get("state_reason"))

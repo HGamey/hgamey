@@ -2,6 +2,7 @@ import json
 import sys
 import time
 from unittest import TestCase
+from unittest.mock import patch
 
 import test_node_read as read_fixture
 
@@ -21,6 +22,10 @@ class ReservationTests(TestCase):
         return self.jobs.dispatch.submit(spec, b"", request_id)["id"]
 
     def finish(self, jid, *, lost=False, group="absent", revision=None):
+        if group == "unknown":
+            query = patch("job_runtime.subprocess.run", side_effect=OSError("fixture: process query unavailable"))
+            query.start()
+            self.addCleanup(query.stop)
         meta = self.jobs._read_meta(jid)
         meta.update(state="finished", phase="interrupted" if lost else "finished",
                     outcome="interrupted" if lost else "failed", exit=-1 if lost else 1,

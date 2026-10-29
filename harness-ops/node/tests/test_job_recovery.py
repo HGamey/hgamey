@@ -82,7 +82,7 @@ class JobRecoveryTests(unittest.TestCase):
             self.assertTrue(self.jobs.status(child)["lost"])
             self.assertEqual(self.queue.get(child)["state"], "blocked")
             self.assertIsNone(self.queue.get(child)["host_capacity_release"])
-            self.assertEqual(self.jobs.status(child)["queue"]["host_capacity"]["state"], "reserved")
+            self.assertEqual(self.jobs.status(child)["queue"]["host_capacity"]["state"], "released")
             self.assertEqual(self.queue.get(sibling)["state"], "queued")
             launch.assert_not_called()
             with self.assertRaises(RequestConflict):

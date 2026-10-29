@@ -174,8 +174,11 @@ class JobDispatch:
         # If SQLite itself fails, this raises and retains the previous reservation.
         self.queue.set_state(row["job_id"], "blocked", reason)
 
-    def finalize(self, row):
+    def finalize(self, row, groups=None):
         """Caller holds intake; commit a stable candidate, never launch/replay it."""
+        row = self.queue.get(row["job_id"])
+        if row["state"] == "done":
+            return True
         jid, store = row["job_id"], self.jobs._read_root
         stage = "candidate"
         try:
@@ -191,12 +194,24 @@ class JobDispatch:
                 candidate = self.jobs._execution_status(jid, worker_alive=False)
                 if candidate["state"] != "finished":
                     return False
+                execution = candidate.get("execution") or {}
+                prior_observation = None
+                contained = (row["spec"].get("execution_policy") == "contained" or
+                             (execution.get("process_management") or {}).get("policy") == "contained")
+                if (execution.get("kind") == "supervised-v1" and not contained
+                        and self.jobs.host_execution_problem(jid, candidate) is not None):
+                    previous = execution.get("owned_process_group") or {}
+                    current = job_runtime._group_completion(previous.get("pgid"), groups)
+                    if any(current[key] != previous.get(key) for key in ("status", "error")):
+                        prior_observation = {**candidate, "execution": {**execution}}
+                        execution["owned_process_group"] = current
                 if candidate.get("lost"):
                     previous = ((candidate.get("execution") or {}).get("service_at_launch") or {}).get("service", {}).get("revision")
                     current = (getattr(self.jobs, "service_at_launch", {}) or {}).get("service", {}).get("revision")
                     if current and previous and current != previous:
                         candidate["note"] = f"部署 {current} 中断"
                         candidate["interruption"] = {"kind": "deployment", "revision": current}
+                if candidate.get("lost") or prior_observation is not None:
                     self.jobs._write_meta(jid, candidate)
                 stage = "records"
                 store.sync(jid + "/meta.json", directory=False)
@@ -210,6 +225,9 @@ class JobDispatch:
                 stage = "directories"
                 store.sync(jid, directory=True)
                 store.sync("", directory=True)
+                if prior_observation is not None:
+                    # Keep the previous query error in the existing event stream.
+                    self.queue.observe(jid, prior_observation)
                 release = self._capacity_release_fact(row, candidate)
                 # Known terminal jobs release scheduling reservations. Unknown
                 # host completion stays blocked until an administrator resets it.
@@ -264,20 +282,24 @@ class JobDispatch:
             self.block_storage(row, "host-capacity-release", error)
             return False
 
-    def _refresh_host_capacity(self):
+    def _refresh_host_capacity(self, groups=None):
+        groups = {} if groups is None else groups
         for row in self.queue.rows(("blocked",)):
             if (row.get("state_reason") or {}).get("kind") == "durability":
                 continue
             with file_lock(self.intake_path):
-                self.finalize(row)
+                self.finalize(row, groups)
+
+    def _pending(self):
+        return bool(self.queue.rows(("preparing", "queued", "claimed"))) or any(
+            (row.get("state_reason") or {}).get("kind") != "durability"
+            for row in self.queue.rows(("blocked",)))
 
     def start(self):
         with self.guard:
             if self.thread and self.thread.is_alive():
                 return
-            if not self.queue.rows(("preparing", "queued", "claimed")) and not any(
-                    (row.get("state_reason") or {}).get("kind") != "durability"
-                    for row in self.queue.rows(("blocked",))):
+            if not self._pending():
                 return
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
@@ -287,15 +309,14 @@ class JobDispatch:
             while True:
                 with file_lock(self.dispatch_path, blocking=False) as acquired:
                     if acquired:
-                        self._refresh_host_capacity()
-                        while self.queue.rows(("preparing", "queued", "claimed")):
+                        while self._pending():
                             self.tick()
                             self.last_error = None
                             time.sleep(0.2)
                 # Release the flock before publishing an idle thread. A submit
                 # racing this check either keeps this loop alive or starts a new one.
                 with self.guard:
-                    if not self.queue.rows(("preparing", "queued", "claimed")):
+                    if not self._pending():
                         self.thread = None
                         return
                 time.sleep(0.2)
@@ -303,7 +324,8 @@ class JobDispatch:
             self.last_error = f"{type(error).__name__}: {error}"
 
     def tick(self):
-        self._refresh_host_capacity()
+        groups = {}
+        self._refresh_host_capacity(groups)
         with file_lock(self.intake_path, blocking=False) as acquired:
             if acquired:
                 for row in self.queue.rows(("preparing",)):
@@ -323,7 +345,7 @@ class JobDispatch:
                     self._launch(row)
                 current = self.queue.get(jid)
                 if current["state"] == "claimed":
-                    if not self.finalize(current):
+                    if not self.finalize(current, groups):
                         self.observe_running(jid)
         lease = self.jobs.leases.snapshot(refresh=True) if any(
             device_access(r["spec"]) == "write" or "device_binding" in r["spec"]

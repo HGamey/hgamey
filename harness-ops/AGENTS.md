@@ -31,7 +31,7 @@ results.cross-compare-v1从冻结目录目标有界读取详情，沿共享四�
 不从新登记选另一连接。网页与 CLI 同级；隔离宿主验证不能写成真机或部署已完成。
 合同：https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/DEVICE-LANES.md 。
 
-独立worker在直接命令退出后有界核查原进程组；仍存在或核查未知时保留真实命令退出码，但作业为interrupted/recovery.required，调度保留声明资源。Web与CLI展示同一owned_process_group记录，不能将absent解释为setsid脱组后代或设备恢复。合同与验收范围见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-GROUP-COMPLETION.md 。
+独立worker在直接命令退出后用ps核查原进程组活成员，zombie不算执行中；dispatcher在worker退出后刷新旧的present/unknown，确认组消失即自动释放，真实退出码和恢复结果不改。每轮共享一次组快照，仅blocked时仍继续观察；已done不重新探测旧PGID。Web与CLI展示同一owned_process_group记录，不能将absent解释为setsid脱组后代或设备恢复。合同与验收范围见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-GROUP-COMPLETION.md 。
 
 请求可显式声明execution_policy；当前仅process_group可用，contained在上传/准备/启动前拒绝，不按OS推断支持。旧请求省略字段保持原幂等内容；请求策略与worker实际process_management分别记录，缺证据不回填。Web/CLI/API必须同步准入与范围。节点启用containment仍待生产权限与恢复边界验收，见 https://github.com/HGamey/docs/blob/main/plans/2026-10-22-agent-platform/JOB-CONTAINMENT.md 。
 

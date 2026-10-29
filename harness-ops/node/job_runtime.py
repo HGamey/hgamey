@@ -305,21 +305,21 @@ class OwnerStop:
         return bool({"owner_record_error", "disk_observation_failed"}.intersection(self.causes))
 
 
-def _group_completion(pgid):
-    """Observe only the original group after reaping our child; never signal old PIDs."""
-    deadline = time.monotonic() + 0.5
-    while True:
-        status, error = "present", None
+def _group_completion(pgid, snapshot=None):
+    """Read live group members; a dispatch pass can share one lazy ps snapshot."""
+    snapshot = {} if snapshot is None else snapshot
+    if not snapshot:
         try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            status = "absent"
-        except OSError as exc:
-            status, error = "unknown", f"{type(exc).__name__}: {exc}"
-        if status != "present" or time.monotonic() >= deadline:
-            return {"scope": "original_process_group", "status": status, "pgid": pgid,
-                    "checked_at": time.time(), "error": error}
-        time.sleep(0.025)
+            result = subprocess.run(['ps', '-axo', 'pgid=,stat='], capture_output=True, text=True, check=True)
+            members = [line.split() for line in result.stdout.splitlines()]
+            snapshot.update(live={int(group) for group, state in members if not state.startswith('Z')}, error=None)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            snapshot.update(live=set(), error=f'{type(exc).__name__}: {exc}')
+        snapshot['checked_at'] = time.time()
+    error = 'original process group was not recorded' if pgid is None else snapshot['error']
+    status = 'unknown' if error else 'present' if pgid in snapshot['live'] else 'absent'
+    return {'scope': 'original_process_group', 'status': status, 'pgid': pgid,
+            'checked_at': snapshot['checked_at'], 'error': error}
 
 
 def terminate_group(pgid, grace=1.0):
@@ -336,9 +336,7 @@ def terminate_group(pgid, grace=1.0):
         if sig == signal.SIGTERM:
             deadline = time.monotonic() + grace
             while time.monotonic() < deadline:
-                try:
-                    os.killpg(pgid, 0)
-                except ProcessLookupError:
+                if _group_completion(pgid)['status'] == 'absent':
                     return signals
                 time.sleep(0.025)
     return signals
