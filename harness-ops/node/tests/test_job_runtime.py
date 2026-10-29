@@ -86,7 +86,7 @@ def statvfs(fd):
     return original_statvfs(fd)
 runtime.os.fstatvfs=statvfs
 try:
-    code=runtime._worker(str(directory),lock_fd,(.12,.12))
+    code=runtime._worker(str(directory),lock_fd,((1.15,.12) if scenario=="manual" else (.12,.12)))
 finally:
     # Reap only this fixture's actual Popen children after a regression; their
     # alarm bounds survival even if the product worker has already lost its lock.
@@ -229,7 +229,7 @@ class JobRuntimeTests(unittest.TestCase):
         self.assertIn(b"restoring", self.store.read_bytes(jid + "/log", 4096))
         self.assertEqual(self.store.read_json(jid + "/launch.json").keys(), {"command", "cwd"})
 
-    def test_graceful_is_once_and_force_only_upgrades_to_term_then_kill(self):
+    def test_cancel_is_once_and_escalates_to_term_then_kill(self):
         jid = self.job()
         program = ("import signal,time;signal.alarm(5);"
                    "signal.signal(signal.SIGINT,lambda *a:print('INT',flush=True));"
@@ -239,11 +239,8 @@ class JobRuntimeTests(unittest.TestCase):
         self.until(lambda: self.ready(jid))
         first = runtime.request_cancel(self.store, jid)
         self.until(lambda: self.read(jid).get("cancel", {}).get("signals"))
-        time.sleep(.3)  # Longer than the injected force intervals: graceful never escalates.
         self.assertEqual([s["name"] for s in self.read(jid)["cancel"]["signals"]], ["SIGINT"])
         self.assertEqual(runtime.request_cancel(self.store, jid)["requested_at"], first["requested_at"])
-        runtime.request_cancel(self.store, jid, force=True)
-        self.assertEqual(runtime.request_cancel(self.store, jid)["mode"], "escalate")
         meta = self.finished(jid, worker)
         self.assertEqual([s["name"] for s in meta["cancel"]["signals"]], ["SIGINT", "SIGTERM", "SIGKILL"])
         self.assertEqual((meta["outcome"], meta["recovery"]["status"], meta["exit"], meta["execution"]["returncode"]),
@@ -321,7 +318,7 @@ class JobRuntimeTests(unittest.TestCase):
         manual = runtime.request_cancel(self.store, jid)
         self.until(lambda: self.fault_record(jid).get("faults"))
         self.assertTrue(runtime.runner_alive(self.store, jid))
-        time.sleep(.3)  # Known graceful intent must survive I/O failure without early escalation.
+        time.sleep(.3)  # Record failures do not shorten the cancellation grace period.
         self.assertEqual([s["name"] for s in self.fault_record(jid)["signals"]], ["SIGINT"])
         meta = self.finished(jid, worker)
         observed = meta["execution"]["time_budget"]
@@ -351,8 +348,8 @@ class JobRuntimeTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 jid = self.job()
                 ready = self.root / jid / "child-ready"
-                # Graceful deliberately lives past both shortened escalation
-                # intervals. Other cases exit zero promptly after the real INT.
+                # The delayed cleanup crosses the shortened cancellation grace.
+                # Other cases exit zero promptly after the real INT.
                 pause = .4 if scenario == "graceful" else .01
                 program = ("import signal,time,sys;from pathlib import Path;signal.alarm(6);"
                            f"signal.signal(signal.SIGINT,lambda *a:(print('INT',flush=True),time.sleep({pause}),sys.exit(0)));"
@@ -369,8 +366,10 @@ class JobRuntimeTests(unittest.TestCase):
                 self.assertFalse(runtime.runner_alive(self.store, jid))
                 evidence, meta = self.fault_record(jid), self.read(jid)
                 self.assertTrue(evidence["faults"])
-                self.assertEqual([s["name"] for s in evidence["signals"]], ["SIGINT"])
-                self.assertEqual(evidence["children"][0]["returncode"], 0)
+                expected_signals = ["SIGINT", "SIGTERM"] if scenario == "graceful" else ["SIGINT"]
+                expected_returncode = -15 if scenario == "graceful" else 0
+                self.assertEqual([s["name"] for s in evidence["signals"]], expected_signals)
+                self.assertEqual(evidence["children"][0]["returncode"], expected_returncode)
                 self.assertFalse(evidence["children"][0]["alive_when_worker_returned"])
                 self.assertIn(b"INT", self.store.read_bytes(jid + "/log", 4096))
                 if scenario == "permanent":
@@ -381,12 +380,12 @@ class JobRuntimeTests(unittest.TestCase):
                     self.assertEqual(self.store.read_bytes(jid + "/exitcode", 128), b"0")
                 else:
                     self.assertEqual(worker.returncode, 0)
-                    self.assertEqual(meta["exit"], 0)
+                    self.assertEqual(meta["exit"], 143 if scenario == "graceful" else 0)
                     self.assertEqual(meta["execution"]["owned_process_group"]["status"], "absent")
                     intent = meta["execution"]["stop_intent"]
                     self.assertEqual(intent["schema"], "phonefarm/job-stop-intent@1")
                     self.assertGreaterEqual(intent["record_errors"]["count"], 1)
-                    self.assertEqual([s["name"] for s in meta["cancel"]["signals"]], ["SIGINT"])
+                    self.assertEqual([s["name"] for s in meta["cancel"]["signals"]], expected_signals)
                     if scenario == "graceful":
                         self.assertEqual(intent["mode"], "graceful")
                         self.assertIn("execution_deadline", intent["causes"])
@@ -441,7 +440,7 @@ class JobRuntimeTests(unittest.TestCase):
                     self.assertFalse((directory / "exitcode").exists())
                 else:
                     self.assertEqual(worker.returncode, 0)
-                    self.assertEqual(meta["exit"], 0)
+                    self.assertEqual(meta["exit"], 143 if scenario == "graceful" else 0)
                     self.assertEqual(meta["execution"]["owned_process_group"]["status"], "absent")
                     self.assertFalse(evidence["children"][0]["alive_when_worker_returned"])
                     self.assertIsNotNone(observed["finished_at"])

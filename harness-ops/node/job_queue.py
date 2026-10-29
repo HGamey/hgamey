@@ -47,10 +47,6 @@ def reservation_conflicts(row, owner, snapshot=None):
             or conflicts(left, right))
 
 
-def global_waiter(row):
-    return device_access(row["spec"]) == "write" and scope(row["spec"])["scope"] == "global"
-
-
 def recovery_conflicts(row, owner):
     """Only another recovery in the same active chain can block a recovery."""
     if not row["spec"].get("recovery_for") or not owner["spec"].get("recovery_for"):
@@ -249,21 +245,8 @@ class JobQueue:
             if sum(row["state"] == "claimed" for row in active) >= max_running:
                 return None
             capacity = job_capacity.snapshot(self._capacity(db), active)
-            # Preserve the original global FIFO fence before ranking candidates.
-            # Priority never allows a later device lane to bypass that barrier.
-            global_waiting = False
-            candidates = []
-            for row in db.execute("SELECT * FROM jobs WHERE state='queued' ORDER BY sequence"):
-                value = self._row(row)
-                if value["paused"]:
-                    continue
-                later_device_write = (device_access(value["spec"]) == "write"
-                                      and scope(value["spec"])["scope"] == "device")
-                if global_waiting and later_device_write:
-                    continue
-                if global_waiter(value):
-                    global_waiting = True
-                candidates.append(value)
+            candidates = [self._row(row) for row in db.execute(
+                "SELECT * FROM jobs WHERE state='queued' ORDER BY sequence") if not row["paused"]]
             # Stable sorting keeps SQL insertion order within each priority,
             # including legacy requests that omit the field (effective zero).
             for value in sorted(candidates, key=lambda row: (

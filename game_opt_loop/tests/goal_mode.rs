@@ -71,6 +71,7 @@ fn fake_phonefarm(probe_out: &Path, win: bool) -> String {
 fn fake_phonefarm_d(probe_out: &Path, status: &str, keep: &str, wins: &str, d: &str, code: u8) -> String {
     let mut s = String::new();
     s.push_str("#!/bin/sh\ncase \"$1\" in\n");
+    s.push_str("  __lease-handoff) exec python3 \"$(dirname \"$0\")/fd_phonefarm.py\" \"$@\" ;;\n");
     s.push_str("  devices) echo \"91253241019A device\"; exit 0 ;;\n");
     s.push_str(&format!("  probe) cat '{}'; exit 0 ;;\n", probe_out.display()));
     s.push_str("  onboard) echo '{\"status\":\"INGAME\"}'; exit 0 ;;\n");
@@ -99,6 +100,7 @@ fn scaffold(tag: &str, win: bool) -> PathBuf {
     std::fs::write(pf.join("knobs/gray/build/build_layer.sh"), "#!/bin/sh\n").unwrap();
     std::fs::write(root.join("probe_out.txt"), ROOTED_NX809J).unwrap();
     std::fs::write(root.join("probe.txt"), PROBE).unwrap();
+    std::fs::write(pf.join("fd_phonefarm.py"), include_str!("fd_phonefarm.py")).unwrap();
     let bin = pf.join("phonefarm");
     std::fs::write(&bin, fake_phonefarm(&root.join("probe_out.txt"), win)).unwrap();
     #[cfg(unix)]
@@ -410,7 +412,6 @@ fn sigint_case(tag: &str, to_group: bool) {
         .arg(root.join("probe.txt"))
         .arg("--profiles")
         .arg(root.join("profiles"))
-        .arg("--no-devlock")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         // 节点那样: 每个任务自己一个进程组, 停任务时对整组发信号
@@ -587,10 +588,10 @@ fn sigint_while_queuing_for_the_lock_stops_without_touching_the_device() {
     let dir = root.join("goals/run_q");
     goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
     confirm_with(&dir, |s| s.layers = vec!["sysparam".into()]);
-    // 永远轮不到的锁；fake lock 先发布实际调用事实。
-    let lock = root.join("busy_devlock");
+    // The selected PF helper records its call, then waits without sending a lock fd.
+    let lock = root.join("phonefarm/phonefarm");
     let called = root.join("lock_called");
-    std::fs::write(&lock, format!("#!/bin/sh\necho called > {}\necho 'not your turn: head=someone'\nexit 1\n", called.display())).unwrap();
+    std::fs::write(&lock, format!("#!/usr/bin/env python3\nimport pathlib,time\npathlib.Path({:?}).write_text('called')\nwhile True: time.sleep(.02)\n", called.to_str().unwrap())).unwrap();
     std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
         .args(["goal", "run"])
@@ -601,7 +602,6 @@ fn sigint_while_queuing_for_the_lock_stops_without_touching_the_device() {
         .arg(root.join("no_secrets.env"))
         .arg("--sysparam-probe")
         .arg(root.join("probe.txt"))
-        .env("DEVLOCK_BIN", &lock)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

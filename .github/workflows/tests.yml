@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install phonefarm test tools
         if: matrix.name == 'phonefarm tests'
-        run: sudo apt-get update && sudo apt-get install -y zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh adb
       - name: Install Rust
         if: matrix.rust
         uses: dtolnay/rust-toolchain@stable
