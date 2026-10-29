@@ -4,8 +4,10 @@ import io
 import json
 from pathlib import Path
 import sys
+import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import dash
@@ -138,6 +140,33 @@ sys.exit(0 if done else 2)
             current["device_scopes"]["registry_revision"] = 2
             current["device_scopes"]["devices"][0]["status"] = "blocked"
             current["device_scopes"]["devices"][1]["status"] = "held"
+            claimed, resume = threading.Event(), threading.Event()
+            launch = env.jobs.dispatch.launch
+
+            def pause_recovery(row):
+                if row["request_id"] == "cancelled-game-recovery":
+                    claimed.set()
+                    self.assertTrue(resume.wait(10), "fixture did not release the claimed recovery")
+                    return False
+                return launch(row)
+
+            with patch.object(env.jobs.dispatch, "launch", side_effect=pause_recovery):
+                try:
+                    code, cancelled = env.call("POST", "/jobs/" + a + "/deployment/recover", {},
+                        headers={**pin, "X-Request-ID": "cancelled-game-recovery"})
+                    self.assertEqual(code, 200, cancelled)
+                    cancelled_id = cancelled["id"]
+                    submitted.append(cancelled_id)
+                    self.assertTrue(claimed.wait(5))
+                    code, reset = env.call("POST", "/jobs/" + cancelled_id + "/reset",
+                        {"note": "cancel the claimed recovery before its command starts"}, headers=pin)
+                    self.assertEqual(code, 200, reset)
+                    self.assertEqual(reset["job"]["queue"]["state_reason"]["kind"], "cancelled_before_launch")
+                    self.assertFalse(Path(env.jobs.path(cancelled_id, "launch.json")).exists())
+                    plan = env.call("GET", "/jobs/" + a + "/deployment")[1]["recovery"]
+                    self.assertEqual((plan["eligible"], plan["target_job_id"]), (True, a))
+                finally:
+                    resume.set()
             code, attempt = env.call("POST", "/jobs/" + a + "/deployment/recover", {},
                                      headers={**pin, "X-Request-ID": "game-scope-recover"})
             self.assertEqual(code, 200, attempt)

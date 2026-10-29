@@ -243,9 +243,15 @@ class JobQueue:
                   "unstarted": {"outcome": outcome, "note": note, "at": now}}
         if input_preparation_expected:
             reason["unstarted"]["input_preparation_expected"] = True
+        state = "blocked"
+        if outcome == "cancelled":
+            # A claimed task whose command never launched is the same durable
+            # cancellation fact as cancel_pending, including recovery children.
+            state = "done"
+            reason = {"kind": "cancelled_before_launch", "at": now}
         with self._transaction(write=True) as db:
-            db.execute("UPDATE jobs SET state='blocked', state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state!='done'",
-                       (json.dumps(reason), json.dumps({"at": now, "basis": "not_started"}), jid))
+            db.execute("UPDATE jobs SET state=?, state_reason=?, host_capacity_release=COALESCE(host_capacity_release,?) WHERE job_id=? AND state!='done'",
+                       (state, json.dumps(reason), json.dumps({"at": now, "basis": "not_started"}), jid))
             return self._publish(db, jid)
 
     def get(self, jid):
