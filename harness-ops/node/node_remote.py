@@ -9,7 +9,7 @@ import base64, fnmatch, hashlib, hmac, json, os, re, secrets, subprocess, sys, t
 import threading, time, uuid
 from urllib.parse import parse_qs, unquote
 from remote_owner import OwnerError
-from device_scope import binding, conflicts, scope, lease_problem, same_binding
+from device_scope import binding, scope, same_binding
 from device_registry import RegistryError
 
 CONFIG_DIR = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
@@ -250,17 +250,6 @@ class Occupancy:
                 for entry in snapshot.get("entries", [])]
 
 
-def describe_holders(serial, holders):
-    parts = []
-    for h in holders:
-        who = h.get("label") or "未知持有者"
-        since = f"，自 {h['since']}" if h.get("since") else ""
-        hb = f"，心跳 {h['heartbeat_age_s']:.0f}s 前" if isinstance(h.get("heartbeat_age_s"), (int, float)) else ""
-        scope = "全局 devlock（没写设备，按占用所有设备算）" if h.get("global") else f"{h['dir']} 点名 {h.get('serial')}"
-        parts.append(f"{who}{since}{hb}；{scope}")
-    return f"设备 {serial} 正被实验占用：" + "；".join(parts)
-
-
 # ═════════════ 设备后端 ═════════════
 
 def _run(argv, timeout, cap=OUTPUT_CAP, env=None):
@@ -355,7 +344,7 @@ class Session:
                 'screen_size': (self.descriptor.get('latest_image') or {}).get('original_size')}
 
     def scope(self):
-        return scope({'device_access': 'write',
+        return scope({'device_access': 'write', 'argv': ['--serial', self.serial],
                       **({'device_binding': self.ref['device_binding']} if 'device_binding' in self.ref else {})})
 
 
@@ -436,7 +425,7 @@ class Remote:
         with self._lock:
             sessions = list(self.sessions.values())
         active = [{**self._refresh(s), 'device_scope': s.scope()} for s in sessions]
-        active = [s for s in active if s.get('phase') != 'closed']
+        active = [s for s in active if s.get('live_owner') and s.get('phase') in ('ready', 'closing')]
         out = []
         for d in self._enumerate():
             serial = d['serial']
@@ -453,8 +442,8 @@ class Remote:
                 if matching:
                     item['holder'] = {'kind': 'experiment', **matching}
             out.append(item)
-        # Old/offline references remain visible even if host enumeration lost
-        # the device. Missing enumeration cannot erase a recovery obligation.
+        # A live owner remains visible even if host enumeration lost its device.
+        # Starting and historical sessions are still queryable by their saved ID.
         present = {d['serial'] for d in out}
         for sess in active:
             if sess['serial'] not in present:
@@ -476,7 +465,6 @@ class Remote:
         value = binding(params['device_binding']) if 'device_binding' in params else None
         if value is not None and value['serial'] != serial:
             raise RemoteError(400, 'acquisition serial must match device_binding')
-        requested_scope = scope({'device_access': 'write', **({'device_binding': value} if value else {})})
         self._require_backend()
         with self._lock:
             for sess in self.sessions.values():
@@ -489,26 +477,11 @@ class Remote:
                 raise RemoteError(403, f'设备 {serial} 未开放远程控制')
             if value is not None and not self.capabilities()['device_binding_v1']:
                 raise RemoteError(503, 'configured PF remote owner does not support device binding; no global fallback')
-            for sess in self.sessions.values():
-                state = self._refresh(sess)
-                if state.get('phase') != 'closed' and conflicts(requested_scope, sess.scope()):
-                    raise RemoteError(409, f"设备域由 {sess.operator['name']} 的会话占用或等待恢复", holder=state)
             device = next((d for d in self._enumerate() if d['serial'] == serial), None)
             if not device or device['state'] != 'device':
                 raise RemoteError(409, '设备当前不在线')
             if device['transport'] != 'adb':
                 raise RemoteError(501, '此 PF remote owner 尚未支持 HDC；未发出设备动作')
-            # Advisory records explain refusal. Only PF's Lease, acquired inside
-            # start(), can actually grant ownership; labels never bypass it.
-            if value is not None:
-                problem = lease_problem({'device_access': 'write', 'device_binding': value},
-                                        self.leases.snapshot(refresh=True) if self.leases else {})
-                if problem:
-                    raise RemoteError(409, problem)
-            else:
-                holders = self.occupancy.holders()
-                if holders:
-                    raise RemoteError(409, describe_holders(serial, holders), holders=holders)
             ref = self.backend.start(serial, op, ip, minutes * 60, acquisition,
                                      **({'device_binding': value} if value else {}))
             sess = Session(ref, self.backend.status(ref))

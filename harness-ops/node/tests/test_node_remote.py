@@ -42,6 +42,7 @@ class FakePF:
         self.data = json.loads(path.read_text()) if path.exists() else {
             "refs": [], "descriptors": {}, "requests": {}, "receipts": {}}
         self.calls, self.lose_reply = [], set()
+        self.starting = set()
         self.closed = False
 
     def save(self):
@@ -62,7 +63,7 @@ class FakePF:
         self.data["refs"].append(ref)
         self.data["descriptors"][ident] = {
             "schema": "phonefarm/remote-control@1", "session_id": "session-" + ident,
-            "serial": serial, "phase": "ready", "live_owner": True,
+            "serial": serial, "phase": "starting" if acquisition_id in self.starting else "ready", "live_owner": True,
             "capabilities": self.actions, "input_contract": self.input_contract,
             "input_frame_id": None, "frame_max_age_seconds": 30,
             "recovery": {"required": False}}
@@ -178,6 +179,30 @@ class Base(unittest.TestCase):
 
 
 class RemoteTests(Base):
+    def test_raw_remote_session_does_not_block_another_phone(self):
+        self.remote.policy.enable("fixture-phone")
+        first = self.acquire("phone-a")
+        second = self.remote.do(self.bob, "fixture-ip", "fixture-phone", "acquire",
+                                {"request_id": "phone-b"})
+        self.assertEqual((first["phase"], second["phase"]), ("ready", "ready"))
+        self.assertEqual([call[1] for call in self.backend.calls if call[0] == "start"],
+                         [SERIAL, "fixture-phone"])
+        devices = {item["serial"]: item for item in self.remote.devices()["devices"]}
+        for serial, acquired in ((SERIAL, first), ("fixture-phone", second)):
+            self.assertEqual(devices[serial]["holder"]["session_id"], acquired["session_id"])
+            self.assertEqual(devices[serial]["holder"]["device_scope"]["scope"], "device")
+
+    def test_another_phone_lock_snapshot_does_not_reject_remote_acquisition(self):
+        snapshot = {"status": "held", "entries": [{"scope": "device", "device_id": "b",
+                    "serial": "fixture-phone", "label": "other-phone-task"}]}
+        self.remote.occupancy = node_remote.Occupancy(lambda: snapshot)
+        acquired = self.acquire("phone-a")
+        self.assertEqual(acquired["phase"], "ready")
+        self.assertEqual([call[1] for call in self.backend.calls if call[0] == "start"], [SERIAL])
+        devices = {item["serial"]: item for item in self.remote.devices()["devices"]}
+        self.assertEqual(devices[SERIAL]["holder"]["session_id"], acquired["session_id"])
+        self.assertEqual(devices["fixture-phone"]["holder"]["label"], "other-phone-task")
+
     def test_inventory_places_a_device_holder_only_on_matching_aliases(self):
         snapshot = {"status": "held", "entries": [{"scope": "device", "device_id": "a",
             "serial": "usb-a", "label": "live-a"}], "device_scopes": {"devices": [
@@ -200,19 +225,20 @@ class RemoteTests(Base):
         leases = mock.Mock()
         leases.snapshot.side_effect = lambda **kw: snapshot
         self.remote.occupancy = node_remote.Occupancy(node_remote.storage_from_leases(leases))
-        with self.assertRaises(node_remote.RemoteError) as held:
-            self.acquire()
-        self.assertEqual(held.exception.status, 409)
         self.assertEqual(self.remote.occupancy.holders()[0]["label"], "fixture-owner")
-        self.assertEqual(self.backend.mutations(), [])
+        self.backend.starting.add("held")
+        self.assertEqual(self.acquire("held")["phase"], "starting")
+        self.assertEqual(self.remote.devices()["devices"][0]["holder"]["label"], "fixture-owner")
         snapshot.update(status="unknown", error="fd status unavailable", entries=[])
         with self.assertRaises(node_remote.RemoteError) as unknown:
-            self.acquire()
+            self.remote.occupancy.holders()
         self.assertEqual(unknown.exception.status, 503)
-        self.assertEqual(self.backend.mutations(), [])
+        self.assertEqual(self.remote.devices()["lock_storage_error"], "fd status unavailable")
+        self.assertEqual(self.acquire("unknown")["phase"], "ready")
         snapshot.update(status="clear", error=None)
-        self.assertEqual(self.acquire()["phase"], "ready")
-        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
+        self.assertEqual(self.remote.occupancy.holders(), [])
+        self.assertEqual(self.acquire("clear")["phase"], "ready")
+        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 3)
         self.assertEqual(old.read_text(), 'old fence and owner evidence')
 
     def test_tokens_are_hashed_and_revocable(self):
@@ -276,11 +302,11 @@ class RemoteTests(Base):
         self.assertNotIn("released", pending)
         state = self.remote.query(self.alice, SERIAL, acquisition_id="acquire-1")
         self.assertEqual(state["phase"], "closing")
-        with self.assertRaises(node_remote.RemoteError) as still_owned:
-            self.acquire("bob-acquire", self.bob)
-        self.assertEqual(still_owned.exception.status, 409)
-        self.assertEqual(len(self.remote.sessions), 1)
-        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 1)
+        self.backend.starting.add("bob-acquire")
+        self.assertEqual(self.acquire("bob-acquire", self.bob)["phase"], "starting")
+        self.assertEqual(self.remote.query(self.alice, SERIAL, acquisition_id="acquire-1")["phase"], "closing")
+        self.assertEqual(len(self.remote.sessions), 2)
+        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 2)
 
     def test_unknown_submit_and_node_restart_keep_saved_reference_and_receipt(self):
         acquired = self.acquire()
@@ -300,12 +326,13 @@ class RemoteTests(Base):
         self.assertTrue(state["recovery"]["required"])
         receipt = restarted.query(self.alice, SERIAL, session_id=sid, request_id="lost-1")
         self.assertEqual((receipt["status"], receipt["request_id"]), ("unknown", "lost-1"))
-        with self.assertRaises(node_remote.RemoteError) as still_blocked:
-            self.acquire("after-restart", self.bob, restarted)
-        self.assertEqual(still_blocked.exception.status, 409)
         self.assertEqual(restarted_backend.mutations(), [])
+        self.assertEqual(self.acquire("after-restart", self.bob, restarted)["phase"], "ready")
+        self.assertEqual(restarted_backend.mutations(), [("start", SERIAL, "after-restart")])
+        self.assertEqual(restarted.query(self.alice, SERIAL, acquisition_id="acquire-1"), state)
+        self.assertEqual(restarted.query(self.alice, SERIAL, session_id=sid, request_id="lost-1"), receipt)
         self.assertEqual(len(restarted_backend.data["requests"]), 1)
-        self.assertEqual(len(restarted.sessions), 1)
+        self.assertEqual(len(restarted.sessions), 2)
 
 
 class RemoteHttpTests(Base):
@@ -342,6 +369,50 @@ class RemoteHttpTests(Base):
 
     def bearer(self, token):
         return {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+
+    def test_control_page_shows_each_raw_remote_holder_on_its_phone(self):
+        self.board.wake = threading.Event()
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.acquire("alice-phone")
+        self.remote.policy.enable("fixture-phone")
+        self.remote.do(self.bob, "fixture-ip", "fixture-phone", "acquire", {"request_id": "bob-phone"})
+        view = f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"
+        status, headers, _ = self.req("POST", "/dash/api/remote/login", {"token": self.alice_token},
+                                    {"Cookie": view, "Content-Type": "application/json", "X-HG": "1"})
+        self.assertEqual(status, 200)
+        operator = headers["Set-Cookie"].split(";", 1)[0]
+        base = "http://%s:%d" % self.server.server_address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (view, operator)])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(base + "/dash/control")
+                page.wait_for_function("() => document.querySelectorAll('#devices .dev-held').length === 2")
+                rows = {row.locator(".dev-serial").inner_text(): row.locator(".dev-sub").inner_text()
+                        for row in page.locator("#devices li").all()}
+                self.assertIn("alice", rows[SERIAL])
+                self.assertNotIn("bob", rows[SERIAL])
+                self.assertIn("bob", rows["fixture-phone"])
+                self.assertNotIn("alice", rows["fixture-phone"])
+                self.assertNotIn("全域占用", " ".join(rows.values()))
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
 
     def test_logcat_mapping_preserves_receipt_and_owner_capability(self):
         self.backend.actions = [*self.backend.actions, "logcat"]
@@ -425,8 +496,13 @@ class RemoteHttpTests(Base):
         code, first = acquire("lane-a", a); self.assertEqual(code, 200, first)
         current["device_scopes"]["devices"][0]["status"] = "held"
         code, second = acquire("lane-b", b); self.assertEqual(code, 200, second)
-        self.assertEqual(acquire("alias-a", alias)[0], 409)
-        self.assertEqual(acquire("global", None, b["serial"])[0], 409)
+        self.backend.starting.update(("alias-a", "raw-b"))
+        with mock.patch.object(self.remote, "_enumerate", return_value=[
+                {"serial": value["serial"], "transport": "adb", "state": "device"} for value in (a, alias, b)]):
+            code, pending_alias = acquire("alias-a", alias)
+        self.assertEqual((code, pending_alias["phase"]), (202, "starting"))
+        code, pending_raw = acquire("raw-b", None, b["serial"])
+        self.assertEqual((code, pending_raw["phase"]), (202, "starting"))
         code, _, raw = self.req("GET", path.rstrip("/"), headers=auth)
         devices = {d["serial"]: d for d in json.loads(raw)["devices"]}
         self.assertEqual(devices[SERIAL]["holder"]["device_scope"], {"scope": "device", "binding": a})
@@ -436,13 +512,13 @@ class RemoteHttpTests(Base):
         resolver.side_effect = AssertionError("old acquisition must not re-resolve")
         self.assertEqual(acquire("lane-a", a)[1]["session_id"], first["session_id"])
         self.assertEqual(acquire("lane-a", {**a, "registry_revision": 2})[0], 409)
-        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 2)
+        self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 4)
         # A saved binding also survives a gateway restart and missing new capability.
         restarted = self.new_remote(self.backend)
         self.assertEqual(restarted.query(self.alice, SERIAL, acquisition_id="lane-a")["device_binding"], a)
         for descriptor in self.backend.data["descriptors"].values():
             descriptor["phase"] = "closed"
-        code, legacy = acquire("legacy-global", None, SERIAL)
+        code, legacy = acquire("raw-a", None, SERIAL)
         self.assertEqual(code, 200, legacy)
         self.assertNotIn("device_binding", self.backend.data["refs"][-1])
 
@@ -582,10 +658,12 @@ class RemoteHttpTests(Base):
         names = {tool["name"] for tool in rpc("tools/list")["result"]["tools"]}
         self.assertTrue({"hgremote_acquire", "hgremote_status", "hgremote_screenshot"} <= names)
         self.assertTrue({"hgremote_shell", "hgremote_install", "hgremote_push"}.isdisjoint(names))
+        self.backend.starting.add("bob-attempt")
         result = rpc("tools/call", {"name": "hgremote_acquire", "arguments": {
             "serial": SERIAL, "request_id": "bob-attempt"}}, self.bob_token)["result"]
-        self.assertTrue(result["isError"])
-        self.assertIn("alice", result["content"][0]["text"])
+        self.assertFalse(result["isError"])
+        self.assertEqual(json.loads(result["content"][0]["text"])["phase"], "starting")
+        before = self.backend.mutations()
         result = rpc("tools/call", {"name": "hgremote_status", "arguments": {
             "serial": SERIAL, "session_id": sid, "request_id": "shot-1"}})["result"]
         self.assertEqual(json.loads(result["content"][0]["text"])["status"], "completed")
