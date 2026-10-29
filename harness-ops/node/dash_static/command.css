@@ -83,7 +83,9 @@ button:disabled { opacity: .45; cursor: default; }
 @keyframes rise { from { opacity: 0; transform: translateY(-6px); } }
 .app.rail-collapsed .clock span, .app.rail-collapsed .clock small, .app.rail-collapsed .block h2, .app.rail-collapsed .roster .who, .app.rail-collapsed .roster .n,
 .app.rail-collapsed .roster .heat, .app.rail-collapsed .phones li .doing, .app.rail-collapsed .feed-block, .app.rail-collapsed .rail-head .mark, .app.rail-collapsed .queue span { display: none; }
-.app.rail-collapsed .clock b { font-size: 15px; } .app.rail-collapsed .rail-head .back { display: none; }
+.app.rail-collapsed .clock b { font-size: 13px; letter-spacing: -.03em; } .app.rail-collapsed .clock { padding: 10px 6px 8px; text-align: center; }
+.app.rail-collapsed .clock .status, .app.rail-collapsed .clock .seg { display: none; }
+.app.rail-collapsed .rail-head { justify-content: center; padding: 0; } .app.rail-collapsed .rail-head .back { display: none; }
 .app.rail-collapsed .phones li { grid-template-columns: 1fr; padding: 6px; } .app.rail-collapsed .phones li .temp { text-align: left; font-size: 11px; }
 .app.rail-collapsed .phones li b small { display: none; } .app.rail-collapsed .phones li b { font-size: 11px; }
 .app.rail-collapsed .block { padding: 8px 10px; } .app.rail-collapsed .roster li { grid-template-columns: 26px; }
