@@ -47,10 +47,11 @@ export class World {
       tr.root = el('div', 'root', '<svg class="ring" viewBox="0 0 230 230"></svg><div class="orb"><div class="count"><b>0</b><small>实验</small></div></div>');
       tr.label = el('div', 'task-label', '<b></b><div class="meta"><span class="tag"></span><span class="mono"></span></div>');
       for (const n of [tr.root, tr.label]) { n.dataset.tree = tr.id; n.dataset.kind = 'root'; }
+      tr.root.tabIndex = 0; tr.root.setAttribute('role', 'button');
       tr.root.style.left = '0px'; tr.root.style.top = '0px'; tr.label.style.left = '0px'; tr.label.style.top = LABEL_Y + 'px';
       node.append(tr.links, tr.root, tr.label);
     }
-    tr.label.querySelector('b').textContent = short(task.title, 34);
+    tr.label.querySelector('b').textContent = short(task.title, 34); tr.root.setAttribute('aria-label', task.title);
     tr.label.querySelector('.mono').textContent = `${agentName(task.owner)} · ${md(task.created_at)} ${hm(task.created_at)}`;
     const keep = new Set();
     for (const g of groups) {
@@ -92,12 +93,12 @@ export class World {
       if (tr.here !== here) { tr.node.style.display = here ? '' : 'none'; tr.here = here; if (here) fresh(tr.root, animate); }
       if (!here) continue;
       out.shown++;
-      let done = 0, ok = 0, busy = false;
+      let done = 0, ok = 0, busy = false, running = 0;
       const ring = [];
       for (const part of tr.parts.values()) {
         if (part.kind !== 'leaf') continue;
         const s = jobAt(part.j, t);
-        if (s === 'running') busy = true;
+        if (s === 'running') { busy = true; running++; }
         if (s && s !== 'running' && s !== 'waiting') { done++; if (s === 'succeeded') ok++; ring.push([part.j.ended, s === 'succeeded']); }
         if (part.s === s) continue;
         const was = part.s; part.s = s;
@@ -122,12 +123,12 @@ export class World {
         part.link.setAttribute('stroke', LINK[state] || LINK.trunk); part.link.setAttribute('stroke-opacity', '.7');
         if (animate && !was) { fresh(part.node, true); part.link.classList.remove('draw'); void part.link.getBBox(); part.link.classList.add('draw'); }
       }
-      const delivered = deliveredAt(task, t), s = `${done}|${ok}|${busy}|${delivered}`;
+      const delivered = deliveredAt(task, t), s = `${done}|${ok}|${running}|${delivered}`;
       if (animate && delivered && tr.delivered === false) { const r = el('span', 'gold-ripple'); tr.root.append(r); r.addEventListener('animationend', () => r.remove()); }
       if (tr.s !== s) {
         tr.s = s;
         tr.root.classList.toggle('busy', busy); tr.root.classList.toggle('delivered', delivered);
-        tr.root.querySelector('.count b').textContent = done;
+        tr.root.querySelector('.count b').textContent = done + running;
         const tag = tr.label.querySelector('.tag'); tag.className = 'tag ' + (delivered ? 'delivered' : 'active'); tag.textContent = delivered ? '已交付' : '进行中';
         tr.root.querySelector('.ring').innerHTML = ringSvg(ring.sort((a, b) => a[0] - b[0]));
         tr.done = done; tr.ok = ok;

@@ -20,6 +20,7 @@ export class Timeline {
     const span = Math.max(600, d1 - d0);
     this.d1 = Math.min(this.t1, d1); this.d0 = Math.max(this.t0, this.d1 - span);
     if (this.d1 - this.d0 < 600) this.d0 = this.d1 - 600;
+    this.hover.hidden = true;
     this.render();
   }
   x(t) { return (t - this.d0) / (this.d1 - this.d0) * this.track.clientWidth; }

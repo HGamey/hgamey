@@ -1136,7 +1136,18 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual(page.get_attribute("#t-play", "aria-label"), "播放", "leaving live holds the moment")
                 page.click("#t-live")
                 self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "true")
+                page.mouse.click(5, 300)  # the rail, so Space is not taken by a focused button
+                page.keyboard.press(" ")
+                self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "false")
+                self.assertEqual(page.get_attribute("#t-play", "aria-label"), "播放", "pausing live holds now")
+                self.assertLess(page.evaluate("() => Date.now() / 1000 - window.__command.S.now"), 30, "and does not jump back to replay the record")
                 self.assertTrue(page.is_visible('a.back[href="/dash"]'))
+                # A chosen source that cannot be read is reported with a retry, never swapped for another one.
+                page.route("**/dash/api/command", lambda route: route.abort())
+                page.goto(f"{base}/dash/command?src=live")
+                page.wait_for_selector("#retry")
+                self.assertIn("读不到本节点的数据", page.text_content("#empty"))
+                self.assertIn("src=live", page.url)
                 self.assertEqual(errors, [])
             finally:
                 browser.close()

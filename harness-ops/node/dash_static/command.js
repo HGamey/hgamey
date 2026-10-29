@@ -148,7 +148,8 @@ function refresh(animate) {
     if (!S.follow && e.tree && !onScreen(e.tree)) S.offscreen++;
   }
   if (!animate && !S.focus) S.focus = lastTreeBefore(idx);
-  counts(out); roster(); phones(); asks(); feed(idx, fresh.length && fresh.length < 20); clock(); followButton();
+  counts(out); roster(); phones(); asks(); feed(idx, fresh.length && fresh.length < 20); clock(); followButton(); minimap();
+  if (M.tasks.length) showEmpty(out.shown || (S.playing && !S.live) ? '' : `<div>${stamp(t)} 还没有任务<small>${stamp(M.tasks.reduce((a, x) => Math.min(a, x.created_at), Infinity))} 出现第一个任务</small></div>`);
   if (S.panel === 'task') panelTask(true); else if (S.panel === 'wins') panelWins();
 }
 const lastTreeBefore = idx => S.events.slice(0, idx).reverse().find(e => e.tree && e.type !== 'end')?.tree;
@@ -203,8 +204,10 @@ function phones() {
   let busy = 0;
   for (const li of $('phones').querySelectorAll('li[data-key]')) {
     const p = S.M.phones.find(x => x.key === li.dataset.key), job = S.M.jobs.find(j => j.phone && phoneOf(j) === p && jobAt(j, t) === 'running');
-    const temp = p.soc_c || p.temp_c;
-    li.querySelector('.temp').textContent = fresh && temp ? `${temp.toFixed(0)}°C` : '';
+    const temp = p.temp_c ?? p.soc_c;   // battery temperature for every phone (SoC is missing on some)
+    const sampled = S.live ? Date.now() / 1000 - (S.M.phonesAt || S.M.at) : S.T1 - (S.M.phonesAt || S.M.at), old = sampled > 600;
+    li.querySelector('.temp').innerHTML = fresh && temp ? `${temp.toFixed(0)}°C${old ? `<small>${esc(ago(sampled))}前</small>` : ''}` : '';
+    li.classList.toggle('old', fresh && old);
     li.classList.toggle('warm', fresh && temp >= 40);
     li.classList.toggle('busy', !!job); if (job) busy++;
     li.querySelector('.doing').textContent = job ? `${agentName(job.agent)} · ${job.kind}` : '空闲';
@@ -252,7 +255,7 @@ function feedItem(e, isNew) {
   const html = feedLine(e); if (!html) return null;
   const li = el('li', (e.who === 'human' ? 'human' : '') + (isNew ? ' new' : ''), `<time>${hm(e.at)}</time><i></i><div class="txt">${html}</div>`);
   li.style.setProperty('--c', e.who === 'human' ? '#f0c36e' : e.who ? agentMeta(e.who).c : '#8aa1b5');
-  if (e.tree) li.dataset.tree = e.tree;
+  if (e.tree) { li.dataset.tree = e.tree; li.tabIndex = 0; }
   return li;
 }
 function feed(idx, incremental) {
@@ -284,19 +287,27 @@ function counts(out) {
   if ($('counts').innerHTML !== html) $('counts').innerHTML = html;
 }
 function status() {
-  const box = $('status');
+  const box = $('status'), age = (Date.now() - S.lastOk) / 1000, stale = S.src === 'live' && S.misses > 0 && age > 25;
   let text, warn = false;
   if (S.error) { text = S.error; warn = true; }
-  else if (S.live) {
-    const age = (Date.now() - S.lastOk) / 1000;
-    text = S.lastOk ? `直播 · ${age < 15 ? '刚刚更新' : `${ago(age)}前更新`}` : '直播 · 连接中';
-    warn = S.misses >= 2;
-  } else {
-    const behind = S.T1 - S.now;
-    text = `${S.playing ? `回放 ${S.speed}×` : '已暂停'}${behind > 60 ? ` · 比${S.src === 'live' ? '现在' : '快照末尾'}早 ${ago(behind)}` : ''}`;
+  else if (S.live) { text = S.lastOk ? `直播 · ${age < 15 ? '刚刚更新' : `${ago(age)}前更新`}` : '直播 · 连接中'; warn = stale; }
+  else {
+    const behind = S.T1 - S.now, end = S.src === 'live' ? '现在' : '快照末尾';
+    text = behind <= 60 && !S.playing ? `回放已到${end}` : `${S.playing ? `回放 ${S.speed}×` : '已暂停'}${behind > 60 ? ` · 比${end}早 ${ago(behind)}` : ''}`;
   }
   if (box.textContent !== text) box.textContent = text;
   box.classList.toggle('warn', warn);
+  // The top bar always says what is on screen and how old it is, also with the rail collapsed.
+  const mode = $('mode');
+  let cls, head, tail;
+  if (stale) { cls = 'stale'; head = '连接中断'; tail = `显示 ${S.lastOk ? new Date(S.lastOk).toLocaleTimeString('zh-CN', {hour12: false}) : '之前'} 的数据 · 重试中`; }
+  else if (S.live) { cls = 'live'; head = '直播'; tail = age < 15 ? '刚刚更新' : `${ago(age)}前更新`; }
+  else if (S.src === 'snapshot') { cls = 'snap'; head = '快照'; tail = `${S.M.source || ''} · ${ago(Date.now() / 1000 - S.M.at)}前的数据`; }
+  else { cls = 'replay'; head = '回放'; tail = S.T1 - S.now > 60 ? `比现在早 ${ago(S.T1 - S.now)}` : '已到现在'; }
+  const html = `<i></i><b>${head}</b><small>${esc(tail)}</small>`;
+  if (mode.innerHTML !== html) mode.innerHTML = html;
+  mode.className = 'mode ' + cls;
+  $('t-live').classList.toggle('stale', stale);
 }
 function followButton() {
   const b = $('b-follow');
@@ -305,7 +316,7 @@ function followButton() {
 }
 function setFollow(on) {
   if (S.follow === on) return;
-  S.follow = on; S.offscreen = 0; S.followAt = 0; followButton();
+  S.follow = on; S.offscreen = 0; S.followAt = 0; followButton(); minimap();
 }
 function sourceSwitch() {
   const box = $('src');
@@ -331,7 +342,7 @@ function minimap() {
   const svg = $('minimap'), e = cam.extent; if (!e || !S.lay) return;
   const pad = 200, vb = [e.x0 - pad, e.y0 - pad, e.x1 - e.x0 + 2 * pad, e.y1 - e.y0 + 2 * pad], v = cam.view();
   const whole = v.x0 <= e.x0 && v.y0 <= e.y0 && v.x1 >= e.x1 && v.y1 >= e.y1;
-  svg.classList.toggle('off', whole);
+  svg.classList.toggle('off', whole || S.follow);   // a navigation aid for free movement; following needs none
   if (whole) return;
   const aspect = vb[2] / vb[3]; svg.style.width = (aspect >= 1.4 ? 168 : Math.round(108 * aspect)) + 'px'; svg.style.height = (aspect >= 1.4 ? Math.round(168 / aspect) : 108) + 'px';
   svg.setAttribute('viewBox', vb.join(' '));
@@ -428,7 +439,9 @@ const tip = $('tip');
 function showTip(e, html) {
   if (!html) { tip.hidden = true; return; }
   tip.innerHTML = html; tip.hidden = false;
-  const w = tip.offsetWidth, h = tip.offsetHeight, x = e.clientX + 16 + w > innerWidth - 8 ? e.clientX - 16 - w : e.clientX + 16, y = e.clientY + 16 + h > innerHeight - 8 ? e.clientY - 12 - h : e.clientY + 16;
+  // Above the pointer by default: a task's title sits below its orb, and the tip should not hide it.
+  const r = e.target?.getBoundingClientRect?.(), cx = e.clientX ?? (r ? r.left + r.width / 2 : 0), cy = e.clientY ?? (r ? r.top : 0);
+  const w = tip.offsetWidth, h = tip.offsetHeight, x = clamp(cx + 14, 8, innerWidth - w - 8), y = cy - h - 14 >= 8 ? cy - h - 14 : Math.min(innerHeight - h - 8, cy + 18);
   tip.style.left = x + 'px'; tip.style.top = y + 'px';
 }
 function tipHtml(node) {
@@ -439,6 +452,12 @@ function tipHtml(node) {
   const j = part.j, s = jobAt(j, S.now), waited = j.claimed && j.queued && j.claimed - j.queued > 30;
   return `<b>${esc(j.kind)} · ${s === 'running' ? '进行中' : OUTCOME[s] || s}</b>${esc(short(tr.shape.task.title))}<br><span class="mono">${esc(agentName(j.agent))} · ${esc(brandOf(j))} · ${hm(begun(j))}${j.ended && s !== 'running' ? `–${hm(j.ended)} · ${mins(j)} 分钟` : ''}${waited ? ` · 排队 ${ago(j.claimed - j.queued)}` : ''}</span>`;
 }
+// Tabbing to a task brings it into view through the camera (the stage itself never scrolls).
+stage.addEventListener('focusin', e => {
+  stage.scrollTop = stage.scrollLeft = 0;
+  const n = e.target.closest('.root[data-tree]');
+  if (n && !onScreen(n.dataset.tree)) { setFollow(false); frameTree(n.dataset.tree); }
+});
 stage.addEventListener('pointerover', e => {
   const n = e.target.closest('[data-kind]'); if (!n || cam.drag?.on) return;
   showTip(e, tipHtml(n)); if (n.dataset.kind === 'root') world.highlight(n.dataset.tree);
@@ -455,7 +474,7 @@ $('overlay').addEventListener('pointerover', e => { const a = e.target.closest('
 $('overlay').addEventListener('pointerout', e => { if (e.target.closest('.agent')) showTip(e); });
 
 // ── Controls
-$('t-play').addEventListener('click', () => { if (S.live) setLive(false); setPlaying(!S.playing); });
+$('t-play').addEventListener('click', () => { if (S.live) return setLive(false); setPlaying(!S.playing); });   // pausing live holds now
 $('t-speed').addEventListener('change', e => { S.speed = Number(e.target.value); if (S.live) setLive(false); status(); });
 $('t-range').addEventListener('change', e => { S.range = e.target.value; afterRange(); });
 $('t-live').addEventListener('click', () => setLive(!S.live));
@@ -471,6 +490,14 @@ function toggleRail(open = app.classList.contains('rail-collapsed')) {
 }
 addEventListener('keydown', e => {
   if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey || e.target.closest?.('input, select, textarea, [contenteditable]') || $('help').open) return;
+  // A focused task or record line opens with Enter (or Space); the focused time bar moves with arrows, Home and End.
+  const focused = e.target.closest?.('.root[data-tree], .feed li[data-tree]');
+  if (focused && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); return select(focused.dataset.tree); }
+  if (e.target === $('t-track') && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+    e.preventDefault(); setLive(false);
+    const span = timeline.d1 - timeline.d0, step = span / (e.shiftKey ? 10 : 50);
+    return seek(e.key === 'Home' ? timeline.d0 : e.key === 'End' ? timeline.d1 : S.now + (e.key === 'ArrowLeft' ? -step : step));
+  }
   const k = e.key, pan = 120;
   const act = {
     ' ': () => $('t-play').click(), k: () => $('t-play').click(), l: () => setLive(!S.live), c: () => $('b-follow').click(), f: () => $('b-fit').click(), '!': () => $('b-fit').click(),
@@ -559,7 +586,12 @@ function avoidRects() {
   }
   return out;
 }
-cam.onResize = () => { if (S.follow) S.followAt = 0; minimap(); };
+cam.onResize = () => {
+  // The stage changed size (window, rail, panel): keep the subject framed rather than whatever world point was central.
+  clearTimeout(S.resizeT);
+  cam.kMin = Math.min(.5, cam.viewFor(cam.extent, {maxK: 1}).k * .8);
+  S.resizeT = setTimeout(() => { if (S.selected) frameTree(S.selected, 0); else if (S.follow && S.focus) frameTree(S.focus, 0); minimap(); }, 120);
+};
 
 // ── Kiosk: replay once, show the whole map and the results, then hand over to the story page.
 async function onEnd() {
@@ -578,17 +610,24 @@ async function onEnd() {
   const [liveR, snapR] = await Promise.allSettled([fetchModel('live'), fetchModel('snapshot')]);
   clearTimeout(slow);
   S.hasSnapshot = snapR.status === 'fulfilled';
-  const pick = want === 'live' && liveR.status === 'fulfilled' ? 'live' : want === 'snapshot' && S.hasSnapshot ? 'snapshot'
-    : Q.get('kiosk') && S.hasSnapshot ? 'snapshot' : liveR.status === 'fulfilled' ? 'live' : S.hasSnapshot ? 'snapshot' : null;
+  const liveOk = liveR.status === 'fulfilled', explicit = want === 'live' || want === 'snapshot';
+  const pick = explicit ? (want === 'live' ? (liveOk ? 'live' : null) : (S.hasSnapshot ? 'snapshot' : null))
+    : Q.get('kiosk') && S.hasSnapshot ? 'snapshot' : liveOk ? 'live' : S.hasSnapshot ? 'snapshot' : null;
   if (!pick) {
-    showEmpty(`<div>指挥中心读不到数据<small>${esc(liveR.reason?.message || '')}</small><button type="button" id="retry">重试</button></div>`);
-    $('retry')?.addEventListener('click', () => location.reload());
+    // The chosen data could not be read: say so and offer a retry (and the other source if there is one); never switch silently.
+    const other = want === 'live' && S.hasSnapshot ? 'snapshot' : want === 'snapshot' && liveOk ? 'live' : null;
+    const why = (want === 'snapshot' ? snapR : liveR).reason?.message || '';
+    showEmpty(`<div>${want === 'snapshot' ? '读不到快照' : '读不到本节点的数据'}<small>${esc(why)}</small><button type="button" id="retry">重试</button>${other ? `<button type="button" id="other">${other === 'snapshot' ? '看快照' : '看本节点'}</button>` : ''}</div>`);
+    $('mode').className = 'mode stale'; $('mode').innerHTML = '<i></i><b>读取失败</b>';
+    $('retry').addEventListener('click', () => location.reload());
+    $('other')?.addEventListener('click', () => { const q = new URLSearchParams(location.search); q.set('src', other); location.search = q.toString(); });
     return;
   }
+  if (!explicit && pick === 'snapshot' && !liveOk) S.error = `本节点数据读取失败（${liveR.reason?.message || ''}），显示的是快照`;
   const raw = pick === 'live' ? liveR.value : snapR.value;
   if (pick === 'live') { S.skew = Date.now() / 1000 - raw.at; S.lastOk = Date.now(); }
   if (innerWidth < 1180) toggleRail(false);
-  adopt(raw, pick, false);
+  adopt(raw, pick, false); app.classList.remove('loading');
   S.speed = SPEEDS.includes(Number(Q.get('speed'))) ? Number(Q.get('speed')) : 900; $('t-speed').value = String(S.speed);
   $('t-range').value = ['all', '24', '6', 'today'].includes(S.range) ? S.range : (S.range = 'all');
   timeline.setRange(...rangeBounds(S.range));
@@ -596,7 +635,7 @@ async function onEnd() {
   if (at) { seek(at); setPlaying(false); }
   else if (pick === 'live' && !Q.get('kiosk')) { S.now = S.T1; refresh(false); setLive(true); }
   else { seek(timeline.d0); setPlaying(Q.get('paused') !== '1'); }
-  S.focus ||= lastTreeBefore(S.idx);
+  S.focus ||= lastTreeBefore(S.idx) || S.events.find(e => e.type === 'task')?.tree;   // a replay opens on its first task
   const task = S.lay.trees.has(Q.get('task')) ? Q.get('task') : null;
   if (task) select(task, {fly: false}); else if (Q.get('panel') === 'wins') openPanel('wins');
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));   // the panel has taken its width

@@ -1,11 +1,14 @@
 // Screen-space marks over the map: agents beside the task they are on, what they just said, and open questions pinned to
-// their task. Nothing here may cover the map's own content when there is room elsewhere: bubbles and pins pick, among eight
-// positions around their anchor, the one that overlaps least (keeping their previous place unless another is clearly better).
+// their task. These may not cover the map's own content: a bubble or pin tries eight sides of its anchor at growing
+// distances (a thin line leads back when it moves away) and keeps its place unless another is clearly better; when no
+// place is clear it is not shown (the rail's record still has it). Zoomed out, there are no bubbles at all.
 import {ORB} from './command-layout.js';
+import {FAR} from './command-world.js';
 import {agentMeta, agentName, clamp, el, esc} from './command-util.js';
 
-const STAND = [180, 145, 215, 110, 250].map(d => d * Math.PI / 180);
-const PLACES = ['ne', 'nw', 'e', 'w', 'se', 'sw', 'n', 's'];
+const STAND = [180, 212, 244, 276, 308].map(d => d * Math.PI / 180);   // left of and above the orb, never below: the title is there
+const PLACES = ['ne', 'nw', 'e', 'w', 'se', 'sw', 'n', 's'], REACH = [0, 48, 110, 190];
+const NS = 'http://www.w3.org/2000/svg';
 const area = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
 
 function boxAt(place, ax, ay, w, h, gap) {
@@ -17,6 +20,7 @@ function boxAt(place, ax, ay, w, h, gap) {
 export class Overlay {
   constructor(layer, cam, world) {
     Object.assign(this, {layer, cam, world, agents: new Map(), bubbles: [], pins: new Map()});
+    this.leads = document.createElementNS(NS, 'svg'); this.leads.setAttribute('class', 'leads'); layer.append(this.leads);
   }
 
   setAgents(names) {
@@ -94,28 +98,33 @@ export class Overlay {
 
   // Lay out pins, then bubbles, avoiding the map's drawn boxes, the agents, each other, and the given screen rects.
   layout(avoid) {
-    const W = this.cam.w, H = this.cam.h, taken = [...this.world.boxes(this.cam), ...avoid];
-    for (const a of this.agents.values()) if (a.pos) taken.push({l: a.pos[0] - 16, t: a.pos[1] - 16, r: a.pos[0] + 16, b: a.pos[1] + 16, soft: true});
+    const W = this.cam.w, H = this.cam.h, taken = [...this.world.boxes(this.cam), ...avoid], far = this.cam.k < FAR;
+    for (const a of this.agents.values()) if (a.pos) taken.push({l: a.pos[0] - 16, t: a.pos[1] - 16, r: a.pos[0] + 16, b: a.pos[1] + 16});
+    const leads = [];
     const pick = (x, ax, ay, w, h, gap, places) => {
       let best = null;
-      for (const place of places) {
-        const box = boxAt(place, ax, ay, w, h, gap);
+      for (const [step, reach] of REACH.entries()) for (const place of places) {
+        const box = boxAt(place, ax, ay, w, h, gap + reach);
         if (box.l < 6 || box.t < 6 || box.r > W - 6 || box.b > H - 6) continue;
-        let cost = 0; for (const o of taken) cost += area(box, o) * (o.soft ? .3 : 1);
-        if (place === x.place) cost *= .6;   // stay put unless clearly better
-        if (!best || cost < best.cost - 1) best = {place, box, cost};
+        let cover = 0; for (const o of taken) cover += area(box, o);
+        if (cover > w * h * .01) continue;   // covering the map is never the answer
+        const score = cover + step * 900 + (place === x.place && step === x.step ? -1200 : 0);
+        if (!best || score < best.score) best = {place, step, box, score};
       }
       return best;
     };
-    const mini = this.cam.k < .5;
+    const lead = (box, ax, ay, r) => {
+      const x = clamp(ax, box.l, box.r), y = clamp(ay, box.t, box.b), d = Math.hypot(x - ax, y - ay);
+      if (d > r + 14) leads.push(`M${(ax + (x - ax) * r / d).toFixed(1)},${(ay + (y - ay) * r / d).toFixed(1)} L${x.toFixed(1)},${y.toFixed(1)}`);
+    };
     for (const p of this.pins.values()) {
       const tr = this.world.trees.get(p.note.research_id);
       p.node.hidden = !tr?.here; if (!tr?.here) continue;
-      p.node.classList.toggle('mini', mini);
-      const [sx, sy] = this.cam.toScreen(tr.shape.x, tr.shape.y), w = mini ? 26 : 280, h = mini ? 26 : p.node.offsetHeight || 64, r = ORB * this.cam.k;
-      const best = pick(p, sx, sy, w, h, r + 10, ['n', 'nw', 'ne', 'w', 's']);
+      p.node.classList.toggle('mini', far);
+      const [sx, sy] = this.cam.toScreen(tr.shape.x, tr.shape.y), w = far ? 26 : 280, h = far ? 26 : p.node.offsetHeight || 64, r = ORB * this.cam.k;
+      const best = pick(p, sx, sy, w, h, r + 10, ['n', 'nw', 'ne', 'w', 'sw', 'e']);
       if (!best) { p.node.hidden = true; continue; }
-      p.place = best.place; taken.push(best.box);
+      p.place = best.place; p.step = best.step; taken.push(best.box); lead(best.box, sx, sy, r + 4);
       p.node.style.transform = `translate(${best.box.l}px,${best.box.t}px)`;
     }
     const now = performance.now();
@@ -123,14 +132,17 @@ export class Overlay {
       if (now - x.born > 6500) x.b.classList.add('fade');
       if (now - x.born > 7400) { x.b.remove(); this.bubbles.splice(this.bubbles.indexOf(x), 1); continue; }
       let anchor = null;
-      if (x.who === 'human') { const tr = this.world.trees.get(x.tree); if (tr?.here) anchor = [...this.cam.toScreen(tr.shape.x, tr.shape.y), ORB * this.cam.k + 8]; }
+      if (far) anchor = null;
+      else if (x.who === 'human') { const tr = this.world.trees.get(x.tree); if (tr?.here) anchor = [...this.cam.toScreen(tr.shape.x, tr.shape.y), ORB * this.cam.k + 8]; }
       else { const a = this.agents.get(x.who); if (a?.pos) anchor = [...a.pos, 18]; }
       x.b.hidden = !anchor; if (!anchor) continue;
       x.w ??= x.b.offsetWidth; x.h ??= x.b.offsetHeight;
       const best = pick(x, anchor[0], anchor[1], x.w, x.h, anchor[2], PLACES);
-      if (!best || best.cost > x.w * x.h * .25) { x.b.hidden = true; continue; }   // nowhere to say it without covering the map
-      x.place = best.place; taken.push(best.box);
+      if (!best) { x.b.hidden = true; continue; }   // nowhere to say it without covering the map
+      x.place = best.place; x.step = best.step; taken.push(best.box); lead(best.box, anchor[0], anchor[1], anchor[2] - 4);
       x.b.style.transform = `translate(${best.box.l}px,${best.box.t}px)`;
     }
+    const d = leads.join(' ');
+    if (this.leads.dataset.d !== d) { this.leads.dataset.d = d; this.leads.innerHTML = d ? `<path d="${d}"/>` : ''; }
   }
 }

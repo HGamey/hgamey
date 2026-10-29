@@ -13,7 +13,7 @@ export const stamp = s => `${md(s)} ${hm(s)}`;
 export function ago(sec) {
   if (sec < 60) return `${Math.max(0, Math.round(sec))} 秒`;
   if (sec < 3600) return `${Math.round(sec / 60)} 分钟`;
-  if (sec < 86400) return `${(sec / 3600).toFixed(sec < 36000 ? 1 : 0)} 小时`;
+  if (sec < 172800) return `${(sec / 3600).toFixed(sec < 36000 ? 1 : 0)} 小时`;
   return `${Math.round(sec / 86400)} 天`;
 }
 
@@ -36,9 +36,11 @@ export const OUTCOME = {succeeded: '成功', failed: '失败', cancelled: '取�
 export const DIR_STATE = {verified: '验证有效', rejected: '试过放弃', proposed: '待做', deferred: '暂缓', running: '进行中', active: '进行中'};
 export const WAIT_KIND = {resource: '等手机', device_lease: '等手机', capacity: '等空位', preparing: '准备中', recovery: '等恢复', durability: '等存储'};
 
+// A title's first clause, unless that clause is too short to tell tasks apart ("照 X 的交付，在 Y 上…" keeps the second).
 export function short(t, max = 30) {
   let s = (t || '').replace(/^\[[^\]]*\]\s*/, '');
-  const cut = s.search(/[，,；;（(]/); if (cut > 0) s = s.slice(0, cut);
+  const stops = [...s.matchAll(/[，,；;（(]/g)].map(m => m.index), cut = stops.find(i => i >= 16);
+  if (cut) s = s.slice(0, cut);
   const colon = s.search(/[：:]/); if (colon >= 6) s = s.slice(0, colon);
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }

@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/dash/static/command.css">
 </head>
 <body>
-<div class="app" id="app">
+<div class="app loading" id="app">
   <aside class="rail" id="rail" aria-label="概况">
     <header class="rail-head">
       <a class="back" href="/dash" title="返回控制台"><span aria-hidden="true">‹</span>控制台</a>
@@ -25,9 +25,10 @@
   </aside>
 
   <header class="top" id="top">
+    <span class="mode" id="mode" role="status"><i></i><b>读取中</b></span>
     <div class="counts" id="counts"></div>
     <div class="actions">
-      <button type="button" class="follow" id="b-follow" aria-pressed="true" title="镜头跟随正在发生的事（F 看全部，C 跟随）">跟随</button>
+      <button type="button" class="follow" id="b-follow" aria-pressed="false" title="镜头跟随正在发生的事（F 看全部，C 跟随）">跟随</button>
       <button type="button" id="b-fit" title="看全部任务（F）">全部</button>
       <button type="button" id="b-wins" aria-pressed="false" title="成果（W）">成果</button>
       <a class="button" id="b-story" href="/dash/showcase" title="讲解页">讲解</a>
@@ -44,7 +45,7 @@
 
   <section class="timeline" id="timeline" aria-label="时间轴">
     <div class="tl-controls">
-      <button type="button" class="icon play" id="t-play" aria-label="暂停" title="播放 / 暂停（空格）">❚❚</button>
+      <button type="button" class="icon play" id="t-play" aria-label="播放" title="播放 / 暂停（空格）">▶</button>
       <select id="t-speed" aria-label="回放速度" title="回放速度">
         <option value="1">1×</option><option value="60">60×</option><option value="300">300×</option><option value="900" selected>900×</option><option value="3600">3600×</option>
       </select>
@@ -53,7 +54,7 @@
       </select>
       <button type="button" id="t-live" class="live" aria-pressed="false" title="直播：跟着本节点实时走（L）"><i></i>直播</button>
     </div>
-    <div class="tl-track" id="t-track">
+    <div class="tl-track" id="t-track" tabindex="0" role="slider" aria-label="时间（← → 移动，Home / End 到两头）">
       <svg id="t-chart" preserveAspectRatio="none"></svg>
       <div class="tl-window" id="t-window"></div>
       <div class="tl-head" id="t-head"><span id="t-head-label"></span></div>
