@@ -19,6 +19,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
   pf-node --research <研究> --detach phonefarm ... # 为研究跑的任务带上研究 ID：手机占用和任务页据此显示
   设备写任务只占一台：研究只有一台 device_requirements 时默认同机；否则显式 --resource device:<串号>，参数优先于研究默认。
+  单机操作也可用 phonefarm lease --serial <串号> -- <命令>（layout 2 已注册设备走 device lane）；devlock busy 默认等待 DEVLOCK_WAIT_SECONDS=900 秒，设 0 立即失败。
   pf-node --experiment <分支|提交> --research <研究> --detach experiment <脚本.py|.sh> ...  # 跑实验仓库里固定提交的脚本
 
   pf-node phonefarm eval --request r.json --json --lock-label judge

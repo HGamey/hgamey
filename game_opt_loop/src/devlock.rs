@@ -136,10 +136,11 @@ pub fn parse_wait(s: &str) -> Result<Duration> {
     }
 }
 
-fn call(script: &Path, phonefarm: &Path, args: &[&str], instance: Option<&str>) -> (Option<i32>, String) {
+fn call(script: &Path, phonefarm: &Path, args: &[&str], instance: Option<&str>, wait: Option<Duration>) -> (Option<i32>, String) {
     let mut command = Command::new(script);
     command.env("PHONEFARM_BIN", phonefarm).args(args).env_remove("DEVLOCK_INSTANCE_ID");
     if let Some(instance) = instance { command.env("DEVLOCK_INSTANCE_ID", instance); }
+    if let Some(wait) = wait { command.env("DEVLOCK_WAIT_SECONDS", wait.as_secs().to_string()); }
     match command.output() {
         Ok(o) => (
             o.status.code(),
@@ -193,7 +194,7 @@ impl Guard {
         let phonefarm = std::path::absolute(phonefarm)?;
         let previous_label = std::env::var_os("DEVLOCK_LABEL");
         if let Ok(instance) = std::env::var("DEVLOCK_INSTANCE_ID") {
-            let (code, out) = call(&script, &phonefarm, &["renew", &label], Some(&instance));
+            let (code, out) = call(&script, &phonefarm, &["renew", &label], Some(&instance), None);
             if code != Some(0) { bail!("inherited device lock identity rejected: {out}"); }
             println!("设备锁: 已核验继承实例 ({label})，原地执行");
             std::env::set_var("DEVLOCK_LABEL", &label);
@@ -205,7 +206,8 @@ impl Guard {
         }
         let t0 = Instant::now();
         let instance = loop {
-            let (code, out) = call(&script, &phonefarm, &["acquire", &label], None);
+            let remaining = wait.saturating_sub(t0.elapsed());
+            let (code, out) = call(&script, &phonefarm, &["acquire", &label], None, Some(remaining));
             match code {
                 Some(0) => {
                     let value: serde_json::Value = serde_json::from_str(&out)
@@ -264,7 +266,7 @@ impl Guard {
                         continue;
                     }
                     last = Instant::now();
-                    let (code, out) = call(&script, &phonefarm, &["renew", &label], Some(&instance));
+                    let (code, out) = call(&script, &phonefarm, &["renew", &label], Some(&instance), None);
                     if code != Some(0) && !warned {
                         // 不杀主流程: 正在跑的评测半途停下会把设备留在半施加态
                         eprintln!("⚠ 设备锁续期失败 ({label}): {out}");
@@ -294,7 +296,7 @@ impl Drop for Guard {
         }
         if self.owned {
             if let Some(s) = &self.script {
-                let (code, out) = call(s, &self.phonefarm, &["release", &self.label], self.instance.as_deref());
+                let (code, out) = call(s, &self.phonefarm, &["release", &self.label], self.instance.as_deref(), None);
                 if code == Some(0) {
                     println!("设备锁: 已释放 ({})", self.label);
                 } else {

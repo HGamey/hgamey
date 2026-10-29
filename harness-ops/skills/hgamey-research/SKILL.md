@@ -12,6 +12,7 @@ description: 在 HGamey 节点上接续游戏或系统优化研究，消费人�
 最短完整路径：`pf-node checkin` → `pf-node research claim <研究ID>` → `pf-node research plan-template exploration --research-revision N` 并按草稿用 `pf-node research create direction <方向ID> <文件>` 写方向 → `pf-node --research <研究ID> --detach <命令>` 提交（实验脚本用 `--experiment <提交> experiment <脚本>`）→ `pf-node jobs --brief` / `pf-node status <job>` → `pf-node research note <研究> "<回复>" --reply-to <留言> --decision adopt|defer|reject`（图片/附件用 `job:<任务>:<路径>`；需要人定的事用 `--ask` 提问后继续其他方向）→ `pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>`。
 
 设备锁序列化实际设备操作；任务预留只在执行中占调度资源，终态自动释放。宿主完成未知时仅由管理员用 `pf-node reset <任务ID> --note <说明>` 一步重置，不代表设备已恢复。
+只碰一台手机用 `phonefarm lease --serial <串号> -- <命令>`（layout 2 已注册设备走 device lane；未注册先完成 domain-init 和设备登记）；多手机操作才用全局 devlock。devlock busy 默认等待 `DEVLOCK_WAIT_SECONDS=900`，超时删除自己的队列标签并记录阻塞者；确需立即失败时设 0。其他 agent 和维护者的留言也会进待办，同样要回应，但不挡交付。
 
 研究目标、方向、证据和人类反馈放在节点；推理、优先级和执行回合由外部 Agent 负责。网页 `/dash/research`、`/dash/jobs`、`/dash/results` 与 CLI/API 使用同一份状态。人无需同步在线。
 

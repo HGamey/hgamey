@@ -14,6 +14,8 @@ LOOP = [
     "每轮开始先运行 pf-node checkin，按 duties 的顺序处理；duties 为空时再推进实验。",
     "只处理自己负责的研究；别人研究里的留言是写给那个研究的负责人的。",
     "人工在 research 里的留言要回应：pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject。没回应之前，这个研究不能交付，方向也不能下结论。",
+    "其他 agent 和维护者的留言也会进待办，同样要回应，但不挡交付。",
+    "devlock busy 默认等 DEVLOCK_WAIT_SECONDS=900 秒，超时清自己的队列标签并记录阻塞者；立即失败设 0。单机用 phonefarm lease --serial <串号>（已注册设备走 lane），多机才用全局 devlock。",
     "需要人判断时发 request，然后继续做其他方向，不要停下来等人。",
     "为研究提交任务时加 --research <研究ID>，网页的手机占用和任务页才看得到这个任务。",
     "用自己的 token 提交任务、写 research、发言，记录都会落在你的名下。",
