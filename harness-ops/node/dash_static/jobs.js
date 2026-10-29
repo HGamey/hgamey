@@ -143,7 +143,8 @@
     const kind = {admitted: '已接收任务', queue_transition: '队列状态提交', worker_observation: 'worker 观察提交', baseline: '开始建立记录'}[item.kind];
     row.append(el('strong', `#${item.sequence} · v${item.revision} · ${kind}`), el('p', `提交于 ${time(item.at)}`, 'read-time'));
     const info = el('dl', null, 'facts');
-    for (const [name, value] of [['队列状态', state.queue_state], ['执行阶段', state.phase], ['结果', state.outcome], ['恢复状态', state.recovery_status]]) info.append(el('dt', name), el('dd', text(value)));
+    const held = state.waiting ? [['等待', `${waitingText(state.waiting)}${state.waiting.blocking_jobs?.length ? ` · 被 ${state.waiting.blocking_jobs.join('、')} 占用` : ''}`]] : [];
+    for (const [name, value] of [['队列状态', state.queue_state], ...held, ['执行阶段', state.phase], ['结果', state.outcome], ['恢复状态', state.recovery_status]]) info.append(el('dt', name), el('dd', text(value)));
     const detail = el('details', null, 'command-details');
     detail.append(el('summary', '已提交事件原记录'), el('pre', JSON.stringify(item, null, 2), 'command-box'));
     row.append(info, detail); return row;

@@ -814,6 +814,9 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(len(self.cli("GET", f"/job-events?job_id={second}&after=0&limit=200")[1]["items"]), len(page["items"]))
         first_events = self.cli("GET", f"/job-events?job_id={first}&after=0&limit=200")[1]["items"]
         self.assertFalse(any("waiting" in item["committed_status"] for item in first_events))
+        script = (NODE / "dash_static/jobs.js").read_text(encoding="utf-8")
+        self.assertIn("const held = state.waiting ? [['等待', `${waitingText(state.waiting)}", script,
+                      "the jobs page's event history names what held the job")
 
     def test_the_jobs_page_resets_through_one_entry_and_never_replays(self):
         # The page's only recovery action: POST /dash/api/jobs/<id>/reset {note}, steer required, repeatable.
