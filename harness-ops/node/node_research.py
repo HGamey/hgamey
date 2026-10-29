@@ -637,6 +637,12 @@ class NodeResearch:
                     raise ResearchError(409, "research_owned", f"this research belongs to {before}; a human reassigns it",
                                         owner=before)
             rid, observations = self._validate_links(db, kind, oid, value, old)
+            if agent is not None and kind in ("research", "direction"):
+                research = self._latest(db, "research", rid)
+                owner = json.loads(research["data"]).get("owner") if research else None
+                if owner is not None and owner != agent:
+                    raise ResearchError(409, "research_owned",
+                                        f"this research belongs to {owner}; use a note instead", owner=owner)
             if (agent is not None and value.get("state") in CONCLUDING.get(kind, ())
                     and (json.loads(old["data"])["state"] if old else None) != value["state"]):
                 waiting = self._unanswered_guidance(db, rid, agent)

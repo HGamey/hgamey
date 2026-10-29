@@ -12,6 +12,7 @@ LOOP = [
     "设备锁序列化实际操作；任务预留只在执行中占调度资源，终态自动释放。宿主完成未知时由管理员 reset，不代表恢复。",
     "设备写任务只占一台：研究只有一台 device_requirements 时默认同机；否则用 --resource device:<串号>，显式参数优先，global 会占全部设备。",
     "每轮开始先运行 pf-node checkin，按 duties 的顺序处理；duties 为空时再推进实验。",
+    "只处理自己负责的研究；别人研究里的留言是写给那个研究的负责人的。",
     "人工在 research 里的留言要回应：pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject。没回应之前，这个研究不能交付，方向也不能下结论。",
     "需要人判断时发 request，然后继续做其他方向，不要停下来等人。",
     "为研究提交任务时加 --research <研究ID>，网页的手机占用和任务页才看得到这个任务。",

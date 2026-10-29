@@ -286,6 +286,35 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.cli("POST", "/agents/agent-a", {"revision": revision, "enabled": False})[0], 200)
         self.assertEqual(self.agent(fresh, "GET", "/whoami")[0], 401)
 
+    def test_research_and_direction_writes_require_owner(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-owned", self.write(
+            "create-owned", {"title": "负责人隔离", "objective": "其他 agent 只能留言"}))[0], 201)
+        tokens = {}
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+            tokens[name] = self.cli("POST", f"/agents/{name}/token", {})[1]["token"]
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "claim", "sr-owned")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-other", self.write(
+            "create-d-other", {"research_id": "sr-owned", "title": "他人方向", "hypothesis": "不可越权"}))[0], 201)
+        code, _, err = self.pf(tokens["agent-b"], "research", "deliver", "sr-owned", "--summary", "越权交付",
+                               "--artifact", f"job:{self.jid}")
+        self.assertNotEqual(code, 0)
+        self.assertIn("research_owned", err)
+        self.assertIn("agent-a", err)
+        self.assertIn("research note", err)
+        source = self.tmp / "other-direction.json"
+        source.write_text(json.dumps({"research_id": "sr-owned", "title": "越权方向", "hypothesis": "不允许"}))
+        code, _, err = self.pf(tokens["agent-b"], "research", "create", "direction", "d-other-agent", str(source))
+        self.assertNotEqual(code, 0)
+        self.assertIn("research_owned", err)
+        code, _, err = self.pf(tokens["agent-b"], "research", "conclude", "d-other", "verified", "--reason", "越权结论")
+        self.assertNotEqual(code, 0)
+        self.assertIn("research_owned", err)
+        self.assertIn("agent-a", err)
+        self.assertEqual(self.pf(tokens["agent-b"], "research", "note", "sr-owned", "开放讨论仍然允许")[0], 0)
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "conclude", "d-other", "verified",
+                                 "--reason", "负责人结论")[0], 0)
+
     def test_research_conclude_command_and_checkin_reminder(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-conclude", self.write(
             "create-conclude", {"title": "方向结论", "objective": "交付后方向不再停留待探索"}))[0], 201)

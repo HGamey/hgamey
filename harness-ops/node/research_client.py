@@ -51,6 +51,7 @@ job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对�
 --ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 conclude 读取方向当前 revision 写入结论与 state_reason；可用 --evidence 重复引用任务产物，未回应人工留言时仍拒绝。
+research/direction 的 update、deliver、create、conclude 仅负责人可写，其他 agent 用 note 留言；留言保持开放。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
 显式查询，不自动重发、换 ID、合并草稿或轮询。回复/关闭请求不自动批准、解阻或完成方向。
 输出与网页同一 API JSON；错误保安全错误码、HTTP 状态与 current_revision，不回显源正文。
@@ -271,7 +272,7 @@ class Client:
 
     def http_error(self, error):
         status, code, revision, retry_after = error.code, None, None, None
-        validation = None
+        validation = owner = None
         try:
             raw = error.read(MAX_DATA + 1)
             value = _json(raw) if len(raw) <= MAX_DATA else None
@@ -285,6 +286,10 @@ class Client:
             candidate = value.get("retry_after_seconds") if isinstance(value, dict) else None
             if status == 429 and type(candidate) is int and 0 <= candidate <= 86400:
                 retry_after = candidate
+            candidate = value.get("owner") if isinstance(value, dict) else None
+            if (status == 409 and code == "research_owned" and isinstance(candidate, str)
+                    and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", candidate)):
+                owner = candidate
             candidate = value.get("error") if isinstance(value, dict) else None
             if (status == 400 and code == "invalid_research" and isinstance(candidate, str)
                     and 0 < len(candidate) <= 4096 and all(32 <= ord(char) != 127 for char in candidate)):
@@ -295,6 +300,8 @@ class Client:
             error.close()
         if code in CODE_MESSAGES:
             message = CODE_MESSAGES[code]
+            if owner is not None:
+                message += f"（负责人 {owner}；可用 research note 留言）"
         elif validation is not None:
             message = "研究数据校验失败：" + validation
         elif status == 409:
