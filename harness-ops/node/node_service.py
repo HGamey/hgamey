@@ -44,7 +44,7 @@ from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
-from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE
+from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE, ATTACHMENT_MAX
 import job_experiment
 from node_media import MediaError
 from node_fleet import FleetState
@@ -1130,7 +1130,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-operations"], ["research-events"], ["agents"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"]):
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query))
@@ -1215,6 +1215,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         raise ValueError("device resolution requires exactly one serial")
                     return self._send(200, {"node_id": node.node_id,
                                             "binding": jobs.device_scopes.resolve(q["serial"][0])})
+                if parts[:1] == ["research-attachments"]:
+                    if len(parts) != 2 or set(q) - {"expected_node_id"}:
+                        raise ValueError("attachment reads require only an explicit node identity")
+                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
+                        raise ValueError("attachment reads require an explicit node identity")
+                    blob, info = research.attachment(unquote(parts[1]))
+                    with blob:
+                        return self._stream_out(blob, info, q, media_type=info["media"]["mime"])
                 if parts[:1] == ["research-state"]:
                     if len(parts) == 4 and parts[1] == "research" and parts[3] == "assessment":
                         if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
@@ -1661,6 +1669,34 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except OSError as error:
                 return self._send(503, {"code": "export_storage_unavailable", "error": str(error)})
 
+        def _attachment_post(self, parts, dashboard):
+            self.close_connection = True
+            if not self._upload_write_auth(dashboard):
+                return
+            try:
+                if parts != ["research-attachments"]:
+                    raise ResearchError(404, "research_operation_not_found", "no such attachment operation")
+                if not (self.headers.get("X-Expected-Node-ID") or
+                        parse_qs(urlparse(self.path).query).get("expected_node_id")):
+                    raise ResearchError(400, "target_required", "attachment upload requires an expected node identity")
+                length = self._upload_length(ATTACHMENT_MAX, 1)
+                attachment_id = self.headers.get("X-Attachment-ID", "")
+                filename = self.headers.get("X-Filename", "")
+                content_type = self.headers.get("Content-Type", "").split(";")[0].strip()
+                self.connection.settimeout(30)
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError("attachment upload was interrupted; query the original attachment ID")
+                return self._send(201, research.upload_attachment(attachment_id, filename, content_type, raw))
+            except (ResearchError, MediaError) as error:
+                return self._send(error.status, error.payload)
+            except AssetUploadError as error:
+                return self._send(error.status, {"code": "invalid_research_request", "error": error.message})
+            except (OSError, sqlite3.Error):
+                return self._send(503, {"code": "research_storage_error", "error": "attachment save could not be confirmed; query the original ID"})
+            except (ValueError, TypeError, OverflowError) as error:
+                return self._send(400, {"code": "invalid_research", "error": str(error)})
+
         def _research_post(self, parts, dashboard):
             self.close_connection = True
             if not self._upload_write_auth(dashboard):
@@ -1920,6 +1956,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._export_cache_clear_all(False)
             if board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"] and parts[4] == "export-cache":
                 return self._export_cache_post(parts[3], True)
+            if parts[:1] == ["research-attachments"]:
+                return self._attachment_post(parts, False)
+            if board and parts[:3] == ["dash", "api", "research-attachments"]:
+                return self._attachment_post(parts[2:], True)
             if parts[:1] == ["research-state"]:
                 return self._research_post(parts, False)
             if board and parts[:3] == ["dash", "api", "research-state"]:

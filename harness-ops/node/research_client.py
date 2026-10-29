@@ -36,7 +36,7 @@ HELP = """用法:
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
   pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask]
-      [--evidence job:ID[:PATH]|result:ID|url:URL ...]                            # 在研究里留言/回应
+      [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
   pf-node research thread ID                      # 按时间读研究里的留言
   pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|url:URL ...
       [--game-version V] [--device D ...]          # 交付：总结、产物、适用范围；状态变为 delivered
@@ -48,6 +48,7 @@ plan-template 离线输出 next_experiment JSON 草稿（title、plan、research
 最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。research list 必须带 KIND，可选值同前；FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
+--attach 直接附本机 PNG、JPEG 或 SVG，可重复，单文件至多 16 MiB；实验 Python 只保证有标准库。
 --ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 conclude 读取方向当前 revision 写入结论与 state_reason；可用 --evidence 重复引用任务产物，未回应人工留言时仍拒绝。
@@ -163,6 +164,7 @@ def parser():
     note.add_argument("--reply-to", type=identifier)
     note.add_argument("--decision", choices=("adopt", "defer", "reject"))
     note.add_argument("--evidence", action="append", default=[])
+    note.add_argument("--attach", action="append", type=Path, help="附加本机 PNG、JPEG 或 SVG，可重复")
     note.add_argument("--ask", action="store_true")
     thread = commands.add_parser("thread")
     thread.add_argument("id", type=identifier)
@@ -319,9 +321,9 @@ class Client:
         return RequestError(message, status=status, code=code, current_revision=revision,
                             retry_after_seconds=retry_after)
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, headers=None):
         request = self.target.request(method, path, body,
-                                      {"Content-Type": "application/json"} if body is not None else None)
+                                      headers if headers is not None else {"Content-Type": "application/json"} if body is not None else None)
         try:
             with self.target.opener.open(request, timeout=30) as response:
                 raw = response.read(MAX_RESPONSE + 1)
@@ -557,6 +559,25 @@ def _artifact(item, node_id, option="--artifact"):
     raise ValueError(option + " 用 job:<任务ID>[:<产物相对路径>]、result:<结果ID> 或 url:<地址>")
 
 
+def _attachment(client, path):
+    if not path.is_file():
+        raise ValueError("--attach 需要本机普通文件")
+    if path.stat().st_size > 16 << 20:
+        raise ValueError("--attach 单文件不能超过 16 MiB")
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}.get(path.suffix.lower())
+    if mime is None:
+        raise ValueError("--attach 只接受 PNG、JPEG 或 SVG")
+    with path.open("rb") as stream:
+        raw = stream.read((16 << 20) + 1)
+    if len(raw) > 16 << 20:
+        raise ValueError("--attach 单文件不能超过 16 MiB")
+    attachment_id = uuid.uuid4().hex
+    value = client.request("POST", "/research-attachments", raw, headers={
+        "X-Attachment-ID": attachment_id, "X-Filename": path.name, "Content-Type": mime})
+    return {"kind": "attachment", "attachment_id": value["attachment_id"], "node_id": value["node_id"],
+            "filename": value["filename"], "content_type": value["content_type"], "sha256": value["sha256"]}
+
+
 def _conclude(client, args):
     if not args.reason.strip() or len(args.reason) > 16384:
         raise ValueError("reason 须为非空文字，至多 16384 字符")
@@ -588,7 +609,8 @@ def _task(client, args):
     if args.command == "note":
         node_id = client.target.identity()["node_id"]
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
-                "ask": args.ask, "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]}
+                "ask": args.ask, "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]
+                + [_attachment(client, path) for path in args.attach or []]}
         return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
     current = client.request("GET", f"/research-state/research/{args.id}")
     data, owner = current["data"], current["data"].get("owner")

@@ -21,6 +21,7 @@ Agent 每轮从这里开始（最短完整路径）：
   设备写任务只占一台：研究只有一台 device_requirements 时默认同机；否则显式 --resource device:<串号>，参数优先于研究默认。
   单机操作也可用 phonefarm lease --serial <串号> -- <命令>（layout 2 已注册设备走 device lane）；devlock busy 默认等待 DEVLOCK_WAIT_SECONDS=900 秒，设 0 立即失败。
   pf-node --experiment <分支|提交> --research <研究> --detach experiment <脚本.py|.sh> ...  # 跑实验仓库里固定提交的脚本
+  --experiment 不能与 --inputs 同用：代码取自固定提交，输入走脚本参数，本机存在的文件会自动上传；短提交号唯一时接受。
 
   pf-node phonefarm eval --request r.json --json --lock-label judge
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
@@ -94,6 +95,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node results import FILE --adapter NAME [--import-id ID] # 仅导入小 JSON，保留原字节
   pf-node results import-status ID         # 找回原导入及全部派生结果
   pf-node research list|show|history ...    # 持久研究、方向、协助请求与反馈，共享版本历史
+  research note 用 --attach 附本机 PNG/JPEG/SVG（单文件至多 16 MiB）；实验 Python 只保证有标准库。
   pf-node research assess ID --revision N  # 显式pin/判据能力；只读指定版本，partial退出2，规则未知保留
   pf-node research create KIND ID FILE     # 仅登记 data JSON；写前固定 operation ID
   pf-node research update KIND ID FILE --revision N --reason TEXT # 显式并发更新，不自动合并
@@ -351,6 +353,11 @@ def resolve_experiment(url, ref):
     for name in (f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}"):
         if not done.returncode and name in refs:
             return refs[name]
+    if not done.returncode and re.fullmatch(r"[0-9a-f]{4,39}", ref):
+        matches = sorted({sha for sha in refs.values() if sha.startswith(ref)})
+        if len(matches) == 1:
+            return matches[0]
+        sys.exit(f"pf-node: 实验仓库 {url} 里的短提交号 {ref} 不存在或不唯一；用完整提交号")
     sys.exit(f"pf-node: 实验仓库 {url} 里没有分支或标签 {ref}；用分支名、标签或完整提交号")
 
 

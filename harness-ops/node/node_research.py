@@ -1,6 +1,7 @@
 """Versioned research metadata and asynchronous feedback, independent of execution."""
 from contextlib import contextmanager
 import copy
+import hashlib
 import json
 import math
 import os
@@ -11,7 +12,7 @@ import time
 import uuid
 from urllib.parse import quote, urlencode
 
-from artifact_io import SafeRoot
+from artifact_io import SafeRoot, describe_file
 from node_read import encode_cursor, decode_cursor
 from node_results import ResultError, encoded, identifier, object_fields, text
 from node_result_compare import compare as compare_results
@@ -20,6 +21,8 @@ from node_media import LIMITS, MediaError
 
 MAX_DATA = 64 << 10
 MAX_WRITE = 128 << 10
+ATTACHMENT_MAX = 16 << 20
+ATTACHMENT_TYPES = {"image/png", "image/jpeg", "image/svg+xml"}
 AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")  # same rule as node_agents.NAME
 STATES = {
     "research": {"active", "idle", "paused", "closed", "delivered"},
@@ -65,7 +68,8 @@ def refs(value):
             raise ValueError("evidence reference must be an object")
         kind = ref.get("kind")
         fields = {"job": {"job_id", "path"}, "result": {"result_id"},
-                  "result_source": {"result_id", "source_name"}, "external": {"locator"}}
+                  "result_source": {"result_id", "source_name"}, "external": {"locator"},
+                  "attachment": {"attachment_id", "filename", "content_type", "sha256"}}
         if kind not in fields:
             raise ValueError("unsupported evidence reference kind")
         object_fields(ref, fields[kind] | {"kind", "node_id"})
@@ -84,6 +88,17 @@ def refs(value):
                 if path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
                     raise ValueError("evidence job path must be a normalized relative path within job/out")
                 ref["path"] = path
+        elif kind == "attachment":
+            if not re.fullmatch(r"[0-9a-f]{32}", ref.get("attachment_id", "")):
+                raise ValueError("evidence attachment identity must have 32 hexadecimal characters")
+            if not re.fullmatch(r"[0-9a-f]{64}", ref.get("sha256", "")):
+                raise ValueError("evidence attachment requires a sha256")
+            filename = ref.get("filename")
+            if (not isinstance(filename, str) or not 1 <= len(filename) <= 128
+                    or "/" in filename or "\\" in filename or "\x00" in filename):
+                raise ValueError("evidence attachment requires a safe filename")
+            if ref.get("content_type") not in ATTACHMENT_TYPES:
+                raise ValueError("evidence attachment type must be PNG, JPEG or SVG")
         else:
             identifier(ref.get("result_id"))
             if kind == "result_source":
@@ -419,6 +434,67 @@ class NodeResearch:
             raise ResearchError(404, "research_operation_not_found", "no committed operation with this ID; do not automatically resubmit")
         return value
 
+    def upload_attachment(self, attachment_id, filename, content_type, raw):
+        if not re.fullmatch(r"[0-9a-f]{32}", attachment_id or ""):
+            raise ValueError("attachment ID must have 32 hexadecimal characters")
+        if (not isinstance(filename, str) or not 1 <= len(filename) <= 128
+                or filename in (".", "..") or "/" in filename or "\\" in filename or "\x00" in filename):
+            raise ValueError("attachment filename must be a single safe filename")
+        if content_type not in ATTACHMENT_TYPES:
+            raise ValueError("attachments must be PNG, JPEG or SVG")
+        if not isinstance(raw, bytes) or len(raw) > ATTACHMENT_MAX:
+            raise ValueError("attachment exceeds the 16 MiB limit")
+        if content_type == "image/png" and not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("attachment is not a PNG")
+        if content_type == "image/jpeg" and not raw.startswith(b"\xff\xd8\xff"):
+            raise ValueError("attachment is not a JPEG")
+        if content_type == "image/svg+xml" and b"<svg" not in raw[:1024]:
+            raise ValueError("attachment is not an SVG")
+        metadata = {"schema_version": 1, "node_id": self.node_id, "attachment_id": attachment_id,
+                    "filename": filename, "content_type": content_type, "size": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest()}
+        path = "_research/attachments/" + attachment_id
+        root = SafeRoot(self.results.jobs.data_root)
+        try:
+            root.mkdir("_research/attachments")
+            try:
+                if root.read_json(path + ".json", 64 << 10) == metadata and root.read_bytes(path, ATTACHMENT_MAX) == raw:
+                    return metadata
+                raise ResearchError(409, "research_operation_conflict", "attachment ID already has different content")
+            except FileNotFoundError:
+                pass
+            with root.create_file(path) as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            root.sync(path)
+            if not root.publish_json_once(path + ".json", metadata):
+                if root.read_json(path + ".json", 64 << 10) != metadata or root.read_bytes(path, ATTACHMENT_MAX) != raw:
+                    raise ResearchError(409, "research_operation_conflict", "attachment ID already has different content")
+            root.sync("_research/attachments", directory=True)
+            return metadata
+        finally:
+            root.close()
+
+    def attachment(self, attachment_id):
+        if not re.fullmatch(r"[0-9a-f]{32}", attachment_id or ""):
+            raise ResearchError(404, "research_attachment_not_found", "no such attachment")
+        root = SafeRoot(self.results.jobs.data_root)
+        try:
+            try:
+                metadata = root.read_json("_research/attachments/" + attachment_id + ".json", 64 << 10)
+            except FileNotFoundError:
+                raise ResearchError(404, "research_attachment_not_found", "no such attachment") from None
+            stream = root.open_file("_research/attachments/" + attachment_id)
+            info = describe_file(stream)
+            if info["sha256"] != metadata["sha256"] or info["size"] != metadata["size"]:
+                stream.close()
+                raise ValueError("attachment bytes differ from their immutable metadata")
+            return stream, {"kind": "file", "path": metadata["filename"], **info,
+                            "media": {"mime": metadata["content_type"]}}
+        finally:
+            root.close()
+
     def _bindings(self, data):
         output = []
         for ref in data["evidence_refs"]:
@@ -438,6 +514,13 @@ class NodeResearch:
                                 raise ResearchError(404, "research_reference_not_found",
                                                     "referenced job artifact is absent or outside job/out") from None
                         binding["identity_kind"] = "job_reference"
+                    elif kind == "attachment":
+                        stream, info = self.attachment(ref["attachment_id"])
+                        stream.close()
+                        if (ref["filename"] != info["path"] or ref["content_type"] != info["media"]["mime"]
+                                or ref["sha256"] != info["sha256"]):
+                            raise ValueError("attachment evidence does not match its immutable bytes")
+                        binding.update(identity_kind="attachment_reference", attachment_sha256=info["sha256"])
                     else:
                         row = self.results._row(ref["result_id"])
                         binding.update(identity_kind="result_reference", result_sequence=row["sequence"],

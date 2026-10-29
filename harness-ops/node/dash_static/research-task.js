@@ -20,14 +20,15 @@
     {schema: 'phonefarm/research-write@1', operation_id: crypto.randomUUID(), base_revision: base, data, actor_label: null, reason});
   const failure = error => error.needSteer ? '需要先解锁研究操作（掌舵密码）' : error.message;
   const artifactPath = ref => `${API}/jobs/${encodeURIComponent(ref.job_id)}/out?${new URLSearchParams({path: ref.path})}`;
+  const attachmentPath = ref => `${API}/research-attachments/${encodeURIComponent(ref.attachment_id)}`;
   function clearImages() {
     ++imageEpoch;
     for (const url of imageURLs) URL.revokeObjectURL(url);
     imageURLs.clear();
   }
-  async function loadImage(image, ref, mime, epoch) {
+  async function loadImage(image, ref, mime, epoch, sourcePath = artifactPath(ref)) {
     try {
-      const response = await HGTarget.fetch(artifactPath(ref), {credentials: 'same-origin', cache: 'no-store'});
+      const response = await HGTarget.fetch(sourcePath, {credentials: 'same-origin', cache: 'no-store'});
       if (!response.ok) throw new Error('HTTP ' + response.status);
       const blob = await response.blob();
       if (epoch !== imageEpoch) return;
@@ -37,11 +38,13 @@
       if (epoch === imageEpoch) image.replaceWith(el('span', '图片读取失败', 'note'));
     }
   }
-  function imageFigure(ref, alt) {
+  function imageFigure(ref, alt, sourcePath = artifactPath(ref)) {
     const link = el('a'), figure = el('figure', null, 'research-artifact'), image = el('img');
-    link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop();
-    image.alt = alt || ref.path; link.append(image); figure.append(link, el('figcaption', `任务 ${ref.job_id} · ${ref.path}`));
-    loadImage(image, ref, IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()] || 'application/octet-stream', imageEpoch);
+    const filename = ref.filename || ref.path.split('/').pop();
+    link.href = HGTarget.url(sourcePath); link.download = filename;
+    image.alt = alt || filename; link.append(image); figure.append(link, el('figcaption', ref.kind === 'attachment' ? filename : `任务 ${ref.job_id} · ${ref.path}`));
+    const mime = ref.content_type || IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()] || 'application/octet-stream';
+    loadImage(image, ref, mime, imageEpoch, sourcePath);
     return figure;
   }
   function evidenceList(refs) {
@@ -59,6 +62,8 @@
         } else {
           const link = el('a', `任务 ${ref.job_id}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(ref.job_id)}`); item.append(link);
         }
+      } else if (ref.kind === 'attachment' && ref.node_id === local) {
+        item.append(imageFigure(ref, ref.filename, attachmentPath(ref)));
       } else if (ref.kind === 'external') item.append(el('span', ref.locator));
       else if (['result', 'result_source'].includes(ref.kind) && ref.node_id === local) {
         const link = el('a', `结果 ${ref.result_id}${ref.source_name ? ` · 来源 ${ref.source_name}` : ''}`);

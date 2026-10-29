@@ -163,6 +163,21 @@ class JobCLI(unittest.TestCase):
             main()
         self.assertEqual(json.loads(stdout.getvalue()), payload)
 
+    def test_experiment_short_commit_resolution_and_input_help(self):
+        cli = self.load_cli()
+        first, second = "abc1234" + "0" * 33, "abc1235" + "1" * 33
+        listing = f"{first}\trefs/heads/main\n{second}\trefs/heads/other\n"
+        with mock.patch.object(cli["resolve_experiment"].__globals__["subprocess"], "run",
+                               return_value=type("Done", (), {"returncode": 0, "stdout": listing})()):
+            self.assertEqual(cli["resolve_experiment"]("fixture", "abc1234"), first)
+            self.assertEqual(cli["resolve_experiment"]("fixture", "abc1235"), second)
+            for ambiguous in ("abc123", "deadbeef"):
+                with self.assertRaises(SystemExit) as rejected:
+                    cli["resolve_experiment"]("fixture", ambiguous)
+                self.assertIn("用完整提交号", str(rejected.exception))
+        self.assertIn("--experiment 不能与 --inputs", cli["main"].__globals__["__doc__"])
+        self.assertIn("本机存在的文件会自动上传", cli["main"].__globals__["__doc__"])
+
     def test_global_write_warning_names_count_and_scoped_jobs_skip(self):
         cli = self.load_cli()
         meta = {"id": JOB, "bin": "fixture", "argv": [], "device_access": "write", "resources": ["legacy-device"]}

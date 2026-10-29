@@ -379,6 +379,38 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("research list 必须带 KIND", help_text)
         self.assertIn("research/direction/request/feedback/note", help_text)
 
+    def test_research_note_attaches_local_images(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-attach", self.write(
+            "create-attach", {"title": "本机附件", "objective": "留言直接显示本机图片"}))[0], 201)
+        svg = self.tmp / "chart.svg"
+        svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40" fill="#2ab57d"/></svg>')
+        png = self.tmp / "tiny.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n")
+        code, _, err = self.pf(ADMIN, "research", "note", "sr-attach", "本机画的图", "--attach", str(svg), "--attach", str(png))
+        self.assertEqual(code, 0, err)
+        _, thread = self.web("GET", "/research-state/note?research_id=sr-attach&limit=10")
+        refs = thread["items"][0]["evidence_refs"]
+        self.assertEqual([ref["kind"] for ref in refs], ["attachment", "attachment"])
+        self.assertEqual([ref["filename"] for ref in refs], ["chart.svg", "tiny.png"])
+        self.assertEqual([ref["content_type"] for ref in refs], ["image/svg+xml", "image/png"])
+        for ref in refs:
+            self.assertEqual(len(ref["sha256"]), 64)
+        attachment_id = refs[0]["attachment_id"]
+        connection = http.client.HTTPConnection(*self.address, timeout=10)
+        connection.request("GET", f"/dash/api/research-attachments/{attachment_id}", headers={
+            "Cookie": self.view_cookie, "X-Expected-Node-ID": self.node_id})
+        response = connection.getresponse()
+        body = response.read()
+        self.assertEqual(response.status, 200, body.decode(errors="replace"))
+        self.assertEqual(response.getheader("Content-Type"), "image/svg+xml")
+        self.assertEqual(body, svg.read_bytes())
+        connection.close()
+        oversized = self.tmp / "oversized.svg"
+        with oversized.open("wb") as stream:
+            stream.truncate((16 << 20) + 1)
+        code, _, err = self.pf(ADMIN, "research", "note", "sr-attach", "不能上传", "--attach", str(oversized))
+        self.assertNotEqual(code, 0)
+
     def test_agent_loop_claim_guidance_and_delivery_through_cli(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
             "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)
