@@ -914,7 +914,7 @@ class Jobs:
             status = self.status(jid)
             if status.get("state") != "finished":
                 raise RequestConflict("reset requires a finished job")
-            if row.get("host_capacity_release") is not None:
+            if row["state"] == "done" and row.get("host_capacity_release") is not None:
                 raise RequestConflict("host completion is already recorded; reset is only for unknown host state")
             from pathlib import Path
             if Path(self.path(jid, "queue-release.json")).exists():
@@ -2136,7 +2136,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.retry_finalize(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reset":
                     if self.agent:
-                        return self._send(403, {"code": "admin_required", "error": "reset needs the admin token"})
+                        row = jobs.dispatch.queue.get(parts[1])
+                        spec = row["spec"] if row else {}
+                        owner = spec.get("actor_id")
+                        if spec.get("research_id") and getattr(jobs, "research", None) is not None:
+                            try:
+                                owner = jobs.research.get("research", spec["research_id"])["data"].get("owner") or owner
+                            except ValueError:
+                                pass
+                        if owner != self.agent:
+                            return self._send(403, {"code": "owner_required", "error": "reset needs the task owner or admin token"})
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):
                         raise ValueError("reset body must be an object")

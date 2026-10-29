@@ -12,7 +12,7 @@ Agent 每轮从这里开始（最短完整路径）：
      图片/附件引用 job:<任务>:<路径>；需要人定的事用 --ask 提问，然后继续做其他方向。
   7. pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>
   设备锁序列化实际设备操作；任务预留只在执行中占调度资源，终态自动释放。
-  宿主完成未知时仅由管理员用 reset 一步重置，不代表设备已恢复。
+  宿主完成未知或设备仍待恢复时由负责人或管理员用 reset 一步重置，不代表设备已恢复。
 
   pf-node checkin                            # 用你自己的 token：现在该做的事，以及每轮做法
   pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
@@ -49,7 +49,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node --detach phonefarm gray-layer session --serial SERIAL --package com.example.game --mode frameaudit --out @out --max-seconds 900 --power-policy battery
   pf-node --detach phonefarm gray-layer refbench-loadop --serial SERIAL --frames 1800 --intensity 8 --timeout-seconds 150 --out @out --json
   pf-node --device-access recovery --recovery-for <id> phonefarm <明确的恢复命令>
-  pf-node reset <id> --note "核查结果"       # 仅管理员：无法确认宿主状态时一步重置并释放预留，不证明已恢复
+  pf-node reset <id> --note "核查结果"       # 负责人或管理员：无法确认宿主/恢复状态时一步重置并释放预留，不证明已恢复
   pf-node retry-finalize <id>                # 重试保存原有结束记录，不重新执行命令
   pf-node --exe src/target/release/phonefarm phonefarm eval ...   # 用自己分支编译的可执行（节点上仍在 phonefarm 根目录下跑）
   pf-node status|log|wait|kill|out <id>
@@ -160,7 +160,7 @@ Agent 每轮从这里开始（最短完整路径）：
   事件不是无损执行历史；head 不是已处理位置，消费者处理后自行保存 next_cursor。Ctrl-C 不取消任务。
 - --device-access none|write|recovery 显式声明设备访问；adb 未声明时按 none 提交，不预留整机，
   写设备必须显式 write；其他命令未声明保持原默认。recovery 必须配 --recovery-for 原资源保留任务 ID，
-  资源由父任务继承，不能同时传 --resource。设备恢复由任务自身步骤负责并记录结果，终态自动释放；宿主完成未知时由管理员 reset。
+  资源由父任务继承，不能同时传 --resource。设备恢复由任务自身步骤负责并记录结果，终态自动释放；宿主完成未知或设备仍待恢复时由负责人或管理员 reset。
 - --device-binding FILE 只读 devices-resolve 保存的 JSON 文件，核其 node_id 与当前目标；只将 binding 放入 job spec，
   不自行给 argv 注入参数。仅配置 phonefarm 的 gray-layer session 支持，禁止 --exe 和 none/recovery 覆盖；
   缺省不发送字段，保持兼容全域。登记/布局变化明确拒绝，不换 alias、不自动降级；typed 恢复继承原绑定。
@@ -531,7 +531,7 @@ def reset_job(jid, note):
         reason = response_error_text(e.body)
         sys.exit(f"pf-node: 重置请求被拒绝：{e}" + (f"：{reason}" if reason else ""))
     if result.get("released") is True:
-        print(f"pf-node: 任务 {jid} 已由管理员重置并释放预留；不证明原进程或设备状态。", file=sys.stderr)
+        print(f"pf-node: 任务 {jid} 已由负责人或管理员重置并释放预留；不证明原进程或设备状态。", file=sys.stderr)
     return result
 
 
@@ -543,6 +543,9 @@ def release_job(jid, note, attest_stopped=False):
     except ClientError as e:
         if e.code in (401, 403):
             sys.exit("pf-node: 释放请求被拒绝；需要有效的管理 token")
+        if e.code == 409:
+            reason = response_error_text(e.body)
+            sys.exit(f"pf-node: 释放请求被拒绝：{reason or e}；这个任务要用 pf-node reset {jid} --note \"<还原说明>\"，负责人或管理员可以做")
         sys.exit(f"pf-node: 释放请求被拒绝：{e}")
     if result.get("released") is True:
         print(f"pf-node: 任务 {jid} 的核查记录已保存，已允许再次调度；这不证明设备已恢复。", file=sys.stderr)
@@ -1554,7 +1557,7 @@ def main():
         return
     if args[0] == "reset":
         if len(args) != 4 or not re.fullmatch(r"[0-9a-f]{12}", args[1]) or args[2] != "--note" or not args[3].strip():
-            sys.exit("用法: pf-node reset <12 位任务 id> --note TEXT（仅管理员记录无法确认宿主状态后的重置）")
+            sys.exit("用法: pf-node reset <12 位任务 id> --note TEXT（负责人或管理员记录无法确认宿主/恢复状态后的重置）")
         result = reset_job(args[1], args[3])
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("released") is True else 1)

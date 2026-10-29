@@ -86,6 +86,39 @@ class ReservationTests(TestCase):
         self.assertEqual(self.request(f"/jobs/{unknown}/reset", token=self.admin, method="POST", body=body,
                                       headers={"Content-Type": "application/json"})[0], 409)
 
+    def test_unknown_host_recovery_frees_capacity_but_waits_for_owner_reset(self):
+        self.jobs.agents.create({"name": "glm-researcher"})
+        self.jobs.agents.create({"name": "other-agent"})
+        spec = {"bin": "phonefarm", "argv": ["-c", "pass", "usb-a"], "device_access": "write",
+                "actor_id": "glm-researcher", "resources": ["device:usb-a"]}
+        jid = self.submit(spec, "unknown-recovery")
+        self.finish(jid, lost=True, group="unknown")
+        self.assertTrue(self.jobs.dispatch.finalize(self.jobs.dispatch.queue.get(jid)))
+        row = self.jobs.dispatch.queue.get(jid)
+        self.assertEqual(row["state"], "blocked")
+        self.assertEqual((row.get("state_reason") or {}).get("kind"), "device_recovery_pending")
+        self.assertIsNone(row["host_capacity_release"])
+        self.assertFalse(self.jobs.queue_release_eligibility(row, self.jobs.status(jid))["eligible"])
+
+        other = self.submit({**spec, "argv": ["-c", "pass", "usb-b"], "resources": ["device:usb-b"]}, "other-phone")
+        self.assertEqual(self.jobs.dispatch.queue.claim_next(2)["job_id"], other)
+        same = self.submit(spec, "same-phone")
+        self.assertIsNone(self.jobs.dispatch.queue.claim_next(2))
+        duties = __import__("agent_duties").duties(self.jobs, "glm-researcher")
+        self.assertTrue(any(item["kind"] == "reset_job" and item["target"] == jid for item in duties["duties"]))
+        other_duties = __import__("agent_duties").duties(self.jobs, "other-agent")
+        self.assertFalse(any(item["kind"] == "reset_job" for item in other_duties["duties"]))
+        body = json.dumps({"note": "已按脚本还原设备并核查"}).encode()
+        other_token = self.jobs.agents.issue_token("other-agent")["token"]
+        self.assertEqual(self.request(f"/jobs/{jid}/reset", token=other_token, method="POST", body=body,
+                                      headers={"Content-Type": "application/json"})[0], 403)
+        owner_token = self.jobs.agents.issue_token("glm-researcher")["token"]
+        code, _, raw = self.request(f"/jobs/{jid}/reset", token=owner_token, method="POST", body=body,
+                                    headers={"Content-Type": "application/json"})
+        self.assertEqual(code, 200, raw)
+        self.assertEqual(self.jobs.dispatch.queue.get(jid)["state"], "done")
+        self.assertEqual(self.jobs.dispatch.queue.claim_next(2)["job_id"], same)
+
     def test_status_duty_requires_research_or_active_job(self):
         import agent_duties
         self.jobs.agents.create({"name": "maintainer"})

@@ -178,6 +178,16 @@ class JobCLI(unittest.TestCase):
         self.assertIn("--experiment 不能与 --inputs", cli["main"].__globals__["__doc__"])
         self.assertIn("本机存在的文件会自动上传", cli["main"].__globals__["__doc__"])
 
+    def test_release_rejection_points_to_owner_reset(self):
+        cli = self.load_cli()
+        error = cli["ClientError"](409, b'{"error":"host completion is unknown"}')
+        with mock.patch.dict(cli["release_job"].__globals__, call=mock.Mock(side_effect=error)), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit) as rejected:
+                cli["release_job"](JOB, "review")
+        self.assertIn(f"pf-node reset {JOB} --note", str(rejected.exception))
+        self.assertIn("负责人或管理员", str(rejected.exception))
+
     def test_global_write_warning_names_count_and_scoped_jobs_skip(self):
         cli = self.load_cli()
         meta = {"id": JOB, "bin": "fixture", "argv": [], "device_access": "write", "resources": ["legacy-device"]}

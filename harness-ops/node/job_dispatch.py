@@ -200,6 +200,13 @@ class JobDispatch:
                 # host completion stays blocked until an administrator resets it.
                 self.queue.set_state(jid, "blocked" if release is None else "done",
                                      host_capacity_release=release, observation=candidate)
+                current = self.queue.get(jid)
+                group_status = (candidate.get("execution") or {}).get("owned_process_group", {}).get("status")
+                if (current["state"] == "blocked" and current.get("host_capacity_release") is None
+                        and candidate.get("lost") is True and group_status in {"unknown", "pending"}
+                        and (current.get("state_reason") or {}).get("kind") != "durability"):
+                    self.queue.set_state(jid, "blocked", {"kind": "device_recovery_pending", "at": time.time()},
+                                         observation=candidate)
                 return True
         except (OSError, ValueError) as error:
             self.block_storage(row, stage, error)

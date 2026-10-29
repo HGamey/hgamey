@@ -39,7 +39,8 @@ def check_fit(spec, config):
 
 
 def held(row):
-    return row["state"] in {"claimed", "blocked"} and row.get("host_capacity_release") is None
+    return (row["state"] in {"claimed", "blocked"} and row.get("host_capacity_release") is None
+            and (row.get("state_reason") or {}).get("kind") != "device_recovery_pending")
 
 
 def snapshot(config, rows):
@@ -67,6 +68,6 @@ def waiting(spec, capacity, rows):
 
 def job_facts(row):
     release = row.get("host_capacity_release")
-    state = ("released" if release else "reserved" if held(row) else
+    state = ("released" if release or (row.get("state_reason") or {}).get("kind") == "device_recovery_pending" else "reserved" if held(row) else
              "historical_done" if row["state"] == "done" else "not_claimed")
     return {**requirement(row["spec"]), "state": state, "release": release}

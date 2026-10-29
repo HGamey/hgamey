@@ -35,7 +35,7 @@ def recovery_reservations(row, owners):
 
 
 def reservation_conflicts(row, owner):
-    if owner["state"] == "blocked":
+    if owner["state"] == "blocked" and (owner.get("state_reason") or {}).get("kind") != "device_recovery_pending":
         # Unknown completion can retain declared host slots, never a phone.
         row_resources = {r for r in row["resources"] if r.startswith("host:")}
         owner_resources = {r for r in owner["resources"] if r.startswith("host:")}
