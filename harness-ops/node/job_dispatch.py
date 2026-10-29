@@ -378,6 +378,8 @@ class JobDispatch:
             env["PF_JOB_ACTOR"] = spec["actor_id"]
         if spec.get("research_id"):
             env["PF_JOB_RESEARCH"] = spec["research_id"]
+        if spec.get("device_binding"):
+            env["PF_JOB_DEVICE_BINDING"] = json.dumps(spec["device_binding"], separators=(",", ":"))
         if spec["bin"] == "experiment":
             # Experiments reach the node's programs through these, not through paths of their own checkout.
             bins = self.jobs.bins
