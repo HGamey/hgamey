@@ -50,7 +50,7 @@ class ExportCache:
                 "configured_root": self.configured_root,
                 "effective_root": os.path.join(self.configured_root, self.namespace) if external else self.jobs_root,
                 "availability": "unavailable" if self.error else "available",
-                "reason": str(self.error) if self.error else None, "legacy_entries_migrated": False}
+                "reason": str(self.error) if self.error else None}
 
     def target(self, jid):
         if self.error:

@@ -246,7 +246,7 @@
     return [['导出缓存模式', ({legacy_job_directory: '作业目录内（legacy_job_directory）', external: '独立缓存根（external）'})[cache.mode] || '未知'],
       ['导出缓存启动观察', ({available: '启动时已打开；不保证当前可写空间', unavailable: '不可用；不会退回作业目录'})[cache.availability] || '未知'],
       ['配置缓存根', cache.configured_root === null ? '未显式配置' : cache.configured_root], ['有效缓存根', cache.effective_root ?? '未取得'],
-      ['缓存位置原因', cache.reason ?? '未报告错误'], ['旧导出缓存迁移', cache.legacy_entries_migrated === false ? '未迁移；清理仅覆盖当前配置的缓存位置' : '未提供'],
+      ['缓存位置原因', cache.reason ?? '未报告错误'],
       ['缓存适用范围', cache.scope === 'directory_export' ? '仅当前作业的目录导出派生件；单文件下载与历史来源不依赖此缓存。实际请求仍需核对导出错误。' : cache.scope || '未知']];
   }
   function serviceFacts(service) {

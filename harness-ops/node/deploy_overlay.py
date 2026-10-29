@@ -120,10 +120,6 @@ def ensure_layout(root):
         raise DeployError(400, f"{cursor(root)} does not exist; nothing to manage")
 
 
-def run_dir_name(run_id):
-    return run_id
-
-
 def switch(root, run_id):
     temporary = root / f".{COMPONENT}.cursor.{os.getpid()}"
     if temporary.exists() or temporary.is_symlink():

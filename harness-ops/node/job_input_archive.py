@@ -29,11 +29,6 @@ class Error(ValueError):
                        "invalid_input_archive": 400, "target_conflict": 409}[code]
         self.details = {} if details is None else details
 
-    def as_dict(self):
-        return {"code": self.code, "status": self.status,
-                "message": str(self), "details": self.details}
-
-
 def _invalid(message):
     return Error("invalid_input_archive", message)
 

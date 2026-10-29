@@ -25,8 +25,6 @@ DEFAULT_POLICY = {
     "deny": ["91253241019A", "AVXB6R5C19000481", "192.168.3.53:5555"],
     # 同一台手机的不同序列号（USB / 无线）：锁和占用检查一起算。
     "aliases": [["91253241019A", "192.168.3.53:5555"]],
-    # 这些设备不受「只写标签的全局 devlock」阻挡（模拟器不在实验里用）。
-    "ignore_global_lock": ["emulator-*"],
 }
 SESSION_TTL = 300          # 心跳：这么久没有任何动作/续期就自动释放
 MAX_MINUTES_DEFAULT, MAX_MINUTES_CAP = 60, 240
@@ -164,17 +162,12 @@ class Policy:
             return False
         return policy.get("default") == "allow" or self._match(serial, policy.get("allow"))
 
-    def ignores_global_lock(self, serial, policy=None):
-        return self._match(serial, (policy or self.load()).get("ignore_global_lock"))
-
-    def enable(self, serial, ignore_global=False):
+    def enable(self, serial):
         p = self.load()
         for s in self.aliases(serial, p):
             p["deny"] = [d for d in p.get("deny", []) if d != s]
         if serial not in p.get("allow", []):
             p.setdefault("allow", []).append(serial)
-        if ignore_global and serial not in p.get("ignore_global_lock", []):
-            p.setdefault("ignore_global_lock", []).append(serial)
         self.save(p)
         return p
 
@@ -492,7 +485,7 @@ class Remote:
             serial = d['serial']
             names = self.policy.aliases(serial, policy)
             item = {**d, 'enabled': self.policy.enabled(serial, policy),
-                    'aliases': [n for n in names if n != serial], 'ignore_global_lock': False,
+                    'aliases': [n for n in names if n != serial],
                     'capabilities': caps['actions'] if caps['available'] and d['transport'] == 'adb' else [],
                     'holder': None}
             matches = [s for s in active if s['device_scope']['scope'] == 'global' or s['serial'] in names]
@@ -1042,7 +1035,7 @@ def main(argv=None):
         if args.verb in ("enable", "disable") and not (args.serial and SERIAL_RE.fullmatch(args.serial)):
             ap.error("需要合法的 serial")
         if args.verb == "enable":
-            pol.enable(args.serial, args.ignore_global_lock)
+            pol.enable(args.serial)
         elif args.verb == "disable":
             pol.disable(args.serial)
         elif args.verb == "default":

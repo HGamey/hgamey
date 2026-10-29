@@ -261,7 +261,7 @@ class ExportCacheTests(unittest.TestCase):
                 self.assertEqual(identity["storage"]["export_cache"], {
                     "scope": "directory_export", "mode": "external", "configured_root": str(cache_root),
                     "effective_root": str(destination.parent), "availability": "available",
-                    "reason": None, "legacy_entries_migrated": False})
+                    "reason": None})
                 with patch.object(node_service, "archive_directory", side_effect=AssertionError("reopened cache rebuilt")):
                     status, _, raw = get(f"/jobs/{JID}/out?meta=1")
                     self.assertEqual((status, json.loads(raw)), (200, info_a))
@@ -311,7 +311,6 @@ class ExportCacheTests(unittest.TestCase):
                 state = identity["storage"]["export_cache"]
                 self.assertEqual((state["mode"], state["availability"], state["configured_root"]),
                                  ("external", "unavailable", str(unavailable)))
-                self.assertFalse(state["legacy_entries_migrated"])
                 status, _, raw = get(f"/jobs/{JID}/out?meta=1")
                 self.assertEqual((status, json.loads(raw)["code"]), (503, "export_storage_unavailable"))
                 status, _, raw = get(f"/jobs/{JID}/out?path=nested/result.bin")
