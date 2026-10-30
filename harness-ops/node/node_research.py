@@ -182,7 +182,7 @@ def normalize(kind, data):
     common = {"evidence_refs"} | ({"evaluation"} if kind in ("request", "feedback") else set())
     fields = {
         "research": {"title", "objective", "game", "constraints", "budgets", "device_requirements", "state", "state_reason", "coverage", "criteria",
-                     "owner", "deliverable"},
+                     "owner", "deliverable", "follows"},
         "direction": {"research_id", "title", "hypothesis", "priority", "priority_reason", "prerequisites", "cost_expectation",
                       "expected_benefit", "next_experiment", "state", "state_reason", "dependencies", "feedback_decisions"},
         "request": {"research_id", "type", "title", "need", "why", "resume_hint", "context", "supersedes", "state", "close_reason", "due_at"},
@@ -225,6 +225,7 @@ def normalize(kind, data):
             raise ValueError("this declared state requires a reason")
     if kind == "research":
         value["objective"] = text(value.get("objective"), 16384, True)
+        value["follows"] = identifier(value["follows"]) if value.get("follows") is not None else None
         value.setdefault("game", None)
         if value["game"] is not None:
             game = object_fields(value["game"], {"game_id", "game_version"})
@@ -674,6 +675,11 @@ class NodeResearch:
     def _validate_links(self, db, kind, oid, value, old):
         observations = {}
         if kind == "research":
+            follows = value.get("follows")
+            if follows == oid:
+                raise ValueError("research cannot follow itself")
+            if follows is not None:
+                self._reference(db, "research", follows)
             return oid, observations
         if kind == "feedback":
             request = self._reference(db, "request", value["request_id"], value["request_revision"])
@@ -986,7 +992,7 @@ class NodeResearch:
                         "title": row["title"] or data.get("text", "")[:120], "state": row["state"],
                         "sequence": row["sequence"], "updated_at": row["at"]}
                 if kind == "research":
-                    item["owner"] = data.get("owner")
+                    item["owner"], item["follows"] = data.get("owner"), data.get("follows")
                 if kind == "note":
                     audit = json.loads(row["audit"])
                     rid = row["research_id"]

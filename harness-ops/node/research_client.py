@@ -37,6 +37,7 @@ HELP = """用法:
   pf-node research media REQUEST A|B|C... --revision N --output FILE
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
+  pf-node research link ID FOLLOWS|none           # 记录或取消这个任务接续哪个任务
   pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask] [--to AGENT]
       [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
   pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
@@ -54,6 +55,7 @@ job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对�
 --attach 直接附本机 PNG、JPEG、SVG、MP4 或 WebM，可重复；图片至多 16 MiB，视频至多 128 MiB。实验 Python 只保证有标准库。
 --ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
+link 读取研究当前 revision 更新 follows；目标必须存在且不能是自己，none 取消接续，签到规则不变。
 conclude 读取方向当前 revision 写入结论与 state_reason；可用 --evidence 重复引用任务产物，未回应人工留言时仍拒绝。
 research/direction 的 update、deliver、create、conclude 仅负责人可写，其他 agent 用 note 留言；留言保持开放。
 写前核对显式目标并打印固定 operation ID，只 POST 一次。回执未知时使用 research operation 原ID
@@ -166,6 +168,9 @@ def parser():
     assign = commands.add_parser("assign")
     assign.add_argument("id", type=identifier)
     assign.add_argument("agent")
+    link = commands.add_parser("link")
+    link.add_argument("id", type=identifier)
+    link.add_argument("follows")
     note = commands.add_parser("note")
     note.add_argument("id", type=identifier)
     note.add_argument("text")
@@ -725,6 +730,10 @@ def _task(client, args):
     if args.command == "assign":
         data["owner"] = None if args.agent == "none" else args.agent
         return _post(client, "research", args.id, data, current["revision"], f"指派给 {args.agent}")
+    if args.command == "link":
+        data["follows"] = None if args.follows == "none" else args.follows
+        reason = "取消接续" if args.follows == "none" else f"接续自 {args.follows}"
+        return _post(client, "research", args.id, data, current["revision"], reason)
     summary = Path(args.summary[1:]).read_text(encoding="utf-8") if args.summary.startswith("@") else args.summary
     node_id = client.target.identity()["node_id"]
     data["deliverable"] = {"summary": summary, "artifacts": [_artifact(item, node_id) for item in args.artifact],
@@ -755,7 +764,7 @@ def main(argv, *, target):
     try:
         if args.command in ("create", "update"):
             return _write(client, args)
-        if args.command in ("claim", "assign", "note", "compare", "thread", "deliver", "conclude"):
+        if args.command in ("claim", "assign", "link", "note", "compare", "thread", "deliver", "conclude"):
             return _task(client, args)
         if args.command == "media":
             return _media(client, args)

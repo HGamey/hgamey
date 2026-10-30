@@ -457,6 +457,29 @@ class CoreFlowTests(unittest.TestCase):
         notes = self.web("GET", "/research-state/note?research_id=sr-collab&limit=10")[1]["items"]
         self.assertEqual(notes[0]["to"], "agent-b")
 
+    def test_research_link_and_unlink_preserve_follows_in_reads_and_lists(self):
+        for rid in ("sr-root", "sr-child"):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": rid, "objective": "把拆开的任务接起来"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-child")[0], 0)
+        code, _, err = self.pf(token, "research", "link", "sr-child", "sr-root")
+        self.assertEqual(code, 0, err)
+        linked = self.web("GET", "/research-state/research/sr-child")[1]
+        self.assertEqual((linked["data"]["follows"], linked["audit"]["reason"]), ("sr-root", "接续自 sr-root"))
+        studies = self.web("GET", "/research-state/research?limit=100")[1]["items"]
+        self.assertEqual({item["id"]: item["follows"] for item in studies},
+                         {"sr-child": "sr-root", "sr-root": None})
+        self.assertIn("research link", self.pf(token, "research", "--help")[1])
+        code, _, err = self.pf(token, "research", "link", "sr-child", "none")
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(self.web("GET", "/research-state/research/sr-child")[1]["data"]["follows"])
+        for target in ("sr-child", "missing"):
+            code, _, err = self.pf(token, "research", "link", "sr-child", target)
+            self.assertNotEqual(code, 0, err)
+        self.assertIsNone(self.web("GET", "/research-state/research/sr-child")[1]["data"]["follows"])
+
     def test_research_note_attaches_local_video(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-video", self.write(
             "create-video", {"title": "视频附件", "objective": "留言直接带本机视频"}))[0], 201)
