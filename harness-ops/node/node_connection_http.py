@@ -1,10 +1,11 @@
 """Machine enrollment and outbound transport endpoints, separate from agent auth."""
 import json
+import sqlite3
 
 from node_directory import DirectoryError, MAX_RESPONSE
 
 
-def handle(handler, method, parts, directory, board, upload_limit):
+def handle(handler, method, parts, directory, board, upload_limit, center):
     web = parts[:2] == ['dash', 'api']
     route = parts[2:] if web else parts
     if route[:1] not in (['node-invites'], ['node-connect']):
@@ -57,7 +58,12 @@ def handle(handler, method, parts, directory, board, upload_limit):
             handler._send(401, {'code': 'unauthorized', 'error': 'node connection token required'})
             return True
         if route == ['node-connect', 'report'] and method == 'POST':
-            handler._send(200, directory.report(node_id, document(MAX_RESPONSE)))
+            snapshot = document(MAX_RESPONSE)
+            observations = snapshot.pop('executions', [])
+            events = snapshot.pop('execution_events', [])
+            value = directory.report(node_id, snapshot)
+            center.report(node_id, observations, events)
+            handler._send(200, value)
         elif route == ['node-connect', 'poll'] and method == 'POST':
             body(64 << 10)
             directory.report(node_id)
@@ -76,6 +82,8 @@ def handle(handler, method, parts, directory, board, upload_limit):
             handler._send(404, {'error': 'no such node connection operation'})
     except DirectoryError as error:
         handler._send(error.status, {'code': 'node_connection_error', 'error': str(error)})
+    except sqlite3.Error as error:
+        handler._send(503, {'code': 'storage_commit_unconfirmed', 'error': str(error)})
     except KeyError:
         handler._send(404, {'code': 'node_call_not_found', 'error': 'call is no longer waiting for a response'})
     except ValueError as error:

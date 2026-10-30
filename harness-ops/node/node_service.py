@@ -317,8 +317,8 @@ class Jobs:
         self.path(jid)
         return self._read_root.read_json(jid + "/meta.json")
 
-    def start(self, spec, body, request_id=None, *, admit=None):
-        return self.center.start(spec, body, request_id, admit=admit)
+    def start(self, spec, body, request_id=None, *, admit=None, selection=None):
+        return self.center.start(spec, body, request_id, admit=admit, selection=selection)
 
     def accept(self, request, body, request_id=None, *, job_id=None, admit=None):
         """Execute a request whose business context was resolved by the center."""
@@ -505,6 +505,8 @@ class Jobs:
             validate_recovery_spec(self, spec)
 
     def status(self, jid):
+        if self.center.remote(jid):
+            return self.center.status(jid)
         row = self.dispatch.queue.get(jid)
         reason = (row or {}).get("state_reason") or {}
         if reason.get("kind") == "manual_unknown":
@@ -565,6 +567,9 @@ class Jobs:
                                 "reason": "waiting for worker release and result storage commit"}
         meta["input_preparation"] = job_preparation.record(self._read_root, jid, expected=meta.get("input_preparation_expected", False))
         meta["execution_node_id"] = self.node_id
+        target = self.center.targets.get(jid)
+        if target and target.get("device_selection"):
+            meta["device_selection"] = target["device_selection"]
         return self.dispatch.attach(meta, row)
 
     def _execution_status(self, jid, worker_alive=None):
@@ -634,6 +639,16 @@ class Jobs:
     def log_from(self, jid, offset, limit=4 << 20):
         if not 0 <= offset <= (1 << 63) - 1 or not 1 <= limit <= (4 << 20):
             raise ValueError("offset must be nonnegative; limit must be between 1 and 4194304")
+        remote_job = self.center.remote(jid)
+        if remote_job:
+            try:
+                response = self.center.rpc(remote_job, "GET", "/jobs/" + jid + "/log?" + urlencode({
+                    "offset": offset, "limit": limit}), max_bytes=limit)
+            except ConnectionError as error:
+                raise DirectoryError(503, "execution node is unavailable") from error
+            if response["status"] != 200:
+                raise DirectoryError(response["status"], "execution log could not be read")
+            return response["body"]
         self.path(jid)
         with self._read_root.open_file(jid + "/log") as f:
             f.seek(offset)
@@ -763,6 +778,8 @@ class Jobs:
     def cancel(self, jid, force=False):
         if not isinstance(force, bool):
             raise ValueError("force must be a boolean")
+        if self.center.remote(jid):
+            return self.center.cancel(jid, force)
         row = self.dispatch.queue.get(jid)
         if row and self.dispatch.queue.cancel_pending(jid):
             self.dispatch.finish_unstarted(row, "cancelled", "cancelled before execution")
@@ -877,6 +894,8 @@ class Jobs:
         """Stop, release and retry saving this task without replaying its command."""
         if not isinstance(note, str) or not note.strip() or len(note) > 2000:
             raise ValueError("reset requires a nonempty review note (at most 2000 characters)")
+        if self.center.remote(jid):
+            return self.center.reset(jid, note.strip())
         with file_lock(self.dispatch.intake_path):
             row = self.dispatch.queue.get(jid)
             if not row:
@@ -943,7 +962,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     if not hasattr(jobs, "history"):
         jobs.history = JobHistory(jobs.history_sources, jobs.dir, node.node_id)
     history = jobs.history
-    jobs.events = NodeJobEvents(jobs.dispatch.queue, node.node_id)
+    jobs.events = NodeJobEvents(jobs.dispatch.queue, node.node_id, jobs.center.targets)
     device_registry = DeviceRegistry(jobs, node.node_id)
     if not hasattr(jobs, "results"):
         jobs.results = NodeResults(jobs, node.node_id)
@@ -969,6 +988,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
         jobs.deployments = NodeDeployments(jobs, games)
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
         jobs.root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
+    jobs.fleet = fleet
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1072,7 +1092,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def do_GET(self):
             if node_connection_http.handle(self, "GET",
-                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD):
+                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD, jobs.center):
                 return
             self.agent = None  # a kept-alive connection must not carry the previous request's identity
             if self._agent_onboarding("GET"):
@@ -1090,7 +1110,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["phones"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"]):
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query), dashboard=True)
@@ -1128,10 +1148,18 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["phones"]:
+                    import job_selection
+                    return self._send(200, {"node_id": jobs.node_id, "items": job_selection.catalog(jobs)})
                 if parts == ["node", "snapshot"]:
                     observation = fleet.request(5) if q.get("devices") == ["1"] else fleet.snapshot()
                     return self._send(200, {"schema_version": 1, "at": time.time(), "identity": node.identity(),
                                             "fleet": observation, "queue": jobs.dispatch.snapshot()})
+                if parts == ["node", "executions"]:
+                    events = jobs.events.events({**q, "limit": ["50"]})
+                    items = [jobs.status(jid) for jid in dict.fromkeys(item["job_id"] for item in events["items"])]
+                    return self._send(200, {"items": items, "events": events["items"], "next_cursor": events["next_cursor"],
+                                            "has_more": events["has_more"]})
                 if parts == ["whoami"]:
                     agent = getattr(self, "agent", None)
                     kind = "agent" if agent else "readonly" if getattr(self, "ro", False) else "admin"
@@ -1279,14 +1307,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                              if refresh == "1" or devices == "1" else directory.get(name))
                     return self._send(200, entry)
                 if parts == ["queue"]:
-                    return self._send(200, {**jobs.dispatch.snapshot(), "node_id": node.node_id})
+                    return self._send(200, jobs.center.queue_snapshot())
                 if parts == ["leases"]:
                     return self._send(200, {**jobs.leases.snapshot(refresh=True), "node_id": node.node_id})
                 if len(parts) == 2 and parts[0] == "requests":
-                    row = jobs.dispatch.queue.by_request(JobDispatch.request_key(unquote(parts[1])))
-                    if not row:
-                        raise KeyError(parts[1])
-                    return self._send(200, jobs.status(row["job_id"]))
+                    return self._send(200, jobs.center.by_request(JobDispatch.request_key(unquote(parts[1]))))
                 if parts == ["fleet"]:
                     cached = q.get("cached", ["0"])[0]
                     if cached not in {"0", "1"}:
@@ -1302,6 +1327,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if parts == ["mcp"]:
                     return self._send(405, b"", extra={"Allow": "POST"})
                 if len(parts) == 2 and parts[0] == "jobs":
+                    remote_job = jobs.center.remote(parts[1])
+                    if remote_job:
+                        jobs.center.refresh(remote_job)
                     return self._send(200, jobs.status(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "log":
                     off = int(q.get("offset", ["0"])[0])
@@ -1781,7 +1809,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def do_DELETE(self):
             if node_connection_http.handle(self, "DELETE",
-                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD):
+                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD, jobs.center):
                 return
             self.agent = None
             if self._agent_onboarding("DELETE"):
@@ -1923,7 +1951,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def do_POST(self):
             if node_connection_http.handle(self, "POST",
-                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD):
+                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD, jobs.center):
                 return
             self.agent = None  # a kept-alive connection must not carry the previous request's identity
             if self._agent_onboarding("POST"):
@@ -1967,6 +1995,20 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._nodes_post(parts, False)
             if board and parts[:3] == ["dash", "api", "nodes"]:
                 return self._nodes_post(parts[2:], True)
+            if (board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"]
+                    and parts[4] == "reset" and jobs.center.remote(parts[3])):
+                if not self._upload_write_auth(True):
+                    return
+                try:
+                    data = json.loads(self.rfile.read(self._upload_length(MAX_REQUEST)))
+                    result = jobs.reset_queue(parts[3], data.get("note"))
+                    return self._send(202 if result.get("pending") else 200, result)
+                except (DirectoryError, AssetUploadError) as error:
+                    return self._send(error.status, {"error": str(error)})
+                except ValueError as error:
+                    return self._send(400, {"error": str(error)})
+                except sqlite3.Error as error:
+                    return self._send(503, {"code": "storage_commit_unconfirmed", "error": str(error)})
             if board and parts[:1] == ["dash"]:
                 n = int(self.headers.get("Content-Length", 0))
                 if n > (256 << 10):
@@ -1980,6 +2022,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if not self._authed(allow_ro=parts == ["mcp"]):
                 return
             try:
+                if len(parts) == 3 and parts[:2] == ["node", "executions"]:
+                    if self.agent:
+                        return self._send(403, {"code": "forbidden", "error": "execution intake requires the node connection"})
+                    request = json.loads(self.headers.get("X-Execution", "{}"))
+                    check_fit(request["spec"], jobs.dispatch.queue.capacity())
+                    return self._send(200, jobs.accept(request, self._body(),
+                        self.headers.get("X-Request-ID"), job_id=parts[2]))
                 if parts[:1] == ["games"]:
                     if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_MANIFEST:
                         self.close_connection = True
@@ -2046,9 +2095,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         key = self.headers.get("X-Request-ID")
                         if key is not None:
                             key = jobs.dispatch.request_key(key)
-                        if key is None or jobs.dispatch.queue.by_request(key) is None:
-                            check_fit(spec, jobs.dispatch.queue.capacity())
-                            jobs.programs.require_session(spec)
+                        selection = None
+                        if key is None or (jobs.center.targets.by_request(key) is None
+                                           and jobs.dispatch.queue.by_request(key) is None):
+                            selection = jobs.center.select_request(spec)
+                            if selection[0] == jobs.node_id:
+                                check_fit(selection[1]["spec"], jobs.dispatch.queue.capacity())
+                                jobs.programs.require_session(selection[1]["spec"])
                     except (ValueError, CapacityExceeded):
                         self.close_connection = True
                         raise
@@ -2058,7 +2111,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if parts == ["agents"]:
                     return self._agents_post(False, body)
                 if parts == ["jobs"]:
-                    return self._send(200, jobs.start(spec, body, request_id=self.headers.get("X-Request-ID")))
+                    return self._send(200, jobs.start(spec, body, request_id=self.headers.get("X-Request-ID"),
+                                                     selection=selection))
                 if parts == ["admin", "restart"]:  # 交给外层守护循环重新拉起（加载新代码）
                     self._send(200, {"restarting": True})
                     threading.Timer(0.5, lambda: os._exit(0)).start()
@@ -2106,7 +2160,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reset":
                     if self.agent:
                         row = jobs.dispatch.queue.get(parts[1])
-                        spec = row["spec"] if row else {}
+                        remote_job = jobs.center.remote(parts[1])
+                        spec = remote_job["request"]["spec"] if remote_job else row["spec"] if row else {}
                         owner = spec.get("actor_id")
                         if spec.get("research_id") and getattr(jobs, "research", None) is not None:
                             try:
@@ -2118,7 +2173,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):
                         raise ValueError("reset body must be an object")
-                    return self._send(200, jobs.reset_queue(parts[1], data.get("note")))
+                    result = jobs.reset_queue(parts[1], data.get("note"))
+                    return self._send(202 if result.get("pending") else 200, result)
             except RegistryError as e:
                 return self._send(e.status, e.payload)
             except (DirectoryError, GameError) as e:
@@ -2262,6 +2318,7 @@ def main():
         if remote:
             remote.close()
         jobs.directory.close()
+        jobs.center.close()
         jobs.games.close()
         jobs.history.close()
         jobs.export_cache.close()

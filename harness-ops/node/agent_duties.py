@@ -163,7 +163,7 @@ def duties(jobs, name, now=None):
                             "overdue": data["due_at"] is not None and data["due_at"] < now})
 
     active, blocked, finished = [], [], []
-    for row in jobs.dispatch.queue.rows():
+    for row in jobs.center.task_rows():
         research_id = row["spec"].get("research_id")
         if row["spec"].get("actor_id") != name and research_id not in owned:
             continue

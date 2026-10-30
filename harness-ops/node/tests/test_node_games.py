@@ -44,6 +44,7 @@ class GameFlowTests(unittest.TestCase):
             self.source.shutdown()
             self.source.server_close()
         self.jobs.directory.close()
+        self.jobs.center.close()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()

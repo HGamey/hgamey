@@ -96,8 +96,8 @@ class JobEventError(ValueError):
 
 
 class NodeJobEvents:
-    def __init__(self, queue, node_id):
-        self.queue, self.node_id = queue, node_id
+    def __init__(self, queue, node_id, targets=None):
+        self.queue, self.node_id, self.targets = queue, node_id, targets
 
     def events(self, query):
         # Queue publication imports projection; do not import NodeRead at module load.
@@ -132,7 +132,8 @@ class NodeJobEvents:
             stream = db.execute("SELECT stream_id FROM job_event_stream WHERE id=1").fetchone()[0]
             if cursor is not None and (cursor["node_id"] != self.node_id or cursor["stream_id"] != stream):
                 raise JobEventError(409, "job_cursor_stream_changed", "cursor belongs to another node or stream; preserve the original cursor")
-            if jid is not None and db.execute("SELECT 1 FROM jobs WHERE job_id=?", (jid,)).fetchone() is None:
+            if (jid is not None and db.execute("SELECT 1 FROM jobs WHERE job_id=?", (jid,)).fetchone() is None
+                    and (self.targets is None or self.targets.get(jid) is None)):
                 raise JobEventError(404, "job_not_found", "job has no registered event history")
             head = db.execute("SELECT COALESCE(MAX(sequence),0) FROM job_events").fetchone()[0]
             if after > head:

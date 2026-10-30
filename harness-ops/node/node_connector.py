@@ -6,7 +6,7 @@ import logging
 import os
 import socket
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode
 
 from artifact_io import SafeRoot
 from node_directory import REFRESH_S
@@ -69,6 +69,8 @@ class LocalHTTP:
     def __init__(self, url, token, node_id):
         self.url, self.token, self.node_id = url, token, node_id
         self._connections, self._guard, self._stop = set(), threading.Lock(), threading.Event()
+        self._events_cursor = self._pending_cursor = None
+        self.has_more = False
 
     def request(self, method, path, body, headers, max_bytes=2 << 20):
         return exchange(self.url, method, path, body, {**headers,
@@ -79,7 +81,19 @@ class LocalHTTP:
         response = self.request('GET', '/node/snapshot', b'', {})
         if response['status'] != 200:
             raise OSError('local snapshot returned HTTP ' + str(response['status']))
-        return json.loads(response['body'])
+        snapshot = json.loads(response['body'])
+        query = '?' + urlencode({'cursor': self._events_cursor}) if self._events_cursor else ''
+        updates = self.request('GET', '/node/executions' + query, b'', {})
+        if updates['status'] != 200:
+            raise OSError('execution updates returned HTTP ' + str(updates['status']))
+        page = json.loads(updates['body'])
+        snapshot['executions'] = page['items']
+        snapshot['execution_events'] = page['events']
+        self._pending_cursor, self.has_more = page['next_cursor'], page['has_more']
+        return snapshot
+
+    def acknowledge(self):
+        self._events_cursor = self._pending_cursor
 
     def close(self):
         self._stop.set()
@@ -138,6 +152,9 @@ class NodeConnector:
         while not self._stop.is_set():
             try:
                 self._json('/node-connect/report', self.backend.snapshot())
+                self.backend.acknowledge()
+                if self.backend.has_more:
+                    continue
             except (OSError, ValueError, http.client.HTTPException) as error:
                 if not self._stop.is_set():
                     logging.warning('node observation upload failed: %s', error)

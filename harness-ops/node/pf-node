@@ -59,6 +59,10 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node devices-set FILE|-             # CAS登记/更新；写入未知先读devices，不自动重发
   pf-node devices-resolve SERIAL         # 纯宿主核对精确别名，输出 {node_id,binding} 可保存为文件
   pf-node --device-binding binding.json --detach phonefarm gray-layer session --serial SERIAL ...
+  pf-node phones                          # 中心观察到的所有手机、型号和固定引用
+  pf-node --device-model MODEL phonefarm ... --serial @serial  # 空闲优先，选定后固定
+  pf-node --device NODE_ID/DEVICE_ID phonefarm ... --serial @serial
+  pf-node --execution-node NODE_ID ...     # 指定执行电脑（含原始 serial 或本机 global 范围）
   pf-node nodes [list|show NAME|invite|invites|update NAME]  # 中心的执行节点目录
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node live status SERIAL [--device-binding FILE] # 单次读取看屏状态
@@ -570,6 +574,8 @@ def reset_job(jid, note):
         sys.exit(f"pf-node: 重置未确认：{e}；先用 {continuation()} status {jid} 核对，不会自动重试")
     if result.get("released") is True:
         print(f"pf-node: 任务 {jid} 已重置并释放预留；不证明设备已恢复。", file=sys.stderr)
+    elif result.get("pending"):
+        print(f"pf-node: 任务 {jid} 的重置待送达或待节点确认；中心会在节点上报后继续送达，尚未确认释放。", file=sys.stderr)
     if result.get("storage_committed") is False:
         print(f"pf-node: 结束记录仍未保存：{json.dumps(result.get('job', {}).get('storage_error'), ensure_ascii=False)}", file=sys.stderr)
     return result
@@ -1172,6 +1178,7 @@ def main():
     connection_url = expected_node_id = explicit_file = None
     request_id, resources = None, []
     priority = None
+    routing = {}
     device_access, recovery_for, execution_policy = None, None, None
     inputs_path, inputs, submission_node = None, None, None
     actor_id = research_id = direction_id = experiment_ref = None
@@ -1191,6 +1198,10 @@ def main():
                 expected_node_id = value
             else:
                 explicit_file = value
+        elif a in ("--device", "--device-model", "--execution-node"):
+            if not args:
+                sys.exit(f"pf-node: {a} 需要一个值")
+            routing[{"--device": "device_ref", "--device-model": "device_model", "--execution-node": "execution_node_id"}[a]] = args.pop(0)
         elif a in ("-o", "--out-dir"):
             outdir = args.pop(0)
         elif a == "--detach":
@@ -1480,14 +1491,14 @@ def main():
             sys.exit(f"pf-node: 无法读取输入清单：{error}")
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
                                                  execution_policy=execution_policy, inputs=inputs, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
-        if args[0] not in submission_node.get("execution", {}).get("bins", []):
+        if not routing and args[0] not in submission_node.get("execution", {}).get("bins", []):
             sys.exit("pf-node: --inputs 仅用于节点提供的程序作业；未提交")
     if time_budget is not None or host_slots is not None or disk_guard is not None or priority is not None:
         if submission_node is None:
             submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
                                                      execution_policy=execution_policy, device_binding=binding_envelope,
                                                      time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
-        if args[0] not in submission_node.get("execution", {}).get("bins", []):
+        if not routing and args[0] not in submission_node.get("execution", {}).get("bins", []):
             sys.exit("pf-node: 优先级、运行预算、磁盘软保护和显式宿主 slots 仅用于普通程序作业；不用于管理/内部准备/typed recovery，未提交")
     if args[0] == "games":
         from game_client import main as games_main
@@ -1602,6 +1613,9 @@ def main():
             sys.exit(f"pf-node: {args[0]} 请求被拒绝：{e}")
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("paused") == (args[0] == "pause") else 1)
+    if args == ["phones"]:
+        print(call("GET", "/phones", attempts=1, raise_errors=True).decode())
+        return
     if args[0] == "nodes":
         from nodes_client import main as nodes_main
         raise SystemExit(nodes_main(args[1:], TARGET))
@@ -1691,7 +1705,9 @@ def main():
         if "jobs.experiment-v1" not in submission_node.get("capabilities", []):
             sys.exit("pf-node: 节点缺少 jobs.experiment-v1；未提交")
         experiment = {"commit": resolve_experiment(submission_node["execution"]["experiments"]["url"], experiment_ref)}
-    if gray_session and existing_gray_request is None:
+    if routing and "jobs.routing-v1" not in submission_node.get("capabilities", []):
+        sys.exit("pf-node: 中心不支持设备选择与跨节点提交；未提交")
+    if gray_session and existing_gray_request is None and not routing:
         require_gray_session_compatibility(submission_node, exe)
     request_id = request_id or str(uuid.uuid4())
     if experiment is not None:  # the entry is a path inside the experiments repository, never a local upload
@@ -1699,7 +1715,7 @@ def main():
         argv = argv[:1] + rest
     else:
         argv, body = pack(([exe] if exe else []) + argv)
-    spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label}
+    spec = {"bin": binname, "argv": argv[1:] if exe else argv, "label": label, **routing}
     if experiment is not None:
         spec["experiment"] = experiment
     if actor_id is not None:
