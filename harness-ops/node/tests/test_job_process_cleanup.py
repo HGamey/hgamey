@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
+import job_runtime
 from node_service import Jobs
 
 
@@ -53,6 +54,16 @@ while True: time.sleep(.01)
                 worker = patch("job_runtime._worker_command", lambda job_dir, lock_fd:
                                [sys.executable, "-c", bootstrap, job_dir, str(lock_fd)])
                 worker.start()
+                processes = []
+                launch = job_runtime.launch
+
+                def launch_worker(*args, **kwargs):
+                    proc = launch(*args, **kwargs)
+                    processes.append(proc)
+                    return proc
+
+                launcher = patch("job_runtime.launch", side_effect=launch_worker)
+                launcher.start()
 
                 def until(predicate):
                     deadline = time.monotonic() + 8
@@ -92,11 +103,16 @@ while True: time.sleep(.01)
                     # forced phase ran, without counting an orphan zombie as live work.
                 finally:
                     worker.stop()
+                    launcher.stop()
                     if pgid is not None:
                         try:
                             os.killpg(pgid, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
+                    # The device lock is released before the worker finishes
+                    # writing its terminal records. Reap it before rmtree.
+                    for proc in processes:
+                        proc.wait()
                     jobs._read_root.close()
 
 
