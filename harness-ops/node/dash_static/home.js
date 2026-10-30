@@ -247,6 +247,12 @@
     const keep = $("research-device").value;
     $("research-device").innerHTML = `<option value="">不限设备</option>` + slots.map(s => `<option value="${esc(s.serial)}">${esc(s.model || "")} · ${esc(s.serial)}${s.busy ? "（在用）" : ""}</option>`).join("");
     if (keep && slots.some(s => s.serial === keep)) $("research-device").value = keep;
+    // 接续自: any task on this node, most recently active first.
+    const follows = $("research-follows"), was = follows.value;
+    api("/dash/api/tasks?all=1").then(v => {
+      follows.innerHTML = `<option value="">不接续</option>` + v.items.map(t => `<option value="${esc(t.id)}">${esc(t.title || t.id)}</option>`).join("");
+      if (v.items.some(t => t.id === was)) follows.value = was;
+    }, () => {});
     if (!S.researchDraft) S.researchDraft = {id: crypto.randomUUID(), operationId: crypto.randomUUID()};
     $("research-msg").textContent = ""; $("research-msg").className = "msg";
     if (!$("dlg-research").open) $("dlg-research").showModal();
@@ -261,7 +267,7 @@
     if (!draft) return;
     const game = $("research-game").value, device = $("research-device").value;
     const data = {title: objective.split("\n", 1)[0].slice(0, 240), objective,
-      game: game ? {game_id: game, game_version: null} : null, device_requirements: device ? [device] : []};
+      game: game ? {game_id: game, game_version: null} : null, device_requirements: device ? [device] : [], follows: $("research-follows").value || null};
     S.busy = true; $("research-submit").disabled = true; $("research-submit").textContent = "创建中…";
     try {
       const r = await steerCall(`/dash/api/research-state/research/${encodeURIComponent(draft.id)}`, {

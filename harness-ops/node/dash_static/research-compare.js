@@ -72,7 +72,7 @@
       Object.assign(node, {controls: true, preload: 'metadata', playsInline: true, muted: true});
       node.onloadstart = () => { if (state[item.slot] === 'not_loaded') state[item.slot] = 'unknown'; };
       node.onloadedmetadata = node.onloadeddata = shown;
-      node.src = url;
+      node.src = url + '#t=0.1';   // paints the first frame without playing
       return node;
     }
     node.alt = item.slot; node.decoding = 'async'; node.loading = 'lazy';
@@ -206,12 +206,17 @@
   }
 
   // The research's comparisons: those waiting for a judgement first (the caller puts them at the top), answered ones apart.
-  async function sections(record, ctx, U) {
-    const list = await U.api(`/research-state/request?research_id=${encodeURIComponent(record.id)}&limit=100`);
-    const requests = (await Promise.all(list.items.map(item => U.api(`/research-state/request/${encodeURIComponent(item.id)}`).catch(() => null)))).filter(isComparison);
+  // On a chain of tasks (`scope`), every task's comparisons, each tagged with its task.
+  async function sections(record, ctx, U, scope) {
+    const lists = await Promise.all((scope?.ids || [record.id]).map(id => U.api(`/research-state/request?research_id=${encodeURIComponent(id)}&limit=100`)));
+    const requests = (await Promise.all(lists.flatMap(list => list.items).map(item => U.api(`/research-state/request/${encodeURIComponent(item.id)}`).catch(() => null)))).filter(isComparison);
     const answers = await Promise.all(requests.map(r => load(r, U).catch(() => null)));
     const open = [], done = [];
-    requests.forEach((r, i) => (answers[i] || r.data.state !== 'open' ? done : open).push(block(r, answers[i], ctx, U)));
+    requests.forEach((r, i) => {
+      const item = block(r, answers[i], ctx, U), mark = scope?.tag(r.research_id);
+      if (mark) { item.querySelector('.compare-head').prepend(mark); item.dataset.task = r.research_id; }
+      (answers[i] || r.data.state !== 'open' ? done : open).push(item);
+    });
     const section = (items, title, id) => {
       if (!items.length) return null;
       const box = U.el('section', null, 'research-section compare-section'), head = U.el('div', null, 'section-head');

@@ -11,7 +11,7 @@
   const TYPES = {guidance: '技术指导', assistance: '操作或素材协助', evaluation: '主观评价'};
   const FIELDS = {
     research: [
-      ['title', '研究标题', 'text', true], ['objective', '目标与判据', 'long', true],
+      ['title', '研究标题', 'text', true], ['objective', '目标与判据', 'long', true], ['follows', '接续自', 'task'],
       ['game', '游戏声明', 'json', false, 'null 或 {"game_id":"doom","game_version":"版本"}；不会准备或安装游戏。'],
       ['constraints', '约束（每行一项）', 'lines'], ['device_requirements', '设备要求（每行一项）', 'lines'],
       ['state', '声明状态', 'state'], ['state_reason', '状态理由', 'long'],
@@ -180,7 +180,7 @@
     $('objects-heading').textContent = listKind === 'research' ? '任务' : KINDS[listKind]; $('object-count').textContent = `${records.length} 条已载入`;
     $('object-list').replaceChildren(...records.map(item => {
       const li = el('li'), button = el('button', null, 'research-choice'); button.type = 'button'; button.setAttribute('aria-current', String(keyOf(item) === keyOf(selection)));
-      if (item.kind === 'research') button.append(el('strong', item.title || item.id), el('span', `${stateText(item.kind, item.state)} · ${item.owner || '无人负责'} · ${time(item.active_at || item.updated_at)}`, 'research-meta'));
+      if (item.kind === 'research') button.append(el('strong', item.title || item.id), el('span', `${stateText(item.kind, item.state)} · ${item.owner || '无人负责'} · ${time(item.active_at || item.updated_at)}${item.follow_ons ? ` · 含 ${item.follow_ons} 个接续任务` : ''}`, 'research-meta'));
       else button.append(el('strong', item.title || item.id), el('span', `${item.id} · v${item.revision} · ${stateText(item.kind, item.state)}`, 'research-meta'), el('span', `记录于 ${time(item.updated_at)}`, 'research-meta'));
       if (item.kind === 'direction') button.append(el('span', item.metadata_blocked === true ? '存在未解的局部阻断依赖' : item.metadata_blocked === false ? '未解的阻断依赖：无；设备资格另核' : '依赖摘要未提供', 'research-meta'));
       if (item.kind === 'request') button.append(el('span', `${Number.isInteger(item.feedback_count) ? item.feedback_count : '未知'} 条答复；依赖是否解除另记`, 'research-meta'));
@@ -272,7 +272,7 @@
     $('related-feedback').hidden = !['request', 'feedback'].includes(record.kind);
     const body = $('object-body'); body.replaceChildren();
     for (const [key, label, type] of FIELDS[record.kind]) {
-      if (['title', 'state'].includes(key)) continue;
+      if (['title', 'state', 'follows'].includes(key)) continue;   // a chain shows as the strip above the sections
       const value = record.data[key]; if (value == null || value === '' || Array.isArray(value) && !value.length) continue;
       if (record.kind === 'research' && key === 'objective' && String(value).trim() === String(record.data.title || '').trim()) continue;
       const shown = record.kind === 'research' ? SHOWN[key] || label : label;
@@ -364,11 +364,12 @@
     $('edit-fields').replaceChildren();
     for (const [key, label, type, required, help] of [...FIELDS[draft.kind], EVIDENCE]) {
       const wrapper = el(type === 'json' ? 'details' : 'label', null, type === 'json' ? 'json-field' : '');
-      const field = el(type === 'state' || type === 'type' ? 'select' : ['long', 'lines', 'json'].includes(type) ? 'textarea' : 'input');
+      const field = el(['state', 'type', 'task'].includes(type) ? 'select' : ['long', 'lines', 'json'].includes(type) ? 'textarea' : 'input');
       field.id = `field-${key}`; field.dataset.field = key; field.dataset.type = type;
       if (type === 'json') { wrapper.append(el('summary', label)); field.setAttribute('aria-label', label); }
       else wrapper.append(el('span', label));
       if (type === 'state' || type === 'type') for (const [value, title] of Object.entries(type === 'state' ? STATES[draft.kind] : TYPES)) field.append(new Option(title, value));
+      else if (type === 'task') fillTasks(field, draft.data[key], draft.id);
       else if (type === 'integer' || type === 'number') { field.type = 'number'; field.step = type === 'integer' ? '1' : 'any'; }
       else if (field.tagName === 'INPUT') { field.type = 'text'; field.maxLength = key === 'title' ? 240 : 64; }
       if (field.tagName === 'TEXTAREA') { field.rows = type === 'json' ? 6 : 3; if (type !== 'json') field.maxLength = 16384; }
@@ -385,6 +386,14 @@
         return checkedObject(await request(`${objectPath('request', id)}?revision=${revision}`, {target}), 'request', id, target, revision);
       }});
     $('edit-reason').required = draft.base_revision != null; renderControls();
+  }
+  // 接续自: any other task on this node, most recently active first.
+  function fillTasks(field, chosen, self) {
+    field.append(new Option('不接续', ''));
+    if (chosen) field.append(new Option(chosen, chosen, true, true));
+    request(`${API}/tasks?all=1`).then(value => {
+      field.replaceChildren(new Option('不接续', ''), ...value.items.filter(task => task.id !== self).map(task => new Option(task.title || task.id, task.id, false, task.id === chosen)));
+    }, () => {});
   }
   function mountPlanTemplates(wrapper, field) {
     const row = el('div'), mode = el('select'), recipe = el('select'), revision = el('input'), apply = el('button', '填入计划模板'), note = el('p', '选择阶段与可选路线，填写实际条件后保存；模板只填写当前草稿。', 'field-note');

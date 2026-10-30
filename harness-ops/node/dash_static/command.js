@@ -22,12 +22,26 @@ async function fetchModel(src) {
   if (!r.ok) { let msg = `HTTP ${r.status}`; try { msg = (await r.json()).error || msg; } catch (_) {} const e = new Error(msg); e.status = r.status; throw e; }
   return r.json();
 }
+// A chain of tasks (each `follows` the one before) is one tree under its first task: its runs, directions and notes
+// hang there, and the latest step carries the state and the owner. Every step's delivery stays on the record.
 function normalize(raw, src) {
-  const tasks = raw.research || [], ids = new Set(tasks.map(t => t.id));
-  const jobs = (raw.jobs || []).filter(j => ids.has(j.research_id));
+  const all = raw.research || [], byId = new Map(all.map(t => [t.id, t])), rootOf = new Map();
+  const earlier = (a, b) => (byId.get(a).created_at || 0) - (byId.get(b).created_at || 0) || (a < b ? -1 : 1);
+  const root = id => {
+    const seen = [];
+    while (!seen.includes(id)) { seen.push(id); if (!byId.has(byId.get(id).follows)) return id; id = byId.get(id).follows; }
+    return seen.slice(seen.indexOf(id)).sort(earlier)[0];   // a cycle: its earliest task stands as the root
+  };
+  for (const t of all) rootOf.set(t.id, root(t.id));
+  const tasks = all.filter(t => rootOf.get(t.id) === t.id).map(t => {
+    const steps = all.filter(m => rootOf.get(m.id) === t.id).sort((a, b) => earlier(a.id, b.id)), last = steps[steps.length - 1];
+    return steps.length > 1 ? {...t, state: last.state, updated_at: last.updated_at, owner: last.owner, steps} : t;
+  });
+  const onTree = x => rootOf.has(x.research_id), lift = x => ({...x, research_id: rootOf.get(x.research_id)});
+  const jobs = (raw.jobs || []).filter(onTree).map(lift);
   const agents = [...new Set([...(raw.agents || []), ...jobs.map(j => j.agent).filter(Boolean)])];
   return {src, at: raw.at, source: raw.source, history: raw.history || null, agents, tasks, jobs,
-    dirs: (raw.directions || []).filter(d => ids.has(d.research_id)), notes: (raw.notes || []).filter(n => ids.has(n.research_id) && n.at),
+    dirs: (raw.directions || []).filter(onTree).map(lift), notes: (raw.notes || []).filter(n => onTree(n) && n.at).map(lift),
     phones: (raw.phones || []).map(p => ({...p, key: phoneKey(p.brand)})), phonesAt: raw.phones_sampled_at || raw.at};
 }
 
@@ -46,7 +60,7 @@ const timeline = new Timeline({onSeek: (t, final) => { setLive(false); seek(t); 
 
 function buildEvents(M) {
   const ev = [], add = (at, type, x) => { if (at) ev.push({at, type, ...x}); };
-  for (const t of M.tasks) { add(t.created_at, 'task', {tree: t.id, t}); if (t.state === 'delivered') add(t.updated_at, 'deliver', {tree: t.id, t}); }
+  for (const t of M.tasks) { add(t.created_at, 'task', {tree: t.id, t}); for (const s of t.steps || [t]) if (s.state === 'delivered') add(s.updated_at, 'deliver', {tree: t.id, t}); }
   for (const d of M.dirs) { add(d.created_at, 'dir', {tree: d.research_id, d}); if (['verified', 'rejected'].includes(d.state) && d.updated_at > d.created_at + 1) add(d.updated_at, 'dirstate', {tree: d.research_id, d}); }
   for (const j of M.jobs) {
     if (j.phone && j.queued && waitEnd(j) - j.queued > 30) add(j.queued, 'wait', {tree: j.research_id, j, who: j.agent});
@@ -72,7 +86,7 @@ function adopt(raw, src, keepCols) {
   cam.extent = union([...S.lay.trees.values()].map(treeBounds)) || {x0: 0, y0: 0, x1: 1000, y1: 600};
   cam.kMin = Math.min(.5, cam.viewFor(cam.extent, {maxK: 1}).k * .8);
   timeline.setData({ends: M.jobs.filter(j => j.ended).map(j => ({at: j.ended, ok: j.outcome === 'succeeded'})), people: M.notes.filter(n => n.who === 'human').map(n => n.at),
-    delivered: M.tasks.filter(t => t.state === 'delivered').map(t => t.updated_at)}, S.T0, S.T1);
+    delivered: M.tasks.flatMap(t => t.steps || [t]).filter(t => t.state === 'delivered').map(t => t.updated_at)}, S.T0, S.T1);
   rosterRows(); phoneCards();
   $('source').textContent = src === 'live' ? `${M.source || '本节点'} · 实时数据` : `快照 · ${M.source || '?'} · 截至 ${stamp(raw.at)}`;
   $('t-live').disabled = src !== 'live'; $('t-live').title = src === 'live' ? '直播：跟着本节点实时走（L）' : '快照不是实时数据；切到「本节点」可以看直播';

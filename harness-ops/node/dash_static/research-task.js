@@ -58,7 +58,7 @@
     const figure = el('figure', null, 'research-artifact video'), video = el('video'), link = el('a');
     const filename = ref.filename || ref.path.split('/').pop();
     Object.assign(video, {controls: true, preload: 'metadata', playsInline: true});
-    video.src = HGTarget.url(sourcePath);
+    video.src = HGTarget.url(sourcePath) + '#t=0.1';   // paints the first frame without playing
     video.onerror = () => video.replaceWith(el('span', '视频读取失败', 'note'));
     link.textContent = ref.kind === 'attachment' ? filename : `任务 ${ref.job_id} · ${ref.path}`;
     link.href = HGTarget.url(sourcePath); link.download = filename;
@@ -250,24 +250,27 @@
     item.append(tag(HGJobState.label(job), HGJobState.tone(job)), link, facts);
     return item;
   }
-  async function directionsSection(record, section) {
+  async function directionsSection(scope, section) {
     const list = el('div', null, 'research-directions'), head = el('div', null, 'section-head'), count = el('span', null, 'count');
     head.append(el('h3', '探索过程'), count);
     section.id = 'task-directions'; section.append(head, list);
     list.append(el('p', '读取中…', 'empty'));
     try {
-      const [directions, jobs, results] = await Promise.all([
-        api(`/research-state/direction?research_id=${encodeURIComponent(record.id)}&limit=100`),
-        api(`/jobs?research=${encodeURIComponent(record.id)}&limit=50`),
-        api(`/results?research_id=${encodeURIComponent(record.id)}&limit=100`)]);
-      const entries = directions.items.slice().reverse();
+      const per = await Promise.all(scope.ids.map(id => Promise.all([
+        api(`/research-state/direction?research_id=${encodeURIComponent(id)}&limit=100`),
+        api(`/jobs?research=${encodeURIComponent(id)}&limit=50`),
+        api(`/results?research_id=${encodeURIComponent(id)}&limit=100`)])));
+      // A chain lists its tasks' directions in chain order, each task's oldest first.
+      const entries = per.flatMap(([directions]) => directions.items.slice().reverse());
+      const jobs = {items: per.flatMap(([, value]) => value.items)}, results = {items: per.flatMap(([, , value]) => value.items)};
       count.textContent = entries.length ? String(entries.length) : '';
       list.replaceChildren(...(entries.length ? entries.map(direction => {
         const item = el('article', null, 'research-direction'), top = el('div', null, 'direction-head');
-        item.dataset.direction = direction.id;
+        item.dataset.direction = direction.id; item.dataset.task = direction.research_id;
         const link = el('a', direction.title || direction.id, 'direction-title');
         link.href = HGTarget.url(`/dash/research?kind=direction&id=${encodeURIComponent(direction.id)}`);
-        top.append(link, tag(DIRECTION_STATE[direction.state] || direction.state, DIRECTION_TONE[direction.state] || 'off'));
+        const title = el('div', null, 'direction-name'); title.append(...[scope.tag(direction.research_id), link].filter(Boolean));
+        top.append(title, tag(DIRECTION_STATE[direction.state] || direction.state, DIRECTION_TONE[direction.state] || 'off'));
         const hypothesis = el('p', direction.hypothesis, 'direction-hypothesis');
         item.append(top, hypothesis);
         if ((direction.hypothesis || '').length > 140) {
@@ -286,21 +289,28 @@
         if (related.childElementCount) item.append(related);
         return item;
       }) : [el('p', '还没有方向', 'empty')]));
+      scope.apply(list);
     } catch (error) { list.replaceChildren(el('p', '读取方向失败：' + failure(error), 'note')); }
   }
 
   const RUNS_SHOWN = 8;
-  async function runsSection(record, section) {
+  async function runsSection(scope, section) {
     const list = el('ul', null, 'run-list'), head = el('div', null, 'section-head'), count = el('span', null, 'count');
     head.append(el('h3', '运行'), count);
     section.append(head, list);
     list.append(el('li', '读取中…', 'empty'));
     try {
-      const value = await api(`/jobs?research=${encodeURIComponent(record.id)}&limit=50`);
+      const value = {items: (await Promise.all(scope.ids.map(id => api(`/jobs?research=${encodeURIComponent(id)}&limit=50`))))
+        .flatMap(page => page.items).sort((a, b) => (b.started || 0) - (a.started || 0))};
       count.textContent = value.items.length ? String(value.items.length) : '';
-      const rows = value.items.map(runRow);
+      const rows = value.items.map(job => {
+        const row = runRow(job), mark = scope.tag(job.research_id);
+        row.dataset.task = job.research_id; if (mark) row.querySelector('.run-facts').prepend(mark);
+        return row;
+      });
       rows.slice(RUNS_SHOWN).forEach(row => { row.hidden = true; });
       list.replaceChildren(...(rows.length ? rows : [el('li', '暂无运行', 'empty')]));
+      scope.apply(list);
       if (rows.length > RUNS_SHOWN) {
         const more = el('button', `显示全部 ${rows.length} 次`, 'link-btn runs-more'); more.type = 'button';
         more.onclick = () => { rows.forEach(row => { row.hidden = false; }); more.remove(); };
@@ -310,7 +320,7 @@
   }
 
   const DECISION = {adopt: ['采纳', 'ok'], defer: ['暂缓', 'off'], reject: ['拒绝', 'bad']};
-  async function threadSection(record, ctx, section) {
+  async function threadSection(record, ctx, section, scope) {
     const list = el('div', null, 'discuss-list'), status = el('p', null, 'note'), head = el('div', null, 'section-head'), count = el('span', null, 'count');
     let replyTo = null, byId = new Map();
     status.setAttribute('role', 'status');
@@ -319,8 +329,8 @@
     section.append(head, list);
     list.append(el('div', '读取中…', 'empty'));
     async function load() {
-      const value = await api(`/research-state/note?research_id=${encodeURIComponent(record.id)}&limit=100`);
-      const notes = value.items.slice().reverse(), ids = new Set(notes.map(note => note.id)), children = new Map(), roots = [];
+      const pages = await Promise.all(scope.ids.map(id => api(`/research-state/note?research_id=${encodeURIComponent(id)}&limit=100`)));
+      const notes = pages.flatMap(page => page.items).sort((a, b) => a.updated_at - b.updated_at), ids = new Set(notes.map(note => note.id)), children = new Map(), roots = [];
       byId = new Map(notes.map(note => [note.id, note]));
       count.textContent = notes.length ? String(notes.length) : '';
       for (const note of notes) {
@@ -333,6 +343,8 @@
         const human = note.auth_channel === 'dashboard_steer';
         const entry = el('div', null, 'discuss-entry' + (human ? ' human' : '') + (note.question_unanswered === true ? ' asking' : ''));
         const main = el('div', null, 'discuss-main'), top = el('div', null, 'discuss-head');
+        const mark = !note.reply_to || !ids.has(note.reply_to) ? scope.tag(note.research_id) : null;
+        if (mark) top.append(mark);
         top.append(el('span', speaker(note), 'discuss-from'));
         if (note.to) top.append(el('span', '→ ' + note.to, 'discuss-to'));
         if (human) top.append(tag('指导', 'acc plain'));
@@ -346,6 +358,7 @@
         main.append(top, el('p', note.text, 'discuss-text'));
         if (note.evidence_refs?.length) main.append(evidenceList(note.evidence_refs));
         entry.dataset.note = note.id; entry.id = 'note-' + note.id;
+        if (mark) entry.dataset.task = note.research_id;
         const replies = children.get(note.id) || [];
         if (replies.length) {
           const nested = el('div', null, 'discuss-replies');
@@ -355,6 +368,7 @@
         return entry;
       }
       list.replaceChildren(...(roots.length ? roots.map(paint) : [el('div', '还没有留言', 'empty')]));
+      scope.apply(list);
       if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'center'});
     }
     try { await load(); } catch (error) { list.replaceChildren(); status.textContent = '读取留言失败：' + failure(error); }
@@ -362,16 +376,25 @@
       const form = el('form', null, 'composer'), input = el('textarea'), button = el('button', '发送', 'ghost primary');
       const chip = el('div', null, 'reply-chip'), chipText = el('span'), cancel = el('button', null, 'chip-x'), foot = el('div', null, 'composer-foot');
       form.id = 'task-note-form'; input.id = 'task-note-text'; input.maxLength = 16384; input.autocomplete = 'off'; input.rows = 2;
-      input.placeholder = record.data.owner ? `写给 ${record.data.owner} 的指导…` : '留言…'; input.setAttribute('aria-label', '留言内容');
+      input.setAttribute('aria-label', '留言内容');
       button.type = 'submit'; button.id = 'task-note-submit';
       cancel.type = 'button'; cancel.setAttribute('aria-label', '取消回复'); cancel.append(icon('M4 4l8 8M12 4l-8 8'));
       chip.hidden = true; chip.append(chipText, cancel);
       // 点名: a note addressed to an agent reaches it at check-in even if it does not own this task.
+      // On a chain the note goes to the selected task (this page's task under 全部), and its owner is the default reader.
       const to = el('select', null, 'composer-to');
       to.id = 'task-note-to'; to.setAttribute('aria-label', '点名');
-      to.append(new Option(record.data.owner ? `给负责人 ${record.data.owner}` : '不点名', ''),
-                ...(agents || []).filter(agent => agent.name !== record.data.owner).map(agent => new Option(`点名 ${agent.name}`, agent.name)));
-      to.onchange = () => { input.placeholder = to.value ? `写给 ${to.value}…` : record.data.owner ? `写给 ${record.data.owner} 的指导…` : '留言…'; };
+      to.onchange = () => {
+        const owner = scope.owner(), where = scope.chain ? `${scope.members.get(scope.target())?.n || ''} ` : '';
+        input.placeholder = to.value ? `${where}写给 ${to.value}…` : owner ? `${where}写给 ${owner} 的指导…` : `${where}留言…`;
+      };
+      const fillTo = () => {
+        const owner = scope.owner();
+        to.replaceChildren(new Option(owner ? `给负责人 ${owner}` : '不点名', ''),
+                           ...(agents || []).filter(agent => agent.name !== owner).map(agent => new Option(`点名 ${agent.name}`, agent.name)));
+        to.onchange();
+      };
+      fillTo(); scope.onPick.push(fillTo);
       foot.append(to, el('span', 'Enter 发送 · Shift+Enter 换行', 'composer-hint'), button);
       form.append(chip, input, foot);
       const setReply = id => {
@@ -398,7 +421,7 @@
         button.disabled = true; button.textContent = '发送中…'; status.textContent = '';
         try {
           await write('note', 'n-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
-                      {research_id: record.id, text, reply_to: replyTo, decision: null, ask: false, evidence_refs: [], to: to.value || null}, null, null);
+                      {research_id: replyTo ? byId.get(replyTo)?.research_id || scope.target() : scope.target(), text, reply_to: replyTo, decision: null, ask: false, evidence_refs: [], to: to.value || null}, null, null);
           setReply(null); input.value = ''; to.value = ''; to.onchange(); grow(); await load();
         } catch (error) { status.textContent = '发送失败：' + failure(error) + '。内容还在输入框里。'; }
         finally { button.disabled = false; button.textContent = '发送'; }
@@ -422,16 +445,74 @@
     if (record.kind !== 'research') return;
     agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
     if (shown !== paint) return;
+    // A task that others follow (or that follows one) shows the whole chain: a strip of its tasks, every section merged.
+    const chain = await api(`/tasks?chain=${encodeURIComponent(record.id)}`).then(value => value.items, () => []);
+    if (shown !== paint) return;
+    const scope = chainScope(record, chain);
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
-    const waiting = el('div'), judged = el('div');
-    container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
-    const compared = window.HGResearchCompare?.sections(record, ctx, util).then(found => {
+    const waiting = el('div'), judged = el('div'), reports = el('div');
+    container.append(...[scope.chain && chainStrip(scope, container), ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports].filter(Boolean));
+    const delivered = deliverables(scope, record).then(found => { if (shown === paint) { reports.replaceWith(...found); scope.apply(container); } });
+    const compared = window.HGResearchCompare?.sections(record, ctx, util, scope).then(found => {
       if (shown !== paint) return;
-      waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');
+      waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || ''); scope.apply(container);
       if (location.hash.startsWith('#cmp-')) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'start'});
     }).catch(() => { waiting.remove(); judged.remove(); });
-    await Promise.all([directionsSection(record, directions), runsSection(record, runs), threadSection(record, ctx, thread), compared]);
+    if (scope.chain) scope.pick(chain[0].id === record.id ? null : record.id);
+    await Promise.all([directionsSection(scope, directions), runsSection(scope, runs), threadSection(record, ctx, thread, scope), compared, delivered]);
+  }
+
+  // ── Chains of tasks (research.follows)
+  const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+  const TASK_STATE = {active: '推进中', idle: '暂空闲', paused: '已暂停', closed: '已关闭', delivered: '已交付'};
+  const clip = (value, n) => { const chars = Array.from(value || ''); return chars.length > n ? chars.slice(0, n).join('') + '…' : value || ''; };
+  function chainScope(record, chain) {
+    const linked = chain.length > 1, members = new Map(chain.map((task, i) => [task.id, {...task, n: CIRCLED[i] || `(${i + 1})`}]));
+    const scope = {chain: linked, ids: linked ? chain.map(task => task.id) : [record.id], members, segment: null, onPick: [],
+      // The task an entry came from, on a merged chain page only.
+      tag(id) {
+        const m = linked && members.get(id); if (!m) return null;
+        const mark = el('span', `${m.n} ${clip(m.title, 10)}`, 'chain-tag'); mark.title = `${m.n} ${m.title} · ${m.owner || '无人负责'}`; return mark;
+      },
+      target: () => scope.segment || record.id,
+      owner: () => scope.segment && scope.segment !== record.id ? members.get(scope.segment)?.owner : record.data.owner,
+      apply(root) { for (const item of root.querySelectorAll('[data-task]')) item.classList.toggle('seg-out', !!scope.segment && item.dataset.task !== scope.segment); },
+      pick() {}};
+    return scope;
+  }
+  function chainStrip(scope, container) {
+    const strip = el('nav', null, 'chain-strip'), all = el('button', '全部', 'chain-seg');
+    strip.setAttribute('aria-label', '接续任务'); all.type = 'button'; all.onclick = () => scope.pick(null); strip.append(all);
+    scope.ids.forEach((id, i) => {
+      const m = scope.members.get(id), seg = el('button', null, 'chain-seg');
+      if (i) strip.append(el('span', '→', 'chain-arrow'));
+      seg.type = 'button'; seg.dataset.seg = id; seg.title = m.title; seg.onclick = () => scope.pick(id);
+      seg.append(el('b', m.n), el('span', clip(m.title, 18), 'chain-title'), el('small', `${m.owner || '无人负责'} · ${TASK_STATE[m.state] || m.state}`));
+      strip.append(seg);
+    });
+    scope.pick = id => {
+      scope.segment = id;
+      for (const seg of strip.querySelectorAll('.chain-seg')) seg.setAttribute('aria-pressed', String((seg.dataset.seg || null) === id));
+      scope.apply(container); scope.onPick.forEach(fn => fn());
+    };
+    return strip;
+  }
+  // The newest delivery reads in full; older ones in the chain fold under it.
+  async function deliverables(scope, record) {
+    if (!scope.chain) return [deliverableSection(record)].filter(Boolean);
+    const done = [...scope.members.values()].filter(m => m.state === 'delivered' || m.id === record.id && record.data.deliverable);
+    const records = (await Promise.all(done.map(m => m.id === record.id ? record : api(`/research-state/research/${encodeURIComponent(m.id)}`).catch(() => null))))
+      .filter(r => r?.data.deliverable).sort((a, b) => b.updated_at - a.updated_at);
+    return records.map((r, i) => {
+      const section = deliverableSection(r), mark = scope.tag(r.id);
+      if (mark) section.querySelector('.section-head').prepend(mark);
+      if (!i) { section.dataset.task = r.id; return section; }
+      section.removeAttribute('id');
+      const older = el('details', null, 'research-section report-older'), m = scope.members.get(r.id);
+      older.dataset.task = r.id; older.append(el('summary', `${m.n} ${m.title} 的交付报告 · ${short(r.updated_at)}`), section);
+      return older;
+    });
   }
   const util = {api, write, el, tag, timeEl, speaker, failure};
 

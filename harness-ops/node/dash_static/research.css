@@ -311,3 +311,21 @@
 .research-view .compare-who { color: var(--muted); }
 .research-view .compare-comment { color: var(--ink2); overflow-wrap: anywhere; }
 .research-view .compare-verdict time { font-size: var(--fs-xs); }
+
+/* 接续任务：顶部链条，合并后的每条带一个任务标签 */
+.research-view .chain-strip { display: flex; align-items: stretch; flex-wrap: wrap; gap: 6px; margin: var(--sp-3) 0 0; }
+.research-view .chain-seg { display: inline-grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0 6px; max-width: 260px; min-height: 34px;
+  padding: 5px 12px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); color: var(--ink2); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+.research-view .chain-seg:first-child { display: inline-flex; align-items: center; }
+.research-view .chain-seg b { font-weight: 650; color: var(--ink); }
+.research-view .chain-seg .chain-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.research-view .chain-seg small { grid-column: 2; font-size: var(--fs-xs); color: var(--muted); }
+.research-view .chain-seg:hover { border-color: var(--ink2); }
+.research-view .chain-seg[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); box-shadow: 0 0 0 1px var(--acc); }
+.research-view .chain-arrow { align-self: center; color: var(--muted); }
+.research-view .chain-tag { display: inline-block; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: baseline;
+  padding: 0 7px; border-radius: 999px; background: var(--wash); color: var(--ink2); font-size: var(--fs-xs); font-weight: 500; line-height: 1.7; }
+.research-view .direction-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.research-view .seg-out { display: none !important; }
+.research-view .report-older > summary { font-size: var(--fs-sm); color: var(--ink2); cursor: pointer; }
+.research-view .report-older > .research-section { border-top: 0; margin-top: var(--sp-3); padding-top: 0; }

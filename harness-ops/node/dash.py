@@ -483,13 +483,18 @@ class Dash:
             return self._send(h, 503, {"error": f"指挥中心数据暂不可用：{type(error).__name__}: {error}"[:300]})
 
     def _task_list(self, h, q):
-        """The task list, most recently active first: a task is as recent as the latest change to it, its directions or
-        notes, or a run of it starting or ending. Same items as the research list, plus `active_at`; no paging."""
+        """The task list, most recently active first. A task is as recent as the latest change to it, its directions or
+        notes, or a run of it being queued, claimed, started or ended (`active_at`). Tasks that follow another
+        (`follows`) form a chain under the first one: by default only chain roots are listed, each with its chain
+        (`chain`, ids in order) and the chain's latest activity; `chain=ID` lists the tasks of ID's chain in order;
+        `all=1` lists every task. `state` keeps the chains holding a task in that state, `research_id` the chain holding
+        that task. Same items as the research list plus these fields; no paging."""
         research = getattr(self.job_service, "research", None) if self.job_service else None
-        if research is None or set(q) - {"state", "research_id", "expected_node_id"} or any(len(v) != 1 for v in q.values()):
-            return self._send(h, 400, {"error": "tasks take only state and research_id"})
+        if (research is None or set(q) - {"state", "research_id", "chain", "all", "expected_node_id"}
+                or any(len(v) != 1 for v in q.values())):
+            return self._send(h, 400, {"error": "tasks take only state, research_id, chain and all"})
         try:
-            query, items, node_id = {"limit": ["100"], **{k: q[k] for k in ("state", "research_id") if q.get(k, [""])[0]}}, [], None
+            query, items, node_id = {"limit": ["100"]}, [], None
             while True:
                 page = research.list("research", query)
                 items, node_id = items + page["items"], page["node_id"]
@@ -508,8 +513,46 @@ class Dash:
             bump(n["research_id"], n["at"])
         for j in model["jobs"]:
             bump(j["research_id"], max((t for t in (j.get("started"), j.get("ended"), j.get("queued"), j.get("claimed")) if t), default=None))
-        items = sorted(({**item, "active_at": at[item["id"]]} for item in items), key=lambda item: item["active_at"], reverse=True)
-        return self._send(h, 200, {"schema_version": 1, "node_id": node_id, "items": items, "next_cursor": None})
+        created = {t["id"]: t.get("created_at") or 0 for t in model["research"]}
+        order = lambda rid: (created.get(rid, 0), rid)
+        tasks = {item["id"]: {**item, "active_at": at[item["id"]]} for item in items}
+
+        def root(rid):
+            seen = []
+            while rid not in seen:
+                seen.append(rid)
+                if tasks[rid].get("follows") not in tasks:
+                    return rid
+                rid = tasks[rid]["follows"]
+            return min(seen[seen.index(rid):], key=order)   # a cycle: its earliest task stands as the root
+        roots, children = {rid: root(rid) for rid in tasks}, collections.defaultdict(list)
+        for rid, task in tasks.items():
+            if rid != roots[rid] and task.get("follows") in tasks:
+                children[task["follows"]].append(rid)
+
+        def walk(rid, out):   # the root, then each task after the one it follows (siblings by creation)
+            out.append(rid)
+            for child in sorted(children[rid], key=order):
+                if child not in out:
+                    walk(child, out)
+            return out
+        chains = {r: walk(r, []) for r in set(roots.values())}
+        if q.get("chain"):
+            if q["chain"][0] not in tasks:
+                return self._send(h, 404, {"error": "没有这个任务"})
+            out = [{**tasks[rid], "root": roots[rid]} for rid in chains[roots[q["chain"][0]]]]
+        elif q.get("all", [""])[0] == "1":
+            out = sorted(({**task, "root": roots[rid]} for rid, task in tasks.items()), key=lambda t: t["active_at"], reverse=True)
+        else:
+            state, held = q.get("state", [""])[0], q.get("research_id", [""])[0]
+            out = []
+            for r, chain in chains.items():
+                if state and not any(tasks[rid]["state"] == state for rid in chain) or held and roots.get(held) != r:
+                    continue
+                out.append({**tasks[r], "chain": chain, "follow_ons": len(chain) - 1,
+                            "active_at": max(tasks[rid]["active_at"] for rid in chain)})
+            out.sort(key=lambda t: t["active_at"], reverse=True)
+        return self._send(h, 200, {"schema_version": 1, "node_id": node_id, "items": out, "next_cursor": None})
 
     def _showcase(self, h, brand=None):
         """Serve the node-local showcase snapshot as written; this node's own state is not consulted."""

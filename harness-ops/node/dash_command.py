@@ -116,7 +116,7 @@ class CommandModel:
             "at": now, "live": True, "source": socket.gethostname(),
             "agents": [a["name"] for a in self.jobs.agents.list()],
             "phones": phones, "phones_sampled_at": snapshot.get("sampled_at"),
-            "research": [{"id": t["id"], "title": t["title"], "state": t["state"], "owner": t.get("owner"),
+            "research": [{"id": t["id"], "title": t["title"], "state": t["state"], "owner": t.get("owner"), "follows": t.get("follows"),
                           "updated_at": t["updated_at"], "created_at": self._created_at("research", t["id"])} for t in tasks],
             "directions": [{"id": d["id"], "research_id": d["research_id"], "title": d["title"], "state": d["state"],
                             "updated_at": d["updated_at"], "created_at": self._created_at("direction", d["id"])} for d in dirs],

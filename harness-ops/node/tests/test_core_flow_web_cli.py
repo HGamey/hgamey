@@ -1090,6 +1090,59 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_chain_of_tasks_reads_as_one(self):
+        """Tasks that follow one another (research.follows) list as their root with a count, read as one page with a
+        strip of the chain and tagged entries, take notes on the chosen task, and draw one tree in the command view."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        for rid, follows in (("sr-root", None), ("sr-next", "sr-root")):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": "任务 " + rid, "objective": "接续", "follows": follows}))[0], 201)
+            self.assertEqual(self.web("POST", f"/research-state/note/n-{rid}", self.write("create-n-" + rid, {
+                "research_id": rid, "text": "进展 " + rid, "reply_to": None, "decision": None, "ask": False, "evidence_refs": []}))[0], 201)
+        listing = self.web("GET", "/tasks")[1]["items"]
+        self.assertEqual([(t["id"], t["chain"], t["follow_ons"]) for t in listing], [("sr-root", ["sr-root", "sr-next"], 1)])
+        self.assertEqual([t["id"] for t in self.web("GET", "/tasks?chain=sr-next")[1]["items"]], ["sr-root", "sr-next"])
+        self.assertEqual(sorted(t["id"] for t in self.web("GET", "/tasks?all=1")[1]["items"]), ["sr-next", "sr-root"])
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{base}/dash/research")
+                page.wait_for_selector(".research-choice")
+                self.assertEqual(page.eval_on_selector_all(".research-choice strong", "e => e.map(x => x.textContent)"), ["任务 sr-root"])
+                self.assertIn("含 1 个接续任务", page.text_content(".research-choice .research-meta"))
+                page.goto(f"{base}/dash/research?kind=research&id=sr-root")
+                page.wait_for_selector(".chain-strip")
+                self.assertEqual(page.eval_on_selector_all(".chain-seg", "e => e.map(x => x.dataset.seg || 'all')"), ["all", "sr-root", "sr-next"])
+                page.wait_for_function("() => document.querySelectorAll('#task-thread .discuss-entry[data-task]').length === 2")
+                self.assertEqual(page.eval_on_selector_all("#task-thread .discuss-entry .chain-tag", "e => e.map(x => x.textContent[0])"), ["①", "②"])
+                page.click('.chain-seg[data-seg="sr-next"]')
+                self.assertEqual(page.eval_on_selector_all("#task-thread .discuss-entry:not(.seg-out) .discuss-text", "e => e.map(x => x.textContent)"), ["进展 sr-next"])
+                page.fill("#task-note-text", "写到第二段")
+                page.click("#task-note-submit")
+                page.wait_for_function("() => [...document.querySelectorAll('.discuss-text')].some(e => e.textContent === '写到第二段')")
+                saved = [n for n in self.web("GET", "/research-state/note?research_id=sr-next&limit=5")[1]["items"] if n["text"] == "写到第二段"]
+                self.assertEqual(len(saved), 1, "a note written with ② selected belongs to ②")
+                page.goto(f"{base}/dash/command")
+                page.wait_for_function("() => window.__ready === true")
+                self.assertEqual(page.evaluate("() => [...window.__command.world.trees.keys()].filter(id => id.startsWith('sr-'))"), ["sr-root"])
+            finally:
+                browser.close()
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):
@@ -1125,7 +1178,9 @@ class CoreFlowTests(unittest.TestCase):
         self.assertLess(page.index('id="object-body"'), page.index('id="task-detail"'))
         self.assertIn('directionsSection', script)
         # Comparisons waiting for a person sit right under the owner; answered ones follow the thread.
-        self.assertIn('container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, deliverableSection(record)]', script)
+        # A chain's strip leads; the delivery report (the newest one in a chain) fills the last place once read.
+        self.assertIn('container.append(...[scope.chain && chainStrip(scope, container), ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports]', script)
+        self.assertIn("reports.replaceWith(...found)", script)
         self.assertIn("waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');", script)
 
     def test_owner_agents_refresh_with_detail_and_access(self):
