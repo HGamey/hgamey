@@ -73,7 +73,7 @@
     return `<span class="run"><span class="tag ${HGJobState.tone(state)}">${esc(HGJobState.label(state))}</span><span class="run-label">${esc(j.label || j.job_id)}</span>${phone ? `<span class="run-phone" title="${esc(phone.serial)}">${esc(model(phone))}</span>` : ""}</span>`;
   }
   function renderTasks(h) {
-    const tasks = (h.tasks || []).filter(t => t.state !== "delivered");
+    const tasks = (h.tasks || []).filter(t => !["delivered", "closed"].includes(t.state));
     $("tasks-count").textContent = tasks.length ? String(tasks.length) : "";
     $("tasks").innerHTML = tasks.map(t => {
       const note = t.latest_note;
@@ -89,6 +89,10 @@
     $("reports-count").textContent = reports.length ? String(reports.length) : "";
     $("reports").innerHTML = reports.map(t => `<li data-report="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${esc(t.owner || "无人负责")} · ${when(h.now, t.updated_at)}</span></li>`).join("")
       || `<li class="empty-row">还没有交付报告</li>`;
+    // Closed tasks stay findable, folded under the reports; reopening one brings it back to 进行中.
+    const closed = (h.tasks || []).filter(t => t.state === "closed");
+    $("closed-sec").hidden = !closed.length; $("closed-count").textContent = closed.length ? String(closed.length) : "";
+    $("closed").innerHTML = closed.map(t => `<li data-closed="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${t.state_reason ? esc(t.state_reason) + " · " : ""}${when(h.now, t.updated_at)}</span></li>`).join("");
   }
 
   // Who holds a phone. A research job names its label, its task and its agent.

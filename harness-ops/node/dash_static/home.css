@@ -281,3 +281,8 @@ details.gm pre { font-size: 14px; }
 #dlg-invite .invite-list .muted { flex: 1; min-width: 0; color: var(--muted); }
 #dlg-invite .invite-list .expired { color: var(--bad-ink); font-weight: 500; }
 #dlg-invite .invite-list .empty-row { color: var(--muted); }
+
+/* 已关闭：折叠在已交付下面 */
+.home-view .closed-tasks > summary { display: flex; align-items: baseline; gap: var(--sp-2); padding: 0 2px; margin-bottom: var(--sp-2); cursor: pointer; color: var(--ink2); font-size: var(--fs-sm); }
+.home-view .closed-tasks > summary .closed-h { font-weight: 600; }
+.home-view .closed-tasks .report-meta { flex: 0 1 auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; }

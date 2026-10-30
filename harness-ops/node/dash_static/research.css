@@ -329,3 +329,13 @@
 .research-view .seg-out { display: none !important; }
 .research-view .report-older > summary { font-size: var(--fs-sm); color: var(--ink2); cursor: pointer; }
 .research-view .report-older > .research-section { border-top: 0; margin-top: var(--sp-3); padding-top: 0; }
+
+/* 关闭 / 重新打开 */
+.research-view .task-state { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.research-view .task-state-form { display: flex; align-items: center; gap: 6px; }
+.research-view .task-state-form input { width: min(320px, 50vw); padding: 5px 9px; font-size: var(--fs-sm); }
+.research-view .task-state-form button.ghost { min-height: 32px; padding: 0 12px; }
+.research-view .task-closed { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--sp-2); margin: 0; padding: 8px 12px;
+  border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); color: var(--ink2); }
+.research-view .task-closed b { color: var(--ink); }
+.research-view .task-closed time { font-size: var(--fs-xs); }

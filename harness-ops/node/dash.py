@@ -758,7 +758,7 @@ class Dash:
             return []
         try:
             # Each state keeps its own quota: many active tasks must not push every delivered report off the page.
-            items = [item for state, limit in (("active", 10), ("delivered", 5))
+            items = [item for state, limit in (("active", 10), ("delivered", 5), ("closed", 10))
                      for item in research.list("research", {"state": [state], "limit": [str(limit)]})["items"]]
             items.sort(key=lambda item: item["updated_at"], reverse=True)
             rows = queue.rows(("queued", "claimed", "blocked")) if queue is not None else []
@@ -778,7 +778,9 @@ class Dash:
         for item in items:
             task = {"id": item["id"], "title": item["title"], "owner": item.get("owner"), "state": item["state"],
                     "updated_at": item["updated_at"], "jobs": jobs.get(item["id"], [])}
-            if item["state"] == "delivered":
+            if item["state"] == "closed":
+                task["state_reason"] = (research.get("research", item["id"])["data"].get("state_reason") or "")[:200]
+            elif item["state"] == "delivered":
                 task["report_url"] = "/dash/research?" + urlencode({"kind": "research", "id": item["id"]}) + "#task-report"
             else:
                 task["latest_note"] = self._latest_note(research, item["id"])

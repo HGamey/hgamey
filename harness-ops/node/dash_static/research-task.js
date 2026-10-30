@@ -194,7 +194,13 @@
       status.textContent = outcome.text || (ok ? (owner ? `已改派给 ${owner}` : '已改为无人负责') : `负责人现在是 ${owner || '无人负责'}，请再确认一次`);
       status.classList.toggle('task-error', !ok || !!outcome.bad);
     }
-    if (!ctx.writable()) return section;
+    if (record.data.state === 'closed') {
+      const closed = el('p', null, 'task-closed');
+      closed.append(el('b', '已关闭'), el('span', record.data.state_reason || ''), timeEl(record.updated_at));
+      section.append(closed);
+    }
+    const stateBox = stateControl(record, ctx, status);
+    if (!ctx.writable()) { row.append(stateBox); return section; }
     const select = el('select'), button = el('button', '改派', 'ghost');
     select.id = 'task-owner'; select.setAttribute('aria-label', '改派给'); button.type = 'button'; button.id = 'task-assign';
     select.append(new Option('无人负责', ''), ...(agents || []).map(agent => new Option(agent.name, agent.name, false, agent.name === owner)));
@@ -217,10 +223,37 @@
       }
       if (shown?.record.id === record.id) await ctx.reload();
     };
-    const assign = el('div', null, 'owner-assign'); assign.append(select, button); row.append(assign);
+    const assign = el('div', null, 'owner-assign'); assign.append(select, button); row.append(assign, stateBox);
     return section;
   }
 
+  // 关闭 asks why; a closed or delivered task can be reopened (and delivered again later). Either is an ordinary revision
+  // of the task, as the CLI's research close/reopen write it.
+  function stateControl(record, ctx, status) {
+    const closing = !['closed', 'delivered'].includes(record.data.state), box = el('div', null, 'task-state');
+    const open = el('button', closing ? '关闭任务' : '重新打开', 'link-btn'), form = el('form', null, 'task-state-form');
+    const why = el('input'), ok = el('button', closing ? '关闭' : '重新打开', 'ghost primary'), no = el('button', '取消', 'ghost');
+    open.type = no.type = 'button'; ok.type = 'submit'; open.id = 'task-state-open'; why.id = 'task-state-reason'; form.hidden = true;
+    why.maxLength = 16384; why.autocomplete = 'off'; why.placeholder = closing ? '关闭原因' : '原因（可不填）'; why.setAttribute('aria-label', closing ? '关闭原因' : '重新打开的原因');
+    open.onclick = () => { if (!ctx.requireWrite()) return; open.hidden = true; form.hidden = false; why.focus(); };
+    no.onclick = () => { form.hidden = true; open.hidden = false; why.value = ''; };
+    form.onsubmit = async event => {
+      event.preventDefault();
+      const reason = why.value.trim() || (closing ? '' : '网页上重新打开');
+      if (!reason) { why.focus(); status.textContent = '写一句关闭原因'; status.classList.add('task-error'); return; }
+      if (!ctx.requireWrite(() => form.requestSubmit())) return;
+      ok.disabled = no.disabled = true; ok.textContent = closing ? '关闭中…' : '打开中…'; status.textContent = ''; status.classList.remove('task-error');
+      try {
+        await write('research', record.id, {...record.data, state: closing ? 'closed' : 'active', state_reason: reason}, record.revision, reason);
+      } catch (error) {
+        status.textContent = (closing ? '没有关闭：' : '没有重新打开：') + failure(error); status.classList.add('task-error');
+        ok.disabled = no.disabled = false; ok.textContent = closing ? '关闭' : '重新打开'; return;
+      }
+      if (shown?.record.id === record.id) await ctx.reload();
+    };
+    form.append(why, ok, no); box.append(open, form);
+    return box;
+  }
   function deliverableSection(record) {
     const value = record.data.deliverable;
     if (!value) return null;

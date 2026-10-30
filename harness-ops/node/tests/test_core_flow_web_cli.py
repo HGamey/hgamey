@@ -1193,6 +1193,68 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_task_closes_with_a_reason_stays_findable_and_reopens(self):
+        """关闭任务 asks why; the closed task shows the reason, folds into 已关闭 on the home page, and 重新打开 makes it active."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+
+        class Quiet:
+            def request(self, **kw):
+                return None
+
+            def snapshot(self):
+                return {"devices": [], "lock": {"status": "free", "lease": {"entries": []}}, "age_s": 1, "error": None, "deferred": False}
+
+        class Goals:
+            def list(self):
+                return []
+
+            def harness_support(self):
+                return {"ok": False}
+        self.board.monitor, self.board.goals, self.board.shot_dir = Quiet(), Goals(), str(self.tmp)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-close", self.write(
+            "create-close", {"title": "要关的任务", "objective": "关闭与重开"}))[0], 201)
+        task = lambda: self.web("GET", "/research-state/research/sr-close")[1]["data"]
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{base}/dash/research?kind=research&id=sr-close")
+                page.click("#task-state-open")
+                page.click(".task-state-form button[type=submit]")
+                self.assertEqual(task()["state"], "active", "closing needs a reason")
+                page.fill("#task-state-reason", "并入别的任务")
+                page.click(".task-state-form button[type=submit]")
+                page.wait_for_selector(".task-closed")
+                self.assertEqual((task()["state"], task()["state_reason"]), ("closed", "并入别的任务"))
+                self.assertIn("并入别的任务", page.text_content(".task-closed"))
+                self.assertEqual(page.text_content("#task-state-open"), "重新打开")
+                page.goto(f"{base}/dash")
+                page.wait_for_selector('#closed li[data-closed="sr-close"]', state="attached")
+                self.assertFalse(page.is_hidden("#closed-sec"))
+                self.assertIn("并入别的任务", page.text_content('#closed li[data-closed="sr-close"]'))
+                self.assertEqual(page.eval_on_selector_all('#tasks [data-task="sr-close"]', "e => e.length"), 0)
+                page.goto(f"{base}/dash/research?kind=research&id=sr-close")
+                page.click("#task-state-open")
+                page.click(".task-state-form button[type=submit]")
+                page.wait_for_function("() => document.getElementById('task-state-open')?.textContent === '关闭任务'")
+                self.assertEqual((task()["state"], task()["state_reason"]), ("active", "网页上重新打开"))
+            finally:
+                browser.close()
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):
