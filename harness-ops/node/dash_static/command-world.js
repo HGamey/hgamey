@@ -161,6 +161,8 @@ export class World {
 
   highlight(id) { for (const tr of this.trees.values()) tr.node.classList.toggle('dim', !!id && tr.id !== id); }
   select(id) { for (const tr of this.trees.values()) tr.node.classList.toggle('selected', tr.id === id); }
+  // The run or direction picked on the map stays marked while its row is highlighted in the panel.
+  mark(id, key) { for (const tr of this.trees.values()) for (const [k, part] of tr.parts) part.node.classList.toggle('marked', tr.id === id && k === key); }
 }
 
 function ringSvg(done) {

@@ -269,6 +269,13 @@ button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 20
 .list li a { color: var(--ink); text-decoration: none; } .list li a:hover { text-decoration: underline; }
 .list li .state { font: 500 11px/1.8 var(--mono); color: var(--muted); }
 .list li.ok .state { color: var(--teal); } .list li.verified .state { color: var(--gold); }
+/* What was clicked on the map: its row is highlighted (with a short flash when scrolled to), and it stays marked there. */
+.list li.hit { background: rgba(240, 195, 110, .1); box-shadow: inset 3px 0 0 var(--gold); padding-left: 10px; padding-right: 8px; border-radius: 6px; }
+.list li.hit + li { border-top-color: transparent; }
+.panel-body h3.hit { color: var(--gold); }
+.panel-body .flash { animation: hitflash 1.2s var(--ease) 1; } @keyframes hitflash { 0%, 30% { background: rgba(240, 195, 110, .32); } }
+.leaf.marked { background: rgba(240, 195, 110, .14); color: var(--ink); box-shadow: inset 0 0 0 1px rgba(240, 195, 110, .6); }
+.chip.marked { box-shadow: 0 0 0 1px var(--gold); }
 .list li.note { grid-template-columns: 1fr; } .list li.note b { color: var(--ink); font-weight: 600; margin-right: 6px; } .list li.note.human b { color: var(--gold); }
 .list li.note.ask { background: rgba(240, 195, 110, .06); padding-left: 8px; border-radius: 6px; }
 .hero { display: flex; align-items: baseline; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }

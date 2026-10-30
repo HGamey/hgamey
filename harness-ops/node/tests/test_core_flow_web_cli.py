@@ -1110,6 +1110,11 @@ class CoreFlowTests(unittest.TestCase):
             self.skipTest("playwright is not installed")
         self.assertEqual(self.web("POST", "/research-state/research/sr-live", self.write(
             "live-task", {"title": "直播里的任务", "objective": "从本节点读出"}))[0], 201)
+        import time
+        for i, jid in enumerate(("aaaaaaaaaa01", "aaaaaaaaaa02", "aaaaaaaaaa03")):   # finished runs of the task, each a leaf
+            Path(self.jobs.path(jid, "out")).mkdir(parents=True)
+            self.jobs._write_meta(jid, {"id": jid, "bin": "fixture", "argv": ["-c", "pass"], "research_id": "sr-live", "actor_id": "agent-a",
+                                        "label": f"run {i}", "started": time.time() - 900 + i * 60, "ended": time.time() - 870 + i * 60, "exit": 0})
         base = "http://%s:%d" % self.address
         with sync_playwright() as playwright:
             try:
@@ -1143,6 +1148,16 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "false")
                 self.assertEqual(page.get_attribute("#t-play", "aria-label"), "播放", "pausing live holds now")
                 self.assertLess(page.evaluate("() => Date.now() / 1000 - window.__command.S.now"), 30, "and does not jump back to replay the record")
+                # Clicking a run on the map opens its task and brings that run's row into view, highlighted; it stays marked.
+                leaf = '.leaf[data-key="aaaaaaaaaa01"]'
+                page.evaluate("id => window.__command.select(id)", "sr-live")
+                page.click(leaf)
+                row = '#panel-body li[data-job="aaaaaaaaaa01"]'
+                page.wait_for_selector(row + ".hit")
+                self.assertEqual(page.eval_on_selector_all("#panel-body .hit", "e => e.length"), 1)
+                self.assertIn("marked", page.get_attribute(leaf, "class"))
+                page.keyboard.press("Escape")
+                self.assertEqual(page.eval_on_selector_all(".marked", "e => e.length"), 0)
                 self.assertTrue(page.is_visible('a.back[href="/dash"]'))
                 # A chosen source that cannot be read is reported with a retry, never swapped for another one.
                 page.route("**/dash/api/command", lambda route: route.abort())

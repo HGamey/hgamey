@@ -33,7 +33,7 @@ function normalize(raw, src) {
 
 // ── State
 const S = {src: null, M: null, lay: null, events: [], times: [], T0: 0, T1: 0, now: 0, idx: -1, playing: true, live: false, speed: 900,
-  follow: true, range: Q.get('range') || 'all', selected: null, panel: null, offscreen: 0, skew: 0, lastOk: 0, misses: 0, hasSnapshot: false};
+  follow: true, range: Q.get('range') || 'all', selected: null, mark: null, panel: null, offscreen: 0, skew: 0, lastOk: 0, misses: 0, hasSnapshot: false};
 const cam = new Camera(stage, $('world'), {onChange: () => { minimap(); zoomClass(); S.camMoved = true; }, onUser: () => setFollow(false)});
 function zoomClass() {
   const w = $('world'), k = Math.round(cam.k * 100) / 100;
@@ -370,12 +370,19 @@ function minimap() {
 }
 
 // ── Selection and the detail panel
-function select(id, {notes = false, fly = true} = {}) {
+// `mark` is what was clicked inside the tree ('j:<job>' a run, 'g:<direction>' or 'g:trunk' a chip): its row in the
+// panel is scrolled to and highlighted, and it stays marked on the map.
+function select(id, {notes = false, fly = true, mark = null} = {}) {
   if (!S.lay.trees.has(id)) return;
   if (!S.selected && S.panel !== 'task') S.camBefore = {k: cam.k, cx: (cam.w / 2 - cam.x) / cam.k, cy: (cam.h / 2 - cam.y) / cam.k};
-  S.selected = id; world.select(id); setFollow(false);
+  S.selected = id; S.mark = mark; world.select(id); world.mark(id, mark); setFollow(false);
   openPanel('task');
   if (notes) requestAnimationFrame(() => $('panel-notes')?.scrollIntoView({block: 'start'}));
+  else if (mark) requestAnimationFrame(() => {
+    const row = $('panel-body').querySelector('.hit'); if (!row) return;
+    row.scrollIntoView({block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+    row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash');
+  });
   if (fly) requestAnimationFrame(() => requestAnimationFrame(() => { const tr = S.lay.trees.get(id), s = cam.seen(treeBounds(tr)); if (s.inside < .9 || s.zoom > 2.5) frameTree(id); }));
   syncUrl();
 }
@@ -389,7 +396,7 @@ function closePanel() {
   if (!S.panel) return false;
   const was = S.panel; S.panel = null; $('panel').hidden = true; $('b-wins').setAttribute('aria-pressed', 'false');
   if (S.railAuto) { S.railAuto = false; toggleRail(true); }
-  if (was === 'task') { S.selected = null; world.select(null); if (S.camBefore) { const v = S.camBefore; S.camBefore = null; requestAnimationFrame(() => cam.fly(v, {ms: 500})); } }
+  if (was === 'task') { S.selected = S.mark = null; world.select(null); world.mark(null); if (S.camBefore) { const v = S.camBefore; S.camBefore = null; requestAnimationFrame(() => cam.fly(v, {ms: 500})); } }
   syncUrl(); minimap();
   return true;
 }
@@ -399,12 +406,14 @@ function panelTask(update) {
   const jobs = M.jobs.filter(j => j.research_id === id && jobAt(j, t) && jobAt(j, t) !== 'waiting').sort((a, b) => begun(b) - begun(a));
   const ok = jobs.filter(j => jobAt(j, t) === 'succeeded').length, dirs = M.dirs.filter(d => d.research_id === id && d.created_at <= t);
   const notes = M.notes.filter(n => n.research_id === id && n.at <= t).sort((a, b) => b.at - a.at), delivered = deliveredAt(task, t);
-  const key = `${id}|${S.idx}`; if (update && $('panel-body').dataset.key === key) return;
+  const key = `${id}|${S.idx}|${S.mark}`; if (update && $('panel-body').dataset.key === key) return;
+  // The 30 newest runs show; a marked run further down shows them all.
+  const marked = S.mark?.startsWith('j:') ? jobs.findIndex(j => 'j:' + j.id === S.mark) : -1, upto = marked >= 30 ? jobs.length : 30;
   $('panel-body').dataset.key = key;
   $('panel-title').textContent = short(task.title, 24);
   const jobRow = j => {
     const s = jobAt(j, t), name = `${esc(j.kind)} · ${esc(brandOf(j))}`;
-    return `<li class="${s === 'succeeded' ? 'ok' : ''}">${live ? `<a href="/dash/jobs#job=${encodeURIComponent(j.id)}">${name}</a>` : `<span>${name}</span>`}<span class="state">${s === 'running' ? '进行中' : OUTCOME[s] || s}</span><small>${esc(agentName(j.agent))} · ${stamp(begun(j))}${s !== 'running' && mins(j) ? ` · ${mins(j)} 分钟` : ''}${j.claimed && j.queued && j.claimed - j.queued > 30 ? ` · 排队 ${ago(j.claimed - j.queued)}` : ''}</small></li>`;
+    return `<li class="${s === 'succeeded' ? 'ok' : ''}${S.mark === 'j:' + j.id ? ' hit' : ''}" data-job="${esc(j.id)}">${live ? `<a href="/dash/jobs#job=${encodeURIComponent(j.id)}">${name}</a>` : `<span>${name}</span>`}<span class="state">${s === 'running' ? '进行中' : OUTCOME[s] || s}</span><small>${esc(agentName(j.agent))} · ${stamp(begun(j))}${s !== 'running' && mins(j) ? ` · ${mins(j)} 分钟` : ''}${j.claimed && j.queued && j.claimed - j.queued > 30 ? ` · 排队 ${ago(j.claimed - j.queued)}` : ''}</small></li>`;
   };
   $('panel-body').innerHTML = `
     <div class="title">${esc(task.title)}</div>
@@ -413,8 +422,8 @@ function panelTask(update) {
     <h3>概况</h3>
     <div class="stats"><div><b>${jobs.length}</b><span>次实验</span></div><div><b>${ok}</b><span>成功</span></div>
       <div class="${dirs.some(d => dirAt(d, t) === 'verified') ? 'gold' : ''}"><b>${dirs.filter(d => dirAt(d, t) === 'verified').length}/${dirs.length}</b><span>方向验证有效</span></div><div><b>${jobs.filter(j => j.phone).length}</b><span>次真机</span></div></div>
-    ${dirs.length ? `<h3>方向<span>${dirs.length}</span></h3><ul class="list">${dirs.map(d => { const s = dirAt(d, t), n = M.jobs.filter(j => j.direction_id === d.id && jobAt(j, t) && jobAt(j, t) !== 'waiting').length; return `<li class="${s === 'verified' ? 'verified' : ''}"><span>${esc(d.title)}</span><span class="state">${esc(DIR_STATE[s] || s)}</span><small>${n} 次实验 · ${stamp(d.created_at)}</small></li>`; }).join('')}</ul>` : ''}
-    ${jobs.length ? `<h3>实验<span>${jobs.length > 30 ? `最近 30 / ${jobs.length}` : jobs.length}</span></h3><ul class="list">${jobs.slice(0, 30).map(jobRow).join('')}</ul>` : ''}
+    ${dirs.length ? `<h3>方向<span>${dirs.length}</span></h3><ul class="list">${dirs.map(d => { const s = dirAt(d, t), n = M.jobs.filter(j => j.direction_id === d.id && jobAt(j, t) && jobAt(j, t) !== 'waiting').length; return `<li class="${s === 'verified' ? 'verified' : ''}${S.mark === 'g:' + d.id ? ' hit' : ''}" data-dir="${esc(d.id)}"><span>${esc(d.title)}</span><span class="state">${esc(DIR_STATE[s] || s)}</span><small>${n} 次实验 · ${stamp(d.created_at)}</small></li>`; }).join('')}</ul>` : ''}
+    ${jobs.length ? `<h3 class="${S.mark === 'g:trunk' ? 'hit' : ''}">实验<span>${jobs.length > upto ? `最近 ${upto} / ${jobs.length}` : jobs.length}</span></h3><ul class="list">${jobs.slice(0, upto).map(jobRow).join('')}</ul>` : ''}
     ${notes.length ? `<h3 id="panel-notes">记录<span>${notes.length}</span></h3><ul class="list">${notes.slice(0, 40).map(n => `<li class="note${n.who === 'human' ? ' human' : ''}${(S.asks || []).some(a => a.id === n.id) ? ' ask' : ''}"><div><b>${esc(agentName(n.who))}</b><span class="mono">${stamp(n.at)}</span></div><div>${esc(n.text)}</div></li>`).join('')}</ul>` : ''}`;
 }
 function panelWins() {
@@ -432,7 +441,7 @@ function panelWins() {
 }
 $('panel-body').addEventListener('click', e => { const a = e.target.closest('a[data-tree]'); if (a) { e.preventDefault(); select(a.dataset.tree); } });
 $('panel-close').addEventListener('click', closePanel);
-$('b-wins').addEventListener('click', () => { if (S.panel === 'wins') closePanel(); else { if (S.panel === 'task') { S.selected = null; world.select(null); } openPanel('wins'); } });
+$('b-wins').addEventListener('click', () => { if (S.panel === 'wins') closePanel(); else { if (S.panel === 'task') { S.selected = S.mark = null; world.select(null); world.mark(null); } openPanel('wins'); } });
 
 // ── Pointer on the map: hover tips and selection
 const tip = $('tip');
@@ -464,7 +473,10 @@ stage.addEventListener('pointerover', e => {
 });
 stage.addEventListener('pointermove', e => { if (!tip.hidden && !cam.drag?.on) { const n = e.target.closest('[data-kind]'); if (n) showTip(e, tipHtml(n)); else showTip(e); } });
 stage.addEventListener('pointerout', e => { const n = e.target.closest('[data-kind]'); if (n && !n.contains(e.relatedTarget)) { showTip(e); world.highlight(null); } });
-stage.addEventListener('click', e => { const n = e.target.closest('[data-kind]'); if (n) select(n.dataset.tree); });
+stage.addEventListener('click', e => {
+  const n = e.target.closest('[data-kind]'); if (!n) return;
+  select(n.dataset.tree, {mark: n.dataset.kind === 'leaf' ? 'j:' + n.dataset.key : n.dataset.kind === 'chip' ? 'g:' + n.dataset.key : null});
+});
 stage.addEventListener('dblclick', e => {
   if (e.target.closest('[data-kind], .pin, .toast, .minimap, .agent')) return;
   const r = stage.getBoundingClientRect(), [wx, wy] = cam.toWorld(e.clientX - r.left, e.clientY - r.top), k = clamp(cam.k * (e.shiftKey ? .5 : 2), cam.kMin, cam.kMax);
