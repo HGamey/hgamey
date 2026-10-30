@@ -78,6 +78,59 @@ class JobsPageMultiNodeTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_an_offline_reset_waits_to_be_delivered_and_is_not_read_as_a_failed_save(self):
+        """Reset on a job its disconnected computer never accepted: the center answers 202 pending, nothing released and
+        nothing saved yet (storage_committed=false). The page says it has not reached that computer, not that saving failed."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.worker.jobs.dispatch.close()
+        self.worker.jobs.dispatch.start = lambda: None
+        connector = self.start_worker()
+        connector._json('/node-connect/report', connector.backend.snapshot())
+        connector.close()
+        for name, value in (('node_directory.REFRESH_S', 0), ('job_center.DEADLINE_S', 1)):
+            quiet = patch(name, value)
+            quiet.start()
+            self.addCleanup(quiet.stop)
+        code, unsent = self.submit({'bin': 'fixture', 'argv': ['-c', 'pass'], 'device_access': 'none',
+                                    'execution_node_id': self.worker.jobs.node_id}, 'reset-before-delivery')
+        self.assertEqual((code, unsent['phase']), (200, 'submission_unknown'), unsent)
+        board, base = self.center.board, self.center.url
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 1000})
+                context.add_cookies([{"name": "hg_dash", "value": board._cookie_val("test-view"), "url": base},
+                                     {"name": "hg_steer", "value": board._cookie_val("test-steer", b"hgamey-steer-v1"), "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(base + "/dash/jobs")
+                page.click(f'#task-list button[data-job="{unsent["id"]}"]')
+                page.wait_for_selector("#reset-panel:not([hidden])")
+                page.click("#reset-panel summary")
+                page.fill("#reset-note", "那台电脑断开了，先记下")
+                with page.expect_response(lambda response: response.url.endswith(f"/jobs/{unsent['id']}/reset"), timeout=40000) as answered:
+                    page.click("#reset-submit")
+                reply = answered.value
+                self.assertEqual(reply.status, 202)
+                receipt = reply.json()
+                self.assertEqual((receipt['pending'], receipt['released'], receipt['storage_committed']), (True, False, False), receipt)
+                page.wait_for_function("() => document.getElementById('reset-result').textContent.includes('还没送到那台电脑')")
+                self.assertNotIn("未保存", page.text_content("#reset-result"), "storage_committed=false before delivery is not a failed save")
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_a_job_can_ask_for_any_idle_phone_of_a_model_on_any_computer(self):
         """平台手机 lists every computer's phones; choosing a model sends device_model, the center picks the idle one,
         and @serial in the arguments becomes its serial on the computer that has it."""

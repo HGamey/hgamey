@@ -359,10 +359,12 @@
     if (name === 'local' || entries.has(name)) { message('invite-message', `「${name}」已经在用，换一个名字。`, true); return; }
     if (!(hours > 0)) { message('invite-message', '有效时长要大于 0。', true); return; }
     if (port && !(Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535)) { message('invite-message', '端口要在 1–65535 之间。', true); return; }
+    // The installer takes only a new empty directory and checks it there; without one no code is made.
+    if (!root) { message('invite-message', '先填安装根：那台电脑上一个新的空目录。', true); $('invite-root').focus(); return; }
     inviteBusy = true; $('invite-result').hidden = true; message('invite-message', ''); renderManagement();
     try {
       const value = await post('/dash/api/node-invites', {hours, note: name});
-      $('invite-command').textContent = `python3 deploy.py join --center ${shellWord(location.origin)} --invite ${shellWord(value.code)} --name ${name}${root ? ` --root ${shellWord(root)}` : ''}${port && Number(port) !== 8765 ? ` --port ${Number(port)}` : ''}`;
+      $('invite-command').textContent = `python3 deploy.py join --center ${shellWord(location.origin)} --invite ${shellWord(value.code)} --name ${name} --root ${shellWord(root)}${port && Number(port) !== 8765 ? ` --port ${Number(port)}` : ''}`;
       $('invite-result').hidden = false;
       message('invite-message', `${time(value.expires_at)} 前有效。`);
       await loadInvites();
