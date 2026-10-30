@@ -176,6 +176,22 @@ pf-node agents token <agent名>   # 用管理 token 为 agent 签发它自己的
 
 部署完成后，打开 `/dash/`，确认首页能看到手机和服务版本；`pf-node doctor` 给出宿主的只读诊断。
 
+### 6. 多台电脑
+
+每台连接手机的电脑各自部署一个节点，部署方法同上，每台一个 `deploy/<节点名>.json`。每个节点有自己的手机、任务队列和研究记录。
+
+选其中一个节点作为 hub，把其他节点登记进它的节点目录：
+
+```sh
+export PF_NODE_TOKEN_FILE=<hub 的管理 token 文件>
+pf-fleet --hub https://<hub 地址> register <节点名> --url https://<该节点地址> --token-file <该节点的 token 文件>
+pf-fleet --hub https://<hub 地址> status     # 全场：各节点是否在线、设备锁、手机清单
+```
+
+- hub 每 30 秒向登记的节点读取一次手机与锁的状态，网页 `/dash/fleet`（节点与设备）显示全场。读取不会占用远端手机。hub 需要能访问到每个节点，走公网隧道或内网都可以。
+- 结果可以跨节点检索：`pf-node results search --node <节点名>`。
+- **当前限制**：研究和任务按节点分开存放，agent 绑定一个节点工作。要用别的节点上的手机，需要直接连那个节点；hub 模式下的 `pf-fleet run` 还不能派发任务。
+
 ## 运维
 
 - **部署节奏**：main 上的最新提交两项 CI 都通过后，先部署测试节点，验收后立即部署生产节点。部署不需要等待手机空闲。
