@@ -343,3 +343,6 @@
 #discuss-form { display: flex; gap: 8px; }
 #discuss-form[hidden] { display: none; }
 #discuss-form input { flex: 1; min-width: 0; }
+.task-item-node { color: var(--ink2); }
+.queue-computer { font-weight: 600; color: var(--ink); }
+.execution-queue { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }

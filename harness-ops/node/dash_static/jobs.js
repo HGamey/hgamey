@@ -19,6 +19,10 @@
   const cancelling = new Set(), cancelReceipts = new Map(), pauseReceipts = new Map(), resetting = new Set(), resetReceipts = new Map();
   const reconciling = new Set(), reconcileReceipts = new Map();
   let nodeInfo = null, leaseSnapshot = null, queueRevision = 0, submissionBusy = false, pendingRequest = null, submittedJob = '';
+  // Joined computers by node_id, so a job run elsewhere can say where (the center itself is not named).
+  let computers = new Map();
+  const remoteJob = job => !!job?.execution_node_id && !!nodeInfo && job.execution_node_id !== nodeInfo.node_id;
+  const computerName = id => computers.get(id) || `电脑 ${String(id).slice(0, 8)}`;
   let runtimeBusy = false;
   let deviceRegistry = null, deviceBinding = null, deviceBindingBusy = false, deviceBindingRevision = 0, deviceBindingError = '';
   const REQUEST_STORAGE = 'hgamey.pending-job-request';
@@ -320,11 +324,15 @@
   function status(job) {
     if (job.observation === 'historical_readonly') return [`原记录：${job.recorded_phase || job.recorded_state || '状态未记录'}${Number.isInteger(job.recorded_exit) ? ` · exit ${job.recorded_exit}` : ''}`, 'unknown'];
     let [label, kind] = runStatus(job);
+    // A stop the center has recorded but the executing computer has not confirmed yet.
+    if (job.stop_requested && job.state !== 'finished') [label, kind] = [`${label} · 停止待确认`, 'unknown'];
     if (job.queue?.state === 'done' && job.recovery?.status === 'required' && !label.includes('恢复')) [label, kind] = [`${label} · 设备恢复待核查`, 'unknown'];
     if (job.storage_error) [label, kind] = [`${label} · 结果保存失败`, 'unknown'];
     return [label, kind];
   }
   function runStatus(job) {
+    // Sent to another computer that has not confirmed taking it: neither queued nor running.
+    if (job.phase === 'submission_unknown' || job.state === 'unknown') return ['等待那台电脑受理', 'unknown'];
     const exceeded = budgetExceeded(job);
     const trigger = [exceeded ? '运行期限已触发' : '', diskGuardTriggered(job) ? '磁盘保护已触发' : ''].filter(Boolean).join('、');
     if (job.queue?.state === 'blocked' || job.phase === 'blocked') return [trigger ? `执行范围待核查 · ${trigger}` : '执行范围待核查', 'unknown'];
@@ -574,7 +582,7 @@
   // One entry for stopping, releasing an unknown execution scope and retrying a failed save. Never replays the command.
   function renderReset(job) {
     const state = job.queue?.state, busyNow = resetting.has(job.id), receipt = resetReceipts.get(job.id);
-    const useful = state === 'claimed' || state === 'blocked' || !!job.storage_error;
+    const useful = state === 'claimed' || state === 'blocked' || !!job.storage_error || job.phase === 'submission_unknown';
     $('reset-panel').hidden = !useful;
     $('reset-note').disabled = busyNow;
     const unlocked = !!access?.steer && HGTarget.canWrite() && !accessBusy;
@@ -596,7 +604,8 @@
       // The node answers after the group is gone (INT, 15 s, TERM, 15 s, KILL), which can take well over 15 s.
       const result = await post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note}, {}, undefined, {wait: true});
       const saveError = result.job?.storage_error?.message;
-      resetReceipts.set(id, {message: result.released !== true ? '资源尚未释放，请以最新任务状态为准。' : result.storage_committed === true ? '已重置，资源已释放。设备是否还原需另行核对。' : `资源已释放，但结束记录仍未保存${saveError ? `：${saveError}` : ''}。修复后可再次重置。`,
+      if (result.pending === true) resetReceipts.set(id, {message: '重置请求已记下，还没送到那台电脑或还没确认；确认前不算已停止，资源也没释放。', error: true});
+      else resetReceipts.set(id, {message: result.released !== true ? '资源尚未释放，请以最新任务状态为准。' : result.storage_committed === true ? '已重置，资源已释放。设备是否还原需另行核对。' : `资源已释放，但结束记录仍未保存${saveError ? `：${saveError}` : ''}。修复后可再次重置。`,
         error: result.released !== true || result.storage_committed !== true});
       if (result.released === true) $('reset-note').value = '';
     } catch (error) {
@@ -752,7 +761,12 @@
       ['核查边界', '只核查原进程组；不涵盖通过 setsid 脱组的后代，也不证明设备已恢复。']
     ] : [['原进程组核查', '旧记录未提供，不能据此确认进程组已结束。']];
     const management = job.execution?.process_management;
-    facts('execution-info', [['执行阶段', PHASES[job.phase] || '旧版记录未提供'],
+    const selection = job.device_selection;
+    facts('execution-info', [
+      ...(remoteJob(job) ? [['执行电脑', `${computerName(job.execution_node_id)} · ${job.connection?.status === 'ready' ? '已连接' : '已断开'}`],
+        ['最近收到那台电脑的状态', time(job.observed_at)], ['停止请求', job.stop_requested ? '已记下，待那台电脑确认' : '无']] : []),
+      ...(selection ? [['选定手机', [selection.model, selection.serial].filter(Boolean).join(' · ') || selection.ref]] : []),
+      ['执行阶段', job.phase === 'submission_unknown' ? '等待那台电脑受理' : PHASES[job.phase] || '旧版记录未提供'],
       ['请求的进程策略', job.execution_policy || '旧记录未提供'],
       ['策略来源', ({explicit: '显式选择', legacy_default: '兼容默认'})[job.execution_policy_source] || '旧记录未提供'],
       ['实际执行策略（worker）', management?.policy || '未提供，不能由请求策略推断'], ['实际进程后端（worker）', management?.backend || '未提供'],
@@ -782,7 +796,8 @@
     renderControls();
     try {
       const result = await post(`${API}/jobs/${encodeURIComponent(id)}/cancel`, {force});
-      cancelReceipts.set(id, {message: result.accepted ? `${force ? '升级终止' : ['preparing', 'queued'].includes(job.phase) ? '撤销排队' : '停止'}请求已记录，请以下方最新执行状态与恢复记录为准。` : `请求未接受：${result.reason || '请核对最新任务状态。'}`, error: !result.accepted});
+      if (result.pending === true) cancelReceipts.set(id, {message: '停止请求已记下，还没送到那台电脑或还没确认；确认前不算已停止。', error: true});
+      else cancelReceipts.set(id, {message: result.accepted ? `${force ? '升级终止' : ['preparing', 'queued'].includes(job.phase) ? '撤销排队' : '停止'}请求已记录，请以下方最新执行状态与恢复记录为准。` : `请求未接受：${result.reason || '请核对最新任务状态。'}`, error: !result.accepted});
     } catch (error) {
       const uncertain = !error.status;
       cancelReceipts.set(id, {message: uncertain ? '请求结果未确认，可能已被节点记录。请刷新任务核对后再决定是否重试。' : errorText(error), error: true});
@@ -891,12 +906,19 @@
     }
     renderControls();
   }
+  async function loadComputers() {
+    try {
+      const value = await json(`${API}/nodes`);
+      computers = new Map((value.items || []).map(item => [item.node_id, item.name]));
+    } catch (_) { computers = new Map(); }   // older nodes have no directory; ids still show
+  }
   async function loadQueue() {
     const revision = ++queueRevision;
     regionBusy('queue-panel', true);
     busy('refresh-queue', true, '读取中…');
     $('queue-summary').hidden = true;
     $('queue-list').replaceChildren();
+    $('execution-queues').replaceChildren();
     $('queue-updated').textContent = '';
     message('queue-message', '正在读取队列…');
     renderLease(null);
@@ -907,10 +929,28 @@
       if (revision !== queueRevision) return;
       renderLease(queue.lease);
       renderHostCapacity(queue.host_capacity);
-      $('queue-summary').replaceChildren(...[[queue.active_count, `已分配作业 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '执行范围待核查']].map(([value, label]) => {
+      // The top-level counts are this computer's own; each joined computer reports its queue separately.
+      const others = (Array.isArray(queue.execution_queues) ? queue.execution_queues : []).filter(other => other.node_id !== queue.node_id);
+      $('queue-summary').replaceChildren(...(others.length ? [el('span', '本机', 'queue-computer')] : []), ...[[queue.active_count, `已分配作业 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '执行范围待核查']].map(([value, label]) => {
         const part = el('span'); part.append(el('strong', text(value)), el('span', label)); return part;
       }));
       $('queue-summary').hidden = false;
+      $('execution-queues').replaceChildren(...others.map(other => {
+        const box = el('div', null, 'execution-queue'), q = other.queue || {}, summary = el('div', null, 'queue-summary');
+        summary.append(el('span', other.name || computerName(other.node_id), 'queue-computer'),
+          ...[[q.active_count, `已分配作业 / ${text(q.max_running)} 个名额`], [q.queued_count, '排队'], [q.blocked_count, '执行范围待核查']].map(([value, label]) => {
+            const part = el('span'); part.append(el('strong', text(value)), el('span', label)); return part;
+          }));
+        box.append(summary, el('p', `${other.connection?.status === 'ready' ? '已连接' : '已断开'} · 观察于 ${time(other.observed_at)}`, 'note'));
+        const list = el('ul', null, 'queue-list');
+        for (const job of q.items || []) {
+          const item = el('li', null, 'queue-item'), identity = el('div');
+          identity.append(el('p', job.job_id, 'task-item-id'), el('span', PHASES[job.phase] || job.phase, `task-state ${job.phase === 'blocked' ? 'unknown' : ''}`));
+          item.append(identity, el('p', waitingText(job.waiting)), openJobButton(job.job_id)); list.append(item);
+        }
+        if (list.children.length) box.append(list);
+        return box;
+      }));
       for (const job of queue.items) {
         const item = el('li', null, 'queue-item');
         const identity = el('div');
@@ -1447,6 +1487,7 @@
     const row = el('div', null, 'task-item-line');
     const [label, kind] = status(currentJob?.id === job.id ? currentJob : job);
     row.append(el('span', job.id, 'task-item-id'), el('span', label, `task-state ${kind}`));
+    if (remoteJob(job)) row.append(el('span', `在 ${computerName(job.execution_node_id)}`, 'task-item-node'));
     const command = [job.bin, ...(Array.isArray(job.argv) ? job.argv : [])].map(text).join(' ');
     button.append(row, el('span', time(job.started), 'task-item-time'), el('span', command.length > 220 ? command.slice(0, 220) + '…' : command, 'task-item-command'));
     button.addEventListener('click', () => {
@@ -2964,7 +3005,7 @@
   $('more-jobs').addEventListener('click', () => loadJobs(true));
   async function refreshAll() {
     busy('refresh-all', true, '刷新中…');
-    try { await loadNode(); await Promise.all([loadJobSources(), loadQueue(), loadJobs(), loadAccess(), selected ? selectJob(selected, true) : null]); }
+    try { await Promise.all([loadNode(), loadComputers()]); await Promise.all([loadJobSources(), loadQueue(), loadJobs(), loadAccess(), selected ? selectJob(selected, true) : null]); }
     finally { busy('refresh-all', false); }
   }
   $('refresh-all').addEventListener('click', refreshAll);
