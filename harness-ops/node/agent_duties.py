@@ -13,6 +13,7 @@ COMPARE_DUTY = "画质和性能都要和基线比，不能只报自己的数。�
 COMPARE_HELP = (COMPARE_DUTY + "\n"
     "pf-node research compare <研究ID> --item <job:ID:PATH 或本机文件> ×N [--pick K] --title \"<标题>\" --question \"<要人判断什么>\" [--direction <方向ID>]\n"
     "N 为 2–8，PNG/JPEG 与 MP4/WebM 可混；洗牌后显示 A、B、C……，输出请求 ID、网页链接和素材对应。")
+COLLABORATION = "只处理自己负责的研究，以及别人研究里点名给你的留言。接续的工作（复现、长稳、改进）在原任务里做：负责人加方向、重新交付；被点名帮忙的，把任务挂到原研究上（--research），结果用留言回在原留言下面。"
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
     "设备锁序列化实际操作；仅 claimed 扣运行名额，确认宿主完成的终态自动释放任务预留。完成未知时保留独占范围，由负责人或管理员 reset。",
@@ -20,7 +21,7 @@ LOOP = [
     "设备写任务只占一台：研究只有一台 device_requirements 时默认同机；已登记的手机默认走自己的 lane，否则用 --resource device:<串号>，显式参数优先，global 会占全部设备。",
     "typed 设备任务里的 devlock 只占本机 lane，嵌套会话沿用同一实例；全局范围任务仍用全农场 devlock。",
     "每轮开始先运行 pf-node checkin，按 duties 的顺序处理；duties 为空时再推进实验。",
-    "只处理自己负责的研究；别人研究里的留言是写给那个研究的负责人的。",
+    COLLABORATION,
     "人工在 research 里的留言要回应：pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject。没回应之前，这个研究不能交付，方向也不能下结论。",
     "其他 agent 和维护者的留言也会进待办，同样要回应，但不挡交付。",
     NOTE_STYLE,
@@ -75,8 +76,10 @@ def duties(jobs, name, now=None):
         studies = [(row, json.loads(row["data"])) for row in _latest(db, "research")]
         owned = {row["id"]: data for row, data in studies if data.get("owner") == name}
         mine = {rid: data for rid, data in owned.items() if data["state"] in OPEN_RESEARCH}
-        notes = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "note")
-                 if row["research_id"] in owned]
+        all_notes = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "note")]
+        addressed = {row["id"] for row, data, audit in all_notes if data.get("to") == name}
+        notes = [(row, data, audit) for row, data, audit in all_notes
+                 if row["research_id"] in owned or data.get("to") == name or data.get("reply_to") in addressed]
         requests = []
         for row in _latest(db, "request"):
             data, audit = json.loads(row["data"]), json.loads(row["audit"])
@@ -108,6 +111,10 @@ def duties(jobs, name, now=None):
             waiting.append({"kind": "note_question", "research_id": row["research_id"], "request_id": question_id,
                             "title": data["text"][:200], "overdue": False})
     for row, data, audit in notes:
+        if row["research_id"] not in owned and data.get("to") != name:
+            continue
+        if data.get("to") is not None and data["to"] != name:
+            continue
         if audit.get("actor_label") == name or row["id"] in answered:
             continue
         speaker = "human" if audit.get("auth_channel") == "dashboard_steer" else audit.get("actor_label") or "admin token"

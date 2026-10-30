@@ -188,7 +188,7 @@ def normalize(kind, data):
         "request": {"research_id", "type", "title", "need", "why", "resume_hint", "context", "supersedes", "state", "close_reason", "due_at"},
         "feedback": {"request_id", "request_revision", "text", "supersedes"},
         # The research's discussion thread: humans and agents post, agents answer guidance with a decision.
-        "note": {"research_id", "text", "reply_to", "decision", "ask"},
+        "note": {"research_id", "text", "reply_to", "decision", "ask", "to"},
     }
     if kind not in fields:
         raise ValueError("unsupported research object kind")
@@ -346,6 +346,7 @@ def normalize(kind, data):
     elif kind == "note":
         value["text"] = text(value.get("text"), 16384, True)
         value["reply_to"] = identifier(value["reply_to"]) if value.get("reply_to") is not None else None
+        value["to"] = identifier(value["to"]) if value.get("to") is not None else None
         value.setdefault("decision", None)
         if value["decision"] is not None and value["decision"] not in DECISIONS:
             raise ValueError("decision must be adopt, defer or reject")
@@ -425,7 +426,7 @@ class NodeResearch:
             data, audit = json.loads(row["data"]), json.loads(row["audit"])
             if agent is not None and audit.get("actor_label") == agent and data.get("reply_to"):
                 answered.add(data["reply_to"])
-            elif audit.get("auth_channel") == "dashboard_steer":
+            elif audit.get("auth_channel") == "dashboard_steer" and data.get("to") in (None, agent):
                 human.append(row["id"])
         return [note for note in human if note not in answered]
 
@@ -994,7 +995,7 @@ class NodeResearch:
                         owner = json.loads(research["data"]).get("owner") if research else None
                         guidance[rid] = set(self._unanswered_guidance(db, rid, owner))
                         questions[rid] = set(self._unanswered_questions(db, rid))
-                    item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"],
+                    item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"], to=data.get("to"),
                                 evidence_refs=data["evidence_refs"], actor_label=audit.get("actor_label"),
                                 auth_channel=audit.get("auth_channel"), ask=data.get("ask", False),
                                 unanswered=row["id"] in guidance[rid] if audit.get("auth_channel") == "dashboard_steer" else None,

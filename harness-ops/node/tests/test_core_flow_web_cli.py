@@ -20,7 +20,7 @@ sys.path.insert(0, str(NODE))
 import dash
 from http_server_fixture import start_http_server
 from node_service import Jobs, make_handler
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_DUTY, COMPARE_HELP
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_DUTY, COMPARE_HELP, COLLABORATION
 
 ADMIN = "core-flow-fixture-admin-token"
 VIEW = "core-flow-view-password"
@@ -375,7 +375,7 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(request["data"]["context"]["directions"], [{"id": "d-compare", "revision": 1}])
         self.assertEqual(request["data"]["evaluation"]["schema"], "phonefarm/compare@1")
         self.assertEqual(request["data"]["evaluation"]["pick"], 1)
-        self.assertEqual([item["media_kind"] for item in request["data"]["evaluation"]["items"]], ["image", "video"])
+        self.assertCountEqual([item["media_kind"] for item in request["data"]["evaluation"]["items"]], ["image", "video"])
         self.assertEqual((request["data"]["evidence_refs"], request["evidence_bindings"]), ([], []))
         self.assertNotIn(comparison["result_id"], json.dumps(request))
         full = self.cli("GET", "/research-state/request/" + request_id)[1]
@@ -421,6 +421,41 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn(COMPARE_DUTY, value["loop"])
         self.assertIn(COMPARE_HELP, self.pf(token, "research", "--help")[1])
         self.assertIn(COMPARE_HELP, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_addressed_note_brings_another_agent_into_the_same_research(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-collab", self.write(
+            "create-collab", {"title": "同一题目协作", "objective": "复现留在原任务"}))[0], 201)
+        tokens = {}
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+            tokens[name] = self.cli("POST", f"/agents/{name}/token", {})[1]["token"]
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "claim", "sr-collab")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-collab", self.write(
+            "human-collab", {"research_id": "sr-collab", "text": "请 B 复现并回报", "to": "agent-b",
+                              "reply_to": None, "decision": None}))[0], 201)
+        owed = [item for item in self.duties(tokens["agent-b"])["duties"] if item["kind"] == "answer_note"]
+        self.assertEqual([(item["research_id"], item["target"]) for item in owed], [("sr-collab", "n-collab")])
+        self.assertNotIn("n-collab", [item.get("target") for item in self.duties(tokens["agent-a"])["duties"]])
+        self.assertIn(COLLABORATION, self.duties(tokens["agent-b"])["loop"])
+        self.assertIn(COLLABORATION, self.pf(tokens["agent-b"], "research", "--help")[1])
+        self.assertIn(COLLABORATION, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
+
+        code, jid, err = self.pf(tokens["agent-b"], "--research", "sr-collab", "--device-access", "none",
+                                 "--detach", "fixture", "-c", "pass")
+        self.assertEqual(code, 0, err)
+        jid = jid.strip()
+        self.assertEqual(self.cli("GET", "/jobs/" + jid)[1]["research_id"], "sr-collab")
+        code, _, err = self.pf(tokens["agent-b"], "research", "note", "sr-collab", "复现已挂到原任务",
+                               "--reply-to", "n-collab", "--decision", "adopt", "--evidence", "job:" + jid)
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("n-collab", [item.get("target") for item in self.duties(tokens["agent-b"])["duties"]])
+        code, _, err = self.pf(tokens["agent-a"], "research", "deliver", "sr-collab", "--summary", "原任务继续交付",
+                               "--artifact", "job:" + jid)
+        self.assertEqual(code, 0, err)
+        code, _, err = self.pf(tokens["agent-a"], "research", "note", "sr-collab", "请 B 再核对长稳", "--to", "agent-b")
+        self.assertEqual(code, 0, err)
+        notes = self.web("GET", "/research-state/note?research_id=sr-collab&limit=10")[1]["items"]
+        self.assertEqual(notes[0]["to"], "agent-b")
 
     def test_research_note_attaches_local_video(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-video", self.write(

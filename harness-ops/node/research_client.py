@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import uuid
 from cli_time import utc
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION
 
 
 HELP = """用法:
@@ -37,7 +37,7 @@ HELP = """用法:
   pf-node research media REQUEST A|B|C... --revision N --output FILE
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
-  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask]
+  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask] [--to AGENT]
       [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
   pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
   pf-node research thread ID                      # 按时间读研究里的留言
@@ -73,7 +73,7 @@ media 只读下载固定版本的一个槽位，需显式 node-id 与评价能�
 图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
 没有自动重试或续传；失败只清理本次 partial。下载完整不表示已解码、看过或已提交评价。
 """
-HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE + "\n" + COMPARE_HELP
+HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE + "\n" + COMPARE_HELP + "\n" + COLLABORATION
 
 KINDS = ("research", "direction", "request", "feedback", "note")
 MAX_DATA = 64 << 10
@@ -174,6 +174,7 @@ def parser():
     note.add_argument("--evidence", action="append", default=[])
     note.add_argument("--attach", action="append", type=Path, help="附加本机 PNG、JPEG、SVG、MP4 或 WebM，可重复")
     note.add_argument("--ask", action="store_true")
+    note.add_argument("--to", type=identifier)
     comparison = commands.add_parser("compare")
     comparison.add_argument("id", type=identifier)
     comparison.add_argument("--item", action="append", required=True)
@@ -705,7 +706,7 @@ def _task(client, args):
     if args.command == "note":
         node_id = client.target.identity()["node_id"]
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
-                "ask": args.ask, "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]
+                "ask": args.ask, "to": args.to, "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]
                 + [_attachment(client, path) for path in args.attach or []]}
         return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
     current = client.request("GET", f"/research-state/research/{args.id}")
