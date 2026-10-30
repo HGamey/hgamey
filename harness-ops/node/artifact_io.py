@@ -30,7 +30,7 @@ class ExportError(ValueError):
 
 def _export_limit(dimension, limit, observed):
     return ExportError(413, "export_budget_exceeded", "directory export exceeds " + dimension
-                       + "; choose a smaller directory or an original file",
+                       + "; 用 pf-node out <任务ID> <相对路径> 按子目录导出，或下载单个原文件",
                        {"dimension": dimension, "limit": limit, "observed": observed})
 
 

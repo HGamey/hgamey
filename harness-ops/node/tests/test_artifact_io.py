@@ -310,6 +310,9 @@ class ArtifactIOTests(unittest.TestCase):
                 if fault in ("entries", "source_bytes", "compressed_bytes"):
                     self.assertEqual(error.details["dimension"], fault)
                     self.assertGreater(error.details["observed"], error.details["limit"])
+                if fault == "entries":
+                    self.assertIn("pf-node out <任务ID> <相对路径>", error.payload["error"])
+                    self.assertIn("子目录", error.payload["error"])
                 if fault in ("entries", "source_bytes"):
                     self.assertEqual(temporary, [], "static source budget must reject before creating a cache")
                 if fault == "compressed_bytes":

@@ -178,6 +178,25 @@ class JobCLI(unittest.TestCase):
         self.assertIn("--experiment 不能与 --inputs", cli["main"].__globals__["__doc__"])
         self.assertIn("本机存在的文件会自动上传", cli["main"].__globals__["__doc__"])
 
+    def test_job_id_subcommand_help_is_local_and_out_explains_subdirectory_export(self):
+        env = {key: value for key, value in os.environ.items() if not key.startswith("PF_")}
+        commands = ("out", "status", "log", "wait", "kill", "artifacts", "inputs", "input-reference",
+                    "leases", "export-cache", "session-recovery", "session-recover", "session-status",
+                    "session-action", "reset", "cancel", "session-pause", "session-resume", "pause",
+                    "resume", "execution-reconcile")
+        for command in commands:
+            with self.subTest(command=command):
+                done = subprocess.run([sys.executable, str(CLI), command, "--help"], env=env,
+                                      capture_output=True, text=True, timeout=5)
+                self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("用法:", done.stdout)
+                self.assertIn(f"pf-node {command}", done.stdout)
+        out_help = subprocess.run([sys.executable, str(CLI), "out", "-h"], env=env,
+                                  capture_output=True, text=True, timeout=5)
+        self.assertEqual(out_help.returncode, 0, out_help.stderr)
+        self.assertIn("pf-node out <任务ID> <相对路径>", out_help.stdout)
+        self.assertIn("子目录", out_help.stdout)
+
     def test_reset_rejection_reports_owner_authority_and_preserves_job_id(self):
         cli = self.load_cli()
         error = cli["ClientError"](403, b'{"error":"reset needs the task owner or admin token"}')

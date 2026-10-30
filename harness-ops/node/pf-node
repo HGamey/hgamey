@@ -211,6 +211,35 @@ from agent_duties import NOTE_STYLE, DELIVERY_STYLE
 
 __doc__ += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE
 
+OUT_HELP = """用法:
+  pf-node out <任务ID>
+  pf-node out <任务ID> <相对路径>
+第一种下载整目录，第二种按子目录导出或只下载一个文件。
+整目录导出超过上限时，用 pf-node out <任务ID> <相对路径> 按子目录导出。"""
+JOB_ID_HELP = {
+    "out": OUT_HELP,
+    "status": "用法: pf-node status <任务ID>",
+    "log": "用法: pf-node log <任务ID>",
+    "wait": "用法: pf-node wait <任务ID>",
+    "kill": "用法: pf-node kill <任务ID>",
+    "artifacts": "用法: pf-node artifacts <任务ID> [--path DIR] [--limit N] [--cursor CURSOR]",
+    "inputs": "用法: pf-node inputs <任务ID>",
+    "input-reference": "用法: pf-node input-reference <任务ID> <相对路径>",
+    "leases": "用法: pf-node leases [任务ID]",
+    "export-cache": "用法: pf-node export-cache <任务ID> [--clear]",
+    "session-recovery": "用法: pf-node session-recovery <任务ID>",
+    "session-recover": "用法: pf-node session-recover <任务ID> [--request-id ID]",
+    "session-status": "用法: pf-node session-status <任务ID> [--request-id ID] [--json]",
+    "session-action": "用法: pf-node session-action <任务ID> --request FILE|-",
+    "reset": "用法: pf-node reset <任务ID> --note TEXT",
+    "cancel": "用法: pf-node cancel <任务ID> [--force]",
+    "session-pause": "用法: pf-node session-pause <任务ID>",
+    "session-resume": "用法: pf-node session-resume <任务ID>",
+    "pause": "用法: pf-node pause <任务ID>",
+    "resume": "用法: pf-node resume <任务ID>",
+    "execution-reconcile": "用法: pf-node execution-reconcile <任务ID> [--force]",
+}
+
 URL = TOKEN = TARGET = None
 CHUNK = 2 << 20
 
@@ -1286,6 +1315,9 @@ def main():
     if args[0] == "research" and (len(args) == 1 or any(arg in ("--help", "-h") for arg in args[1:])):
         from research_client import HELP
         print(HELP)
+        return
+    if len(args) == 2 and args[0] in JOB_ID_HELP and args[1] in ("--help", "-h"):
+        print(JOB_ID_HELP[args[0]])
         return
     if len(args) >= 2 and args[0] == "research" and args[1] in ("plan-template", "recipes"):
         from research_client import main as research_main
