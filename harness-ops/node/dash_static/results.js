@@ -113,7 +113,7 @@
       button.setAttribute('aria-current', String(item.result_id === selected)); badge(state, item.outcome);
       button.append(el('strong', item.title || item.result_id), el('span', `${item.result_id} · ${time(item.registered_at)}`, 'result-meta'),
         el('span', [item.labels?.game_id, item.labels?.game_version, item.labels?.device].filter(Boolean).join(' · ') || '未提供游戏 / 设备标签', 'result-meta'),
-        el('span', `${Number.isInteger(item.metric_count) ? item.metric_count : '未知'} 项指标 · ${Number.isInteger(item.source_count) ? item.source_count : '未知'} 项来源`, 'result-meta'), state);
+        el('span', `${Number.isInteger(item.metric_count) ? item.metric_count : '未知'} 项指标 · ${Number.isInteger(item.source_count) ? item.source_count : '未知'} 项来源${ranOn(item) && ranOn(item) !== HGTarget.binding()?.node_id ? ` · 在 ${computerName(ranOn(item))}` : ''}`, 'result-meta'), state);
       button.addEventListener('click', () => { selectResult(item.result_id); $('detail-heading').focus(); });
       const add = makeButton('加入比较', () => addCompareColumn(item.result_id)); add.classList.add('compare-list-add'); add.disabled = !!compareProblem() || compareColumns.length >= 4; li.append(button, add); return li;
     }));
@@ -168,7 +168,7 @@
     const m = value.manifest, current = value.current || {}, origin = m.origin || {};
     $('detail-content').hidden = false; $('result-title').textContent = m.title || value.result_id; badge($('result-outcome'), m.outcome);
     $('detail-updated').textContent = `登记于 ${time(value.registered_at)}；当前来源读取于 ${new Date().toLocaleString()}`;
-    facts($('result-info'), [['结果 ID', value.result_id], ['节点', value.node_id], ['登记来源', value.provenance?.kind === 'import' ? `报告导入 · ${text(value.provenance.import_id)}` : value.provenance?.kind === 'registration' ? '显式登记' : '未提供'], ['关联任务', m.job_id || '无'],
+    facts($('result-info'), [['结果 ID', value.result_id], ['执行电脑', computerName(ranOn(value))], ['登记来源', value.provenance?.kind === 'import' ? `报告导入 · ${text(value.provenance.import_id)}` : value.provenance?.kind === 'registration' ? '显式登记' : '未提供'], ['关联任务', m.job_id || '无'],
       ...Object.entries({game_id: '游戏', game_version: '版本', device: '设备标签', research_id: '研究', direction_id: '方向'}).map(([key, label]) => [label, m.labels?.[key]]),
       ['原报告结论', m.source_outcome], ['生产者声明', origin.producer], ['生产者版本', origin.producer_version], ['证据来源声明', origin.evidence_origin || 'unknown'], ['观测时间声明', time(origin.observed_at)], ['替代旧记录', m.supersedes || '无']]);
     $('result-claims').replaceChildren(...(m.claims || []).map(value => el('li', value)));
@@ -197,48 +197,25 @@
     } catch (error) { if (!disposed && revision === detailRevision) message('detail-message', `读取失败：${errorText(error)}${!$('detail-content').hidden ? ' 上次详情保留，当前状态尚未更新。' : ''}`, true); }
     finally { if (!disposed && revision === detailRevision) { $('refresh-detail').disabled = false; $('result-detail').setAttribute('aria-busy', 'false'); } }
   }
+  // Every result lives in this center's index; provenance.execution_node_id says which computer ran it.
+  let computers = new Map();
+  const ranOn = record => record?.provenance?.execution_node_id || record?.node_id || null;
+  const computerName = id => !id ? '电脑未知' : id === HGTarget.binding()?.node_id ? '本机' : computers.get(id) || `电脑 ${id.slice(0, 8)}`;
+  async function loadComputers() {
+    try { computers = new Map(((await request(`${API}/nodes`)).items || []).map(item => [item.node_id, item.name])); } catch (_) { /* ids still show */ }
+  }
   // Comparison is a read-only view of explicitly selected registered values.
   let compareTarget = null, compareColumns = [], compareRows = [{id: 'row-1', label: '指标 1', metric_indexes: []}];
   let compareNextColumn = 1, compareNextRow = 2, compareContext = null, compareRevision = 0, compareBusy = false, compareController = null;
-  let compareMode = 'local', compareSources = new Map(), remoteRevision = 0, remoteController = null;
+  let compareMode = 'local';
   let detailRecord = null, compareCache = new Map(), compareLoads = new Map();
   const compareCapable = () => node?.capabilities?.includes(compareMode === 'cross' ? 'results.cross-compare-v1' : 'results.compare-v1') === true;
   const crossCapable = () => node?.capabilities?.includes('results.cross-compare-v1') === true;
-  const columnNode = column => column.node_id || compareTarget?.node_id;
-  const compareKey = column => JSON.stringify([columnNode(column), column.result_id]);
-  const sourceKey = source => JSON.stringify([source.name, source.node_id, source.revision]);
+  const compareKey = column => column.result_id;
+  // The computer a column's result ran on, once its record is read.
+  const columnRan = column => ranOn(compareCache.get(compareKey(column))?.value);
+  const relation = (column, other) => other.id === column.id ? '自己' : columnRan(other) && columnRan(other) === columnRan(column) ? '同一台电脑' : '另一台电脑';
   const columnCaption = (column, index) => compareMode === 'cross' ? `列 ${index + 1}` : index === 0 ? '基线' : `候选 ${index}`;
-  async function remoteRecord(source, id, target, signal) {
-    const value = await request(`${API}/remote-result?${new URLSearchParams({target:JSON.stringify(source),result_id:id})}`, {target,signal,maxBytes:6*1048576});
-    if (value.schema_version !== 1 || value.node_id !== target.node_id || value.result_id !== id || sourceKey(value.source || {}) !== sourceKey(source)) throw new Error('远端详情与冻结来源或结果 ID 不匹配。');
-    if (value.status !== 'ok') throw new Error(`${value.status || 'unknown'}：${value.error?.message || '本次未取得远端结果；不表示零指标。'}`);
-    checkRecord(value.result, 'register', id, source);
-    return value;
-  }
-  async function viewRemoteResult(source, id) {
-    if (!crossCapable() || !HGTarget.canWrite() || disposed || !validID(id)) return;
-    const version = ++remoteRevision, target = HGTarget.binding(), controller = new AbortController(); remoteController?.abort(); remoteController = controller;
-    const timer = setTimeout(() => controller.abort(), 12000), box = $('remote-result-detail'); box.hidden = false; box.setAttribute('aria-busy','true'); $('remote-result-content').replaceChildren(); message('remote-result-message', `正在读取 ${source.name} / ${id}，登记配置 ${source.revision}…`);
-    box.scrollIntoView({block:'start'});
-    try {
-      const value = await remoteRecord(source,id,target,controller.signal);
-      if (disposed || version !== remoteRevision || HGTarget.problem(target)) return;
-      const record = value.result, content = $('remote-result-content'), info = el('dl',null,'facts');
-      content.append(el('h3',record.manifest.title || id)); facts(info,[['源节点',`${source.name} / ${source.node_id}`],['冻结目录版本',source.revision],['登记序号',record.sequence],['登记时间',time(record.registered_at)],['本次源读取',time(value.read_at)]]); content.append(info);
-      const add = makeButton('将此远端结果加入对照',()=>addCompareColumn(id,record,source)); content.append(add);
-      const metrics = el('ul',null,'metric-list'), evidence = new Map((record.metric_evidence || []).map(item=>[item.index,item]));
-      for (const [i,metric] of (record.manifest.metrics || []).entries()) { const item = metricItem(metric,evidence.get(i)); item.prepend(el('p',`原指标 #${i}`,'result-meta')); metrics.append(item); }
-      if (!metrics.children.length) metrics.append(el('li','没有登记数值指标，不补零。','note')); content.append(metrics);
-      // Originals are read through this center (/nodes/<name>/read/…), never from the source's own address.
-      const observations = new Map((record.source_observations || []).map(item=>[item.name,item])), current = new Map((record.current?.sources || []).map(item=>[item.name,item])), sources = el('ul',null,'source-list');
-      for (const item of record.manifest.sources || []) sources.append(sourceItem(item,observations.get(item.name),current.get(item.name),target));
-      if (sources.children.length) content.append(el('h4','来源与原件'),sources);
-      const raw = el('details',null,'result-json'); raw.append(el('summary','源声明与核验原记录'),el('pre',JSON.stringify(record,null,2),'command-box')); content.append(raw);
-      message('remote-result-message','以上是源节点登记的声明，不是本后台实测；原件经本后台读取。');
-    } catch (error) { if (!disposed && version === remoteRevision) message('remote-result-message',`详情读取失败：${error.message}。没有自动重试或换目录版本。`,true); }
-    finally { clearTimeout(timer); if (version === remoteRevision) box.setAttribute('aria-busy','false'); }
-  }
-
   const compareProblem = () => !compareCapable() ? `此节点未提供 ${compareMode === 'cross' ? 'results.cross-compare-v1' : 'results.compare-v1'}；可保留和导出选择，不能读取比较。` : !HGTarget.canWrite() ? '节点身份尚未绑定，或缺少 node.target-v1；不会转投其他节点。' : compareTarget ? HGTarget.problem(compareTarget) : '';
   const structuredText = value => value == null || value === '' ? '未记录' : typeof value === 'object' ? JSON.stringify(value) : String(value);
   const COMPARE_REASONS = {not_selected: '未选择指标', result_unavailable: '结果不可读取', invalid_index: '指标索引越界', value_unavailable: '数值缺失', unit_unavailable: '单位未记录', unit_mismatch: '单位不同', scope_unavailable: '范围未知', scope_mismatch: '范围不同', arithmetic_overflow: '算术溢出', baseline_nonpositive: '基线不大于零，百分比未定义', baseline_not_selected: '未选择基线', baseline_unavailable: '所选基线不可读取'};
@@ -250,8 +227,8 @@
   }
   function renderCompareControls() {
     const issue = compareProblem(), full = compareColumns.length >= 4;
-    message('compare-capability', issue || `比较目标：${compareTarget?.node_id || HGTarget.binding()?.node_id || '未绑定'} · ${compareMode === 'cross' ? '跨节点逐列显式基线' : '同节点首列基线'}；描述字段一致也不代表科学可比。`, !!issue);
-    $('compare-mode-help').textContent = compareMode === 'cross' ? '跨节点对照：每列独立选择无基线、自己或另一列。读取使用冻结的目录版本；移除基线列会清空依赖它的选择。旧同节点研究判据不接受此格式。' : '本地比较首列为基线；可重复选择同一结果的不同条件。逐行选择指标，不按名称配对。';
+    message('compare-capability', issue || `比较目标：${compareTarget?.node_id || HGTarget.binding()?.node_id || '未绑定'} · ${compareMode === 'cross' ? '逐列显式基线' : '首列基线'}；描述字段一致也不代表科学可比。`, !!issue);
+    $('compare-mode-help').textContent = compareMode === 'cross' ? '这些结果来自不同电脑：每列独立选择无基线、自己或另一列；移除基线列会清空依赖它的选择。旧研究判据不接受此格式。' : '首列为基线；可重复选择同一结果的不同条件。逐行选择指标，不按名称配对。';
     $('compare-add').disabled = !!issue || full;
     $('compare-add-detail').disabled = !!issue || full || !detailRecord || detailRecord.result_id !== selected;
     document.querySelectorAll('.compare-list-add').forEach(button => { button.disabled = !!issue || full; });
@@ -269,13 +246,9 @@
   }
   function makeButton(label, callback) { const button = el('button', label, 'ghost'); button.type = 'button'; button.addEventListener('click', callback); return button; }
   function removeCompareColumn(index) {
-    const [column] = compareColumns.splice(index,1), sourceID = columnNode(column);
+    const [column] = compareColumns.splice(index,1);
     for (const other of compareColumns) if (other.baseline_column_id === column.id) other.baseline_column_id = null;
-    if (!compareColumns.some(other=>columnNode(other) === sourceID)) {
-      compareSources.delete(sourceID);
-      for (const key of compareCache.keys()) if (JSON.parse(key)[0] === sourceID) compareCache.delete(key);
-      for (const [key,controller] of compareLoads) if (JSON.parse(key)[0] === sourceID) { controller.abort(); compareLoads.delete(key); }
-    }
+    if (!compareColumns.some(other=>other.result_id === column.result_id)) { compareCache.delete(compareKey(column)); compareLoads.get(compareKey(column))?.abort(); compareLoads.delete(compareKey(column)); }
     for (const row of compareRows) row.metric_indexes.splice(index,1);
     comparisonChanged(); renderCompareEditor();
   }
@@ -283,11 +256,10 @@
     $('compare-columns').replaceChildren(...compareColumns.map((column, index) => {
       const card = el('div', null, 'compare-column'), label = el('label', `${columnCaption(column,index)}标签`), input = el('input');
       input.value = column.label; input.maxLength = 128; input.addEventListener('input', () => { column.label = input.value; comparisonChanged(); refreshPickerLabels(); }); label.append(input);
-      card.append(label, el('p', `${columnNode(column)} / ${column.result_id}`, 'result-meta'));
+      card.append(label, el('p', `${columnRan(column) ? computerName(columnRan(column)) + ' · ' : ''}${column.result_id}`, 'result-meta'));
       if (compareMode === 'cross') {
-        const source = compareSources.get(column.node_id); card.append(el('p',source ? `来源 ${source.name} · 冻结目录版本 ${source.revision}` : '当前后台本地登记','result-meta'));
         const field = el('label','本列基线'), select = el('select'); select.dataset.compareBaseline = column.id; select.setAttribute('aria-label',`${column.label} · 本列基线`); select.append(new Option('无基线（只保留原值）',''));
-        for (const other of compareColumns) select.append(new Option(`${other.id === column.id ? '自己' : other.node_id === column.node_id ? '同节点' : '跨节点'} · ${other.label}`,other.id));
+        for (const other of compareColumns) select.append(new Option(`${relation(column, other)} · ${other.label}`,other.id));
         select.value = column.baseline_column_id || ''; select.addEventListener('change',()=>{ column.baseline_column_id = select.value || null; comparisonChanged(); }); field.append(select); card.append(field);
       }
       const cached = compareCache.get(compareKey(column));
@@ -325,46 +297,45 @@
     for (const select of document.querySelectorAll('[data-compare-baseline]')) {
       const column = compareColumns.find(item=>item.id === select.dataset.compareBaseline);
       select.setAttribute('aria-label',`${column.label} · 本列基线`);
-      for (const option of select.options) if (option.value) { const other = compareColumns.find(item=>item.id === option.value); option.textContent = `${other.id === column.id ? '自己' : other.node_id === column.node_id ? '同节点' : '跨节点'} · ${other.label}`; }
+      for (const option of select.options) if (option.value) { const other = compareColumns.find(item=>item.id === option.value); option.textContent = `${relation(column, other)} · ${other.label}`; }
     }
   }
   async function loadCompareRecord(column) {
     const key = compareKey(column);
     if (compareLoads.has(key) || compareProblem() || !compareTarget) return;
-    const target = compareTarget, source = compareSources.get(columnNode(column)), controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000); compareLoads.set(key, controller); renderCompareEditor();
+    const target = compareTarget, controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000); compareLoads.set(key, controller); renderCompareEditor();
     try {
-      const remote = source ? await remoteRecord(source,column.result_id,target,controller.signal) : null;
-      const value = remote ? remote.result : checkRecord(await request(pathFor('register', column.result_id), {target, signal: controller.signal}), 'register', column.result_id, target);
-      if (!disposed && compareTarget === target && compareLoads.get(key) === controller && (!source || sourceKey(compareSources.get(columnNode(column)) || {}) === sourceKey(source))) compareCache.set(key, {value, source:remote?.source, read_at:remote?.read_at});
+      const value = checkRecord(await request(pathFor('register', column.result_id), {target, signal: controller.signal}), 'register', column.result_id, target);
+      if (!disposed && compareTarget === target && compareLoads.get(key) === controller) { compareCache.set(key, {value}); acrossComputers(); }
     } catch (error) { if (!disposed && compareTarget === target && compareLoads.get(key) === controller) compareCache.set(key, {error: `指标读取失败：${error.name === 'AbortError' ? '读取超时或取消' : error.message}。原选择保留，仍可读取部分对照。`}); }
     finally { clearTimeout(timer); if (compareLoads.get(key) === controller) compareLoads.delete(key); if (!disposed && compareTarget === target) renderCompareEditor(); }
   }
-  function addCompareColumn(id, value = null, source = null) {
+  // Results from different computers compare with a baseline chosen per column (result-cross-compare@1): the first
+  // column stays everyone's baseline until changed. Same-computer columns keep the first-column baseline.
+  function acrossComputers() {
+    const ran = new Set(compareColumns.map(columnRan).filter(Boolean));
+    if (compareMode !== 'local' || ran.size < 2 || !crossCapable()) return;
+    const baseline = compareColumns[0]?.id; for (const column of compareColumns) column.baseline_column_id = baseline;
+    compareMode = 'cross'; comparisonChanged(); message('compare-message', '这些结果来自不同电脑，已改为逐列选择基线；目前都以第一列为基线。');
+  }
+  function addCompareColumn(id, value = null) {
     if (compareColumns.length >= 4) { message('compare-message','最多 4 列，请先移除不需要的列。',true); return; }
     if (!validID(id)) { message('compare-message', '请输入有效结果 ID。', true); return; }
-    if (source && (!crossCapable() || !HGTarget.canWrite())) return;
-    if (!source && compareProblem()) return;
+    if (compareProblem()) return;
     if (!compareTarget) compareTarget = HGTarget.binding();
     if (HGTarget.problem(compareTarget)) return;
-    if (source) {
-      const previous = compareSources.get(source.node_id);
-      if (source.node_id === compareTarget.node_id || (previous && sourceKey(previous) !== sourceKey(source))) { message('compare-message','该节点已有不同冻结目录版本；保留原列，不自动改绑。请移除该源全部列后再明确加入。',true); return; }
-      if (compareMode === 'local') { const baseline = compareColumns[0]?.id; for (const column of compareColumns) { column.node_id = compareTarget.node_id; column.baseline_column_id = baseline; } compareMode = 'cross'; }
-      compareSources.set(source.node_id,{name:source.name,node_id:source.node_id,revision:source.revision});
-    }
-    const title = (value?.manifest?.title || (!source && records.get(id)?.title) || id).slice(0, 128);
+    const title = (value?.manifest?.title || records.get(id)?.title || id).slice(0, 128);
     while (compareColumns.some(column => column.id === `column-${compareNextColumn}`)) compareNextColumn++;
     const column = {id: `column-${compareNextColumn++}`, label: title, result_id: id};
-    if (compareMode === 'cross') { column.node_id = source?.node_id || compareTarget.node_id; column.baseline_column_id = null; }
+    if (compareMode === 'cross') column.baseline_column_id = null;
     compareColumns.push(column); compareRows.forEach(row => row.metric_indexes.push(null));
     const key = compareKey(column);
-    if (value?.node_id === columnNode(column) && value.result_id === id) compareCache.set(key, {value});
+    if (value?.result_id === id) { compareCache.set(key, {value}); acrossComputers(); }
     comparisonChanged(); $('compare-panel').open = true; renderCompareEditor(); $('compare-panel').scrollIntoView({block: 'start'});
     if (!compareCache.get(key)?.value) loadCompareRecord(column);
   }
   function comparisonSpec() {
     const spec = {schema: compareMode === 'cross' ? 'phonefarm/result-cross-compare@1' : 'phonefarm/result-compare@1', node_id: compareTarget?.node_id, columns: compareColumns.map(column => ({...column})), rows: compareRows.map(row => ({...row, metric_indexes: [...row.metric_indexes]}))};
-    if (compareMode === 'cross') spec.targets = [...compareSources.values()].map(source=>({...source}));
     if (compareContext !== null) spec.context = structuredClone(compareContext);
     validateComparisonSpec(spec); return spec;
   }
@@ -373,10 +344,9 @@
     if (!spec || !['phonefarm/result-compare@1','phonefarm/result-cross-compare@1'].includes(spec.schema) || !/^[0-9a-f]{32}$/.test(spec.node_id || '') || !Array.isArray(spec.columns) || spec.columns.length < 2 || spec.columns.length > 4 || !Array.isArray(spec.rows) || spec.rows.length < 1 || spec.rows.length > 16) throw new Error('比较需明确节点、2–4 列和 1–16 个指标行。');
     if (new Set(spec.columns.map(item => item.id)).size !== spec.columns.length || new Set(spec.rows.map(item => item.id)).size !== spec.rows.length) throw new Error('比较列或行的 ID 重复。');
     for (const column of spec.columns) if (!validID(column.id) || !validID(column.result_id) || typeof column.label !== 'string' || !column.label.trim() || column.label.length > 128) throw new Error('每列需有效 ID、结果 ID 和非空标签。');
+    if ('targets' in spec || spec.columns.some(column => 'node_id' in column)) throw new Error('这是旧的跨节点比较链接（按节点目录挑选）；结果现在都在本中心，请重新加入列。');
     if (spec.schema === 'phonefarm/result-cross-compare@1') {
-      if (!Array.isArray(spec.targets) || spec.targets.length > 4 || !spec.targets.length || new Set(spec.targets.map(t=>t.node_id)).size !== spec.targets.length || new Set(spec.targets.map(t=>t.name)).size !== spec.targets.length) throw new Error('跨节点比较需要 1–4 个互异冻结来源。');
-      for (const source of spec.targets) if (!source || !/^[a-z0-9_-]{1,64}$/.test(source.name || '') || source.name === 'local' || Object.keys(source).sort().join(',') !== 'name,node_id,revision' || !/^[0-9a-f]{32}$/.test(source.node_id || '') || source.node_id === spec.node_id || !Number.isInteger(source.revision) || source.revision < 1 || !spec.columns.some(c=>c.node_id === source.node_id)) throw new Error('来源需要明确登记名、原节点 ID 和目录版本，且须被比较列使用。');
-      for (const column of spec.columns) if ((column.node_id !== spec.node_id && !spec.targets.some(t=>t.node_id === column.node_id)) || !Object.hasOwn(column,'baseline_column_id') || (column.baseline_column_id !== null && !spec.columns.some(c=>c.id === column.baseline_column_id))) throw new Error('每列须属于明确来源，并显式选择基线或 null。');
+      for (const column of spec.columns) if (!Object.hasOwn(column,'baseline_column_id') || (column.baseline_column_id !== null && !spec.columns.some(c=>c.id === column.baseline_column_id))) throw new Error('每列须显式选择基线或 null。');
     }
     for (const row of spec.rows) if (!validID(row.id) || typeof row.label !== 'string' || !row.label.trim() || row.label.length > 128 || !Array.isArray(row.metric_indexes) || row.metric_indexes.length !== spec.columns.length || row.metric_indexes.some(index => index !== null && (!Number.isInteger(index) || index < 0 || index > 255))) throw new Error('每行需非空标题，并为每列明确选择 0–255 的指标索引或空项。');
     if ('context' in spec) {
@@ -385,7 +355,7 @@
     }
   }
   function resetComparison() {
-    compareController?.abort(); for (const controller of compareLoads.values()) controller.abort(); compareLoads.clear(); compareCache.clear(); compareTarget = null; compareMode = 'local'; compareSources.clear();
+    compareController?.abort(); for (const controller of compareLoads.values()) controller.abort(); compareLoads.clear(); compareCache.clear(); compareTarget = null; compareMode = 'local';
     compareColumns = []; compareRows = [{id: 'row-1', label: '指标 1', metric_indexes: []}]; compareNextColumn = 1; compareNextRow = 2; compareContext = null;
     for (const id of ['compare-scope', 'compare-assumptions', 'compare-interventions']) $(id).value = '';
     const url = new URL(location.href); url.searchParams.delete('compare'); history.replaceState(null, '', url.pathname + url.search + url.hash);
@@ -398,18 +368,18 @@
   }
   function renderComparison(value, target) {
     const output = $('compare-output'); output.replaceChildren(); output.hidden = false;
-    output.append(el('h2', '登记值对照'), el('p', compareMode === 'cross' ? `各列基线分别列出；后台 ${value.node_id}。各源不是同一时刻快照，读取于 ${new Date().toLocaleString()}。` : `基线：${value.columns[0].label} · ${value.columns[0].result_id}；节点 ${value.node_id}。读取于 ${new Date().toLocaleString()}。`, 'note'), el('p', '差值由节点按 candidate − baseline 计算，百分比以正基线为分母。这里不判断优劣、不建立科学可比资格；单位和范围冲突不会换算。', 'note'));
+    output.append(el('h2', '登记值对照'), el('p', compareMode === 'cross' ? `各列基线分别列出；各结果不是同一时刻测得。读取于 ${new Date().toLocaleString()}。` : `基线：${value.columns[0].label} · ${value.columns[0].result_id}。读取于 ${new Date().toLocaleString()}。`, 'note'), el('p', '差值由节点按 candidate − baseline 计算，百分比以正基线为分母。这里不判断优劣、不建立科学可比资格；单位和范围冲突不会换算。', 'note'));
     if (value.partial) output.append(el('p', '部分结果不可读取；其余登记值保留，缺项没有填零。', 'note task-error'));
     if (value.spec.context) { const context = el('dl', null, 'facts'); facts(context, [['作者声明的范围', value.spec.context.scope], ['假设', (value.spec.context.assumptions || []).join('；')], ['有意干预', (value.spec.context.interventions || []).join('；')]]); output.append(context); }
     for (const row of value.rows) {
       const section = el('section', null, 'compare-matrix-row'), cells = el('div', null, 'compare-cells'); cells.style.setProperty('--compare-count', String(value.columns.length)); section.append(el('h3', row.label));
       row.cells.forEach((cell, index) => {
-        const column = value.columns[index], card = el('div', null, 'compare-cell'); card.append(el('h4', `${columnCaption(column,index)} · ${column.label}`), el('p', `${column.node_id} / ${column.result_id} · ${cell.metric_index == null ? '未选指标' : `指标 #${cell.metric_index}`}`, 'result-meta'));
+        const column = value.columns[index], card = el('div', null, 'compare-cell'); card.append(el('h4', `${columnCaption(column,index)} · ${column.label}`), el('p', `${computerName(ranOn(column.result))} · ${column.result_id} · ${cell.metric_index == null ? '未选指标' : `指标 #${cell.metric_index}`}`, 'result-meta'));
         if (cell.status === 'available' && cell.metric) { const metrics = el('ul', null, 'metric-list'); metrics.append(metricItem(cell.metric, cell.metric_evidence)); card.append(metrics); }
         else card.append(el('p', ({not_selected: '此列未选择本行指标。', result_unavailable: '结果不可读取。', invalid_index: '指标索引越界。'})[cell.status] || '指标状态未知。', 'note'), el('p', cell.reason || column.error?.message || '', 'note'));
         if (compareMode === 'cross') {
           const baseline = value.columns.find(other=>other.id === cell.baseline_column_id);
-          card.append(el('p',baseline ? `基线：${baseline.label} · ${baseline.node_id} / ${baseline.result_id}${cell.cross_node === true ? '（显式跨节点基线）' : baseline.id === column.id ? '（本列自身）' : '（同节点）'}` : '未选择基线；仅保留原值。','note'));
+          card.append(el('p',baseline ? `基线：${baseline.label} · ${computerName(ranOn(baseline.result))} · ${baseline.result_id}${cell.cross_node === true ? '（另一台电脑的结果）' : baseline.id === column.id ? '（本列自身）' : '（同一台电脑）'}` : '未选择基线；仅保留原值。','note'));
         }
         card.append(el('p', displayDelta(cell.delta), 'compare-delta'));
         const relation = cell.descriptor_relation, status = {match: '已记录字段一致', mismatch: '描述字段存在差异', incomplete: '描述字段记录不全', unavailable: '描述关系不可读取'}[relation?.status] || '描述关系未知';
@@ -420,12 +390,10 @@
     }
     for (const [index, column] of value.columns.entries()) {
       const section = el('section', null, 'compare-provenance'), record = column.result, manifest = record?.manifest;
-      section.append(el('h3', `${columnCaption(column,index)} · ${column.label}`), el('p', `${column.node_id} / ${column.result_id}`, 'result-meta'));
-      const remote = column.node_id !== target.node_id;
-      if (compareMode === 'cross') { const origin = el('dl',null,'facts'); facts(origin,[['源节点',remote ? column.source?.name || '未确认' : '当前后台'],['目录版本',column.source?.revision ?? (remote ? '未知' : '本地')],['源状态',column.source_status],['最近尝试',time(column.attempted_at)],['本次源读取',time(column.read_at)]]); section.append(origin); if (remote && column.source?.name) section.append(makeButton('查看此远端结果详情',()=>viewRemoteResult(column.source,column.result_id))); }
+      section.append(el('h3', `${columnCaption(column,index)} · ${column.label}`), el('p', `${computerName(ranOn(column.result))} · ${column.result_id}`, 'result-meta'));
       if (column.status !== 'available' || !manifest) { section.append(el('p', `结果不可读取：${column.error?.message || '原因未提供'}`, 'note task-error')); output.append(section); continue; }
       const details = el('dl', null, 'facts'); facts(details, [['登记序号',record.sequence], ['登记时间', time(record.registered_at)], ['原登记结论', OUTCOMES[manifest.outcome] || '未知'], ['原报告结论', manifest.source_outcome], ['游戏 / 版本', [manifest.labels?.game_id, manifest.labels?.game_version].filter(Boolean).join(' / ')], ['设备标签', manifest.labels?.device], ['证据来源声明', manifest.origin?.evidence_origin], ['关联任务', manifest.job_id || '无'], ['当前队列 / 恢复', record.current?.job?.record ? `${text(record.current.job.record.queue?.state)} / ${text(record.current.job.record.recovery?.status)}` : record.current?.job?.reason || '未取得当前任务记录']]); section.append(details);
-      if (!remote) section.append(link(`/dash/results#result=${encodeURIComponent(column.result_id)}`, '查看原结果与完整声明', target));
+      section.append(link(`/dash/results#result=${encodeURIComponent(column.result_id)}`, '查看原结果与完整声明', target));
       const notes = el('ul', null, 'result-notes'); for (const claim of manifest.claims || []) notes.append(el('li', `原声明：${claim}`)); for (const limit of manifest.limitations || []) notes.append(el('li', `局限：${limit}`)); section.append(notes);
       const observations = new Map((record.source_observations || []).map(item => [item.name, item])), current = new Map((record.current?.sources || []).map(item => [item.name, item])), sources = el('ul', null, 'source-list');
       for (const source of manifest.sources || []) sources.append(sourceItem(source, observations.get(source.name), current.get(source.name), target));
@@ -442,8 +410,8 @@
       const value = await request(`${API}/${compareMode === 'cross' ? 'result-cross-compare' : 'result-compare'}?${new URLSearchParams({spec: JSON.stringify(spec)})}`, {target, signal: controller.signal, maxBytes:6*1048576});
       if (disposed || revision !== compareRevision) return;
       if (HGTarget.problem(target)) throw new Error(HGTarget.problem(target));
-      if (value.schema_version !== 1 || value.node_id !== target.node_id || value.basis !== 'registered_values' || value.comparability !== 'not_established' || JSON.stringify(value.spec) !== JSON.stringify(spec) || (compareMode === 'local' && value.baseline_column_id !== spec.columns[0].id) || !Array.isArray(value.columns) || value.columns.length !== spec.columns.length || !Array.isArray(value.rows) || value.rows.length !== spec.rows.length || value.columns.some((column, index) => column.id !== spec.columns[index].id || column.result_id !== spec.columns[index].result_id || column.node_id !== (spec.columns[index].node_id || target.node_id) || (compareMode === 'cross' && column.baseline_column_id !== spec.columns[index].baseline_column_id)) || value.rows.some((row, index) => row.id !== spec.rows[index].id || !Array.isArray(row.cells) || row.cells.length !== spec.columns.length || row.cells.some((cell, i) => cell.column_id !== spec.columns[i].id || cell.metric_index !== spec.rows[index].metric_indexes[i] || (compareMode === 'cross' && cell.baseline_column_id !== spec.columns[i].baseline_column_id)))) throw new Error('比较响应与原节点或选择不一致；保留原选择待核对。');
-      for (const column of value.columns) { if (column.status === 'available' && column.result?.manifest) compareCache.set(compareKey(column), {value: column.result,source:column.source,read_at:column.read_at}); else compareCache.set(compareKey(column), {error: column.error?.message || '结果不可读取'}); }
+      if (value.schema_version !== 1 || value.node_id !== target.node_id || value.basis !== 'registered_values' || value.comparability !== 'not_established' || JSON.stringify(value.spec) !== JSON.stringify(spec) || (compareMode === 'local' && value.baseline_column_id !== spec.columns[0].id) || !Array.isArray(value.columns) || value.columns.length !== spec.columns.length || !Array.isArray(value.rows) || value.rows.length !== spec.rows.length || value.columns.some((column, index) => column.id !== spec.columns[index].id || column.result_id !== spec.columns[index].result_id || !(column.node_id === null && !column.result || /^[0-9a-f]{32}$/.test(column.node_id || '')) || (compareMode === 'cross' && column.baseline_column_id !== spec.columns[index].baseline_column_id)) || value.rows.some((row, index) => row.id !== spec.rows[index].id || !Array.isArray(row.cells) || row.cells.length !== spec.columns.length || row.cells.some((cell, i) => cell.column_id !== spec.columns[i].id || cell.metric_index !== spec.rows[index].metric_indexes[i] || (compareMode === 'cross' && cell.baseline_column_id !== spec.columns[i].baseline_column_id)))) throw new Error('比较响应与原节点或选择不一致；保留原选择待核对。');
+      for (const column of value.columns) { if (column.status === 'available' && column.result?.manifest) compareCache.set(compareKey(column), {value: column.result}); else compareCache.set(compareKey(column), {error: column.error?.message || '结果不可读取'}); }
       renderCompareEditor(); renderComparison(value, target); message('compare-message', '只读对照已返回；原登记、来源状态与任务恢复分别展示。');
     } catch (error) { if (!disposed && revision === compareRevision) message('compare-message', `对照读取失败：${error.code ? error.code + ' · ' : ''}${error.name === 'AbortError' ? '读取超时或取消' : error.message}。原选择保留，可显式重试。`, true); }
     finally { clearTimeout(timer); if (!disposed && revision === compareRevision) { compareBusy = false; renderCompareControls(); } }
@@ -454,7 +422,7 @@
       if (share) {
         if (compareProblem()) throw new Error(compareProblem());
         const url = new URL('/dash/results', location.origin); url.searchParams.set('expected_node_id', spec.node_id); url.searchParams.set('compare', JSON.stringify(spec));
-        $('compare-share-url').value = url.href; $('compare-share-link').href = url.href; $('compare-share-result').hidden = false; message('compare-message', '分享链接固定当前后台、各来源目录版本、基线、列、行和范围声明；只读重载，未包含凭据。');
+        $('compare-share-url').value = url.href; $('compare-share-link').href = url.href; $('compare-share-result').hidden = false; message('compare-message', '分享链接固定当前后台、基线、列、行和范围声明；只读重载，未包含凭据。');
       } else {
         const url = URL.createObjectURL(new Blob([raw + '\n'], {type: 'application/json'})), a = el('a'); a.href = url; a.download = compareMode === 'cross' ? 'result-cross-compare.json' : 'result-compare.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); message('compare-message', '选择 JSON 已导出；下方也保留可复制文本。它不包含新的测量或可比资格。');
       }
@@ -464,7 +432,7 @@
     if (!raw) return;
     $('compare-panel').open = true;
     try {
-      const spec = JSON.parse(raw); validateComparisonSpec(spec); compareTarget = {entry: location.origin, node_id: spec.node_id}; compareColumns = spec.columns; compareRows = spec.rows; compareMode = spec.schema === 'phonefarm/result-cross-compare@1' ? 'cross' : 'local'; compareSources = new Map((spec.targets || []).map(source=>[source.node_id,source]));
+      const spec = JSON.parse(raw); validateComparisonSpec(spec); compareTarget = {entry: location.origin, node_id: spec.node_id}; compareColumns = spec.columns; compareRows = spec.rows; compareMode = spec.schema === 'phonefarm/result-cross-compare@1' ? 'cross' : 'local';
       compareNextColumn = 1; while (compareColumns.some(column => column.id === `column-${compareNextColumn}`)) compareNextColumn++;
       compareNextRow = 1; while (compareRows.some(row => row.id === `row-${compareNextRow}`)) compareNextRow++;
       compareContext = 'context' in spec ? spec.context : null;
@@ -603,9 +571,6 @@
   $('access-toggle').addEventListener('click', () => { if (access?.steer) setAccess({}, true); else { $('unlock-form').hidden = false; $('steer-password').focus(); } });
   $('unlock-close').addEventListener('click', () => { $('steer-password').value = ''; $('unlock-form').hidden = true; });
   $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess({pw: $('steer-password').value}); });
-  window.HGResultCompare = {viewRemote:viewRemoteResult, addRemote:(source,id)=>addCompareColumn(id,null,source), available:crossCapable};
-  $('remote-result-close').addEventListener('click',()=>{ remoteRevision++; remoteController?.abort(); $('remote-result-detail').hidden = true; });
-  document.addEventListener('visibilitychange',()=>{ if (document.hidden) { remoteRevision++; remoteController?.abort(); $('remote-result-detail').setAttribute('aria-busy','false'); message('remote-result-message','页面已隐藏；未确认的详情读取已停止，请显式重读。'); } });
   $('compare-add-form').addEventListener('submit', event => { event.preventDefault(); addCompareColumn($('compare-result-id').value.trim()); });
   $('compare-add-detail').addEventListener('click', () => { if (detailRecord?.result_id === selected) addCompareColumn(selected, detailRecord); });
   $('compare-add-row').addEventListener('click', () => { if (compareRows.length >= 16) return; while (compareRows.some(row => row.id === `row-${compareNextRow}`)) compareNextRow++; compareRows.push({id: `row-${compareNextRow++}`, label: `指标 ${compareRows.length + 1}`, metric_indexes: compareColumns.map(() => null)}); comparisonChanged(); renderCompareEditor(); });
@@ -622,7 +587,7 @@
   $('compare-share').addEventListener('click', () => exportComparison(true));
   document.addEventListener('hgamey-target-change', () => { renderControls(); renderCompareControls(); if (compareTarget && HGTarget.problem(compareTarget)) { compareRevision++; compareController?.abort(); compareBusy = false; renderCompareControls(); } });
   window.addEventListener('hashchange', () => { const id = new URLSearchParams(location.hash.slice(1)).get('result'); if (validID(id)) selectResult(id); });
-  window.addEventListener('pagehide', () => { disposed = true; remoteRevision++; remoteController?.abort(); listController?.abort(); detailController?.abort(); compareController?.abort(); for (const controller of compareLoads.values()) controller.abort(); });
+  window.addEventListener('pagehide', () => { disposed = true; listController?.abort(); detailController?.abort(); compareController?.abort(); for (const controller of compareLoads.values()) controller.abort(); });
   try { const saved = JSON.parse(sessionStorage.getItem(KEY) || 'null'); if (saved && ['register', 'import'].includes(saved.operation) && validID(saved.id)) pending = {operation: saved.operation, id: saved.id, target: saved.target || null}; } catch (_) { /* Damaged storage does not establish a request or target. */ }
   const query = new URLSearchParams(location.search), hash = new URLSearchParams(location.hash.slice(1));
   for (const key of FILTERS) if (query.has(key)) $('filters').elements.namedItem(key).value = query.get(key);
@@ -632,6 +597,6 @@
   loadAccess();
   HGTarget.ready().then(value => {
     node = value; message('capability-message', capable() ? '只检索本节点已登记结果；按需读取详情时核对明确来源，不采集设备。' : '此节点未提供 results.index-v1；新结果索引不可用，旧任务与原件仍在任务页。', !capable());
-    renderControls(); renderCompareEditor(); restoreComparison(query.get('compare')); if (capable()) { loadList(); if (selected) selectResult(selected); }
+    renderControls(); renderCompareEditor(); restoreComparison(query.get('compare')); if (capable()) loadComputers().then(() => { loadList(); if (selected) selectResult(selected); });
   }).catch(error => { message('capability-message', errorText(error), true); renderControls(); });
 })();
