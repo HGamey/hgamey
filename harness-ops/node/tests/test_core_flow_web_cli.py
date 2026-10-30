@@ -1242,6 +1242,16 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual((task()["state"], task()["state_reason"]), ("closed", "并入别的任务"))
                 self.assertIn("并入别的任务", page.text_content(".task-closed"))
                 self.assertEqual(page.text_content("#task-state-open"), "重新打开")
+                page.goto(f"{base}/dash/command")
+                page.wait_for_function("() => window.__ready === true")
+                # The model behind the view is cached for a few seconds; the live view picks the close up on a later poll.
+                page.wait_for_function("() => window.__command.world.trees.get('sr-close')?.label.querySelector('.tag').textContent === '已关闭'", timeout=20000)
+                self.assertEqual(page.text_content('#counts span[data-k="closed"] b'), "1", "a closed task is not counted as 进行中")
+                self.assertEqual(page.evaluate("""async () => {
+                    const {taskAt} = await import('/dash/static/command-util.js');
+                    const a = {state: 'delivered', created_at: 1, updated_at: 5}, b = {state: 'closed', created_at: 6, updated_at: 9};
+                    return [4, 5, 7, 10].map(t => taskAt({...a, steps: [a, b]}, t)); }"""), ["active", "delivered", "active", "delivered"],
+                    "a chain whose last step closed after an earlier one delivered reads as delivered")
                 page.goto(f"{base}/dash")
                 page.wait_for_selector('#closed li[data-closed="sr-close"]', state="attached")
                 self.assertFalse(page.is_hidden("#closed-sec"))

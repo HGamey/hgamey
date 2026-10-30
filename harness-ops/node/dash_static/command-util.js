@@ -59,4 +59,11 @@ export function jobAt(j, t) {
   return j.ended && j.ended <= t ? j.outcome || 'failed' : 'running';
 }
 export const dirAt = (d, t) => d.updated_at <= t ? d.state : 'proposed';
-export const deliveredAt = (task, t) => task.state === 'delivered' && task.updated_at <= t;
+// A task at time t: delivered or closed from its last write on, active before. A chain is active while any of its steps
+// is, delivered once one of them delivered, and closed only when every step was closed.
+const stepAt = (s, t) => (s.state === 'delivered' || s.state === 'closed') && s.updated_at <= t ? s.state : 'active';
+export const taskAt = (task, t) => {
+  const states = (task.steps || [task]).filter(s => s.created_at <= t).map(s => stepAt(s, t));
+  return states.includes('active') || !states.length ? 'active' : states.includes('delivered') ? 'delivered' : 'closed';
+};
+export const TASK_STATE = {active: '进行中', delivered: '已交付', closed: '已关闭'};

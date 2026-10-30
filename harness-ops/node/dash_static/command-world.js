@@ -1,7 +1,7 @@
 // The trees as DOM: one positioned container per task, built once and updated in place. show(t) puts every tree in its
 // state at time t; when `animate` is set (forward play), things that just appeared draw in, otherwise they simply appear.
 import {CHIP_W, CHIP_X, LABEL_Y, ORB, leafW} from './command-layout.js';
-import {DIR_STATE, agentName, brandOf, deliveredAt, dirAt, el, esc, hm, jobAt, md, mins, short} from './command-util.js';
+import {DIR_STATE, TASK_STATE, agentName, brandOf, dirAt, el, esc, hm, jobAt, md, mins, short, taskAt} from './command-util.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 export const FAR = .68;    // below this zoom: no speech bubbles, pins shrink to a mark, task titles grow to stay readable
@@ -125,17 +125,17 @@ export class World {
         part.link.setAttribute('stroke', LINK[state] || LINK.trunk); part.link.setAttribute('stroke-opacity', '.7');
         if (animate && !was) { fresh(part.node, true); part.link.classList.remove('draw'); void part.link.getBBox(); part.link.classList.add('draw'); }
       }
-      const delivered = deliveredAt(task, t), s = `${done}|${ok}|${running}|${delivered}`;
+      const state = taskAt(task, t), delivered = state === 'delivered', s = `${done}|${ok}|${running}|${state}`;
       if (animate && delivered && tr.delivered === false) { const r = el('span', 'gold-ripple'); tr.root.append(r); r.addEventListener('animationend', () => r.remove()); }
       if (tr.s !== s) {
         tr.s = s;
-        tr.root.classList.toggle('busy', busy); tr.root.classList.toggle('delivered', delivered);
+        tr.root.classList.toggle('busy', busy); tr.root.classList.toggle('delivered', delivered); tr.root.classList.toggle('closed', state === 'closed');
         tr.root.querySelector('.count b').textContent = done + running;
-        const tag = tr.label.querySelector('.tag'); tag.className = 'tag ' + (delivered ? 'delivered' : 'active'); tag.textContent = delivered ? '已交付' : '进行中';
+        const tag = tr.label.querySelector('.tag'); tag.className = 'tag ' + state; tag.textContent = TASK_STATE[state];
         tr.root.querySelector('.ring').innerHTML = ringSvg(ring.sort((a, b) => a[0] - b[0]));
         tr.done = done; tr.ok = ok;
       }
-      tr.busy = busy; tr.delivered = delivered;
+      tr.busy = busy; tr.delivered = delivered; tr.state = state;
     }
     this.t = t;
     return out;
@@ -176,6 +176,6 @@ function ringSvg(done) {
 }
 
 export const tipFor = {
-  root: tr => `<b>${esc(tr.shape.task.title)}</b><span class="mono">${tr.delivered ? '已交付' : '进行中'} · ${esc(agentName(tr.shape.task.owner))} · ${tr.done || 0} 次实验 · 成功 ${tr.ok || 0}</span>`,
+  root: tr => `<b>${esc(tr.shape.task.title)}</b><span class="mono">${TASK_STATE[tr.state] || TASK_STATE.active} · ${esc(agentName(tr.shape.task.owner))} · ${tr.done || 0} 次实验 · 成功 ${tr.ok || 0}</span>`,
   chip: (tr, part) => `<b>${esc(part.g.dir ? part.g.dir.title : '未归入方向的实验')}</b><span class="mono">${part.g.dir ? esc(DIR_STATE[dirAt(part.g.dir, Infinity)] || part.g.dir.state) + ' · ' : ''}${part.g.jobs.length} 次实验</span>`,
 };

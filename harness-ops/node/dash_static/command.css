@@ -124,7 +124,7 @@ button:disabled { opacity: .45; cursor: default; }
 .app.booting .minimap { opacity: 0; pointer-events: none; }
 .counts span.alert { color: var(--ink); background: color-mix(in srgb, var(--c) 16%, var(--raise)); }
 button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 207, 192, .1); border-color: rgba(92, 207, 192, .45); }
-@container top (max-width: 980px) { .counts span[data-k="active"], .counts span[data-k="runs"] { display: none; } .mode small { display: none; } }
+@container top (max-width: 980px) { .counts span[data-k="active"], .counts span[data-k="closed"], .counts span[data-k="runs"] { display: none; } .mode small { display: none; } }
 @container top (max-width: 700px) { .counts span[data-k="tasks"], .counts span[data-k="done"] { display: none; } }
 
 /* Map */

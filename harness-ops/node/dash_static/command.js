@@ -1,6 +1,6 @@
 // Command view: this node's tasks as trees on a map, its phones and agents in the rail, and a time bar that replays the
 // record or follows it live. Data: /dash/api/command (this node, live) or /dash/api/showcase (a read-only snapshot).
-import {$, BRAND, DIR_STATE, OUTCOME, WAIT_KIND, agentMeta, agentName, ago, begun, brandOf, clamp, day, deliveredAt, dirAt, el, esc, hm, jobAt, md, mins, phoneKey, short, stamp, waitEnd} from './command-util.js';
+import {$, BRAND, DIR_STATE, OUTCOME, WAIT_KIND, agentMeta, agentName, ago, begun, brandOf, clamp, day, dirAt, el, esc, hm, jobAt, md, mins, phoneKey, short, stamp, taskAt, TASK_STATE, waitEnd} from './command-util.js';
 import {layout, treeBounds, union} from './command-layout.js';
 import {Camera} from './command-camera.js';
 import {Timeline} from './command-timeline.js';
@@ -292,10 +292,11 @@ function clock() {
 
 // ── Top bar
 function counts(out) {
-  const M = S.M, t = S.now, shown = M.tasks.filter(x => x.created_at <= t), delivered = shown.filter(x => deliveredAt(x, t)).length;
+  const M = S.M, t = S.now, shown = M.tasks.filter(x => x.created_at <= t), state = shown.map(x => taskAt(x, t)), n = s => state.filter(x => x === s).length;
   const runs = M.jobs.filter(j => j.ended && j.ended <= t).length;
   const wait = (S.waiting || []).length, ask = (S.asks || []).length;
-  const items = [['tasks', '任务', shown.length, '#8aa1b5'], ['active', '进行中', shown.length - delivered, '#5ccfc0'], ['done', '已交付', delivered, '#f0c36e'], ['runs', '实验', runs, '#e3eaf0'],
+  const items = [['tasks', '任务', shown.length, '#8aa1b5'], ['active', '进行中', n('active'), '#5ccfc0'], ['done', '已交付', n('delivered'), '#f0c36e'],
+    ...(n('closed') ? [['closed', '已关闭', n('closed'), '#8aa1b5']] : []), ['runs', '实验', runs, '#e3eaf0'],
     ...(wait ? [['wait', '等手机', wait, '#8db4f5']] : []), ...(ask ? [['ask', '等你回复', ask, '#f0c36e']] : [])];
   const html = items.map(([key, k, v, c]) => `<span data-k="${key}" class="${key === 'wait' || key === 'ask' ? 'alert' : ''}" style="--c:${c}"><i></i>${k}<b>${v}</b></span>`).join('');
   if ($('counts').innerHTML !== html) $('counts').innerHTML = html;
@@ -419,7 +420,7 @@ function panelTask(update) {
   const t = S.now, task = tr.task, M = S.M, live = S.src === 'live';
   const jobs = M.jobs.filter(j => j.research_id === id && jobAt(j, t) && jobAt(j, t) !== 'waiting').sort((a, b) => begun(b) - begun(a));
   const ok = jobs.filter(j => jobAt(j, t) === 'succeeded').length, dirs = M.dirs.filter(d => d.research_id === id && d.created_at <= t);
-  const notes = M.notes.filter(n => n.research_id === id && n.at <= t).sort((a, b) => b.at - a.at), delivered = deliveredAt(task, t);
+  const notes = M.notes.filter(n => n.research_id === id && n.at <= t).sort((a, b) => b.at - a.at), state = taskAt(task, t);
   const key = `${id}|${S.idx}|${S.mark}`; if (update && $('panel-body').dataset.key === key) return;
   // The 30 newest runs show; a marked run further down shows them all.
   const marked = S.mark?.startsWith('j:') ? jobs.findIndex(j => 'j:' + j.id === S.mark) : -1, upto = marked >= 30 ? jobs.length : 30;
@@ -431,7 +432,7 @@ function panelTask(update) {
   };
   $('panel-body').innerHTML = `
     <div class="title">${esc(task.title)}</div>
-    <div class="meta"><span class="tag ${delivered ? 'delivered' : 'active'}">${delivered ? '已交付' : '进行中'}</span><span>${esc(agentName(task.owner))}</span><span class="mono">${stamp(task.created_at)} 起</span></div>
+    <div class="meta"><span class="tag ${state}">${TASK_STATE[state]}</span><span>${esc(agentName(task.owner))}</span><span class="mono">${stamp(task.created_at)} 起</span></div>
     ${live ? `<a class="button open" href="/dash/research?kind=research&id=${encodeURIComponent(id)}">打开任务</a>` : ''}
     <h3>概况</h3>
     <div class="stats"><div><b>${jobs.length}</b><span>次实验</span></div><div><b>${ok}</b><span>成功</span></div>
@@ -441,7 +442,8 @@ function panelTask(update) {
     ${notes.length ? `<h3 id="panel-notes">记录<span>${notes.length}</span></h3><ul class="list">${notes.slice(0, 40).map(n => `<li class="note${n.who === 'human' ? ' human' : ''}${(S.asks || []).some(a => a.id === n.id) ? ' ask' : ''}"><div><b>${esc(agentName(n.who))}</b><span class="mono">${stamp(n.at)}</span></div><div>${esc(n.text)}</div></li>`).join('')}</ul>` : ''}`;
 }
 function panelWins() {
-  const M = S.M, t = S.now, done = M.tasks.filter(r => deliveredAt(r, t)).sort((a, b) => b.updated_at - a.updated_at);
+  const M = S.M, t = S.now, done = M.tasks.flatMap(r => (r.steps || [r]).filter(s => taskAt(s, t) === 'delivered').map(s => ({...s, tree: r.id})))
+    .sort((a, b) => b.updated_at - a.updated_at);
   const key = `wins|${S.idx}`; if ($('panel-body').dataset.key === key) return; $('panel-body').dataset.key = key;
   const phone = M.jobs.filter(j => j.phone && j.ended && j.ended <= t).length, humans = M.notes.filter(n => n.who === 'human' && n.at <= t).length;
   const adopted = M.notes.filter(n => n.decision === 'adopt' && n.at <= t).length, verified = M.dirs.filter(d => d.state === 'verified' && d.updated_at <= t).length, h = M.history;
@@ -449,7 +451,7 @@ function panelWins() {
   $('panel-body').innerHTML = `<div class="hero"><b>${done.length}</b><span>份交付报告</span></div>
     <h3>过程</h3><div class="stats"><div class="gold"><b>${verified}</b><span>验证有效的方向</span></div><div><b>${phone}</b><span>次真机实验</span></div>
       <div><b>${humans}</b><span>次人的回复</span></div><div><b>${adopted}</b><span>条采纳记录</span></div></div>
-    ${done.length ? `<h3>交付<span>${done.length}</span></h3><ul class="list">${done.map(r => `<li data-tree="${esc(r.id)}"><a href="#" data-tree="${esc(r.id)}">${esc(short(r.title, 44))}</a><span class="state">${md(r.updated_at)}</span></li>`).join('')}</ul>` : ''}
+    ${done.length ? `<h3>交付<span>${done.length}</span></h3><ul class="list">${done.map(r => `<li data-tree="${esc(r.tree)}"><a href="#" data-tree="${esc(r.tree)}">${esc(short(r.title, 44))}</a><span class="state">${md(r.updated_at)}</span></li>`).join('')}</ul>` : ''}
     ${h ? `<h3>来历<span>${h.since ? `自 ${esc(h.since)}` : ''}</span></h3><div class="stats"><div><b>${Object.values(h.commits || {}).reduce((a, b) => a + b, 0).toLocaleString('en-US')}</b><span>次提交</span></div>
       <div><b>${(h.experiment_lines || []).length}</b><span>条实验线</span></div><div class="gold"><b>${h.sr_networks_kept ?? '?'}</b><span>个超分网络（从 ${h.sr_networks ?? '?'} 个里留下）</span></div></div>` : ''}`;
 }
