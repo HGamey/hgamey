@@ -402,7 +402,8 @@
       }
       list.replaceChildren(...(roots.length ? roots.map(paint) : [el('div', '还没有留言', 'empty')]));
       scope.apply(list);
-      if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'center'});
+      // Each section answers only its own anchor: a note link lands here; #cmp- and #task-report land on theirs.
+      if (location.hash.startsWith('#note-')) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'center'});
     }
     try { await load(); } catch (error) { list.replaceChildren(); status.textContent = '读取留言失败：' + failure(error); }
     {
@@ -496,6 +497,8 @@
     if (shown !== paint) return;
     const delivered = deliverables(scope, record).then(found => { if (shown === paint) { reports.replaceWith(...found); scope.apply(container); } });
     await Promise.all([directionsSection(scope, directions), runsSection(scope, runs), threadSection(record, ctx, thread, scope), delivered]);
+    // The report is last, so a 交付报告 link lands once everything above it is in.
+    if (shown === paint && location.hash === '#task-report') document.getElementById('task-report')?.scrollIntoView({block: 'start'});
   }
   function compareNote(text, retry) {
     const box = el('section', null, 'research-section compare-section'), head = el('div', null, 'section-head');

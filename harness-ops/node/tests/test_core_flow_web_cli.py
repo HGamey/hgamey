@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from http.server import ThreadingHTTPServer
@@ -1981,8 +1982,11 @@ class CoreFlowTests(unittest.TestCase):
                 page.on("request", lambda request: order.append(request.url))
                 page.click("#task-compare-open button >> text=重试")
                 page.wait_for_selector("#task-compare-open #cmp-ev-first")
-                # A fresh visit: the comparison's reads go before the thread's, and it lands in view, outlined.
+                # A fresh visit: the comparison's reads go before the thread's, and it lands in view, outlined. The
+                # thread answers late, as on a busy page, and must not move the comparison when it arrives.
                 order.clear()
+                notes = "**/dash/api/research-state/note?*"
+                page.route(notes, lambda route, request: (time.sleep(1), route.continue_()))
                 page.goto(base + "/dash")
                 page.goto(base + url)
                 block = "#task-compare-open #cmp-ev-first"
@@ -1990,11 +1994,50 @@ class CoreFlowTests(unittest.TestCase):
                 top = page.evaluate("s => document.querySelector(s).getBoundingClientRect().top", block)
                 self.assertTrue(56 <= top <= 120, f"block top {top}: below the sticky top bar, not hidden under it")
                 page.wait_for_selector("#task-thread .discuss-entry")
+                page.wait_for_function("() => !document.querySelector('[aria-busy=true]')")
+                after = page.evaluate("s => document.querySelector(s).getBoundingClientRect().top", block)
+                self.assertTrue(abs(after - top) < 1, f"block top {top} → {after} once the thread loaded: it stays where it landed")
                 reads = [u for u in order if "/research-state/request?" in u or "/research-state/note?" in u]
                 self.assertTrue(reads and "/research-state/request?" in reads[0], reads[:3])
                 first_note = next(i for i, u in enumerate(reads) if "/research-state/note?" in u)
                 self.assertTrue(all("/research-state/note?" not in u for u in reads[:first_note]))
                 self.assertGreater(first_note, 0)
+            finally:
+                browser.close()
+
+    def test_a_report_link_from_home_lands_on_the_report_once_the_thread_is_in(self):
+        """#task-report is the last section: the page lands on it after the long thread above has loaded."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.assertEqual(self.web("POST", "/research-state/research/sr-landing", self.write(
+            "create-sr-landing", {"title": "落到报告", "objective": "交付报告链接"}))[0], 201)
+        for i in range(12):
+            self.assertEqual(self.web("POST", f"/research-state/note/n-landing-{i}", self.write(f"create-n-landing-{i}", {
+                "research_id": "sr-landing", "text": f"进展 {i}", "reply_to": None, "decision": None}))[0], 201)
+        self.assertEqual(self.pf(ADMIN, "research", "deliver", "sr-landing", "--summary", "# 结果\n\n帧率 +18%",
+                                 "--artifact", f"job:{self.jid}", "--game-version", "5.1", "--device", "FixturePhone")[0], 0)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 700})
+                name, value = self.view_cookie.split("=", 1)
+                context.add_cookies([{"name": name, "value": value, "url": base}])
+                page = context.new_page()
+                # The thread answers after the report, as on a busy page.
+                page.route("**/dash/api/research-state/note?*", lambda route, request: (time.sleep(1), route.continue_()))
+                page.goto(base + "/dash/research?kind=research&id=sr-landing#task-report")
+                page.wait_for_selector("#task-thread .discuss-entry")
+                page.wait_for_function("() => Math.abs(document.getElementById('task-report').getBoundingClientRect().top - 72) < 50")
             finally:
                 browser.close()
 
