@@ -4,11 +4,13 @@ import {CHIP_W, CHIP_X, LABEL_Y, ORB, leafW} from './command-layout.js';
 import {DIR_STATE, agentName, brandOf, deliveredAt, dirAt, el, esc, hm, jobAt, md, mins, short} from './command-util.js';
 
 const NS = 'http://www.w3.org/2000/svg';
-export const FAR = .68;   // below this zoom the map drops small text and keeps marks and task titles
+export const FAR = .68;    // below this zoom: no speech bubbles, pins shrink to a mark, task titles grow to stay readable
+export const TINY = .2;    // below this zoom (past fit-all on a 1280×720 window) small text is a smear: runs become dots and chips keep only their mark
 const MARK = {verified: '<svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   rejected: '<svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   deferred: '<svg viewBox="0 0 16 16"><path d="M5 4v8M11 4v8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
-  proposed: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 2"/></svg>'};
+  proposed: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 2"/></svg>',
+  trunk: '<svg viewBox="0 0 16 16"><path d="M4 5h8M4 8h8M4 11h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'};
 const LINK = {verified: '#f0c36e', rejected: '#4c5866', deferred: '#66778a', proposed: '#8db4f5', trunk: '#8aa1b5'};
 const LEAF_LINK = {succeeded: '#5ccfc0', running: '#5ccfc0', waiting: '#8db4f5'};
 
@@ -118,7 +120,7 @@ export class World {
         part.node.style.display = here2 ? '' : 'none'; part.link.style.display = here2 ? '' : 'none';
         if (!here2) continue;
         part.node.className = 'chip ' + state;
-        part.node.querySelector('.mark').innerHTML = g.dir ? MARK[state] || MARK.proposed : `<b class="n">${shown}</b>`;
+        part.node.querySelector('.mark').innerHTML = g.dir ? MARK[state] || MARK.proposed : MARK.trunk;   // the count is in the line below
         part.node.querySelector('small').textContent = g.dir ? (DIR_STATE[state] || state) + (shown ? ` · ${shown} 次实验` : '') : `${shown} 次实验`;
         part.link.setAttribute('stroke', LINK[state] || LINK.trunk); part.link.setAttribute('stroke-opacity', '.7');
         if (animate && !was) { fresh(part.node, true); part.link.classList.remove('draw'); void part.link.getBBox(); part.link.classList.add('draw'); }
@@ -141,7 +143,7 @@ export class World {
 
   // Screen boxes of what is drawn, for the overlay to keep clear of (only trees on screen are measured).
   boxes(cam) {
-    const v = cam.view(), out = [], far = cam.k < FAR;
+    const v = cam.view(), out = [], far = cam.k < TINY;
     for (const tr of this.trees.values()) {
       if (!tr.here) continue;
       const {x, y, box} = tr.shape;

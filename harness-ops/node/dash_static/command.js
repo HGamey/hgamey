@@ -4,7 +4,7 @@ import {$, BRAND, DIR_STATE, OUTCOME, WAIT_KIND, agentMeta, agentName, ago, begu
 import {layout, treeBounds, union} from './command-layout.js';
 import {Camera} from './command-camera.js';
 import {Timeline} from './command-timeline.js';
-import {FAR, World, tipFor} from './command-world.js';
+import {FAR, TINY, World, tipFor} from './command-world.js';
 import {Overlay} from './command-overlay.js';
 
 const Q = new URLSearchParams(location.search);
@@ -38,7 +38,7 @@ const cam = new Camera(stage, $('world'), {onChange: () => { minimap(); zoomClas
 function zoomClass() {
   const w = $('world'), k = Math.round(cam.k * 100) / 100;
   if (w.dataset.k === String(k)) return;
-  w.dataset.k = k; w.style.setProperty('--inv', (1 / k).toFixed(3)); w.classList.toggle('far', k < FAR);
+  w.dataset.k = k; w.style.setProperty('--inv', (1 / k).toFixed(3)); w.classList.toggle('far', k < FAR); w.classList.toggle('tiny', k < TINY);
 }
 const world = new World($('world'));
 const overlay = new Overlay($('overlay'), cam, world);

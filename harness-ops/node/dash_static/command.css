@@ -158,16 +158,16 @@ button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 20
 .task-label { position: absolute; width: 440px; margin-left: -220px; text-align: center; cursor: pointer; }
 .task-label b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: max(18px, calc(13px * var(--inv, 1))); font-weight: 600; line-height: 1.35; }
 .world.far .task-label .meta { display: none; }
-.world.far .chip .t, .world.far .leaf span, .world.far .leaf em, .world.far .root .count small { display: none; }
-.world.far .chip { grid-template-columns: 1fr; justify-items: center; }
-.world.far .leaf i { transform: scale(min(3, calc(.62 * var(--inv, 1)))); }
-.world.far .leaf:hover { background: none; }
+/* Small text stays when zoomed out; only past TINY (command-world.js), where it is a smear, do runs and chips keep just their marks. */
+.world.tiny .chip .t, .world.tiny .leaf span, .world.tiny .leaf em, .world.tiny .root .count small { display: none; }
+.world.tiny .chip { grid-template-columns: 1fr; justify-items: center; }
+.world.tiny .leaf i { transform: scale(min(3, calc(.62 * var(--inv, 1)))); }
+.world.tiny .leaf:hover { background: none; }
 .task-label .meta { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 6px; font-size: 12px; border: 1px solid var(--line2); color: var(--ink2); }
 .tag.active { color: var(--teal); border-color: rgba(92, 207, 192, .4); } .tag.delivered { color: var(--gold); border-color: rgba(240, 195, 110, .45); }
 .chip { position: absolute; width: 236px; height: 58px; transform: translateY(-50%); display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px;
   padding: 0 14px; border-radius: 12px; background: rgba(19, 27, 36, .94); border: 1px solid var(--line2); }
-.chip .n { font: 600 24px/1 var(--mono); min-width: 26px; }
 .chip .t { min-width: 0; } .chip .t span { display: block; font-size: 13px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip .t small { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); }
 .chip .mark { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: var(--steel); border: 1px solid var(--line2); }
