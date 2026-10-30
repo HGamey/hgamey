@@ -266,7 +266,7 @@ pf-node nodes show lab-b
 pf-node nodes show lab-b --devices        # 明确请求重新采样这台电脑上的手机
 ```
 
-join 需要 Git、Python 3、Rust/Cargo，以及手机所需的 adb/hdc；Linux 使用当前用户的 systemd，macOS 使用登录用户的 launchd。它生成本机身份、私有 token、`node-launch.json` 和 `deploy-node.json`，构建发布并启动服务。默认本机端口 8765，可用 `--port` 改；不需要先做上面的独立中心部署。已有执行节点的业务数据只读保留，不删除。
+join 必须用 `--root` 明确指定不存在或为空的新安装目录；已有安装和任何非空目录都会在兑换邀请前拒绝，邀请不消耗。join 需要 Git、Python 3、Rust/Cargo，以及手机所需的 adb/hdc；Linux 使用当前用户的 systemd，macOS 使用登录用户的 launchd。它生成本机身份、私有 token、`node-launch.json` 和 `deploy-node.json`，构建发布并启动服务。默认本机端口 8765，可用 `--port` 改；不需要先做上面的独立中心部署。已有执行节点的业务数据只读保留，不删除。
 
 后续在这台电脑的仓库根运行 `python3 deploy.py --config "$HOME/node/deploy-node.json"` 升级；加 `--ref <提交>` 可回退，加 `--status` 查实际版本。join 已保存配置但构建失败时，也用这条部署命令继续，不再次消费邀请码。运行中的任务独立于服务，升级保留身份、连接凭据和设备锁路径。若同机已有 PF，加入前将 `DEVLOCK_DIR` 设为它正在使用的目录；否则默认 `<安装根>/locks`。灰档层构建仍按上面的 `gray_layer`、`build_env` 配置启用，默认不构建。
 

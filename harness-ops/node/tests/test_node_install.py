@@ -169,6 +169,41 @@ class NodeInstallTests(unittest.TestCase):
                                if line.startswith('WorkingDirectory='))
         self.assertEqual(working_directory,'WorkingDirectory='+str(self.root))
 
+    def test_join_refuses_existing_or_nonempty_roots_before_spending_an_invitation(self):
+        for existing in (False, True):
+            with self.subTest(existing_installation=existing):
+                root=self.base/('existing installation' if existing else 'unrelated files')
+                root.mkdir()
+                files={'keep.txt': b'keep this file'}
+                if existing:
+                    files.update({'data/_node/id': b'cccccccccccccccccccccccccccccccc\n',
+                        'node-launch.json': b'{"old-center":true,"DEVLOCK_DIR":"/old/locks"}',
+                        'deploy-node.json': b'{"root":"/old/center","HG_CONFIG_DIR":"/old/config"}',
+                        'locks/owner': b'original lock inode'})
+                for name, contents in files.items():
+                    path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(contents)
+                before={str(p.relative_to(root)): (p.read_bytes(),p.stat().st_ino,p.stat().st_mtime_ns)
+                        for p in root.rglob('*') if p.is_file()}
+                invitation=self.center.jobs.directory.invite()
+                with patch.object(deploy,'deploy') as publish:
+                    with self.assertRaises(deploy.DeployError):
+                        deploy.join_node(self.center.url,invitation['code'],'overwrite-'+str(existing).lower(),root,self.port,
+                                         self.revision,False,home=self.home)
+                    publish.assert_not_called()
+                after={str(p.relative_to(root)): (p.read_bytes(),p.stat().st_ino,p.stat().st_mtime_ns)
+                       for p in root.rglob('*') if p.is_file()}
+                self.assertEqual(after,before)
+                self.assertEqual(self.center.jobs.directory.list(),[])
+                self.assertIn(invitation['id'],[value['id'] for value in self.center.jobs.directory.invites()])
+                self.assertFalse((self.home/'.config/systemd/user').exists())
+
+    def test_join_cli_requires_an_explicit_root_before_enrollment(self):
+        with patch.object(deploy,'join_node') as join, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                deploy.main(['join','--center',self.center.url,'--invite','unused','--name','worker'])
+        self.assertEqual(error.exception.code,2)
+        join.assert_not_called()
+
     def test_macos_service_has_one_outbound_executor_and_the_same_fixed_paths(self):
         env={'DEVLOCK_DIR':str(self.root/'locks'),'HG_CONFIG_DIR':str(self.root/'config'),'PATH':'/usr/bin:/bin'}
         plan=deploy.service_plan(self.root,'a'*32,'darwin',self.home,env)

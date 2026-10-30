@@ -111,17 +111,15 @@ def join_node(center, invite, name, root, port, ref, fetch, *, home=None):
     sys.path.insert(0, str(REPO / 'harness-ops/node'))
     from node_connector import join
     root = path(root).resolve()
+    if root.exists() and any(root.iterdir()):
+        raise DeployError('join requires a new empty installation directory; use --config to upgrade an existing installation')
     data = root / 'data'
     data.mkdir(parents=True, exist_ok=True)
     node = join(center, invite, name, str(data))
     token_file = data / '_node/admin.token'
-    try:
-        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        pass  # Re-enrollment keeps this computer's local administration credential.
-    else:
-        with os.fdopen(fd, 'w') as stream:
-            stream.write(secrets.token_urlsafe(32) + '\n')
+    fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        stream.write(secrets.token_urlsafe(32) + '\n')
     launch = {'schema': 'hgamey/node-launch@1', 'node_token_file': str(token_file), 'service_args': [
         '--phonefarm', str(root / 'phonefarm'), '--game-opt-loop', str(root / 'game_opt_loop'),
         '--data-dir', str(data), '--host', '127.0.0.1', '--port', str(port)]}
@@ -140,7 +138,7 @@ def join_node(center, invite, name, root, port, ref, fetch, *, home=None):
     for command in service['prepare']:
         run(command)
     # A new launchd job has no service to boot out yet. Future upgrades use stop.
-    first = sys.platform == 'darwin' and not (root / 'harness-ops').exists()
+    first = sys.platform == 'darwin'
     result = deploy(name, {**config, 'stop': []} if first else config, ref, fetch, False)
     say('joined; upgrades: python3 deploy.py --config ' + shlex.quote(str(configuration)))
     return result
@@ -387,7 +385,7 @@ def main(argv=None):
         parser.add_argument('--center', required=True)
         parser.add_argument('--invite', required=True)
         parser.add_argument('--name', required=True)
-        parser.add_argument('--root', default='~/node')
+        parser.add_argument('--root', required=True, help='new empty installation directory')
         parser.add_argument('--port', type=int, default=8765)
         parser.add_argument('--ref', default='origin/main')
         parser.add_argument('--no-fetch', action='store_true')
