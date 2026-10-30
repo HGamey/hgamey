@@ -160,6 +160,90 @@ class NodeReadTests(unittest.TestCase):
             remote_server.server_close()
             remote_thread.join()
 
+    def test_fleet_page_joins_a_computer_with_a_code_and_shows_it_connected(self):
+        """/dash/fleet hands out a one-time join code with the command to run on the other computer, lists unused codes
+        and revokes them, shows a joined computer as connected, and edits its note and tags against its revision. There
+        is no URL, token or SSH field, and no link to the other computer's own pages."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        remote_root = self.root / "peer"
+        remote_root.mkdir()
+        remote_jobs = Jobs(str(remote_root), {})
+        remote_node = NodeRead(remote_jobs, remote_jobs.data_root, str(remote_root))
+        remote_fleet = FleetState(str(remote_root), str(remote_root / "locks"), str(remote_root / "shots"))
+        remote_token = "isolated-fleet-page-peer-admin"
+        remote_server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(
+            NoMcp(), remote_jobs, remote_token, node=remote_node, fleet=remote_fleet))
+        remote_thread = start_http_server(remote_server)
+        base = "http://127.0.0.1:" + str(self.server.server_port)
+        steer = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}; {dash.STEER_COOKIE}="
+                           f"{self.board._cookie_val(self.board._steer_pass(), b'hgamey-steer-v1')}"}
+        from node_connection_fixture import connect
+        connector = None
+        try:
+            connector = connect(self.jobs.directory, base, "peer", "http://127.0.0.1:" + str(remote_server.server_port),
+                                remote_token, remote_node.node_id)
+            with sync_playwright() as playwright:
+                try:
+                    browser = playwright.chromium.launch()
+                except Exception as error:
+                    if os.environ.get("CI"):
+                        raise
+                    self.skipTest(f"no browser for playwright: {error}")
+                try:
+                    context = browser.new_context(viewport={"width": 1280, "height": 900})
+                    context.add_cookies([{"name": dash.COOKIE, "value": self.board._cookie_val(self.pw), "url": base},
+                                         {"name": dash.STEER_COOKIE, "url": base,
+                                          "value": self.board._cookie_val(self.board._steer_pass(), b"hgamey-steer-v1")}])
+                    page = context.new_page()
+                    page.goto(base + "/dash/fleet")
+                    page.wait_for_selector("#node-directory li:nth-child(2)")
+                    self.assertIn("已连接", page.text_content("#node-directory li:nth-child(2)"))
+                    self.assertEqual(page.eval_on_selector_all("input[type=url], input[type=password]:not(#steer-password), #registration-form", "e => e.length"), 0)
+                    page.wait_for_selector("#invite-open:not([disabled])")
+                    page.click("#invite-open")
+                    page.fill("#invite-name", "peer")
+                    page.click("#invite-submit")
+                    self.assertIn("已经在用", page.text_content("#invite-message"))
+                    page.fill("#invite-name", "lab-b")
+                    page.fill("#invite-data-dir", "/srv/hg data")
+                    page.click("#invite-submit")
+                    page.wait_for_selector("#invite-result:not([hidden])")
+                    self.assertRegex(page.text_content("#invite-command"),
+                                     r"^python3 harness-ops/node/node_connector\.py --center http://127\.0\.0\.1:\d+ --invite hgninv_\S+ --name lab-b --data-dir '/srv/hg data'$")
+                    listed = json.loads(self.request("/dash/api/node-invites", headers=steer)[2])["invites"]
+                    self.assertEqual([invite["note"] for invite in listed], ["lab-b"])
+                    page.wait_for_selector(f'#invite-list button[data-invite="{listed[0]["id"]}"]')
+                    page.click(f'#invite-list button[data-invite="{listed[0]["id"]}"]')
+                    page.wait_for_selector("#invite-none:not([hidden])")
+                    self.assertEqual(json.loads(self.request("/dash/api/node-invites", headers=steer)[2])["invites"], [])
+
+                    page.click("#node-directory li:nth-child(2) button")
+                    page.wait_for_selector("#remote-actions:not([hidden])")
+                    self.assertTrue(page.is_hidden("#node-jobs-link"), "a joined computer's own pages are not linked")
+                    page.wait_for_selector("#meta-edit:not([disabled])")
+                    page.click("#meta-edit")
+                    page.fill("#meta-tags", "gpu, lab")
+                    page.fill("#meta-note", "实验室那台")
+                    page.click("#meta-save")
+                    page.wait_for_selector("#meta-form", state="hidden")
+                    saved = self.get_json("/nodes/peer")
+                    self.assertEqual((saved["tags"], saved["note"]), (["gpu", "lab"], "实验室那台"))
+                finally:
+                    browser.close()
+        finally:
+            if connector:
+                connector.close()
+            remote_jobs.directory.close()
+            remote_fleet.close()
+            remote_server.shutdown()
+            remote_server.server_close()
+            remote_thread.join()
+
     def test_arbitrary_old_failed_jobs_are_paginated_and_searchable(self):
         for i in range(1, 206):
             self.fixture(i, exit=7 if i == 1 else 0)

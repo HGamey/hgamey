@@ -105,8 +105,6 @@
 .registration-fields input[type="checkbox"] { width: 16px; min-height: 16px; accent-color: var(--blue); }
 .registration-extra { margin-top: 16px; font-size: 13px; }
 .registration-extra summary { cursor: pointer; color: var(--ink2); padding: 4px 0; }
-.disable-confirm { padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; margin-top: 14px; background: var(--card); }
-.disable-confirm p { font-size: 13px; margin: 0; }
 .fleet-view button:disabled:not([aria-busy="true"]) { cursor: not-allowed; }
 .fleet-view .task-error { color: var(--bad-ink); }
 .fleet-view .node-context { flex-wrap: wrap; }
@@ -130,3 +128,8 @@
 .device-registry-aliases { margin: 8px 0 0; padding-left: 18px; color: var(--ink2); font-size: 13px; overflow-wrap: anywhere; }
 .device-registry .registration-fields textarea { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; padding: 8px 10px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 6px; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .device-registry .registration-fields textarea:disabled { background: var(--panel); color: var(--muted); }
+.invite-result { margin-top: 16px; }
+.invite-result .command-box { white-space: pre-wrap; word-break: break-all; user-select: all; }
+.registration-form h4 { margin: 20px 0 8px; font-size: 13px; color: var(--ink2); }
+.invite-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.invite-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--ink2); }

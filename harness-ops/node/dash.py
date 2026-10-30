@@ -370,12 +370,6 @@ class Dash:
                 code, result = self.job_service.games.write([unquote(p) for p in sub[1:]], data,
                                                            h.headers.get("X-Request-ID"))
                 return self._send(h, code, result)
-            if sub[:2] == ["api", "nodes"] and len(sub) in (2, 3):
-                if len(body) > MAX_REQUEST:
-                    return self._send(h, 413, {"error": "node registration exceeds 64 KiB"})
-                if len(sub) == 2:
-                    return self._send(h, 201, self.job_service.directory.create(data))
-                return self._send(h, 200, self.job_service.directory.update(sub[2], data))
             if len(sub) == 5 and sub[:2] == ["api", "jobs"] and sub[3:] == ["execution", "reconcile"]:
                 if len(body) > MAX_REQUEST:
                     return self._send(h, 413, {"error": "execution reconciliation exceeds 64 KiB"})

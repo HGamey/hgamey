@@ -30,7 +30,7 @@
     <div class="selected-node-links"><a id="node-jobs-link" class="workspace-link" href="/dash/jobs">所选节点任务 →</a><a id="node-games-link" class="workspace-link" href="/dash/games">所选节点游戏与资源 →</a><a id="node-control-link" class="workspace-link" href="/dash/control">所选节点远程控制 →</a></div>
   </div>
   <section class="directory-panel" aria-labelledby="directory-heading">
-    <div class="section-heading"><h2 id="directory-heading">节点目录</h2><button id="register-open" class="ghost" type="button" disabled>登记节点</button></div>
+    <div class="section-heading"><h2 id="directory-heading">节点目录</h2><button id="invite-open" class="ghost" type="button" disabled>生成电脑加入码</button></div>
     <p id="directory-message" class="note" role="status">正在读取目录…</p>
     <ul id="node-directory" class="node-directory" aria-label="选择节点"></ul>
     <div class="directory-access"><p id="access-message" class="note" role="status">正在读取操作权限…</p><button id="access-toggle" class="ghost" type="button" disabled>解锁目录操作</button></div>
@@ -39,20 +39,23 @@
       <div class="directory-actions"><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-close" class="ghost" type="button">取消</button></div>
       <p id="unlock-message" class="note" role="status"></p>
     </form>
-    <form id="registration-form" class="registration-form" autocomplete="off" hidden>
-      <div class="section-heading"><h3 id="registration-heading">登记节点</h3><button id="registration-close" class="ghost" type="button">关闭</button></div>
+    <form id="invite-form" class="registration-form" autocomplete="off" hidden>
+      <div class="section-heading"><h3>生成电脑加入码</h3><button id="invite-close" class="ghost" type="button">关闭</button></div>
       <div class="registration-fields">
-        <label>登记名<input id="registration-name" pattern="[a-z0-9_-]{1,64}" maxlength="64" required aria-describedby="registration-name-help"><span id="registration-name-help" class="field-help">小写字母、数字、下划线或连字符；保存后不可改，local 为本节点保留。</span></label>
-        <label>节点 URL<input id="registration-url" type="url" placeholder="https://node.example.com" required></label>
-        <label>标签<input id="registration-tags" placeholder="用逗号分隔"></label>
-        <label>备注<input id="registration-note"></label>
-        <label class="wide-field">远端只读凭据<input id="registration-token" type="password" autocomplete="new-password" aria-describedby="credential-help"><span id="credential-help" class="field-help">空白不发送；更新时保留原凭据。凭据不会回显或存入浏览器存储。</span></label>
-        <label id="credential-clear-field" class="credential-clear wide-field" hidden><input id="registration-clear-token" type="checkbox"> 明确清除已保存的远端凭据</label>
+        <label>节点名<input id="invite-name" pattern="[a-z0-9_-]{1,64}" maxlength="64" required placeholder="lab-b"><span class="field-help">小写字母、数字、下划线或连字符</span></label>
+        <label>那台电脑的数据目录<input id="invite-data-dir" placeholder="和它节点服务的 --data-dir 相同"></label>
+        <label>有效时长（小时）<input id="invite-hours" type="number" min="1" max="720" step="1" value="24" required></label>
       </div>
-      <details class="registration-extra"><summary>保留旧配置元数据</summary><div class="registration-fields"><label>SSH 标识<input id="registration-ssh"></label><label>Goals 目录<input id="registration-goals-dir"></label></div><p class="note">仅保存元数据，本页不会执行 SSH 或读取此目录。</p></details>
-      <p id="registration-revision" class="note"></p>
-      <div class="directory-actions"><button id="registration-save" class="ghost primary" type="submit">保存登记</button><button id="registration-reload" class="ghost" type="button" hidden>读取已保存配置（替换草稿）</button></div>
-      <p id="registration-message" class="note" role="status"></p>
+      <div class="directory-actions"><button id="invite-submit" class="ghost primary" type="submit">生成</button></div>
+      <div id="invite-result" class="invite-result" hidden>
+        <p class="note">在那台电脑的安装目录运行，然后重启它的节点服务。加入码只显示这一次。</p>
+        <pre id="invite-command" class="command-box"></pre>
+        <div class="directory-actions"><button id="invite-copy" class="ghost" type="button">复制命令</button></div>
+      </div>
+      <p id="invite-message" class="note" role="status"></p>
+      <h4>未使用的加入码</h4>
+      <ul id="invite-list" class="invite-list"></ul>
+      <p id="invite-none" class="note">没有。</p>
     </form>
   </section>
   <section class="node-card" aria-labelledby="node-heading">
@@ -61,19 +64,26 @@
       <span id="node-updated" class="muted"></span>
     </div>
     <p id="node-message" class="note" role="status"></p>
-    <div id="remote-actions" class="directory-actions" hidden><button id="remote-devices" class="ghost" type="button">请求远端设备采样</button><button id="registration-edit" class="ghost" type="button" disabled>更新登记</button><button id="registration-toggle" class="ghost" type="button" disabled>停用登记</button></div>
+    <div id="remote-actions" class="directory-actions" hidden><button id="remote-devices" class="ghost" type="button">重新采样手机</button><button id="meta-edit" class="ghost" type="button" disabled>改备注和标签</button></div>
     <p id="remote-action-message" class="note" role="status"></p>
-    <div id="disable-confirm" class="disable-confirm" hidden><p>停用后保留历史观测，仅停止此目录的远端探测；不会停止远端任务或释放设备。</p><div class="directory-actions"><button id="disable-submit" class="ghost danger" type="button">确认停用登记</button><button id="disable-close" class="ghost" type="button">取消</button></div></div>
+    <form id="meta-form" class="registration-form" autocomplete="off" hidden>
+      <div class="section-heading"><h3 id="meta-heading">改备注和标签</h3><button id="meta-close" class="ghost" type="button">关闭</button></div>
+      <div class="registration-fields">
+        <label>标签<input id="meta-tags" placeholder="用逗号分隔"></label>
+        <label class="wide-field">备注<input id="meta-note" maxlength="4096"></label>
+      </div>
+      <div class="directory-actions"><button id="meta-save" class="ghost primary" type="submit">保存</button></div>
+      <p id="meta-message" class="note" role="status"></p>
+    </form>
     <details id="node-details" class="node-details" hidden><summary>节点信息与数据位置</summary><dl id="node-info" class="facts"></dl>
       <div class="section-heading"><h3>配置程序观察</h3><button id="refresh-runtime" class="ghost" type="button" disabled>重新观察本节点配置程序</button></div>
-      <p id="runtime-refresh-help" class="note" role="status"></p><a id="runtime-source-link" class="workspace-link" hidden>到源节点查看与刷新程序观察 →</a>
+      <p id="runtime-refresh-help" class="note" role="status"></p>
       <div id="node-programs"></div><p class="note">服务启动观察、配置程序缓存与作业实际自报分别记录；构建声明不证明已加载的全部字节，也不证明设备资格。</p>
     </details>
   </section>
   <section id="device-registry" class="directory-panel device-registry" aria-labelledby="device-registry-heading">
     <div class="section-heading"><h2 id="device-registry-heading">本节点设备登记</h2><div class="directory-actions"><button id="device-registry-refresh" class="ghost" type="button" disabled>读取设备登记</button><button id="device-registry-create" class="ghost" type="button" disabled>登记设备</button></div></div>
     <p id="device-registry-scope" class="note">设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。当前仍使用全域排他执行。</p>
-    <a id="device-registry-source" class="workspace-link" hidden>到源节点查看设备登记 →</a>
     <div id="device-registry-local">
       <p id="device-registry-message" class="note" role="status">等待本节点身份…</p>
       <p id="device-registry-meta" class="note"></p>
@@ -127,7 +137,7 @@
   </div>
   <p id="sampling-policy" class="sampling-policy">页面刷新读取共享快照；设备采样由节点按锁状态与采样间隔安排。</p>
 </main>
-<footer class="foot">远端日常读取目录缓存；设备采样需明确请求。登记不会分发任务或迁移数据。能力声明、节点可达与设备观测分开展示。</footer>
+<footer class="foot">加入的电脑主动连到这里，约每 30 秒上传一次快照；手机采样需明确请求。</footer>
 <script src="/dash/static/target.js"></script>
 <script src="/dash/static/fleet.js"></script>
 </body>

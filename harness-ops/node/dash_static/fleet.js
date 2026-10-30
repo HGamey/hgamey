@@ -1,4 +1,4 @@
-/* Directory reads use host caches. Remote device sampling is an explicit action. */
+/* Joined computers report to this center; their phones are re-sampled only on an explicit request. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -8,12 +8,11 @@
   let localIdentity = null, localQueue = null, localQueueError = '', localReceivedAt = 0, directoryKnown = false, directoryFailed = false;
   let selected = new URLSearchParams(location.hash.slice(1)).get('node') || 'local', entries = new Map();
   if (!/^[a-z0-9_-]{1,64}$/.test(selected)) selected = 'local';
-  let access = null, accessBusy = false, accessError = '', editor = null, writing = false, toggleDraft = null;
+  let access = null, accessBusy = false, accessError = '', editor = null, writing = false, inviteBusy = false;
   let runtimeBusy = false, runtimeNotice = '', runtimeError = false;
   let deviceRegistry = null, registryBusy = false, registryWriting = false, registryAttempted = false, registryController = null;
   let registryError = '', registryNotice = '', registryReadAt = null, deviceEditor = null;
-  const uncertainUpdates = new Set();
-  const CONNECTION = {unverified: '尚未核验', ready: '节点协议可达', unavailable: '连接不可用', unauthorized: '凭据未获授权', incompatible: '节点协议不兼容', identity_mismatch: '节点身份不匹配', disabled: '登记已停用', no_credentials: '未配置凭据'};
+  const CONNECTION = {ready: '已连接', disconnected: '已断开'};
   const text = value => value == null || value === '' ? '未知' : String(value);
   const numeric = (value, unit) => typeof value === 'number' && Number.isFinite(value) ? `${value}${unit}` : '未知';
   const time = value => value == null ? '未记录' : new Date(value * 1000).toLocaleString();
@@ -73,10 +72,7 @@
     $('refresh-runtime').disabled = !local || !supported || !access?.steer || accessBusy || !HGTarget.canWrite() || runtimeBusy || loading || writing;
     $('refresh-runtime').setAttribute('aria-busy', String(runtimeBusy));
     $('refresh-runtime').textContent = runtimeBusy ? '正在观察本节点程序…' : '重新观察本节点配置程序';
-    const source = local ? null : nodePageURL('jobs', entry);
-    $('runtime-source-link').hidden = !source;
-    if (source) { $('runtime-source-link').href = source; $('runtime-source-link').target = '_blank'; $('runtime-source-link').rel = 'noopener noreferrer'; }
-    message('runtime-refresh-help', !local ? `以下程序身份来自目录快照 ${time(entry?.snapshot?.at)}；${entryStale(entry || {}) ? '目录观测已陈旧，当前入口身份未知。' : '观察状态只适用于该快照。'}本页不刷新远端程序，请到源节点明确操作。` : runtimeBusy ? '正在执行有界宿主身份查询，下方保留上次观察；不操作设备，不自动重试。' : runtimeNotice || (!supported ? '此节点未声明 node.runtime-v1，不能刷新程序观察。' : !access?.steer || accessBusy ? '读取缓存无需解锁；重新执行程序身份观察需先解锁目录操作。' : '仅此按钮执行新的程序身份观察；自动刷新只读取缓存并检查文件变化。'), local && runtimeError);
+    message('runtime-refresh-help', !local ? `以下程序身份来自 ${time(entry?.snapshot?.at)} 上传的快照${entryStale(entry || {}) ? '；这台电脑已断开或还没有快照，当前身份未知' : ''}。` : runtimeBusy ? '正在执行有界宿主身份查询，下方保留上次观察；不操作设备，不自动重试。' : runtimeNotice || (!supported ? '此节点未声明 node.runtime-v1，不能刷新程序观察。' : !access?.steer || accessBusy ? '读取缓存无需解锁；重新执行程序身份观察需先解锁目录操作。' : '仅此按钮执行新的程序身份观察；自动刷新只读取缓存并检查文件变化。'), local && runtimeError);
   }
   async function refreshRuntime() {
     if ($('refresh-runtime').disabled || selected !== 'local') return;
@@ -96,22 +92,12 @@
   function badge(node, value, kind = '') { node.textContent = value; node.className = `task-state ${kind}`; }
   function message(id, value, error = false) { $(id).textContent = value; $(id).classList.toggle('task-error', error); }
   function remoteEntry() { return selected === 'local' ? null : entries.get(selected); }
-  function entryStale(entry) { return directoryFailed || entry.stale || !entry.enabled || entry.connection?.status !== 'ready' || !entry.snapshot || Date.now() / 1000 - entry.snapshot.at > 30; }
-  function nodePageURL(page, entry = remoteEntry(), job = '') {
-    let url;
-    if (selected === 'local') return HGTarget.url(`/dash/${page}${job ? `#job=${encodeURIComponent(job)}` : ''}`);
-    if (!entry?.snapshot?.url || !/^[0-9a-f]{32}$/.test(entry.node_id) || entry.snapshot.identity?.node_id !== entry.node_id) return null;
-    try {
-      url = new URL(entry.snapshot.url);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
-      url.pathname = url.pathname.replace(/\/$/, '') + `/dash/${page}`; url.search = ''; url.hash = job ? `job=${encodeURIComponent(job)}` : '';
-      url.searchParams.set('expected_node_id',entry.node_id); return url.href;
-    } catch (_) { return null; }
-  }
-  const nodeJobsURL = (entry = remoteEntry(), job = '') => nodePageURL('jobs', entry, job);
+  function entryStale(entry) { return directoryFailed || entry.stale || entry.connection?.status !== 'ready' || !entry.snapshot; }
+  // Only this node's own pages link out: a joined computer's dashboard is not reachable through the center.
+  const nodePageURL = (page, job = '') => selected === 'local' ? HGTarget.url(`/dash/${page}${job ? `#job=${encodeURIComponent(job)}` : ''}`) : null;
   function jobLink(id) {
-    const url = nodeJobsURL(remoteEntry(), id), link = el(url ? 'a' : 'span', `任务 ${id}`);
-    if (url) { link.href = url; if (selected !== 'local') { link.target = '_blank'; link.rel = 'noopener noreferrer'; } }
+    const url = nodePageURL('jobs', id), link = el(url ? 'a' : 'span', `任务 ${id}`);
+    if (url) link.href = url;
     return link;
   }
   function busy(value) {
@@ -123,7 +109,7 @@
   }
   function refreshNote() {
     $('refresh-note').textContent = authLost ? '登录已失效，自动刷新已暂停。' : document.hidden ? '页面不可见，自动刷新已暂停。' :
-      !$('auto-refresh').checked ? '自动刷新已关闭，可手动读取目录与快照。' : '可见时每 10 秒读取目录并请求到期缓存；远端设备采样需明确点击。';
+      !$('auto-refresh').checked ? '自动刷新已关闭，可手动读取目录与快照。' : '可见时每 10 秒读取目录；其他电脑的手机需明确点击才重新采样。';
   }
   function schedule() {
     clearTimeout(timer);
@@ -131,9 +117,9 @@
     if (disposed || document.hidden || authLost || !$('auto-refresh').checked) return;
     timer = setTimeout(() => refresh(), Math.max(AUTO_MS, lastStartedAt + AUTO_MS - Date.now()));
   }
-  async function json(path, signal, body) {
-    const response = await HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', signal,
-      ...(body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify(body)})});
+  async function json(path, signal, body, method = body === undefined ? 'GET' : 'POST') {
+    const response = await HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', signal, method,
+      ...(method === 'GET' ? {} : {headers: {'Content-Type': 'application/json', 'X-HG': '1'}, ...(body === undefined ? {} : {body: JSON.stringify(body)})})});
     if (response.status === 401 || response.status === 403 || (response.redirected && new URL(response.url).pathname === '/dash/login')) {
       const error = new Error('登录已失效，请重新登录后刷新。');
       error.auth = true;
@@ -152,9 +138,9 @@
     }
     return value;
   }
-  async function post(path, body) {
+  async function post(path, body, method) {
     const pending = new AbortController(), timeout = setTimeout(() => pending.abort(), 15000);
-    try { return await json(path, pending.signal, body); } finally { clearTimeout(timeout); }
+    try { return await json(path, pending.signal, body, method); } finally { clearTimeout(timeout); }
   }
   function registrySupported() { return localIdentity?.capabilities?.includes('devices.registry-v1') === true; }
   function registryWritable() {
@@ -175,10 +161,7 @@
     $('device-registry-refresh').setAttribute('aria-busy', String(registryBusy));
     $('device-registry-refresh').textContent = registryBusy ? '正在读取登记…' : '读取设备登记';
     $('device-registry-create').disabled = !writable || !!deviceEditor;
-    $('device-registry-scope').textContent = local ? '设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。登记原件的 execution_scope 是当时记录；当前执行范围以任务绑定与 lease 协议事实为准。' : '目录快照不包含此处的权威设备登记。请到源节点读取和编辑；本页不会将远端设备写入当前后台。登记也不等于物理同机核验、设备在线或并发资格。';
-    const source = local ? null : nodePageURL('fleet');
-    $('device-registry-source').hidden = !source;
-    if (source) { $('device-registry-source').href = source; $('device-registry-source').target = '_blank'; $('device-registry-source').rel = 'noopener noreferrer'; }
+    $('device-registry-scope').textContent = local ? '设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。登记原件的 execution_scope 是当时记录；当前执行范围以任务绑定与 lease 协议事实为准。' : '这台电脑的设备登记不经中心读取，只能在它本机查看和编辑。';
     const permission = !access?.steer ? '当前只读；创建和编辑需解锁目录操作。' : '';
     message('device-registry-message', registryBusy ? '正在读取宿主登记；旧记录保留，不查询设备。' : registryError ? `登记状态未确认：${registryError}。${deviceRegistry ? '下方保留上次读取的记录；' : ''}请显式重读，不会自动重试。` : !localIdentity ? '等待本节点身份…' : !supported ? '此节点未声明 devices.registry-v1，设备登记接口不可用。' : registryNotice || (!deviceRegistry ? '尚未读取设备登记。' : permission || '仅保存维护者声明；未执行设备探测。'), !!registryError);
     $('device-registry-meta').textContent = deviceRegistry ? `节点 ${deviceRegistry.node_id} · 登记 revision ${deviceRegistry.revision} · 更新于 ${registryTimestamp(deviceRegistry.updated_at)} · 读取于 ${time(registryReadAt)}。${permission}` : '';
@@ -289,10 +272,10 @@
       choice.type = 'button'; choice.setAttribute('aria-current', String(selected === entry.name));
       const state = el('span'); badge(state, CONNECTION[entry.connection?.status] || '连接状态未知', entry.connection?.status === 'ready' && !entryStale(entry) ? '' : 'unknown');
       head.append(el('strong', entry.name), state);
-      const devices = entry.snapshot?.fleet?.devices;
+      const fleet = entry.snapshot?.fleet, devices = fleet?.devices;
       choice.append(head, el('span', `${text(entry.node_id)}${entry.tags?.length ? ` · ${entry.tags.join(' / ')}` : ''}`, 'node-choice-meta'),
-        el('span', Array.isArray(devices) ? `上次设备记录：${devices.length} 台${entryStale(entry) ? ' · 目录观测已陈旧' : ''}` : '尚无设备列表，不能据此判定零设备', 'node-choice-meta'),
-        el('span', `最近成功：${time(entry.connection?.last_seen_at)}${entry.refreshing ? ' · 目录刷新已排队或执行中' : ''}`, 'node-choice-meta'));
+        el('span', Array.isArray(devices) ? `${devices.length} 台手机 · 采样于 ${time(fleet.sampled_at)}${fleet.stale || entryStale(entry) ? ' · 已过期' : ''}` : '还没有手机读数', 'node-choice-meta'),
+        el('span', `最近联系：${time(entry.connection?.last_seen_at)}`, 'node-choice-meta'));
       choice.addEventListener('click', () => selectNode(entry.name)); row.append(choice); rows.push(row);
     }
     $('node-directory').replaceChildren(...rows);
@@ -300,28 +283,21 @@
   document.addEventListener('hgamey-target-change', () => renderManagement());
   function renderManagement() {
     const entry = remoteEntry(), writable = directoryKnown && access?.steer && HGTarget.canWrite() && !accessBusy && !writing && !registryWriting;
-    $('register-open').disabled = !writable;
-    $('registration-edit').disabled = !entry || !writable;
-    $('registration-toggle').disabled = !entry || !writable || uncertainUpdates.has(selected);
-    $('registration-toggle').textContent = entry?.enabled ? '停用登记' : '启用登记';
+    $('invite-open').disabled = !writable;
+    $('invite-submit').disabled = !writable || inviteBusy;
+    $('invite-submit').setAttribute('aria-busy', String(inviteBusy));
+    $('meta-edit').disabled = !entry || !writable;
     $('remote-actions').hidden = selected === 'local';
-    $('remote-devices').disabled = !HGTarget.canWrite() || !entry || !entry.enabled || !entry.credential_present || entry.refreshing || loading || authLost;
-    $('remote-devices').setAttribute('aria-busy', String(!!entry?.refreshing));
-    $('remote-devices').textContent = entry?.refreshing ? '目录请求处理中…' : '请求远端设备采样';
-    $('disable-submit').disabled = !writable || uncertainUpdates.has(selected);
+    $('remote-devices').disabled = !HGTarget.canWrite() || !entry || entry.connection?.status !== 'ready' || loading || authLost;
     $('access-toggle').disabled = accessBusy || writing || registryWriting || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定目录操作' : '解锁目录操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
-    message('access-message', accessError || (accessBusy ? '正在核对目录操作权限…' : !access ? '权限尚未取得，仅查看目录。' : !access.steer_configured ? '本节点未配置掌舵密码，目录保持只读。' : access.steer ? '已解锁登记、更新和停用；不改变远端任务。' : '当前只读；目录查询与明确设备采样可用，修改登记需解锁。'), !!accessError);
-    for (const id of ['registration-name', 'registration-url', 'registration-tags', 'registration-note', 'registration-token', 'registration-clear-token', 'registration-ssh', 'registration-goals-dir']) $(id).disabled = !writable || !!editor?.needsRead;
-    $('registration-name').disabled = !writable || !!editor?.revision || !!editor?.needsRead;
-    $('registration-token').disabled ||= $('registration-clear-token').checked;
-    $('registration-save').disabled = !writable || !editor || !!editor.needsRead;
-    $('registration-save').setAttribute('aria-busy', String(writing));
-    $('registration-save').textContent = writing ? '正在保存…' : editor?.revision != null ? '保存更新' : '保存登记';
-    $('registration-reload').hidden = !editor?.needsRead;
-    $('registration-reload').disabled = writing || loading;
-    $('registration-close').disabled = writing;
+    message('access-message', accessError || (accessBusy ? '正在核对目录操作权限…' : !access ? '权限尚未取得，仅查看目录。' : !access.steer_configured ? '本节点未配置掌舵密码，目录保持只读。' : access.steer ? '已解锁：可生成加入码、改备注和标签。' : '当前只读；生成加入码、改备注和标签需解锁。'), !!accessError);
+    for (const id of ['meta-tags', 'meta-note']) $(id).disabled = !writable;
+    $('meta-save').disabled = !writable || !editor;
+    $('meta-save').setAttribute('aria-busy', String(writing));
+    $('meta-save').textContent = writing ? '正在保存…' : '保存';
+    $('meta-close').disabled = writing;
     $('refresh-fleet').disabled = loading || runtimeBusy || registryWriting;
     renderRuntimeRefresh();
     renderDeviceRegistry();
@@ -344,76 +320,77 @@
   }
   function closeEditor() {
     if (writing) return;
-    editor = null; $('registration-token').value = ''; $('registration-form').hidden = true;
+    editor = null; $('meta-form').hidden = true;
   }
-  function openEditor(entry = null) {
-    if (writing || !access?.steer || !directoryKnown) return;
-    editor = {name: entry?.name || '', revision: entry?.revision ?? null};
-    $('registration-form').hidden = false;
-    $('registration-heading').textContent = entry ? `更新登记 · ${entry.name}` : '登记节点';
-    for (const [id, value] of [['name', entry?.name], ['url', entry?.url], ['tags', entry?.tags?.join(', ')], ['note', entry?.note], ['ssh', entry?.ssh], ['goals-dir', entry?.goals_dir]]) $('registration-' + id).value = value || '';
-    $('registration-token').value = ''; $('registration-clear-token').checked = false;
-    $('credential-clear-field').hidden = !entry;
-    $('credential-help').textContent = `${entry ? `当前${entry.credential_present ? '已有' : '没有'}远端凭据。` : ''}空白不发送；更新时保留原凭据。凭据不回显、不存入浏览器存储。`;
-    $('registration-revision').textContent = entry ? `编辑版本：${entry.revision}。保存时核对版本，不覆盖并行修改。` : '登记后可刷新目录核验远端身份；保存登记不会主动采样设备。';
-    message('registration-message', ''); renderManagement();
-    $(entry ? 'registration-url' : 'registration-name').focus();
+  function openEditor(entry) {
+    if (writing || !access?.steer || !entry) return;
+    editor = {name: entry.name, revision: entry.revision};
+    $('meta-form').hidden = false; $('meta-heading').textContent = `改备注和标签 · ${entry.name}`;
+    $('meta-tags').value = entry.tags?.join(', ') || ''; $('meta-note').value = entry.note || '';
+    message('meta-message', ''); renderManagement(); $('meta-note').focus();
   }
-  async function saveRegistration() {
-    if ($('registration-save').disabled) return;
-    const name = $('registration-name').value.trim(), attempt = editor;
-    if (!/^[a-z0-9_-]{1,64}$/.test(name) || name === 'local') { message('registration-message', '登记名格式不正确或使用了保留名 local。', true); return; }
-    const body = {url: $('registration-url').value.trim(), tags: $('registration-tags').value.split(',').map(s => s.trim()).filter(Boolean), note: $('registration-note').value, ssh: $('registration-ssh').value, goals_dir: $('registration-goals-dir').value};
-    if (attempt.revision == null) body.name = name; else body.revision = attempt.revision;
-    const token = $('registration-token').value.trim(); $('registration-token').value = '';
-    if ($('registration-clear-token').checked) body.token = null; else if (token) body.token = token;
-    attempt.name = name; suspend(); writing = true; renderManagement(); message('registration-message', '正在保存，写入不会自动重试…');
+  async function saveEditor() {
+    if ($('meta-save').disabled) return;
+    const attempt = editor, path = `/dash/api/nodes/${encodeURIComponent(attempt.name)}`;
+    const body = {revision: attempt.revision, tags: $('meta-tags').value.split(',').map(s => s.trim()).filter(Boolean), note: $('meta-note').value};
+    suspend(); writing = true; renderManagement(); message('meta-message', '正在保存…');
     try {
-      const entry = await post(attempt.revision == null ? '/dash/api/nodes' : `/dash/api/nodes/${name}`, body);
+      const entry = await post(path, body);
       entries.set(entry.name, entry);
-      if (editor === attempt) {
-        attempt.revision = entry.revision; $('credential-clear-field').hidden = false; $('registration-clear-token').checked = false;
-        message('registration-message', '登记已保存。刷新目录核对节点身份；保存不代表远端可达或设备存在。'); $('registration-revision').textContent = `已保存版本：${entry.revision}`;
-        $('credential-help').textContent = `当前${entry.credential_present ? '已有' : '没有'}远端凭据。空白不发送；更新时保留原凭据。凭据不回显、不存入浏览器存储。`;
-      }
+      if (editor === attempt) { editor = null; $('meta-form').hidden = true; message('remote-action-message', '备注和标签已保存。'); }
       renderDirectory(); if (selected === entry.name) renderSelected();
     } catch (error) {
-      if (editor === attempt) {
-        attempt.needsRead = !error.status || error.status >= 500 || error.status === 409;
-        message('registration-message', `${error.message} ${attempt.needsRead ? '请先读取已保存配置；不会自动重试或覆盖。凭据输入已清空。' : '未确认保存，请检查输入或操作权限。凭据输入已清空。'}`, true);
-      }
+      if (editor === attempt && error.status === 409) {
+        // Changed elsewhere: take the new revision, keep the draft, and let the user save again.
+        try {
+          const entry = await json(path); entries.set(entry.name, entry); attempt.revision = entry.revision; renderDirectory();
+          message('meta-message', `刚被别处改过（现在是：标签 ${entry.tags?.join(', ') || '无'}；备注 ${entry.note || '无'}）。你的修改还在，确认后再保存。`, true);
+        } catch (again) { message('meta-message', `${error.message}；重新读取也失败：${again.message}`, true); }
+      } else if (editor === attempt) message('meta-message', error.message, true);
       if (error.auth) await loadAccess();
     } finally { writing = false; renderManagement(); schedule(); }
   }
-  async function reloadRegistration() {
-    if (!editor?.needsRead || writing || loading) return;
-    const attempt = editor; suspend(); writing = true; renderManagement();
+  // Join codes for other computers: shown once, listed until used, revocable.
+  const shellWord = value => /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  async function makeInvite() {
+    if ($('invite-submit').disabled) return;
+    const name = $('invite-name').value.trim(), dir = $('invite-data-dir').value.trim(), hours = Number($('invite-hours').value);
+    if (!/^[a-z0-9_-]{1,64}$/.test(name)) { message('invite-message', '节点名只能用小写字母、数字、下划线或连字符。', true); return; }
+    if (name === 'local' || entries.has(name)) { message('invite-message', `「${name}」已经在用，换一个名字。`, true); return; }
+    if (!(hours > 0)) { message('invite-message', '有效时长要大于 0。', true); return; }
+    inviteBusy = true; $('invite-result').hidden = true; message('invite-message', ''); renderManagement();
     try {
-      const entry = await json(`/dash/api/nodes/${attempt.name}`); entries.set(entry.name, entry);
-      if (editor === attempt) { writing = false; openEditor(entry); message('registration-message', '已读取已保存配置并替换草稿。请核对内容；没有重新发送写入。'); }
-      renderDirectory(); if (selected === entry.name) renderSelected();
-    } catch (error) {
-      if (editor === attempt) {
-        if (error.status === 404 && attempt.revision == null) { attempt.needsRead = false; message('registration-message', '当前未找到此登记。请核对参数后显式保存；凭据需要重新填写。'); }
-        else message('registration-message', `读取未完成：${error.message}。没有重新写入。`, true);
-      }
-    } finally { writing = false; renderManagement(); schedule(); }
+      const value = await post('/dash/api/node-invites', {hours, note: name});
+      $('invite-command').textContent = `python3 harness-ops/node/node_connector.py --center ${shellWord(location.origin)} --invite ${shellWord(value.code)} --name ${name} --data-dir ${dir ? shellWord(dir) : '<数据目录>'}`;
+      $('invite-result').hidden = false;
+      message('invite-message', `${time(value.expires_at)} 前有效。`);
+      await loadInvites();
+    } catch (error) { message('invite-message', error.message, true); if (error.auth) await loadAccess(); }
+    finally { inviteBusy = false; renderManagement(); }
   }
-  async function toggleRegistration() {
-    const attempt = toggleDraft;
-    if (!attempt || writing || !access?.steer || uncertainUpdates.has(attempt.name)) return;
-    suspend(); writing = true; renderManagement();
+  async function loadInvites() {
+    if (!access?.steer) return;
     try {
-      const entry = await post(`/dash/api/nodes/${attempt.name}`, {revision: attempt.revision, enabled: !attempt.enabled});
-      entries.set(entry.name, entry);
-      if (selected === entry.name) { $('disable-confirm').hidden = true; message('remote-action-message', entry.enabled ? '登记已启用。可刷新目录核对状态。' : '登记已停用，历史观测保留；远端任务不受影响。'); renderSelected(); }
-      renderDirectory();
-    } catch (error) {
-      if (!error.status || error.status >= 500 || error.status === 409) uncertainUpdates.add(attempt.name);
-      if (selected === attempt.name) { $('disable-confirm').hidden = true; message('remote-action-message', `${error.message}。请刷新目录核对结果，不会自动重试。`, true); }
-      if (error.auth) await loadAccess();
-    } finally { toggleDraft = null; writing = false; renderManagement(); schedule(); }
+      const {invites} = await json('/dash/api/node-invites');
+      $('invite-list').replaceChildren(...invites.map(invite => {
+        const row = el('li'), revoke = el('button', '撤销', 'ghost');
+        revoke.type = 'button'; revoke.dataset.invite = invite.id;
+        revoke.addEventListener('click', async () => {
+          revoke.disabled = true;
+          try { await post(`/dash/api/node-invites/${encodeURIComponent(invite.id)}`, undefined, 'DELETE'); await loadInvites(); }
+          catch (error) { revoke.disabled = false; message('invite-message', `撤销失败：${error.message}`, true); }
+        });
+        row.append(el('span', `${invite.note || '未命名'} · ${invite.expires_at * 1000 < Date.now() ? '已过期' : `${time(invite.expires_at)} 前有效`}`), revoke); return row;
+      }));
+      $('invite-none').hidden = invites.length > 0;
+    } catch (error) { message('invite-message', `加入码列表读取失败：${error.message}`, true); }
   }
+  function openInvite() {
+    if ($('invite-open').disabled) return;
+    $('invite-form').hidden = false; $('invite-result').hidden = true; $('invite-command').textContent = ''; message('invite-message', '');
+    $('invite-name').focus(); loadInvites();
+  }
+  function closeInvite() { $('invite-form').hidden = true; $('invite-command').textContent = ''; }
   function processPolicyFacts(node) {
     if (!node?.capabilities?.includes('jobs.execution-policy-v1')) return [['进程执行策略能力', '未提供，执行范围未知']];
     return [['进程执行策略协议', 'jobs.execution-policy-v1'], ...[['process_group', '原进程组策略']].map(([key, label]) => {
@@ -427,11 +404,11 @@
   }
   function renderNode(node, entry = null) {
     $('node-summary').textContent = `${entry ? `${entry.name} · ` : '本节点 · '}${text(node?.node_id || entry?.node_id)}${node?.host?.hostname ? ` · ${node.host.hostname}` : ''}`;
-    $('node-updated').textContent = entry ? `目录快照：${time(entry.snapshot?.at)}` : `读取于 ${new Date().toLocaleTimeString()}`;
-    message('node-message', entry ? `${CONNECTION[entry.connection?.status] || '连接状态未知'}${entry.refreshing ? ' · 目录刷新已排队或执行中' : ''}。最近尝试：${time(entry.connection?.attempted_at)}；最近成功：${time(entry.connection?.last_seen_at)}。${entry.connection?.error ? ` ${typeof entry.connection.error === 'string' ? entry.connection.error : JSON.stringify(entry.connection.error)}` : ''}${entryStale(entry) ? ' 当前连接或目录观测已陈旧，以下为最后取得的信息。' : ''}` : '', !!entry?.connection?.error);
+    $('node-updated').textContent = entry ? `最近快照：${time(entry.snapshot?.at)}` : `读取于 ${new Date().toLocaleTimeString()}`;
+    message('node-message', entry ? `${CONNECTION[entry.connection?.status] || '连接状态未知'}。最近联系：${time(entry.connection?.last_seen_at)}。${entry.connection?.error ? ` 这次请求没成功：${typeof entry.connection.error === 'string' ? entry.connection.error : JSON.stringify(entry.connection.error)}。` : ''}${entryStale(entry) ? ' 以下是最后一次收到的信息。' : ''}` : '', !!entry?.connection?.error);
     $('node-details').hidden = false;
-    facts($('node-info'), [...(entry ? [['登记名', entry.name], ['配置版本', entry.revision], ['配置入口', entry.url], ['快照来源', entry.snapshot?.url], ['远端凭据', entry.credential_present ? '已保存（不回显）' : '未配置'], ['标签', entry.tags?.join('、')], ['备注', entry.note], ['SSH 元数据', entry.ssh], ['Goals 目录元数据', entry.goals_dir]] : []),
-      ['节点 ID', node?.node_id || entry?.node_id], ['访问入口', entry ? entry.snapshot?.url : location.origin], ['宿主系统', node?.host?.platform],
+    facts($('node-info'), [...(entry ? [['节点名', entry.name], ['加入时间', time(entry.created_at)], ['标签', entry.tags?.join('、')], ['备注', entry.note]] : [['访问入口', location.origin]]),
+      ['节点 ID', node?.node_id || entry?.node_id], ['宿主系统', node?.host?.platform],
       ...serviceFacts(node?.service), ['服务启动', time(node?.started_at)],
       ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root],
       ['宿主调度容量（身份快照）', hostSlotsText(node?.execution?.host_capacity?.slots)],
@@ -607,7 +584,7 @@
     renderManagement();
     if (selected === 'local' && registrySupported() && !registryAttempted && !disposed) readDeviceRegistry();
   }
-  async function refresh(manual = false, devices = false) {
+  async function refresh(manual = false, devices = false, pull = false) {
     if (loading || writing || runtimeBusy || registryWriting || disposed || document.hidden) return;
     clearTimeout(timer);
     const version = ++revision;
@@ -618,13 +595,13 @@
     lastStartedAt = Date.now();
     busy(true);
     const name = selected, current = () => version === revision && selected === name && !disposed;
-    const directoryRequest = json(devices ? '/dash/api/nodes' : '/dash/api/nodes?refresh=1', signal).then(result => {
+    // `refresh=1` asks every joined computer for its current snapshot; only the refresh button does that.
+    const directoryRequest = json(pull ? '/dash/api/nodes?refresh=1' : '/dash/api/nodes', signal).then(result => {
       if (!current()) return;
       if (result.schema_version !== 1 || !Array.isArray(result.items)) throw new Error('目录接口版本不支持。');
       directoryKnown = true; directoryFailed = false; localIdentity = result.local;
       entries = new Map(result.items.map(entry => [entry.name, entry]));
-      for (const name of entries.keys()) uncertainUpdates.delete(name);
-      message('directory-message', `${entries.size} 个远端登记；连接状态与设备观测分开记录。`);
+      message('directory-message', entries.size ? `${entries.size} 台电脑已加入。` : '还没有其他电脑加入。');
       renderDirectory();
     }).catch(async error => {
       if (!current()) return;
@@ -656,7 +633,7 @@
           const entry = await json(`/dash/api/nodes/${name}?devices=1`, signal);
           if (!current()) return;
           entries.set(name, entry); renderDirectory();
-          message('remote-action-message', entry.refreshing ? '远端设备采样请求已排队或处理中。当前仍显示已有快照，请核对后续采样时间。' : '已读取目录回执，请核对采样时间与诊断；请求不代表已完成设备采样。');
+          message('remote-action-message', entry.connection?.error ? `这次没采到：${entry.connection.error}。下面仍是 ${time(entry.snapshot?.fleet?.sampled_at)} 的读数。` : `已重新采样，读数来自 ${time(entry.snapshot?.fleet?.sampled_at)}。`, !!entry.connection?.error);
         }
       }
       if (!current()) return;
@@ -666,10 +643,6 @@
       renderSelected();
     } catch (error) {
       if (!current()) return;
-      if (devices && error.status === 409) {
-        message('remote-action-message', `已有目录刷新进行中，请在完成后显式重试设备采样。${error.message}。不会自动重放。`, true);
-        renderSelected(); return;
-      }
       authLost = !!error.auth;
       $('page-error').textContent = error.name === 'AbortError' ? '读取超时，请重试。设备与锁的当前状态尚未确认。' : error.message;
       $('page-error').hidden = false;
@@ -684,7 +657,7 @@
     if (name === selected) return;
     suspend(); selected = name;
     history.replaceState(null, '', `${location.pathname}${location.search}#node=${encodeURIComponent(name)}`);
-    closeEditor(); toggleDraft = null; $('disable-confirm').hidden = true;
+    closeEditor();
     message('remote-action-message', '');
     $('devices').replaceChildren(); $('lock-leases').replaceChildren();
     renderDirectory(); renderSelected(); refresh(true);
@@ -696,7 +669,7 @@
     busy(false);
     refreshNote();
   }
-  $('refresh-fleet').addEventListener('click', () => refresh(true));
+  $('refresh-fleet').addEventListener('click', () => refresh(true, false, true));
   $('refresh-runtime').addEventListener('click', refreshRuntime);
   $('device-registry-refresh').addEventListener('click', readDeviceRegistry);
   $('device-registry-create').addEventListener('click', () => openDeviceEditor());
@@ -704,19 +677,17 @@
   $('device-registry-form').addEventListener('submit', event => { event.preventDefault(); saveDeviceRegistry(); });
   $('device-registry-reload').addEventListener('click', reloadDeviceEditor);
   $('remote-devices').addEventListener('click', () => { if (!$('remote-devices').disabled) refresh(true, true); });
-  $('register-open').addEventListener('click', () => openEditor());
-  $('registration-edit').addEventListener('click', () => openEditor(remoteEntry()));
-  $('registration-close').addEventListener('click', closeEditor);
-  $('registration-form').addEventListener('submit', event => { event.preventDefault(); saveRegistration(); });
-  $('registration-clear-token').addEventListener('change', () => { if ($('registration-clear-token').checked) $('registration-token').value = ''; renderManagement(); });
-  $('registration-reload').addEventListener('click', reloadRegistration);
-  $('registration-toggle').addEventListener('click', () => {
-    if ($('registration-toggle').disabled) return;
-    toggleDraft = {...remoteEntry()};
-    if (toggleDraft.enabled) $('disable-confirm').hidden = false; else toggleRegistration();
+  $('meta-edit').addEventListener('click', () => openEditor(remoteEntry()));
+  $('meta-close').addEventListener('click', closeEditor);
+  $('meta-form').addEventListener('submit', event => { event.preventDefault(); saveEditor(); });
+  $('invite-open').addEventListener('click', openInvite);
+  $('invite-close').addEventListener('click', closeInvite);
+  $('invite-form').addEventListener('submit', event => { event.preventDefault(); makeInvite(); });
+  $('invite-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('invite-command').textContent); $('invite-copy').textContent = '已复制'; }
+    catch (_) { getSelection().selectAllChildren($('invite-command')); $('invite-copy').textContent = '已选中，按 Ctrl+C 复制'; }
+    setTimeout(() => { $('invite-copy').textContent = '复制命令'; }, 2000);
   });
-  $('disable-submit').addEventListener('click', toggleRegistration);
-  $('disable-close').addEventListener('click', () => { toggleDraft = null; $('disable-confirm').hidden = true; });
   $('access-toggle').addEventListener('click', () => { if (access?.steer) setAccess(false); else { $('unlock-form').hidden = false; $('steer-password').focus(); } });
   $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess(true); });
   $('unlock-close').addEventListener('click', closeUnlock);
@@ -726,7 +697,7 @@
     else if ($('auto-refresh').checked && !authLost && Date.now() - lastStartedAt >= AUTO_MS) refresh();
     else schedule();
   });
-  window.addEventListener('pagehide', () => { disposed = true; registryController?.abort(); closeUnlock(); $('registration-token').value = ''; suspend(); });
+  window.addEventListener('pagehide', () => { disposed = true; registryController?.abort(); closeUnlock(); closeInvite(); suspend(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { disposed = false; schedule(); } });
   renderDirectory(); loadAccess(); refresh(true);
 })();
