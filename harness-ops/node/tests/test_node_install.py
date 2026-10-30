@@ -59,8 +59,17 @@ class NodeInstallTests(unittest.TestCase):
         self.output=io.StringIO()
         self.launch_log=(self.base/'launcher.log').open('wb')
         self.addCleanup(self.launch_log.close)
-        self.revision=deploy.git('rev-parse','HEAD')
-        self.other=deploy.git('rev-parse','HEAD^')
+        # CI checks out only HEAD. Make the second release in a private git store
+        # instead of depending on repository history or fetching over the network.
+        checkout = self.base / 'release-source'
+        subprocess.run(['git', 'clone', '--quiet', '--shared', '--no-checkout', str(deploy.REPO), str(checkout)],
+                       check=True, capture_output=True)
+        repository = patch.object(deploy, 'REPO', checkout)
+        repository.start()
+        self.addCleanup(repository.stop)
+        self.revision = deploy.git('rev-parse', 'HEAD')
+        self.other = deploy.git('-c', 'user.name=Installation fixture', '-c', 'user.email=fixture@example.invalid',
+                                'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'Second private installation release')
         with socket.socket() as listener:
             listener.bind(('127.0.0.1',0));self.port=listener.getsockname()[1]
         extract=deploy.extract
