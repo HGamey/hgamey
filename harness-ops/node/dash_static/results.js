@@ -25,7 +25,7 @@
     try {
       const url = new URL(value, location.origin);
       if (url.origin !== location.origin || url.username || url.password) return el('span', `${label}（链接不可用）`);
-      if (/^\/(results|result-imports)\//.test(url.pathname)) url.pathname = '/dash/api' + url.pathname;
+      if (/^\/(results|result-imports|nodes)\//.test(url.pathname)) url.pathname = '/dash/api' + url.pathname;
       if (!url.pathname.startsWith('/dash/')) return el('span', `${label}（链接不可用）`);
       item.href = HGTarget.url(url.pathname + url.search + url.hash, target);
     } catch (_) { return el('span', `${label}（链接不可用）`); }
@@ -208,14 +208,6 @@
   const compareKey = column => JSON.stringify([columnNode(column), column.result_id]);
   const sourceKey = source => JSON.stringify([source.name, source.node_id, source.revision]);
   const columnCaption = (column, index) => compareMode === 'cross' ? `列 ${index + 1}` : index === 0 ? '基线' : `候选 ${index}`;
-  function sourceLink(source, id, label = '到源节点查看详情与原件') {
-    try {
-      const url = new URL(source.url);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !/^[0-9a-f]{32}$/.test(source.node_id || '')) throw new Error('unbound source');
-      url.pathname = url.pathname.replace(/\/$/, '') + '/dash/results'; url.search = new URLSearchParams({expected_node_id:source.node_id}).toString(); url.hash = new URLSearchParams({result:id}).toString();
-      const item = el('a', label); item.href = url.href; item.target = '_blank'; item.rel = 'noopener noreferrer'; return item;
-    } catch (_) { return el('span', '源入口未确认，未创建原件跳转。', 'note'); }
-  }
   async function remoteRecord(source, id, target, signal) {
     const value = await request(`${API}/remote-result?${new URLSearchParams({target:JSON.stringify(source),result_id:id})}`, {target,signal,maxBytes:6*1048576});
     if (value.schema_version !== 1 || value.node_id !== target.node_id || value.result_id !== id || sourceKey(value.source || {}) !== sourceKey(source)) throw new Error('远端详情与冻结来源或结果 ID 不匹配。');
@@ -232,13 +224,17 @@
       const value = await remoteRecord(source,id,target,controller.signal);
       if (disposed || version !== remoteRevision || HGTarget.problem(target)) return;
       const record = value.result, content = $('remote-result-content'), info = el('dl',null,'facts');
-      content.append(el('h3',record.manifest.title || id)); facts(info,[['源节点',`${source.name} / ${source.node_id}`],['冻结目录版本',source.revision],['源入口',value.source.url],['登记序号',record.sequence],['登记时间',time(record.registered_at)],['本次源读取',time(value.read_at)]]); content.append(info);
-      const add = makeButton('将此远端结果加入对照',()=>addCompareColumn(id,record,source)); content.append(add,sourceLink(value.source,id));
+      content.append(el('h3',record.manifest.title || id)); facts(info,[['源节点',`${source.name} / ${source.node_id}`],['冻结目录版本',source.revision],['登记序号',record.sequence],['登记时间',time(record.registered_at)],['本次源读取',time(value.read_at)]]); content.append(info);
+      const add = makeButton('将此远端结果加入对照',()=>addCompareColumn(id,record,source)); content.append(add);
       const metrics = el('ul',null,'metric-list'), evidence = new Map((record.metric_evidence || []).map(item=>[item.index,item]));
       for (const [i,metric] of (record.manifest.metrics || []).entries()) { const item = metricItem(metric,evidence.get(i)); item.prepend(el('p',`原指标 #${i}`,'result-meta')); metrics.append(item); }
       if (!metrics.children.length) metrics.append(el('li','没有登记数值指标，不补零。','note')); content.append(metrics);
+      // Originals are read through this center (/nodes/<name>/read/…), never from the source's own address.
+      const observations = new Map((record.source_observations || []).map(item=>[item.name,item])), current = new Map((record.current?.sources || []).map(item=>[item.name,item])), sources = el('ul',null,'source-list');
+      for (const item of record.manifest.sources || []) sources.append(sourceItem(item,observations.get(item.name),current.get(item.name),target));
+      if (sources.children.length) content.append(el('h4','来源与原件'),sources);
       const raw = el('details',null,'result-json'); raw.append(el('summary','源声明与核验原记录'),el('pre',JSON.stringify(record,null,2),'command-box')); content.append(raw);
-      message('remote-result-message','这里只读源节点声明，不是同时刻快照或本后台实测。原件从源节点另行登录读取。');
+      message('remote-result-message','以上是源节点登记的声明，不是本后台实测；原件经本后台读取。');
     } catch (error) { if (!disposed && version === remoteRevision) message('remote-result-message',`详情读取失败：${error.message}。没有自动重试或换目录版本。`,true); }
     finally { clearTimeout(timer); if (version === remoteRevision) box.setAttribute('aria-busy','false'); }
   }
@@ -426,13 +422,13 @@
       const section = el('section', null, 'compare-provenance'), record = column.result, manifest = record?.manifest;
       section.append(el('h3', `${columnCaption(column,index)} · ${column.label}`), el('p', `${column.node_id} / ${column.result_id}`, 'result-meta'));
       const remote = column.node_id !== target.node_id;
-      if (compareMode === 'cross') { const origin = el('dl',null,'facts'); facts(origin,[['源入口',column.source?.url || (remote ? '未确认' : '当前后台')],['目录版本',column.source?.revision ?? (remote ? '未知' : '本地')],['源状态',column.source_status],['最近尝试',time(column.attempted_at)],['本次源读取',time(column.read_at)]]); section.append(origin); if (remote) section.append(sourceLink(column.source || {},column.result_id)); }
+      if (compareMode === 'cross') { const origin = el('dl',null,'facts'); facts(origin,[['源节点',remote ? column.source?.name || '未确认' : '当前后台'],['目录版本',column.source?.revision ?? (remote ? '未知' : '本地')],['源状态',column.source_status],['最近尝试',time(column.attempted_at)],['本次源读取',time(column.read_at)]]); section.append(origin); if (remote && column.source?.name) section.append(makeButton('查看此远端结果详情',()=>viewRemoteResult(column.source,column.result_id))); }
       if (column.status !== 'available' || !manifest) { section.append(el('p', `结果不可读取：${column.error?.message || '原因未提供'}`, 'note task-error')); output.append(section); continue; }
       const details = el('dl', null, 'facts'); facts(details, [['登记序号',record.sequence], ['登记时间', time(record.registered_at)], ['原登记结论', OUTCOMES[manifest.outcome] || '未知'], ['原报告结论', manifest.source_outcome], ['游戏 / 版本', [manifest.labels?.game_id, manifest.labels?.game_version].filter(Boolean).join(' / ')], ['设备标签', manifest.labels?.device], ['证据来源声明', manifest.origin?.evidence_origin], ['关联任务', manifest.job_id || '无'], ['当前队列 / 恢复', record.current?.job?.record ? `${text(record.current.job.record.queue?.state)} / ${text(record.current.job.record.recovery?.status)}` : record.current?.job?.reason || '未取得当前任务记录']]); section.append(details);
       if (!remote) section.append(link(`/dash/results#result=${encodeURIComponent(column.result_id)}`, '查看原结果与完整声明', target));
       const notes = el('ul', null, 'result-notes'); for (const claim of manifest.claims || []) notes.append(el('li', `原声明：${claim}`)); for (const limit of manifest.limitations || []) notes.append(el('li', `局限：${limit}`)); section.append(notes);
       const observations = new Map((record.source_observations || []).map(item => [item.name, item])), current = new Map((record.current?.sources || []).map(item => [item.name, item])), sources = el('ul', null, 'source-list');
-      for (const source of manifest.sources || []) sources.append(sourceItem(source, observations.get(source.name), remote ? {...current.get(source.name),url:null} : current.get(source.name), target));
+      for (const source of manifest.sources || []) sources.append(sourceItem(source, observations.get(source.name), current.get(source.name), target));
       if (!manifest.sources?.length) sources.append(el('li', '没有登记来源，无法据此核对原件。', 'note')); section.append(sources); output.append(section);
     }
   }

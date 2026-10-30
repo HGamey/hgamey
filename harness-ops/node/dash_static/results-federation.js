@@ -41,9 +41,8 @@
     $('federation-targets').replaceChildren(...[...entries.values()].map(entry => {
       const label = el('label', null, 'federation-target'), box = el('input'), body = el('span');
       box.type = 'checkbox'; box.value = entry.name; box.checked = chosen.has(entry.name);
-      body.append(el('strong', entry.name), el('span', entry.url || '入口未提供', 'result-meta'), el('span', `节点 ${entry.node_id || '尚未绑定'} · 配置 ${entry.revision ?? '未知'}`, 'result-meta'));
-      const reason = !validEntry(entry) ? '尚无绑定身份，请先在节点目录核对。' : !entry.enabled ? '登记已停用；显式查询会返回停用原因。' : entry.connection?.status === 'ready' ? '上次目录连接可达；结果能力在检索时核对。' : `上次目录状态：${entry.connection?.status || '未核验'}。可显式检索，失败单独显示。`;
-      body.append(el('span', reason, 'result-meta'));
+      body.append(el('strong', entry.name), el('span', entry.connection?.status === 'ready' ? '已连接' : '已断开；检索会失败，失败单独显示', 'result-meta'), el('span', `节点 ${entry.node_id || '尚未绑定'} · 配置 ${entry.revision ?? '未知'}`, 'result-meta'));
+      if (!validEntry(entry)) body.append(el('span', '尚无绑定身份。', 'result-meta'));
       box.addEventListener('change', () => {
         if (!box.checked) chosen.delete(entry.name);
         else if (validEntry(entry) && chosen.size < 4 && ![...chosen.values()].some(t => t.node_id === entry.node_id)) chosen.set(entry.name, boundEntry(entry));
@@ -64,7 +63,7 @@
       let removed = false;
       for (const [name, selected] of chosen) { const entry = entries.get(name); if (!entry || !validEntry(entry) || targetKey(selected) !== targetKey(entry)) { chosen.delete(name); removed = true; } }
       if (removed) changed();
-      message('federation-directory-message', removed ? '部分登记身份或版本已变化，已撤下原选择；请重新核对后明确选择。上次检索结果仍标注原条件。' : entries.size ? '仅取得登记元数据。选择不会发起远端请求，原凭据不回显。' : '尚无远端登记。可先到节点目录登记并核对身份。', removed);
+      message('federation-directory-message', removed ? '部分节点身份或版本已变化，已撤下原选择；请重新核对后明确选择。上次检索结果仍标注原条件。' : entries.size ? '选择不会发起远端请求。' : '还没有其他电脑加入。可在节点目录生成加入码。', removed);
       renderDirectory();
     } catch (error) { if (!disposed && version === directoryVersion) { directoryKnown = false; message('federation-directory-message', `目录读取失败：${error.message}。上次登记显示保留，新的节点选择暂不可用。`, true); } }
     finally { if (!disposed && version === directoryVersion) { directoryBusy = false; controls(); } }
@@ -79,21 +78,13 @@
     if (groups.size) message('federation-message', '选择或筛选已修改。下方保留上次检索及其原条件；请显式检索所选远端，旧页不能混入新条件。', true);
     renderGroups(); controls();
   }
-  function detailLink(item, source) {
-    try {
-      const url = new URL(item.detail_url), endpoint = new URL(source.url);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.origin !== endpoint.origin || !url.pathname.endsWith('/dash/results') ||
-          url.searchParams.getAll('expected_node_id').length !== 1 || url.searchParams.get('expected_node_id') !== source.node_id || new URLSearchParams(url.hash.slice(1)).get('result') !== item.result_id) throw new Error('unbound link');
-      const a = el('a', '到源节点查看详情与原件'); a.href = url.href; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a;
-    } catch (_) { return el('span', '源详情链接未确认，未创建跳转。', 'note'); }
-  }
   function renderGroups() {
     const matching = currentContext();
     $('federation-results').replaceChildren(...[...groups.values()].map(group => {
       const section = el('section', null, 'federation-group'), header = el('div', null, 'section-heading'), state = el('span', group.busy ? '正在读取…' : STATUS[group.status] || '状态未知', `task-state ${group.status === 'ok' && !group.busy ? '' : 'unknown'}`);
       section.dataset.node = group.target.node_id; section.setAttribute('aria-busy', String(group.busy));
       header.append(el('h3', group.target.name), state); section.append(header);
-      section.append(el('p', `${group.source.url || '入口未知'}\n节点 ${group.target.node_id} · 配置 ${group.target.revision}`, 'federation-source'));
+      section.append(el('p', `节点 ${group.target.node_id} · 配置 ${group.target.revision}`, 'federation-source'));
       section.append(el('p', `本组条件：${Object.entries(group.filters).map(([key,value]) => `${key}=${value}`).join(' · ') || '全部已登记结果'} · 每页最多 20 条`, 'note'));
       section.append(el('p', `最近请求：${time(group.attemptedAt)} · 最后成功读索引：${time(group.readAt)}`, 'read-time'));
       if (group.error) section.append(el('p', `${group.error}${group.hasPage ? ' 上次结果、成功时间与分页位置保留。' : ' 尚未取得此节点的结果，不表示零条。'}`, 'note task-error'));
@@ -103,7 +94,7 @@
         const list = el('ul', null, 'federation-items');
         for (const item of group.items.values()) {
           const li = el('li'); li.append(el('strong', item.title || item.result_id), el('span', `${item.result_id} · ${OUTCOME[item.outcome] || '结论未知'}`, 'result-meta'),
-            el('span', [item.labels?.game_id, item.labels?.game_version, item.labels?.device].filter(Boolean).join(' · ') || '未提供游戏 / 设备标签', 'result-meta'), group.navigationAvailable ? detailLink(item, group.source) : el('span', '本次来源入口未确认；请先到节点目录核对。', 'note'));
+            el('span', [item.labels?.game_id, item.labels?.game_version, item.labels?.device].filter(Boolean).join(' · ') || '未提供游戏 / 设备标签', 'result-meta'));
           const actions = el('div',null,'result-actions');
           for (const [label,method] of [['读取指标详情','viewRemote'],['加入跨节点对照','addRemote']]) {
             const button = el('button',label,'ghost'); button.type='button'; button.disabled = !canRead() || !matching || !window.HGResultCompare?.available();
@@ -124,7 +115,6 @@
   function applyPage(group, page, cursor) {
     if (!page || targetKey(page.source || {}) !== targetKey(group.target) || (page.requested_cursor ?? null) !== cursor) throw new Error('返回来源身份、配置版本或游标不匹配，旧页保留。');
     group.attemptedAt = page.attempted_at ?? group.attemptedAt;
-    group.navigationAvailable = typeof page.source.url === 'string' && !!page.source.url;
     group.status = page.status; group.error = page.error?.message || null;
     if (page.status !== 'ok') { group.failedCursor = cursor; return; }
     if (!Array.isArray(page.items)) throw new Error('成功分项未返回结果数组。');
@@ -165,7 +155,7 @@
     activeSignature = nextSignature; activeHub = HGTarget.binding(); const currentFilters = filters(); groups = new Map();
     for (const target of chosen.values()) {
       const old = same ? previous.get(targetKey(target)) : null;
-      groups.set(targetKey(target), old || {target: {...target}, source: {...target, url: entries.get(target.name)?.url}, filters: {...currentFilters}, items: new Map(), hasPage: false, cursor: null, readAt: null, attemptedAt: null, status: 'unknown', error: null, busy: false, failedCursor: null, navigationAvailable: false});
+      groups.set(targetKey(target), old || {target: {...target}, source: {...target}, filters: {...currentFilters}, items: new Map(), hasPage: false, cursor: null, readAt: null, attemptedAt: null, status: 'unknown', error: null, busy: false, failedCursor: null});
     }
     queryGroups([...groups.values()]);
   }
@@ -180,7 +170,7 @@
   window.addEventListener('pagehide', () => { disposed = true; stopReads('页面已离开。'); directoryVersion++; });
   HGTarget.ready().then(node => {
     supported = node.capabilities?.includes('results.federation-v1') === true;
-    message('federation-capability', supported ? '远端检索只读取索引；不会迁移结果或原件。源站详情需要浏览器可达并单独登录。' : '此后台未提供 results.federation-v1，远端检索不可用；本地结果功能保持原有范围。', !supported);
+    message('federation-capability', supported ? '不会迁移结果或原件。' : '此后台未提供 results.federation-v1，远端检索不可用；本地结果功能保持原有范围。', !supported);
     controls(); if ($('federation-panel').open) loadDirectory();
   }).catch(error => { message('federation-capability', error.message, true); controls(); });
 })();

@@ -23,10 +23,10 @@
   <form id="filters" class="result-filters" aria-label="筛选已登记结果"><div class="result-filter-grid"><label>游戏 ID<input name="game_id" autocomplete="off"></label><label>游戏版本<input name="game_version" autocomplete="off"></label><label>设备标签<input name="device" autocomplete="off"></label><label>研究 ID<input name="research_id" autocomplete="off"></label><label>方向 ID<input name="direction_id" autocomplete="off"></label><label>报告结论<select name="outcome"><option value="">全部（含失败 / 未知）</option value="gain">报告有收益</option><option value="no_gain">报告无收益</option><option value="regression">报告退化</option><option value="failed">失败</option><option value="not_run">未执行</option><option value="unknown">未知</option></select></label><label>关联任务 ID<input name="job_id" autocomplete="off" spellcheck="false" maxlength="12"></label></div><div class="result-actions"><button id="filter-submit" class="ghost primary" type="submit">筛选本节点</button><button id="filter-reset" class="ghost" type="button">清空筛选</button></div></form>
   <details id="federation-panel" class="result-federation">
     <summary>检索已登记的远端节点</summary>
-    <p class="note">使用上方筛选条件，最多选择 4 个远端。这里不改变当前后台或登记位置。可经本后台读取有界指标详情；原件只在源节点查看。</p>
+    <p class="note">使用上方筛选条件，最多选择 4 个远端。这里不改变当前后台或登记位置。详情和原件都经本后台读取。</p>
     <p id="federation-capability" class="note" role="status">正在核对跨节点检索能力…</p>
     <div class="section-heading"><h2>选择检索来源</h2><button id="federation-directory-refresh" class="ghost" type="button" disabled>读取节点目录</button></div>
-    <p id="federation-directory-message" class="note" role="status">展开后只读取登记元数据，不刷新远端或采集设备。</p>
+    <p id="federation-directory-message" class="note" role="status">展开后只读取节点目录，不刷新远端或采集设备。</p>
     <div id="federation-targets" class="federation-targets" role="group" aria-label="已登记远端节点"></div>
     <div class="result-actions"><button id="federation-search" class="ghost primary" type="button" disabled>检索所选远端</button><span id="federation-selection" class="note">尚未选择节点</span><a href="/dash/fleet">管理节点目录</a></div>
     <p id="federation-message" class="note" role="status"></p>
