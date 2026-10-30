@@ -153,6 +153,22 @@ class NodeInstallTests(unittest.TestCase):
         self.assertNotIn(json.loads(connection)['token'],self.output.getvalue())
         self.assertIn('KillMode=process',next((self.home/'.config/systemd/user').glob('*.service')).read_text())
 
+    def test_linux_service_is_accepted_by_systemd(self):
+        env={'DEVLOCK_DIR':str(self.root/'locks'),'HG_CONFIG_DIR':str(self.root/'config'),'PATH':'/usr/bin:/bin'}
+        plan=deploy.service_plan(self.root,'a'*32,'linux',self.home,env)
+        plan['path'].parent.mkdir(parents=True)
+        plan['path'].write_bytes(plan['content'])
+        analyzer=shutil.which('systemd-analyze')
+        if analyzer:
+            runtime=self.base/'runtime'
+            runtime.mkdir(mode=0o700)
+            result=subprocess.run([analyzer,'--user','verify',str(plan['path'])],
+                env={**os.environ,'XDG_RUNTIME_DIR':str(runtime)},capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        working_directory=next(line for line in plan['content'].decode().splitlines()
+                               if line.startswith('WorkingDirectory='))
+        self.assertEqual(working_directory,'WorkingDirectory='+str(self.root))
+
     def test_macos_service_has_one_outbound_executor_and_the_same_fixed_paths(self):
         env={'DEVLOCK_DIR':str(self.root/'locks'),'HG_CONFIG_DIR':str(self.root/'config'),'PATH':'/usr/bin:/bin'}
         plan=deploy.service_plan(self.root,'a'*32,'darwin',self.home,env)

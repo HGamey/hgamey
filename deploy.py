@@ -97,7 +97,7 @@ def service_plan(root, node_id, platform, home, environment):
     def word(value):
         return json.dumps(value, ensure_ascii=False).replace('%', '%%')
     content = '\n'.join(['[Unit]', 'Description=HGamey execution node', '', '[Service]', 'Type=simple',
-        'ExecStart=' + ' '.join(word(value) for value in args), 'WorkingDirectory=' + word(str(root)),
+        'ExecStart=' + ' '.join(word(value) for value in args), 'WorkingDirectory=' + str(root).replace('%', '%%'),
         'Environment=' + ' '.join(word(key + '=' + value) for key, value in environment.items()),
         'KillMode=process', 'Restart=on-failure', '', '[Install]', 'WantedBy=default.target', ''])
     return {'path': home / '.config/systemd/user' / label, 'content': content.encode(),
