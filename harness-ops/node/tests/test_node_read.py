@@ -210,6 +210,10 @@ class NodeReadTests(unittest.TestCase):
                     page.click("#invite-submit")
                     self.assertIn("已经在用", page.text_content("#invite-message"))
                     page.fill("#invite-name", "lab-b")
+                    page.click("#invite-submit")
+                    self.assertIn("先填安装根", page.text_content("#invite-message"))
+                    self.assertEqual(json.loads(self.request("/dash/api/node-invites", headers=steer)[2])["invites"], [],
+                                     "no code is made without an install root")
                     page.fill("#invite-root", "/srv/hg node")
                     page.fill("#invite-port", "8775")
                     page.click("#invite-submit")
