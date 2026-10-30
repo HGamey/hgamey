@@ -431,13 +431,13 @@ class JobDispatch:
         threading.Thread(target=proc.wait, daemon=True).start()
 
     def waiting(self, row, rows=None, lease=None):
-        rows = rows if rows is not None else self.queue.rows(("preparing", "queued", "claimed", "blocked"))
         state = row["state"]
         if state in ("preparing", "blocked"):
             return {"kind": "preparing" if state == "preparing" else "durability" if
                     (row.get("state_reason") or {}).get("kind") == "durability" else "recovery", "blocking_jobs": []}
         if state != "queued":
             return {"kind": None, "blocking_jobs": []}
+        rows = rows if rows is not None else self.queue.rows(("preparing", "queued", "claimed", "blocked"))
         owners = [r for r in rows if r["state"] in {"claimed", "blocked"}]
         lease = lease or self.jobs.leases.snapshot()
         declared = scope(row["spec"], lease)
@@ -466,7 +466,7 @@ class JobDispatch:
             return capacity
         return {"kind": None, "blocking_jobs": []}
 
-    def attach(self, meta, row):
+    def attach(self, meta, row, rows=None):
         meta.update(job_events.public_fields(row))
         if row:
             meta["resources"] = row["resources"]
@@ -479,7 +479,7 @@ class JobDispatch:
                 meta["priority"] = row["spec"]["priority"]
             meta["queue"] = {"state": row["state"], "submitted_at": row["submitted_at"],
                              "priority": job_priority(row["spec"]),
-                             "resources": row["resources"], "waiting": self.waiting(row),
+                             "resources": row["resources"], "waiting": self.waiting(row, rows),
                              "device_scope": scope(row["spec"]),
                              "host_capacity": job_capacity.job_facts(row),
                              "state_reason": row.get("state_reason"),

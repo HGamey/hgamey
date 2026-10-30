@@ -525,9 +525,11 @@ class Jobs:
             validate_recovery_spec(self, spec)
 
     def status(self, jid):
-        if self.center.remote(jid):
-            return self.center.status(jid)
-        row = self.dispatch.queue.get(jid)
+        return self._status(jid, self.dispatch.queue.get(jid), self.center.targets.get(jid))
+
+    def _status(self, jid, row, target, *, rows=None, nodes=None):
+        if target and target['execution_node_id'] != self.node_id:
+            return self.center.status(jid, record=target, nodes=nodes)
         reason = (row or {}).get("state_reason") or {}
         if reason.get("kind") == "manual_unknown":
             # Releasing the reservation cannot seal output from an unobserved launch.
@@ -587,10 +589,9 @@ class Jobs:
                                 "reason": "waiting for worker release and result storage commit"}
         meta["input_preparation"] = job_preparation.record(self._read_root, jid, expected=meta.get("input_preparation_expected", False))
         meta["execution_node_id"] = self.node_id
-        target = self.center.targets.get(jid)
         if target and target.get("device_selection"):
             meta["device_selection"] = target["device_selection"]
-        return self.dispatch.attach(meta, row)
+        return self.dispatch.attach(meta, row, rows)
 
     def _execution_status(self, jid, worker_alive=None):
         meta = self._read_meta(jid)

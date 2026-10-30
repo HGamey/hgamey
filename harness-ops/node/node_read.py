@@ -177,13 +177,20 @@ class NodeRead:
                 raise ValueError("cursor must belong to the same query and state")
             after = tuple(cursor[:2])
         entries, warnings = [], []
+        # These are request-local reads, shared by every status in this page.
+        rows = {row['job_id']: row for row in self.jobs.dispatch.queue.rows()}
+        targets = {record['id']: record for record in self.jobs.center.targets.rows()}
+        nodes = None
         # Admission is authoritative even if storage failed before mkdir/meta.
-        job_ids = self.jobs.center.job_ids()
+        job_ids = self.jobs.center.job_ids(rows.values(), targets.values())
         for jid in job_ids:
             if not re.fullmatch(r"[0-9a-f]{12}", jid):
                 continue
             try:
-                meta = self.jobs.status(jid)
+                target = targets.get(jid)
+                if target and target['execution_node_id'] != self.node_id and nodes is None:
+                    nodes = self.jobs.directory.list()
+                meta = self.jobs._status(jid, rows.get(jid), target, rows=rows.values(), nodes=nodes)
                 started = meta.get("started", 0)
                 if not isinstance(started, (int, float)) or not math.isfinite(started):
                     raise ValueError("invalid start time")

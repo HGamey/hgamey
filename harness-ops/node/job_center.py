@@ -85,8 +85,9 @@ class JobCenter:
             'sent_at': None, 'stop': None, 'observation': None})
         return self.transfer(record, body)
 
-    def node(self, node_id):
-        entry = next((entry for entry in self.local.directory.list() if entry['node_id'] == node_id), None)
+    def node(self, node_id, entries=None):
+        entries = self.local.directory.list() if entries is None else entries
+        entry = next((entry for entry in entries if entry['node_id'] == node_id), None)
         if entry is None:
             raise ValueError('execution node is not registered: ' + str(node_id))
         return entry
@@ -161,8 +162,8 @@ class JobCenter:
         self.observe(record, value)
         return self.status(record['id'])
 
-    def status(self, jid):
-        record = self.targets.get(jid)
+    def status(self, jid, *, record=None, nodes=None):
+        record = self.targets.get(jid) if record is None else record
         if record['execution_node_id'] == self.local.node_id and record['observation'] is not None:
             return {**self.local.status(jid), 'device_selection': record['device_selection']}
         if record['observation'] is not None:
@@ -185,7 +186,7 @@ class JobCenter:
                      stop_requested=record['stop'],
                      device_selection=record['device_selection'],
                      artifacts_sync=record.get('artifacts_sync', {'status': 'pending'}),
-                     connection=self.node(record['execution_node_id'])['connection'])
+                     connection=self.node(record['execution_node_id'], nodes)['connection'])
         return value
 
     def operation(self, jid, method, suffix, body=None, request_id=None):
@@ -306,11 +307,12 @@ class JobCenter:
             return self.local.status(row['job_id'])
         raise KeyError(key)
 
-    def job_ids(self):
+    def job_ids(self, rows=None, targets=None):
         # The local source is already durable. Do not copy its queue into a second ledger.
+        rows = self.local.dispatch.queue.rows() if rows is None else rows
+        targets = self.targets.rows() if targets is None else targets
         return {jid for jid in os.listdir(self.local.dir) if re.fullmatch(r'[0-9a-f]{12}', jid)} | {
-            row['job_id'] for row in self.local.dispatch.queue.rows()} | {
-            row['id'] for row in self.targets.rows()}
+            row['job_id'] for row in rows} | {row['id'] for row in targets}
 
     def task_rows(self):
         rows = self.local.dispatch.queue.rows()
