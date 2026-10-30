@@ -182,12 +182,13 @@ def supervise(service_args, token, workdir, env, no_tunnel):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False,
-        epilog="Without --config, remaining arguments go unchanged to node_service.py. Logs and cwd remain ~/node.")
+        epilog="Without --config, remaining arguments go unchanged to node_service.py. Logs and cwd use --workdir (default ~/node).")
     parser.add_argument("--config", metavar="ABS", help="external hgamey/node-launch@1 JSON; exclusive with service arguments")
     parser.add_argument("--no-tunnel", action="store_true", help="run the node service without a cloudflared tunnel")
+    parser.add_argument('--workdir', metavar='ABS', help='launcher logs and working directory (default ~/node)')
     options, service_args = parser.parse_known_args(argv)
     try:
-        workdir = Path.home() / "node"
+        workdir = absolute_path(options.workdir, 'workdir') if options.workdir else Path.home() / "node"
         env = os.environ.copy()
         config_dir = Path(env.get("HG_CONFIG_DIR") or "~/.config/hgamey").expanduser()
         if not config_dir.is_absolute():

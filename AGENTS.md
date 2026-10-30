@@ -30,7 +30,7 @@ python3 -m unittest discover -s harness-ops/node/tests
 ## 部署
 
 - 在节点上运行 `python3 deploy.py <节点名>`：默认 origin/main，`--ref` 指定提交，`--status` 查看节点实际运行的版本。节点配置在 `deploy/<节点名>.json`，只放路径和服务命令，不放凭据。回滚就是部署上一个提交。
-- deploy.py 先停服务再换文件，有任务在跑或卡住时拒绝（`--force` 覆盖）。不要手工 rsync 覆盖安装、改写 `harness-ops` 游标，也不要删除 `releases/`、`deploy-state/`、`_jobs/` 或 token。
+- deploy.py 先停服务再换文件，独立任务继续运行，部署回执记录当时活着的任务。新执行电脑用 `deploy.py join` 加入中心，后续用它生成的 `--config` 部署。不要手工 rsync 覆盖安装、改写 `harness-ops` 游标，也不要删除 `releases/`、`deploy-state/`、`_jobs/` 或 token。
 - 没有 stable 分支和自动部署脚本；`pf-node-deploy`、`update_node --git` 已停用。
 
 ## Agent 使用平台

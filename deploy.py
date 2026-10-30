@@ -21,6 +21,9 @@ import fcntl
 import filecmp
 import json
 import os
+import plistlib
+import secrets
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -62,8 +65,8 @@ def git(*args):
     return subprocess.run(["git", "-C", str(REPO), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def load_config(name):
-    file = REPO / "deploy" / (name + ".json")
+def load_config(name, config_file=None):
+    file = path(config_file) if config_file else REPO / "deploy" / (name + ".json")
     try:
         config = json.loads(file.read_text())
     except (OSError, ValueError) as error:
@@ -72,6 +75,75 @@ def load_config(name):
     if config.get("schema") != CONFIG_SCHEMA or not required <= set(config):
         raise DeployError(f"{file} needs schema {CONFIG_SCHEMA} and keys {sorted(required)}")
     return config
+
+
+def service_plan(root, node_id, platform, home, environment):
+    """The service manager owns the launcher; independent task groups survive its restart."""
+    args = [sys.executable, str(root / 'harness-ops/node/node_launch.py'), '--config',
+            str(root / 'node-launch.json'), '--workdir', str(root), '--no-tunnel']
+    if platform == 'darwin':
+        label = 'com.hgamey.node.' + node_id
+        filename = home / 'Library/LaunchAgents' / (label + '.plist')
+        content = plistlib.dumps({'Label': label, 'ProgramArguments': args,
+            'WorkingDirectory': str(root), 'EnvironmentVariables': environment, 'KeepAlive': True,
+            'StandardOutPath': str(root / 'launcher.log'), 'StandardErrorPath': str(root / 'launcher.log')})
+        domain = 'gui/' + str(os.getuid())
+        return {'path': filename, 'content': content, 'prepare': [],
+                'stop': [['launchctl', 'bootout', domain + '/' + label]],
+                'start': [['launchctl', 'bootstrap', domain, str(filename)]]}
+    if platform != 'linux':
+        raise DeployError('joining a computer currently supports Linux and macOS')
+    label = 'hgamey-node-' + node_id + '.service'
+    def word(value):
+        return json.dumps(value, ensure_ascii=False).replace('%', '%%')
+    content = '\n'.join(['[Unit]', 'Description=HGamey execution node', '', '[Service]', 'Type=simple',
+        'ExecStart=' + ' '.join(word(value) for value in args), 'WorkingDirectory=' + word(str(root)),
+        'Environment=' + ' '.join(word(key + '=' + value) for key, value in environment.items()),
+        'KillMode=process', 'Restart=on-failure', '', '[Install]', 'WantedBy=default.target', ''])
+    return {'path': home / '.config/systemd/user' / label, 'content': content.encode(),
+            'prepare': [['systemctl', '--user', 'daemon-reload']],
+            'stop': [['systemctl', '--user', 'stop', label]],
+            'start': [['systemctl', '--user', 'enable', '--now', label]]}
+
+
+def join_node(center, invite, name, root, port, ref, fetch, *, home=None):
+    """Enroll once, then use the ordinary publication and version check."""
+    sys.path.insert(0, str(REPO / 'harness-ops/node'))
+    from node_connector import join
+    root = path(root).resolve()
+    data = root / 'data'
+    data.mkdir(parents=True, exist_ok=True)
+    node = join(center, invite, name, str(data))
+    token_file = data / '_node/admin.token'
+    try:
+        fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass  # Re-enrollment keeps this computer's local administration credential.
+    else:
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(secrets.token_urlsafe(32) + '\n')
+    launch = {'schema': 'hgamey/node-launch@1', 'node_token_file': str(token_file), 'service_args': [
+        '--phonefarm', str(root / 'phonefarm'), '--game-opt-loop', str(root / 'game_opt_loop'),
+        '--data-dir', str(data), '--host', '127.0.0.1', '--port', str(port)]}
+    (root / 'node-launch.json').write_text(json.dumps(launch, indent=1) + '\n')
+    environment = {'DEVLOCK_DIR': str(path(os.environ.get('DEVLOCK_DIR', str(root / 'locks'))).resolve()),
+                   'HG_CONFIG_DIR': str(root / 'config'), 'PATH': os.environ.get('PATH', os.defpath)}
+    service = service_plan(root, node['node_id'], sys.platform, home or Path.home(), environment)
+    service['path'].parent.mkdir(parents=True, exist_ok=True)
+    service['path'].write_bytes(service['content'])
+    config = {'schema': CONFIG_SCHEMA, 'name': name, 'root': str(root), 'work': str(root / 'deploy-work'),
+        'jobs_roots': [str(data / 'jobs')], 'stop': service['stop'], 'start': service['start'],
+        'nodes': [{'url': 'http://127.0.0.1:' + str(port), 'token_file': str(token_file)}],
+        'gray_layer': False, 'path_prepend': ['~/.cargo/bin']}
+    configuration = root / 'deploy-node.json'
+    configuration.write_text(json.dumps(config, indent=1) + '\n')
+    for command in service['prepare']:
+        run(command)
+    # A new launchd job has no service to boot out yet. Future upgrades use stop.
+    first = sys.platform == 'darwin' and not (root / 'harness-ops').exists()
+    result = deploy(name, {**config, 'stop': []} if first else config, ref, fetch, False)
+    say('joined; upgrades: python3 deploy.py --config ' + shlex.quote(str(configuration)))
+    return result
 
 
 def reports(config, wait):
@@ -309,18 +381,38 @@ def status(name, config):
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['join']:
+        parser = argparse.ArgumentParser(description='Install this computer as an outbound HGamey execution node.', allow_abbrev=False)
+        parser.add_argument('--center', required=True)
+        parser.add_argument('--invite', required=True)
+        parser.add_argument('--name', required=True)
+        parser.add_argument('--root', default='~/node')
+        parser.add_argument('--port', type=int, default=8765)
+        parser.add_argument('--ref', default='origin/main')
+        parser.add_argument('--no-fetch', action='store_true')
+        args = parser.parse_args(argv[1:])
+        try:
+            return join_node(args.center, args.invite, args.name, args.root, args.port, args.ref, not args.no_fetch)
+        except (DeployError, OSError, ValueError, subprocess.CalledProcessError) as error:
+            say('join failed: ' + str(error))
+            return 2
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
-    parser.add_argument("node", help="node name; settings come from deploy/<node>.json")
+    parser.add_argument("node", nargs='?', help="node name; settings come from deploy/<node>.json")
+    parser.add_argument('--config', help='local deployment configuration generated by join')
     parser.add_argument("--ref", default="origin/main", help="commit, branch or tag to deploy (default origin/main)")
     parser.add_argument("--no-fetch", action="store_true", help="do not git fetch origin first")
     parser.add_argument("--force", action="store_true", help="accepted for compatibility; deployment already proceeds over running jobs")
     parser.add_argument("--status", action="store_true", help="show the installed commit and what the nodes report")
     args = parser.parse_args(argv)
+    if not args.node and not args.config:
+        parser.error('provide a node name or --config')
     try:
-        config = load_config(args.node)
+        config = load_config(args.node, args.config)
+        name = args.node or config.get('name', 'joined')
         if args.status:
-            return status(args.node, config)
-        return deploy(args.node, config, args.ref, not args.no_fetch, args.force)
+            return status(name, config)
+        return deploy(name, config, args.ref, not args.no_fetch, args.force)
     except (DeployError, OSError, ValueError, subprocess.CalledProcessError, sqlite3.Error) as error:
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
             say(error.stderr if isinstance(error.stderr, str) else error.stderr.decode(errors="replace"))

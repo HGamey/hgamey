@@ -1,9 +1,7 @@
 """Outbound node enrollment and calls; the center never dials the worker."""
-import argparse
 import http.client
 import json
 import logging
-import os
 import socket
 import threading
 from urllib.parse import urlsplit, urlencode
@@ -187,18 +185,3 @@ class NodeConnector:
         self.backend.close()
         for thread in threads:
             thread.join()
-
-
-def main():
-    parser = argparse.ArgumentParser(description='Join this computer to one HGamey center.')
-    parser.add_argument('--center', required=True)
-    parser.add_argument('--invite', required=True)
-    parser.add_argument('--name', required=True)
-    parser.add_argument('--data-dir', required=True)
-    args = parser.parse_args()
-    node = join(args.center, args.invite, args.name, os.path.abspath(args.data_dir))
-    print(json.dumps({'node': node, 'next': 'restart the local node service to connect'}, ensure_ascii=False))
-
-
-if __name__ == '__main__':
-    main()

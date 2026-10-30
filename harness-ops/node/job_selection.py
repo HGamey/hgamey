@@ -26,6 +26,9 @@ def phones(node_id, name, snapshot, connected):
         result.setdefault(reference, {'ref': reference, 'node_id': node_id, 'node_name': name,
             'device_id': device_id, 'serial': serial, 'aliases': registered.get('aliases', []) if registered else [serial],
             'model': phone.get('model'), 'connected': connected, 'idle': free,
+            'device_binding': ({'schema': 'phonefarm/device-binding@1', 'registry_revision': scopes['registry_revision'],
+                                'device_id': device_id, 'serial': serial}
+                               if registered else None),
             'sampled_at': fleet.get('sampled_at'), 'stale': fleet.get('stale', True), 'observation': phone})
     return list(result.values())
 

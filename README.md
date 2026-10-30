@@ -251,21 +251,28 @@ pf-node agents invite            # 生成邀请码和初始提示，发给新 ag
 
 ### 6. 多台电脑
 
-每台连接手机的电脑各自部署一个节点，部署方法同上，每台一个 `deploy/<节点名>.json`。选一个已有节点作为中心，管理手机电脑只使用这个中心的 URL 和管理 token。
+选一个已有节点作为中心（已有研究、agent、结果和游戏目录原地保留）。人只打开中心网址，agent 只用中心 URL 和自己的 token。连接手机的新电脑安装执行节点，不另建业务库或公网入口。
 
 ```sh
 # 在中心的管理 CLI 上生成一次性机器邀请码
 pf-node nodes invite --note '第二台手机电脑'
 pf-node nodes list
 
-# 在新电脑的安装目录执行；--data-dir 必须等于该节点服务的数据目录
-python3 harness-ops/node/node_connector.py --center https://<中心地址> --invite <码> --name lab-b --data-dir <本机数据目录>
-# 重启这台电脑的节点服务后，它会主动连接中心
+# 在新电脑上，克隆本仓库并进入仓库根目录
+python3 deploy.py join --center https://<中心地址> --invite <码> --name lab-b --root "$HOME/node"
+
+# 回到中心 CLI 核对
 pf-node nodes show lab-b
 pf-node nodes show lab-b --devices        # 明确请求重新采样这台电脑上的手机
 ```
 
+join 需要 Git、Python 3、Rust/Cargo，以及手机所需的 adb/hdc；Linux 使用当前用户的 systemd，macOS 使用登录用户的 launchd。它生成本机身份、私有 token、`node-launch.json` 和 `deploy-node.json`，构建发布并启动服务。默认本机端口 8765，可用 `--port` 改；不需要先做上面的独立中心部署。已有执行节点的业务数据只读保留，不删除。
+
+后续在这台电脑的仓库根运行 `python3 deploy.py --config "$HOME/node/deploy-node.json"` 升级；加 `--ref <提交>` 可回退，加 `--status` 查实际版本。join 已保存配置但构建失败时，也用这条部署命令继续，不再次消费邀请码。运行中的任务独立于服务，升级保留身份、连接凭据和设备锁路径。若同机已有 PF，加入前将 `DEVLOCK_DIR` 设为它正在使用的目录；否则默认 `<安装根>/locks`。灰档层构建仍按上面的 `gray_layer`、`build_env` 配置启用，默认不构建。
+
 节点通过出站 HTTPS 长轮询接收命令，每 30 秒上报最近的手机、队列和服务快照。新电脑可以在 NAT 后，不需要入站端口、SSH 或公网隧道；连接凭据只保存在本机私有数据目录，中心只存哈希。列表读取不会启动采样，离线保留上次快照和时间。原有本机手机采样规则保持。
+
+游戏准备也从中心运行，例如 `pf-node games deploy <游戏> <版本> --serial <pf-node phones 返回的 ref>`。中心冻结配方和资产，执行节点按内容哈希复用自己的缓存；恢复仍在原电脑、原手机上进行。原始冻结 manifest 和执行电脑上的实际资产路径分开保存。
 
 结果统一用 `pf-node results list/show` 从中心索引读取。已完成的远端产物分块归集到中心，另一执行节点使用同一中心输入引用，不再填来源目录名。已归集的原件在电脑离线后仍能读取。旧 `pf-fleet` 本地注册表、URL/token 注册及切换目标的入口已删除。已登记的旧名称和历史快照保留，其他电脑需用邀请码重新加入。
 

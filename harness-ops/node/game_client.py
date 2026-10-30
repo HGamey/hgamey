@@ -45,10 +45,11 @@ deploy 仅部署配方选中的资源到已安装引擎的新目录；--check �
 install 仅对明确缺席的包新装单个 APK；--check 核元数据和设备前提，不升级、不启动应用。
 initialize 显式有界尝试 Launcher 初始化并停止本次目标；目录已就绪时不启动，首次配置保留，场景仍需核验。
 scene 冻结两份原部署 input-reference 的 source，放入独立运行目录并有界启动/观察/停止；不代表冷启同状态或性能资格。
-新建 deploy/install/initialize/scene（含 --check）仅接受 Android serial，不支持 hdc:/ios: 目标。
+新建 deploy/install/initialize/scene（含 --check）的 --serial 接受平台手机引用（pf-node phones 的 ref），
+或本机 Android serial；不支持 hdc:/ios: 目标。平台引用自动固定执行电脑和登记绑定。
 这些命令可在 games 子命令后附 --device-binding FILE，读取 devices-resolve 的 {node_id,binding} 原文件；
-绑定 serial 必须与 --serial 完全一致。显式按登记设备执行可与其他设备并行，仍受全域任务和实际资源约束。
-省略时保持兼容全域。恢复任务继承原绑定，不接受重新指定绑定；原请求重试应保留原文件与请求 ID。
+绑定 serial 必须属于选定手机；手填本机 serial 时须完全一致。不同设备可并行，全场任务仍互斥。
+恢复任务继承原电脑和绑定，不接受重新指定绑定；原请求重试应保留原文件与请求 ID。
 原请求、事务报告与恢复资格仍可使用 games request/deployment/deployment-recover 接续，不按新目标规则改写。
 部署、应用读取、登录和场景状态分别报告。恢复接续原任务，不重放部署，不自动释放队列保留。
 assistance-draft 只读原报告，输出可交给 research create request 的 data；需要显式节点身份。
@@ -237,10 +238,12 @@ def deployment_arguments(args, request_id, *, recovery=False):
         if option in ("--serial", "--request-id", "--device-binding") and index + 1 < len(args):
             value = args[index + 1]
             if option == "--serial" and not recovery:
-                if value.lower().startswith(("hdc:", "ios:")):
+                raw_serial = urllib.parse.unquote(value.split('/', 1)[-1])
+                if raw_serial.lower().startswith(("hdc:", "ios:")):
                     raise ValueError("此准备流程仅支持 Android，不支持 hdc:/ios: 新目标；"
                                      "原请求或事务请用 games request/deployment 查询")
-                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value):
+                if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", raw_serial)
+                        or '/' in value and not re.fullmatch(r'[0-9a-f]{32}', value.split('/', 1)[0])):
                     raise ValueError("--serial 需要有效 Android serial：1–128 位，字母或数字开头，"
                                      "仅含字母、数字、下划线、点、冒号或横线")
                 serial = value
@@ -279,7 +282,7 @@ def deployment_binding(path, node_id, serial):
     if not isinstance(envelope, dict) or envelope.get("node_id") != node_id:
         raise ValueError("设备绑定文件的 node_id 与当前固定节点不一致")
     value = validated_device_binding(envelope.get("binding"))
-    if value["serial"] != serial:
+    if '/' not in serial and value["serial"] != serial:
         raise ValueError("设备绑定的精确 serial 与 --serial 不一致；未提交")
     return value
 

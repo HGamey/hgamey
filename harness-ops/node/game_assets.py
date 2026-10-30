@@ -736,7 +736,22 @@ class AssetCache:
         """Legacy adapter only: caller supplies an already safely opened regular file."""
         return self._prepare(asset, None, on_progress, source)
 
-    def _prepare(self, asset, jobs_root, on_progress, local_source=None):
+    def receive(self, asset, read_at, on_progress=None):
+        """Receive a center-owned object through the existing cache writer and publication."""
+        return self._prepare(asset, None, on_progress, read_at=read_at)
+
+    def _receive(self, asset, read_at, stream, offset, digest, progress):
+        writer = AssetWriter(stream, asset['size'], offset)
+        while writer.count < asset['size']:
+            chunk = read_at(writer.count, min(CHUNK, asset['size'] - writer.count))
+            if not chunk:
+                raise AssetError('center transfer ended before the declared size; partial retained')
+            writer.write(chunk)
+            digest.update(chunk)
+            progress('downloading', writer.count, resumed_bytes=offset, transferred_bytes=writer.count - offset)
+        return digest, writer.count, {'resumed_bytes': offset, 'transferred_bytes': writer.count - offset}
+
+    def _prepare(self, asset, jobs_root, on_progress, local_source=None, read_at=None):
         _asset(asset)
         sha, size = asset["sha256"], asset["size"]
         quarantine = []
@@ -788,13 +803,15 @@ class AssetCache:
                 digest, offset = hashlib.sha256(), 0
                 prefix_identity = None
                 progress("missing")
-            if asset["source"]["kind"] == "unavailable" and local_source is None:
+            if asset["source"]["kind"] == "unavailable" and local_source is None and read_at is None:
                 return _observation("unavailable", size, offset, asset["source"]["reason"], quarantine=quarantine)
             self._space(store, size - offset)
             with self._partial(store, sha) as stream:
                 if prefix_identity is not None and stamp(os.fstat(stream.fileno())) != prefix_identity:
                     raise AssetError("partial changed between verification and transfer")
-                if local_source is not None:
+                if read_at is not None:
+                    digest, count, transfer = self._receive(asset, read_at, stream, offset, digest, progress)
+                elif local_source is not None:
                     digest, count, transfer = self._import(asset, local_source, stream, offset, digest, progress)
                 elif asset["source"]["kind"] == "url":
                     digest, count, transfer = self._download(asset, stream, digest, offset, store, progress)

@@ -272,6 +272,11 @@ class Jobs:
         self.history_sources = history_sources if history_sources is not None else []
         self.data_root = os.path.abspath(data_dir or root)
         self.node_id = load_identity(self.data_root)
+        try:
+            with open(os.path.join(self.data_root, '_node', 'center.json')) as source:
+                self.connection = json.load(source)
+        except FileNotFoundError:
+            self.connection = None
         self.experiment_url = experiment_url or job_experiment.DEFAULT_URL
         self.experiment_mirror = os.path.join(self.data_root, "_experiments", "experiments.git")
         self.update_config_dir = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
@@ -445,6 +450,8 @@ class Jobs:
         with self._read_root.create_file(jid + "/log"):
             pass
         job_preparation.prepare(self, jid, body, spec.get("inputs"))
+        if binname == 'phonefarm' and argv[:3] == ['game-deploy', '--request', '@in/manifest.json']:
+            self.deployments.prepare_assets(jid)
 
         def sub(a):
             a = a.replace("@out", jout)
@@ -462,6 +469,8 @@ class Jobs:
                 raise ValueError("exe 只能是本任务上传的文件 @in/...")
             os.chmod(exe, 0o755)
         command = [exe] + [sub(a) for a in effective_argv]
+        if self.connection and binname == 'phonefarm' and argv[:3] == ['game-deploy', '--request', '@in/manifest.json']:
+            command[command.index('--request') + 1] = self.path(jid, 'in', 'execution-manifest.json')
         if binname == "experiment":  # the code is the pinned commit, unpacked under in/
             checkout = os.path.join(jin, job_experiment.CHECKOUT)
             job_experiment.materialize(self.experiment_mirror, self.experiment_url, spec["experiment"]["commit"], checkout)
@@ -496,6 +505,8 @@ class Jobs:
             cwd = self.path(jid, "in")
         argv = [re.sub(r"@in/", self.path(jid, "in") + "/", arg.replace("@out", self.path(jid, "out")))
                 for arg in _job_lock_args(spec["argv"], f"job-{jid}")]
+        if self.connection and spec['argv'][:3] == ['game-deploy', '--request', '@in/manifest.json']:
+            argv[argv.index('--request') + 1] = self.path(jid, 'in', 'execution-manifest.json')
         if spec.get("device_access") == "recovery":
             try:
                 self.validate_bound_recovery(spec)
@@ -988,21 +999,21 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     jobs.events = NodeJobEvents(jobs.dispatch.queue, node.node_id, jobs.center.targets)
     device_registry = DeviceRegistry(jobs, node.node_id)
     if not hasattr(jobs, "results"):
-        jobs.results = NodeResults(jobs, node.node_id)
+        jobs.results = None if jobs.connection else NodeResults(jobs, node.node_id)
     results = jobs.results
     if not hasattr(jobs, "research"):
-        jobs.research = NodeResearch(results, node.node_id)
+        jobs.research = None if jobs.connection else NodeResearch(results, node.node_id)
     research = jobs.research
     if not hasattr(jobs, "directory"):
-        jobs.directory = NodeDirectory(jobs.data_root, node.node_id)
+        jobs.directory = None if jobs.connection else NodeDirectory(jobs.data_root, node.node_id)
     if not hasattr(jobs, "agents"):
-        jobs.agents = NodeAgents(jobs.data_root, node.node_id)
+        jobs.agents = None if jobs.connection else NodeAgents(jobs.data_root, node.node_id)
     directory = jobs.directory
     if not hasattr(jobs, "games"):
-        jobs.games = NodeGames(jobs, node.node_id)
+        jobs.games = None if jobs.connection else NodeGames(jobs, node.node_id)
     games = jobs.games
     if not hasattr(jobs, "uploads"):
-        jobs.uploads = NodeUploads(jobs, games)
+        jobs.uploads = None if jobs.connection else NodeUploads(jobs, games)
     uploads = jobs.uploads
     if not hasattr(jobs, "deployments"):
         jobs.deployments = NodeDeployments(jobs, games)
@@ -1020,6 +1031,16 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return False
             if not self._target_guard():
                 return False
+            if jobs.connection:
+                parts = [p for p in urlparse(self.path).path.split('/') if p]
+                # Joined computers expose execution and local administration;
+                # business and user-facing routes belong to their center.
+                roots = {'health', 'whoami', 'doctor', 'node', 'jobs', 'job-sources',
+                         'job-events', 'queue', 'requests', 'leases', 'fleet', 'export-caches', 'admin', 'mcp'}
+                if not parts or parts[0] not in roots or self.command == 'POST' and parts == ['jobs']:
+                    self.close_connection = True
+                    self._send(404, {'code': 'not_found', 'error': 'business routes belong to the center'})
+                    return False
             if self._target_continue:
                 return super().handle_expect_100()
             return True
@@ -1088,7 +1109,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if allow_ro and hmac.compare_digest(got, f"Bearer {ro_token}"):
                 self.ro = True
                 return True
-            if got.startswith("Bearer hgag_"):
+            if jobs.agents is not None and got.startswith("Bearer hgag_"):
                 # An agent's own token can do what the admin token does, except manage agents,
                 # and everything it writes is attributed to that agent.
                 self.agent = jobs.agents.verify(got[7:].strip())
@@ -2321,7 +2342,7 @@ def main():
                 experiment_url=a.experiments_url)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     board = None
-    if dash:
+    if dash and not jobs.connection:
         try:
             board = dash.Dash(root, gol, jobs.dir, jobs=jobs, fleet=fleet,
                               lan_plain=a.host not in ("127.0.0.1", "::1", "localhost"))
@@ -2345,12 +2366,9 @@ def main():
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
                                                                   remote=remote))
     connector = None
-    connection_path = os.path.join(jobs.data_root, "_node", "center.json")
-    if os.path.exists(connection_path):
+    if jobs.connection:
         from node_connector import NodeConnector, LocalHTTP
-        with open(connection_path, encoding="utf-8") as stream:
-            config = json.load(stream)
-        connector = NodeConnector(config, LocalHTTP(f"http://127.0.0.1:{srv.server_port}", token, jobs.node_id))
+        connector = NodeConnector(jobs.connection, LocalHTTP(f"http://127.0.0.1:{srv.server_port}", token, jobs.node_id))
         connector.start()
     log(f"节点服务 {a.host}:{srv.server_port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})"
         f"  entry={os.path.abspath(__file__)}  phonefarm={root}"
@@ -2362,9 +2380,11 @@ def main():
             connector.close()
         if remote:
             remote.close()
-        jobs.directory.close()
+        if jobs.directory:
+            jobs.directory.close()
         jobs.center.close()
-        jobs.games.close()
+        if jobs.games:
+            jobs.games.close()
         jobs.history.close()
         jobs.export_cache.close()
         fleet.close()

@@ -8,6 +8,8 @@ description: 在 HGamey 节点上接续游戏或系统优化研究，消费人�
 ## 每轮入口
 
 先向管理员拿邀请码，设置 `PF_NODE_URL`，运行 `pf-node join --invite <码> --name <名字> --token-file <路径>`。join 自行登记身份，把你自己的 token 写进 0600 文件；将它打印的三行环境变量放进包装脚本即可。每轮开始运行 `pf-node checkin`，它列出要回应的人工留言、要处理的反馈、卡住的任务、过期的状态、可认领与该交付的研究，以及每轮做法；先清 duties 再推进实验。研究就是任务：`pf-node research claim|note|thread|deliver`；回应人工留言带 `--reply-to <留言> --decision adopt|defer|reject`，交付带总结、产物和适用的游戏版本与设备。
+
+多台电脑共用中心 URL 和这一个 token。`pf-node phones` 列出平台手机引用；普通任务用 `--device <ref>`，同型号任意一台用 `--device-model <型号>`，命令串号写完整参数 `@serial`。游戏准备使用 `pf-node games deploy|install|initialize|scene … --serial <ref>`；中心把冻结资产送到选定电脑，恢复固定原电脑和手机，不切换 URL 或复制游戏目录。
 写留言：先说结论，再给依据（数字、任务号、提交号、文件）。一条只讲一件事，200 字以内，细节放报告或附件。用平常话和通用术语，不自造词，不用比喻和口号。不写客套、致谢，不复述对方，不写「我将……」式的预告。不确定就直说不确定。
 
 最短完整路径：`pf-node checkin` → `pf-node research claim <研究ID>` → `pf-node research plan-template exploration --research-revision N` 并按草稿用 `pf-node research create direction <方向ID> <文件>` 写方向 → `pf-node --research <研究ID> --detach <命令>` 提交（实验脚本用 `--experiment <提交> experiment <脚本>`）→ `pf-node jobs --brief` / `pf-node status <job>` → `pf-node research note <研究> "<回复>" --reply-to <留言> --decision adopt|defer|reject`（图片/附件用 `job:<任务>:<路径>`；需要人定的事用 `--ask` 提问后继续其他方向）→ `pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>`。

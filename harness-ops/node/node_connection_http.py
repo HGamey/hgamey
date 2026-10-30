@@ -1,9 +1,12 @@
 """Machine enrollment and outbound transport endpoints, separate from agent auth."""
+from contextlib import closing
 import json
 import sqlite3
+from urllib.parse import urlparse, parse_qs
 
 from node_directory import DirectoryError, MAX_RESPONSE
 from job_inputs import InputError, MAX_FILE, _source_file
+from artifact_io import SafeRoot, describe_file
 
 
 def handle(handler, method, parts, directory, board, upload_limit, center):
@@ -58,7 +61,19 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
         if node_id is None:
             handler._send(401, {'code': 'unauthorized', 'error': 'node connection token required'})
             return True
-        if len(route) == 4 and route[:2] == ['node-connect', 'inputs'] and method == 'GET':
+        if len(route) == 4 and route[:2] == ['node-connect', 'assets'] and method == 'GET':
+            record = center.targets.get(route[2])
+            if record is None or record['execution_node_id'] != node_id:
+                raise DirectoryError(404, 'asset destination is not assigned to this execution node')
+            frozen = record['request'].get('deployment') or {}
+            asset = next((asset for asset in frozen.get('manifest', {}).get('assets', [])
+                          if asset['sha256'] == route[3]), None)
+            if asset is None:
+                raise DirectoryError(404, 'asset is not declared by this job')
+            with closing(SafeRoot(center.local.games.cache.root)) as store, store.open_file('blobs/' + asset['sha256']) as stream:
+                info = describe_file(stream, center.local._sha_cache, center.local._out_guard)
+                handler._stream_out(stream, {**info, 'kind': 'file'}, parse_qs(urlparse(handler.path).query))
+        elif len(route) == 4 and route[:2] == ['node-connect', 'inputs'] and method == 'GET':
             record = center.targets.get(route[2])
             if record is None or record['execution_node_id'] != node_id:
                 raise DirectoryError(404, 'input destination is not assigned to this execution node')
@@ -98,6 +113,8 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
         handler._send(error.status, {'code': error.code, 'error': str(error)})
     except DirectoryError as error:
         handler._send(error.status, {'code': 'node_connection_error', 'error': str(error)})
+    except FileNotFoundError as error:
+        handler._send(404, {'code': 'source_not_found', 'error': str(error)})
     except sqlite3.Error as error:
         handler._send(503, {'code': 'storage_commit_unconfirmed', 'error': str(error)})
     except KeyError:

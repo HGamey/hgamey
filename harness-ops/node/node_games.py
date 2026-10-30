@@ -150,15 +150,16 @@ class NodeGames:
         states = {a["observation"]["state"] for a in assets}
         ready = "verified" if states == {"verified"} else ("unknown" if "unknown" in states else "incomplete")
         deployments = getattr(self.jobs, "deployments", None)
+        support = deployments.platform_support() if deployments else {}
         transactions = deployments.history(entry, rows) if deployments and history else []
         return {**entry, "node_id": self.node_id, "assets": assets, "resource_state": ready,
-                "deployment_support": deployments.support if deployments else {"available": False},
+                "deployment_support": support.get('deploy', {"available": False}),
                 "deployments": [r for r in transactions if r["operation"] == "deploy"],
-                "installation_support": deployments.installation_support if deployments else {"available": False},
+                "installation_support": support.get('install', {"available": False}),
                 "installations": [r for r in transactions if r["operation"] == "install"],
-                "initialization_support": deployments.initialization_support if deployments else {"available": False},
+                "initialization_support": support.get('initialize', {"available": False}),
                 "initializations": [r for r in transactions if r["operation"] == "initialize"],
-                "scene_support": deployments.scene_support if deployments else {"available": False},
+                "scene_support": support.get('scene', {"available": False}),
                 "scenes": [r for r in transactions if r["operation"] == "scene"],
                 "deployment_history_errors": [r for r in transactions if r["operation"] == "unknown"],
                 "preparations": preparations if history else [], "preparation_count": len(preparations),

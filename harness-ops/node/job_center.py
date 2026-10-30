@@ -316,7 +316,8 @@ class JobCenter:
         local = self.local.dispatch.snapshot()
         nodes = [{'node_id': self.local.node_id, 'name': 'local', 'observed_at': time.time(),
                   'connection': {'status': 'ready'}, 'queue': local}]
+        entries = self.local.directory.list() if self.local.directory else []
         nodes.extend({'node_id': entry['node_id'], 'name': entry['name'], 'connection': entry['connection'],
                       'observed_at': (entry.get('snapshot') or {}).get('at'),
-                      'queue': (entry.get('snapshot') or {}).get('queue')} for entry in self.local.directory.list())
+                      'queue': (entry.get('snapshot') or {}).get('queue')} for entry in entries)
         return {**local, 'node_id': self.local.node_id, 'execution_queues': nodes}

@@ -116,8 +116,6 @@ def ensure_layout(root):
         run_dir.mkdir(parents=True)
         record(run_dir, receipt, "baseline")
         switch(root, run_id)
-    else:
-        raise DeployError(400, f"{cursor(root)} does not exist; nothing to manage")
 
 
 def switch(root, run_id):

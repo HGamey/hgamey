@@ -43,6 +43,7 @@ class BindingHistory(unittest.TestCase):
                       ("installed", "resources_deployed", "application_access", "login", "scene_ready", "recovery")}}
         gateway = object.__new__(NodeDeployments)
         gateway.jobs = Mock()
+        gateway.jobs.center.remote.return_value = None
         gateway.jobs._read_root.read_json.return_value = report
         self.assertEqual(gateway._report("job", request, self.old), (report, None))
         owner = object.__new__(PFRemote)
@@ -73,6 +74,7 @@ class BindingHistory(unittest.TestCase):
     def test_old_deployment_fingerprint_uses_saved_scope_metadata(self):
         gateway = object.__new__(NodeDeployments)
         gateway.jobs = Mock()
+        gateway.jobs.center.remote.return_value = None
         gateway.games = Mock()
         gateway.games._resource.return_value = "game:game:1"
         request = {"schema": "phonefarm/game-deploy-request@1", "node_id": "node", "game_id": "game",

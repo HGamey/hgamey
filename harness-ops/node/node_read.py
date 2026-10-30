@@ -107,7 +107,7 @@ class NodeRead:
         return self.jobs.programs.snapshot()
 
     def identity(self):
-        return {"schema_version": 1, "node_id": self.node_id,
+        value = {"schema_version": 1, "node_id": self.node_id,
                 "host": {"hostname": socket.gethostname(), "platform": platform.system()},
                 "service": copy.deepcopy(self.service), "started_at": self.started,
                 "storage": {"jobs_root": os.path.abspath(self.jobs.dir), "data_root": self.data_root,
@@ -142,6 +142,20 @@ class NodeRead:
                                 (["games.scene-v1"] if getattr(self.jobs, "deployments", None)
                                  and self.jobs.deployments.scene_support["available"] else []),
                 "devices": {"status": "not_probed", "reason": "node identity does not probe phones"}}
+        value['role'] = 'executor' if self.jobs.connection else 'center'
+        if self.jobs.connection:
+            value['center'] = {key: self.jobs.connection[key] for key in ('url', 'center_id')}
+            value['capabilities'] = [cap for cap in value['capabilities']
+                if not cap.startswith(('research.', 'results.')) and cap not in {
+                    'fleet.directory-v1', 'jobs.routing-v1', 'games.prepare-v1', 'games.upload-v1', 'games.write-limits-v1'}]
+        elif getattr(self.jobs, 'directory', None) is not None:
+            for entry in self.jobs.directory.list():
+                capabilities = ((entry.get('snapshot') or {}).get('identity') or {}).get('capabilities', [])
+                for cap in capabilities:
+                    if cap in {'games.deploy-v1', 'games.install-v1', 'games.initialize-v1', 'games.scene-v1', 'games.device-lanes-v1'}:
+                        if cap not in value['capabilities']:
+                            value['capabilities'].append(cap)
+        return value
 
     def list_jobs(self, query):
         limit = page_size(query)
