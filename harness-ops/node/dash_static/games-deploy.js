@@ -49,7 +49,7 @@
     const fleetButton=el('button','刷新手机列表','ghost');fleetButton.type='button';fleetButton.id='deploy-refresh-devices';target.append(serialLabel,listLabel,fleetButton);
     const fleetNote=el('p',null,'note'), recipe=el('p',null,'note'), status=el('div',null,'deploy-status'), actions=el('div',null,'submission-actions');
     const scopePicker=el('div',null,'deploy-target'), scopeLabel=el('label','执行范围'), scope=el('select'), resolveBinding=el('button','读取此 serial 的登记绑定','ghost'), bindingNote=el('p',null,'note'), bindingInfo=el('pre',null,'command-box');
-    scope.id='deploy-device-scope';for(const [value,label] of [['global','兼容全域（默认）'],['device','按已登记设备执行']]){const option=el('option',label);option.value=value;scope.append(option);}scopeLabel.append(scope);resolveBinding.id='deploy-resolve-binding';resolveBinding.type='button';scopePicker.append(scopeLabel,resolveBinding);bindingNote.id='deploy-binding-message';bindingNote.setAttribute('role','status');bindingInfo.id='deploy-binding-info';
+    scope.id='deploy-device-scope';for(const [value,label] of [['global','按串号（默认）'],['device','按已登记设备执行']]){const option=el('option',label);option.value=value;scope.append(option);}scopeLabel.append(scope);resolveBinding.id='deploy-resolve-binding';resolveBinding.type='button';scopePicker.append(scopeLabel,resolveBinding);bindingNote.id='deploy-binding-message';bindingNote.setAttribute('role','status');bindingInfo.id='deploy-binding-info';
     const sceneSource=el('section',null,'scene-source'), sourceLabel=el('label','原资源部署任务 ID'), sourceJob=el('input'), sourceRead=el('button','读取部署引用','ghost'), sourceNote=el('p',null,'note'), sourceFacts=el('details',null,'asset-details');
     sceneSource.id='scene-source';sourceJob.id='scene-source-job';sourceJob.type='text';sourceJob.autocomplete='off';sourceJob.spellcheck=false;sourceJob.maxLength=12;sourceJob.placeholder='12 位小写十六进制任务 ID';sourceLabel.append(sourceJob);sourceRead.id='scene-source-read';sourceRead.type='button';sourceNote.setAttribute('role','status');sceneSource.append(sourceLabel,sourceRead,sourceNote,sourceFacts);
     const check=el('button','检查部署条件','ghost'), apply=el('button','部署到新资源目录','ghost primary');check.type=apply.type='button';check.id='deploy-check';apply.id='deploy-apply';actions.append(check,apply);
@@ -78,7 +78,7 @@
     }
     function bindingProblem(v,p=null) {
       if(p?.kind==='recover'||isRef(p?p.serial:v.serial)||!(p?Object.hasOwn(p,'device_binding'):v.scope==='device'))return '';
-      if(!lanesSupported())return '节点未提供游戏设备范围能力，不能提交登记绑定；不会改投全域。';
+      if(!lanesSupported())return '节点未提供游戏设备范围能力，不能提交登记绑定；不会改为不带绑定提交。';
       const value=p?p.device_binding:v.deviceBinding;
       if(!bindingOK(value)||value.serial!==(p?p.serial:v.serial))return '请显式读取当前 serial 的登记绑定，再提交任务。';
       return !p&&v.bindingBusy?'正在读取登记绑定…':'';
@@ -156,7 +156,7 @@
       scopePicker.hidden=p?.kind==='recover'||platform;scope.value=scoped?'device':'global';scope.disabled=v.busy||!!p||!!v.bindingBusy||!canManage(v);scope.children[1].disabled=!lanesSupported();
       resolveBinding.hidden=!scoped;resolveBinding.disabled=v.busy||!!p||!!v.bindingBusy||!lanesSupported()||!!targetProblem(v)||!canManage(v);resolveBinding.setAttribute('aria-busy',String(!!v.bindingBusy));
       bindingInfo.hidden=!(platform||scoped)||!bound;bindingInfo.textContent=(platform||scoped)&&bound?JSON.stringify(bound,null,2):'';
-      bindingNote.textContent=platform&&p?.kind!=='recover'?(p?'原请求按所选手机的登记执行；只按原 ID 查询或接续。':registered?'按这台手机的登记执行，中心会自动带上它的登记绑定。':'这台手机没有登记，任务按兼容全域排队。'):p?.kind==='recover'?'恢复继承原任务的设备范围，不能重新选择绑定。':p?`原请求范围已冻结：${scoped?'按登记设备':'兼容全域'}。只按原 ID 查询或接续，当前选择不会改写它。`:!scoped?'未发送 device_binding，保持兼容全域执行。显式选择按登记设备后，可与其他已绑定设备任务并行；全域任务和实际资源约束仍可能等待。':v.bindingError||bindingProblem(v)||'已核对宿主登记；提交时冻结此绑定，可与其他设备并行。只读登记不采样手机；登记变化时需另开请求重新核对。';
+      bindingNote.textContent=platform&&p?.kind!=='recover'?(p?'原请求按所选手机的登记执行；只按原 ID 查询或接续。':registered?'按这台手机的登记执行，中心会自动带上它的登记绑定。':'这台手机没有登记，任务只占用这一台手机排队。'):p?.kind==='recover'?'恢复继承原任务的设备范围，不能重新选择绑定。':p?`原请求范围已冻结：${scoped?'按登记设备':'按串号'}。只按原 ID 查询或接续，当前选择不会改写它。`:!scoped?'未发送 device_binding，按这个串号只占用这一台手机；全域任务仍可能让它等待。显式选择按登记设备后，按登记身份占用。':v.bindingError||bindingProblem(v)||'已核对宿主登记；提交时冻结此绑定，可与其他设备并行。只读登记不采样手机；登记变化时需另开请求重新核对。';
       sceneSource.hidden=v.operation!=='scene';sourceJob.value=v.sceneJob||'';sourceJob.disabled=v.busy||!!p;sourceRead.disabled=v.busy||!!p||!!v.sceneReading||!support(v)||!plan||!context().detailFresh||context().node?.node_id!==v.record.node_id||!serialOK(v.serial)||!/^[0-9a-f]{12}$/.test(v.sceneJob||'');sourceRead.textContent=v.sceneReading?'正在读取两份引用…':'读取部署引用';sourceRead.setAttribute('aria-busy',String(!!v.sceneReading));
       sourceNote.textContent=v.sceneError||(v.sceneReading?'正在只读获取 deployment.json 与 game-deploy/session.json。':sceneReady(v)?`已读取 ${time(v.sceneAt)} · 原任务 ${v.sceneJob} · 当前目标 ${shown(v)}。仅核对来源身份；提交后由任务核对原部署、设备和应用。`:'填写原资源部署任务 ID 并显式读取两份引用。允许同游戏旧版本的部署；变更目标或来源后需重新读取。');sourceNote.classList.toggle('task-error',!!v.sceneError);
       sourceFacts.replaceChildren();sourceFacts.hidden=!sceneReady(v);if(sceneReady(v)){sourceFacts.append(el('summary','已冻结的部署引用'),el('pre',JSON.stringify(v.sceneDeployment,null,2),'command-box'));const original=link('查看原资源部署任务',jobURL({id:v.sceneJob}));if(original)sourceFacts.append(original);}
