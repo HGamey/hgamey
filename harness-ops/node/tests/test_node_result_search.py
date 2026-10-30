@@ -15,6 +15,7 @@ NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
 from node_service import readonly_token
 import test_node_games as game_fixture
+from node_connection_fixture import connect
 
 
 class NodeResultSearchTests(unittest.TestCase):
@@ -27,13 +28,13 @@ class NodeResultSearchTests(unittest.TestCase):
         for env in (self.alpha, self.beta):
             self.publish(env, "older-" + env.label)
             self.publish(env, "same-result")
-            entry = self.hub.jobs.directory.create({"name": env.label, "url": env.url,
-                                                    "token": readonly_token(env.admin)})
-            # Fixture precondition: the persistent directory already has a known
-            # identity. The operation under test must not refresh or rebind it.
-            self.assertTrue(self.hub.jobs.directory._pin(entry, env.jobs.games.node_id))
+            env.connector = connect(self.hub.jobs.directory, self.hub.url, env.label,
+                                    env.url, env.admin, env.jobs.games.node_id)
+            entry = self.hub.jobs.directory.get(env.label)
             self.targets.append({"name": env.label, "node_id": env.jobs.games.node_id,
                                  "revision": entry["revision"]})
+        for env in self.environments:
+            env.calls.clear()
 
     def node(self, label):
         env = game_fixture.GameFlowTests()
@@ -49,15 +50,8 @@ class NodeResultSearchTests(unittest.TestCase):
                 env.calls.append({"method": "GET", "path": parsed.path,
                                   "query": parse_qs(parsed.query),
                                   "pin": self.headers.get("X-Expected-Node-ID")})
-                if env.fault == "identity" and parsed.path == "/node":
-                    return self._send(200, {"schema_version": 1, "node_id": "f" * 32,
-                                           "capabilities": ["results.index-v1", "node.target-v1"]})
-                if env.fault == "redirect" and parsed.path == "/node":
-                    self.send_response(307)
-                    self.send_header("Location", env.redirect_url)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
+                if env.fault == "identity" and parsed.path == "/results":
+                    return self._send(200, {"node_id": "f" * 32, "items": [], "next_cursor": None})
                 if env.fault == "wait" and parsed.path == "/results":
                     env.entered.set()
                     if not env.release.wait(5):
@@ -83,6 +77,9 @@ class NodeResultSearchTests(unittest.TestCase):
                 finally:
                     for _ in range(acquired):
                         search._slots.release()
+        for env in self.environments:
+            if hasattr(env, "connector"):
+                env.connector.close()
         for env in reversed(self.environments):
             env.tearDown()
             self.assertFalse(env.thread.is_alive())
@@ -119,7 +116,7 @@ class NodeResultSearchTests(unittest.TestCase):
     def assert_read_boundaries(self):
         for env in (self.alpha, self.beta):
             self.assertTrue(env.calls)
-            self.assertTrue(all(call["method"] == "GET" and call["path"] in ("/node", "/results")
+            self.assertTrue(all(call["method"] == "GET" and call["path"] in ("/results",)
                                 for call in env.calls), env.calls)
             self.assertTrue(all(call["pin"] == env.jobs.games.node_id for call in env.calls), env.calls)
         for env in self.environments:
@@ -142,9 +139,10 @@ class NodeResultSearchTests(unittest.TestCase):
             self.assertEqual((row["status"], row["items"][0]["result_id"]), ("ok", "same-result"))
             self.assertEqual(row["items"][0]["title"], env.label + " same-result")
             link = urlparse(row["items"][0]["detail_url"])
-            self.assertEqual(link.netloc, urlparse(env.url).netloc)
-            self.assertEqual((link.path, link.fragment), ("/dash/results", "result=same-result"))
-            self.assertEqual(parse_qs(link.query), {"expected_node_id": [env.jobs.games.node_id]})
+            self.assertEqual((link.netloc, link.path, link.fragment), ("", "/remote-result", ""))
+            query = parse_qs(link.query)
+            self.assertEqual(query["result_id"], ["same-result"])
+            self.assertEqual(json.loads(query["target"][0])["node_id"], env.jobs.games.node_id)
         self.assertNotIn(self.hub.admin, first.stdout)
         self.assertNotIn(readonly_token(self.hub.admin), first.stdout)
 
@@ -163,6 +161,7 @@ class NodeResultSearchTests(unittest.TestCase):
         self.assertEqual([item["result_id"] for item in tail["items"]], ["older-alpha"])
         self.assertIsNone(tail["next_cursor"])
 
+        self.beta.connector.close()
         self.beta.server.shutdown()
         self.beta.server.server_close()
         self.beta.thread.join(timeout=2)
@@ -178,7 +177,7 @@ class NodeResultSearchTests(unittest.TestCase):
         self.assertIsNone(groups["beta"]["next_cursor"])
         self.assert_read_boundaries()
 
-    def test_inflight_revision_identity_redirect_and_read_permissions(self):
+    def test_inflight_note_change_preserves_result_identity_and_read_permissions(self):
         before = [len(env.calls) for env in (self.alpha, self.beta)]
         self.assertEqual(self.request(self.targets, authenticated=False)[0], 401)
         self.assertEqual([len(env.calls) for env in (self.alpha, self.beta)], before)
@@ -194,27 +193,18 @@ class NodeResultSearchTests(unittest.TestCase):
                 self.alpha.release.set()
             code, result = future.result(timeout=10)
         self.assertEqual(code, 200, result)
-        self.assertEqual(result["nodes"][0]["status"], "configuration_changed")
-        self.assertIsNone(result["nodes"][0]["items"], "late content must not be published")
-        alpha_calls = len(self.alpha.calls)
-        self.assertEqual(self.request(self.targets[:1])[1]["nodes"][0]["status"], "configuration_changed")
-        self.assertEqual(len(self.alpha.calls), alpha_calls, "stale revision must not contact the new selection")
+        self.assertEqual(result["nodes"][0]["status"], "ok")
+        self.assertEqual(result["nodes"][0]["items"][0]["result_id"], "same-result")
+        self.assertEqual(self.request(self.targets[:1])[1]["nodes"][0]["status"], "ok")
 
         self.beta.fault = "identity"
         beta_calls = len(self.beta.calls)
         code, result = self.request(self.targets[1:])
         self.assertEqual((code, result["nodes"][0]["status"]), (200, "identity_mismatch"))
-        self.assertEqual([call["path"] for call in self.beta.calls[beta_calls:]], ["/node"])
+        self.assertEqual([call["path"] for call in self.beta.calls[beta_calls:]], ["/results"])
         self.assertIsNone(result["nodes"][0]["items"])
         self.assertEqual(self.hub.jobs.directory.get("beta")["node_id"], self.beta.jobs.games.node_id)
 
-        self.beta.fault, self.beta.redirect_url = "redirect", self.alpha.url + "/must-not-follow"
-        beta_calls = len(self.beta.calls)
-        code, result = self.request(self.targets[1:])
-        self.assertEqual((code, result["nodes"][0]["status"]), (200, "unsupported"))
-        self.assertEqual([call["path"] for call in self.beta.calls[beta_calls:]], ["/node"])
-        self.assertEqual(len(self.alpha.calls), alpha_calls, "redirect must not forward source credentials")
-        self.assertNotIn(readonly_token(self.beta.admin), json.dumps(result))
         self.assert_read_boundaries()
 
 

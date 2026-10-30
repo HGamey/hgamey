@@ -111,31 +111,22 @@ class NodeReadTests(unittest.TestCase):
                 "X-HG": "1", "Content-Type": "application/json"}
         steer = {**view, "Cookie": view["Cookie"] + "; " + dash.STEER_COOKIE + "=" +
                  self.board._cookie_val(self.board._steer_pass(), b"hgamey-steer-v1")}
-        credential = readonly_token(remote_token)
-        body = json.dumps({"name": "peer", "url": "http://127.0.0.1:" + str(remote_server.server_port),
-                           "token": credential, "tags": ["isolated"]})
-
-        def settled():
-            until = time.monotonic() + 4
-            while time.monotonic() < until:
-                entry = self.get_json("/nodes/peer")
-                if not entry["refreshing"]:
-                    return entry
-                time.sleep(.02)
-            self.fail("isolated node directory refresh did not settle")
-
+        from node_connection_fixture import connect
+        connector = None
+        body = '{}'
         try:
-            self.assertEqual(self.request("/nodes", method="POST", body=body,
+            self.assertEqual(self.request("/node-invites", method="POST", body=body,
                                           headers={"Content-Type": "application/json"})[0], 401)
-            self.assertEqual(self.request("/dash/api/nodes", method="POST", body=body, headers=view)[0], 403)
-            status, _, created = self.request("/dash/api/nodes", method="POST", body=body, headers=steer)
+            self.assertEqual(self.request("/dash/api/node-invites", method="POST", body=body, headers=view)[0], 403)
+            status, _, created = self.request("/dash/api/node-invites", method="POST", body=body, headers=steer)
             self.assertEqual(status, 201, created)
-            self.assertNotIn(credential, created.decode())
-            self.assertIsNone(json.loads(created)["snapshot"])
+            self.assertIn('code', json.loads(created))
+            connector = connect(self.jobs.directory, "http://127.0.0.1:" + str(self.server.server_port),
+                                "peer", "http://127.0.0.1:" + str(remote_server.server_port),
+                                remote_token, remote_node.node_id)
             self.assertIsNone(self.get_json("/fleet?cached=1")["devices"])
             self.assertIsNone(self.board.monitor._thread)
-            self.get_json("/nodes?refresh=1")
-            ready = settled()
+            ready = self.get_json("/nodes/peer")
             self.assertEqual(ready["connection"]["status"], "ready", ready)
             self.assertEqual(ready["node_id"], remote_node.node_id)
             self.assertIsNone(ready["snapshot"]["fleet"]["devices"])
@@ -148,21 +139,21 @@ class NodeReadTests(unittest.TestCase):
             sampled = {**remote_fleet.snapshot(), "devices": [], "sampled_at": time.time(), "stale": False}
             with patch.object(remote_fleet, "request", return_value=sampled) as request:
                 self.get_json("/nodes/peer?devices=1")
-                self.assertEqual(settled()["snapshot"]["fleet"]["devices"], [])
+                self.assertEqual(self.get_json("/nodes/peer")["snapshot"]["fleet"]["devices"], [])
                 request.assert_called_once_with(5.0)
 
-            update = json.dumps({"revision": ready["revision"], "enabled": False})
+            update = json.dumps({"revision": ready["revision"], "note": "new description"})
             code, _, data = self.request("/nodes/peer", method="POST", token=self.admin,
                                          body=update, headers={"Content-Type": "application/json"})
             self.assertEqual(code, 200, data)
-            disabled = json.loads(data)
-            self.assertEqual(disabled["connection"]["status"], "disabled")
-            self.assertTrue(disabled["stale"])
-            self.assertEqual(disabled["snapshot"]["identity"]["node_id"], remote_node.node_id)
+            changed = json.loads(data)
+            self.assertEqual(changed["note"], "new description")
+            self.assertEqual(changed["snapshot"]["identity"]["node_id"], remote_node.node_id)
             self.assertEqual(self.request("/nodes/peer", method="POST", token=self.admin,
                                           body=update, headers={"Content-Type": "application/json"})[0], 409)
-            self.assertEqual(self.get_json("/nodes/peer?devices=1")["connection"]["status"], "disabled")
         finally:
+            if connector:
+                connector.close()
             remote_jobs.directory.close()
             remote_fleet.close()
             remote_server.shutdown()

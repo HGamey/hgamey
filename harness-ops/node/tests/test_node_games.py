@@ -43,6 +43,7 @@ class GameFlowTests(unittest.TestCase):
         if self.source:
             self.source.shutdown()
             self.source.server_close()
+        self.jobs.directory.close()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
@@ -50,9 +51,6 @@ class GameFlowTests(unittest.TestCase):
         self.board.monitor.close()
         if self.board.monitor._thread:
             self.board.monitor._thread.join()
-        self.jobs.directory.close()
-        with self.jobs.directory._guard:
-            self.jobs.directory._guard.wait_for(lambda: not self.jobs.directory._workers)
         self.jobs.games.close()
         self.jobs.history.close()
         self.jobs.export_cache.close()

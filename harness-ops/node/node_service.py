@@ -33,7 +33,7 @@ import shutil
 import node_doctor
 import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, urlencode
 from node_read import NodeRead
 from job_center import JobCenter
 from node_identity import load_identity
@@ -52,7 +52,8 @@ from node_media import MediaError
 from node_fleet import FleetState
 from node_agents import AgentError, NodeAgents
 from agent_onboarding import invitation_prompt
-from node_directory import NodeDirectory, DirectoryError
+from node_directory import NodeDirectory, DirectoryError, _ProbeError, DEADLINE_S
+import node_connection_http
 from node_games import NodeGames, GameError, MAX_MANIFEST
 from node_uploads import NodeUploads
 from node_deployments import NodeDeployments, DeploymentError
@@ -1070,6 +1071,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             return False
 
         def do_GET(self):
+            if node_connection_http.handle(self, "GET",
+                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD):
+                return
             self.agent = None  # a kept-alive connection must not carry the previous request's identity
             if self._agent_onboarding("GET"):
                 return
@@ -1124,6 +1128,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if parts == ["node"]:
                     return self._send(200, node.identity())
+                if parts == ["node", "snapshot"]:
+                    observation = fleet.request(5) if q.get("devices") == ["1"] else fleet.snapshot()
+                    return self._send(200, {"schema_version": 1, "at": time.time(), "identity": node.identity(),
+                                            "fleet": observation, "queue": jobs.dispatch.snapshot()})
                 if parts == ["whoami"]:
                     agent = getattr(self, "agent", None)
                     kind = "agent" if agent else "readonly" if getattr(self, "ro", False) else "admin"
@@ -1238,6 +1246,23 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, uploads.get(unquote(parts[1])))
                 if len(parts) == 4 and parts[0] == "games" and parts[2] == "versions":
                     return self._send(200, games.get(unquote(parts[1]), unquote(parts[3])))
+                if len(parts) >= 4 and parts[0] == "nodes" and parts[2] == "read":
+                    entry = directory.get(unquote(parts[1]))
+                    query = {key: values for key, values in q.items() if key != "expected_node_id"}
+                    path = "/" + "/".join(parts[3:]) + ("?" + urlencode(query, doseq=True) if query else "")
+                    try:
+                        response = directory.request(entry, path, time.monotonic() + DEADLINE_S,
+                            headers={key: self.headers[key] for key in ("Range", "If-Range") if key in self.headers},
+                            max_bytes=OUT_CHUNK_MAX)
+                    except _ProbeError as error:
+                        return self._send(503, {"code": "node_unavailable", "error": error.message})
+                    metadata = response["headers"]
+                    if len(response["body"]) > OUT_CHUNK_MAX:
+                        return self._send(413, {"code": "chunk_too_large", "error": "read this source with bounded ranges"})
+                    extra = {key: value for key, value in metadata.items()
+                             if key.lower() in {"etag", "accept-ranges", "content-range", "content-disposition"}}
+                    return self._send(response["status"], response["body"],
+                                      metadata.get("Content-Type", "application/octet-stream"), extra=extra)
                 if parts[:1] == ["nodes"] and len(parts) <= 2:
                     refresh = q.get("refresh", ["0"])[0]
                     devices = q.get("devices", ["0"])[0]
@@ -1755,6 +1780,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 left -= len(b)
 
         def do_DELETE(self):
+            if node_connection_http.handle(self, "DELETE",
+                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD):
+                return
             self.agent = None
             if self._agent_onboarding("DELETE"):
                 return
@@ -1877,7 +1905,26 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except OSError:
                 return self._send(503, {"code": "upload_storage_error", "error": "upload could not be confirmed; query the same ID"})
 
+        def _nodes_post(self, parts, dashboard):
+            if not self._upload_write_auth(dashboard):
+                return
+            if not dashboard and self.agent:
+                return self._send(403, {"code": "forbidden", "error": "node management requires administrator access"})
+            if len(parts) != 2:
+                return self._send(404, {"code": "not_found", "error": "join nodes with an invitation"})
+            try:
+                length = self._upload_length(MAX_REQUEST)
+                data = json.loads(self.rfile.read(length) or b"{}")
+                return self._send(200, directory.update(unquote(parts[1]), data))
+            except (DirectoryError, AssetUploadError) as error:
+                return self._send(error.status, {"code": "node_update_error", "error": str(error)})
+            except ValueError as error:
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
+
         def do_POST(self):
+            if node_connection_http.handle(self, "POST",
+                    [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD):
+                return
             self.agent = None  # a kept-alive connection must not carry the previous request's identity
             if self._agent_onboarding("POST"):
                 return
@@ -1916,6 +1963,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._upload_post(parts, False)
             if board and parts[:3] == ["dash", "api", "uploads"]:
                 return self._upload_post(parts[2:], True)
+            if parts[:1] == ["nodes"]:
+                return self._nodes_post(parts, False)
+            if board and parts[:3] == ["dash", "api", "nodes"]:
+                return self._nodes_post(parts[2:], True)
             if board and parts[:1] == ["dash"]:
                 n = int(self.headers.get("Content-Length", 0))
                 if n > (256 << 10):
@@ -1939,16 +1990,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     code, result = games.write([unquote(p) for p in parts], json.loads(self._body() or b"{}"),
                                                self.headers.get("X-Request-ID"))
                     return self._send(code, result)
-                if parts[:1] == ["nodes"] and len(parts) <= 2:
-                    if not 0 <= int(self.headers.get("Content-Length", 0)) <= MAX_REQUEST:
-                        self.close_connection = True
-                        return self._send(413, {"code": "request_too_large", "error": "node registration exceeds 64 KiB"})
-                    if "application/json" not in self.headers.get("Content-Type", ""):
-                        return self._send(400, {"code": "invalid_request", "error": "node registration requires application/json"})
-                    data = json.loads(self._body() or b"{}")
-                    if len(parts) == 1:
-                        return self._send(201, directory.create(data))
-                    return self._send(200, directory.update(unquote(parts[1]), data))
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2:] == ["execution", "reconcile"]:
                     if int(self.headers.get("Content-Length", 0)) > MAX_REQUEST:
                         self.close_connection = True
@@ -2202,12 +2243,22 @@ def main():
             log(f"node_remote 起不来，/remote 不可用: {e!r}")
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
                                                                   remote=remote))
+    connector = None
+    connection_path = os.path.join(jobs.data_root, "_node", "center.json")
+    if os.path.exists(connection_path):
+        from node_connector import NodeConnector, LocalHTTP
+        with open(connection_path, encoding="utf-8") as stream:
+            config = json.load(stream)
+        connector = NodeConnector(config, LocalHTTP(f"http://127.0.0.1:{srv.server_port}", token, jobs.node_id))
+        connector.start()
     log(f"节点服务 {a.host}:{srv.server_port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})"
         f"  entry={os.path.abspath(__file__)}  phonefarm={root}"
         f"  data_root={jobs.data_root}  jobs_root={jobs.dir}  node_id={jobs.node_id}")
     try:
         srv.serve_forever()
     finally:
+        if connector:
+            connector.close()
         if remote:
             remote.close()
         jobs.directory.close()

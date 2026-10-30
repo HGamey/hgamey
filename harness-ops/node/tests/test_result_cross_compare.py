@@ -120,7 +120,7 @@ class ResultCrossCompareTests(unittest.TestCase):
                               env=env, capture_output=True, text=True, timeout=15)
 
     def assert_sources(self, *, allow_index=False):
-        allowed = {"/node", "/results/same-result", "/results/missing"}
+        allowed = { "/results/same-result", "/results/missing"}
         if allow_index:
             allowed.add("/results")
         for env in (self.alpha, self.beta):
@@ -138,11 +138,11 @@ class ResultCrossCompareTests(unittest.TestCase):
         detail = json.loads(shown.stdout)
         self.assertEqual((detail["node_id"], detail["result_id"], detail["status"]),
                          (self.hub.jobs.games.node_id, "same-result", "ok"))
-        self.assertEqual(detail["source"], {**target, "url": self.alpha.url})
+        self.assertEqual(detail["source"], {**target, "read_base": "/nodes/alpha/read"})
         for key in ("manifest", "sequence", "registered_at", "provenance", "metric_evidence", "source_observations"):
             self.assertEqual(detail["result"][key], originals["alpha"][key])
         self.assertEqual([call["path"] for call in self.hub.calls], ["/node", "/remote-result"])
-        self.assertEqual([call["path"] for call in self.alpha.calls], ["/node", "/results/same-result"])
+        self.assertEqual([call["path"] for call in self.alpha.calls], ["/results/same-result"])
         self.assertEqual(self.beta.calls, [])
 
         spec = self.spec()
@@ -159,7 +159,7 @@ class ResultCrossCompareTests(unittest.TestCase):
         self.assertNotIn("baseline_column_id", value)
         self.assertEqual([call["path"] for call in self.hub.calls], ["/node", "/result-cross-compare"])
         for env in (self.alpha, self.beta):
-            self.assertEqual([call["path"] for call in env.calls], ["/node", "/results/same-result"])
+            self.assertEqual([call["path"] for call in env.calls], ["/results/same-result"])
         cells = value["rows"][0]["cells"]
         self.assertEqual([cell["metric_index"] for cell in cells], [0, 1, 0, 1])
         self.assertEqual([cell["metric"]["condition"] for cell in cells], ["baseline", "candidate"] * 2)
@@ -177,10 +177,8 @@ class ResultCrossCompareTests(unittest.TestCase):
                              (env.jobs.games.node_id, "ok", "available"))
             self.assertEqual(column["result"]["manifest"], originals[env.label]["manifest"])
             self.assertIsInstance(column["read_at"], (int, float))
-            link = urlparse(column["links"]["dashboard"])
-            self.assertEqual((link.netloc, link.path, link.fragment),
-                             (urlparse(env.url).netloc, "/dash/results", "result=same-result"))
-            self.assertEqual(parse_qs(link.query), {"expected_node_id": [env.jobs.games.node_id]})
+            self.assertIsNone(column["links"]["dashboard"])
+            self.assertEqual(urlparse(column["links"]["api"]).path, "/remote-result")
 
         explicit = copy.deepcopy(spec)
         explicit["columns"][1]["baseline_column_id"] = None
@@ -199,6 +197,7 @@ class ResultCrossCompareTests(unittest.TestCase):
         self.assertTrue(cross_node["cross_node"])
         self.assertEqual((cross_node["delta"]["value"], cross_node["delta"]["percent"]), (5, 50))
 
+        self.beta.connector.close()
         self.beta.server.shutdown()
         self.beta.server.server_close()
         self.beta.thread.join(timeout=2)
@@ -228,19 +227,10 @@ class ResultCrossCompareTests(unittest.TestCase):
         self.assertEqual((code, result["status"], result["result"]), (200, "unsupported", None))
         self.assertNotIn("private fixture", json.dumps(result))
         self.beta.detail_fault = None
-        self.beta.fault = "identity"
-        before = len(self.beta.calls)
-        self.assertEqual(self.detail(beta)[1]["status"], "identity_mismatch")
-        self.assertEqual([call["path"] for call in self.beta.calls[before:]], ["/node"])
-        self.beta.fault = None
         for fault, expected in (("identity", "identity_mismatch"), ("manifest_identity", "unsupported")):
             self.beta.detail_fault = fault
             code, result = self.detail(beta)
             self.assertEqual((code, result["status"], result["result"]), (200, expected, None))
-        self.beta.detail_fault, self.beta.redirect_url = "redirect", self.alpha.url + "/must-not-follow"
-        before = len(self.alpha.calls)
-        self.assertEqual(self.detail(beta)[1]["status"], "unsupported")
-        self.assertEqual(len(self.alpha.calls), before)
         self.beta.detail_fault = None
 
         self.alpha.detail_fault = "wait"
@@ -253,10 +243,9 @@ class ResultCrossCompareTests(unittest.TestCase):
             finally:
                 self.alpha.release.set()
             code, result = future.result(timeout=10)
-        self.assertEqual((code, result["status"], result["result"]), (200, "configuration_changed", None))
-        before = len(self.alpha.calls)
-        self.assertEqual(self.detail(alpha)[1]["status"], "configuration_changed")
-        self.assertEqual(len(self.alpha.calls), before)
+        self.assertEqual((code, result["status"]), (200, "ok"))
+        self.assertEqual(result["result"]["result_id"], "same-result")
+        self.assertEqual(self.detail(alpha)[1]["status"], "ok")
 
         current = {**alpha, "revision": 2}
         self.alpha.waiting_count = 0

@@ -3,28 +3,13 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
-import threading
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from node_directory import DirectoryError, NodeDirectory
+from node_directory import DirectoryError, NodeDirectory, _ProbeError
 
-
-LOCAL = "a" * 32
-REMOTE = "b" * 32
-
-
-def response(path, node_id=REMOTE):
-    base = {"schema_version": 1, "node_id": node_id}
-    if path == "/node":
-        return {**base, "capabilities": ["fleet.cached-v1"], "host": {"hostname": "fixture"}}
-    if path.startswith("/fleet?"):
-        return {**base, "devices": [{"transport": "adb", "serial": "fixture-only"}],
-                "lock": {"status": "unknown"}, "age_s": 12, "sampled_at": 123}
-    if path == "/queue":
-        return {**base, "items": []}
-    raise AssertionError(path)
+LOCAL, REMOTE = 'a' * 32, 'b' * 32
 
 
 class NodeDirectoryTests(unittest.TestCase):
@@ -34,114 +19,116 @@ class NodeDirectoryTests(unittest.TestCase):
 
     def tearDown(self):
         self.directory.close()
-        with self.directory._guard:
-            self.assertTrue(self.directory._guard.wait_for(lambda: not self.directory._workers, timeout=2))
         self.temp.cleanup()
 
-    def drain(self):
-        with self.directory._guard:
-            self.assertTrue(self.directory._guard.wait_for(lambda: not self.directory._inflight, timeout=2))
-
-    def create(self, name="remote", **fields):
-        return self.directory.create({"name": name, "url": "http://fixture.invalid/prefix/",
-                                      "token": "fixture-credential-never-production", **fields})
+    def join(self):
+        invitation = self.directory.invite()
+        return self.directory.join({'invite': invitation['code'], 'name': 'remote', 'node_id': REMOTE})
 
     def test_configuration_is_durable_private_and_never_probes_on_read(self):
-        with patch.object(self.directory, "_request") as request:
-            entry = self.create(tags=["android"], ssh="fixture-host", goals_dir="/fixture/goals")
-            self.assertEqual(entry["url"], "http://fixture.invalid/prefix")
-            self.assertEqual(entry["connection"]["status"], "unverified")
+        joined = self.join()
+        token = joined['token']
+        with patch.object(self.directory.link, 'call') as request:
+            entry = self.directory.get('remote')
+            self.assertEqual(entry['node_id'], REMOTE)
+            self.assertEqual(entry['connection']['status'], 'disconnected')
             self.assertEqual(self.directory.list(), [entry])
-            self.assertEqual(self.directory.get("remote"), entry)
             request.assert_not_called()
-        self.assertNotIn("fixture-credential-never-production", json.dumps(entry))
-        self.assertNotIn("token", entry)
-        private = Path(self.temp.name) / "_node" / "directory"
+        self.assertNotIn(token, json.dumps(entry))
+        self.assertNotIn('credential', entry)
+        self.assertNotIn('url', entry)
+        private = Path(self.temp.name) / '_node' / 'directory'
         self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o700)
-        self.assertEqual(stat.S_IMODE((private / "registry.json").stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE((private / 'registry.json').stat().st_mode), 0o600)
+        self.assertNotIn(token, (private / 'registry.json').read_text())
         self.directory.close()
         self.directory = NodeDirectory(self.temp.name, LOCAL)
-        self.assertEqual(self.directory.get("remote"), entry)
-        changed = self.directory.update("remote", {"revision": entry["revision"], "token": None})
-        self.assertEqual(changed["connection"]["status"], "no_credentials")
-        self.assertFalse(changed["credential_present"])
+        self.assertEqual(self.directory.get('remote'), entry)
+        self.assertEqual(self.directory.verify(token), REMOTE)
+        changed = self.directory.update('remote', {'revision': entry['revision'], 'note': 'new note'})
+        self.assertEqual(changed['note'], 'new note')
         with self.assertRaises(DirectoryError) as conflict:
-            self.directory.update("remote", {"revision": entry["revision"], "enabled": False})
+            self.directory.update('remote', {'revision': entry['revision'], 'note': 'old revision'})
         self.assertEqual(conflict.exception.status, 409)
 
-    def test_offline_and_changed_identity_preserve_the_last_complete_snapshot(self):
-        self.create()
-        calls = []
+    def test_offline_preserves_the_last_complete_snapshot_and_rejoin_identity(self):
+        joined = self.join()
+        snapshot = {'at': 123, 'fleet': {'devices': [{'serial': 'fixture-only'}], 'age_s': 12},
+                    'queue': {'items': []}}
+        with patch('node_directory.time.time', return_value=1000):
+            ready = self.directory.report(REMOTE, snapshot)
+        with patch('node_directory.time.time', return_value=1100):
+            offline = self.directory.get('remote')
+        self.assertEqual(offline['snapshot'], ready['snapshot'])
+        self.assertEqual(offline['connection']['last_seen_at'], ready['connection']['last_seen_at'])
+        self.assertEqual(offline['connection']['status'], 'disconnected')
+        self.assertTrue(offline['stale'])
+        with patch.object(self.directory, '_request', side_effect=_ProbeError('unavailable', 'disconnected')):
+            refreshed = self.directory.refresh('remote', devices=True)
+        self.assertEqual(refreshed['snapshot'], snapshot)
+        self.assertEqual(refreshed['connection']['error'], 'disconnected')
+        # A new invitation rotates the connection token, not the computer identity or its observations.
+        rejoined = self.join()
+        self.assertEqual(rejoined['node']['node_id'], REMOTE)
+        self.assertEqual(rejoined['node']['snapshot'], snapshot)
+        self.assertIsNone(self.directory.verify(joined['token']))
+        self.assertEqual(self.directory.verify(rejoined['token']), REMOTE)
+        self.assertEqual(len(self.directory.list()), 1)
+
+    def test_inflight_note_change_keeps_the_same_identity_and_observation(self):
+        original = self.join()['node']
+        snapshot = {'at': 123, 'fleet': {'devices': []}, 'queue': {'items': []}}
 
         def read(entry, path, deadline):
-            calls.append(path)
-            return response(path)
+            self.assertEqual(entry['node_id'], REMOTE)
+            self.assertEqual(path, '/node/snapshot')
+            self.directory.update('remote', {'revision': original['revision'], 'note': 'changed while reading'})
+            return snapshot
 
-        with patch.object(self.directory, "_request", side_effect=read):
-            self.directory.refresh()
-            self.drain()
-            ready = self.directory.get("remote")
-            self.directory.refresh()
-            self.assertEqual(calls, ["/node", "/fleet?cached=1", "/queue"])
-        self.assertEqual(ready["node_id"], REMOTE)
-        self.assertEqual(ready["connection"]["status"], "ready")
-        self.assertEqual(ready["snapshot"]["fleet"]["age_s"], 12)
-        with patch.object(self.directory, "_request", side_effect=OSError("fixture-credential-never-production")):
-            self.directory.refresh("remote", devices=True)
-            self.drain()
-        offline = self.directory.get("remote")
-        self.assertEqual(offline["snapshot"], ready["snapshot"])
-        self.assertEqual(offline["connection"]["last_seen_at"], ready["connection"]["last_seen_at"])
-        self.assertEqual(offline["connection"]["status"], "unavailable")
-        self.assertTrue(offline["stale"])
-        self.assertNotIn("fixture-credential-never-production", json.dumps(offline))
-        with patch.object(self.directory, "_request", side_effect=lambda entry, path, deadline: response(path, "c" * 32)) as changed:
-            self.directory.refresh("remote", devices=True)
-            self.drain()
-            self.assertEqual(changed.call_count, 1)  # No fleet probe after a different /node identity.
-        mismatch = self.directory.get("remote")
-        self.assertEqual(mismatch["snapshot"], ready["snapshot"])
-        self.assertEqual(mismatch["connection"]["status"], "identity_mismatch")
-        self.create("duplicate")
-        with patch.object(self.directory, "_request", side_effect=read):
-            self.directory.refresh("duplicate")
-            self.drain()
-        duplicate = self.directory.get("duplicate")
-        self.assertIsNone(duplicate["node_id"])
-        self.assertEqual(duplicate["connection"]["status"], "identity_mismatch")
+        with patch.object(self.directory, '_request', side_effect=read) as request:
+            result = self.directory.refresh('remote')
+        self.assertEqual(result['note'], 'changed while reading')
+        self.assertEqual(result['node_id'], REMOTE)
+        self.assertEqual(result['snapshot'], snapshot)
+        self.assertEqual(result['connection']['status'], 'ready')
+        self.assertEqual(request.call_count, 1)
 
-    def test_inflight_configuration_change_discards_old_identity_and_result(self):
-        original = self.create()
-        entered, release = threading.Event(), threading.Event()
-        calls = []
+    def test_invitation_expiry_revocation_and_name_conflict_do_not_spend_another_code(self):
+        self.join()
+        expired = self.directory.invite(hours=1)
+        with patch('node_directory.time.time', return_value=expired['expires_at']):
+            with self.assertRaises(DirectoryError) as error:
+                self.directory.join({'invite': expired['code'], 'name': 'another', 'node_id': 'c' * 32})
+        self.assertEqual(error.exception.status, 410)
+        self.directory.revoke_invite(expired['id'])
+        self.assertNotIn(expired['id'], [item['id'] for item in self.directory.invites()])
+        invitation = self.directory.invite()
+        with self.assertRaises(DirectoryError) as error:
+            self.directory.join({'invite': invitation['code'], 'name': 'remote', 'node_id': 'c' * 32})
+        self.assertEqual(error.exception.status, 409)
+        added = self.directory.join({'invite': invitation['code'], 'name': 'another', 'node_id': 'c' * 32})
+        self.assertEqual(added['node']['name'], 'another')
 
-        def read(entry, path, deadline):
-            calls.append((entry["url"], path))
-            entered.set()
-            if not release.wait(2):
-                raise AssertionError("fixture release was not signaled")
-            return response(path)
-
-        with patch.object(self.directory, "_request", side_effect=read):
-            self.directory.refresh("remote")
-            self.assertTrue(entered.wait(2))
-            try:
-                with self.assertRaises(DirectoryError) as busy:
-                    self.directory.refresh("remote", devices=True)
-                self.assertEqual(busy.exception.status, 409)
-                changed = self.directory.update("remote", {"revision": original["revision"],
-                                                            "url": "http://new-fixture.invalid", "enabled": False})
-                self.assertFalse(changed["refreshing"])
-            finally:
-                release.set()
-            self.drain()
-        result = self.directory.get("remote")
-        self.assertEqual(result["url"], "http://new-fixture.invalid")
-        self.assertEqual(result["connection"]["status"], "disabled")
-        self.assertIsNone(result["node_id"])
-        self.assertIsNone(result["snapshot"])
-        self.assertEqual(len(calls), 1)
+    def test_old_directory_keeps_names_and_snapshots_while_discarding_dial_in_credentials(self):
+        snapshot = {'at': 123, 'fleet': {'devices': []}, 'queue': {'items': []}}
+        original = {'name': 'remote', 'node_id': REMOTE, 'tags': ['lab'], 'note': 'existing node',
+                    'revision': 7, 'created_at': 1, 'updated_at': 2, 'snapshot': snapshot,
+                    'url': 'https://obsolete.invalid', 'token': 'old-remote-token', 'enabled': True,
+                    'ssh': 'old-ssh', 'goals_dir': '/old/goals', 'connection': {'status': 'ready'}}
+        self.directory._store.write_json('registry.json', {'schema': 'phonefarm/node-directory@1', 'nodes': [original]})
+        self.directory.close()
+        self.directory = NodeDirectory(self.temp.name, LOCAL)
+        current = self.directory.get('remote')
+        for key in ('name', 'node_id', 'tags', 'note', 'revision', 'created_at', 'updated_at', 'snapshot'):
+            self.assertEqual(current[key], original[key])
+        self.assertEqual(current['connection']['status'], 'disconnected')
+        self.assertTrue(current['stale'])
+        for key in ('url', 'token', 'ssh', 'goals_dir', 'enabled'):
+            self.assertNotIn(key, current)
+        rejoined = self.join()
+        self.assertEqual(rejoined['node']['snapshot'], snapshot)
+        self.assertEqual(len(self.directory.list()), 1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

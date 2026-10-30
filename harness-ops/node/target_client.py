@@ -163,8 +163,7 @@ class Target:
         return urllib.request.Request(self.url + path, data=data, method=method, headers=self.headers(headers))
 
     def command(self, program="pf-node"):
-        flag = "--hub" if program == "pf-fleet" else "--url"
-        args = [program, flag, self.url]
+        args = [program, "--url", self.url]
         if self.expected_node_id is not None:
             args += ["--node-id", self.expected_node_id]
         return shlex.join(args)

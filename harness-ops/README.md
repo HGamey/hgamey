@@ -6,7 +6,7 @@
 |---|---|
 | `node/node_service.py` | 节点上的 HTTP 服务：接任务、跑 phonefarm / game_opt_loop、回传输出 |
 | `node/pf-node` | 开发机上的客户端，把命令派到一台节点执行 |
-| `node/pf-fleet` | 共享节点目录；显式 legacy 注册表可选空闲节点，迁移入口暂不支持 |
+| `node/node_connector.py` | 手机电脑主动连接中心，上传快照、接收长轮询命令 |
 | `../deploy.py`、`node/deploy_overlay.py` | 在节点上按一个提交构建、发布、重启并核对版本 |
 | `node/dash.py`、`node/dash_goals.py`、`node/dash_static/` | 网页任务、游戏、研究协助、节点目录与控制；查看和操作分别授权 |
 | `node/node_remote.py`、`skills/hgamey-remote/` | 远程调试：个人操作员令牌接管设备（HTTP `/remote`、MCP `/remote/mcp`、网页 `/dash/control`），用法见 skill |
@@ -20,7 +20,7 @@ export PF_NODE_URL=https://node.example.invalid
 export PF_NODE_TOKEN_FILE=/private/path/node.token     # 显式文件，不搜索其他目录
 node/pf-node node                                      # 只读取得 node_id、宿主和数据位置
 export PF_NODE_ID='填入上一步的node_id'                  # 后续写入和设备采样必须绑定
-node/pf-fleet --registry /private/path/nodes.json status # 显式 legacy 目录；也可设置 PF_FLEET_REGISTRY
+node/pf-node nodes list                               # 中心登记的执行节点；nodes invite 生成加入码
 node/pf-node research list direction                   # 共享目标、方向、协助与历史；create/update 显式保存
 node/pf-node leases                                    # 只读设备所有权与恢复事实
 node/pf-node jobs --query Doom                         # 任意任务检索、分页，含失败与历史任务

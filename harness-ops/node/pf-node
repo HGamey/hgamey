@@ -59,6 +59,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node devices-set FILE|-             # CAS登记/更新；写入未知先读devices，不自动重发
   pf-node devices-resolve SERIAL         # 纯宿主核对精确别名，输出 {node_id,binding} 可保存为文件
   pf-node --device-binding binding.json --detach phonefarm gray-layer session --serial SERIAL ...
+  pf-node nodes [list|show NAME|invite|invites|update NAME]  # 中心的执行节点目录
   pf-node fleet [--wait N]                 # 只读设备/锁快照，最多等待 N 秒刷新（缺省 5）
   pf-node live status SERIAL [--device-binding FILE] # 单次读取看屏状态
   pf-node live frame SERIAL --output FILE [--device-binding FILE] # 单次JPEG；原绑定、显式新文件、不重试
@@ -1298,6 +1299,9 @@ def main():
     if args[0] == "join":
         from agent_client import join_main
         raise SystemExit(join_main(args[1:], connection_url))
+    if args[0] == "nodes" and args[1:] in (["--help"], ["-h"]):
+        from nodes_client import main as nodes_main
+        raise SystemExit(nodes_main(args[1:]))
     if args[0] == "agents" and args[1:] in (["--help"], ["-h"]):
         from agent_client import main as agents_main
         raise SystemExit(agents_main(args[1:]))
@@ -1599,9 +1603,8 @@ def main():
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get("paused") == (args[0] == "pause") else 1)
     if args[0] == "nodes":
-        from fleet_client import main as fleet_main
-        argv = ["nodes"] + (["--json"] if "--json" in args else [])
-        raise SystemExit(fleet_main(URL, argv, expected_node_id=TARGET.expected_node_id, explicit_file=explicit_file))
+        from nodes_client import main as nodes_main
+        raise SystemExit(nodes_main(args[1:], TARGET))
     if args[0] == "fleet":
         if len(args) == 1:
             wait = 5.0

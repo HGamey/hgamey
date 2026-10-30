@@ -79,27 +79,19 @@ class NodeResultSearch:
                 raise ValueError("invalid source summary fields")
             value = {key: item.get(key) for key in ("result_id", "title", "job_id", "labels", "outcome",
                      "registered_at", "provenance", "metric_count", "source_count")}
-            value["detail_url"] = (source["url"] + "/dash/results?" + urlencode({"expected_node_id": source["node_id"]})
-                                   + "#result=" + quote(rid, safe=""))
+            target = {key: source[key] for key in ("name", "node_id", "revision")}
+            value["detail_url"] = "/remote-result?" + urlencode({"target": json.dumps(target), "result_id": rid})
             output.append(value)
         return output, cursor
 
     def _read(self, entry, row, filters, limit, deadline):
         source = row["source"]
         nid = source["node_id"]
-        identity = self.directory._request(entry, "/node", deadline, expected_node_id=nid)
-        if identity.get("node_id") != nid:
-            raise _ProbeError("identity_mismatch", "source identity differs from the selected directory node")
-        caps = identity.get("capabilities")
-        if not isinstance(caps, list) or not {"results.index-v1", "node.target-v1"} <= set(caps):
-            raise _ProbeError("unsupported", "source lacks explicit result-index or target-binding support")
         params = {**filters, "limit": limit}
         if row["requested_cursor"] is not None:
             params["cursor"] = row["requested_cursor"]
-        page = self.directory._request(entry, "/results?" + urlencode(params), deadline, expected_node_id=nid)
+        page = self.directory._request(entry, "/results?" + urlencode(params), deadline)
         items, cursor = self._items(page, source, limit)
-        # Config changes during IO invalidate the whole page. Never switch URLs or retry.
-        self.directory.read_target(source["name"], nid, source["revision"])
         return {**row, "status": "ok", "read_at": time.time(), "error": None,
                 "items": items, "next_cursor": cursor}
 
@@ -205,48 +197,29 @@ class NodeResultSearch:
         # Retain the source's facts, but never use navigation supplied by it.
         result = copy.deepcopy({key: value[key] for key in ("schema_version", "node_id", "result_id", "sequence",
             "registered_at", "manifest", "provenance", "source_observations", "metric_evidence", "current")})
-        pin = "?" + urlencode({"expected_node_id": source["node_id"]})
         for item in result["current"]["sources"]:
-            item["url"] = (source["url"] + "/results/" + quote(rid, safe="") + "/sources/"
-                           + quote(item["name"], safe="") + pin) if item["status"] == "available" else None
+            item["url"] = (source["read_base"] + "/results/" + quote(rid, safe="") + "/sources/"
+                           + quote(item["name"], safe="")) if item["status"] == "available" else None
         json.dumps(result, allow_nan=False)  # Reject non-finite values outside metrics too.
         return result
 
     def _detail_worker(self, entry, rows, deadline, output, nid):
         failures = (_ProbeError, DirectoryError, OSError, http.client.HTTPException,
                     ValueError, TypeError, KeyError, OverflowError, RecursionError)
+        batch = {}
         try:
-            try:
-                source = rows[0]["source"]
-                self.directory.read_target(source["name"], nid, source["revision"])
-                identity = self.directory._request(entry, "/node", deadline, expected_node_id=nid)
-                if identity.get("node_id") != nid:
-                    raise _ProbeError("identity_mismatch", "source identity differs from the selected directory node")
-                caps = identity.get("capabilities")
-                if (not isinstance(caps, list) or not all(isinstance(cap, str) for cap in caps)
-                        or not {"results.index-v1", "node.target-v1"} <= set(caps)):
-                    raise _ProbeError("unsupported", "source lacks explicit result-index or target-binding support")
-                batch = {}
-                for row in rows:
-                    # Never continue a source batch against a newly selected URL
-                    # or credential, even when the preceding result was missing.
-                    self.directory.read_target(source["name"], nid, source["revision"])
-                    rid = row["result_id"]
-                    try:
-                        raw = self.directory._request(entry, "/results/" + quote(rid, safe=""), deadline,
-                                                      expected_node_id=nid, result_not_found=True)
-                        record = self._detail_record(raw, source, rid)
-                        batch[(nid, rid)] = {**row, "status": "ok", "read_at": time.time(), "error": None, "result": record}
-                    except failures as error:
-                        batch[(nid, rid)] = self._detail_failed(row, *self._detail_error(error))
-                    self.directory.read_target(source["name"], nid, source["revision"])
-                    if time.monotonic() <= deadline:
-                        # A later slow result must not erase an earlier completed
-                        # detail. Publish a copy; late workers never mutate it.
-                        output.put((nid, dict(batch), False))
-                self.directory.read_target(source["name"], nid, source["revision"])
-            except failures as error:
-                batch = {(nid, row["result_id"]): self._detail_failed(row, *self._detail_error(error)) for row in rows}
+            source = rows[0]["source"]
+            for row in rows:
+                rid = row["result_id"]
+                try:
+                    raw = self.directory._request(entry, "/results/" + quote(rid, safe=""), deadline,
+                                                  result_not_found=True)
+                    record = self._detail_record(raw, source, rid)
+                    batch[(nid, rid)] = {**row, "status": "ok", "read_at": time.time(), "error": None, "result": record}
+                except failures as error:
+                    batch[(nid, rid)] = self._detail_failed(row, *self._detail_error(error))
+                if time.monotonic() <= deadline:
+                    output.put((nid, dict(batch), False))
             if time.monotonic() <= deadline:
                 output.put((nid, batch, True))
         finally:
@@ -278,11 +251,11 @@ class NodeResultSearch:
         output, results, pending = queue.Queue(), {}, set()
         for nid, rids in grouped.items():
             target = selected[nid]
-            source = {**target, "url": None}
+            source = {**target, "read_base": None}
             rows = [{"schema_version": 1, "node_id": self.node_id, "source": source,
                      "result_id": rid, "attempted_at": attempted} for rid in rids]
             try:
-                entry = self.directory.read_target(target["name"], nid, target["revision"])
+                entry = self.directory.read_target(target["name"], nid)
             except DirectoryError as error:
                 status = "unknown_node" if error.status == 404 else "unavailable"
                 results.update({(nid, row["result_id"]): self._detail_failed(row, status,
@@ -291,7 +264,7 @@ class NodeResultSearch:
             except _ProbeError as error:
                 results.update({(nid, row["result_id"]): self._detail_failed(row, error.status, error.message) for row in rows})
                 continue
-            source["url"] = entry["url"]
+            source["read_base"] = "/nodes/" + quote(entry["name"], safe="") + "/read"
             results.update({(nid, row["result_id"]): self._detail_failed(row, "unavailable",
                             "source did not finish before the query deadline") for row in rows})
             if not self._slots.acquire(blocking=False):
@@ -319,16 +292,6 @@ class NodeResultSearch:
             results.update(batch)
             if done:
                 pending.remove(nid)
-        # A fast source may have finished before another slow source. Confirm its
-        # frozen directory version again before assembling the returned envelope.
-        for nid, target in selected.items():
-            if not any(results[(nid, rid)]["source"]["url"] is not None for rid in grouped[nid]):
-                continue
-            try:
-                self.directory.read_target(target["name"], nid, target["revision"])
-            except (DirectoryError, _ProbeError) as error:
-                for rid in grouped[nid]:
-                    results[(nid, rid)] = self._detail_failed(results[(nid, rid)], *self._detail_error(error))
         return results
 
     def remote_result(self, query):
@@ -355,10 +318,10 @@ class NodeResultSearch:
         deadline, attempted = time.monotonic() + DEADLINE_S, time.time()
         output, rows, pending = queue.Queue(), [], set()
         for index, target in enumerate(targets):
-            row = {"source": {**target, "url": None}, "attempted_at": attempted, "requested_cursor": cursor}
+            row = {"source": {**target, "read_base": None}, "attempted_at": attempted, "requested_cursor": cursor}
             rows.append(self._failed(row, "unavailable", "source did not finish before the query deadline"))
             try:
-                entry = self.directory.read_target(target["name"], target["node_id"], target["revision"])
+                entry = self.directory.read_target(target["name"], target["node_id"])
             except DirectoryError as error:
                 rows[index] = self._failed(row, "unknown_node" if error.status == 404 else "unavailable",
                                            "selected source registration is unavailable")
@@ -366,7 +329,7 @@ class NodeResultSearch:
             except _ProbeError as error:
                 rows[index] = self._failed(row, error.status, error.message)
                 continue
-            row["source"]["url"] = entry["url"]
+            row["source"]["read_base"] = "/nodes/" + quote(entry["name"], safe="") + "/read"
             if not self._slots.acquire(blocking=False):
                 rows[index] = self._failed(row, "busy", "remote result readers are busy; retry this source explicitly")
                 continue

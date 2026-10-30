@@ -117,6 +117,7 @@ class JobInputsTests(unittest.TestCase):
         self.url = f"http://127.0.0.1:{self.server.server_port}"
 
     def tearDown(self):
+        self.jobs.directory.close()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
@@ -157,7 +158,6 @@ class JobInputsTests(unittest.TestCase):
                 path.write_text(json.dumps(summary, indent=2) + "\n")
                 print(f"job input write limits evidence: {path}", file=sys.stderr)
             self.jobs.games.close()
-            self.jobs.directory.close()
             self.fleet.close()
             self.jobs._read_root.close()
         finally:
@@ -288,10 +288,9 @@ class JobInputsTests(unittest.TestCase):
         status, reference = peer_call("GET", f"/jobs/{job['id']}/input-reference?path=report.json")
         self.assertEqual(status, 200, reference)
 
-        # 登记带凭据的只读来源；来源 node_id 与消费节点不同。
-        entry = self.jobs.directory.create({"name": "lab-b", "url": peer_url,
-                                            "token": readonly_token(peer_admin)})
-        self.assertTrue(self.jobs.directory._pin(entry, peer.games.node_id))
+        from node_connection_fixture import connect
+        connector = connect(self.jobs.directory, self.url, "lab-b", peer_url, peer_admin, peer.games.node_id)
+        self.addCleanup(connector.close)
         node = self.call("GET", "/node")[1]
         self.assertIn("jobs.cross-node-inputs-v1", node["capabilities"])
 
@@ -337,9 +336,9 @@ class JobInputsTests(unittest.TestCase):
         unknown_entry["files"][0]["source"]["node"] = "no-such-entry"
         refused("entry", unknown_entry, "source_not_found")
 
-        # 移除凭据：准备期拒绝，消费命令不执行。
-        self.jobs.directory.update("lab-b", {"revision": entry["revision"], "token": None})
-        refused("credential", manifest, "source_unavailable")
+        # 出站连接已断开：不能制造完整输入，消费命令不执行。
+        connector.close()
+        refused("disconnected", manifest, "source_unavailable")
 
     def test_reference_cli_binding_and_repeated_request_execute_once(self):
         status, node = self.call("GET", "/node")

@@ -1,17 +1,12 @@
-import contextlib
-import io
 import json
 import os
 from pathlib import Path
-import runpy
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest import mock
 
 
 NODE = Path(__file__).resolve().parents[1]
@@ -71,7 +66,7 @@ class TargetClient(unittest.TestCase):
 
     def test_help_and_explicit_credentials_never_fall_back(self):
         for program, args in [("pf-node", ["--help"]), ("pf-node", ["games", "--help"]),
-                              ("pf-fleet", ["--help"]), ("pf-remote", ["--help"])]:
+                              ("pf-node", ["nodes", "--help"]), ("pf-remote", ["--help"])]:
             result = self.cli(program, args)
             self.assertEqual(result.returncode, 0, result.stderr)
         missing = self.cli("pf-node", ["node"], {"PF_NODE_TOKEN": "ambient-fixture-token"})
@@ -161,27 +156,6 @@ class TargetClient(unittest.TestCase):
         self.assertEqual(calls[-1]["path"], "/export-caches/clear")
         self.assertEqual(json.loads(calls[-1]["body"]), {})
 
-    def test_legacy_fleet_freezes_probe_identity_and_clears_ambient_token(self):
-        fleet = runpy.run_path(str(NODE / "pf-fleet"))
-        snapshot = {"schema_version": 1, "node_id": ID, "lock": {"status": "free", "queue": [],
-                    "stale": False, "error": None}, "devices": [], "sampled_at": time.time(),
-                    "stale": False, "error": None, "deferred": None}
-        endpoint, calls = self.server(lambda c: (200, {}, self.identity() if c["path"] == "/node" else snapshot))
-        entry = {"name": "fixture", "url": endpoint, "token_file": str(self.credential), "tags": [], "node_id": ID}
-        with mock.patch.dict(os.environ, {"PF_NODE_TOKEN": "wrong-ambient", "PF_NODE_ID": OTHER_ID,
-                                          "PF_NODE_URL": "http://wrong.invalid"}, clear=True):
-            with mock.patch.object(os, "execvpe", side_effect=RuntimeError("selected")) as execute:
-                with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError, "selected"):
-                    fleet["cmd_run"]([entry], ["--node", "fixture", "--", "node"])
-            environment = execute.call_args.args[2]
-            self.assertNotIn("PF_NODE_TOKEN", environment)
-            self.assertEqual(environment["PF_NODE_TOKEN_FILE"], str(self.credential))
-            self.assertEqual(environment["PF_NODE_URL"], endpoint)
-            self.assertEqual(environment["PF_NODE_ID"], ID)
-            with self.assertRaisesRegex(SystemExit, "不能覆盖"):
-                fleet["cmd_run"]([entry], ["--node", "fixture", "--", "--url", "http://wrong.invalid", "node"])
-        self.assertTrue(all(c["authorization"] == "Bearer fixture-explicit-token" for c in calls))
-        self.assertTrue(all(c["node_id"] == ID for c in calls))
 
 
 if __name__ == "__main__":

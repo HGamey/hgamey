@@ -251,19 +251,25 @@ pf-node agents invite            # 生成邀请码和初始提示，发给新 ag
 
 ### 6. 多台电脑
 
-每台连接手机的电脑各自部署一个节点，部署方法同上，每台一个 `deploy/<节点名>.json`。每个节点有自己的手机、任务队列和研究记录。
-
-选其中一个节点作为 hub，把其他节点登记进它的节点目录：
+每台连接手机的电脑各自部署一个节点，部署方法同上，每台一个 `deploy/<节点名>.json`。选一个已有节点作为中心，管理手机电脑只使用这个中心的 URL 和管理 token。
 
 ```sh
-export PF_NODE_TOKEN_FILE=<hub 的管理 token 文件>
-pf-fleet --hub https://<hub 地址> register <节点名> --url https://<该节点地址> --token-file <该节点的 token 文件>
-pf-fleet --hub https://<hub 地址> status     # 全场：各节点是否在线、设备锁、手机清单
+# 在中心的管理 CLI 上生成一次性机器邀请码
+pf-node nodes invite --note '第二台手机电脑'
+pf-node nodes list
+
+# 在新电脑的安装目录执行；--data-dir 必须等于该节点服务的数据目录
+python3 harness-ops/node/node_connector.py --center https://<中心地址> --invite <码> --name lab-b --data-dir <本机数据目录>
+# 重启这台电脑的节点服务后，它会主动连接中心
+pf-node nodes show lab-b
+pf-node nodes show lab-b --devices        # 明确请求重新采样这台电脑上的手机
 ```
 
-- hub 每 30 秒向登记的节点读取一次手机与锁的状态，网页 `/dash/fleet`（节点与设备）显示全场。读取不会占用远端手机。hub 需要能访问到每个节点，走公网隧道或内网都可以。
-- 结果可以跨节点检索：`pf-node results search --node <节点名>`。
-- **当前限制**：研究和任务按节点分开存放，agent 绑定一个节点工作。要用别的节点上的手机，需要直接连那个节点；hub 模式下的 `pf-fleet run` 还不能派发任务。
+节点通过出站 HTTPS 长轮询接收命令，每 30 秒上报最近的手机、队列和服务快照。新电脑可以在 NAT 后，不需要入站端口、SSH 或公网隧道；连接凭据只保存在本机私有数据目录，中心只存哈希。列表读取不会启动采样，离线保留上次快照和时间。原有本机手机采样规则保持。
+
+`pf-node results search --node lab-b` 和跨节点输入沿同一出站连接读取。旧 `pf-fleet` 本地注册表、URL/token 注册及切换目标的入口已删除。已登记的旧名称和历史快照保留，其他电脑需用邀请码重新加入。
+
+**当前阶段**只接通节点目录与读取，任务和研究仍由提交的节点执行和保存；远端任务派发、统一产物及远控将在后续步骤接通。网页的节点管理随页面更新交付。
 
 ## 运维
 

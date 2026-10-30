@@ -90,7 +90,7 @@ def cross_compare(results, search, node_id, spec):
         except (OSError, sqlite3.Error):
             record, status = None, "unavailable"
             error = {"code": "result_read_unavailable", "message": "local registered result could not be read"}
-        records[(nid, rid)] = {"source": {"name": None, "node_id": node_id, "url": None, "revision": None},
+        records[(nid, rid)] = {"source": {"name": None, "node_id": node_id, "read_base": None, "revision": None},
                               "status": status, "error": error, "result": record,
                               "attempted_at": attempted, "read_at": time.time() if record else None}
     targets = {target["node_id"]: target for target in spec["targets"]}
@@ -104,8 +104,7 @@ def cross_compare(results, search, node_id, spec):
             dashboard = "/dash/results?" + urlencode({"expected_node_id": nid}) + "#result=" + quote(rid, safe="")
         else:
             api = "/remote-result?" + urlencode({"target": json.dumps(targets[nid], separators=(",", ":")), "result_id": rid})
-            dashboard = ((source["url"] + "/dash/results?" + urlencode({"expected_node_id": nid})
-                          + "#result=" + quote(rid, safe="")) if source.get("url") else None)
+            dashboard = None  # The center page owns remote-result navigation; no second login URL.
         columns.append({**requested, "source": source, "source_status": envelope["status"],
                         "attempted_at": envelope["attempted_at"], "read_at": envelope["read_at"],
                         "status": "available" if envelope["status"] == "ok" else "unavailable",
