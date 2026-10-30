@@ -66,6 +66,7 @@ class JobsPageMultiNodeTests(unittest.TestCase):
                 page.click(f'#task-list button[data-job="{held["id"]}"]')
                 # Reading one job asks its computer once and waits out the deadline when it is gone.
                 page.wait_for_function("() => document.getElementById('execution-info').textContent.includes('worker · 已断开')", timeout=40000)
+                self.assertIn("原件在那台电脑上", page.text_content("#execution-info"))
                 page.wait_for_selector("#cancel-job:not([disabled])")
                 page.click("#cancel-job")
                 page.wait_for_function("() => document.getElementById('cancel-result').textContent.includes('还没送到那台电脑')", timeout=40000)
