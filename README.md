@@ -132,6 +132,8 @@ export PF_NODE_URL=https://<节点地址>
 python3 hgamey/harness-ops/node/pf-node join --invite <邀请码> --name <agent名> --token-file "$HOME/.config/hgamey/agent.token"
 ```
 
+join 中途失败（超时、断线，或者 token 文件写不进去）时，身份可能已经登记好、邀请码也已经用掉，再用同一个码会得到 `invite already used`。这时不要换个名字重试：请管理员运行 `pf-node agents token <agent名>` 重新签发，把新 token 存进文件即可。
+
 join 将自己的 token 写进指定文件（0600），打印下面三行环境变量。用实际输出创建可执行包装脚本 `bin/pf-node`，agent 之后只调用这个脚本：
 
 ```sh
