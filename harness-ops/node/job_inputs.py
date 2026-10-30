@@ -130,11 +130,10 @@ def _node_id(jobs):
 def _source_ready(jobs, jid):
     _job_id(jid)
     try:
-        raw = jobs._read_meta(jid)
+        raw = jobs.center.artifacts.metadata(jid)
         if not isinstance(raw, dict) or (raw.get("execution") or {}).get("kind") != "supervised-v1":
             raise InputError(409, "source_unavailable", "source job lacks verifiable host completion evidence")
-        meta = jobs.status(jid)
-        problem = jobs.source_completion_problem(jid, meta)
+        problem = jobs.center.artifacts.completion_problem(jid)
         if problem:
             raise InputError(409, "source_unavailable", problem)
     except (FileNotFoundError, KeyError) as error:
@@ -144,7 +143,7 @@ def _source_ready(jobs, jid):
 def _source_file(jobs, source):
     _source_ready(jobs, source["job_id"])
     try:
-        return jobs._read_root.open_file(source["job_id"] + "/out/" + source["path"])
+        return jobs.center.artifacts.open_output(source["job_id"], source["path"])
     except FileNotFoundError as error:
         raise InputError(404, "source_not_found", "source output file does not exist") from error
 

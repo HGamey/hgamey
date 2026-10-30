@@ -35,6 +35,8 @@ import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subp
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 from node_read import NodeRead
+from job_center import JobCenter
+from node_identity import load_identity
 from node_history import JobHistory, HistoryError, load_history_config
 from job_export_cache import ExportCache, validate_root as validate_export_cache_root
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
@@ -269,6 +271,7 @@ class Jobs:
         self.root, self.bins = root, bins
         self.history_sources = history_sources if history_sources is not None else []
         self.data_root = os.path.abspath(data_dir or root)
+        self.node_id = load_identity(self.data_root)
         self.experiment_url = experiment_url or job_experiment.DEFAULT_URL
         self.experiment_mirror = os.path.join(self.data_root, "_experiments", "experiments.git")
         self.update_config_dir = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
@@ -293,6 +296,7 @@ class Jobs:
         self.device_scopes = DeviceScope(self)
         self.dispatch = JobDispatch(self, max_running, host_capacity=host_capacity)
         self._out_guard, self._sha_cache = threading.Lock(), {}
+        self.center = JobCenter(self)
 
     def path(self, jid, *p):
         if not re.fullmatch(r"[0-9a-f]{12}", jid or ""):
@@ -313,8 +317,11 @@ class Jobs:
         return self._read_root.read_json(jid + "/meta.json")
 
     def start(self, spec, body, request_id=None, *, admit=None):
-        if not isinstance(spec, dict):
-            raise ValueError("job spec must be an object")
+        return self.center.start(spec, body, request_id, admit=admit)
+
+    def accept(self, request, body, request_id=None, *, job_id=None, admit=None):
+        """Execute a request whose business context was resolved by the center."""
+        spec, research_devices = request["spec"], request["research_devices"]
         policy = require_policy(spec)
         binname, argv = spec.get("bin"), spec.get("argv") or []
         if binname not in self.bins:
@@ -333,33 +340,7 @@ class Jobs:
                     or any(not isinstance(r, str) or not _re.fullmatch(r"[0-9a-f]{64}", r) for r in asset_refs)):
                 raise ValueError("asset_refs must be a list of up to 256 sha256 hex strings")
             asset_refs = sorted(set(asset_refs))
-        actor_id = spec.get("actor_id")
-        if actor_id is not None:
-            if not isinstance(actor_id, str) or not actor_id.strip() or len(actor_id) > 64:
-                raise ValueError("actor_id 必须是 1-64 字符的非空字符串")
-            actor_id = actor_id.strip()
-        research_id = spec.get("research_id")
-        research_devices = []
-        if research_id is not None:
-            store = getattr(self, "research", None)
-            try:
-                if store is None:
-                    raise ValueError("this node keeps no research records")
-                research_devices = store.get("research", research_id)["data"].get("device_requirements") or []
-            except ValueError as error:  # ResearchError is a ValueError: malformed id or no such research
-                raise ValueError(f"research_id must name a research on this node: {error}") from None
-        direction_id = spec.get("direction_id")
-        if direction_id is not None:
-            if research_id is None:
-                raise ValueError("direction_id requires research_id")
-            store = getattr(self, "research", None)
-            try:
-                if store is None:
-                    raise ValueError("this node keeps no research records")
-                if store.get("direction", direction_id)["research_id"] != research_id:
-                    raise ValueError("direction_id must belong to research_id")
-            except ValueError as error:
-                raise ValueError(f"direction_id must name a direction on research {research_id}: {error}") from None
+        actor_id, research_id, direction_id = (spec.get(key) for key in ("actor_id", "research_id", "direction_id"))
         external_lock = binname in {"adb", "fetch_apk"}
         if external_lock and spec.get("exe"):
             raise ValueError("adb/fetch_apk 不支持 exe 替换；lease helper 请走 phonefarm 路线并自行持有 lease")
@@ -437,7 +418,7 @@ class Jobs:
                 self.deployments.require_device_binding()
             if original_admit is not None:
                 original_admit()
-        return self.dispatch.submit(spec, body, request_id, admit=admit)
+        return self.dispatch.submit(spec, body, request_id, job_id=job_id, admit=admit)
 
     def _prepare(self, row, body):
         spec, jid = row["spec"], row["job_id"]
@@ -582,6 +563,7 @@ class Jobs:
             meta["controls"] = {"cancel_supported": False, "force_supported": False,
                                 "reason": "waiting for worker release and result storage commit"}
         meta["input_preparation"] = job_preparation.record(self._read_root, jid, expected=meta.get("input_preparation_expected", False))
+        meta["execution_node_id"] = self.node_id
         return self.dispatch.attach(meta, row)
 
     def _execution_status(self, jid, worker_alive=None):

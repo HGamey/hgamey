@@ -85,7 +85,7 @@ class JobDispatch:
                 "lock_mode": "management" if name == "devlock" else "devlock_run" if name in {"adb", "fetch_apk"} else "internal_or_helper",
                 "recovery": {"status": "not_needed", "reason": "command has not started"}}
 
-    def submit(self, spec, body, request_id, *, admit=None):
+    def submit(self, spec, body, request_id, *, job_id=None, admit=None):
         key = self.request_key(uuid.uuid4().hex if request_id is None else request_id)
         with file_lock(self.intake_path):
             prior = self.queue.by_request(key)
@@ -105,7 +105,7 @@ class JobDispatch:
                 parent = self.queue.get(spec["recovery_for"])
                 if not parent or parent["state"] not in {"blocked", "done"}:
                     raise RequestConflict("recovery_for must name a finished job")
-            row, created = self.queue.reserve(key, fingerprint, spec, spec["resources"])
+            row, created = self.queue.reserve(key, fingerprint, spec, spec["resources"], job_id=job_id)
             if created:
                 jid = row["job_id"]
                 try:

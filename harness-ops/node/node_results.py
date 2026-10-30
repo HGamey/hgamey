@@ -242,11 +242,10 @@ class NodeResults:
         return db.execute("SELECT * FROM results WHERE result_id=?", (result_id,)).fetchone()
 
     def _job_exists(self, jid):
-        if jid is None or self.jobs.dispatch.queue.get(jid):
+        if jid is None:
             return
         try:
-            fd = self.jobs._read_root.open_fd(jid, directory=True)
-            os.close(fd)
+            self.jobs.center.artifacts.require_job(jid)
         except (OSError, ValueError):
             raise ResultError(404, "result_job_not_found", "local result job does not exist; use an external reference for historical IDs") from None
 
@@ -279,7 +278,7 @@ class NodeResults:
                     root.close()
             else:
                 try:
-                    with self.jobs._read_root.open_file(source["job_id"] + "/out/" + source["path"]) as stream:
+                    with self.jobs.center.artifacts.open_output(source["job_id"], source["path"]) as stream:
                         before = os.fstat(stream.fileno())
                         row.update(status="available", size=before.st_size, stamp=list(stamp(before)))
                         if name in needed:
@@ -385,24 +384,26 @@ class NodeResults:
         cursor = encode_cursor([self.node_id, filters, upper, rows[limit - 1]["sequence"]]) if len(rows) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": items, "next_cursor": cursor}
 
+    def _open_source(self, source):
+        if source["kind"] == "attachment":
+            root = SafeRoot(self.jobs.data_root)
+            try:
+                return root.open_file("_research/attachments/" + source["attachment_id"])
+            finally:
+                root.close()
+        return self.jobs.center.artifacts.open_output(source["job_id"], source["path"])
+
     def _current_source(self, rid, source, observation):
         item = {"name": source["name"], "status": observation["status"], "reason": observation["reason"], "url": None}
         if source["kind"] == "imported_json":
             item.update(status="available", reason=None)
         elif source["kind"] in {"job_output", "attachment"}:
-            root = SafeRoot(self.jobs.data_root) if source["kind"] == "attachment" else None
             try:
-                path = ("_research/attachments/" + source["attachment_id"] if root is not None
-                        else source["job_id"] + "/out/" + source["path"])
-                opener = root.open_file if root is not None else self.jobs._read_root.open_file
-                with opener(path) as stream:
+                with self._open_source(source) as stream:
                     same = list(stamp(os.fstat(stream.fileno()))) == observation.get("stamp")
                 item.update(status="available" if same else "changed", reason=None if same else "source no longer matches its registration observation")
             except (OSError, ValueError):
                 item.update(status="unavailable", reason="source is no longer readable through the registered path")
-            finally:
-                if root is not None:
-                    root.close()
         if item["status"] == "available":
             item["url"] = "/results/" + quote(rid, safe="") + "/sources/" + quote(source["name"], safe="")
         return item
@@ -488,17 +489,10 @@ class NodeResults:
             return self.imported(source["import_id"], source=True)
         if source["kind"] not in {"job_output", "attachment"} or not observation.get("stamp"):
             raise ResultError(409, "result_source_unbound", "source was not bound to readable local bytes at registration")
-        root = SafeRoot(self.jobs.data_root) if source["kind"] == "attachment" else None
         try:
-            path = ("_research/attachments/" + source["attachment_id"] if root is not None
-                    else source["job_id"] + "/out/" + source["path"])
-            opener = root.open_file if root is not None else self.jobs._read_root.open_file
-            stream = opener(path)
+            stream = self._open_source(source)
         except (OSError, ValueError):
             raise ResultError(404, "result_source_unavailable", "registered source is missing or unreadable") from None
-        finally:
-            if root is not None:
-                root.close()
         try:
             if list(stamp(os.fstat(stream.fileno()))) != observation["stamp"]:
                 raise ResultError(409, "result_source_changed", "source changed after registration; old result was not rewritten")

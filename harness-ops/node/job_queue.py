@@ -163,7 +163,7 @@ class JobQueue:
         with self._transaction(write=True) as db:
             return self._publish(db, jid, "worker_observation", observation)
 
-    def reserve(self, request_id, fingerprint, spec, resources):
+    def reserve(self, request_id, fingerprint, spec, resources, *, job_id=None):
         """The caller supplies a non-secret spec and its content fingerprint."""
         if not isinstance(spec, dict):
             raise ValueError("spec must be an object")
@@ -179,7 +179,7 @@ class JobQueue:
             # transaction. Existing IDs above retain their original admission.
             job_priority(spec)
             job_capacity.check_fit(spec, self._capacity(db))
-            job_id = secrets.token_hex(6)
+            job_id = job_id or secrets.token_hex(6)
             db.execute("""INSERT INTO jobs
                 (job_id, request_id, fingerprint, spec, resources, submitted_at, state)
                 VALUES (?, ?, ?, ?, ?, ?, 'preparing')""",

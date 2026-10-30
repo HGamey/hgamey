@@ -79,26 +79,7 @@ class NodeRead:
         self.jobs = jobs
         self.started = time.time()
         self.data_root = os.path.abspath(data_root)
-        identity_dir = os.path.join(self.data_root, "_node")
-        os.makedirs(identity_dir, exist_ok=True)
-        identity_path = os.path.join(identity_dir, "id")
-        temporary = identity_path + "." + uuid.uuid4().hex
-        try:
-            with open(temporary, "x", encoding="utf-8") as f:
-                f.write(uuid.uuid4().hex + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            try:
-                os.link(temporary, identity_path)  # Publish complete bytes, never a partially written identity.
-            except FileExistsError:
-                pass
-        finally:
-            os.unlink(temporary)
-        with open(identity_path, encoding="utf-8") as f:
-            self.node_id = f.read().strip()
-        if not re.fullmatch(r"[0-9a-f]{32}", self.node_id):
-            raise ValueError("invalid persistent node identity; preserve and repair _node/id")
-        jobs.node_id = self.node_id
+        self.node_id = jobs.node_id
         self.service = {"revision": None, "dirty": None,
                         "source_kind": "startup_checkout_observation",
                         "instance_id": uuid.uuid4().hex, "observed_at": self.started,
@@ -184,7 +165,7 @@ class NodeRead:
             after = tuple(cursor[:2])
         entries, warnings = [], []
         # Admission is authoritative even if storage failed before mkdir/meta.
-        job_ids = set(os.listdir(self.jobs.dir)) | {r["job_id"] for r in self.jobs.dispatch.queue.rows()}
+        job_ids = self.jobs.center.job_ids()
         for jid in job_ids:
             if not re.fullmatch(r"[0-9a-f]{12}", jid):
                 continue
@@ -222,4 +203,4 @@ class NodeRead:
 
     def artifacts(self, jid, query):
         self.jobs.status(jid)
-        return artifact_page(self.jobs._read_root, jid, query)
+        return self.jobs.center.artifacts.list(jid, query)
