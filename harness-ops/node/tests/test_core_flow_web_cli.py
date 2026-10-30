@@ -1255,6 +1255,67 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_long_chain_reads_what_is_on_screen_first(self):
+        """A chain's page reads what is on screen: below the fold, runs and notes wait until scrolled to, each task's
+        runs are asked for once, an older delivery is read when it is opened, and the folded agent directory is not
+        read at all."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        for rid, follows in (("sr-a", None), ("sr-b", "sr-a"), ("sr-c", "sr-b")):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": "长链 " + rid, "objective": "首屏只读看得到的", "follows": follows}))[0], 201)
+        # A note on a delivered task reopens it, so the note comes first.
+        self.assertEqual(self.web("POST", "/research-state/note/n-long", self.write("create-n-long", {
+            "research_id": "sr-a", "text": "最早的进展", "reply_to": None, "decision": None}))[0], 201)
+        for rid in ("sr-a", "sr-b"):
+            self.assertEqual(self.pf(ADMIN, "research", "deliver", rid, "--summary", "# 交付 " + rid, "--artifact", f"job:{self.jid}",
+                                     "--game-version", "5.1", "--device", "FixturePhone")[0], 0)
+        for i in range(20):
+            self.assertEqual(self.web("POST", f"/research-state/direction/d-long-{i}", self.write(f"create-d-long-{i}", {
+                "research_id": "sr-c", "title": f"方向 {i}", "hypothesis": "把运行和留言推到屏幕下面"}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                asked = []
+                page.on("request", lambda request: asked.append(request.url.split("/dash/api", 1)[-1]) if "/dash/api/" in request.url else None)
+                reads = lambda part: [url for url in asked if part in url]
+                settled = "() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))"
+                page.goto(f"{base}/dash/research?kind=research&id=sr-c")
+                page.wait_for_function("() => document.querySelectorAll('#task-directions .research-direction').length === 20")
+                page.wait_for_selector('.task-report[data-task="sr-b"]', state="attached")
+                page.evaluate(settled)
+                self.assertGreater(page.evaluate("() => document.getElementById('task-runs').getBoundingClientRect().top - innerHeight"), 100,
+                                   "the fixture puts runs and notes below the fold")
+                self.assertEqual(reads("/research-state/note?"), [], "notes below the fold are not read yet")
+                self.assertEqual(page.eval_on_selector_all("#task-runs .run-list, #task-thread .discuss-entry", "e => e.length"), 0)
+                self.assertEqual(reads("/research-state/research/sr-a"), [], "the older delivery is not read while folded")
+                page.wait_for_function("() => { scrollTo(0, document.documentElement.scrollHeight); return document.querySelectorAll('#task-thread .discuss-entry').length === 1; }")
+                self.assertEqual(sorted(url.split("research=")[1].split("&")[0] for url in reads("/jobs?research=")), ["sr-a", "sr-b", "sr-c"],
+                                 "directions and runs share one read of each task's runs")
+                self.assertEqual(len(reads("/research-state/note?")), 3)
+                page.click(".chain-seg:not([data-seg])")
+                page.click(".report-older summary")
+                page.wait_for_selector(".report-older .task-report")
+                self.assertIn("交付 sr-a", page.text_content(".report-older"))
+                self.assertEqual(len(reads("/research-state/research/sr-a")), 1)
+                self.assertEqual(reads("/duties") + reads("/jobs?limit=50"), [], "the folded agent directory is not read")
+            finally:
+                browser.close()
+
     def test_a_task_closes_with_a_reason_stays_findable_and_reopens(self):
         """关闭任务 asks why; the closed task shows the reason, folds into 已关闭 on the home page, and 重新打开 makes it active."""
         try:

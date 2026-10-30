@@ -49,14 +49,16 @@
     return answers.items.length ? await U.api(`/research-state/feedback/${encodeURIComponent(answers.items[0].id)}`) : null;
   }
 
+  // Videos and type probes wait until the block is near the screen (the task page's reader when it has one).
+  let near = (node, run) => run();
   // A slot whose kind the record does not state is asked for its type with a one-byte read before an element is chosen.
   function media(record, item, state, done) {
     const path = `/dash/api/research-state/request/${encodeURIComponent(record.id)}/media/${item.slot}?revision=${record.revision}`;
     const holder = document.createElement('div'), size = document.createElement('span');
     holder.className = 'compare-media'; state[item.slot] = 'not_loaded';
-    const kind = item.kind ? Promise.resolve(item.kind)
-      : HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', headers: {Range: 'bytes=0-0'}})
-        .then(r => { r.body?.cancel(); return /^video\//.test(r.headers.get('Content-Type') || '') ? 'video' : 'image'; }, () => 'image');
+    const kind = item.kind ? Promise.resolve(item.kind) : new Promise(resolve => near(holder, () => resolve(
+      HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', headers: {Range: 'bytes=0-0'}})
+        .then(r => { r.body?.cancel(); return /^video\//.test(r.headers.get('Content-Type') || '') ? 'video' : 'image'; }, () => 'image'))));
     kind.then(k => { holder.append(element(HGTarget.url(path), k, item, state, size)); done(); });
     return {holder, size};
   }
@@ -72,7 +74,7 @@
       Object.assign(node, {controls: true, preload: 'metadata', playsInline: true, muted: true});
       node.onloadstart = () => { if (state[item.slot] === 'not_loaded') state[item.slot] = 'unknown'; };
       node.onloadedmetadata = node.onloadeddata = shown;
-      node.src = url + '#t=0.1';   // paints the first frame without playing
+      near(node, () => { node.src = url + '#t=0.1'; });   // paints the first frame without playing
       return node;
     }
     node.alt = item.slot; node.decoding = 'async'; node.loading = 'lazy';
@@ -208,6 +210,7 @@
   // The research's comparisons: those waiting for a judgement first (the caller puts them at the top), answered ones apart.
   // On a chain of tasks (`scope`), every task's comparisons, each tagged with its task.
   async function sections(record, ctx, U, scope) {
+    if (U.near) near = U.near;
     const lists = await Promise.all((scope?.ids || [record.id]).map(id => U.api(`/research-state/request?research_id=${encodeURIComponent(id)}&limit=100`)));
     const requests = (await Promise.all(lists.flatMap(list => list.items).map(item => U.api(`/research-state/request/${encodeURIComponent(item.id)}`).catch(() => null)))).filter(isComparison);
     const answers = await Promise.all(requests.map(r => load(r, U).catch(() => null)));

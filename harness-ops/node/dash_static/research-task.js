@@ -27,6 +27,23 @@
   const failure = error => error.needSteer ? '需要先解锁研究操作（掌舵密码）' : error.message;
   const artifactPath = ref => `${API}/jobs/${encodeURIComponent(ref.job_id)}/out?${new URLSearchParams({path: ref.path})}`;
   const attachmentPath = ref => `${API}/research-attachments/${encodeURIComponent(ref.attachment_id)}`;
+  // Media are read once they come near the screen: a long chain's notes, judged comparisons and folded reports cost
+  // nothing until a person scrolls to (or opens) them.
+  const mediaRuns = new WeakMap(), media = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      media.unobserve(entry.target); const run = mediaRuns.get(entry.target); mediaRuns.delete(entry.target); run?.();
+    }
+  }, {rootMargin: '600px 0px'}) : null;
+  function near(node, run) { if (!media) return run(); mediaRuns.set(node, run); media.observe(node); }
+  // A chain's sections below the comparisons are read once they reach the screen (the media above prefetch further).
+  const sectionRuns = new WeakMap(), sections = media && new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      sections.unobserve(entry.target); const run = sectionRuns.get(entry.target); sectionRuns.delete(entry.target); run?.();
+    }
+  }, {rootMargin: '100px 0px'});
+  const reached = node => new Promise(resolve => { if (!sections) return resolve(); sectionRuns.set(node, resolve); sections.observe(node); });
   function clearImages() {
     ++imageEpoch;
     for (const url of imageURLs) URL.revokeObjectURL(url);
@@ -50,7 +67,7 @@
     link.href = HGTarget.url(sourcePath); link.download = filename;
     image.alt = alt || filename; link.append(image); figure.append(link, el('figcaption', ref.kind === 'attachment' ? filename : `任务 ${ref.job_id} · ${ref.path}`));
     const mime = ref.content_type || IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()] || 'application/octet-stream';
-    loadImage(image, ref, mime, imageEpoch, sourcePath);
+    const epoch = imageEpoch; near(figure, () => loadImage(image, ref, mime, epoch, sourcePath));
     return figure;
   }
   // Videos stream from their URL (the player seeks with ranges); nothing is read until the player asks for it.
@@ -58,7 +75,7 @@
     const figure = el('figure', null, 'research-artifact video'), video = el('video'), link = el('a');
     const filename = ref.filename || ref.path.split('/').pop();
     Object.assign(video, {controls: true, preload: 'metadata', playsInline: true});
-    video.src = HGTarget.url(sourcePath) + '#t=0.1';   // paints the first frame without playing
+    near(video, () => { video.src = HGTarget.url(sourcePath) + '#t=0.1'; });   // paints the first frame without playing
     video.onerror = () => video.replaceWith(el('span', '视频读取失败', 'note'));
     link.textContent = ref.kind === 'attachment' ? filename : `任务 ${ref.job_id} · ${ref.path}`;
     link.href = HGTarget.url(sourcePath); link.download = filename;
@@ -291,7 +308,7 @@
     try {
       const per = await Promise.all(scope.ids.map(id => Promise.all([
         api(`/research-state/direction?research_id=${encodeURIComponent(id)}&limit=100`),
-        api(`/jobs?research=${encodeURIComponent(id)}&limit=50`),
+        scope.jobs(id),
         api(`/results?research_id=${encodeURIComponent(id)}&limit=100`)])));
       // A chain lists its tasks' directions in chain order, each task's oldest first.
       const entries = per.flatMap(([directions]) => directions.items.slice().reverse());
@@ -333,7 +350,7 @@
     section.append(head, list);
     list.append(el('li', '读取中…', 'empty'));
     try {
-      const value = {items: (await Promise.all(scope.ids.map(id => api(`/jobs?research=${encodeURIComponent(id)}&limit=50`))))
+      const value = {items: (await Promise.all(scope.ids.map(id => scope.jobs(id))))
         .flatMap(page => page.items).sort((a, b) => (b.started || 0) - (a.started || 0))};
       count.textContent = value.items.length ? String(value.items.length) : '';
       const rows = value.items.map(job => {
@@ -480,10 +497,12 @@
     const waiting = target ? compareNote('正在读取待你评的对比…') : el('div');
     clearImages(); container.replaceChildren(...(target ? [waiting] : []));
     if (record.kind !== 'research') return;
+    // A task that others follow (or that follows one) shows the whole chain: a strip of its tasks, every section merged.
+    // The chain is asked for while the owner list is read.
+    const chained = api(`/tasks?chain=${encodeURIComponent(record.id)}`).then(value => value.items, () => []);
     agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
     if (shown !== paint) return;
-    // A task that others follow (or that follows one) shows the whole chain: a strip of its tasks, every section merged.
-    const chain = await api(`/tasks?chain=${encodeURIComponent(record.id)}`).then(value => value.items, () => []);
+    const chain = await chained;
     if (shown !== paint) return;
     const scope = chainScope(record, chain);
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
@@ -496,8 +515,17 @@
     await comparisons(record, ctx, scope, container, waiting, judged, target, () => shown === paint);
     if (shown !== paint) return;
     const delivered = deliverables(scope, record).then(found => { if (shown === paint) { reports.replaceWith(...found); scope.apply(container); } });
-    await Promise.all([directionsSection(scope, directions), runsSection(scope, runs), threadSection(record, ctx, thread, scope), delivered]);
-    // The report is last, so a 交付报告 link lands once everything above it is in.
+    const steps = [[directions, () => directionsSection(scope, directions)], [runs, () => runsSection(scope, runs)],
+      [thread, () => threadSection(record, ctx, thread, scope), location.hash.startsWith('#note-')]];
+    if (!scope.chain) await Promise.all([...steps.map(([, load]) => load()), delivered]);
+    else {
+      // A chain reads its sections in page order as each reaches the screen, so what is below the fold waits for a
+      // scroll; a note link reads the thread at once.
+      const now = steps.filter(([, , at]) => at).map(([, load]) => load());
+      (async () => { for (const [section, load, at] of steps) { if (at) continue; await reached(section); if (shown !== paint) return; await load(); } })();
+      await Promise.all([...now, delivered]);
+    }
+    // The report is last, so a 交付报告 link lands once everything above it that will be read now is in.
     if (shown === paint && location.hash === '#task-report') document.getElementById('task-report')?.scrollIntoView({block: 'start'});
   }
   function compareNote(text, retry) {
@@ -532,7 +560,10 @@
   const clip = (value, n) => { const chars = Array.from(value || ''); return chars.length > n ? chars.slice(0, n).join('') + '…' : value || ''; };
   function chainScope(record, chain) {
     const linked = chain.length > 1, members = new Map(chain.map((task, i) => [task.id, {...task, n: CIRCLED[i] || `(${i + 1})`}]));
+    const runs = new Map();
     const scope = {chain: linked, ids: linked ? chain.map(task => task.id) : [record.id], members, segment: null, onPick: [],
+      // Each task's runs, read once for both 探索过程 and 运行.
+      jobs: id => runs.get(id) || runs.set(id, api(`/jobs?research=${encodeURIComponent(id)}&limit=50`)).get(id),
       // The task an entry came from, on a merged chain page only.
       tag(id) {
         const m = linked && members.get(id); if (!m) return null;
@@ -561,23 +592,32 @@
     };
     return strip;
   }
-  // The newest delivery reads in full; older ones in the chain fold under it.
+  // The newest delivery reads in full; older ones in the chain fold under it and are read when opened.
   async function deliverables(scope, record) {
     if (!scope.chain) return [deliverableSection(record)].filter(Boolean);
-    const done = [...scope.members.values()].filter(m => m.state === 'delivered' || m.id === record.id && record.data.deliverable);
-    const records = (await Promise.all(done.map(m => m.id === record.id ? record : api(`/research-state/research/${encodeURIComponent(m.id)}`).catch(() => null))))
-      .filter(r => r?.data.deliverable).sort((a, b) => b.updated_at - a.updated_at);
-    return records.map((r, i) => {
-      const section = deliverableSection(r), mark = scope.tag(r.id);
-      if (mark) section.querySelector('.section-head').prepend(mark);
-      if (!i) { section.dataset.task = r.id; return section; }
-      section.removeAttribute('id');
-      const older = el('details', null, 'research-section report-older'), m = scope.members.get(r.id);
-      older.dataset.task = r.id; older.append(el('summary', `${m.n} ${m.title} 的交付报告 · ${short(r.updated_at)}`), section);
-      return older;
+    const read = m => m.id === record.id ? Promise.resolve(record) : api(`/research-state/research/${encodeURIComponent(m.id)}`).catch(() => null);
+    const done = [...scope.members.values()].filter(m => m.state === 'delivered' || m.id === record.id && record.data.deliverable)
+      .sort((a, b) => (b.id === record.id ? record.updated_at : b.updated_at) - (a.id === record.id ? record.updated_at : a.updated_at));
+    let newest = null;
+    while (done.length && !newest) { const r = await read(done.shift()); if (r?.data.deliverable) newest = r; }
+    const tagged = r => { const section = deliverableSection(r), mark = scope.tag(r.id); if (mark) section.querySelector('.section-head').prepend(mark); return section; };
+    const older = done.map(m => {
+      const box = el('details', null, 'research-section report-older');
+      box.dataset.task = m.id; box.append(el('summary', `${m.n} ${m.title} 的交付报告 · ${short(m.id === record.id ? record.updated_at : m.updated_at)}`));
+      box.addEventListener('toggle', async () => {
+        if (!box.open || box.dataset.read) return;
+        box.dataset.read = '1'; const status = el('p', '读取中…', 'empty'); box.append(status);
+        const r = await read(m);
+        if (!r?.data.deliverable) { status.textContent = '没读到这份交付报告。'; delete box.dataset.read; return; }
+        const section = tagged(r); section.removeAttribute('id'); status.replaceWith(section);
+      });
+      return box;
     });
+    if (!newest) return older;
+    const section = tagged(newest); section.dataset.task = newest.id;
+    return [section, ...older];
   }
-  const util = {api, write, el, tag, timeEl, speaker, failure};
+  const util = {api, write, el, tag, timeEl, speaker, failure, near};
 
   window.HGResearchTask = {renderDetail, util, clearDetail: container => { shown = null; clearImages(); container.replaceChildren(); }};
 })();
