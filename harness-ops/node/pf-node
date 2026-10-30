@@ -15,7 +15,7 @@ Agent 每轮从这里开始（最短完整路径）：
   宿主完成未知时由负责人或管理员用 reset 一步停止并释放预留；保存错误修复后也用 reset 重存，不重跑实验。
 
   pf-node checkin                            # 用你自己的 token：现在该做的事，以及每轮做法
-  pf-node agents token <名字>                # 先用管理 token 签发你自己的 token（只打印一次）
+  pf-node join --invite <码> --name <名字> --token-file <路径> # 向管理员拿邀请码；只需 PF_NODE_URL
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）
   pf-node --research <研究> --detach phonefarm ... # 为研究跑的任务带上研究 ID：手机占用和任务页据此显示
   pf-node --research <研究> --direction <方向> --detach <命令> # 把运行挂到任务页的对应方向；方向必须属于该研究
@@ -1265,6 +1265,12 @@ def main():
     if not args:
         print(__doc__)
         return
+    if args[0] == "join":
+        from agent_client import join_main
+        raise SystemExit(join_main(args[1:], connection_url))
+    if args[0] == "agents" and args[1:] in (["--help"], ["-h"]):
+        from agent_client import main as agents_main
+        raise SystemExit(agents_main(args[1:]))
     if args[0] == "live" and (len(args) == 1 or any(arg in ("--help", "-h") for arg in args[1:])):
         from live_client import main as live_main
         return live_main(None, ["--help"])
@@ -1504,8 +1510,8 @@ def main():
             sys.exit("用法: pf-node checkin [--json]")
         me = json.loads(call("GET", "/whoami", attempts=1, raise_4xx=True)).get("agent")
         if not me:
-            sys.exit("pf-node checkin 要用 agent 自己的 token：先用管理 token 运行 pf-node agents token <名字>，"
-                     "把输出存进私有文件，再设 PF_NODE_TOKEN_FILE=<文件>")
+            sys.exit("pf-node checkin 要用 agent 自己的 token：向管理员拿邀请码，运行 "
+                     "pf-node join --invite <码> --name <名字> --token-file <路径>，再使用它打印的三行环境变量")
         value = json.loads(call("POST", f"/agents/{me}/checkin", b"{}", {"Content-Type": "application/json"},
                                 attempts=1, raise_4xx=True, safe_retry=True))
         if args[1:] == ["--json"]:

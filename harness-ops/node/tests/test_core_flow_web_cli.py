@@ -120,6 +120,21 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         return json.loads(out)
 
+    def test_dashboard_can_prepare_and_revoke_agent_invitation_with_steer(self):
+        body = {"url": "https://node.example", "note": "web invitation"}
+        self.assertEqual(self.web("POST", "/agent-invites", body, steer=False)[0], 403)
+        self.assertEqual(self.web("POST", "/agent-invites", body, hg=False)[0], 400)
+        status, invited = self.web("POST", "/agent-invites", body)
+        self.assertEqual(status, 201, invited)
+        for fact in [body["url"], self.node_id, invited["code"], "./bin/pf-node checkin"]:
+            self.assertIn(fact, invited["prompt"])
+        self.assertEqual(self.web("GET", "/agent-invites", steer=False)[0], 403)
+        status, listed = self.web("GET", "/agent-invites")
+        self.assertEqual(status, 200, listed)
+        self.assertEqual([item["id"] for item in listed["invites"]], [invited["id"]])
+        self.assertEqual(self.web("DELETE", "/agent-invites/" + invited["id"], {})[0], 200)
+        self.assertEqual(self.web("GET", "/agent-invites")[1]["invites"], [])
+
     @staticmethod
     def write(operation, data):
         return {"schema": "phonefarm/research-write@1", "operation_id": operation, "base_revision": None,

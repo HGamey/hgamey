@@ -36,6 +36,6 @@ python3 -m unittest discover -s harness-ops/node/tests
 ## Agent 使用平台
 
 - 每轮从 `pf-node checkin` 开始：它列出现在欠的事（人工留言、反馈、卡住的任务、过期的状态、该交付的研究）和每轮做法。
-- 用自己的 token 工作：持有管理 token 时先运行 `pf-node agents token <名字>`，存进私有文件，再设 `PF_NODE_TOKEN_FILE`。之后的写入都记在你名下。
+- 用自己的 token 工作：向管理员拿邀请码，设 `PF_NODE_URL` 后运行 `pf-node join --invite <码> --name <名字> --token-file <路径>`；将它打印的三行环境变量放进包装脚本。之后的写入都记在你名下。
 - 任务就是 research：`pf-node research claim|note|thread|deliver`（见 `pf-node research --help`）。回应人工留言用 `--reply-to <留言> --decision adopt|defer|reject`；交付要有总结、产物和适用的游戏版本与设备。
 - 一个方向等人时继续做其他方向，不要停下来等。

@@ -49,6 +49,7 @@ import job_experiment
 from node_media import MediaError
 from node_fleet import FleetState
 from node_agents import AgentError, NodeAgents
+from agent_onboarding import invitation_prompt
 from node_directory import NodeDirectory, DirectoryError
 from node_games import NodeGames, GameError, MAX_MANIFEST
 from node_uploads import NodeUploads
@@ -1088,6 +1089,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def do_GET(self):
             self.agent = None  # a kept-alive connection must not carry the previous request's identity
+            if self._agent_onboarding("GET"):
+                return
             if self._remote("GET"):
                 return
             u = urlparse(self.path)
@@ -1483,6 +1486,55 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                     "session_pause_requested": pausing,
                                     "note": "takes effect at the next producer safe point; cancel still works"})
 
+        def _agent_onboarding(self, method):
+            parts = [unquote(p) for p in urlparse(self.path).path.split("/") if p]
+            dashboard = bool(board and parts[:2] == ["dash", "api"])
+            if dashboard:
+                parts = parts[2:]
+            joining = parts == ["join"] and not dashboard
+            if not joining and parts[:1] != ["agent-invites"]:
+                return False
+            self.close_connection = True
+            if not joining:
+                if dashboard and method == "GET":
+                    if not board.authed(self):
+                        self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
+                        return True
+                    if not board.steered(self):
+                        self._send(403, {"code": "steer_required", "error": "需要掌舵密码", "need_steer": True})
+                        return True
+                elif not self._upload_write_auth(dashboard):
+                    return True
+                if getattr(self, "agent", None):
+                    self._send(403, {"code": "admin_required", "error": "managing invites needs the admin token"})
+                    return True
+            try:
+                if method == "GET" and parts == ["agent-invites"]:
+                    self._send(200, {"node_id": node.node_id, "invites": jobs.agents.invites()})
+                elif method == "DELETE" and len(parts) == 2 and parts[0] == "agent-invites":
+                    self._send(200, jobs.agents.revoke_invite(parts[1]))
+                elif method == "POST" and (joining or parts == ["agent-invites"]):
+                    length = self._upload_length(MAX_REQUEST)
+                    data = json.loads(self.rfile.read(length) or b"{}")
+                    if not isinstance(data, dict):
+                        raise ValueError("agent onboarding requires a JSON object")
+                    if joining:
+                        self._send(201, jobs.agents.join(data))
+                    else:
+                        value = jobs.agents.invite(data.get("hours", 24), data.get("note", ""))
+                        # CLI supplies its public URL; the web button can use the request origin.
+                        url = str(data.get("url") or (self.headers.get("X-Forwarded-Proto", "http")
+                                  + "://" + self.headers.get("Host", ""))).rstrip("/")
+                        self._send(201, {**value, "url": url, "node_id": node.node_id,
+                                         "prompt": invitation_prompt(url, node.node_id, value["code"])})
+                else:
+                    self._send(404, {"code": "not_found", "error": "route not found"})
+            except (AgentError, AssetUploadError) as error:
+                self._send(error.status, {"code": "agent_error", "error": str(error)})
+            except ValueError as error:
+                self._send(400, {"code": "invalid_request", "error": str(error)})
+            return True
+
         def _agents_post(self, dashboard, body):
             self.close_connection = True
             if not self._authed():
@@ -1719,6 +1771,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 left -= len(b)
 
         def do_DELETE(self):
+            self.agent = None
+            if self._agent_onboarding("DELETE"):
+                return
             if self._remote("DELETE"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
@@ -1840,6 +1895,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def do_POST(self):
             self.agent = None  # a kept-alive connection must not carry the previous request's identity
+            if self._agent_onboarding("POST"):
+                return
             if self._remote("POST"):
                 return
             parts = [p for p in urlparse(self.path).path.split("/") if p]
@@ -2007,7 +2064,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     # Checking in moves the agent's unread position, so only the agent itself does it.
                     if self.agent != parts[1]:
                         return self._send(403, {"code": "agent_token_required",
-                                                "error": "check in with this agent's own token (pf-node agents token NAME)"})
+                                                "error": "check in with this agent's own token (get an invite, then pf-node join)"})
                     try:
                         return self._send(200, agent_duties.checkin(jobs, parts[1]))
                     except AgentError as error:

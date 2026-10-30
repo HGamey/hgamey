@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -108,14 +109,68 @@ class NodeAgents:
             entry = self._entry(state, name)
             if not entry.get("enabled", True):
                 raise AgentError(409, "this agent is disabled")
-            token_id = secrets.token_hex(4)
-            token = f"hgag_{token_id}_{secrets.token_urlsafe(32)}"
-            now = time.time()
-            entry["credential"] = {"id": token_id, "sha256": hashlib.sha256(token.encode()).hexdigest(), "issued_at": now}
+            token = self._mint_token(entry)
             entry["revision"] += 1
-            entry["updated_at"] = now
             self._store.write_json("registry.json", state)
             return {"agent": self._public(entry), "token": token}
+
+    def _mint_token(self, entry):
+        token_id = secrets.token_hex(4)
+        token = f"hgag_{token_id}_{secrets.token_urlsafe(32)}"
+        now = time.time()
+        entry["credential"] = {"id": token_id, "sha256": hashlib.sha256(token.encode()).hexdigest(), "issued_at": now}
+        entry["updated_at"] = now
+        return token
+
+    def invite(self, hours=24, note=""):
+        _fields({"note": note})
+        try:
+            seconds = float(hours) * 3600
+        except (TypeError, ValueError, OverflowError):
+            seconds = 0
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise AgentError(400, "hours must be a positive finite number")
+        code = "hginv_" + secrets.token_urlsafe(32)
+        now = time.time()
+        entry = {"id": secrets.token_hex(8), "sha256": hashlib.sha256(code.encode()).hexdigest(),
+                 "created_at": now, "expires_at": now + seconds, "note": note}
+        with self._locked() as state:
+            state.setdefault("invites", []).append(entry)
+            self._store.write_json("registry.json", state)
+        return {**{k: v for k, v in entry.items() if k != "sha256"}, "code": code}
+
+    def invites(self):
+        with self._locked() as state:
+            return [{k: v for k, v in entry.items() if k != "sha256"}
+                    for entry in state.get("invites", []) if "used_at" not in entry]
+
+    def revoke_invite(self, invite_id):
+        with self._locked() as state:
+            state["invites"] = [entry for entry in state.get("invites", []) if entry["id"] != invite_id]
+            self._store.write_json("registry.json", state)
+        return {"id": invite_id, "revoked": True}
+
+    def join(self, body):
+        code = body.get("invite")
+        if not isinstance(code, str) or not code:
+            raise AgentError(400, "invite is required")
+        fields = _fields({"name": body.get("name"), "note": body.get("note", "")})
+        digest = hashlib.sha256(code.encode()).hexdigest()
+        with self._locked() as state:
+            invite = next((entry for entry in state.get("invites", [])
+                           if hmac.compare_digest(entry["sha256"], digest)), None)
+            if invite is None:
+                raise AgentError(404, "invite not found")
+            if "used_at" in invite:
+                raise AgentError(409, "invite already used")
+            if time.time() >= invite["expires_at"]:
+                raise AgentError(410, "invite expired")
+            entry = self._create(state, fields)
+            token = self._mint_token(entry)
+            invite.update(used_at=time.time(), agent=entry["name"])
+            # Identity, token hash and consumption are one registry replacement.
+            self._store.write_json("registry.json", state)
+            return {"node_id": self.local_node_id, "agent": self._public(entry), "token": token}
 
     def verify(self, token):
         """Name of the enabled agent this token belongs to, or None."""
@@ -159,15 +214,19 @@ class NodeAgents:
         if "name" not in fields:
             raise AgentError(400, "name is required")
         with self._locked() as state:
-            if any(entry["name"] == fields["name"] for entry in state["agents"]):
-                raise AgentError(409, "an agent with this name is already registered")
-            now = time.time()
-            entry = {"tags": [], "note": "", "enabled": True,
-                     **fields, "revision": 1, "node_id": self.local_node_id,
-                     "created_at": now, "updated_at": now}
-            state["agents"].append(entry)
+            entry = self._create(state, fields)
             self._store.write_json("registry.json", state)
             return self._public(entry)
+
+    def _create(self, state, fields):
+        if any(entry["name"] == fields["name"] for entry in state["agents"]):
+            raise AgentError(409, "an agent with this name is already registered")
+        now = time.time()
+        entry = {"tags": [], "note": "", "enabled": True,
+                 **fields, "revision": 1, "node_id": self.local_node_id,
+                 "created_at": now, "updated_at": now}
+        state["agents"].append(entry)
+        return entry
 
     def update(self, name, body):
         _name(name)

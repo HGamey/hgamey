@@ -1,9 +1,22 @@
 """Agent registry CLI: register, list, show, update, token — same contract as the API — and the check-in view."""
+import argparse
 import json
+import os
+import shlex
 import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
 from cli_time import utc
+from target_client import NoRedirect, url as target_url
 
-HELP = """pf-node agents                              # 注册 agent 列表
+HELP = """新 agent：向管理员拿邀请码，只设 PF_NODE_URL 即可接入：
+pf-node join --invite CODE --name NAME --token-file PATH  # 自己登记，token 写进 0600 文件
+
+pf-node agents invite [--hours 24] [--note TEXT]  # 管理员生成一次性邀请码和初始提示
+pf-node agents invites                     # 管理员列出未使用的邀请码（含过期时间）
+pf-node agents invites revoke ID           # 管理员撤销邀请码
+pf-node agents                             # 注册 agent 列表
 pf-node agents show NAME                    # 单个详情
 pf-node agents register FILE                # 注册（FILE 为 data JSON，至多 4 KiB）
 pf-node agents status NAME TEXT             # 上报当前在做什么（至多 1024 字符，保留最近 50 条）
@@ -29,6 +42,21 @@ def main(args, target=None):
 
     if not args:
         print(json.dumps(call("GET", "/agents"), ensure_ascii=False, indent=1))
+        return 0
+    if args[0] == "invite":
+        parser = argparse.ArgumentParser(prog="pf-node agents invite")
+        parser.add_argument("--hours", type=float, default=24)
+        parser.add_argument("--note", default="")
+        options = parser.parse_args(args[1:])
+        value = call("POST", "/agent-invites", json.dumps({"hours": options.hours, "note": options.note,
+                                                           "url": target.url}).encode())
+        print(f"邀请码： {value['code']}\n过期时间： {utc(value['expires_at'])}\n\n{value['prompt']}")
+        return 0
+    if args == ["invites"]:
+        print(json.dumps(call("GET", "/agent-invites"), ensure_ascii=False, indent=1))
+        return 0
+    if len(args) == 3 and args[:2] == ["invites", "revoke"]:
+        print(json.dumps(call("DELETE", "/agent-invites/" + args[2]), ensure_ascii=False))
         return 0
     if args[0] == "show" and len(args) == 2:
         print(json.dumps(call("GET", f"/agents/{args[1]}"), ensure_ascii=False, indent=1))
@@ -60,6 +88,38 @@ def main(args, target=None):
         print(json.dumps(call("GET", "/agents"), ensure_ascii=False, indent=1))
         return 0
     sys.exit("pf-node agents: 无效命令；用 agents --help 查看用法")
+
+
+def join_main(args, connection_url=None):
+    parser = argparse.ArgumentParser(prog="pf-node join", description="拿到邀请码后自行接入；只需 PF_NODE_URL，不需要已有 token 或节点 ID。")
+    parser.add_argument("--invite", required=True)
+    parser.add_argument("--name", required=True)
+    parser.add_argument("--note", default="")
+    parser.add_argument("--token-file", required=True, help="将新 token 写入此文件（0600）")
+    options = parser.parse_args(args)
+    url = target_url(connection_url if connection_url is not None else os.environ.get("PF_NODE_URL"))
+    filename = Path(options.token_file).expanduser().absolute()
+    request = urllib.request.Request(url + "/join", method="POST",
+        data=json.dumps({"invite": options.invite, "name": options.name, "note": options.note}).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        filename.parent.mkdir(parents=True, exist_ok=True)
+        # Check the destination before spending the code; don't truncate an old token on a rejected join.
+        with os.fdopen(os.open(filename, os.O_WRONLY | os.O_CREAT, 0o600), "w", encoding="utf-8") as output:
+            os.fchmod(output.fileno(), 0o600)
+            with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+                value = json.load(response)
+            output.write(value["token"] + "\n")
+            output.truncate()
+    except urllib.error.HTTPError as error:
+        with error:
+            sys.exit(f"pf-node join: HTTP {error.code}: {error.read().decode(errors='replace')}")
+    except (OSError, urllib.error.URLError) as error:
+        sys.exit(f"pf-node join: {error}")
+    for key, item in [("PF_NODE_URL", url), ("PF_NODE_ID", value["node_id"]), ("PF_NODE_TOKEN_FILE", str(filename))]:
+        print(f"export {key}={shlex.quote(item)}")
+    print("\n下一步：将这三行放进包装脚本，再运行 pf-node checkin。")
+    return 0
 
 
 def render_checkin(value):
