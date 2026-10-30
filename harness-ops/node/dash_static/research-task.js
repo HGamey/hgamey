@@ -4,6 +4,7 @@
   const API = '/dash/api';
   let agents = null, shown = null, assigned = null, imageEpoch = 0;
   const imageURLs = new Set(), IMAGE_TYPES = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', svg: 'image/svg+xml', webp: 'image/webp'};
+  const VIDEO_TYPES = {mp4: 'video/mp4', webm: 'video/webm'}, extension = path => path.split('.').pop().toLowerCase();
   const el = (tag, value, className) => { const item = document.createElement(tag); if (value != null) item.textContent = String(value); if (className) item.className = className; return item; };
   const FULL = new Intl.DateTimeFormat('zh-CN', {dateStyle: 'medium', timeStyle: 'medium', hour12: false});
   const SHORT = new Intl.DateTimeFormat('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
@@ -52,14 +53,28 @@
     loadImage(image, ref, mime, imageEpoch, sourcePath);
     return figure;
   }
+  // Videos stream from their URL (the player seeks with ranges); nothing is read until the player asks for it.
+  function videoFigure(ref, sourcePath = artifactPath(ref)) {
+    const figure = el('figure', null, 'research-artifact video'), video = el('video'), link = el('a');
+    const filename = ref.filename || ref.path.split('/').pop();
+    Object.assign(video, {controls: true, preload: 'metadata', playsInline: true});
+    video.src = HGTarget.url(sourcePath);
+    video.onerror = () => video.replaceWith(el('span', '视频读取失败', 'note'));
+    link.textContent = ref.kind === 'attachment' ? filename : `任务 ${ref.job_id} · ${ref.path}`;
+    link.href = HGTarget.url(sourcePath); link.download = filename;
+    const caption = el('figcaption'); caption.append(link);
+    figure.append(video, caption);
+    return figure;
+  }
   function evidenceList(refs) {
     const list = el('ul', null, 'research-evidence'), local = HGTarget.binding()?.node_id;
     for (const ref of refs || []) {
       const item = el('li');
       if (ref.kind === 'job' && ref.node_id === local) {
         if (ref.path) {
-          const mime = IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()];
+          const mime = IMAGE_TYPES[extension(ref.path)];
           if (mime) item.append(imageFigure(ref, ref.path));
+          else if (VIDEO_TYPES[extension(ref.path)]) item.append(videoFigure(ref));
           else {
             const link = el('a', `任务 ${ref.job_id} · ${ref.path}`);
             link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop(); item.append(link);
@@ -68,7 +83,7 @@
           const link = el('a', `任务 ${ref.job_id}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(ref.job_id)}`); item.append(link);
         }
       } else if (ref.kind === 'attachment' && ref.node_id === local) {
-        item.append(imageFigure(ref, ref.filename, attachmentPath(ref)));
+        item.append(/^video\//.test(ref.content_type || '') ? videoFigure(ref, attachmentPath(ref)) : imageFigure(ref, ref.filename, attachmentPath(ref)));
       } else if (ref.kind === 'external') item.append(el('span', ref.locator));
       else if (['result', 'result_source'].includes(ref.kind) && ref.node_id === local) {
         const link = el('a', `结果 ${ref.result_id}${ref.source_name ? ` · 来源 ${ref.source_name}` : ''}`);
@@ -103,7 +118,7 @@
     while ((match = pattern.exec(value))) {
       appendText(parent, value.slice(at, match.index));
       const ref = jobImage(match[2]);
-      if (ref) parent.append(imageFigure(ref, match[1]));
+      if (ref) parent.append(VIDEO_TYPES[extension(ref.path)] ? videoFigure(ref) : imageFigure(ref, match[1]));
       else parent.append(document.createTextNode(match[0]));
       at = pattern.lastIndex;
     }
