@@ -486,6 +486,50 @@ class CoreFlowTests(unittest.TestCase):
             self.assertNotEqual(code, 0, err)
         self.assertIsNone(self.web("GET", "/research-state/research/sr-child")[1]["data"]["follows"])
 
+    def test_close_reopen_and_automatic_reopen(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-reopen", self.write(
+            "create-reopen", {"title": "可重开的任务", "objective": "交付后仍能继续"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-reopen")[0], 0)
+        self.assertEqual(self.pf(token, "research", "deliver", "sr-reopen", "--summary", "第一版",
+                                 "--artifact", "job:" + self.jid)[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-reopen", self.write(
+            "human-reopen", {"research_id": "sr-reopen", "text": "还需要补一组复现", "reply_to": None,
+                              "decision": None}))[0], 201)
+        opened = self.web("GET", "/research-state/research/sr-reopen")[1]
+        self.assertEqual(opened["data"]["state"], "active")
+        self.assertIn("n-reopen", opened["data"]["state_reason"])
+        reminder = next(item for item in self.duties(token)["duties"] if item["kind"] == "research_reopened")
+        self.assertEqual(reminder["research_id"], "sr-reopen")
+        self.assertIn("n-reopen", reminder["text"])
+        self.assertEqual(self.pf(token, "research", "note", "sr-reopen", "采纳，补复现", "--reply-to",
+                                 "n-reopen", "--decision", "adopt")[0], 0)
+        code, _, err = self.pf(token, "research", "close", "sr-reopen", "--reason", "先并入另一个实验")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.web("GET", "/research-state/research/sr-reopen")[1]["data"]["state"], "closed")
+        source = self.tmp / "reopen-direction.json"
+        source.write_text(json.dumps({"research_id": "sr-reopen", "title": "补充复现", "hypothesis": "新方向会重开任务"}))
+        code, _, err = self.pf(token, "research", "create", "direction", "d-reopen", str(source))
+        self.assertEqual(code, 0, err)
+        opened = self.web("GET", "/research-state/research/sr-reopen")[1]
+        self.assertEqual(opened["data"]["state"], "active")
+        self.assertIn("d-reopen", opened["data"]["state_reason"])
+        self.assertEqual(self.pf(token, "research", "close", "sr-reopen", "--reason", "暂时不做")[0], 0)
+        closed = self.web("GET", "/research-state/research?state=closed&limit=100")[1]["items"]
+        self.assertIn("sr-reopen", [item["id"] for item in closed])
+        code, _, err = self.pf(token, "research", "reopen", "sr-reopen", "--reason", "继续完成第二版")
+        self.assertEqual(code, 0, err)
+        opened = self.web("GET", "/research-state/research/sr-reopen")[1]
+        self.assertEqual((opened["data"]["state"], opened["data"]["state_reason"]), ("active", "继续完成第二版"))
+        reminders = [item for item in self.duties(token)["duties"] if item["kind"] == "research_reopened"]
+        self.assertTrue(any("继续完成第二版" in item["text"] for item in reminders))
+        self.assertNotEqual(self.pf(token, "research", "close", "sr-reopen")[0], 0)
+        self.assertEqual(self.web("GET", "/research-state/research/sr-reopen")[1]["data"]["state"], "active")
+        concept = "任务开着就是进行中；关上分两种，有成果的是已交付，没成果的是已关闭（不做了，或者并入了别的任务，要写原因）。关上的任务可以重新打开，接着做完再交付一次，交付会多一个版本。"
+        self.assertIn(concept, self.pf(token, "research", "--help")[1])
+        self.assertIn(concept, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
+
     def test_research_note_attaches_local_video(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-video", self.write(
             "create-video", {"title": "视频附件", "objective": "留言直接带本机视频"}))[0], 201)

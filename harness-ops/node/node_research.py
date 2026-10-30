@@ -754,6 +754,35 @@ class NodeResearch:
             raise ResearchError(409, "research_dependency_cycle", "unresolved blocking dependencies would form a cycle")
         return rid, observations
 
+    def _auto_reopen(self, db, kind, oid, rid, auth_channel, agent, actor, now):
+        if kind == "note" and auth_channel == "dashboard_steer":
+            cause = f"人工留言 {oid} 重新打开任务"
+        elif kind == "direction" and agent is not None and self._latest(db, "direction", oid) is None:
+            cause = f"负责人新建方向 {oid} 重新打开任务"
+        else:
+            return
+        research = self._latest(db, "research", rid)
+        data = json.loads(research["data"])
+        if data["state"] not in {"closed", "delivered"} or kind == "direction" and data.get("owner") != agent:
+            return
+        data["state"], data["state_reason"] = "active", cause
+        operation_id = "auto-reopen-" + uuid.uuid4().hex
+        revision = research["revision"] + 1
+        request = encoded({"kind": "research", "id": rid, "base_revision": research["revision"],
+                           "data": data, "actor_label": actor, "reason": cause})
+        audit = {"actor_label": actor, "auth_channel": auth_channel, "reason": cause, "at": now}
+        sequence = db.execute("INSERT INTO events (research_id,kind,object_id,revision,operation_id,at) VALUES (?,?,?,?,?,?)",
+                              (rid, "research", rid, revision, operation_id, now)).lastrowid
+        db.execute("INSERT INTO revisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (sequence, "research", rid, revision, rid, data.get("title"), "active", None,
+                    encoded(data), encoded(audit), research["bindings"], research["observations"], now))
+        db.execute("INSERT INTO objects VALUES (?,?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET revision=excluded.revision,updated_at=excluded.updated_at",
+                   ("research", rid, rid, revision, now, now))
+        receipt = {"schema_version": 1, "node_id": self.node_id, "operation_id": operation_id,
+                   "object": {"kind": "research", "id": rid, "revision": revision},
+                   "event_seq": sequence, "committed_at": now}
+        db.execute("INSERT INTO operations VALUES (?,?,?)", (operation_id, request, encoded(receipt)))
+
     def write(self, kind, oid, envelope, auth_channel, agent=None):
         identifier(oid)
         object_fields(envelope, {"schema", "operation_id", "base_revision", "data", "actor_label", "reason"})
@@ -819,7 +848,9 @@ class NodeResearch:
                 observations["criteria_bindings"] = criteria_bindings
             if deliverable_bindings is not None:
                 observations["deliverable_bindings"] = deliverable_bindings
-            now, revision = time.time(), (current or 0) + 1
+            now = time.time()
+            self._auto_reopen(db, kind, oid, rid, auth_channel, agent, actor, now)
+            revision = (current or 0) + 1
             audit = {"actor_label": actor, "auth_channel": auth_channel, "reason": reason, "at": now}
             sequence = db.execute("INSERT INTO events (research_id,kind,object_id,revision,operation_id,at) VALUES (?,?,?,?,?,?)",
                                   (rid, kind, oid, revision, operation_id, now)).lastrowid

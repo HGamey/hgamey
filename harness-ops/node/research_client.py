@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import uuid
 from cli_time import utc
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION, TASK_STATE_HELP
 
 
 HELP = """用法:
@@ -38,6 +38,8 @@ HELP = """用法:
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
   pf-node research link ID FOLLOWS|none           # 记录或取消这个任务接续哪个任务
+  pf-node research close ID --reason TEXT         # 关闭任务（不做了或并入别的任务）
+  pf-node research reopen ID --reason TEXT        # 重新打开，之后可再交付一个版本
   pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask] [--to AGENT]
       [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
   pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
@@ -76,7 +78,7 @@ media 只读下载固定版本的一个槽位，需显式 node-id 与评价能�
 图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
 没有自动重试或续传；失败只清理本次 partial。下载完整不表示已解码、看过或已提交评价。
 """
-HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE + "\n" + COMPARE_HELP + "\n" + COLLABORATION
+HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE + "\n" + COMPARE_HELP + "\n" + COLLABORATION + "\n" + TASK_STATE_HELP
 
 KINDS = ("research", "direction", "request", "feedback", "note")
 MAX_DATA = 64 << 10
@@ -173,6 +175,10 @@ def parser():
     link = commands.add_parser("link")
     link.add_argument("id", type=identifier)
     link.add_argument("follows")
+    for name in ("close", "reopen"):
+        command = commands.add_parser(name)
+        command.add_argument("id", type=identifier)
+        command.add_argument("--reason", required=True)
     note = commands.add_parser("note")
     note.add_argument("id", type=identifier)
     note.add_argument("text")
@@ -736,6 +742,12 @@ def _task(client, args):
         data["follows"] = None if args.follows == "none" else args.follows
         reason = "取消接续" if args.follows == "none" else f"接续自 {args.follows}"
         return _post(client, "research", args.id, data, current["revision"], reason)
+    if args.command in ("close", "reopen"):
+        if not args.reason.strip() or len(args.reason) > 16384:
+            raise ValueError("reason 须为非空文字，至多 16384 字符")
+        data["state"] = "closed" if args.command == "close" else "active"
+        data["state_reason"] = args.reason
+        return _post(client, "research", args.id, data, current["revision"], args.reason)
     summary = Path(args.summary[1:]).read_text(encoding="utf-8") if args.summary.startswith("@") else args.summary
     node_id = client.target.identity()["node_id"]
     data["deliverable"] = {"summary": summary, "artifacts": [_artifact(item, node_id) for item in args.artifact],
@@ -766,7 +778,7 @@ def main(argv, *, target):
     try:
         if args.command in ("create", "update"):
             return _write(client, args)
-        if args.command in ("claim", "assign", "link", "note", "compare", "thread", "deliver", "conclude"):
+        if args.command in ("claim", "assign", "link", "close", "reopen", "note", "compare", "thread", "deliver", "conclude"):
             return _task(client, args)
         if args.command == "media":
             return _media(client, args)

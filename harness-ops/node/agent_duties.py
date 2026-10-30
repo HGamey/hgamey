@@ -14,6 +14,7 @@ COMPARE_HELP = (COMPARE_DUTY + "\n"
     "pf-node research compare <研究ID> --item <job:ID:PATH 或本机文件> ×N [--pick K] --title \"<标题>\" --question \"<要人判断什么>\" [--direction <方向ID>]\n"
     "N 为 2–8，PNG/JPEG 与 MP4/WebM 可混；洗牌后显示 A、B、C……，输出请求 ID、网页链接和素材对应。")
 COLLABORATION = "只处理自己负责的研究，以及别人研究里点名给你的留言。接续的工作（复现、长稳、改进）在原任务里做：负责人加方向、重新交付；被点名帮忙的，把任务挂到原研究上（--research），结果用留言回在原留言下面。"
+TASK_STATE_HELP = "任务开着就是进行中；关上分两种，有成果的是已交付，没成果的是已关闭（不做了，或者并入了别的任务，要写原因）。关上的任务可以重新打开，接着做完再交付一次，交付会多一个版本。"
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
     "设备锁序列化实际操作；仅 claimed 扣运行名额，确认宿主完成的终态自动释放任务预留。完成未知时保留独占范围，由负责人或管理员 reset。",
@@ -94,6 +95,10 @@ def duties(jobs, name, now=None):
         for row in _latest(db, "direction"):
             if row["research_id"] in owned:
                 directions.setdefault(row["research_id"], []).append((row["id"], row["state"]))
+        reopened = db.execute("""SELECT cur.research_id,cur.sequence,cur.data FROM revisions cur
+            JOIN revisions prev ON prev.kind=cur.kind AND prev.id=cur.id AND prev.revision=cur.revision-1
+            WHERE cur.kind='research' AND json_extract(cur.data,'$.state')='active'
+              AND json_extract(prev.data,'$.state') IN ('closed','delivered') ORDER BY cur.sequence""").fetchall()
 
     owed, waiting = [], []
     answered = {data["reply_to"] for _, data, audit in notes if audit.get("actor_label") == name and data["reply_to"]}
@@ -123,6 +128,13 @@ def duties(jobs, name, now=None):
                      "text": f"{speaker} 在 {row['research_id']} 留言：{data['text'][:200]}",
                      "command": f"pf-node research note {row['research_id']} \"<回复>\" --reply-to {row['id']} "
                                 "--decision adopt|defer|reject"})
+    for row in reopened:
+        if row["research_id"] not in owned or row["sequence"] <= seen:
+            continue
+        reason = json.loads(row["data"]).get("state_reason") or "未记录原因"
+        owed.append({"kind": "research_reopened", "research_id": row["research_id"], "target": row["research_id"],
+                     "unread": True, "text": f"任务 {row['research_id']} 重新打开了，原因：{reason}",
+                     "command": f"pf-node research show research {row['research_id']}"})
     for row, data, audit in requests:
         if data["state"] != "open":
             continue
