@@ -59,8 +59,8 @@
     const kind = item.kind ? Promise.resolve(item.kind) : new Promise(resolve => near(holder, () => resolve(
       HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', headers: {Range: 'bytes=0-0'}})
         .then(r => { r.body?.cancel(); return /^video\//.test(r.headers.get('Content-Type') || '') ? 'video' : 'image'; }, () => 'image'))));
-    kind.then(k => { holder.append(element(HGTarget.url(path), k, item, state, size)); done(); });
-    return {holder, size};
+    const ready = kind.then(k => { holder.append(element(HGTarget.url(path), k, item, state, size)); done(); return {slot: item.slot, url: HGTarget.url(path), kind: k}; });
+    return {holder, size, ready};
   }
   function element(url, kind, item, state, size) {
     const node = document.createElement(kind === 'video' ? 'video' : 'img');
@@ -80,8 +80,72 @@
     node.alt = item.slot; node.decoding = 'async'; node.loading = 'lazy';
     node.onload = () => node.decode().then(shown, node.onerror);
     node.src = url;
-    const open = document.createElement('a'); open.href = url; open.target = '_blank'; open.rel = 'noopener'; open.append(node);
-    return open;
+    return node;
+  }
+
+  // The in-page viewer: every slot stacked in one box at the same size, so switching (arrow keys, A–D or the letter
+  // buttons) only changes which one shows — nothing reloads, moves or flashes. Videos keep one clock: playing,
+  // pausing and seeking the shown one moves them all, so a switch shows the same moment. Only letters are shown.
+  function viewer(article, slots, start, U) {
+    const box = U.el('dialog', null, 'compare-viewer'), stage = U.el('div', null, 'viewer-stage'), rail = U.el('div', null, 'viewer-rail');
+    const close = U.el('button', '×', 'viewer-close'), hint = U.el('p', '← →\nA–D\n切换\n\nEsc\n关闭', 'viewer-hint');
+    close.type = 'button'; close.setAttribute('aria-label', '关闭'); box.setAttribute('aria-label', '放大对比');
+    let index = 0;
+    const items = slots.map(({slot, url, kind}) => {
+      const node = document.createElement(kind === 'video' ? 'video' : 'img'), button = U.el('button', slot, 'viewer-slot');
+      node.className = 'viewer-media'; node.dataset.slot = slot; button.type = 'button'; button.dataset.slot = slot;
+      if (kind === 'video') Object.assign(node, {muted: true, playsInline: true, preload: 'auto', loop: true});
+      else { node.alt = slot; node.decoding = 'sync'; }
+      node.src = kind === 'video' ? url + '#t=0.1' : url;
+      stage.append(node); rail.append(button);
+      return {slot, node, button, video: kind === 'video'};
+    });
+    const shown = () => items[index];
+    const others = () => items.filter((item, i) => i !== index && item.video);
+    // The shown video leads; the others follow its play, pause and position.
+    const follow = event => {
+      const lead = shown(); if (event.target !== lead.node) return;
+      for (const item of others()) {
+        if (event.type === 'play') item.node.play().catch(() => {});
+        if (event.type === 'pause') item.node.pause();
+        if (Math.abs(item.node.currentTime - lead.node.currentTime) > 0.05) item.node.currentTime = lead.node.currentTime;
+      }
+    };
+    for (const type of ['play', 'pause', 'seeked']) stage.addEventListener(type, follow, true);
+    const settle = node => new Promise(done => node.seeking ? node.addEventListener('seeked', done, {once: true}) : done());
+    async function go(next) {
+      next = (next + items.length) % items.length;
+      if (next === index && box.open) return paint();
+      const from = shown(), to = items[next];
+      if (from?.video && to.video) {
+        if (Math.abs(to.node.currentTime - from.node.currentTime) > (from.node.paused ? 0.01 : 0.15)) to.node.currentTime = from.node.currentTime;
+        if (from.node.paused) { to.node.pause(); await settle(to.node); } else to.node.play().catch(() => {});
+      }
+      index = next; paint();
+    }
+    function paint() {
+      items.forEach((item, i) => {
+        item.node.classList.toggle('shown', i === index); item.button.setAttribute('aria-pressed', String(i === index));
+        if (item.video) item.node.controls = i === index;
+      });
+      box.dataset.slot = shown().slot;
+    }
+    rail.addEventListener('click', event => { const button = event.target.closest('.viewer-slot'); if (button) go(items.findIndex(item => item.slot === button.dataset.slot)); });
+    box.addEventListener('keydown', event => {
+      if (event.target.closest('video') && [' ', 'Enter'].includes(event.key)) return;
+      const letter = items.findIndex(item => item.slot.toLowerCase() === event.key.toLowerCase());
+      if (['ArrowRight', 'ArrowDown'].includes(event.key)) go(index + 1);
+      else if (['ArrowLeft', 'ArrowUp'].includes(event.key)) go(index - 1);
+      else if (letter >= 0) go(letter);
+      else return;
+      event.preventDefault(); event.stopPropagation();
+    }, true);   // before a focused video's own seek keys
+    close.onclick = () => box.close();
+    box.addEventListener('close', () => { items.forEach(item => item.video && item.node.pause()); box.remove(); });
+    box.append(stage, rail, close, hint); article.append(box);
+    index = Math.max(0, items.findIndex(item => item.slot === start)); paint();
+    box.showModal(); box.focus();
+    return box;
   }
 
   // The letters' sources, once answered: result source → the run and file it came from.
@@ -120,12 +184,16 @@
     };
     grid.addEventListener('play', sync, true); grid.addEventListener('pause', sync, true);
     const placed = () => { together.hidden = players().length < 2; };
+    const ready = [];
+    // A picture (or a slot's ⤢) opens the viewer on that slot, inside this page.
+    const zoom = async slot => viewer(article, await Promise.all(ready), slot, U);
     for (const item of s.slots) {
-      const card = U.el('figure', null, 'compare-item'), cap = U.el('figcaption'), m = media(record, item, state, placed);
-      card.dataset.slot = item.slot;
-      cap.append(U.el('b', item.slot, 'compare-letter'), m.size);
-      card.append(cap, m.holder); grid.append(card); cards.set(item.slot, card);
+      const card = U.el('figure', null, 'compare-item'), cap = U.el('figcaption'), m = media(record, item, state, placed), open = U.el('button', '⤢', 'compare-zoom');
+      card.dataset.slot = item.slot; open.type = 'button'; open.title = '放大对比'; open.setAttribute('aria-label', `放大对比 ${item.slot}`); open.onclick = () => zoom(item.slot);
+      cap.append(U.el('b', item.slot, 'compare-letter'), m.size, open);
+      card.append(cap, m.holder); grid.append(card); cards.set(item.slot, card); ready.push(m.ready);
     }
+    grid.addEventListener('click', event => { const image = event.target.closest('.compare-media img'); if (image) zoom(image.closest('.compare-item').dataset.slot); });
     article.append(grid, together);
     if (answer) {
       for (const letter of v?.picked || []) cards.get(letter)?.classList.add('picked');

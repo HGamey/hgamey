@@ -293,7 +293,23 @@
    never change a block's height and push a comparison a person was sent to. The media fit inside it. */
 .research-view .compare-media { aspect-ratio: 16 / 9; max-height: min(70vh, 640px); }
 .research-view .compare-item figcaption > :empty::before { content: '\00a0'; }   /* the size line, before it is known */
-.research-view .compare-media > a { display: block; height: 100%; }
+.research-view .compare-media img { cursor: zoom-in; }
+.research-view .compare-zoom { margin-left: auto; padding: 0 6px; border: 0; background: none; color: var(--muted); font-size: var(--fs-md); line-height: 1.2; cursor: zoom-in; }
+.research-view .compare-zoom:hover { color: var(--ink); }
+/* The viewer: near full screen, every slot stacked in one box; only the shown one is visible. */
+.research-view .compare-viewer { width: calc(100vw - 24px); height: calc(100vh - 24px); max-width: none; max-height: none; margin: auto; padding: 0;
+  border: 0; border-radius: var(--radius-lg); background: #050607; color: #e8eaed; display: grid; grid-template-columns: minmax(0, 1fr) 64px; grid-template-rows: minmax(0, 1fr) auto; }
+.research-view .compare-viewer:not([open]) { display: none; }
+.research-view .compare-viewer::backdrop { background: rgba(0, 0, 0, .78); }
+.research-view .viewer-stage { position: relative; grid-row: 1 / 3; }
+.research-view .viewer-media { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; visibility: hidden; }
+.research-view .viewer-media.shown { visibility: visible; }
+.research-view .viewer-rail { display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 8px; }
+.research-view .viewer-slot { width: 44px; height: 44px; border: 1px solid #3a3f45; border-radius: var(--radius); background: #15181b; color: #e8eaed; font-size: 18px; font-weight: 650; cursor: pointer; }
+.research-view .viewer-slot[aria-pressed="true"] { border-color: var(--acc); background: var(--acc); color: #fff; }
+.research-view .viewer-close { position: absolute; top: 8px; right: 12px; width: 40px; height: 40px; border: 0; background: none; color: #e8eaed; font-size: 28px; cursor: pointer; }
+.research-view .viewer-hint { grid-column: 2; margin: 0 4px 12px; font-size: 11px; line-height: 1.4; color: #8a9096; text-align: center; white-space: pre-line; }
+.research-view .compare-viewer:focus { outline: none; }
 .research-view .compare-together[hidden] { display: none; }
 .research-view .compare-item :is(img, video) { display: block; width: 100%; height: 100%; object-fit: contain; background: #0b0d0e; border-radius: var(--radius); }
 .research-view .compare-source { flex-basis: 100%; font-size: var(--fs-sm); color: var(--ink2); overflow-wrap: anywhere; }

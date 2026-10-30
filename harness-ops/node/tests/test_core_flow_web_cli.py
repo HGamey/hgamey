@@ -2133,6 +2133,106 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_comparison_opens_in_a_viewer_that_switches_slots_in_place(self):
+        """A picture opens an in-page, near full-screen viewer (no new page). Arrow keys and the A–D buttons switch the
+        slot shown in the same box; only letters appear. Videos keep one clock across a switch. Esc closes it."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import base64, struct, zlib
+
+        def png(rgb, width=64, height=32):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress((b"\x00" + rgb * width) * height)) + chunk(b"IEND", b""))
+        jid = "ffffffffffff"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        methods = {"native": b"\x10\x20\x30", "bilinear": b"\x30\x20\x10", "sgsr": b"\x20\x30\x10", "ours": b"\x10\x30\x20"}
+        for name, rgb in methods.items():
+            (out / (name + ".png")).write_bytes(png(rgb))
+        clip = base64.b64decode("GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAQCEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggEeTbuMU6uEHFO7a1OsggPs7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiECfQAAAAAAAFlSua8GuAQAAAAAAADjXgQFzxYhxERJxo71UCZyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhAX14QDgibCBoLqBWpqBAhJUw2f8c3OgY8CAZ8iaRaOHRU5DT0RFUkSHjUxhdmY2MC4xNi4xMDBzc9ZjwItjxYhxERJxo71UCWfIoUWjh0VOQ09ERVJEh5RMYXZjNjAuMzEuMTAyIGxpYnZweGfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDIuMDAwMDAwMDAwAB9DtnVCR+eBAKPWgQAAgPAFAJ0BKqAAWgAARwiFhYiFhIgCAgJ1qgP4AgaaE+CGqpNdxDqqTXcQ6qk13EOqpNdxDqqTXcQYAP7/TRL//FhX8WFfxYV/8WFf/PzO7cX85gCjmIEAZAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQDIABECAAEQEAAYABhYL/QACICBAAAAo5iBASwAEQIAARAQABgAGFgv9AAIgIEAAACjmIEBkAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQH0ABECAAEQEAAYABhYL/QACICBAAAAo5iBAlgAEQIAARAQABgAGFgv9AAIgIEAAACjl4ECvADxAQABEBAUYABhYL/QACICBAAAo5iBAyAAEQIAARAQABgAGFgv9AAIgIEAAACjmIEDhAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQPoABECAAEQEAAYABhYL/QACICBAAAAo5iBBEwAEQIAARAQABgAGFgv9AAIgIEAAACjmIEEsAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQUUABECAAEQEAAYABhYL/QACICBAAAAo5iBBXgAEQIAARAQABgAGFgv9AAIgIEAAACjmIEF3AARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQZAABECAAEQEAAYABhYL/QACICBAAAAo5iBBqQAEQIAARAQABgAGFgv9AAIgIEAAACjl4EHCADxAQABEBAUYABhYL/QACICBAAAo5iBB2wAEQIAARAQABgAGFgv9AAIgIEAAAAcU7trkbuPs4EAt4r3gQHxggGf8IED")   # a real 2 s 160×90 VP8 clip
+        for name in ("clip-native", "clip-ours"):
+            (out / (name + ".webm")).write_bytes(clip)
+        sources = [*methods, "clip-native", "clip-ours"]
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-view", "title": "查看器素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": name + (".webm" if name.startswith("clip") else ".png")} for name in sources]})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-view", self.write(
+            "create-view", {"title": "放大对比", "objective": "同尺寸切换看差别"}))[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-view", "source_name": name}
+        for rid, names, kind in (("ev-pics", list(methods), "image"), ("ev-clips", ["clip-native", "clip-ours"], "video")):
+            self.assertEqual(self.cli("POST", f"/research-state/request/{rid}", self.write("create-" + rid, {
+                "research_id": "sr-view", "type": "evaluation", "title": "哪个更清楚 " + rid, "need": "选 1 个", "why": "fixture",
+                "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref(name) for name in names],
+                "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": i, "media_kind": kind} for i in range(len(names))], "pick": 1}}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{base}/dash/research?kind=research&id=sr-view")
+                pics = "#cmp-ev-pics"
+                page.wait_for_function(f"() => [...document.querySelectorAll('{pics} .compare-media img')].length === 4 && [...document.querySelectorAll('{pics} .compare-media img')].every(x => x.complete && x.naturalWidth)")
+                page.locator(f'{pics} .compare-item[data-slot="B"] img').click()
+                viewer = "dialog.compare-viewer[open]"
+                page.wait_for_selector(viewer)
+                self.assertEqual((len(context.pages), page.url.split("?")[0]), (1, f"{base}/dash/research"), "opens inside this page")
+                page.wait_for_function(f"() => [...document.querySelectorAll('{viewer} img')].every(x => x.complete && x.naturalWidth === 64)")
+                box = page.evaluate(f"() => {{ const r = document.querySelector('{viewer}').getBoundingClientRect(); return [r.width, r.height]; }}")
+                self.assertGreater(box[0], 1280 * 0.95)
+                self.assertGreater(box[1], 800 * 0.95)
+                shown = f"() => {{ const m = document.querySelector('{viewer} .viewer-media.shown'), r = m.getBoundingClientRect(); return [m.dataset.slot, r.x, r.y, r.width, r.height, document.querySelectorAll('{viewer} .viewer-media.shown').length]; }}"
+                seen = [page.evaluate(shown)]
+                for key in ("ArrowRight", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"):
+                    page.keyboard.press(key)
+                    seen.append(page.evaluate(shown))
+                page.click(f'{viewer} .viewer-slot[data-slot="D"]')
+                seen.append(page.evaluate(shown))
+                self.assertEqual([s[0] for s in seen], ["B", "C", "D", "C", "B", "C", "D"])
+                self.assertEqual({tuple(s[1:]) for s in seen}, {tuple(seen[0][1:])}, "every slot shows in the same box, one at a time")
+                text = page.text_content(viewer)
+                self.assertFalse([name for name in [*sources, "r-view", ".png", ".webm"] if name in text], text)
+                self.assertTrue(all("/media/" in src for src in page.eval_on_selector_all(f"{viewer} .viewer-media", "e => e.map(x => x.getAttribute('src'))")))
+                page.keyboard.press("Escape")
+                page.wait_for_selector("dialog.compare-viewer", state="detached")
+
+                clips = "#cmp-ev-clips"
+                page.click(f'{clips} .compare-item[data-slot="A"] .compare-zoom')
+                page.wait_for_selector(viewer)
+                page.wait_for_function(f"() => [...document.querySelectorAll('{viewer} video')].every(x => x.readyState >= 2)")
+                page.evaluate(f"() => new Promise(done => {{ const v = document.querySelector('{viewer} video.shown'); v.addEventListener('seeked', done, {{once: true}}); v.currentTime = 1.2; }})")
+                page.keyboard.press("ArrowRight")
+                state = f"() => [...document.querySelectorAll('{viewer} video')].map(v => [v.dataset.slot, v.classList.contains('shown'), v.currentTime, v.paused])"
+                page.wait_for_function(f"() => document.querySelector('{viewer} video.shown').dataset.slot === 'B'")
+                (_, _, a_time, a_paused), (_, _, b_time, b_paused) = page.evaluate(state)
+                self.assertAlmostEqual(b_time, 1.2, delta=0.05)
+                self.assertTrue(a_paused and b_paused, "a paused clip stays paused at the same moment")
+                page.evaluate(f"() => document.querySelector('{viewer} video.shown').play()")
+                page.wait_for_function(f"() => [...document.querySelectorAll('{viewer} video')].every(v => !v.paused && v.currentTime > 1.3)")
+                page.keyboard.press("ArrowLeft")
+                page.wait_for_function(f"() => document.querySelector('{viewer} video.shown').dataset.slot === 'A'")
+                (_, _, a_time, a_paused), (_, _, b_time, b_paused) = page.evaluate(state)
+                self.assertFalse(a_paused or b_paused, "a playing clip keeps playing")
+                self.assertLess(abs(a_time - b_time), 0.25, "and shows the same moment")
+                page.keyboard.press("Escape")
+                page.wait_for_selector("dialog.compare-viewer", state="detached")
+            finally:
+                browser.close()
+
     def test_a_comparison_stays_where_it_landed_when_videos_above_it_load(self):
         """去评 lands on the second of two comparisons. The first one's videos are held back until after the landing;
         when they load (portrait, unlike the browser's default box) the comparison does not move."""
