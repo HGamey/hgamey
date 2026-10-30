@@ -49,6 +49,21 @@
     return answers.items.length ? await U.api(`/research-state/feedback/${encodeURIComponent(answers.items[0].id)}`) : null;
   }
 
+  // A task's (or a whole chain's) comparisons in one read: each full record with its newest answer, page by page,
+  // in chain order as the per-task lists gave them.
+  async function chainRequests(ids, U) {
+    const query = new URLSearchParams(ids.map(id => ['research_id', id])), items = [];
+    query.set('full', '1'); query.set('feedback', 'latest'); query.set('limit', '100');
+    for (let cursor = null; ; ) {
+      if (cursor) query.set('cursor', cursor);
+      const page = await U.api(`/research-state/request?${query}`);
+      items.push(...page.items); cursor = page.next_cursor;
+      if (!cursor) break;
+    }
+    const step = new Map(ids.map((id, i) => [id, i]));
+    return items.map((item, i) => [item, i]).sort(([a, i], [b, j]) => (step.get(a.research_id) ?? 0) - (step.get(b.research_id) ?? 0) || i - j).map(([item]) => item);
+  }
+
   // Videos and type probes wait until the block is near the screen (the task page's reader when it has one).
   let near = (node, run) => run();
   // A slot whose kind the record does not state is asked for its type with a one-byte read before an element is chosen.
@@ -279,9 +294,10 @@
   // On a chain of tasks (`scope`), every task's comparisons, each tagged with its task.
   async function sections(record, ctx, U, scope) {
     if (U.near) near = U.near;
-    const lists = await Promise.all((scope?.ids || [record.id]).map(id => U.api(`/research-state/request?research_id=${encodeURIComponent(id)}&limit=100`)));
-    const requests = (await Promise.all(lists.flatMap(list => list.items).map(item => U.api(`/research-state/request/${encodeURIComponent(item.id)}`).catch(() => null)))).filter(isComparison);
-    const answers = await Promise.all(requests.map(r => load(r, U).catch(() => null)));
+    const requests = (await chainRequests(scope?.ids || [record.id], U)).filter(isComparison);
+    // The newest answer is shown when it carries a judgement; otherwise the answers are read one by one as before.
+    const answers = await Promise.all(requests.map(r => r.latest_feedback === null ? null
+      : verdict(r.latest_feedback?.data?.evaluation) ? r.latest_feedback : load(r, U).catch(() => null)));
     const open = [], done = [];
     requests.forEach((r, i) => {
       const item = block(r, answers[i], ctx, U), mark = scope?.tag(r.research_id);

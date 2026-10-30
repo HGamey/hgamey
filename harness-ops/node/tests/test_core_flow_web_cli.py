@@ -2133,6 +2133,72 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_chains_comparisons_and_their_answers_arrive_in_one_read(self):
+        """A chain's comparisons come from one request list read (every task, full records, newest answers): no read
+        per comparison or per answer. Each shows under its task in chain order; the answered one with its verdict."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import struct, zlib
+
+        def png(rgb):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress((b"\x00" + rgb * 2) * 2)) + chunk(b"IEND", b""))
+        jid = "abababababab"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        (out / "a.png").write_bytes(png(b"\x10\x20\x30"))
+        (out / "b.png").write_bytes(png(b"\x30\x20\x10"))
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-one-read", "title": "素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": name + ".png"} for name in ("a", "b")]})[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-one-read", "source_name": name}
+        for rid, follows in (("sr-one", None), ("sr-two", "sr-one")):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": "一次读出 " + rid, "objective": "对比一次读完", "follows": follows}))[0], 201)
+            self.assertEqual(self.cli("POST", f"/research-state/request/ev-{rid}", self.write("create-ev-" + rid, {
+                "research_id": rid, "type": "evaluation", "title": "对比 " + rid, "need": "哪张更清楚？", "why": "fixture",
+                "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref("a"), ref("b")],
+                "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": 0, "media_kind": "image"}, {"ref": 1, "media_kind": "image"}], "pick": 1}}))[0], 201)
+        assessment = {"schema": "phonefarm/compare-feedback@1", "picked": ["B"], "unable": False, "difference": "moderate",
+                      "client_display": {"A": "decoded", "B": "decoded"}, "identity_revealed": False}
+        self.assertEqual(self.web("POST", "/research-state/feedback/f-one-read", self.write("answer-ev-sr-one", {
+            "request_id": "ev-sr-one", "request_revision": 1, "text": "B 更清楚", "evaluation": assessment}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                asked = []
+                page.on("request", lambda request: asked.append(request.url.split("/dash/api", 1)[1]) if "/dash/api/research-state/" in request.url else None)
+                page.goto(f"{base}/dash/research?kind=research&id=sr-one")
+                page.wait_for_selector("#task-compare-open #cmp-ev-sr-two")
+                page.wait_for_selector("#task-compare-done #cmp-ev-sr-one .compare-verdict", state="attached")
+                self.assertIn("B 更好", page.text_content("#task-compare-done #cmp-ev-sr-one .compare-verdict"))
+                lists = [url for url in asked if url.startswith("/research-state/request?")]
+                self.assertEqual(len(lists), 1, lists)
+                self.assertIn("research_id=sr-one&research_id=sr-two", lists[0])
+                self.assertIn("full=1", lists[0])
+                self.assertIn("feedback=latest", lists[0])
+                self.assertEqual([url for url in asked if url.startswith(("/research-state/request/ev-", "/research-state/feedback"))
+                                  and "/media/" not in url], [], "no read per comparison or per answer")
+            finally:
+                browser.close()
+
     def test_a_comparison_opens_in_a_viewer_that_switches_slots_in_place(self):
         """A picture opens an in-page, near full-screen viewer (no new page). Arrow keys and the A–D buttons switch the
         slot shown in the same box; only letters appear. Videos keep one clock across a switch. Esc closes it."""
