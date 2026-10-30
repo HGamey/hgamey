@@ -371,6 +371,8 @@ class RemoteHttpTests(Base):
         return {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
 
     def test_control_page_shows_each_raw_remote_holder_on_its_phone(self):
+        """With the view password alone the page lists each phone (by its own serial, selected by platform reference)
+        with the session holding it, and asks for the steer password before any action; there is no operator login."""
         self.board.wake = threading.Event()
         try:
             from playwright.sync_api import sync_playwright
@@ -379,13 +381,8 @@ class RemoteHttpTests(Base):
                 raise
             self.skipTest("playwright is not installed")
         self.acquire("alice-phone")
-        self.remote.policy.enable("fixture-phone")
         self.remote.do(self.bob, "fixture-ip", "fixture-phone", "acquire", {"request_id": "bob-phone"})
         view = f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"
-        status, headers, _ = self.req("POST", "/dash/api/remote/login", {"token": self.alice_token},
-                                    {"Cookie": view, "Content-Type": "application/json", "X-HG": "1"})
-        self.assertEqual(status, 200)
-        operator = headers["Set-Cookie"].split(";", 1)[0]
         base = "http://%s:%d" % self.server.server_address
         with sync_playwright() as playwright:
             try:
@@ -396,11 +393,11 @@ class RemoteHttpTests(Base):
                 self.skipTest(f"no browser for playwright: {error}")
             try:
                 context = browser.new_context()
-                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
-                                     for cookie in (view, operator)])
+                context.add_cookies([{"name": view.split("=", 1)[0], "value": view.split("=", 1)[1], "url": base}])
                 page = context.new_page()
-                errors = []
+                errors, requests = [], []
                 page.on("pageerror", lambda error: errors.append(str(error)))
+                page.on("request", lambda request: requests.append(request.url))
                 page.goto(base + "/dash/control")
                 page.wait_for_function("() => document.querySelectorAll('#devices .dev-held').length === 2")
                 rows = {row.locator(".dev-serial").inner_text(): row.locator(".dev-sub").inner_text()
@@ -410,6 +407,11 @@ class RemoteHttpTests(Base):
                 self.assertIn("bob", rows["fixture-phone"])
                 self.assertNotIn("alice", rows["fixture-phone"])
                 self.assertNotIn("全域占用", " ".join(rows.values()))
+                self.assertEqual(page.text_content("#op-login label"), "掌舵密码")
+                self.assertTrue(page.is_visible("#op-login"))
+                page.locator("#devices button").filter(has_text=SERIAL).click()
+                self.assertIn("先用掌舵密码解锁", page.text_content("#operation-info"))
+                self.assertFalse([url for url in requests if "/remote/login" in url])
                 self.assertEqual(errors, [])
             finally:
                 browser.close()
@@ -427,17 +429,14 @@ class RemoteHttpTests(Base):
             return start(*args, **kwargs)
 
         view = f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"
-        status, headers, _ = self.req("POST", "/dash/api/remote/login", {"token": self.alice_token},
-                                    {"Cookie": view, "Content-Type": "application/json", "X-HG": "1"})
-        self.assertEqual(status, 200)
-        operator = headers["Set-Cookie"].split(";", 1)[0]
+        steer = f"{dash.STEER_COOKIE}={self.board._cookie_val(self.board._steer_pass(), b'hgamey-steer-v1')}"
         base = "http://%s:%d" % self.server.server_address
         with sync_playwright() as playwright, mock.patch.object(self.backend, "start", side_effect=waiting):
             browser = playwright.chromium.launch()
             try:
                 context = browser.new_context()
                 context.add_cookies([{"name": c.split("=", 1)[0], "value": c.split("=", 1)[1], "url": base}
-                                     for c in (view, operator)])
+                                     for c in (view, steer)])
                 page = context.new_page()
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))

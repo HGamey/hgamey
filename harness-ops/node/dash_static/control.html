@@ -19,12 +19,12 @@
   </div>
   <div class="top-right" id="who">
     <form id="op-login" class="op-login" hidden>
-      <label for="op-token">操作员令牌</label>
-      <input id="op-token" type="password" autocomplete="off" placeholder="hgop_..." spellcheck="false">
-      <button type="submit">登录</button>
+      <label for="op-token">掌舵密码</label>
+      <input id="op-token" type="password" autocomplete="current-password" spellcheck="false">
+      <button type="submit">解锁</button>
     </form>
     <span id="op-name" hidden></span>
-    <button id="op-logout" class="ghost" type="button" hidden>退出操作员</button>
+    <button id="op-logout" class="ghost" type="button" hidden>上锁</button>
   </div>
 </header><script src="/dash/static/shell.js"></script>
 <main class="control-page">
@@ -32,7 +32,7 @@
   <section class="ctl-devices" aria-labelledby="dev-h">
     <h2 id="dev-h">设备</h2>
     <ul id="devices" class="dev-list"></ul>
-    <p class="note">只有主人开放且能力可用的设备可操作。实验占用、待恢复或状态未知时不能接管。</p>
+    <p class="note">实验占用、待恢复或状态未知时不能接管。</p>
     <p class="note" id="capability-info"></p>
   </section>
   <section class="ctl-screen" aria-labelledby="scr-h">
