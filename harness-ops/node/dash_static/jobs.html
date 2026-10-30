@@ -90,7 +90,11 @@
     <section class="device-binding-panel" aria-labelledby="device-binding-heading">
       <h3 id="device-binding-heading">本次设备范围</h3>
       <div class="submit-fields">
-        <label class="wide-field">范围<select id="submit-device-scope"><option value="global">兼容全域 · 不声明设备绑定</option><option value="device">已登记设备 · 显式绑定</option></select></label>
+        <label class="wide-field">范围<select id="submit-device-scope"><option value="global">兼容全域 · 不声明设备绑定</option><option value="device">已登记设备 · 显式绑定</option><option value="platform">平台手机 · 指定一台或任意同型号</option></select></label>
+        <div id="platform-phone-picker" class="wide-field" hidden>
+          <label>手机<select id="submit-phone" disabled><option value="">正在读取平台手机…</option></select></label>
+          <p class="note">参数里单独一项写 <code>@serial</code>，会换成选中手机的串号。任务会在那台手机所在的电脑上排队；「空闲」只是最近看到空闲，锁由那台电脑来拿。</p>
+        </div>
         <div id="device-binding-picker" class="wide-field" hidden>
           <div class="submission-actions"><button id="read-device-registry" class="ghost" type="button">读取设备登记</button><a id="device-registry-link" href="/dash/fleet">管理本节点登记</a></div>
           <div class="submit-fields">

@@ -1093,6 +1093,33 @@
   function bindingFacts(binding) {
     return binding ? [['登记设备 ID', binding.device_id], ['连接别名（serial）', binding.serial], ['冻结登记 revision', binding.registry_revision], ['冻结锁域 ID', binding.domain_id]] : [['设备范围', '兼容全域（未声明设备绑定）']];
   }
+  // Platform phones (jobs.routing-v1): one phone by ref, or any phone of a model, on whichever computer has it.
+  let platformPhones = null, platformPhonesError = '';
+  const platformSupported = () => nodeInfo?.capabilities?.includes('jobs.routing-v1') === true;
+  function submissionPhone() {
+    const body = pendingRequest?.body;
+    if (body) return body.device_ref ? {device_ref: body.device_ref} : body.device_model ? {device_model: body.device_model} : null;
+    if ($('submit-device-scope').value !== 'platform') return null;
+    const value = $('submit-phone').value;
+    return value.startsWith('ref:') ? {device_ref: value.slice(4)} : value.startsWith('model:') ? {device_model: value.slice(6)} : null;
+  }
+  async function readPlatformPhones() {
+    platformPhonesError = '';
+    try {
+      const {items} = await json(`${API}/phones`);
+      platformPhones = items;
+      const chosen = $('submit-phone').value, models = new Map();
+      for (const phone of items) if (phone.model) models.set(phone.model, [...(models.get(phone.model) || []), phone]);
+      const option = (value, label) => { const node = el('option', label); node.value = value; return node; };
+      const group = (label, options) => { const node = document.createElement('optgroup'); node.label = label; node.append(...options); return node; };
+      $('submit-phone').replaceChildren(option('', items.length ? '请选择' : '平台上还没有手机'),
+        ...(models.size ? [group('任意一台空闲的同型号', [...models].map(([model, phones]) => option('model:' + model, `${model}（${phones.length} 台，${phones.filter(p => p.idle).length} 台最近空闲）`)))] : []),
+        ...[...new Set(items.map(p => p.node_name))].map(name => group(name === 'local' ? '本机' : name, items.filter(p => p.node_name === name).map(p =>
+          option('ref:' + p.ref, `${p.model || '未知型号'} · ${p.serial}${!p.connected ? ' · 已断开' : p.idle ? ' · 最近空闲' : ''}`)))));
+      if ([...$('submit-phone').options].some(item => item.value === chosen)) $('submit-phone').value = chosen;
+    } catch (error) { platformPhones = null; platformPhonesError = errorText(error); }
+    renderSubmission();
+  }
   function submissionBinding() {
     if (pendingRequest) return pendingRequest.body?.device_binding || pendingRequest.device_binding || null;
     return $('submit-device-scope').value === 'device' ? deviceBinding : null;
@@ -1114,11 +1141,17 @@
   function renderDeviceBinding(allowed) {
     const fixed = !!pendingRequest, locked = fixed || submissionBusy || deviceBindingBusy;
     const binding = submissionBinding();
-    if (fixed) $('submit-device-scope').value = binding ? 'device' : 'global';
-    const scoped = $('submit-device-scope').value === 'device';
+    const phone = submissionPhone();
+    if (fixed) $('submit-device-scope').value = binding ? 'device' : phone ? 'platform' : 'global';
+    const scoped = $('submit-device-scope').value === 'device', platform = $('submit-device-scope').value === 'platform';
     $('submit-device-scope').disabled = !allowed || locked;
     $('submit-device-scope').querySelector('[value="device"]').disabled = !deviceLanesSupported();
+    $('submit-device-scope').querySelector('[value="platform"]').disabled = !platformSupported();
     $('device-binding-picker').hidden = !scoped;
+    $('platform-phone-picker').hidden = !platform;
+    $('submit-phone').disabled = !allowed || locked || !platformPhones;
+    if (platform && !platformPhones && !platformPhonesError) $('submit-phone').firstChild.textContent = '正在读取平台手机…';
+    if (platform && platformPhonesError) $('submit-phone').firstChild.textContent = `读取失败：${platformPhonesError}`;
     $('read-device-registry').disabled = locked || !deviceLanesSupported() || !!HGTarget.problem();
     $('read-device-registry').setAttribute('aria-busy', String(deviceBindingBusy));
     $('submit-device-id').disabled = !allowed || locked || !deviceRegistry || !!deviceBindingError;
@@ -1127,8 +1160,8 @@
     $('resolve-device-binding').setAttribute('aria-busy', String(deviceBindingBusy));
     $('device-registry-link').href = HGTarget.url('/dash/fleet');
     const problem = deviceBindingProblem();
-    const detail = fixed ? pendingRequest.binding_recorded ? '原请求设备声明已冻结，刷新登记不会改投；先按原 ID 查询。' : '旧未决记录未保存设备声明，不能补入当前登记；先按原 ID 查询。' : deviceBindingBusy ? '正在读取宿主登记或核对绑定，不采设备…' : deviceBindingError || !scoped ? deviceBindingError || '不发送 device_binding 字段，沿兼容全域执行。' : binding ? '绑定已核对；提交时随原请求固定。登记或启动条件变化仍可能被节点拒绝。' : '读取本节点登记后，显式选择设备和精确别名，再核对绑定。';
-    message('device-binding-message', `${detail}${scoped && problem ? ` ${problem}` : ''}`, !!deviceBindingError || !!problem);
+    const detail = platform ? fixed ? '原请求的手机已冻结，先按原 ID 查询。' : phone ? '' : '选一台手机，或任意一台空闲的同型号。' : fixed ? pendingRequest.binding_recorded ? '原请求设备声明已冻结，刷新登记不会改投；先按原 ID 查询。' : '旧未决记录未保存设备声明，不能补入当前登记；先按原 ID 查询。' : deviceBindingBusy ? '正在读取宿主登记或核对绑定，不采设备…' : deviceBindingError || !scoped ? deviceBindingError || '不发送 device_binding 字段，沿兼容全域执行。' : binding ? '绑定已核对；提交时随原请求固定。登记或启动条件变化仍可能被节点拒绝。' : '读取本节点登记后，显式选择设备和精确别名，再核对绑定。';
+    message('device-binding-message', `${detail}${scoped && problem ? ` ${problem}` : ''}`, !platform && (!!deviceBindingError || !!problem));
     $('device-binding-info').hidden = !binding && !deviceRegistry;
     facts('device-binding-info', binding ? bindingFacts(binding) : deviceRegistry ? [['登记节点', deviceRegistry.node_id], ['登记 revision', deviceRegistry.revision], ['启用的登记', deviceRegistry.devices.filter(device => device.enabled).length]] : []);
   }
@@ -1365,6 +1398,11 @@
         if (bindingProblem) throw new Error(bindingProblem);
         const binding = submissionBinding();
         if (binding) body.device_binding = binding;
+        if ($('submit-device-scope').value === 'platform') {
+          const phone = submissionPhone();
+          if (!phone) throw new Error('请选择一台手机，或任意一台空闲的同型号。');
+          Object.assign(body, phone);
+        }
         pendingRequest = {id: pendingRequest?.id || crypto.randomUUID(), target: pendingRequest ? pendingRequest.target : HGTarget.binding(), body,
           binding_recorded: true, device_binding: binding, budget_recorded: budgetRecorded, time_budget: timeBudget, host_slots_recorded: hostSlotsRecorded, host_slots: hostSlots,
           disk_guard_recorded: diskGuardRecorded, disk_guard: diskGuard, priority_recorded: priorityRecorded, priority};
@@ -3096,7 +3134,8 @@
   $('request-lookup-form').addEventListener('submit', event => { event.preventDefault(); lookupRequest(); });
   $('submit-open-job').addEventListener('click', () => { if (submittedJob) { selectCurrentJob(submittedJob); $('detail-heading').focus(); } });
   $('submit-device-access').addEventListener('change', renderSubmission);
-  $('submit-device-scope').addEventListener('change', () => { deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision; deviceBindingBusy = false; renderSubmission(); });
+  $('submit-device-scope').addEventListener('change', () => { deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision; deviceBindingBusy = false; renderSubmission(); if ($('submit-device-scope').value === 'platform') readPlatformPhones(); });
+  $('submit-phone').addEventListener('change', renderSubmission);
   $('read-device-registry').addEventListener('click', readDeviceRegistry);
   $('submit-device-id').addEventListener('change', selectDeviceAliases);
   $('submit-device-alias').addEventListener('change', () => { deviceBinding = null; deviceBindingError = ''; ++deviceBindingRevision; renderSubmission(); });
