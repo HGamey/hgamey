@@ -101,18 +101,26 @@ class JobCenter:
             deadline=time.monotonic() + DEADLINE_S, deliver=deliver)
 
     def observe(self, record, observation):
-        finished = (observation.get('queue', {}).get('state') == 'done'
-                    and (record.get('observation') or {}).get('queue', {}).get('state') != 'done')
         record = self.targets.update(record['id'], observation=observation, observed_at=time.time())
         if record['execution_node_id'] != self.local.node_id:
             self.artifacts.observed(record)
-            parent = record['request']['spec'].get('recovery_for') if finished else None
-            while parent:
-                original = self.remote(parent)
-                self.artifacts.recollect(parent)
-                parent = original['request']['spec'].get('recovery_for')
+            self._recollect_recovery_parents(record)
         if record['stop'] and observation.get('queue', {}).get('state') != 'done':
             self._send_stop_in_background(record)
+
+    def _recollect_recovery_parents(self, record):
+        parent = record['request']['spec'].get('recovery_for')
+        observation = record.get('observation') or {}
+        if (not parent or record.get('recovery_parents_invalidated')
+                or observation.get('state') != 'finished' or observation.get('queue', {}).get('state') != 'done'):
+            return
+        while parent:
+            original = self.remote(parent)
+            self.artifacts.recollect(parent)
+            parent = original['request']['spec'].get('recovery_for')
+        # Each parent's pending copy is durable before acknowledging invalidation.
+        # A crash before this write repeats it; a crash after it resumes that copy.
+        self.targets.update(record['id'], recovery_parents_invalidated=True)
 
     def refresh(self, record):
         if record['execution_node_id'] == self.local.node_id:
@@ -258,6 +266,7 @@ class JobCenter:
         for record in self.targets.rows():
             if record['execution_node_id'] == node_id:
                 self.artifacts.observed(record)
+                self._recollect_recovery_parents(record)
             if (record['execution_node_id'] == node_id and record['stop'] and record['observation'] is not None
                     and record['observation'].get('queue', {}).get('state') != 'done'):
                 self._send_stop_in_background(record)

@@ -70,6 +70,64 @@ class MultiNodeSessionTests(unittest.TestCase):
         self.assertTrue((self.worker.root / 'jobs' / jid / 'out' / 'session-control.json').exists())
         self.assertEqual(self.center.call('GET', '/jobs/' + child['id'] + '/session/recovery')[1]['target_job_id'], child['id'])
 
+    def test_restart_after_recovery_observation_commit_recollects_the_parent_on_report(self):
+        from job_center import JobCenter
+        source = self.completion(lambda: self.flow.submit({'bin': 'phonefarm', 'argv': SESSION_ARGV,
+            'device_access': 'write', 'execution_node_id': self.worker.jobs.node_id}, 'crash-source'))
+        jid = source['id']
+        center = self.center.jobs.center
+        center.artifacts.collect(jid)
+        center.artifacts.close()
+        cached = self.center.root / 'jobs' / jid / 'out' / 'session-control.json'
+        before = cached.read_bytes()
+        done = threading.Event()
+        commit, observe = self.worker.jobs.dispatch._commit_completion, center.observe
+
+        def committed(*args, **kwargs):
+            value = commit(*args, **kwargs)
+            done.set()
+            return value
+
+        def defer_child(record, observation):
+            if not record['request']['spec'].get('recovery_for'):
+                observe(record, observation)
+
+        with patch.object(self.worker.jobs.dispatch, '_commit_completion', side_effect=committed), \
+                patch.object(center, 'observe', side_effect=defer_child):
+            code, child = self.center.call('POST', '/jobs/' + jid + '/session/recover', {}, token=self.flow.agent,
+                                           headers={'X-Request-ID': 'crash-recovery'})
+            self.assertEqual(code, 200, child)
+            self.assertTrue(done.wait(10))
+        cid = child['id']
+        terminal = self.worker.jobs.status(cid)
+        self.assertEqual(terminal['queue']['state'], 'done')
+        # Accepting an unknown execution releases its scope, not its producer.
+        # It must not acknowledge invalidation before the real completion arrives.
+        with patch.object(center.artifacts, 'recollect', side_effect=AssertionError('recovery is still unknown')):
+            center.observe(center.targets.get(cid), {**terminal, 'state': 'unknown'})
+        with patch.object(center.artifacts, 'recollect', side_effect=RuntimeError('crash after observation commit')):
+            with self.assertRaisesRegex(RuntimeError, 'crash after observation commit'):
+                center.observe(center.targets.get(cid), terminal)
+        self.assertEqual(center.targets.get(cid)['observation'], terminal)
+        self.assertEqual(cached.read_bytes(), before)
+        self.assertEqual(center.artifacts.sync_status(jid)['status'], 'complete')
+        center.close()
+        self.center.jobs.center = restarted = JobCenter(self.center.jobs)
+        self.addCleanup(restarted.close)
+        # The worker's event cursor may already have passed the completion event.
+        restarted.report(self.worker.jobs.node_id, [])
+        restarted.artifacts.close()  # Join actual collection; no periodic report or retry.
+        self.assertEqual(restarted.artifacts.sync_status(jid)['status'], 'complete')
+        self.assertNotEqual(cached.read_bytes(), before)
+        self.assertEqual(len(json.loads(cached.read_bytes())['recovery']['reports']), 2)
+        self.assertEqual(cached.read_bytes(), (self.worker.root / 'jobs' / jid / 'out' / 'session-control.json').read_bytes())
+        inode = cached.stat().st_ino
+        with patch.object(restarted.artifacts, 'recollect', side_effect=AssertionError('already invalidated')):
+            restarted.report(self.worker.jobs.node_id, [terminal])
+            restarted.report(self.worker.jobs.node_id, [])
+        self.assertEqual(cached.stat().st_ino, inode)
+        self.assertEqual(len(self.worker.jobs.dispatch.queue.rows()), 2)
+
 
 if __name__ == '__main__':
     unittest.main()
