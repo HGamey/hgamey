@@ -186,14 +186,15 @@ class NodeAgents:
                     return entry["name"]
         return None
 
-    def record_checkin(self, name, seen_event_seq):
-        """Remember when the agent last checked in and how far it has read the research stream."""
+    def record_checkin(self, name, seen_event_seq, loop_hashes):
+        """Remember when the agent last checked in and which research events and loop steps it saw."""
         with self._locked() as state:
             entry = self._entry(state, name)
             previous = entry.get("checkin") or {}
             now = time.time()
             entry["checkin"] = {"at": now, "previous_at": previous.get("at"),
-                                "seen_event_seq": max(previous.get("seen_event_seq", 0), seen_event_seq)}
+                                "seen_event_seq": max(previous.get("seen_event_seq", 0), seen_event_seq),
+                                "loop_hashes": list(loop_hashes)}
             self._store.write_json("registry.json", state)
             return self._public(entry)
 

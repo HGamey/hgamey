@@ -13,10 +13,12 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import ThreadingHTTPServer
 
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
+import agent_duties
 import dash
 from http_server_fixture import start_http_server
 from node_service import Jobs, make_handler
@@ -315,6 +317,34 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("direction_id", err)
         script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
         self.assertIn("job.direction_id === direction.id", script)
+
+    def test_changed_loop_step_is_marked_new_once_per_agent_in_json_and_text(self):
+        tokens = {}
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+            tokens[name] = self.cli("POST", f"/agents/{name}/token", {})[1]["token"]
+        first_json = self.duties(tokens["agent-a"])
+        first_text = self.pf(tokens["agent-b"], "checkin")
+        self.assertEqual(first_text[0], 0, first_text[2])
+        self.assertFalse(any(step.startswith("[新]") for step in first_json["loop"]))
+        self.assertNotIn("[新]", first_text[1].split("每轮做法：", 1)[1])
+
+        changed_loop = list(agent_duties.LOOP)
+        changed_loop[5] += "（已修改）"
+        with mock.patch.object(agent_duties, "LOOP", changed_loop):
+            changed_json = self.duties(tokens["agent-a"])
+            self.assertEqual(changed_json["loop"][5], "[新] " + changed_loop[5])
+            self.assertEqual([step for step in changed_json["loop"] if step.startswith("[新]")],
+                             [changed_json["loop"][5]])
+            self.assertFalse(any(step.startswith("[新]") for step in self.duties(tokens["agent-a"])["loop"]))
+
+            changed_text = self.pf(tokens["agent-b"], "checkin")
+            self.assertEqual(changed_text[0], 0, changed_text[2])
+            loop_text = changed_text[1].split("每轮做法：", 1)[1]
+            self.assertIn(f" 6. [新] {changed_loop[5]}", loop_text)
+            self.assertEqual(loop_text.count("[新]"), 1)
+            next_text = self.pf(tokens["agent-b"], "checkin")
+            self.assertNotIn("[新]", next_text[1].split("每轮做法：", 1)[1])
 
     def test_note_style_is_shared_by_checkin_help_and_skill(self):
         self.assertLessEqual(len(NOTE_STYLE), 200)

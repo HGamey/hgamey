@@ -1,5 +1,6 @@
 """What an agent owes right now. `pf-node checkin` prints this at the start of every loop,
 so the loop depends on the node's record instead of the agent's memory."""
+import hashlib
 import json
 import time
 
@@ -39,6 +40,10 @@ LOOP = [
 ]
 
 
+def _loop_hashes():
+    return [hashlib.sha256(step.encode("utf-8")).hexdigest() for step in LOOP]
+
+
 def _latest(db, kind):
     return db.execute("SELECT r.* FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id AND r.revision=o.revision "
                       "WHERE o.kind=? ORDER BY r.sequence", (kind,)).fetchall()
@@ -72,6 +77,10 @@ def duties(jobs, name, now=None):
     entry = jobs.agents.get(name)
     checkin = entry.get("checkin") or {}
     seen, last = checkin.get("seen_event_seq", 0), checkin.get("at")
+    previous_loop_hashes = checkin.get("loop_hashes")
+    loop_hashes = _loop_hashes()
+    loop = ["[新] " + step if previous_loop_hashes is not None and digest not in previous_loop_hashes else step
+            for step, digest in zip(LOOP, loop_hashes)]
     with jobs.research._db() as db:
         head = jobs.research._upper(db)
         studies = [(row, json.loads(row["data"])) for row in _latest(db, "research")]
@@ -216,11 +225,11 @@ def duties(jobs, name, now=None):
             "jobs": {"active": active, "blocked": blocked, "finished_since_last_checkin": finished},
             "research": {"mine": [{"research_id": rid, "title": data["title"], "state": data["state"]} for rid, data in mine.items()],
                          "unclaimed": unclaimed},
-            "loop": LOOP}
+            "loop": loop}
 
 
 def checkin(jobs, name):
     """Duties as of now, then remember the check-in so the next one only marks newer items unread."""
     value = duties(jobs, name)
-    jobs.agents.record_checkin(name, value["event_head"])
+    jobs.agents.record_checkin(name, value["event_head"], _loop_hashes())
     return value
