@@ -220,6 +220,27 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(self.request(f"/jobs/{jid}/out?path=image.bin", headers={"Range": "bytes=20-10"})[0], 416)
         self.assertEqual(self.request(f"/jobs/{jid}/out?path=image.bin&etag=old")[0], 409)
 
+    def test_media_job_outputs_use_real_types_inline_and_keep_range(self):
+        jid = self.fixture(1)
+        output = Path(self.jobs.path(jid, "out"))
+        media = {"clip.mp4": "video/mp4", "clip.webm": "video/webm", "image.png": "image/png",
+                 "photo.jpg": "image/jpeg", "photo.jpeg": "image/jpeg"}
+        for name in (*media, "page.html", "vector.svg"):
+            (output / name).write_bytes((name + "-payload").encode())
+        for name, mime in media.items():
+            status, headers, body = self.request(f"/jobs/{jid}/out?path={name}", headers={"Range": "bytes=0-7"})
+            self.assertEqual((status, body), (206, (name + "-payload").encode()[:8]))
+            self.assertEqual(headers["Content-Type"], mime)
+            self.assertEqual(headers["Content-Disposition"], "inline")
+            self.assertEqual(headers["Content-Security-Policy"], "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+            self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        for name in ("page.html", "vector.svg", "image.bin"):
+            status, headers, _ = self.request(f"/jobs/{jid}/out?path={name}")
+            self.assertEqual(status, 200)
+            self.assertEqual(headers["Content-Type"], "application/octet-stream")
+            self.assertEqual(headers["Content-Disposition"], "attachment")
+            self.assertNotIn("Content-Security-Policy", headers)
+
     def test_job_lease_receipts_keep_scoped_evidence_separate_from_recovery(self):
         jid = self.fixture(1, recovery={"status": "required", "reason": "fixture needs review"})
         self.assertIn("jobs.leases-v1", self.get_json("/node")["capabilities"])

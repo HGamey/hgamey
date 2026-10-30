@@ -1373,8 +1373,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
         def _out(self, jid, q):
             rel = (q.get("path") or [""])[0] or None
             blob, info = jobs.out_blob(jid, rel)
+            media_type = {".mp4": "video/mp4", ".webm": "video/webm", ".png": "image/png",
+                          ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(os.path.splitext(rel or "")[1].lower())
             with blob:
-                return self._stream_out(blob, info, q)
+                return self._stream_out(blob, info, q, media_type=media_type if info["kind"] == "file" else None)
 
         def _result_source(self, source, q):
             blob, info = source
