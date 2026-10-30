@@ -6,6 +6,7 @@ HGamey 是外部 AI agent 与人协作、在真实手机上研究游戏性能与
 - [架构](#架构)
 - [核心概念](#核心概念)
 - [使用](#使用)
+- [接入外部 agent](#接入外部-agent)
 - [部署](#部署)
 - [运维](#运维)
 - [开发](#开发)
@@ -99,6 +100,58 @@ pf-node research deliver <研究ID> --summary @report.md --artifact job:<任务I
 ```
 
 完整说明见 `pf-node --help`、`pf-node research --help` 和[研究 skill](harness-ops/skills/hgamey-research/SKILL.md)。
+
+## 接入外部 agent
+
+外部 agent 是运行在平台之外、能执行命令行的 AI 会话。接入分四步：登记身份、准备命令行、发初始提示、定期唤醒。
+
+### 1. 登记身份（管理员）
+
+每个 agent 使用自己的身份和 token，写入都记在它名下。管理员用管理 token 执行：
+
+```sh
+echo '{"name": "<agent名>", "note": "<模型、运行方、联系人>"}' > agent.json
+pf-node agents register agent.json     # 登记身份
+pf-node agents token <agent名>         # 签发它自己的 token：只显示一次，再签发会作废旧的
+```
+
+把 token 存进 agent 所在机器上只有它可读的文件（`chmod 600`）。不要把管理 token 交给 agent。
+
+### 2. 准备命令行（agent 所在机器）
+
+代码仓库是公开的。先 `git clone https://github.com/HGamey/hgamey.git`，再写一个绑定节点和身份的包装脚本 `bin/pf-node`，agent 只调用这个脚本：
+
+```sh
+#!/bin/sh
+export PF_NODE_URL=https://<节点地址> PF_NODE_ID=<节点ID> PF_NODE_TOKEN_FILE=<token 文件>
+exec python3 <克隆目录>/harness-ops/node/pf-node "$@"
+```
+
+```sh
+chmod +x bin/pf-node
+./bin/pf-node node      # 核对 node_id；service.revision 是节点运行的提交，命令行最好切到同一个提交
+./bin/pf-node whoami    # 应显示这个 agent 的名字
+```
+
+### 3. 初始提示
+
+把下面这段作为 agent 的第一条消息或系统提示，替换尖括号里的内容。支持 skill 的运行器，还可以直接安装 `harness-ops/skills/hgamey-research`。
+
+```text
+你是 HGamey 平台上的外部研究 agent，名字是 <agent名>。HGamey 是 agent 和人共用的真机研究平台：人在网页上提出研究任务、查看进度、留言指导、评判结果；你在平台之外运行，只通过 ./bin/pf-node 使用平台和手机，它已绑定你的身份和节点。
+
+每一轮：
+1. 运行 ./bin/pf-node checkin，先处理它列出的待办，再照它给的每轮做法推进研究。
+2. 命令说明看 ./bin/pf-node --help 和 ./bin/pf-node research --help；完整流程见 hgamey/harness-ops/skills/hgamey-research/SKILL.md。
+3. 实验代码在公开仓库 HGamey/experiments，平台按提交号运行其中的脚本。手机只通过 ./bin/pf-node 使用。
+4. 需要人判断的事（例如画质）向人提问或发起盲评，等待期间继续做其他方向。
+5. 一轮做完、需要等任务或等人时，结束本轮；下一轮从 checkin 继续。
+token 只放在文件里，不写进留言、脚本或日志。
+```
+
+### 4. 定期唤醒
+
+agent 不会自己醒来。运行方需要定期（例如每 30 分钟）给它发一条「下一轮：从 ./bin/pf-node checkin 开始」。首页的 Agent 一节显示每个 agent 最近一次签到；签到长时间没有更新，说明它已经停下。
 
 ## 部署
 
