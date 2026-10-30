@@ -874,8 +874,10 @@ class NodeResearch:
             raise ValueError("unsupported research object kind")
 
     @staticmethod
-    def _page(query, allowed=()):
-        if set(query) - ({"limit", "cursor", "expected_node_id"} | set(allowed)) or any(len(v) != 1 for v in query.values()):
+    def _page(query, allowed=(), repeated=()):
+        if (set(query) - ({"limit", "cursor", "expected_node_id"} | set(allowed))
+                or any(key not in repeated and len(values) != 1 for key, values in query.items())
+                or any(not values for values in query.values())):
             raise ValueError("unsupported or repeated research query field")
         limit = int(query.get("limit", [20])[0])
         if not 1 <= limit <= 100:
@@ -992,34 +994,60 @@ class NodeResearch:
                 "current_revision": record["current_revision"], "audit": record["audit"], "criteria": criteria,
                 "criteria_bindings": bindings, **criteria_rules.assess(criteria, comparison)}
 
-    def list(self, kind, query):
+    def list(self, kind, query, blind=False):
         self._kind(kind)
-        limit = self._page(query, {"research_id", "state", "request_id", "follows"})
-        filters = {key: query[key][0] for key in ("research_id", "state", "request_id", "follows") if query.get(key) and query[key][0]}
+        complete = kind == "request" and query.get("full") == ["1"] and query.get("feedback") == ["latest"]
+        allowed = {"research_id", "state", "request_id", "follows"}
+        if kind == "request":
+            allowed |= {"full", "feedback"}
+        limit = self._page(query, allowed, repeated={"research_id"} if complete else ())
+        if ("full" in query or "feedback" in query) and not complete:
+            raise ValueError("full request reads require full=1 and feedback=latest")
+        filters = {key: query[key][0] for key in ("state", "request_id", "follows") if query.get(key) and query[key][0]}
+        research_ids = query.get("research_id", [])
+        if complete and research_ids:
+            filters["research_id"] = research_ids
+        elif research_ids and research_ids[0]:
+            filters["research_id"] = research_ids[0]
         for key, value in filters.items():
             if key == "state":
                 if value not in STATES[kind]:
                     raise ValueError("unsupported state filter for this kind")
             else:
-                identifier(value)
+                values = value if complete and key == "research_id" else [value]
+                for one in values:
+                    identifier(one)
                 if key == "request_id" and kind != "feedback":
                     raise ValueError("request_id filter is only supported for feedback")
                 if key == "follows" and kind != "research":
                     raise ValueError("follows filter is only supported for research")
         binding = [self.node_id, "list", kind, filters]
+        if complete:
+            binding.append("full-feedback-latest")
         with self._db() as db:
             upper, after = self._cursor(query, binding, self._upper(db))
             terms = ["r.sequence IN (SELECT MAX(sequence) FROM revisions WHERE kind=? AND sequence<=? GROUP BY id)"]
             params = [kind, upper]
             for key, value in filters.items():
-                terms.append("json_extract(r.data,'$.follows')=?" if key == "follows" else "r." + key + "=?")
-                params.append(value)
+                if complete and key == "research_id":
+                    terms.append("r.research_id IN (" + ",".join("?" for _ in value) + ")")
+                    params.extend(value)
+                else:
+                    terms.append("json_extract(r.data,'$.follows')=?" if key == "follows" else "r." + key + "=?")
+                    params.append(value)
             if after is not None:
                 terms.append("r.sequence<?"); params.append(after)
             rows = db.execute("SELECT r.* FROM revisions r WHERE " + " AND ".join(terms) + " ORDER BY r.sequence DESC LIMIT ?",
                               (*params, limit + 1)).fetchall()
             items, guidance, questions = [], {}, {}
             for row in rows[:limit]:
+                if complete:
+                    item = self._show(db, row, blind)
+                    feedback = db.execute("SELECT * FROM revisions WHERE kind='feedback' AND request_id=? AND sequence<=? "
+                                          "ORDER BY sequence DESC LIMIT 1", (row["id"], upper)).fetchone()
+                    item["latest_feedback"] = self._show(db, feedback, blind) if feedback is not None else None
+                    items.append(item)
+                    continue
                 data = json.loads(row["data"])
                 item = {"kind": kind, "id": row["id"], "research_id": row["research_id"], "revision": row["revision"],
                         "title": row["title"] or data.get("text", "")[:120], "state": row["state"],

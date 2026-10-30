@@ -444,6 +444,75 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("research list feedback --request-id " + request_id, owed["command"])
         self.assertNotIn(request_id, [item["request_id"] for item in self.duties(token)["waiting_on_human"]])
 
+    def test_request_chain_reads_full_comparisons_and_latest_feedback_in_one_page(self):
+        for rid, title, follows in (("sr-chain-root", "根任务", None), ("sr-chain-next", "接续任务", "sr-chain-root")):
+            data = {"title": title, "objective": "一次读取链上的盲评", "follows": follows}
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write("create-" + rid, data))[0], 201)
+        out = Path(self.jobs.path(self.jid, "out"))
+        out.mkdir(parents=True, exist_ok=True)
+        for name in ("chain-a.png", "chain-b.png"):
+            (out / name).write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-chain",
+            "title": "链上盲评素材", "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"],
+            "sources": [{"name": name, "kind": "job_output", "job_id": self.jid, "path": name + ".png"}
+                        for name in ("chain-a", "chain-b")]})[0], 201)
+        refs = [{"kind": "result_source", "node_id": self.node_id, "result_id": "r-chain", "source_name": name}
+                for name in ("chain-a", "chain-b")]
+        for rid, request_id in (("sr-chain-root", "ev-chain-root"), ("sr-chain-next", "ev-chain-next")):
+            request = {"research_id": rid, "type": "evaluation", "title": request_id, "need": "选一张", "why": "fixture",
+                       "context": {"research_revision": 1, "directions": []}, "evidence_refs": refs,
+                       "evaluation": {"schema": "phonefarm/compare@1",
+                                      "items": [{"ref": 0, "media_kind": "image"}, {"ref": 1, "media_kind": "image"}],
+                                      "pick": 1}}
+            self.assertEqual(self.web("POST", f"/research-state/request/{request_id}",
+                                      self.write("create-" + request_id, request))[0], 201)
+        for feedback_id, slot, text in (("f-chain-old", "A", "第一次回答"), ("f-chain-new", "B", "第二次回答")):
+            assessment = {"schema": "phonefarm/compare-feedback@1", "picked": [slot], "unable": False,
+                          "difference": "small", "client_display": {"A": "decoded", "B": "decoded"},
+                          "identity_revealed": False}
+            feedback = {"request_id": "ev-chain-root", "request_revision": 1, "text": text, "evaluation": assessment}
+            self.assertEqual(self.web("POST", f"/research-state/feedback/{feedback_id}",
+                                      self.write("create-" + feedback_id, feedback))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        path = ("/research-state/request?research_id=sr-chain-root&research_id=sr-chain-next"
+                "&full=1&feedback=latest&limit=100")
+        for reader, dashboard_blind in ((self.web, True), (lambda method, path: self.agent(token, method, path), False)):
+            code, batch = reader("GET", path)
+            self.assertEqual(code, 200, batch)
+            self.assertIsNone(batch["next_cursor"])
+            items = {item["id"]: item for item in batch["items"]}
+            self.assertEqual(set(items), {"ev-chain-root", "ev-chain-next"})
+            for request_id in items:
+                single = reader("GET", "/research-state/request/" + request_id)[1]
+                latest = None
+                if request_id == "ev-chain-root":
+                    latest = reader("GET", "/research-state/feedback/f-chain-new")[1]
+                self.assertEqual(items[request_id], {**single, "latest_feedback": latest})
+            self.assertEqual(items["ev-chain-root"]["latest_feedback"]["data"]["text"], "第二次回答")
+            self.assertIsNone(items["ev-chain-next"]["latest_feedback"])
+            self.assertEqual(items["ev-chain-next"]["data"]["evidence_refs"], [] if dashboard_blind else refs)
+            self.assertEqual(len(items["ev-chain-next"]["evidence_bindings"]), 0 if dashboard_blind else 2)
+            self.assertEqual(len(items["ev-chain-root"]["data"]["evidence_refs"]), 2)
+
+        paged_path = path.replace("limit=100", "limit=1")
+        code, first = self.agent(token, "GET", paged_path)
+        self.assertEqual(code, 200, first)
+        self.assertEqual(len(first["items"]), 1)
+        self.assertIsNotNone(first["next_cursor"])
+        code, second = self.agent(token, "GET", paged_path + "&cursor=" + first["next_cursor"])
+        self.assertEqual(code, 200, second)
+        self.assertEqual(len(second["items"]), 1)
+        self.assertIsNone(second["next_cursor"])
+        self.assertNotEqual(first["items"][0]["id"], second["items"][0]["id"])
+        self.assertIn("latest_feedback", second["items"][0])
+
+        headers = {"Authorization": f"Bearer {token}", "X-Expected-Node-ID": "f" * 32}
+        mismatched_batch = self.request("GET", path, headers=headers)
+        mismatched_single = self.request("GET", "/research-state/request/ev-chain-root", headers=headers)
+        self.assertEqual(mismatched_batch, mismatched_single)
+        self.assertEqual(mismatched_batch[0], 409)
+
     def test_compare_help_is_shared_by_checkin_help_and_skill(self):
         self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
         token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]

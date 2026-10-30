@@ -1298,7 +1298,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         with blob:
                             return self._stream_out(blob, info, {}, media_type=info["media"]["mime"])
                     if len(parts) == 2:
-                        return self._send(200, research.list(parts[1], q))
+                        return self._send(200, research.list(parts[1], q, blind=dashboard))
                     if len(parts) == 4 and parts[3] == "history":
                         return self._send(200, research.history(parts[1], unquote(parts[2]), q, blind=dashboard))
                     if len(parts) == 3:
