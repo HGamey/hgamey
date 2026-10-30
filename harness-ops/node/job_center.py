@@ -218,8 +218,10 @@ class JobCenter:
     def reset(self, jid, note):
         self.stop(jid, 'reset', {'note': note})
         status = self.status(jid)
-        return {'released': status['queue']['state'] == 'done', 'storage_committed': 'storage_error' not in status,
-                'pending': status['queue']['state'] != 'done', 'job': status}
+        released = status['queue']['state'] == 'done'
+        return {'released': released,
+                'storage_committed': released and status['state'] == 'finished' and 'storage_error' not in status,
+                'pending': not released, 'job': status}
 
     def cancel(self, jid, force):
         self.stop(jid, 'cancel', {'force': force})

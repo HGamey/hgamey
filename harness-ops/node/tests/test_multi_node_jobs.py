@@ -125,6 +125,31 @@ class MultiNodeJobTests(unittest.TestCase):
                 self.assertEqual((code, reply['pending']), (202, True), reply)
         self.assertIsNotNone(self.center.jobs.center.remote(job['id'])['stop'])
 
+    def test_offline_reset_only_confirms_storage_for_a_saved_terminal_job(self):
+        cases = [
+            ('running', 1, {'state': 'running', 'queue': {'state': 'claimed'}}, False, False),
+            ('admission-unknown', 1, None, False, False),
+            ('never-delivered', None, None, True, True),
+            ('finished', 1, {'state': 'finished', 'queue': {'state': 'done'}}, True, True),
+            ('storage-error', 1, {'state': 'finished', 'queue': {'state': 'done'},
+                                  'storage_error': {'message': 'fixture disk error'}}, True, False),
+            ('manual-unknown', 1, {'state': 'unknown', 'queue': {'state': 'done'}}, True, False),
+        ]
+        for index, (name, sent, observed, released, stored) in enumerate(cases):
+            with self.subTest(name=name):
+                jid = '%012x' % index
+                self.center.jobs.center.targets.reserve({'id': jid, 'request_id': 'offline-' + name,
+                    'fingerprint': name, 'execution_node_id': self.worker.jobs.node_id,
+                    'request': {'spec': {'bin': 'fixture', 'argv': ['-c', 'pass'], 'device_access': 'none'}},
+                    'submitted_at': 1, 'device_selection': None, 'sent_at': sent, 'stop': None,
+                    'observation': ({'id': jid, **observed} if observed else None)})
+                with patch.object(self.center.jobs.center, 'rpc', side_effect=AssertionError('offline reset sent a call')):
+                    code, receipt = self.center.call('POST', '/jobs/' + jid + '/reset', {'note': name})
+                self.assertEqual(code, 200 if released else 202, receipt)
+                self.assertEqual((receipt['pending'], receipt['released'], receipt['storage_committed']),
+                                 (not released, released, stored), receipt)
+                self.assertEqual(self.center.jobs.center.targets.get(jid)['stop']['note'], name)
+
     def test_task_rows_use_recorded_terminal_facts_without_reading_each_node(self):
         center = self.center.jobs.center
         for index in range(3):
