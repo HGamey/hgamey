@@ -68,14 +68,17 @@
     const phoneOf = ref => phones?.find(phone=>phone.ref===ref);
     // Receipts, reports and history name the computer that ran the job and the phone's own serial, never the ref:
     // a target is compared as {node, raw}. A hand-typed serial is a phone on this center.
-    function who(v,serial=v.serial,raw=v.raw) { return isRef(serial)?{node:serial.slice(0,serial.indexOf('/')),raw:raw??phoneOf(serial)?.serial??null}:{node:v.record.node_id,raw:serial}; }
+    // An unregistered phone's ref ends in its own serial; the job's device_selection freezes the actual one.
+    const refPart = serial => { const part=serial.slice(serial.indexOf('/')+1); try { return decodeURIComponent(part); } catch(_) { return part; } };
+    function who(v,serial=v.serial,raw=v.raw) { return isRef(serial)?{node:serial.slice(0,serial.indexOf('/')),raw:raw??phoneOf(serial)?.serial??refPart(serial)}:{node:v.record.node_id,raw:serial}; }
+    function freeze(v,p,job) {
+      const frozen=isRef(p.serial)&&job?.device_selection?.serial;
+      if(!frozen)return;
+      p.raw_serial=frozen; if(v.serial===p.serial)v.raw=frozen;
+    }
     const itemTarget = item => ({node:item.target.execution_node_id??item.target.node_id,raw:item.target.serial});
     function shown(v,serial=v.serial,raw=v.raw) { if(!isRef(serial))return serial; const t=who(v,serial,raw), phone=phoneOf(serial), name=t.node===v.record.node_id?'本机':phone?.node_name||`电脑 ${t.node.slice(0,8)}`; return `${name} · ${t.raw||serial}`; }
-    function targetProblem(v,serial=v.serial,raw=v.raw) {
-      if(!isRef(serial))return androidSerialProblem(serial);
-      const t=who(v,serial,raw);
-      return t.raw?androidSerialProblem(t.raw):'手机列表里没有这台手机；刷新手机列表后再选。';
-    }
+    function targetProblem(v,serial=v.serial,raw=v.raw) { return androidSerialProblem(who(v,serial,raw).raw); }
     function bindingProblem(v,p=null) {
       if(p?.kind==='recover'||isRef(p?p.serial:v.serial)||!(p?Object.hasOwn(p,'device_binding'):v.scope==='device'))return '';
       if(!lanesSupported())return '节点未提供游戏设备范围能力，不能提交登记绑定；不会改为不带绑定提交。';
@@ -88,7 +91,7 @@
       if(p.kind==='recover')return true;
       if(Object.hasOwn(p,'device_binding'))return sameBinding(job?.device_binding,p.device_binding);
       // The center attaches a platform phone's registered binding itself; it names the same phone's own serial.
-      if(isRef(p.serial))return job?.device_binding==null||bindingOK(job.device_binding)&&(!p.raw_serial||job.device_binding.serial===p.raw_serial);
+      if(isRef(p.serial)){const frozen=job?.device_selection?.serial??p.raw_serial;return job?.device_binding==null||bindingOK(job.device_binding)&&(!frozen||job.device_binding.serial===frozen);}
       return job?.device_binding==null;
     }
     function invalidateBinding(v) { if(v){v.deviceBinding=null;v.bindingError='';v.bindingBusy=false;v.bindingRevision=(v.bindingRevision||0)+1;} }
@@ -156,7 +159,7 @@
       scopePicker.hidden=p?.kind==='recover'||platform;scope.value=scoped?'device':'global';scope.disabled=v.busy||!!p||!!v.bindingBusy||!canManage(v);scope.children[1].disabled=!lanesSupported();
       resolveBinding.hidden=!scoped;resolveBinding.disabled=v.busy||!!p||!!v.bindingBusy||!lanesSupported()||!!targetProblem(v)||!canManage(v);resolveBinding.setAttribute('aria-busy',String(!!v.bindingBusy));
       bindingInfo.hidden=!(platform||scoped)||!bound;bindingInfo.textContent=(platform||scoped)&&bound?JSON.stringify(bound,null,2):'';
-      bindingNote.textContent=platform&&p?.kind!=='recover'?(p?'原请求按所选手机的登记执行；只按原 ID 查询或接续。':registered?'按这台手机的登记执行，中心会自动带上它的登记绑定。':'这台手机没有登记，任务只占用这一台手机排队。'):p?.kind==='recover'?'恢复继承原任务的设备范围，不能重新选择绑定。':p?`原请求范围已冻结：${scoped?'按登记设备':'按串号'}。只按原 ID 查询或接续，当前选择不会改写它。`:!scoped?'未发送 device_binding，按这个串号只占用这一台手机；全域任务仍可能让它等待。显式选择按登记设备后，按登记身份占用。':v.bindingError||bindingProblem(v)||'已核对宿主登记；提交时冻结此绑定，可与其他设备并行。只读登记不采样手机；登记变化时需另开请求重新核对。';
+      bindingNote.textContent=platform&&p?.kind!=='recover'?(p?'原请求按所选手机的登记执行；只按原 ID 查询或接续。':registered?'按这台手机的登记执行，中心会自动带上它的登记绑定。':phoneOf(v.serial)?'这台手机没有登记，任务只占用这一台手机排队。':'手机列表里还没有这台手机；中心按它的登记执行，没有登记就只占用这一台手机。'):p?.kind==='recover'?'恢复继承原任务的设备范围，不能重新选择绑定。':p?`原请求范围已冻结：${scoped?'按登记设备':'按串号'}。只按原 ID 查询或接续，当前选择不会改写它。`:!scoped?'未发送 device_binding，按这个串号只占用这一台手机；全域任务仍可能让它等待。显式选择按登记设备后，按登记身份占用。':v.bindingError||bindingProblem(v)||'已核对宿主登记；提交时冻结此绑定，可与其他设备并行。只读登记不采样手机；登记变化时需另开请求重新核对。';
       sceneSource.hidden=v.operation!=='scene';sourceJob.value=v.sceneJob||'';sourceJob.disabled=v.busy||!!p;sourceRead.disabled=v.busy||!!p||!!v.sceneReading||!support(v)||!plan||!context().detailFresh||context().node?.node_id!==v.record.node_id||!serialOK(v.serial)||!/^[0-9a-f]{12}$/.test(v.sceneJob||'');sourceRead.textContent=v.sceneReading?'正在读取两份引用…':'读取部署引用';sourceRead.setAttribute('aria-busy',String(!!v.sceneReading));
       sourceNote.textContent=v.sceneError||(v.sceneReading?'正在只读获取 deployment.json 与 game-deploy/session.json。':sceneReady(v)?`已读取 ${time(v.sceneAt)} · 原任务 ${v.sceneJob} · 当前目标 ${shown(v)}。仅核对来源身份；提交后由任务核对原部署、设备和应用。`:'填写原资源部署任务 ID 并显式读取两份引用。允许同游戏旧版本的部署；变更目标或来源后需重新读取。');sourceNote.classList.toggle('task-error',!!v.sceneError);
       sourceFacts.replaceChildren();sourceFacts.hidden=!sceneReady(v);if(sceneReady(v)){sourceFacts.append(el('summary','已冻结的部署引用'),el('pre',JSON.stringify(v.sceneDeployment,null,2),'command-box'));const original=link('查看原资源部署任务',jobURL({id:v.sceneJob}));if(original)sourceFacts.append(original);}
@@ -203,6 +206,7 @@
         const path=p.kind==='recover'?`${API}/jobs/${encodeURIComponent(p.source_job_id)}/deployment/recover`:`${API}/games/${encodeURIComponent(p.game_id)}/versions/${encodeURIComponent(p.version)}/${p.operation}`;
         const body=p.kind==='recover'?{}:{node_id:p.node_id,serial:p.serial,mode:p.mode,...(Object.hasOwn(p,'device_binding')?{device_binding:p.device_binding}:{}),...(p.operation==='scene'?{deployment:p.deployment}:{})};const job=await http(path,{body,requestID:p.request_id,target:p.target||null});
         if(!job?.id||job.request_id!==p.request_id||!matchingJobBinding(job,p)||(p.kind==='recover'&&job.recovery_for!==p.source_job_id))throw new Error('回包未确认原请求身份或设备范围。');
+        freeze(v,p,job);
         saved.delete(v.key);persist();invalidateRecovery(v,p);v.job=job;setMessage(v,`${operationName(p.operation)} · ${modeName(p.mode,p.operation)}任务已记录：${job.id} · 设备 ${shown(v,p.serial,p.raw_serial)} · ${jobLabel(job)}。接受任务不代表设备准备或恢复已完成。`);
         if(current(v))await refresh(p);
       } catch(error) {
@@ -214,12 +218,12 @@
       if(!(mode==='recover'?canManage(v)&&serialOK(v.serial):canWrite(v)&&!targetProblem(v)&&!bindingProblem(v))||v.busy||pending(v)||!globalThis.crypto?.randomUUID)return;
       if(mode==='recover') {const value=details.get(source);if(!value?.recovery?.eligible||!value.recovery.supported||!recordMatches(value,v)||!/^[0-9a-f]{12}$/.test(value.recovery.target_job_id))return;source=value.recovery.target_job_id;}
       if(mode!=='recover'&&v.operation==='scene'&&!sceneReady(v))return;
-      const p={kind:mode==='recover'?'recover':'deploy',operation:v.operation,node_id:v.record.node_id,game_id:v.record.game_id,version:v.record.version,serial:v.serial,...(isRef(v.serial)?{raw_serial:who(v).raw}:{}),mode,request_id:crypto.randomUUID(),target:HGTarget.binding(),...(source?{source_job_id:source}:{}),...(mode!=='recover'&&!isRef(v.serial)&&v.scope==='device'?{device_binding:{...v.deviceBinding}}:{}),...(mode!=='recover'&&v.operation==='scene'?{deployment:{report:{...v.sceneDeployment.report},state:{...v.sceneDeployment.state}}}:{}),queried:false};saved.set(v.key,p);persist();await submit(v,p);
+      const p={kind:mode==='recover'?'recover':'deploy',operation:v.operation,node_id:v.record.node_id,game_id:v.record.game_id,version:v.record.version,serial:v.serial,...(isRef(v.serial)&&(v.raw??phoneOf(v.serial)?.serial)?{raw_serial:v.raw??phoneOf(v.serial).serial}:{}),mode,request_id:crypto.randomUUID(),target:HGTarget.binding(),...(source?{source_job_id:source}:{}),...(mode!=='recover'&&!isRef(v.serial)&&v.scope==='device'?{device_binding:{...v.deviceBinding}}:{}),...(mode!=='recover'&&v.operation==='scene'?{deployment:{report:{...v.sceneDeployment.report},state:{...v.sceneDeployment.state}}}:{}),queried:false};saved.set(v.key,p);persist();await submit(v,p);
     }
     async function queryPending(v) {
       const p=pending(v);if(!p||v.busy)return;let found=false;v.busy=true;setMessage(v,'正在查询原请求，没有重新提交。');render(v);
       try {
-        const job=await http(`${API}/requests/${encodeURIComponent(p.request_id)}`,{target:p.target||null});if(!job?.id||job.request_id!==p.request_id)throw new Error('原请求回包身份不匹配。');v.job=job;found=true;
+        const job=await http(`${API}/requests/${encodeURIComponent(p.request_id)}`,{target:p.target||null});if(!job?.id||job.request_id!==p.request_id)throw new Error('原请求回包身份不匹配。');v.job=job;found=true;freeze(v,p,job);persist();
         const value=verifyDeployment(await http(`${API}/jobs/${encodeURIComponent(job.id)}/deployment`,{target:p.target||null}),v,p);
         if(value.job.id!==job.id)throw new Error('任务回执身份不匹配。');details.set(job.id,value);saved.delete(v.key);persist();invalidateRecovery(v,p);
         setMessage(v,`已找回${operationName(p.operation)}原任务 ${job.id} · ${jobLabel(job)}，没有重复提交。设备事实以该任务的事务报告为准。`);if(current(v))await refresh(p);
