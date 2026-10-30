@@ -104,6 +104,8 @@ pf-node research deliver <研究ID> --summary @report.md --artifact job:<任务I
 
 一个节点是一台连接手机的主机（macOS 或 Linux）。节点上运行节点服务；需要公网访问时，还运行 cloudflared 隧道。部署由仓库根目录的 `deploy.py` 完成，它把一个提交构建并发布到节点，重启服务，并核对每个服务报告的版本。
 
+现有部署（手机插在哪台机器、每台机器跑什么、哪些 agent 在哪里跑）见 HGamey/docs 的 [DEPLOYMENT.md](https://github.com/HGamey/docs/blob/main/DEPLOYMENT.md) 和[部署拓扑图](https://github.com/HGamey/docs/blob/main/diagrams/08-deployment.png)。本节是新建节点的通用步骤。
+
 ### 前置条件
 
 - Python 3.12 及以上，Rust stable 工具链（`cargo`），git。
