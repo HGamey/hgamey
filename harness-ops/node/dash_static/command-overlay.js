@@ -140,7 +140,7 @@ export class Overlay {
       const best = pick(x, anchor[0], anchor[1], x.w, x.h, anchor[2], PLACES);
       if (!best) { x.b.hidden = true; continue; }   // nowhere to say it without covering the map
       x.place = best.place; x.step = best.step; taken.push(best.box); lead(best.box, anchor[0], anchor[1], anchor[2] - 4);
-      x.b.style.transform = `translate(${best.box.l}px,${best.box.t}px)`;
+      x.b.style.translate = `${best.box.l}px ${best.box.t}px`;   // not transform: the entrance scale would shrink the offset too
     }
     const d = leads.join(' ');
     if (this.leads.dataset.d !== d) { this.leads.dataset.d = d; this.leads.innerHTML = d ? `<path d="${d}"/>` : ''; }
