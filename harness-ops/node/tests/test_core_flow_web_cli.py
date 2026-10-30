@@ -2133,6 +2133,96 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_comparison_stays_where_it_landed_when_videos_above_it_load(self):
+        """去评 lands on the second of two comparisons. The first one's videos are held back until after the landing;
+        when they load (portrait, unlike the browser's default box) the comparison does not move."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import base64
+        # A real 720×1440 VP8 clip: Chromium reads its size, so a slot that followed it would grow.
+        clip = base64.b64decode("GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAjIEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggEgTbuMU6uEHFO7a1Osggiy7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiEBpAAAAAAAAFlSua8OuAQAAAAAAADrXgQFzxYgWmfis4mL8bZyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhAvrwgDgi7CCAtC6ggWgmoECElTDZ/xzc6BjwIBnyJpFo4dFTkNPREVSRIeNTGF2ZjYwLjE2LjEwMHNz1mPAi2PFiBaZ+KziYvxtZ8ihRaOHRU5DT0RFUkSHlExhdmM2MC4zMS4xMDIgbGlidnB4Z8ihRaOIRFVSQVRJT05Eh5MwMDowMDowMC4yMDAwMDAwMDAAH0O2dUcL54EAo0cFgQAAgPDbAJ0BKtACoAUARwiFhYiFhIgCAgJ1qgP4A/oCBrak9waBZJ9r25snOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOHsnOGQA/v1u8//jmTcwxP+Obf/xYTwOKMj/8VEAHFO7a5G7j7OBALeK94EB8YIBofCBAw==")
+        jid = "eeeeeeeeeeee"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        for name in ("v1", "v2"):
+            (out / (name + ".webm")).write_bytes(clip)
+        import struct, zlib
+
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        # A large portrait picture too: an image's own size must not set its slot's size either.
+        width, height = 1200, 2400
+        (out / "tall.png").write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                                       + chunk(b"IDAT", zlib.compress((b"\x00" + b"\x40\x60\x80" * width) * height)) + chunk(b"IEND", b""))
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-vid", "title": "视频素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": path} for name, path in (("v1", "v1.webm"), ("v2", "v2.webm"), ("tall", "tall.png"))]})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-vid", self.write(
+            "create-vid", {"title": "两段视频", "objective": "落点不被上方视频推走"}))[0], 201)
+        for i in range(12):
+            self.assertEqual(self.web("POST", f"/research-state/note/n-vid-{i}", self.write(f"create-n-vid-{i}", {
+                "research_id": "sr-vid", "text": f"进展 {i}", "reply_to": None, "decision": None}))[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-vid", "source_name": name}
+        for rid in ("ev-vid-1", "ev-vid-2"):
+            self.assertEqual(self.cli("POST", f"/research-state/request/{rid}", self.write("create-" + rid, {
+                "research_id": "sr-vid", "type": "evaluation", "title": "两段视频 " + rid, "need": "哪段更清楚？", "why": "fixture",
+                "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref("v1"), ref("v2"), ref("tall")],
+                "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": 0, "media_kind": "video"}, {"ref": 1, "media_kind": "video"},
+                                                                          {"ref": 2, "media_kind": "image"}], "pick": 1}}))[0], 201)
+        url = "/dash/research?kind=research&id=sr-vid"
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 700})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(base + url)
+                page.wait_for_function("() => document.querySelectorAll('#task-compare-open .compare').length === 2")
+                above, target = page.eval_on_selector_all("#task-compare-open .compare", "e => e.map(x => x.id)")
+                gate = {"open": False, "held": []}
+
+                def hold(route, request):
+                    if gate["open"]:
+                        route.continue_()
+                    else:
+                        gate["held"].append(route)
+                page.route(f"**/research-state/request/{above[len('cmp-'):]}/media/*", hold)
+                page.goto(base + "/dash")
+                page.goto(f"{base}{url}#{target}")
+                page.wait_for_selector(f"#{target}.compare-target")
+                position = f"() => {{ const e = document.getElementById('{target}'); return [e.getBoundingClientRect().top, parseFloat(getComputedStyle(e).scrollMarginTop)]; }}"
+                top, margin = page.evaluate(position)
+                self.assertTrue(56 <= top <= 120 and abs(top - margin) < 1, f"landed at {top} (scroll margin {margin})")
+                videos = f"#{above} video"
+                page.wait_for_function(f"() => {{ const v = [...document.querySelectorAll('{videos}')]; return v.length === 2 && v.every(x => x.currentSrc); }}")
+                self.assertEqual(page.eval_on_selector_all(videos, "e => e.map(x => x.readyState)"), [0, 0], "the videos above wait until after the landing")
+                gate["open"] = True
+                for route in gate["held"]:
+                    route.continue_()
+                page.wait_for_function(f"() => [...document.querySelectorAll('{videos}')].every(x => x.videoHeight === 1440)"
+                                       f" && [...document.querySelectorAll('#{above} img')].every(x => x.complete && x.naturalHeight === 2400)")
+                page.evaluate("() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
+                after, margin = page.evaluate(position)
+                self.assertTrue(abs(after - margin) < 1, f"comparison moved from {top} to {after} when the videos above it loaded")
+                # Every slot is the same 16:9 box inside its column, whatever the clip's own size.
+                for width, height, column in page.eval_on_selector_all("#task-compare-open .compare-media", "e => e.map(x => [x.getBoundingClientRect().width, x.getBoundingClientRect().height, x.closest('.compare-item').clientWidth])"):
+                    self.assertLessEqual(width, column)
+                    self.assertAlmostEqual(height, min(width * 9 / 16, 640, 0.7 * 700), delta=1)
+            finally:
+                browser.close()
+
     def test_a_report_link_from_home_lands_on_the_report_once_the_thread_is_in(self):
         """#task-report is the last section: the page lands on it after the long thread above has loaded."""
         try:

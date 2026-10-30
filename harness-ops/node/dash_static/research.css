@@ -289,9 +289,13 @@
 .research-view .compare-item figcaption { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px var(--sp-2); margin: 0 2px 8px; font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
 .research-view .compare-letter { font-size: var(--fs-md); font-weight: 650; line-height: 1.2; color: var(--ink); }
 .research-view .compare-item.picked .compare-letter { color: var(--acc-ink); }
-.research-view .compare-media > a { display: block; }
+/* Each slot keeps one 16:9 box from the start, so media that arrive later (or are asked for their type first)
+   never change a block's height and push a comparison a person was sent to. The media fit inside it. */
+.research-view .compare-media { aspect-ratio: 16 / 9; max-height: min(70vh, 640px); }
+.research-view .compare-item figcaption > :empty::before { content: '\00a0'; }   /* the size line, before it is known */
+.research-view .compare-media > a { display: block; height: 100%; }
 .research-view .compare-together[hidden] { display: none; }
-.research-view .compare-item :is(img, video) { display: block; width: 100%; max-height: min(70vh, 640px); object-fit: contain; background: #0b0d0e; border-radius: var(--radius); }
+.research-view .compare-item :is(img, video) { display: block; width: 100%; height: 100%; object-fit: contain; background: #0b0d0e; border-radius: var(--radius); }
 .research-view .compare-source { flex-basis: 100%; font-size: var(--fs-sm); color: var(--ink2); overflow-wrap: anywhere; }
 .research-view .compare-together { margin-top: var(--sp-2); min-height: 30px; padding: 0 12px; font-size: var(--fs-sm); }
 .research-view .compare-answer { display: grid; gap: 10px; margin-top: var(--sp-3); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
