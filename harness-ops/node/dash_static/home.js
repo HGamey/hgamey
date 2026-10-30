@@ -64,6 +64,7 @@
   }
 
   const taskURL = t => HGTarget.url(t.report_url || `/dash/research?kind=research&id=${encodeURIComponent(t.id)}`);
+  const chainOf = t => t.follow_ons ? `含 ${t.follow_ons} 个接续任务` : "";
   const ownerLine = t => t.owner ? `<span class="who">${avatar(t.owner)}${esc(t.owner)}</span>` : `<span class="tag warn">无人负责</span>`;
   function phoneOf(h, jobId) {
     return h.slots.find(s => s && (s.holder?.job_id === jobId || s.global_holder?.job_id === jobId));
@@ -79,7 +80,7 @@
       const note = t.latest_note;
       return `<li data-task="${esc(t.id)}" class="task-row">
         <a class="task-title" href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a>
-        <div class="task-meta">${ownerLine(t)}${t.jobs.map(j => jobChip(h, j)).join("")}<span class="task-time">${when(h.now, note?.updated_at || t.updated_at)}</span></div>
+        <div class="task-meta">${ownerLine(t)}${t.follow_ons ? `<span>${chainOf(t)}</span>` : ""}${t.jobs.map(j => jobChip(h, j)).join("")}<span class="task-time">${when(h.now, note?.updated_at || t.updated_at)}</span></div>
         ${note ? `<p class="task-note"><span><b>${esc(speaker(note))}</b>${esc(note.text)}</span></p>` : ""}
       </li>`;
     }).join("") || `<li class="empty-row">没有进行中的任务。<button class="link-btn" type="button" data-new>新建任务</button></li>`;
@@ -87,12 +88,12 @@
   function renderReports(h) {
     const reports = (h.tasks || []).filter(t => t.state === "delivered");
     $("reports-count").textContent = reports.length ? String(reports.length) : "";
-    $("reports").innerHTML = reports.map(t => `<li data-report="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${esc(t.owner || "无人负责")} · ${when(h.now, t.updated_at)}</span></li>`).join("")
+    $("reports").innerHTML = reports.map(t => `<li data-report="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${[esc(t.owner || "无人负责"), chainOf(t), when(h.now, t.updated_at)].filter(Boolean).join(" · ")}</span></li>`).join("")
       || `<li class="empty-row">还没有交付报告</li>`;
     // Closed tasks stay findable, folded under the reports; reopening one brings it back to 进行中.
     const closed = (h.tasks || []).filter(t => t.state === "closed");
     $("closed-sec").hidden = !closed.length; $("closed-count").textContent = closed.length ? String(closed.length) : "";
-    $("closed").innerHTML = closed.map(t => `<li data-closed="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${t.state_reason ? esc(t.state_reason) + " · " : ""}${when(h.now, t.updated_at)}</span></li>`).join("");
+    $("closed").innerHTML = closed.map(t => `<li data-closed="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${[esc(t.state_reason || ""), chainOf(t), when(h.now, t.updated_at)].filter(Boolean).join(" · ")}</span></li>`).join("");
   }
 
   // Who holds a phone. A research job names its label, its task and its agent.

@@ -494,13 +494,7 @@ class Dash:
                 or any(len(v) != 1 for v in q.values())):
             return self._send(h, 400, {"error": "tasks take only state, research_id, chain and all"})
         try:
-            query, items, node_id = {"limit": ["100"]}, [], None
-            while True:
-                page = research.list("research", query)
-                items, node_id = items + page["items"], page["node_id"]
-                if not page.get("next_cursor"):
-                    break
-                query = {**query, "cursor": [page["next_cursor"]]}
+            items, node_id = self._every_task(research)
             model, at = self._model(), {item["id"]: item["updated_at"] for item in items}
         except ValueError as error:
             return self._send(h, 400, {"error": str(error)})
@@ -513,30 +507,8 @@ class Dash:
             bump(n["research_id"], n["at"])
         for j in model["jobs"]:
             bump(j["research_id"], max((t for t in (j.get("started"), j.get("ended"), j.get("queued"), j.get("claimed")) if t), default=None))
-        created = {t["id"]: t.get("created_at") or 0 for t in model["research"]}
-        order = lambda rid: (created.get(rid, 0), rid)
         tasks = {item["id"]: {**item, "active_at": at[item["id"]]} for item in items}
-
-        def root(rid):
-            seen = []
-            while rid not in seen:
-                seen.append(rid)
-                if tasks[rid].get("follows") not in tasks:
-                    return rid
-                rid = tasks[rid]["follows"]
-            return min(seen[seen.index(rid):], key=order)   # a cycle: its earliest task stands as the root
-        roots, children = {rid: root(rid) for rid in tasks}, collections.defaultdict(list)
-        for rid, task in tasks.items():
-            if rid != roots[rid] and task.get("follows") in tasks:
-                children[task["follows"]].append(rid)
-
-        def walk(rid, out):   # the root, then each task after the one it follows (siblings by creation)
-            out.append(rid)
-            for child in sorted(children[rid], key=order):
-                if child not in out:
-                    walk(child, out)
-            return out
-        chains = {r: walk(r, []) for r in set(roots.values())}
+        roots, chains = self._chains(tasks, {t["id"]: t.get("created_at") or 0 for t in model["research"]})
         if q.get("chain"):
             if q["chain"][0] not in tasks:
                 return self._send(h, 404, {"error": "没有这个任务"})
@@ -553,6 +525,44 @@ class Dash:
                             "active_at": max(tasks[rid]["active_at"] for rid in chain)})
             out.sort(key=lambda t: t["active_at"], reverse=True)
         return self._send(h, 200, {"schema_version": 1, "node_id": node_id, "items": out, "next_cursor": None})
+
+    @staticmethod
+    def _every_task(research):
+        """Every task of this node, page by page, and the node id."""
+        query, items, node_id = {"limit": ["100"]}, [], None
+        while True:
+            page = research.list("research", query)
+            items, node_id = items + page["items"], page["node_id"]
+            if not page.get("next_cursor"):
+                return items, node_id
+            query = {**query, "cursor": [page["next_cursor"]]}
+
+    @staticmethod
+    def _chains(tasks, created):
+        """Tasks that follow one another (`follows`) as chains: each task's root, and each root's tasks in order (the
+        root, then each task after the one it follows, siblings by creation). In a cycle its earliest task is the root."""
+        order = lambda rid: (created.get(rid, 0), rid)
+
+        def root(rid):
+            seen = []
+            while rid not in seen:
+                seen.append(rid)
+                if tasks[rid].get("follows") not in tasks:
+                    return rid
+                rid = tasks[rid]["follows"]
+            return min(seen[seen.index(rid):], key=order)
+        roots, children = {rid: root(rid) for rid in tasks}, collections.defaultdict(list)
+        for rid, task in tasks.items():
+            if rid != roots[rid] and task.get("follows") in tasks:
+                children[task["follows"]].append(rid)
+
+        def walk(rid, out):
+            out.append(rid)
+            for child in sorted(children[rid], key=order):
+                if child not in out:
+                    walk(child, out)
+            return out
+        return roots, {r: walk(r, []) for r in set(roots.values())}
 
     def _showcase(self, h, brand=None):
         """Serve the node-local showcase snapshot as written; this node's own state is not consulted."""
@@ -751,16 +761,16 @@ class Dash:
         return None
 
     def _tasks(self):
-        """Active and recently delivered research, newest first, with jobs still working for each."""
+        """Open, recently delivered and closed tasks, newest first, with jobs still working for each. A chain of tasks
+        (`follows`) is one row under its root: open while one of its tasks is, else delivered once one delivered, else
+        closed. Time and reason come from its latest task in that state, the owner from the latest of them that has one,
+        and jobs and the latest note from all of its tasks."""
         research = getattr(self.job_service, "research", None) if self.job_service else None
         queue = getattr(getattr(self.job_service, "dispatch", None), "queue", None)
         if research is None:
             return []
         try:
-            # Each state keeps its own quota: many active tasks must not push every delivered report off the page.
-            items = [item for state, limit in (("active", 10), ("delivered", 5), ("closed", 10))
-                     for item in research.list("research", {"state": [state], "limit": [str(limit)]})["items"]]
-            items.sort(key=lambda item: item["updated_at"], reverse=True)
+            tasks = {item["id"]: item for item in self._every_task(research)[0]}
             rows = queue.rows(("queued", "claimed", "blocked")) if queue is not None else []
         except (OSError, ValueError, sqlite3.Error):
             return []
@@ -774,18 +784,35 @@ class Dash:
                                   "public": {"state": meta.get("state") or row["state"], "phase": meta.get("phase"),
                                              "outcome": meta.get("outcome"), "lost": meta.get("lost"),
                                              "queue": {"state": row["state"]}}})
-        tasks = []
-        for item in items:
-            task = {"id": item["id"], "title": item["title"], "owner": item.get("owner"), "state": item["state"],
-                    "updated_at": item["updated_at"], "jobs": jobs.get(item["id"], [])}
-            if item["state"] == "closed":
-                task["state_reason"] = (research.get("research", item["id"])["data"].get("state_reason") or "")[:200]
-            elif item["state"] == "delivered":
-                task["report_url"] = "/dash/research?" + urlencode({"kind": "research", "id": item["id"]}) + "#task-report"
+        chains = collections.defaultdict(list)
+        for rid, root in self._chains(tasks, {})[0].items():
+            chains[root].append(tasks[rid])
+        shown = []
+        for root, members in chains.items():
+            state = next((s for s in ("active", "delivered", "closed") if any(t["state"] == s for t in members)), None)
+            if state:
+                ranked = sorted((t for t in members if t["state"] == state), key=lambda t: t["updated_at"], reverse=True)
+                shown.append((ranked[0], next((t["owner"] for t in ranked if t.get("owner")), None), root, members))
+        shown.sort(key=lambda row: row[0]["updated_at"], reverse=True)
+        # Each state keeps its own quota: many active tasks must not push every delivered report off the page.
+        quota, out = {"active": 10, "delivered": 5, "closed": 10}, []
+        for latest, owner, root, members in shown:
+            state = latest["state"]
+            if not quota[state]:
+                continue
+            quota[state] -= 1
+            task = {"id": root, "title": tasks[root]["title"], "owner": owner, "state": state,
+                    "updated_at": latest["updated_at"], "follow_ons": len(members) - 1,
+                    "jobs": [job for t in members for job in jobs.get(t["id"], [])]}
+            if state == "closed":
+                task["state_reason"] = (research.get("research", latest["id"])["data"].get("state_reason") or "")[:200]
+            elif state == "delivered":
+                task["report_url"] = "/dash/research?" + urlencode({"kind": "research", "id": root}) + "#task-report"
             else:
-                task["latest_note"] = self._latest_note(research, item["id"])
-            tasks.append(task)
-        return tasks
+                notes = [n for n in (self._latest_note(research, t["id"]) for t in members) if n]
+                task["latest_note"] = max(notes, key=lambda n: n["updated_at"]) if notes else None
+            out.append(task)
+        return out
 
     @staticmethod
     def _latest_note(research, rid):

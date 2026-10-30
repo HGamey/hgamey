@@ -1003,6 +1003,38 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(sum(task["state"] == "active" for task in tasks), 10)
         self.assertIn("sr-old-report", [task["id"] for task in tasks if task["state"] == "delivered"])
 
+    def test_home_lists_a_chain_of_tasks_as_one_row_under_its_root(self):
+        """Like the task list, the home page shows a chain (research.follows) as one row under its root: open while one
+        of its tasks is, delivered once one delivered. The owner is the latest open task's that has one, so a newer
+        unclaimed follow-on does not make an owned chain read 无人负责."""
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        create = lambda rid, follows: self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+            "create-" + rid, {"title": "任务 " + rid, "objective": "首页按链", "follows": follows}))[0], 201)
+        create("sr-chain-root", None)
+        create("sr-chain-next", "sr-chain-root")
+        self.assertEqual(self.pf(token, "research", "claim", "sr-chain-root")[0], 0)
+        code, _, err = self.pf(token, "research", "deliver", "sr-chain-root", "--summary", "第一段结论",
+                               "--artifact", "url:https://example.invalid/report")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.pf(token, "research", "claim", "sr-chain-next")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-chain-next", self.write("create-n-chain-next", {
+            "research_id": "sr-chain-next", "text": "第二段进展", "reply_to": None, "decision": None}))[0], 201)
+        create("sr-chain-third", "sr-chain-next")
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service = self.jobs
+        [row] = board._tasks()
+        self.assertEqual((row["id"], row["title"], row["state"], row["owner"], row["follow_ons"], row["latest_note"]["text"]),
+                         ("sr-chain-root", "任务 sr-chain-root", "active", "agent-a", 2, "第二段进展"))
+        for rid in ("sr-chain-next", "sr-chain-third"):
+            code, _, err = self.pf(ADMIN, "research", "close", rid, "--reason", "并入第一段")
+            self.assertEqual(code, 0, err)
+        [row] = board._tasks()
+        self.assertEqual((row["id"], row["state"], row["owner"], row["follow_ons"], row["report_url"]),
+                         ("sr-chain-root", "delivered", "agent-a", 2, "/dash/research?kind=research&id=sr-chain-root#task-report"))
+        script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
+        self.assertIn("`含 ${t.follow_ons} 个接续任务`", script)
+
     def test_home_tasks_keep_public_job_phase_with_queue_state(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-phase", self.write(
             "create-phase", {"title": "状态口径", "objective": "queued 不被误报为运行中"}))[0], 201)
