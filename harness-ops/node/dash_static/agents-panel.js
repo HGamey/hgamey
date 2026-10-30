@@ -61,6 +61,14 @@
       : '<div class="empty">暂无状态历史</div>';
   });
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => load().catch(e => console.error(e)));
-  else load().catch(e => console.error(e));
+  // On a task page the directory is folded: read it once it is opened (the Agent tab opens it).
+  const box = document.getElementById("agents-directory");
+  let started = false;
+  const start = () => {
+    if (started || (box && !box.open)) return;
+    started = true; load().catch(e => { started = false; console.error(e); });
+  };
+  box?.addEventListener("toggle", start);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+  else start();
 })();
