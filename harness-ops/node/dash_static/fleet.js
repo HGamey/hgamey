@@ -354,14 +354,15 @@
   const shellWord = value => /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
   async function makeInvite() {
     if ($('invite-submit').disabled) return;
-    const name = $('invite-name').value.trim(), dir = $('invite-data-dir').value.trim(), hours = Number($('invite-hours').value);
+    const name = $('invite-name').value.trim(), root = $('invite-root').value.trim(), port = $('invite-port').value.trim(), hours = Number($('invite-hours').value);
     if (!/^[a-z0-9_-]{1,64}$/.test(name)) { message('invite-message', '节点名只能用小写字母、数字、下划线或连字符。', true); return; }
     if (name === 'local' || entries.has(name)) { message('invite-message', `「${name}」已经在用，换一个名字。`, true); return; }
     if (!(hours > 0)) { message('invite-message', '有效时长要大于 0。', true); return; }
+    if (port && !(Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535)) { message('invite-message', '端口要在 1–65535 之间。', true); return; }
     inviteBusy = true; $('invite-result').hidden = true; message('invite-message', ''); renderManagement();
     try {
       const value = await post('/dash/api/node-invites', {hours, note: name});
-      $('invite-command').textContent = `python3 harness-ops/node/node_connector.py --center ${shellWord(location.origin)} --invite ${shellWord(value.code)} --name ${name} --data-dir ${dir ? shellWord(dir) : '<数据目录>'}`;
+      $('invite-command').textContent = `python3 deploy.py join --center ${shellWord(location.origin)} --invite ${shellWord(value.code)} --name ${name}${root ? ` --root ${shellWord(root)}` : ''}${port && Number(port) !== 8765 ? ` --port ${Number(port)}` : ''}`;
       $('invite-result').hidden = false;
       message('invite-message', `${time(value.expires_at)} 前有效。`);
       await loadInvites();

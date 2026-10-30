@@ -43,12 +43,13 @@
       <div class="section-heading"><h3>生成电脑加入码</h3><button id="invite-close" class="ghost" type="button">关闭</button></div>
       <div class="registration-fields">
         <label>节点名<input id="invite-name" pattern="[a-z0-9_-]{1,64}" maxlength="64" required placeholder="lab-b"><span class="field-help">小写字母、数字、下划线或连字符</span></label>
-        <label>那台电脑的数据目录<input id="invite-data-dir" placeholder="和它节点服务的 --data-dir 相同"></label>
+        <label>安装根<input id="invite-root" placeholder="~/node" spellcheck="false"><span class="field-help">留空用 ~/node</span></label>
+        <label>端口<input id="invite-port" type="number" min="1" max="65535" step="1" placeholder="8765"><span class="field-help">只监听本机</span></label>
         <label>有效时长（小时）<input id="invite-hours" type="number" min="1" max="720" step="1" value="24" required></label>
       </div>
       <div class="directory-actions"><button id="invite-submit" class="ghost primary" type="submit">生成</button></div>
       <div id="invite-result" class="invite-result" hidden>
-        <p class="note">在那台电脑的安装目录运行，然后重启它的节点服务。加入码只显示这一次。</p>
+        <p class="note">在那台电脑的 HGamey 仓库根目录运行；它会装好并启动节点服务（需要 Python 3、Rust/Cargo、Git、adb）。加入码只显示这一次。</p>
         <pre id="invite-command" class="command-box"></pre>
         <div class="directory-actions"><button id="invite-copy" class="ghost" type="button">复制命令</button></div>
       </div>

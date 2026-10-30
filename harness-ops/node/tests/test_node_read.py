@@ -210,11 +210,13 @@ class NodeReadTests(unittest.TestCase):
                     page.click("#invite-submit")
                     self.assertIn("已经在用", page.text_content("#invite-message"))
                     page.fill("#invite-name", "lab-b")
-                    page.fill("#invite-data-dir", "/srv/hg data")
+                    page.fill("#invite-root", "/srv/hg node")
+                    page.fill("#invite-port", "8775")
                     page.click("#invite-submit")
                     page.wait_for_selector("#invite-result:not([hidden])")
+                    # One command in the repository root installs and starts the node; no node_connector, no data dir.
                     self.assertRegex(page.text_content("#invite-command"),
-                                     r"^python3 harness-ops/node/node_connector\.py --center http://127\.0\.0\.1:\d+ --invite hgninv_\S+ --name lab-b --data-dir '/srv/hg data'$")
+                                     r"^python3 deploy\.py join --center http://127\.0\.0\.1:\d+ --invite hgninv_\S+ --name lab-b --root '/srv/hg node' --port 8775$")
                     listed = json.loads(self.request("/dash/api/node-invites", headers=steer)[2])["invites"]
                     self.assertEqual([invite["note"] for invite in listed], ["lab-b"])
                     page.wait_for_selector(f'#invite-list button[data-invite="{listed[0]["id"]}"]')

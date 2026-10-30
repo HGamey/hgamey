@@ -128,7 +128,7 @@
     finally { accessBusy = false; $('unlock-submit').disabled = false; renderAccess(); }
   }
   async function loadNode() {
-    try { const node = await request(`${API}/node`); nodeInfo = node; $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`; message('node-message', '资源留在此节点的数据目录；本页不自动分发到其他节点。'); }
+    try { const node = await request(`${API}/node`); nodeInfo = node; $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`; message('node-message', '资源存在本中心；在别的电脑的手机上准备时，任务会把用到的资源传过去。'); }
     catch (error) { nodeInfo = null; message('node-message', `节点身份读取失败：${error.message}`, true); }
     finally { renderWritePolicy(); uploads.update(); deployments.update(); }
   }
