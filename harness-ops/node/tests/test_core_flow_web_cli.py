@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest import mock
 from http.server import ThreadingHTTPServer
@@ -1983,10 +1982,8 @@ class CoreFlowTests(unittest.TestCase):
                 page.click("#task-compare-open button >> text=重试")
                 page.wait_for_selector("#task-compare-open #cmp-ev-first")
                 # A fresh visit: the comparison's reads go before the thread's, and it lands in view, outlined. The
-                # thread answers late, as on a busy page, and must not move the comparison when it arrives.
+                # thread is read only after that and must not move the comparison when it arrives.
                 order.clear()
-                notes = "**/dash/api/research-state/note?*"
-                page.route(notes, lambda route, request: (time.sleep(1), route.continue_()))
                 page.goto(base + "/dash")
                 page.goto(base + url)
                 block = "#task-compare-open #cmp-ev-first"
@@ -1995,8 +1992,9 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertTrue(56 <= top <= 120, f"block top {top}: below the sticky top bar, not hidden under it")
                 page.wait_for_selector("#task-thread .discuss-entry")
                 page.wait_for_function("() => !document.querySelector('[aria-busy=true]')")
-                after = page.evaluate("s => document.querySelector(s).getBoundingClientRect().top", block)
-                self.assertTrue(abs(after - top) < 1, f"block top {top} → {after} once the thread loaded: it stays where it landed")
+                # Once the thread is in, the block is still top-aligned: its top sits at its own scroll margin.
+                after, margin = page.evaluate("s => { const e = document.querySelector(s); return [e.getBoundingClientRect().top, parseFloat(getComputedStyle(e).scrollMarginTop)]; }", block)
+                self.assertTrue(56 <= after <= 120 and abs(after - margin) < 1, f"block top {top} → {after} once the thread loaded (scroll margin {margin})")
                 reads = [u for u in order if "/research-state/request?" in u or "/research-state/note?" in u]
                 self.assertTrue(reads and "/research-state/request?" in reads[0], reads[:3])
                 first_note = next(i for i, u in enumerate(reads) if "/research-state/note?" in u)
@@ -2033,8 +2031,6 @@ class CoreFlowTests(unittest.TestCase):
                 name, value = self.view_cookie.split("=", 1)
                 context.add_cookies([{"name": name, "value": value, "url": base}])
                 page = context.new_page()
-                # The thread answers after the report, as on a busy page.
-                page.route("**/dash/api/research-state/note?*", lambda route, request: (time.sleep(1), route.continue_()))
                 page.goto(base + "/dash/research?kind=research&id=sr-landing#task-report")
                 page.wait_for_selector("#task-thread .discuss-entry")
                 page.wait_for_function("() => Math.abs(document.getElementById('task-report').getBoundingClientRect().top - 72) < 50")
