@@ -12,7 +12,7 @@ HGamey 是一个仓库：`harness-ops/`（节点服务、网页、`pf-node`）�
 ## 代码仓库只放代码
 
 - 不新增说明文档、图片、PPT、PDF、实验报告；长期文档（设计、规格、进展）放 https://github.com/HGamey/docs 。
-- 允许：各目录的 README.md（每个不超过 40 行）、AGENTS.md、skills/、许可证、程序或测试要读的数据、`history/` 下的迁移对照。推到 main 后 CI 的 `code-only` 检查会对其他文档类文件报错。
+- 允许：根目录 README.md（项目说明与部署手册，不限行数，2026-10-30 用户要求）、各组件目录的 README.md（每个不超过 40 行）、AGENTS.md、skills/、许可证、程序或测试要读的数据、`history/` 下的迁移对照。推到 main 后 CI 的 `code-only` 检查会对其他文档类文件报错。
 
 ## 测试
 

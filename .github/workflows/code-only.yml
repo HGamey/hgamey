@@ -32,7 +32,8 @@ jobs:
             printf '%s\n' "$bad"
             status=1
           fi
-          for readme in $(printf '%s\n' "$changed" | grep -E '^([^/]+/)?README\.md$' || true); do
+          # The root README is the project overview and deployment guide; component READMEs stay short.
+          for readme in $(printf '%s\n' "$changed" | grep -E '^[^/]+/README\.md$' || true); do
             n=$(wc -l < "$readme")
             if [ "$n" -gt 40 ]; then
               echo "::error::$readme 有 $n 行，上限 40 行。详细说明放到 HGamey/docs。"
