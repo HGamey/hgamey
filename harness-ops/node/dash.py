@@ -271,6 +271,8 @@ class Dash:
             return self._static(h, "command.html")
         if sub == ["api", "command"]:
             return self._command(h)
+        if sub == ["api", "tasks"]:
+            return self._task_list(h, parse_qs(query))
         if sub == ["api", "showcase"] or sub[:3] == ["api", "showcase", "screen"] and len(sub) == 4:
             return self._showcase(h, sub[3] if len(sub) == 4 else None)
         if len(sub) == 2 and sub[0] == "static" and sub[1] in SHOWCASE_STATIC:
@@ -467,15 +469,47 @@ class Dash:
         cached = ext in (".js", ".css") and parse_qs(query).get("v") == [_asset_version(name)]
         self._send(h, 200, data, STATIC_TYPES[ext], ASSET_CACHE if cached else None)
 
-    def _command(self, h):
-        """The command view's live model, built from this node's own stores (read-only, cached a few seconds)."""
+    def _model(self):
         model = getattr(self, "_command_model", None)
         if model is None:
             model = self._command_model = dash_command.CommandModel(self.job_service, getattr(self, "monitor", None))
+        return model.get()
+
+    def _command(self, h):
+        """The command view's live model, built from this node's own stores (read-only, cached a few seconds)."""
         try:
-            return self._send(h, 200, model.get())
+            return self._send(h, 200, self._model())
         except Exception as error:  # the page shows this and keeps its last good model
             return self._send(h, 503, {"error": f"指挥中心数据暂不可用：{type(error).__name__}: {error}"[:300]})
+
+    def _task_list(self, h, q):
+        """The task list, most recently active first: a task is as recent as the latest change to it, its directions or
+        notes, or a run of it starting or ending. Same items as the research list, plus `active_at`; no paging."""
+        research = getattr(self.job_service, "research", None) if self.job_service else None
+        if research is None or set(q) - {"state", "research_id", "expected_node_id"} or any(len(v) != 1 for v in q.values()):
+            return self._send(h, 400, {"error": "tasks take only state and research_id"})
+        try:
+            query, items, node_id = {"limit": ["100"], **{k: q[k] for k in ("state", "research_id") if q.get(k, [""])[0]}}, [], None
+            while True:
+                page = research.list("research", query)
+                items, node_id = items + page["items"], page["node_id"]
+                if not page.get("next_cursor"):
+                    break
+                query = {**query, "cursor": [page["next_cursor"]]}
+            model, at = self._model(), {item["id"]: item["updated_at"] for item in items}
+        except ValueError as error:
+            return self._send(h, 400, {"error": str(error)})
+        except (OSError, sqlite3.Error) as error:
+            return self._send(h, 503, {"error": f"任务列表暂不可用：{type(error).__name__}"})
+        bump = lambda rid, t: at.__setitem__(rid, max(at[rid], t)) if rid in at and t else None
+        for d in model["directions"]:
+            bump(d["research_id"], d["updated_at"])
+        for n in model["notes"]:
+            bump(n["research_id"], n["at"])
+        for j in model["jobs"]:
+            bump(j["research_id"], max((t for t in (j.get("started"), j.get("ended"), j.get("queued"), j.get("claimed")) if t), default=None))
+        items = sorted(({**item, "active_at": at[item["id"]]} for item in items), key=lambda item: item["active_at"], reverse=True)
+        return self._send(h, 200, {"schema_version": 1, "node_id": node_id, "items": items, "next_cursor": None})
 
     def _showcase(self, h, brand=None):
         """Serve the node-local showcase snapshot as written; this node's own state is not consulted."""

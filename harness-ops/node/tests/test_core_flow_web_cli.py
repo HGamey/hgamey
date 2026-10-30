@@ -940,6 +940,25 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('没有目标在跑', gol_script)
         self.assertIn('还没有目标', gol_script, "an empty GOL must say there is no goal, never show a demo")
 
+    def test_the_task_list_puts_the_most_recently_active_task_first(self):
+        """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
+        for rid in ("sr-older", "sr-newer"):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": rid, "objective": "排序"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/note/n-older", self.write("create-n-older", {
+            "research_id": "sr-older", "text": "新进展", "reply_to": None, "decision": None, "ask": False, "evidence_refs": []}))[0], 201)
+        status, listing = self.web("GET", "/tasks")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["node_id"], self.node_id)
+        self.assertEqual([item["id"] for item in listing["items"]], ["sr-older", "sr-newer"])
+        older = listing["items"][0]
+        self.assertGreater(older["active_at"], older["updated_at"], "the note, not the record, made it recent")
+        self.assertEqual([item["id"] for item in self.web("GET", "/tasks?research_id=sr-newer")[1]["items"]], ["sr-newer"])
+        self.assertEqual(self.web("GET", "/tasks?limit=5")[0], 400)
+        script = (NODE / "dash_static/research.js").read_text(encoding="utf-8")
+        self.assertIn("listKind === 'research' ? `${API}/tasks?${query}`", script)
+        self.assertIn("time(item.active_at || item.updated_at)", script)
+
     def test_direction_list_exposes_hypothesis_for_task_page(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-direction-view", self.write(
             "create-direction-view", {"title": "方向展示", "objective": "任务页直接看到探索假设"}))[0], 201)

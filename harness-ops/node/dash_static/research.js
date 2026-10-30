@@ -180,7 +180,7 @@
     $('objects-heading').textContent = listKind === 'research' ? '任务' : KINDS[listKind]; $('object-count').textContent = `${records.length} 条已载入`;
     $('object-list').replaceChildren(...records.map(item => {
       const li = el('li'), button = el('button', null, 'research-choice'); button.type = 'button'; button.setAttribute('aria-current', String(keyOf(item) === keyOf(selection)));
-      if (item.kind === 'research') button.append(el('strong', item.title || item.id), el('span', `${stateText(item.kind, item.state)} · ${item.owner || '无人负责'} · ${time(item.updated_at)}`, 'research-meta'));
+      if (item.kind === 'research') button.append(el('strong', item.title || item.id), el('span', `${stateText(item.kind, item.state)} · ${item.owner || '无人负责'} · ${time(item.active_at || item.updated_at)}`, 'research-meta'));
       else button.append(el('strong', item.title || item.id), el('span', `${item.id} · v${item.revision} · ${stateText(item.kind, item.state)}`, 'research-meta'), el('span', `记录于 ${time(item.updated_at)}`, 'research-meta'));
       if (item.kind === 'direction') button.append(el('span', item.metadata_blocked === true ? '存在未解的局部阻断依赖' : item.metadata_blocked === false ? '未解的阻断依赖：无；设备资格另核' : '依赖摘要未提供', 'research-meta'));
       if (item.kind === 'request') button.append(el('span', `${Number.isInteger(item.feedback_count) ? item.feedback_count : '未知'} 条答复；依赖是否解除另记`, 'research-meta'));
@@ -192,7 +192,7 @@
   function syncRow(record) {
     const row = records.find(item => keyOf(item) === keyOf(record));
     if (!row || row.revision === record.revision) return;
-    Object.assign(row, {revision: record.revision, updated_at: record.updated_at, title: record.data.title, state: record.data.state},
+    Object.assign(row, {revision: record.revision, updated_at: record.updated_at, active_at: Math.max(row.active_at || 0, record.updated_at), title: record.data.title, state: record.data.state},
       record.kind === 'research' ? {owner: record.data.owner ?? null} : {});
     renderList();
   }
@@ -209,7 +209,9 @@
     listBusy = true; $('object-list').setAttribute('aria-busy', 'true'); $('filter-submit').disabled = true; $('more-objects').disabled = true;
     message('list-message', append ? '正在读取同一索引快照的下一页…' : '正在读取记录…');
     try {
-      const value = checkedNode(await request(`${API}/research-state/${listKind}?${query}`, {target, signal: listController.signal}), target);
+      // Tasks come most recently active first (dash /tasks, one page); the other kinds keep the record index.
+      if (listKind === 'research') { query.delete('limit'); query.delete('cursor'); }
+      const value = checkedNode(await request(listKind === 'research' ? `${API}/tasks?${query}` : `${API}/research-state/${listKind}?${query}`, {target, signal: listController.signal}), target);
       if (disposed || epoch !== listEpoch) return;
       if (!Array.isArray(value.items)) throw new Error('列表缺少记录数组。');
       records.push(...value.items); listCursor = value.next_cursor || null;
