@@ -2,8 +2,9 @@
 details and originals open here after that computer has gone."""
 import json
 import os
-import time
+import threading
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import test_multi_node_artifacts as artifacts_fixture
@@ -16,23 +17,28 @@ class ResultsPageRemoteTests(unittest.TestCase):
     # Borrow the center + joined worker fixture without rediscovering its tests.
     setUp = artifacts_fixture.MultiNodeArtifactsTests.setUp
 
-    def collected(self, jid):
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            code, job = self.center.call('GET', '/jobs/' + jid)
-            if code == 200 and job['artifacts_sync']['status'] == 'complete':
-                return
-            time.sleep(0.2)
-        self.fail('the worker job outputs were not collected to the center')
-
     def remote_result(self):
         """Run a job on the worker, collect its outputs here, let the worker go, then register its result here."""
         connector = self.flow.start_worker()
         program = "from pathlib import Path; import sys; (Path(sys.argv[1])/'report.json').write_text(%r)" % REPORT
-        code, job = self.flow.submit({'bin': 'fixture', 'argv': ['-c', program, '@out'], 'device_access': 'none',
-                                      'execution_node_id': self.worker.jobs.node_id}, 'remote-result-job')
-        self.assertEqual(code, 200, job)
-        self.collected(job['id'])
+        committed, commit = threading.Event(), self.worker.jobs.dispatch._commit_completion
+
+        def finished(*args, **kwargs):
+            value = commit(*args, **kwargs)
+            committed.set()
+            return value
+        with patch.object(self.worker.jobs.dispatch, '_commit_completion', side_effect=finished):
+            code, job = self.flow.submit({'bin': 'fixture', 'argv': ['-c', program, '@out'], 'device_access': 'none',
+                                          'execution_node_id': self.worker.jobs.node_id}, 'remote-result-job')
+            self.assertEqual(code, 200, job)
+            self.assertTrue(committed.wait(10), job)
+        # Once the worker has committed the job, the center reads it as finished and copies its outputs; the
+        # collector then stops, so nothing is still copying when the worker goes.
+        self.center.call('GET', '/jobs/' + job['id'])
+        artifacts = self.center.jobs.center.artifacts
+        artifacts.collect(job['id'])
+        artifacts.close()
+        self.assertEqual(artifacts.sync_status(job['id'])['status'], 'complete')
         connector.close()
         self.register(registration('remote-result', job['id']))
         return job['id']
