@@ -1051,6 +1051,45 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('没有目标在跑', gol_script)
         self.assertIn('还没有目标', gol_script, "an empty GOL must say there is no goal, never show a demo")
 
+    def test_a_web_note_can_be_addressed_to_another_agent(self):
+        """点名: the composer lists the other registered agents; the saved note carries `to` and shows → agent."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-to", self.write(
+            "create-to", {"title": "点名", "objective": "叫别的 agent 来帮忙", "owner": "agent-a"}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{base}/dash/research?kind=research&id=sr-to")
+                page.wait_for_selector("#task-note-to")
+                self.assertEqual(page.eval_on_selector_all("#task-note-to option", "e => e.map(o => o.value)"), ["", "agent-b"])
+                page.select_option("#task-note-to", "agent-b")
+                page.fill("#task-note-text", "帮忙复现")
+                page.click("#task-note-submit")
+                page.wait_for_selector(".discuss-to")
+                notes = self.web("GET", "/research-state/note?research_id=sr-to&limit=5")[1]["items"]
+                self.assertEqual([(n["text"], n["to"]) for n in notes], [("帮忙复现", "agent-b")])
+                self.assertEqual(page.text_content(".discuss-to"), "→ agent-b")
+                self.assertEqual(page.input_value("#task-note-to"), "", "the next note is not addressed by accident")
+            finally:
+                browser.close()
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):

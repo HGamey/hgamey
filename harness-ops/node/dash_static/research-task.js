@@ -334,6 +334,7 @@
         const entry = el('div', null, 'discuss-entry' + (human ? ' human' : '') + (note.question_unanswered === true ? ' asking' : ''));
         const main = el('div', null, 'discuss-main'), top = el('div', null, 'discuss-head');
         top.append(el('span', speaker(note), 'discuss-from'));
+        if (note.to) top.append(el('span', '→ ' + note.to, 'discuss-to'));
         if (human) top.append(tag('指导', 'acc plain'));
         if (note.unanswered === true) top.append(tag('agent 未回应', 'warn'));
         if (note.ask) top.append(tag(note.question_unanswered === true ? '问人 · 待回复' : '问人', note.question_unanswered === true ? 'warn' : 'plain'));
@@ -365,11 +366,20 @@
       button.type = 'submit'; button.id = 'task-note-submit';
       cancel.type = 'button'; cancel.setAttribute('aria-label', '取消回复'); cancel.append(icon('M4 4l8 8M12 4l-8 8'));
       chip.hidden = true; chip.append(chipText, cancel);
-      foot.append(el('span', 'Enter 发送 · Shift+Enter 换行', 'composer-hint'), button);
+      // 点名: a note addressed to an agent reaches it at check-in even if it does not own this task.
+      const to = el('select', null, 'composer-to');
+      to.id = 'task-note-to'; to.setAttribute('aria-label', '点名');
+      to.append(new Option(record.data.owner ? `给负责人 ${record.data.owner}` : '不点名', ''),
+                ...(agents || []).filter(agent => agent.name !== record.data.owner).map(agent => new Option(`点名 ${agent.name}`, agent.name)));
+      to.onchange = () => { input.placeholder = to.value ? `写给 ${to.value}…` : record.data.owner ? `写给 ${record.data.owner} 的指导…` : '留言…'; };
+      foot.append(to, el('span', 'Enter 发送 · Shift+Enter 换行', 'composer-hint'), button);
       form.append(chip, input, foot);
       const setReply = id => {
         replyTo = id; chip.hidden = !id;
-        if (id) { const note = byId.get(id); chipText.textContent = `回复 ${note ? speaker(note) : id}：${(note?.text || '').slice(0, 60)}`; }
+        if (id) { const note = byId.get(id); chipText.textContent = `回复 ${note ? speaker(note) : id}：${(note?.text || '').slice(0, 60)}`;
+          // Answering another agent's note points the reply at that agent.
+          const who = note?.auth_channel === 'agent_token' ? note.actor_label : null;
+          if (who && [...to.options].some(option => option.value === who)) { to.value = who; to.onchange(); } }
       };
       cancel.onclick = () => { setReply(null); input.focus(); };
       const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight + 2, 320) + 'px'; };
@@ -388,8 +398,8 @@
         button.disabled = true; button.textContent = '发送中…'; status.textContent = '';
         try {
           await write('note', 'n-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
-                      {research_id: record.id, text, reply_to: replyTo, decision: null, ask: false, evidence_refs: []}, null, null);
-          setReply(null); input.value = ''; grow(); await load();
+                      {research_id: record.id, text, reply_to: replyTo, decision: null, ask: false, evidence_refs: [], to: to.value || null}, null, null);
+          setReply(null); input.value = ''; to.value = ''; to.onchange(); grow(); await load();
         } catch (error) { status.textContent = '发送失败：' + failure(error) + '。内容还在输入框里。'; }
         finally { button.disabled = false; button.textContent = '发送'; }
       };

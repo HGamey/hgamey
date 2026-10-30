@@ -203,6 +203,9 @@
   resize: none; outline: none; line-height: 1.6; font-size: var(--fs-base); }
 .research-view .composer-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
 .research-view .composer-hint { font-size: var(--fs-xs); color: var(--muted); }
+.research-view .composer-to { width: auto; max-width: 46%; min-width: 0; padding: 3px 8px; font-size: var(--fs-xs); color: var(--ink2); border-radius: var(--radius-sm); }
+.research-view .composer-foot .composer-hint { margin-right: auto; }
+.research-view .discuss-to { font-size: var(--fs-sm); color: var(--acc-ink); }
 .research-view .composer button.ghost.primary { min-height: 32px; padding: 0 16px; }
 .research-view .reply-chip { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: 6px; padding: 4px 4px 4px 10px; border-radius: var(--radius);
   background: var(--wash); font-size: var(--fs-xs); color: var(--ink2); }
