@@ -47,6 +47,53 @@ class NodeConnectionsTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_exchange_rejects_a_response_cut_off_before_its_content_length(self):
+        inherited = self.env.server.RequestHandlerClass
+
+        class Interrupted(inherited):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', '100')
+                self.end_headers()
+                self.wfile.write(b'x' * 11)
+                self.wfile.flush()
+                self.close_connection = True
+
+        self.env.server.RequestHandlerClass = Interrupted
+        with self.assertRaises(http.client.IncompleteRead):
+            exchange(self.env.url, 'GET', '/fixture-short-response', max_bytes=100)
+
+    def test_reply_requires_both_outer_and_inner_content_lengths_before_delivery(self):
+        directory = self.env.jobs.directory
+        joined = directory.join({'invite': directory.invite()['code'], 'name': 'worker', 'node_id': 'b' * 32})
+        link = directory.link
+        for framing in ('outer', 'inner'):
+            with self.subTest(framing=framing), ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(link.call, 'b' * 32,
+                                      {'method': 'GET', 'path': '/log', 'headers': {}, 'max_bytes': 100})
+                try:
+                    command, = link.poll('b' * 32, wait=5)
+                    path = '/node-connect/calls/' + command['id'] + '/reply'
+                    headers = {'Authorization': 'Bearer ' + joined['token'],
+                        'X-Node-Response': json.dumps({'status': 200, 'headers': {'Content-Length': '100'}})}
+                    # Half-close a real HTTP request after only 11 of the declared bytes.
+                    with socket.create_connection(self.env.server.server_address, timeout=5) as sock:
+                        raw_headers = {**headers, 'Host': 'fixture', 'Connection': 'close',
+                                       'Content-Length': '100' if framing == 'outer' else '11'}
+                        sock.sendall(('POST ' + path + ' HTTP/1.1\r\n' + ''.join(
+                            key + ': ' + value + '\r\n' for key, value in raw_headers.items()) + '\r\n').encode() + b'x' * 11)
+                        sock.shutdown(socket.SHUT_WR)
+                        response = http.client.HTTPResponse(sock)
+                        response.begin()
+                        self.assertEqual(response.status, 400, response.read())
+                    self.assertFalse(pending.done(), 'a partial reply satisfied the waiting call')
+                    response = exchange(self.env.url, 'POST', path, b'x' * 100, headers)
+                    self.assertEqual(response['status'], 200, response)
+                    self.assertEqual(pending.result(timeout=5)['body'], b'x' * 100)
+                finally:
+                    if not pending.done():
+                        link.reply('b' * 32, command['id'], 500, {}, b'fixture cleanup')
+
     def test_invite_joins_once_reports_only_its_node_and_keeps_credentials_private(self):
         code, invite = self.request('POST', '/node-invites', {'note': 'isolated worker'})
         self.assertEqual(code, 201, invite)

@@ -34,6 +34,63 @@ class MultiNodeArtifactsTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_short_log_transfers_never_replace_a_previous_log_or_publish_complete(self):
+        self.flow.start_worker()
+        artifacts = self.center.jobs.center.artifacts
+        # Explicit collection keeps the transfer fault active for this exact job.
+        artifacts.close()
+        finished = threading.Event()
+        commit = self.worker.jobs.dispatch._commit_completion
+
+        def committed(*args, **kwargs):
+            value = commit(*args, **kwargs)
+            finished.set()
+            return value
+
+        with patch.object(self.worker.jobs.dispatch, '_commit_completion', side_effect=committed):
+            code, job = self.flow.submit({'bin': 'fixture', 'argv': ['-c', "print('x' * 513)"],
+                'device_access': 'none', 'execution_node_id': self.worker.jobs.node_id}, 'short-log')
+            self.assertEqual(code, 200, job)
+            self.assertTrue(finished.wait(10))
+        jid = job['id']
+        self.center.call('GET', '/jobs/' + jid)
+        # Completed metadata cached by the previous version has no log length.
+        # It must be refreshed before it can prove the log transfer complete.
+        self.center.jobs.center.targets.update(jid, artifact_source={
+            'job': self.worker.jobs.status(jid), 'completion_problem': None})
+        original = self.worker.jobs.log_from(jid, 0)
+        self.assertEqual(len(original), 514)
+        cached = self.center.root / 'jobs' / jid / 'log'
+        cached.parent.mkdir(exist_ok=True)
+        cached.write_bytes(b'previous complete log')
+        before = cached.stat().st_ino
+        inherited = self.worker.server.RequestHandlerClass
+        for declared in (len(original), 11):
+            with self.subTest(declared=declared):
+                class ShortLog(inherited):
+                    def do_GET(handler):
+                        if handler.path.startswith('/jobs/' + jid + '/log?'):
+                            handler.send_response(200)
+                            handler.send_header('Content-Length', str(declared))
+                            handler.end_headers()
+                            handler.wfile.write(original[:11])
+                            handler.wfile.flush()
+                            handler.close_connection = True
+                            return
+                        super().do_GET()
+
+                self.worker.server.RequestHandlerClass = ShortLog
+                artifacts.collect(jid)
+                self.assertEqual(artifacts.sync_status(jid)['status'], 'error')
+                self.assertEqual(self.center.jobs.center.targets.get(jid)['artifact_source']['log_size'], len(original))
+                self.assertEqual(cached.read_bytes(), b'previous complete log')
+                self.assertEqual(cached.stat().st_ino, before)
+        self.worker.server.RequestHandlerClass = inherited
+        artifacts.collect(jid)
+        self.assertEqual(artifacts.sync_status(jid)['status'], 'complete')
+        self.assertEqual(cached.read_bytes(), original)
+        self.assertEqual(len(self.worker.jobs.dispatch.queue.rows()), 1)
+
     def test_finished_outputs_are_collected_in_chunks_and_results_survive_a_disconnected_worker(self):
         connector = self.flow.start_worker()
         finished, collected = threading.Event(), threading.Event()

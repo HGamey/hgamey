@@ -1228,7 +1228,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                             "has_more": events["has_more"]})
                 if len(parts) == 4 and parts[:2] == ["node", "executions"] and parts[3] == "source":
                     job = jobs.status(parts[2])
-                    return self._send(200, {"job": job, "completion_problem": jobs.source_completion_problem(parts[2], job)})
+                    problem = jobs.source_completion_problem(parts[2], job)
+                    log_size = None
+                    if problem is None:
+                        with jobs._read_root.open_file(parts[2] + "/log") as stream:
+                            log_size = os.fstat(stream.fileno()).st_size
+                    return self._send(200, {"job": job, "completion_problem": problem, "log_size": log_size})
                 if parts == ["whoami"]:
                     agent = getattr(self, "agent", None)
                     kind = "agent" if agent else "readonly" if getattr(self, "ro", False) else "admin"

@@ -28,7 +28,11 @@ def exchange(url, method, path, body=b'', headers=None, *, timeout=35, connectio
                 connections.add(sock)
         connection.request(method, endpoint.path.rstrip('/') + path, body=body, headers=headers or {})
         response = connection.getresponse()
-        return {'status': response.status, 'headers': dict(response.getheaders()), 'body': response.read(max_bytes + 1)}
+        length = response.length
+        data = response.read(max_bytes + 1)
+        if length is not None and len(data) != length:
+            raise http.client.IncompleteRead(data, length - len(data))
+        return {'status': response.status, 'headers': dict(response.getheaders()), 'body': data}
     finally:
         connection.close()
         if connections is not None:

@@ -45,7 +45,8 @@ class JobArtifacts:
     def source(self, jid):
         record = self.center.remote(jid)
         saved = record.get('artifact_source')
-        if saved and saved['job']['state'] == 'finished' and saved['completion_problem'] is None:
+        if (saved and saved['job']['state'] == 'finished' and saved['completion_problem'] is None
+                and saved.get('log_size') is not None):
             return saved
         value = json.loads(self.request(jid, '/node/executions/' + jid + '/source')['body'])
         self.center.targets.update(jid, artifact_source=value)
@@ -247,7 +248,10 @@ class JobArtifacts:
             source = self.source(jid)
             self.store.write_json(jid + '/meta.json', source['job'])
             self.inputs(jid)
-            # A finished log has no further producer; copy bounded ranges as binary.
+            # A short read is not EOF: the finished source supplies the exact length.
+            size = source.get('log_size')
+            if size is None:
+                raise ValueError('execution source has not confirmed its finished log size')
             temporary = jid + '/.collected/log.partial'
             try:
                 self.store.unlink(temporary)
@@ -255,12 +259,13 @@ class JobArtifacts:
                 pass
             with self.store.create_file(temporary) as stream:
                 offset = 0
-                while True:
-                    block = self.request(jid, f'/jobs/{jid}/log?offset={offset}&limit={CHUNK}', maximum=CHUNK)['body']
+                while offset < size:
+                    length = min(CHUNK, size - offset)
+                    block = self.request(jid, f'/jobs/{jid}/log?offset={offset}&limit={length}', maximum=CHUNK)['body']
+                    if len(block) != length:
+                        raise OSError('log range was interrupted or differs from the finished source size')
                     stream.write(block)
                     offset += len(block)
-                    if len(block) < CHUNK:
-                        break
                 stream.flush()
                 os.fsync(stream.fileno())
             self.store.replace(temporary, jid + '/log')

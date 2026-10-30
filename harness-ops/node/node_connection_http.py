@@ -20,7 +20,11 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
             if not 0 <= length <= limit:
                 handler.close_connection = True
                 raise DirectoryError(413, 'node connection request exceeds the HTTP size limit')
-            return handler.rfile.read(length)
+            value = handler.rfile.read(length)
+            if len(value) != length:
+                handler.close_connection = True
+                raise DirectoryError(400, 'node connection request ended before Content-Length')
+            return value
 
         def document(limit=64 << 10):
             value = json.loads(body(limit) or b'{}')
@@ -103,7 +107,12 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
                 handler._send(200, directory.link.body(node_id, call_id), 'application/octet-stream')
             elif route[3] == 'reply' and method == 'POST':
                 response = json.loads(handler.headers['X-Node-Response'])
-                directory.link.reply(node_id, call_id, response['status'], response['headers'], body(upload_limit))
+                payload = body(upload_limit)
+                length = next((value for key, value in response['headers'].items()
+                               if key.lower() == 'content-length'), None)
+                if length is not None and int(length) != len(payload):
+                    raise DirectoryError(400, 'node response bytes differ from Content-Length')
+                directory.link.reply(node_id, call_id, response['status'], response['headers'], payload)
                 handler._send(200, {'received': True})
             else:
                 handler._send(404, {'error': 'no such node call operation'})
