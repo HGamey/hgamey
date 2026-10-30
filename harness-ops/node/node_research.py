@@ -547,7 +547,7 @@ class NodeResearch:
                         self.results._job_exists(ref["job_id"])
                         if ref.get("path") is not None:
                             try:
-                                with self.results.jobs._read_root.open_file(ref["job_id"] + "/out/" + ref["path"]):
+                                with self.results.jobs.center.artifacts.open_output(ref["job_id"], ref["path"]):
                                     pass
                             except (OSError, ValueError):
                                 raise ResearchError(404, "research_reference_not_found",

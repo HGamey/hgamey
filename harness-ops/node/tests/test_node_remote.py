@@ -146,15 +146,17 @@ class Base(unittest.TestCase):
         self.backend = FakePF(self.backend_path)
         self.remotes = []
         self.remote = self.new_remote(self.backend)
-        self.alice_token, _ = self.remote.operators.add("alice")
-        self.bob_token, _ = self.remote.operators.add("bob")
-        self.alice = self.remote.operators.verify(self.alice_token)
-        self.bob = self.remote.operators.verify(self.bob_token)
+        from node_agents import NodeAgents
+        self.agents = NodeAgents(str(self.root), 'a' * 32)
+        for name in ('alice', 'bob'):
+            self.agents.create({'name': name})
+            setattr(self, name + '_token', self.agents.issue_token(name)['token'])
+            setattr(self, name, {'id': 'agent:' + name, 'name': name})
 
     def new_remote(self, backend):
         remote = node_remote.Remote(lambda: {"status": "clear", "entries": []},
                                     adb="/fixture-no-real-adb", config_dir=str(self.cfg),
-                                    reaper=False, backend=backend)
+                                    backend=backend)
         # Host transport inventory only; no tool/phone process is spawned here.
         inventory = [{"serial": SERIAL, "transport": "adb", "state": "device", "model": "fixture"},
                      {"serial": "fixture-phone", "transport": "adb", "state": "device", "model": "fixture"}]
@@ -167,6 +169,7 @@ class Base(unittest.TestCase):
     def tearDown(self):
         for remote in self.remotes:
             remote.close()
+        self.agents.close()
         self.tmp.cleanup()
 
     def acquire(self, request_id="acquire-1", op=None, remote=None, **params):
@@ -180,7 +183,6 @@ class Base(unittest.TestCase):
 
 class RemoteTests(Base):
     def test_raw_remote_session_does_not_block_another_phone(self):
-        self.remote.policy.enable("fixture-phone")
         first = self.acquire("phone-a")
         second = self.remote.do(self.bob, "fixture-ip", "fixture-phone", "acquire",
                                 {"request_id": "phone-b"})
@@ -217,6 +219,16 @@ class RemoteTests(Base):
         snapshot["entries"] = [{"scope": "global", "label": "live-global"}]
         self.assertTrue(all(item["holder"]["global"] for item in self.remote.devices()["devices"]))
 
+    def test_remote_holder_aliases_come_from_pf_registry(self):
+        first = self.acquire()
+        self.remote.occupancy = node_remote.Occupancy(lambda: {'status': 'held',
+            'entries': [{'scope': 'device', 'device_id': 'a', 'serial': SERIAL, 'label': 'owner'}],
+            'device_scopes': {'devices': [{'device_id': 'a', 'aliases': [SERIAL, 'fixture-phone']}]}})
+        devices = {item['serial']: item for item in self.remote.devices()['devices']}
+        self.assertEqual(devices['fixture-phone']['holder']['kind'], 'remote')
+        self.assertEqual(devices['fixture-phone']['holder']['session_id'], first['session_id'])
+        self.assertEqual(devices[SERIAL]['aliases'], ['fixture-phone'])
+
     def test_occupancy_follows_current_fd_status_and_preserves_old_records(self):
         self.locks.mkdir()
         old = self.locks / "devlock.d"
@@ -241,34 +253,21 @@ class RemoteTests(Base):
         self.assertEqual(sum(call[0] == "start" for call in self.backend.calls), 3)
         self.assertEqual(old.read_text(), 'old fence and owner evidence')
 
-    def test_tokens_are_hashed_and_revocable(self):
-        stored = (self.cfg / "remote.operators.json").read_text()
+    def test_center_agent_tokens_are_hashed_and_revocable(self):
+        stored = (self.root / '_node' / 'agents' / 'registry.json').read_text()
+        self.assertEqual((self.root / '_node' / 'agents' / 'registry.json').stat().st_mode & 0o777, 0o600)
         self.assertNotIn(self.alice_token, stored)
         self.assertIn(hashlib.sha256(self.alice_token.encode()).hexdigest(), stored)
-        self.assertEqual((self.cfg / "remote.operators.json").stat().st_mode & 0o777, 0o600)
-        altered = self.alice_token[:-1] + ("x" if self.alice_token[-1] != "x" else "y")
-        self.assertIsNone(self.remote.operators.verify(altered))
-        self.assertIsNone(self.remote.operators.verify("Bearer " + self.alice_token))
-        self.remote.operators.revoke("alice")
-        self.assertIsNone(self.remote.operators.verify(self.alice_token))
-        self.assertEqual(self.remote.operators.verify(self.bob_token)["name"], "bob")
+        altered = self.alice_token[:-1] + ('x' if self.alice_token[-1] != 'x' else 'y')
+        self.assertIsNone(self.agents.verify(altered))
+        self.assertIsNone(self.agents.verify('Bearer ' + self.alice_token))
+        self.agents.update('alice', {'revision': self.agents.get('alice')['revision'], 'enabled': False})
+        self.assertIsNone(self.agents.verify(self.alice_token))
+        self.assertEqual(self.agents.verify(self.bob_token), 'bob')
         self.assertEqual(self.backend.mutations(), [])
 
-    def test_allowlist_and_missing_pf_capability_do_not_launch(self):
-        policy = self.remote.policy
-        policy.save({"default": "deny", "allow": ["emulator-*"],
-                     "deny": ["fixture-phone", "fixture-wifi"],
-                     "aliases": [["fixture-phone", "fixture-wifi"]]})
-        with self.assertRaises(node_remote.RemoteError) as denied:
-            self.remote.do(self.alice, "fixture-ip", "fixture-phone", "acquire", {"request_id": "denied"})
-        self.assertEqual(denied.exception.status, 403)
-        self.assertEqual(self.backend.mutations(), [])
-        policy.enable("fixture-phone")
-        self.assertTrue(policy.enabled("fixture-phone"))
-        self.assertFalse(policy.enabled("fixture-wifi"), "an alias is not enabled implicitly")
-        policy.disable("fixture-phone")
-        self.assertFalse(policy.enabled("fixture-phone"))
-        self.backend.available, self.backend.reason = False, "observation owner capability unavailable"
+    def test_missing_pf_capability_still_does_not_launch(self):
+        self.backend.available, self.backend.reason = False, 'observation owner capability unavailable'
         with self.assertRaises(node_remote.RemoteError) as unsupported:
             self.acquire()
         self.assertEqual(unsupported.exception.status, 503)
@@ -339,9 +338,11 @@ class RemoteHttpTests(Base):
     def setUp(self):
         super().setUp()
         self.jobs = Jobs(str(self.root / "jobs"), {})
+        self.jobs.agents = self.agents
         self.board = dash.Dash.__new__(dash.Dash)
         self.pw = "unit-test-view-password"
         self.board._pass = lambda: self.pw
+        self.board._steer_pass = lambda: "unit-test-steer"
         self.admin = "unit-test-node-admin-not-production"
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(
             object(), self.jobs, self.admin, self.board,
@@ -523,9 +524,6 @@ class RemoteHttpTests(Base):
                 "queue_waiting": False, "unknown": False,
                 "devices": [{"device_id": key, "status": "clear", "error": None} for key in ("A", "B")]}}
         self.remote.leases = mock.Mock(snapshot=lambda **kw: copy.deepcopy(current))
-        self.remote.policy.enable(b["serial"])
-        policy = self.remote.policy.load(); policy["aliases"] = [[SERIAL, alias["serial"]]]
-        self.remote.policy.save(policy)
         auth = {**self.bearer(self.alice_token), "X-Expected-Node-ID": self.jobs.node_id}
         path = "/remote/devices/"
         code, _, raw = self.req("GET", path + "resolve?serial=" + SERIAL, headers=auth)
@@ -550,8 +548,8 @@ class RemoteHttpTests(Base):
         self.assertEqual((code, pending_raw["phase"]), (202, "starting"))
         code, _, raw = self.req("GET", path.rstrip("/"), headers=auth)
         devices = {d["serial"]: d for d in json.loads(raw)["devices"]}
-        self.assertEqual(devices[SERIAL]["holder"]["device_scope"], {"scope": "device", "binding": a})
-        self.assertEqual(devices[b["serial"]]["holder"]["session_id"], second["session_id"])
+        self.assertEqual(devices[self.jobs.node_id + "/" + SERIAL]["holder"]["device_scope"], {"scope": "device", "binding": a})
+        self.assertEqual(devices[self.jobs.node_id + "/" + b["serial"]]["holder"]["session_id"], second["session_id"])
         self.assertNotEqual(first["session_id"], second["session_id"])
         self.backend.device_binding_available = False
         resolver.side_effect = AssertionError("old acquisition must not re-resolve")
@@ -658,12 +656,12 @@ class RemoteHttpTests(Base):
 
     def test_http_mcp_query_pending_and_unsupported_upload_without_body_read(self):
         auth = self.bearer(self.alice_token)
-        self.assertEqual(self.req("GET", "/remote/devices", headers=self.bearer(self.admin))[0], 401)
+        self.assertEqual(self.req("GET", "/remote/devices", headers=self.bearer(self.admin))[0], 200)
         status, _, raw = self.req("GET", "/remote/devices", headers=auth)
         self.assertEqual(status, 200)
         devices = {item["serial"]: item for item in json.loads(raw)["devices"]}
-        self.assertTrue(devices[SERIAL]["enabled"])
-        self.assertFalse(devices["fixture-phone"]["enabled"])
+        self.assertTrue(devices[self.jobs.node_id + "/" + SERIAL]["enabled"])
+        self.assertTrue(devices[self.jobs.node_id + "/fixture-phone"]["enabled"])
         status, _, raw = self.req("POST", f"/remote/devices/{SERIAL}/session", {"request_id": "http-acquire"}, auth)
         self.assertEqual(status, 200)
         sid = json.loads(raw)["session_id"]
@@ -720,35 +718,31 @@ class RemoteHttpTests(Base):
         status, _, body = self.req("GET", f"/remote/devices/{SERIAL}/session?session_id={sid}", headers=auth)
         self.assertEqual((status, json.loads(body)["phase"]), (202, "closing"))
 
-    def test_browser_needs_view_password_operator_cookie_csrf_and_unrevoked_operator(self):
-        view = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}", "Content-Type": "application/json"}
-        login = {"token": self.alice_token}
-        self.assertEqual(self.req("POST", "/dash/api/remote/login", login,
-            {"Content-Type": "application/json", "X-HG": "1"})[0], 401)
-        self.assertEqual(self.req("POST", "/dash/api/remote/login", login, view)[0], 400)
-        status, headers, _ = self.req("POST", "/dash/api/remote/login", login, {**view, "X-HG": "1"})
-        self.assertEqual(status, 200)
-        self.assertIn("HttpOnly; Secure; SameSite=Strict", headers["Set-Cookie"])
-        cookie = headers["Set-Cookie"].split(";")[0]
-        web = {**view, "Cookie": view["Cookie"] + "; " + cookie, "X-HG": "1"}
-        path = f"/dash/api/remote/devices/{SERIAL}"
-        self.assertEqual(self.req("POST", path + "/session", {"request_id": "web-acquire"},
-            {**web, "X-HG": ""})[0], 400)
+    def test_browser_uses_view_and_steer_and_revoked_agents_cannot_write(self):
+        path = f'/dash/api/remote/devices/{SERIAL}'
+        view = {'Cookie': f'{dash.COOKIE}={self.board._cookie_val(self.pw)}', 'Content-Type': 'application/json'}
+        data = {'request_id': 'web-acquire'}
+        self.assertEqual(self.req('POST', path + '/session', data, {'X-HG': '1'})[0], 401)
+        self.assertEqual(self.req('POST', path + '/session', data, {**view, 'X-HG': '1'})[0], 403)
+        web = {**view, 'X-HG': '1', 'Cookie': view['Cookie'] + '; hg_steer=' +
+               self.board._cookie_val('unit-test-steer', b'hgamey-steer-v1')}
+        self.assertEqual(self.req('POST', path + '/session', data, {**web, 'X-HG': ''})[0], 400)
         self.assertEqual(self.backend.mutations(), [])
-        status, _, body = self.req("POST", path + "/session", {"request_id": "web-acquire"}, web)
-        self.assertEqual(status, 200)
-        sid = json.loads(body)["session_id"]
-        payload = {"session_id": sid, "request_id": "web-back", "key": "back"}
-        status, _, body = self.req("POST", path + "/key", payload, web)
-        self.assertEqual((status, json.loads(body)["status"]), (200, "completed"))
-        request = next(iter(self.backend.data["requests"].values()))
-        self.assertEqual(request["params"], {"key": 4})
+        status, _, body = self.req('POST', path + '/session', data, web)
+        self.assertEqual(status, 200, body)
+        sid = json.loads(body)['session_id']
+        payload = {'session_id': sid, 'request_id': 'web-back', 'key': 'back'}
+        status, _, body = self.req('POST', path + '/key', payload, web)
+        self.assertEqual((status, json.loads(body)['status']), (200, 'completed'))
+        self.assertEqual(next(iter(self.backend.data['requests'].values()))['params'], {'key': 4})
+        auth = self.bearer(self.alice_token)
+        self.assertEqual(self.req('GET', '/remote/devices', headers=auth)[0], 200)
         before = self.backend.mutations()
-        self.remote.operators.revoke("alice")
-        self.assertEqual(self.req("POST", path + "/key", {**payload, "request_id": "revoked"}, web)[0], 401)
+        self.agents.update('alice', {'revision': self.agents.get('alice')['revision'], 'enabled': False})
+        self.assertEqual(self.req('POST', f'/remote/devices/{SERIAL}/session', {'request_id': 'revoked'}, auth)[0], 401)
         self.assertEqual(self.backend.mutations(), before)
-        self.assertEqual(self.req("GET", "/dash/control", headers={"Cookie": view["Cookie"]})[0], 200)
-        self.assertEqual(self.req("GET", "/dash/control")[0], 303)
+        self.assertEqual(self.req('GET', '/dash/control', headers={'Cookie': view['Cookie']})[0], 200)
+        self.assertEqual(self.req('GET', '/dash/control')[0], 303)
 
 
 if __name__ == "__main__":

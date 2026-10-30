@@ -17,6 +17,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -250,6 +251,8 @@ class JobInputsTests(unittest.TestCase):
             server.server_close()
             thread.join()
             peer.directory.close()
+            peer.center.close()
+            peer.dispatch.close()
             peer._read_root.close()
 
         self.addCleanup(close_peer)
@@ -278,26 +281,37 @@ class JobInputsTests(unittest.TestCase):
         original = b'{ "cross": {"node": "source-of-truth", "value": 7}}\n'
         peer, peer_admin, peer_url, peer_call, peer_submit = self.peer_node("lab-b")
         self.assertNotEqual(peer.games.node_id, self.jobs.games.node_id)
-        code = ("import os; from pathlib import Path; "
-                f"(Path(os.environ['PF_JOB_OUT']) / 'report.json').write_bytes({original!r})")
-        job = peer_submit("peer-source-job", {"bin": "fixture", "argv": ["-c", code], "device_access": "none"})
-        deadline = time.monotonic() + 10
-        while peer.status(job["id"])["state"] != "finished" and time.monotonic() < deadline:
-            time.sleep(.03)
-        self.assertEqual(peer.status(job["id"])["exit"], 0, peer.status(job["id"]))
-        status, reference = peer_call("GET", f"/jobs/{job['id']}/input-reference?path=report.json")
-        self.assertEqual(status, 200, reference)
-
         from node_connection_fixture import connect
-        connector = connect(self.jobs.directory, self.url, "lab-b", peer_url, peer_admin, peer.games.node_id)
+        connector = connect(self.jobs.directory, self.url, 'lab-b', peer_url, peer_admin, peer.node_id)
         self.addCleanup(connector.close)
-        node = self.call("GET", "/node")[1]
-        self.assertIn("jobs.cross-node-inputs-v1", node["capabilities"])
+        program = ("import os; from pathlib import Path; "
+                   f"(Path(os.environ['PF_JOB_OUT']) / 'report.json').write_bytes({original!r})")
+        done, collected = threading.Event(), threading.Event()
+        commit, update = peer.dispatch._commit_completion, self.jobs.center.targets.update
+        def committed(*args, **kwargs):
+            value = commit(*args, **kwargs)
+            done.set()
+            return value
+        def stored(jid, **fields):
+            value = update(jid, **fields)
+            if fields.get('artifacts_sync', {}).get('status') == 'complete':
+                collected.set()
+            return value
+        with mock.patch.object(peer.dispatch, '_commit_completion', side_effect=committed), \
+                mock.patch.object(self.jobs.center.targets, 'update', side_effect=stored):
+            job = self.submit('peer-source-job', {'bin': 'fixture', 'argv': ['-c', program],
+                'device_access': 'none', 'execution_node_id': peer.node_id})
+            self.assertTrue(done.wait(10))
+            self.assertEqual(self.call('GET', '/jobs/' + job['id'])[1]['exit'], 0)
+            self.assertTrue(collected.wait(10))
+        status, reference = self.call('GET', f"/jobs/{job['id']}/input-reference?path=report.json")
+        self.assertEqual(status, 200, reference)
+        connector.close()
 
         manifest = {"schema": "phonefarm/job-inputs@1", "node_id": self.jobs.games.node_id,
                     "cwd": "default", "files": [
                         {"name": "report", "target": "originals/report.json",
-                         "source": {**reference["source"], "node": "lab-b"}}],
+                         "source": reference["source"]}],
                     "bindings": []}
         consumer = ("import os; from pathlib import Path; inp=os.environ['PF_JOB_IN']; "
                     "out=Path(os.environ['PF_JOB_OUT']); "
@@ -309,7 +323,7 @@ class JobInputsTests(unittest.TestCase):
         self.assertEqual(Path(self.jobs.path(submitted["id"], "out", "copy.json")).read_bytes(), original)
         receipt = self.input_status(submitted["id"])["preparation"]
         self.assertEqual(receipt["status"], "ready", receipt)
-        self.assertEqual(receipt["files"][0]["source"]["node"], "lab-b")
+        self.assertEqual(receipt["files"][0]["source"], reference["source"])
         self.assertNotIn(peer_admin, json.dumps(receipt))
         # 同节点原件不被触碰。
         self.assertEqual(Path(peer.path(job["id"], "out", "report.json")).read_bytes(), original)
@@ -332,13 +346,11 @@ class JobInputsTests(unittest.TestCase):
         wrong_size = copy.deepcopy(manifest)
         wrong_size["files"][0]["source"]["size"] += 1
         refused("size", wrong_size, "input_mismatch")
-        unknown_entry = copy.deepcopy(manifest)
-        unknown_entry["files"][0]["source"]["node"] = "no-such-entry"
-        refused("entry", unknown_entry, "source_not_found")
-
-        # 出站连接已断开：不能制造完整输入，消费命令不执行。
-        connector.close()
-        refused("disconnected", manifest, "source_unavailable")
+        missing = copy.deepcopy(manifest)
+        missing['files'][0]['source']['job_id'] = 'f' * 12
+        refused('missing', missing, 'source_not_found')
+        self.assertEqual(self.submit('cross-node-consumer', {'bin': 'fixture', 'argv': ['-c', consumer],
+            'device_access': 'none', 'inputs': manifest})['id'], submitted['id'])
 
     def test_reference_cli_binding_and_repeated_request_execute_once(self):
         status, node = self.call("GET", "/node")

@@ -1,4 +1,4 @@
-"""Small, explicit same-node input snapshots inside the existing preparation step."""
+"""Small, explicit center-owned input snapshots inside the existing preparation step."""
 import copy
 import errno
 import hashlib
@@ -8,7 +8,6 @@ import re
 import time
 
 from artifact_io import stamp
-from node_directory import DirectoryError
 
 
 SCHEMA = "phonefarm/job-inputs@1"
@@ -74,15 +73,9 @@ def validate(value, node_id):
         names.add(name)
         targets.append(_path(item["target"]))
         source = item["source"]
-        extra = set(source) - {"job_id", "path", "size", "sha256"}
-        if extra not in (set(), {"node"}):
-            raise ValueError("input source allows job_id, path, size, sha256 and an optional node name")
+        _exact(source, ("job_id", "path", "size", "sha256"), "input source")
         _job_id(source["job_id"])
         _path(source["path"])
-        if "node" in source and (not isinstance(source["node"], str)
-                                 or not re.fullmatch(r"[a-z0-9_-]{1,64}", source["node"])
-                                 or source["node"] == "local"):
-            raise ValueError("input source node must name a shared directory entry (1-64 lowercase letters, digits, _ or -)")
         if type(source["size"]) is not int or not 0 <= source["size"] <= MAX_FILE:
             raise ValueError("each input size must be an integer from 0 to 8 MiB")
         if not isinstance(source["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
@@ -195,29 +188,32 @@ def _parents(store, rel):
         store.mkdir("/".join(parts[:count]))
 
 
-def _remote_snapshot(jobs, source):
-    """One bounded cross-node fetch; credentials stay inside the shared directory."""
-    directory = getattr(jobs, "directory", None)
-    if directory is None:
-        raise InputError(503, "source_unavailable", "cross-node inputs require a shared directory on this node")
+def _central_snapshot(jobs, jid, item, center_id):
+    from artifact_io import SafeRoot
+    from node_connector import exchange
+    store = SafeRoot(jobs.data_root)
     try:
-        data = directory.download_input(source["node"], source["job_id"], source["path"],
-                                        source["size"] + 1)
-    except DirectoryError as error:
-        code = "source_not_found" if error.status == 404 else "source_unavailable"
-        raise InputError(409, code, "cross-node input source is unavailable: " + str(error)) from error
-    if len(data) != source["size"]:
-        raise InputError(409, "input_mismatch", "remote source size differs from its declared input reference")
-    if hashlib.sha256(data).hexdigest() != source["sha256"]:
-        raise InputError(409, "input_mismatch", "remote source SHA-256 does not match its input reference")
+        config = store.read_json('_node/center.json')
+    finally:
+        store.close()
+    source = item['source']
+    response = exchange(config['url'], 'GET', '/node-connect/inputs/' + jid + '/' + item['name'],
+        headers={'Authorization': 'Bearer ' + config['token'], 'X-Expected-Node-ID': center_id},
+        max_bytes=MAX_FILE)
+    if response['status'] != 200:
+        value = json.loads(response['body'])
+        raise InputError(response['status'], value.get('code', 'source_unavailable'), value['error'])
+    data = response['body']
+    if len(data) != source['size'] or hashlib.sha256(data).hexdigest() != source['sha256']:
+        raise InputError(409, 'input_mismatch', 'center source size or SHA-256 differs from its input reference')
     return data
 
 
-def _snapshot(jobs, item):
+def _snapshot(jobs, item, jid=None, center_id=None):
     """The typed-input budget bounds all retained originals and derived bytes."""
     source = item["source"]
-    if "node" in source:
-        return _remote_snapshot(jobs, source)
+    if center_id is not None and center_id != jobs.node_id:
+        return _central_snapshot(jobs, jid, item, center_id)
     with _source_file(jobs, source) as stream:
         before = os.fstat(stream.fileno())
         if before.st_size != source["size"]:
@@ -302,7 +298,6 @@ def prepare(jobs, jid, manifest, *, before_write=None, write=None):
     """
     _job_id(jid)
     node_id = _node_id(jobs)
-    manifest = validate(manifest, node_id)
     receipt = {"schema": RECEIPT, "node_id": node_id, "job_id": jid, "status": "pending",
                "started_at": time.time(), "updated_at": time.time(), "error": None,
                "files": [{**item, "status": "pending"} for item in manifest["files"]],
@@ -323,7 +318,7 @@ def prepare(jobs, jid, manifest, *, before_write=None, write=None):
         payloads = {}
         for item in receipt["files"]:
             active = item
-            payloads[item["target"]] = _snapshot(jobs, item)
+            payloads[item["target"]] = _snapshot(jobs, item, jid, manifest["node_id"])
         files = {item["name"]: item for item in manifest["files"]}
         remaining = MAX_TOTAL - sum(len(data) for data in payloads.values())
         for binding in receipt["bindings"]:
@@ -374,6 +369,8 @@ def prepare(jobs, jid, manifest, *, before_write=None, write=None):
 def record(jobs, jid):
     """Read declaration and receipt only; never prepare inputs or hash a file."""
     _job_id(jid)
+    if jobs.center.remote(jid):
+        return jobs.center.artifacts.inputs(jid)
     node_id = _node_id(jobs)
     row = jobs.dispatch.queue.get(jid)
     if row is None:

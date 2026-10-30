@@ -46,6 +46,7 @@ class MultiNodeJobTests(unittest.TestCase):
 
         connector._json = observed
         self.addCleanup(connector.close)
+        self.addCleanup(self.center.jobs.center.artifacts.close)
         connector.start()
         self.assertTrue(reported.wait(5))
         return connector
@@ -59,6 +60,39 @@ class MultiNodeJobTests(unittest.TestCase):
                'PF_NODE_TOKEN': self.agent, 'PF_NODE_ID': self.center.jobs.node_id}
         return subprocess.run([sys.executable, str(Path(fixture.__file__).resolve().parents[1] / 'pf-node'),
                                *args], env=env, capture_output=True, text=True, timeout=15)
+
+    def test_reported_disconnect_returns_cached_status_and_pending_stop_without_transport(self):
+        self.worker.jobs.dispatch.close()
+        self.worker.jobs.dispatch.start = lambda: None
+        connector = self.start_worker()
+        spec = {'bin': 'fixture', 'argv': ['-c', 'pass'], 'device_access': 'none',
+                'execution_node_id': self.worker.jobs.node_id}
+        code, job = self.submit(spec, 'known-offline')
+        self.assertEqual(code, 200, job)
+        connector.close()
+        directory = self.center.jobs.directory
+        with directory._locked() as state:
+            state['nodes'][0]['last_seen_at'] = 0
+            directory._store.write_json('registry.json', state)
+        with patch.object(directory.link, 'call', side_effect=AssertionError('offline read waited on transport')):
+            self.assertEqual(self.center.call('GET', '/jobs/' + job['id'])[1]['id'], job['id'])
+            for action, body in [('cancel', {}), ('reset', {'note': 'offline stop'})]:
+                code, reply = self.center.call('POST', '/jobs/' + job['id'] + '/' + action, body)
+                self.assertEqual((code, reply['pending']), (202, True), reply)
+        self.assertIsNotNone(self.center.jobs.center.remote(job['id'])['stop'])
+
+    def test_task_rows_use_recorded_terminal_facts_without_reading_each_node(self):
+        center = self.center.jobs.center
+        for index in range(3):
+            center.targets.reserve({'id': '%012x' % index, 'request_id': 'cached-' + str(index),
+                'fingerprint': str(index), 'execution_node_id': self.worker.jobs.node_id,
+                'request': {'spec': {'actor_id': 'researcher'}}, 'device_selection': None,
+                'stop': None, 'observation': {'state': 'finished', 'queue': {'state': 'done'}}})
+        with patch.object(self.center.jobs.directory, 'list', wraps=self.center.jobs.directory.list) as listed, \
+                patch.object(center, 'status', side_effect=AssertionError('task_rows refreshed a routed job')):
+            rows = center.task_rows()
+        self.assertEqual([row['state'] for row in rows], ['done'] * 3)
+        self.assertLessEqual(listed.call_count, 1)
 
     def test_model_cli_reaches_the_selected_serial_and_old_centers_cannot_ignore_the_selector(self):
         self.phone(self.center, 'USB-A', 'held')

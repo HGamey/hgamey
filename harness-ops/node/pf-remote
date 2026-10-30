@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit operator client; never retries a remote device action automatically."""
+"""Center agent client; never retries a remote device action automatically."""
 import argparse
 from http.client import HTTPException
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import sys
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 from target_client import Target, TargetError
 from device_scope import binding as validated_device_binding
 
@@ -16,12 +16,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--url', help='exact node URL or PF_NODE_URL (HTTPS; HTTP allowed on loopback)')
     ap.add_argument('--node-id', help='expected persistent node ID or PF_NODE_ID; required for actions')
-    ap.add_argument('--token-file', help='explicit operator credential file, takes precedence over PF_NODE_TOKEN(_FILE)')
+    ap.add_argument('--token-file', help='explicit center agent credential file, takes precedence over PF_NODE_TOKEN(_FILE)')
     subs = ap.add_subparsers(dest='command', required=True)
     subs.add_parser('devices')
     resolve = subs.add_parser('devices-resolve', help='read a pinned node device binding; save the JSON for acquire')
     resolve.add_argument('serial')
-    subs.add_parser('node', help='read-only discovery using the operator credential')
+    subs.add_parser('node', help='read-only discovery using the center agent credential')
     acquire = subs.add_parser('acquire')
     acquire.add_argument('serial')
     acquire.add_argument('--request-id', required=True)
@@ -35,7 +35,9 @@ def main(argv=None):
     action = subs.add_parser('action')
     action.add_argument('serial')
     action.add_argument('action', choices=['tap','swipe','text','key','screenshot','logcat','diagnostics','app_start','app_stop','renew','release'])
-    action.add_argument('--session-id', required=True)
+    action_identity = action.add_mutually_exclusive_group(required=True)
+    action_identity.add_argument('--session-id')
+    action_identity.add_argument('--acquisition-id', help='release a starting acquisition before its session ID is known')
     action.add_argument('--request-id', required=True)
     action.add_argument('--params', default='{}', help='typed JSON action parameters')
     action.add_argument('--frame-id', help='source screenshot request ID for tap/swipe; coordinates use original image pixels')
@@ -52,9 +54,7 @@ def main(argv=None):
     target = Target.resolve(args.url, args.node_id, args.token_file, identity_path='/remote/node')
     address = urlsplit(target.url)
     if address.scheme == 'http' and address.hostname not in ('127.0.0.1','localhost','::1'):
-        ap.error('operator credentials require HTTPS outside loopback')
-    if not target.token.startswith('hgop_'):
-        ap.error('credential must be an operator token')
+        ap.error('center agent credentials require HTTPS outside loopback')
     if args.command == 'node':
         print(json.dumps(target.identity(), ensure_ascii=False, indent=2))
         return 0
@@ -80,7 +80,7 @@ def main(argv=None):
                 if not isinstance(envelope, dict) or envelope.get('node_id') != target.expected_node_id:
                     ap.error('device binding file node_id must match the pinned node')
                 binding = validated_device_binding(envelope.get('binding'))
-                if binding['serial'] != args.serial:
+                if binding['serial'] != unquote(args.serial.split('/', 1)[-1]):
                     ap.error('device binding serial must exactly match acquire serial')
                 with target.opener.open(target.request('GET', '/remote/devices'), timeout=30) as response:
                     capabilities = json.loads(response.read((1 << 20) + 1)).get('capabilities', {})
@@ -92,6 +92,8 @@ def main(argv=None):
             query = {'session_id': args.session_id} if args.session_id else {'acquisition_id': args.acquisition_id}
             path += '/session?' + urlencode(query)
         elif args.command == 'action':
+            if args.acquisition_id and args.action != 'release':
+                ap.error('--acquisition-id is only used to release a starting owner')
             params = json.loads(args.params)
             if not isinstance(params, dict) or {'session_id','request_id'} & params.keys():
                 ap.error('--params must be an object without session_id/request_id')
@@ -131,8 +133,10 @@ def main(argv=None):
                 if not isinstance(params.get('frame_id'), str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', params['frame_id']):
                     ap.error('tap/swipe require --frame-id or params.frame_id: 1..64 ASCII letters, digits, dot, underscore or hyphen')
             method, path = ('DELETE', path + '/session') if args.action == 'release' else ('POST', path + '/' + args.action)
-            body = {**params, 'session_id': args.session_id, 'request_id': args.request_id}
-            query_context = {'session_id': args.session_id, 'request_id': args.request_id, 'serial': args.serial}
+            body = {**params, 'request_id': args.request_id, **(
+                {'session_id': args.session_id} if args.session_id else {'acquisition_id': args.acquisition_id})}
+            query_context = {'request_id': args.request_id, 'serial': args.serial, **(
+                {'session_id': args.session_id} if args.session_id else {'acquisition_id': args.acquisition_id})}
         else:
             path += '/requests/' + quote(args.request_id, safe='') + '?' + urlencode(
                 {'session_id': args.session_id, **({'image': '1'} if args.out else {})})

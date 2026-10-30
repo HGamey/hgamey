@@ -329,6 +329,12 @@ class NodeDeployments:
                 "target_job_id": target, "reason": reason}
 
     def get(self, jid, rows=None):
+        if self.jobs.center.remote(jid):
+            value = self.jobs.center.operation(jid, 'GET', '/deployment')
+            value['job'] = self.jobs.status(jid)
+            value['target']['execution_node_id'] = value['target']['node_id']
+            value['target']['node_id'] = self.jobs.node_id
+            return value
         job = self.jobs.status(jid)
         # Finalization may commit while status is read. Do not qualify that
         # finished status against a queue row captured before the read.
@@ -422,7 +428,9 @@ class NodeDeployments:
                                "job_url": "/dash/jobs#job=" + row["job_id"]})
         return result
 
-    def recover(self, jid, body, request_id):
+    def recover(self, jid, body, request_id, *, submit=None):
+        if self.jobs.center.remote(jid):
+            return self.jobs.center.recover(jid, 'deployment', body, request_id)
         if body != {} or not request_id:
             raise ValueError("recovery requires an empty JSON object and X-Request-ID; the node derives paths and serial")
         key = self.jobs.dispatch.request_key(request_id)
@@ -437,4 +445,4 @@ class NodeDeployments:
             if not recovery["eligible"]:
                 raise RequestConflict(recovery["reason"])
             os.close(self.jobs._read_root.open_fd(os.path.relpath(self._source_session(jid), self.jobs.dir), directory=True))
-        return self.jobs.start(spec, payload, request_id=key, admit=admit)
+        return (submit or self.jobs.start)(spec, payload, request_id=key, admit=admit)

@@ -9,14 +9,14 @@ description: 通过 HGamey 节点操作已授权的远程 Android 设备：显�
 
 ## 显式选择节点
 
-需要节点 URL、预期 `node_id` 和自己的操作员凭据文件。`node_id` 是 32 位小写十六进制；令牌由节点管理员签发，以 `hgop_` 开头，不写入仓库或命令正文。
+需要中心 URL、预期 `node_id` 和自己的 agent 凭据文件，与研究和任务使用同一个 token。没有 token 时向管理员拿邀请码，运行 `pf-node join`；不另签远控 token，不写入仓库或命令正文。
 
 ```bash
-# NODE_URL、NODE_ID、OPERATOR_TOKEN_FILE 均来自本次明确选择的目标。
+# NODE_URL、NODE_ID、AGENT_TOKEN_FILE 均来自本次明确选择的目标。
 # 以下在 harness-ops checkout 中运行；不是某个生产节点的默认配置。
 remote() {
   python3 node/pf-remote --url "$NODE_URL" --node-id "$NODE_ID" \
-    --token-file "$OPERATOR_TOKEN_FILE" "$@"
+    --token-file "$AGENT_TOKEN_FILE" "$@"
 }
 remote node
 remote devices
@@ -24,7 +24,7 @@ remote devices
 
 首次只读发现可用 `pf-remote --url … --token-file … node`；确认目标后保存其 ID，后续读写都带原 ID。URL、主机显示名或存储路径不是身份替代品。身份变化或缺少 `node.target-v1` 时停止写入，不接受新 ID 来绕过拒绝。当前 CLI 拒绝自动重定向，并发送 `X-Expected-Node-ID`；非 loopback 连接要求 HTTPS。显式环境变量 `PF_NODE_URL`、`PF_NODE_ID` 和 `PF_NODE_TOKEN_FILE` 也可使用，没有隐式生产 URL 或祖先目录凭据搜索。
 
-`devices` 返回策略、持有者和能力；只对本次授权且 `enabled` 的设备继续。还要检查 `capabilities.available`、设备动作列表及 `ownership: strong-lease-v1`。设备在目录中出现，不代表可取得租约。当前动作仅支持 Android/ADB；HDC 设备可能列出，但不支持此远程控制协议。
+`devices` 返回所有电脑的手机、持有者和能力；`serial` 是带执行电脑的 `node_id/raw_serial`，将这个完整值保存给后续动作使用。`raw_serial` 是原串号，不可拿它丢掉节点部分。还要检查 `capabilities.available`、设备动作列表及 `ownership: strong-lease-v1`。设备在目录中出现，不代表可取得租约。当前动作仅支持 Android/ADB；HDC 设备可能列出，但不支持此远程控制协议。
 
 ## 会话、动作与原 ID 续查
 
@@ -48,7 +48,7 @@ remote action "$SERIAL" release --session-id "$SESSION_ID" --request-id "$RELEAS
 remote session "$SERIAL" --session-id "$SESSION_ID"
 ```
 
-- 手机被占用时，`acquire` 返回 `starting` 并等待 PF 锁；不同手机可并行，同一手机的别名和全场锁仍互斥。保留原 ID 查询，等 `ready` 再提交设备动作；不想等时对该 `session_id` 发 `release`。
+- 手机被占用时，`acquire` 返回 `starting` 并等待 PF 锁；不同手机可并行，同一手机的别名和全场锁仍互斥。保留原 ID 查询，等 `ready` 再提交设备动作；不想等时对该 `session_id` 发 `release`；还没有 session ID 时用 `remote action "$SERIAL" release --acquisition-id "$ACQUISITION_ID" --request-id "$RELEASE_ID"`。
 - `accepted` / `started` 只表示待定；继续只读查询原 acquisition/session/request ID。截图尚未完成时，之后可用 `receipt … --out NEW_FILE` 获取已完成原件，不会重新截屏。
 - 超时、断线、`unknown` 或 `recovery_required` 不证明动作未执行。保留原 ID，只读续查，不换 ID 重放。409 也不统一等于“别人占用”；按原会话与回执判断，不能绕过冲突抢占。
 - `release` 在 `starting` 时终止等待，结束后不会再取得手机；在 `ready` 时先关闭新动作准入，此前已开始的一条有界动作可结束，其余未开始动作应为 `not_executed`。回执已接受不等于已释放，以会话 `phase: closed` 为准。

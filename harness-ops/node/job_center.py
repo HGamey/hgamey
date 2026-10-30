@@ -8,34 +8,11 @@ import uuid
 import threading
 
 from job_targets import JobTargets
+from job_artifacts import JobArtifacts
 from job_dispatch import request_fingerprint
 from job_queue import RequestConflict
 from node_directory import DirectoryError, DEADLINE_S
 import job_selection
-
-
-class JobArtifacts:
-    """Local source adapter shared by result registration, inputs and job reads."""
-    def __init__(self, executor):
-        self.executor = executor
-
-    def require_job(self, jid):
-        if self.executor.dispatch.queue.get(jid):
-            return
-        os.close(self.executor._read_root.open_fd(jid, directory=True))
-
-    def open_output(self, jid, path):
-        return self.executor._read_root.open_file(jid + '/out/' + path)
-
-    def metadata(self, jid):
-        return self.executor._read_meta(jid)
-
-    def completion_problem(self, jid):
-        return self.executor.source_completion_problem(jid, self.executor.status(jid))
-
-    def list(self, jid, query):
-        from node_read import artifact_page
-        return artifact_page(self.executor._read_root, jid, query)
 
 
 class JobCenter:
@@ -124,7 +101,16 @@ class JobCenter:
             deadline=time.monotonic() + DEADLINE_S, deliver=deliver)
 
     def observe(self, record, observation):
+        finished = (observation.get('queue', {}).get('state') == 'done'
+                    and (record.get('observation') or {}).get('queue', {}).get('state') != 'done')
         record = self.targets.update(record['id'], observation=observation, observed_at=time.time())
+        if record['execution_node_id'] != self.local.node_id:
+            self.artifacts.observed(record)
+            parent = record['request']['spec'].get('recovery_for') if finished else None
+            while parent:
+                original = self.remote(parent)
+                self.artifacts.recollect(parent)
+                parent = original['request']['spec'].get('recovery_for')
         if record['stop'] and observation.get('queue', {}).get('state') != 'done':
             self._send_stop_in_background(record)
 
@@ -132,6 +118,9 @@ class JobCenter:
         if record['execution_node_id'] == self.local.node_id:
             self.observe(record, self.local.status(record['id']))
             return True
+        if ((record.get('observation') or {}).get('queue', {}).get('state') == 'done'
+                or self.node(record['execution_node_id'])['connection']['status'] == 'disconnected'):
+            return record.get('observation') is not None
         try:
             response = self.rpc(record, 'GET', '/jobs/' + record['id'])
         except ConnectionError:
@@ -153,7 +142,7 @@ class JobCenter:
             return self.status(record['id'])
         try:
             response = self.rpc(record, 'POST', '/node/executions/' + record['id'], body,
-                {'X-Execution': json.dumps(record['request']),
+                {'X-Execution': json.dumps({**record['request'], 'center_id': self.local.node_id}),
                  'X-Request-ID': 'center:' + self.local.node_id + ':' + record['id']},
                 deliver=lambda: self.targets.mark_sent(record['id']))
         except ConnectionError:
@@ -180,12 +169,51 @@ class JobCenter:
                 value.update(state='finished', phase='finished', outcome='cancelled', ended=record['stop']['at'],
                              queue={'state': 'done', 'resources': []},
                              recovery={'status': 'not_needed', 'reason': 'cancelled before delivery'})
+        for key in ('actor_id', 'research_id', 'direction_id'):
+            if key in record['request']['spec']:
+                value.setdefault(key, record['request']['spec'][key])
         value.update(request_id=record['request_id'], execution_node_id=record['execution_node_id'],
                      observed_at=record.get('observed_at'),
                      stop_requested=record['stop'],
                      device_selection=record['device_selection'],
+                     artifacts_sync=record.get('artifacts_sync', {'status': 'pending'}),
                      connection=self.node(record['execution_node_id'])['connection'])
         return value
+
+    def operation(self, jid, method, suffix, body=None, request_id=None):
+        record = self.remote(jid)
+        try:
+            response = self.rpc(record, method, '/jobs/' + jid + suffix,
+                b'' if body is None else json.dumps(body).encode(),
+                {'Content-Type': 'application/json', **({'X-Request-ID': request_id} if request_id else {})})
+        except ConnectionError as error:
+            raise DirectoryError(503, str(error)) from error
+        value = json.loads(response['body'])
+        if response['status'] != 200:
+            from node_session import SessionError
+            raise SessionError(response['status'], value.get('code', 'execution_unavailable'),
+                               value.get('error', 'execution operation failed'))
+        if 'node_id' in value:
+            value.update(node_id=self.local.node_id, execution_node_id=record['execution_node_id'])
+        return value
+
+    def recover(self, jid, kind, body, request_id):
+        if body != {}:
+            raise ValueError('recovery body must be empty; the original node derives the session')
+        parent = self.remote(jid)
+        key = self.local.dispatch.request_key(request_id)
+        recovery = {'source_job_id': jid, 'kind': kind, 'body': body}
+        original = parent['request']['spec']
+        spec = {'bin': 'phonefarm', 'argv': [], 'device_access': 'recovery', 'recovery_for': jid,
+                **{key: original[key] for key in ('actor_id', 'research_id', 'direction_id') if key in original}}
+        record = self.targets.reserve({'id': secrets.token_hex(6), 'request_id': key,
+            'fingerprint': request_fingerprint(recovery, b''), 'execution_node_id': parent['execution_node_id'],
+            'request': {'spec': spec, 'research_devices': [], 'recovery': recovery},
+            'device_selection': parent.get('device_selection'), 'submitted_at': time.time(),
+            'sent_at': None, 'stop': None, 'observation': None})
+        if record.get('stop') or record.get('observation') or record.get('sent_at') and self.refresh(record):
+            return self.status(record['id'])
+        return self.transfer(record, b'')
 
     def reset(self, jid, note):
         self.stop(jid, 'reset', {'note': note})
@@ -200,7 +228,8 @@ class JobCenter:
 
     def stop(self, jid, action, body):
         record = self.targets.update(jid, stop={'at': time.time(), 'action': action, **body})
-        if record['observation'] is not None:
+        if (record['observation'] is not None
+                and self.node(record['execution_node_id'])['connection']['status'] != 'disconnected'):
             thread = self._send_stop_in_background(record, explicit=True)
             if thread is not None:
                 thread.join()
@@ -225,6 +254,8 @@ class JobCenter:
                 continue  # A machine reports only its own already-routed public jobs.
             self.observe(record, observation)
         for record in self.targets.rows():
+            if record['execution_node_id'] == node_id:
+                self.artifacts.observed(record)
             if (record['execution_node_id'] == node_id and record['stop'] and record['observation'] is not None
                     and record['observation'].get('queue', {}).get('state') != 'done'):
                 self._send_stop_in_background(record)
@@ -252,6 +283,7 @@ class JobCenter:
             threads = list(self._stopping.values())
         for thread in threads:
             thread.join()
+        self.artifacts.close()
 
     def by_request(self, key):
         record = self.targets.by_request(key)
@@ -274,7 +306,8 @@ class JobCenter:
         for record in self.targets.rows():
             if record['execution_node_id'] == self.local.node_id:
                 continue
-            status = self.status(record['id'])
+            status = record.get('observation') or {'queue': {'state': (
+                'done' if record.get('stop') and record.get('sent_at') is None else 'unknown')}}
             rows.append({'job_id': record['id'], 'spec': record['request']['spec'],
                          'state': status['queue']['state'], 'status_committed_at': status.get('status_committed_at')})
         return rows

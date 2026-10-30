@@ -156,6 +156,8 @@ def _recovery_qualification(jobs, row):
 
 def recovery_plan(jobs, jid):
     """Read the unique recovery leaf; no job creation, device IO or state repair."""
+    if jobs.center.remote(jid):
+        return jobs.center.operation(jid, 'GET', '/session/recovery')
     rows = jobs.dispatch.queue.rows()
     source, bound = _bound_recovery(jobs, jid, rows)
     source_id = source["job_id"]
@@ -215,7 +217,7 @@ def recovery_plan(jobs, jid):
     return plan
 
 
-def recover_session(jobs, jid, request_id):
+def recover_session(jobs, jid, request_id, *, submit=None):
     """Queue one attempt with a frozen source and an atomically qualified leaf."""
     key = jobs.dispatch.request_key(request_id)
     source, bound = _bound_recovery(jobs, jid)
@@ -235,7 +237,7 @@ def recover_session(jobs, jid, request_id):
 
     # submit() checks the original ID first, so closed sessions still replay the
     # identical old spec; new IDs recheck the current chain under the intake lock.
-    return jobs.start(spec, b"", request_id=key, admit=admit)
+    return (submit or jobs.start)(spec, b"", request_id=key, admit=admit)
 
 
 def session_call(jobs, jid, *, request_id=None, action=None):

@@ -10,7 +10,6 @@ import re
 import secrets
 import threading
 import time
-from urllib.parse import quote
 
 from artifact_io import SafeRoot
 from job_dispatch import file_lock
@@ -213,13 +212,6 @@ class NodeDirectory:
             self._store.write_json('registry.json', state)
             return self._public(entry)
 
-    def read_target(self, name, node_id):
-        with self._locked() as state:
-            entry = self._find(state, name)
-            if entry['node_id'] != node_id:
-                raise _ProbeError('identity_mismatch', 'registered node does not match the selected identity')
-            return self._public(entry)
-
     def request(self, entry, path, deadline=None, *, headers=None, max_bytes=MAX_RESPONSE):
         try:
             return self.link.call(entry['node_id'], {'method': 'GET', 'path': path, 'headers': headers or {},
@@ -227,11 +219,9 @@ class NodeDirectory:
         except ConnectionError as error:
             raise _ProbeError('unavailable', str(error)) from error
 
-    def _request(self, entry, path, deadline, result_not_found=False):
+    def _request(self, entry, path, deadline):
         response = self.request(entry, path, deadline)
-        if response['status'] == 400 and 'cursor=' in path:
-            raise _ProbeError('invalid_cursor', 'source rejected the cursor or its original filters')
-        if response['status'] != 200 and not (response['status'] == 404 and result_not_found):
+        if response['status'] != 200:
             raise _ProbeError('unavailable', 'node returned an unsuccessful HTTP status')
         if len(response['body']) > MAX_RESPONSE:
             raise _ProbeError('incompatible', 'node response exceeds its read limit')
@@ -239,10 +229,6 @@ class NodeDirectory:
             value = json.loads(response['body'])
         except (ValueError, UnicodeError):
             raise _ProbeError('incompatible', 'node did not return valid JSON') from None
-        if response['status'] == 404:
-            if isinstance(value, dict) and value.get('code') == 'result_not_found':
-                raise _ProbeError('not_found', 'source has no registered result with this ID')
-            raise _ProbeError('incompatible', 'node does not support the required result detail API')
         return value
 
     def refresh(self, name=None, devices=False):
@@ -257,22 +243,6 @@ class NodeDirectory:
                 entry['connection']['error'] = error.message
             observations.append(entry)
         return observations[0] if name is not None else observations
-
-    def download_input(self, name, job_id, remote_path, limit):
-        from job_inputs import _job_id, _path
-        _job_id(job_id)
-        _path(remote_path)
-        entry = self.get(name)
-        try:
-            response = self.request(entry, '/jobs/' + job_id + '/out?path=' + quote(remote_path, safe=''),
-                                    time.monotonic() + DEADLINE_S, max_bytes=limit)
-        except _ProbeError as error:
-            raise DirectoryError(502, error.message) from error
-        if response['status'] == 404:
-            raise DirectoryError(404, 'remote source output is missing')
-        if response['status'] != 200:
-            raise DirectoryError(502, 'remote node returned an unsuccessful status for the input source')
-        return response['body'][:limit]
 
     def close(self):
         with self._guard:

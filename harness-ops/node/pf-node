@@ -94,7 +94,6 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node games upload-finalize ID        # 字节收齐后提交/找回同一个校验任务
   pf-node games upload-cancel ID          # 取消写入保留，保留partial与历史
   pf-node results list|show ID             # 显式登记结果索引与来源；不扫描旧任务目录
-  pf-node results search --node NAME [--node OTHER] # 只读搜索已绑定节点，各节点独立分页
   pf-node results compare FILE             # 显式2–4列指标矩阵；只读登记值差，保留未知与来源
   pf-node results register FILE            # 不可变登记；固定 result_id，回执未知仅查询原 ID
   pf-node results import FILE --adapter NAME [--import-id ID] # 仅导入小 JSON，保留原字节
@@ -456,9 +455,6 @@ def require_idempotent_jobs(require_recovery=False, execution_policy=None, input
             validate(inputs, node.get("node_id"))
         except ValueError as error:
             sys.exit(f"pf-node: 输入清单无效：{error}；未打包或提交")
-        if any("node" in item["source"] for item in inputs["files"]):
-            if "jobs.cross-node-inputs-v1" not in node.get("capabilities", []):
-                sys.exit("pf-node: 节点缺少 jobs.cross-node-inputs-v1，不接受跨节点输入来源；未打包或提交")
     if device_binding is not None:
         if "devices.lanes-v1" not in node.get("capabilities", []):
             sys.exit("pf-node: 节点缺少 devices.lanes-v1；未打包或提交，不降级全域")

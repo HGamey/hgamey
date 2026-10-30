@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Authenticated remote gateway; PF owns device locks, commands and recovery.
 
-Operator credentials, policy and HTTP/MCP remain here. No handler performs raw
+HTTP/MCP use the center identity. No handler performs raw
 ADB/HDC device I/O or grants ownership based on labels. Saved PF references and
 stable request IDs survive node restart; unknown actions are queried, not replayed.
 """
-import base64, fnmatch, hashlib, hmac, json, os, re, secrets, subprocess, sys, tempfile
+import base64, json, os, re, subprocess, sys, tempfile
 import threading, time, uuid
 from urllib.parse import parse_qs, unquote
 from remote_owner import OwnerError
@@ -13,19 +13,10 @@ from device_scope import binding, scope, same_binding
 from device_registry import RegistryError
 
 CONFIG_DIR = os.path.expanduser(os.environ.get("HG_CONFIG_DIR") or "~/.config/hgamey")
-TOKEN_RE = re.compile(r"hgop_([0-9a-f]{8})_([A-Za-z0-9_-]{32,64})\Z")
 SERIAL_RE = re.compile(r"[A-Za-z0-9._:-]{1,64}\Z")
 PACKAGE_RE = re.compile(r"[A-Za-z0-9_.]{1,200}\Z")
 ACTIVITY_RE = re.compile(r"[A-Za-z0-9_.$/]{1,300}\Z")
 DEVICE_PATH_RE = re.compile(r"/[^\x00-\x1f'\\]{1,500}\Z")
-DEFAULT_POLICY = {
-    "default": "deny",
-    "allow": ["emulator-*"],
-    # 主人在用的真机：默认排除，主人用 `device enable` 打开。
-    "deny": ["91253241019A", "AVXB6R5C19000481", "192.168.3.53:5555"],
-    # 同一台手机的不同序列号（USB / 无线）：锁和占用检查一起算。
-    "aliases": [["91253241019A", "192.168.3.53:5555"]],
-}
 SESSION_TTL = 300          # 心跳：这么久没有任何动作/续期就自动释放
 MAX_MINUTES_DEFAULT, MAX_MINUTES_CAP = 60, 240
 SHELL_TIMEOUT_DEFAULT, SHELL_TIMEOUT_MAX = 20, 120
@@ -38,13 +29,10 @@ TEXT_MAX = 1000
 RATE_CAPACITY, RATE_REFILL = 60.0, 10.0
 COST = {"shell": 3, "screenshot": 2, "install": 20, "push": 5, "pull": 5, "logcat": 3, "diagnostics": 3, "uninstall": 5}
 INFLIGHT_MAX = 3
-AUTH_FAILS_MAX, AUTH_FAIL_WINDOW = 20, 600
 ANDROID_KEYS = {"back": 4, "home": 3, "recents": 187, "app_switch": 187, "menu": 82, "enter": 66, "del": 67,
                 "backspace": 67, "power": 26, "volume_up": 24, "volume_down": 25, "tab": 61, "escape": 111,
                 "wakeup": 224, "sleep": 223, "up": 19, "down": 20, "left": 21, "right": 22}
 HDC_KEYS = {"back": "Back", "home": "Home", "power": "Power", "recents": "Recent"}
-COOKIE = "hg_op"
-WEB_SESSION_S = 12 * 3600
 
 
 class RemoteError(Exception):
@@ -59,126 +47,6 @@ def _now():
 
 def _iso(t):
     return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(t)) if t else None
-
-
-def _atomic_json(path, value):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
-    with os.fdopen(fd, "w") as f:
-        json.dump(value, f, ensure_ascii=False, indent=1)
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-
-
-def _read_json(path, default):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return default
-
-
-# ═════════════ 凭据 ═════════════
-
-class Operators:
-    """操作员令牌：hgop_<8 hex id>_<secret>。文件只存 sha256(令牌)；令牌是高熵随机串，无需慢哈希。"""
-
-    def __init__(self, path):
-        self.path, self._lock = path, threading.Lock()
-
-    def _all(self):
-        return _read_json(self.path, {"operators": []})["operators"]
-
-    def add(self, name):
-        name = (name or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,40}", name):
-            raise ValueError("名字只能是 1-40 个字母数字 _ . @ -")
-        with self._lock:
-            ops = self._all()
-            if any(o["name"] == name and not o.get("revoked") for o in ops):
-                raise ValueError(f"已有有效的操作员 {name}；先 revoke 再签发")
-            oid = secrets.token_hex(4)
-            token = f"hgop_{oid}_{secrets.token_urlsafe(32)}"
-            ops.append({"id": oid, "name": name, "sha256": hashlib.sha256(token.encode()).hexdigest(),
-                        "created": _iso(_now()), "revoked": None})
-            _atomic_json(self.path, {"operators": ops})
-        return token, oid
-
-    def revoke(self, key):
-        with self._lock:
-            ops, hit = self._all(), []
-            for o in ops:
-                if (o["id"] == key or o["name"] == key) and not o.get("revoked"):
-                    o["revoked"] = _iso(_now())
-                    hit.append(o["id"])
-            if hit:
-                _atomic_json(self.path, {"operators": ops})
-        return hit
-
-    def list(self):
-        return [{k: o.get(k) for k in ("id", "name", "created", "revoked")} for o in self._all()]
-
-    def verify(self, token):
-        m = TOKEN_RE.fullmatch(token or "")
-        if not m:
-            return None
-        digest = hashlib.sha256(token.encode()).hexdigest()
-        for o in self._all():
-            if o["id"] == m.group(1) and not o.get("revoked") and hmac.compare_digest(o["sha256"], digest):
-                return {"id": o["id"], "name": o["name"]}
-        return None
-
-
-class Policy:
-    def __init__(self, path):
-        self.path = path
-
-    def load(self):
-        value = _read_json(self.path, None)
-        if not isinstance(value, dict):
-            return json.loads(json.dumps(DEFAULT_POLICY))
-        return {**json.loads(json.dumps(DEFAULT_POLICY)), **value}
-
-    def save(self, value):
-        _atomic_json(self.path, value)
-
-    @staticmethod
-    def _match(serial, patterns):
-        return any(fnmatch.fnmatchcase(serial, p) for p in patterns or [])
-
-    def aliases(self, serial, policy=None):
-        policy = policy or self.load()
-        for group in policy.get("aliases") or []:
-            if serial in group:
-                return sorted(set(group))
-        return [serial]
-
-    def enabled(self, serial, policy=None):
-        policy = policy or self.load()
-        names = self.aliases(serial, policy)
-        if any(self._match(s, policy.get("deny")) for s in names):
-            return False
-        return policy.get("default") == "allow" or self._match(serial, policy.get("allow"))
-
-    def enable(self, serial):
-        p = self.load()
-        for s in self.aliases(serial, p):
-            p["deny"] = [d for d in p.get("deny", []) if d != s]
-        if serial not in p.get("allow", []):
-            p.setdefault("allow", []).append(serial)
-        self.save(p)
-        return p
-
-    def disable(self, serial):
-        p = self.load()
-        p["allow"] = [a for a in p.get("allow", []) if a != serial]
-        p["ignore_global_lock"] = [a for a in p.get("ignore_global_lock", []) if a != serial]
-        if serial not in p.get("deny", []):
-            p.setdefault("deny", []).append(serial)
-        self.save(p)
-        return p
 
 
 class Audit:
@@ -349,24 +217,18 @@ class Session:
 
 
 class Remote:
-    def __init__(self, storage, adb='adb', hdc=None, config_dir=None, reaper=True, backend=None):
+    def __init__(self, storage, adb='adb', hdc=None, config_dir=None, backend=None):
         cfg = config_dir or CONFIG_DIR
-        self.operators = Operators(os.path.join(cfg, 'remote.operators.json'))
-        self.policy = Policy(os.path.join(cfg, 'remote.devices.json'))
         self.audit = Audit(os.path.join(cfg, 'remote.audit.jsonl'))
         self.occupancy = Occupancy(storage)
         self.adb, self.hdc, self.backend = adb, hdc, backend
         self.device_scopes, self.leases = None, None
         self.rate = RateLimit()
         self.sessions, self._lock = {}, threading.RLock()
-        self.web, self.fails = {}, {}
         self._devcache = (0, [])
-        self._closed = threading.Event()
         if backend:
             for ref in backend.load():
                 self.sessions[ref['id']] = Session(ref, backend.status(ref))
-        if reaper:
-            threading.Thread(target=self._reaper, daemon=True, name='remote-reaper').start()
 
     def capabilities(self):
         aliases = {'start_app': 'app_start', 'stop_app': 'app_stop'}
@@ -417,7 +279,7 @@ class Remote:
         return sess.public()
 
     def devices(self):
-        policy, caps = self.policy.load(), self.capabilities()
+        caps = self.capabilities()
         try:
             holders, occ_err = self.occupancy.holders(), None
         except RemoteError as error:
@@ -429,9 +291,12 @@ class Remote:
         out = []
         for d in self._enumerate():
             serial = d['serial']
-            names = self.policy.aliases(serial, policy)
-            item = {**d, 'enabled': self.policy.enabled(serial, policy),
-                    'aliases': [n for n in names if n != serial],
+            names = {serial}
+            for holder in holders:
+                if serial in holder['aliases']:
+                    names.update(holder['aliases'])
+            item = {**d, 'enabled': True,
+                    'aliases': sorted(names - {serial}),
                     'capabilities': caps['actions'] if caps['available'] and d['transport'] == 'adb' else [],
                     'holder': None}
             matches = [s for s in active if s['device_scope']['scope'] == 'global' or s['serial'] in names]
@@ -448,7 +313,7 @@ class Remote:
         for sess in active:
             if sess['serial'] not in present:
                 out.append({'serial': sess['serial'], 'transport': 'adb', 'state': 'offline',
-                    'enabled': self.policy.enabled(sess['serial'], policy), 'aliases': [],
+                    'enabled': True, 'aliases': [],
                     'capabilities': [], 'holder': {'kind': 'remote', **sess}})
         return {'devices': out, 'capabilities': caps, 'lock_storage_error': occ_err,
                 'global_holders': holders}
@@ -473,8 +338,6 @@ class Remote:
                             or not same_binding(sess.ref.get('device_binding'), value)):
                         raise RemoteError(409, 'acquisition request ID already has different content')
                     return {'reused': True, **self._refresh(sess)}
-            if not self.policy.enabled(serial):
-                raise RemoteError(403, f'设备 {serial} 未开放远程控制')
             if value is not None and not self.capabilities()['device_binding_v1']:
                 raise RemoteError(503, 'configured PF remote owner does not support device binding; no global fallback')
             device = next((d for d in self._enumerate() if d['serial'] == serial), None)
@@ -538,26 +401,7 @@ class Remote:
             raise RemoteError(409, result.get('error') or 'PF rejected request', request_id=rid, session_id=sid)
         return result
 
-    def _reaper(self):
-        while not self._closed.wait(5):
-            try:
-                self.reap()
-            except Exception as error:
-                print('remote owner policy refresh failed:', type(error).__name__, file=sys.stderr)
-
-    def reap(self):
-        valid_ops = {o['id'] for o in self.operators.list() if not o['revoked']}
-        with self._lock:
-            sessions = list(self.sessions.values())
-        for sess in sessions:
-            state = self._refresh(sess)
-            if state.get('phase') == 'ready' and (sess.operator['id'] not in valid_ops or not self.policy.enabled(sess.serial)):
-                self._submit(sess, 'release', {}, 'node-policy-close')
-        # TTL and maximum lifetime are enforced by PF, including when no web
-        # request arrives. Nothing in this process closes a device lease FD.
-
     def close(self):
-        self._closed.set()
         if self.backend:
             self.backend.close()
 
@@ -577,10 +421,7 @@ class Remote:
                 outcome = self.acquire(op, serial, ip, params)
             else:
                 rid = valid_request_id(params.get('request_id'))
-                sess = self.session_of(op, serial, params.get('session_id'))
-                if action != 'release' and not self.policy.enabled(serial):
-                    self._submit(sess, 'release', {}, 'node-policy-close')
-                    raise RemoteError(403, '设备已关闭远程开放；正在有序交回')
+                sess = self.session_of(op, serial, params.get('session_id'), params.get('acquisition_id'))
                 if action in ('tap', 'swipe'):
                     # A new helper's capabilities cannot upgrade a saved owner.
                     # Receipt GET remains available, including for old owners.
@@ -594,7 +435,7 @@ class Remote:
                     if action not in sess.descriptor.get('capabilities', []):
                         raise RemoteError(409, f'session does not support {action}; query an existing receipt by request ID',
                                           code='action_unavailable', request_id=rid, session_id=params.get('session_id'))
-                cleaned = {k: v for k, v in params.items() if k not in ('request_id', 'session_id')}
+                cleaned = {k: v for k, v in params.items() if k not in ('request_id', 'session_id', 'acquisition_id')}
                 normalized = validate_action(action, cleaned)
                 mapped = {'app_start': 'start_app', 'app_stop': 'stop_app'}.get(action, action)
                 outcome = self._submit(sess, mapped, normalized, rid)
@@ -612,39 +453,6 @@ class Remote:
     # ── 认证 ──
     def _ip(self, h):
         return h.headers.get("CF-Connecting-IP", h.client_address[0])
-
-    def _fail(self, ip):
-        now = _now()
-        self.fails[ip] = [t for t in self.fails.get(ip, []) if now - t < AUTH_FAIL_WINDOW] + [now]
-
-    def _throttled(self, ip):
-        now = _now()
-        return len([t for t in self.fails.get(ip, []) if now - t < AUTH_FAIL_WINDOW]) >= AUTH_FAILS_MAX
-
-    def bearer(self, h):
-        ip = self._ip(h)
-        if self._throttled(ip):
-            raise RemoteError(429, "认证失败太多次，10 分钟后再试")
-        if h.headers.get("X-Forwarded-Proto", "https") != "https":
-            raise RemoteError(400, "只接受 HTTPS（经隧道）；这个令牌已经明文发出过，请让主人 revoke 重签")
-        auth = h.headers.get("Authorization", "")
-        op = self.operators.verify(auth[7:].strip()) if auth.startswith("Bearer ") else None
-        if not op:
-            self._fail(ip)
-            raise RemoteError(401, "需要操作员令牌：Authorization: Bearer hgop_...（找节点主人签发）")
-        return op
-
-    def web_op(self, h):
-        for part in h.headers.get("Cookie", "").split(";"):
-            k, _, v = part.strip().partition("=")
-            if k == COOKIE and v in self.web:
-                op, exp = self.web[v]
-                if exp > _now() and any(o["id"] == op["id"] and not o["revoked"] for o in self.operators.list()):
-                    return op
-                self.web.pop(v, None)
-        return None
-
-
 
 # ═════════════ MCP ═════════════
 
@@ -796,47 +604,32 @@ def handle(remote, h, method, parts, query, board=None, node=None):
     dash = parts[:3] == ["dash", "api", "remote"]
     sub = parts[3:] if dash else parts[1:]
     q = {k: v[-1] for k, v in parse_qs(query or "").items()}
-    ip = remote._ip(h)
+    ip = h.headers.get("CF-Connecting-IP", h.client_address[0])
     try:
         if dash:
             if not (board and board.authed(h)):
                 raise RemoteError(401, "需要查看密码")
-            if h.headers.get("X-HG") != "1":
+            steered = board.steered(h)
+            if sub == ['whoami']:
+                return _send(h, 200, {'operator': 'human' if steered else None, 'id': 'human'}) or True
+            if method != 'GET' and h.headers.get('X-HG') != '1':
                 h.close_connection = True
-                raise RemoteError(400, "请求格式不对（缺 X-HG 头）")
-            if sub == ["login"] and method == "POST":
-                if remote._throttled(ip):
-                    raise RemoteError(429, "认证失败太多次，10 分钟后再试")
-                data = json.loads(_read_body(h, JSON_MAX) or b"{}")
-                op = remote.operators.verify(str(data.get("token", "")).strip())
-                if not op:
-                    remote._fail(ip)
-                    time.sleep(1)
-                    raise RemoteError(403, "操作员令牌不对或已吊销")
-                sid = secrets.token_urlsafe(32)
-                remote.web[sid] = (op, _now() + WEB_SESSION_S)
-                remote.audit.write(op=op["name"], op_id=op["id"], ip=ip, serial=None, action="web-login", args={},
-                                   result={"ok": True})
-                ck = f"{COOKIE}={sid}; Path=/dash; Max-Age={WEB_SESSION_S}; HttpOnly; Secure; SameSite=Strict"
-                return _send(h, 200, {"operator": op["name"]}, extra={"Set-Cookie": ck}) or True
-            if sub == ["logout"] and method == "POST":
-                _read_body(h, JSON_MAX)
-                for part in h.headers.get("Cookie", "").split(";"):
-                    k, _, v = part.strip().partition("=")
-                    if k == COOKIE:
-                        remote.web.pop(v, None)
-                ck = f"{COOKIE}=; Path=/dash; Max-Age=0; HttpOnly; Secure; SameSite=Strict"
-                return _send(h, 200, {"ok": True}, extra={"Set-Cookie": ck}) or True
-            op = remote.web_op(h)
-            if not op:
-                if sub == ["whoami"]:
-                    return _send(h, 200, {"operator": None}) or True
-                raise RemoteError(401, "需要操作员令牌登录", need_operator=True)
-            if method in ("POST", "DELETE") and "application/json" not in h.headers.get("Content-Type", ""):
+                raise RemoteError(400, '请求格式不对（缺 X-HG 头）')
+            # Screenshots are new device actions even when requested by GET.
+            readonly = sub == ['devices'] or sub == ['node'] or sub[:2] == ['devices', 'resolve'] or (
+                len(sub) >= 3 and (sub[2] == 'requests' or sub[2] == 'session' and method == 'GET'))
+            if not readonly and h.headers.get('X-HG') != '1':
+                raise RemoteError(400, '请求格式不对（缺 X-HG 头）')
+            if not readonly and not steered:
+                raise RemoteError(403, '需要掌舵权限', need_steer=True)
+            op = {'id': 'human', 'name': 'human'}
+            if method in ('POST', 'DELETE') and 'application/json' not in h.headers.get('Content-Type', ''):
                 h.close_connection = True
-                raise RemoteError(400, "写接口只收 JSON")
+                raise RemoteError(400, '写接口只收 JSON')
         else:
-            op = remote.bearer(h)
+            if not h._authed():
+                return True
+            op = {'id': 'agent:' + h.agent, 'name': h.agent} if h.agent else {'id': 'admin', 'name': 'admin'}
         if sub == ["node"] and method == "GET":
             if node is None:
                 raise RemoteError(503, "node identity provider unavailable")
@@ -921,58 +714,16 @@ def storage_from_leases(leases):
     return lambda: leases.snapshot(refresh=True)
 
 
-# ═════════════ CLI ═════════════
-
 def main(argv=None):
     import argparse
-    ap = argparse.ArgumentParser(description="远程操作：操作员令牌、设备开放名单、审计")
-    sp = ap.add_subparsers(dest="cmd", required=True)
-    o = sp.add_parser("operator")
-    o.add_argument("verb", choices=["add", "list", "revoke"])
-    o.add_argument("name", nargs="?")
-    d = sp.add_parser("device")
-    d.add_argument("verb", choices=["list", "enable", "disable", "default"])
-    d.add_argument("serial", nargs="?")
-    d.add_argument("--ignore-global-lock", action="store_true",
-                   help="已退役；所有remote动作必须共用PF全局bridge")
-    a = sp.add_parser("audit")
-    a.add_argument("-n", type=int, default=50)
+    ap = argparse.ArgumentParser(description='远控审计；身份使用中心 agent token')
+    ap.add_argument('command', choices=['audit'])
+    ap.add_argument('-n', type=int, default=50)
     args = ap.parse_args(argv)
-    cfg = CONFIG_DIR
-    if getattr(args, "ignore_global_lock", False):
-        ap.error("--ignore-global-lock 已退役；不能绕过PF实际所有权")
-    if args.cmd == "operator":
-        ops = Operators(os.path.join(cfg, "remote.operators.json"))
-        if args.verb == "add":
-            token, oid = ops.add(args.name)
-            print(f"操作员 {args.name}（id {oid}）的令牌，只显示这一次：\n{token}")
-        elif args.verb == "revoke":
-            hit = ops.revoke(args.name or "")
-            print(f"已吊销 {hit}" if hit else "没找到有效的操作员")
-            return 0 if hit else 1
-        else:
-            for x in ops.list():
-                print(f"{x['id']}  {x['name']:<20} 签发 {x['created']}" + (f"  已吊销 {x['revoked']}" if x["revoked"] else ""))
-    elif args.cmd == "device":
-        pol = Policy(os.path.join(cfg, "remote.devices.json"))
-        if args.verb in ("enable", "disable") and not (args.serial and SERIAL_RE.fullmatch(args.serial)):
-            ap.error("需要合法的 serial")
-        if args.verb == "enable":
-            pol.enable(args.serial)
-        elif args.verb == "disable":
-            pol.disable(args.serial)
-        elif args.verb == "default":
-            if args.serial not in ("allow", "deny"):
-                ap.error("default allow|deny")
-            p = pol.load()
-            p["default"] = args.serial
-            pol.save(p)
-        print(json.dumps(pol.load(), ensure_ascii=False, indent=1))
-    elif args.cmd == "audit":
-        for line in Audit(os.path.join(cfg, "remote.audit.jsonl")).tail(args.n):
-            print(line)
+    for line in Audit(os.path.join(CONFIG_DIR, 'remote.audit.jsonl')).tail(args.n):
+        print(line)
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())

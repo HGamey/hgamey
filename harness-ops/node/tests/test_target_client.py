@@ -131,7 +131,7 @@ class TargetClient(unittest.TestCase):
         game = self.cli("pf-node", ["games", "register", str(self.root / "not-opened")], env)
         self.assertIn("身份", game.stderr)
         self.assertEqual([c["path"] for c in calls], ["/node"])
-        self.credential.write_text("hgop_fixture-operator")
+        self.credential.write_text("hgag_fixture-agent")
         discovery = self.cli("pf-remote", ["--url", endpoint, "--token-file", str(self.credential), "node"])
         self.assertEqual(discovery.returncode, 0, discovery.stderr)
         self.assertEqual(calls[-1]["path"], "/remote/node")
@@ -140,7 +140,7 @@ class TargetClient(unittest.TestCase):
         self.assertNotEqual(action.returncode, 0)
         self.assertEqual(calls[-1]["path"], "/remote/node")
         self.assertTrue(all(c["method"] == "GET" for c in calls))
-        self.assertNotIn("hgop_fixture-operator", discovery.stderr + action.stderr)
+        self.assertNotIn("hgag_fixture-agent", discovery.stderr + action.stderr)
 
     def test_export_caches_clear_posts_to_the_clear_route(self):
         def route(call):

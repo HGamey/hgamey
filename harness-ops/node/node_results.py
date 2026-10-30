@@ -335,6 +335,9 @@ class NodeResults:
     def register(self, payload):
         value = manifest(payload)
         provenance = {"kind": "registration", "import_id": None}
+        source = self.jobs.center.remote(value["job_id"]) if value["job_id"] else None
+        if source:
+            provenance["execution_node_id"] = source["execution_node_id"]
         with self._db() as db:
             old = self._find(db, value["result_id"])
         if old:

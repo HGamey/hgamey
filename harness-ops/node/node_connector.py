@@ -82,6 +82,8 @@ class LocalHTTP:
         if response['status'] != 200:
             raise OSError('local snapshot returned HTTP ' + str(response['status']))
         snapshot = json.loads(response['body'])
+        remote = self.request('GET', '/node/remote/devices', b'', {})
+        snapshot['remote'] = json.loads(remote['body'])
         query = '?' + urlencode({'cursor': self._events_cursor}) if self._events_cursor else ''
         updates = self.request('GET', '/node/executions' + query, b'', {})
         if updates['status'] != 200:

@@ -55,14 +55,8 @@ print('\\n'+terminal.group(0)+'0')
         self.backend = PFRemote(PF, str(self.root), env, self.root / "remote")
         self.addCleanup(self.cleanup_owners)
         self.remote = Remote(lambda: self.pf("lease", "status", "--json"), adb=str(adb),
-                             config_dir=str(self.root / "config"), reaper=False, backend=self.backend)
-        token, _ = self.remote.operators.add("fixture")
-        self.operator = self.remote.operators.verify(token)
-        for serial in (A, B, ALIAS):
-            self.remote.policy.enable(serial)
-        policy = self.remote.policy.load()
-        policy["aliases"] = [[A, ALIAS]]
-        self.remote.policy.save(policy)
+                             config_dir=str(self.root / "config"), backend=self.backend)
+        self.operator = {'id': 'agent:fixture', 'name': 'fixture'}
 
     def cleanup_owners(self):
         for process in list(self.backend.processes.values()):
@@ -104,8 +98,9 @@ print('\\n'+terminal.group(0)+'0')
 
     def release_session(self, serial, session, request, process):
         calls = (self.root / "adb-calls").read_bytes()
-        result = self.remote.do(self.operator, "fixture", serial, "release", {
-            "session_id": session["session_id"], "request_id": request})
+        identity = ({"acquisition_id": session["acquisition_id"]} if session["phase"] == "starting"
+                    else {"session_id": session["session_id"]})
+        result = self.remote.do(self.operator, "fixture", serial, "release", {**identity, "request_id": request})
         deadline = time.monotonic() + 5
         while result["status"] in ("accepted", "started"):
             self.assertLess(time.monotonic(), deadline, result)

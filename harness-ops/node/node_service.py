@@ -33,7 +33,7 @@ import shutil
 import node_doctor
 import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote, urlencode
+from urllib.parse import urlparse, parse_qs, unquote, quote, urlencode
 from node_read import NodeRead
 from job_center import JobCenter
 from node_identity import load_identity
@@ -43,7 +43,6 @@ from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_R
 from device_scope import (DeviceScope, validate_job as validate_device_job,
                           serial_from_argv, binding_argument, same_binding, canonical_resources)
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
-from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
 from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE, ATTACHMENT_MAX, ATTACHMENT_LIMITS
@@ -322,6 +321,16 @@ class Jobs:
 
     def accept(self, request, body, request_id=None, *, job_id=None, admit=None):
         """Execute a request whose business context was resolved by the center."""
+        if 'recovery' in request:
+            recovery = request['recovery']
+            def submit(spec, payload, request_id, admit):
+                return self.accept({'spec': spec, 'research_devices': []}, payload,
+                                   request_id, job_id=job_id, admit=admit)
+            if recovery['kind'] == 'session':
+                return recover_session(self, recovery['source_job_id'], request_id, submit=submit)
+            if recovery['kind'] == 'deployment':
+                return self.deployments.recover(recovery['source_job_id'], recovery['body'], request_id, submit=submit)
+            raise ValueError('unsupported recovery kind')
         spec, research_devices = request["spec"], request["research_devices"]
         policy = require_policy(spec)
         binname, argv = spec.get("bin"), spec.get("argv") or []
@@ -391,7 +400,7 @@ class Jobs:
         resources = canonical_resources(resources, device_binding, registry)
         if len(resources) > 32:
             raise ValueError("resources including the required device reservation must fit within 32 names")
-        inputs = (job_inputs.validate(spec["inputs"], getattr(self, "node_id", None))
+        inputs = (job_inputs.validate(spec["inputs"], request.get("center_id", self.node_id))
                   if "inputs" in spec else None)
         spec = {"bin": binname, "argv": argv, "label": spec.get("label"),
                 **({"actor_id": actor_id} if actor_id else {}),
@@ -640,7 +649,7 @@ class Jobs:
         if not 0 <= offset <= (1 << 63) - 1 or not 1 <= limit <= (4 << 20):
             raise ValueError("offset must be nonnegative; limit must be between 1 and 4194304")
         remote_job = self.center.remote(jid)
-        if remote_job:
+        if remote_job and (remote_job.get("artifacts_sync") or {}).get("status") != "complete":
             try:
                 response = self.center.rpc(remote_job, "GET", "/jobs/" + jid + "/log?" + urlencode({
                     "offset": offset, "limit": limit}), max_bytes=limit)
@@ -663,6 +672,14 @@ class Jobs:
         import stat
         self.path(jid)
         rel = relative_path(rel or "")
+        if self.center.remote(jid):
+            try:
+                self.center.artifacts.ensure_output(jid, rel)
+            except FileNotFoundError:
+                raise
+            except OSError as error:
+                raise DirectoryError(507 if error.errno in {errno.ENOSPC, errno.EDQUOT} else 503,
+                                     'artifact collection failed: ' + str(error)) from error
         target = jid + "/out" + ("/" + rel if rel else "")
         fd = self._read_root.open_fd(target)
         if stat.S_ISREG(os.fstat(fd).st_mode):
@@ -793,9 +810,15 @@ class Jobs:
         return {"accepted": True, "job": self.status(jid)}
 
     def session(self, jid, *, request_id=None, action=None):
+        if self.center.remote(jid):
+            suffix = '/session' + ('/actions/' + quote(request_id, safe='') if request_id else '')
+            return self.center.operation(jid, 'POST' if action else 'GET',
+                '/session/actions' if action else suffix, action)
         return session_call(self, jid, request_id=request_id, action=action)
 
     def recover_session(self, jid, request_id):
+        if self.center.remote(jid):
+            return self.center.recover(jid, 'session', {}, request_id)
         return recover_session(self, jid, request_id)
 
     def _check_recovery_children(self, jid):
@@ -975,9 +998,6 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     if not hasattr(jobs, "agents"):
         jobs.agents = NodeAgents(jobs.data_root, node.node_id)
     directory = jobs.directory
-    if not hasattr(jobs, "result_search"):
-        jobs.result_search = NodeResultSearch(directory, node.node_id)
-    result_search = jobs.result_search
     if not hasattr(jobs, "games"):
         jobs.games = NodeGames(jobs, node.node_id)
     games = jobs.games
@@ -989,6 +1009,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
         jobs.root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
     jobs.fleet = fleet
+    from node_remote_center import RemoteCenter
+    jobs.remote_center = RemoteCenter(jobs, remote)
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1085,8 +1107,31 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
         def _remote(self, method):
             u = urlparse(self.path)
             parts = [p for p in u.path.split("/") if p]
-            if remote and (parts[:1] == ["remote"] or parts[:3] == ["dash", "api", "remote"] or parts == ["dash", "control"]):
-                node_remote.handle(remote, self, method, parts, u.query, board, node=node)
+            if parts[:2] == ['node', 'remote']:
+                if not self._authed():
+                    return True
+                if self.agent:
+                    self._send(403, {'error': 'internal remote calls require the machine connection'})
+                    return True
+                try:
+                    if remote is None:
+                        raise node_remote.RemoteError(503, 'PF remote owner is not configured')
+                    if method == 'GET' and parts == ['node', 'remote', 'devices']:
+                        self._send(200, remote.devices())
+                    elif method == 'POST' and parts == ['node', 'remote']:
+                        value = json.loads(node_remote._read_body(self, node_remote.JSON_MAX))
+                        if value['operation'] not in ('do', 'query', 'resolve'):
+                            raise ValueError('unsupported remote operation')
+                        node_remote._send_result(self, getattr(remote, value['operation'])(**value['args']))
+                    else:
+                        self._send(404, {'error': 'no such internal remote operation'})
+                except node_remote.RemoteError as error:
+                    self._send(error.status, error.payload)
+                except (ValueError, KeyError, TypeError) as error:
+                    self._send(400, {'error': str(error)})
+                return True
+            if parts[:1] == ['remote'] or parts[:3] == ['dash', 'api', 'remote'] or parts == ['dash', 'control']:
+                node_remote.handle(jobs.remote_center, self, method, parts, u.query, board, node=node)
                 return True
             return False
 
@@ -1110,7 +1155,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["phones"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["phones"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"]):
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query), dashboard=True)
@@ -1160,6 +1205,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     items = [jobs.status(jid) for jid in dict.fromkeys(item["job_id"] for item in events["items"])]
                     return self._send(200, {"items": items, "events": events["items"], "next_cursor": events["next_cursor"],
                                             "has_more": events["has_more"]})
+                if len(parts) == 4 and parts[:2] == ["node", "executions"] and parts[3] == "source":
+                    job = jobs.status(parts[2])
+                    return self._send(200, {"job": job, "completion_problem": jobs.source_completion_problem(parts[2], job)})
                 if parts == ["whoami"]:
                     agent = getattr(self, "agent", None)
                     kind = "agent" if agent else "readonly" if getattr(self, "ro", False) else "admin"
@@ -1243,17 +1291,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if ("cursor" in q or q.get("wait_seconds", ["0"])[0] != "0") and not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
                         return self._send(400, {"code": "target_required", "error": "event wait and cursor require an explicit node identity"})
                     return self._send(200, research.events(q))
-                if parts == ["result-search"]:
-                    if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
-                        return self._send(400, {"code": "target_required", "error": "result search requires an explicit hub identity"})
-                    return self._send(200, result_search.search(q))
-                if parts in (["remote-result"], ["result-cross-compare"]):
+                if parts == ["result-cross-compare"]:
                     q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
-                        return self._send(400, {"code": "target_required", "error": "cross-node result reads require an explicit hub identity"})
-                    value = (result_search.remote_result(q) if parts == ["remote-result"] else
-                             cross_compare_query(results, result_search, node.node_id, q))
-                    return self._send(200, value)
+                        return self._send(400, {"code": "target_required", "error": "comparison requires an explicit center identity"})
+                    return self._send(200, cross_compare_query(results, node.node_id, q))
                 if parts == ["result-compare"]:
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
                         return self._send(400, {"code": "target_required", "error": "result comparison requires an explicit node identity"})
@@ -1337,6 +1379,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.log_from(parts[1], off, limit), "application/octet-stream")
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "artifacts":
                     return self._send(200, node.artifacts(parts[1], q))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "artifacts-sync":
+                    return self._send(200, jobs.center.artifacts.sync_status(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "inputs":
                     return self._send(200, job_inputs.record(jobs, parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "export-cache":
@@ -2124,7 +2168,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     receipt = jobs.cancel(parts[1], force=True if parts[2] == "kill" else data.get("force", False))
                     if parts[2] == "kill":
                         receipt["killed"] = receipt["accepted"]
-                    code = 409 if not receipt["accepted"] and receipt["job"]["state"] == "running" else 200
+                    code = (202 if receipt.get("pending") else
+                            409 if not receipt["accepted"] and receipt["job"]["state"] == "running" else 200)
                     return self._send(code, receipt)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"session-pause", "session-resume"}:
                     return self._session_pause_post(parts[1], parts[2] == "session-pause")

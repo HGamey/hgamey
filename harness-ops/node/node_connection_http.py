@@ -3,6 +3,7 @@ import json
 import sqlite3
 
 from node_directory import DirectoryError, MAX_RESPONSE
+from job_inputs import InputError, MAX_FILE, _source_file
 
 
 def handle(handler, method, parts, directory, board, upload_limit, center):
@@ -57,7 +58,20 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
         if node_id is None:
             handler._send(401, {'code': 'unauthorized', 'error': 'node connection token required'})
             return True
-        if route == ['node-connect', 'report'] and method == 'POST':
+        if len(route) == 4 and route[:2] == ['node-connect', 'inputs'] and method == 'GET':
+            record = center.targets.get(route[2])
+            if record is None or record['execution_node_id'] != node_id:
+                raise DirectoryError(404, 'input destination is not assigned to this execution node')
+            item = next((item for item in record['request']['spec']['inputs']['files']
+                         if item['name'] == route[3]), None)
+            if item is None:
+                raise DirectoryError(404, 'input is not declared by this job')
+            with _source_file(center.local, item['source']) as stream:
+                data = stream.read(MAX_FILE + 1)
+            if len(data) > MAX_FILE:
+                raise InputError(413, 'input_too_large', 'input exceeds 8 MiB')
+            handler._send(200, data, 'application/octet-stream')
+        elif route == ['node-connect', 'report'] and method == 'POST':
             snapshot = document(MAX_RESPONSE)
             observations = snapshot.pop('executions', [])
             events = snapshot.pop('execution_events', [])
@@ -80,6 +94,8 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
                 handler._send(404, {'error': 'no such node call operation'})
         else:
             handler._send(404, {'error': 'no such node connection operation'})
+    except InputError as error:
+        handler._send(error.status, {'code': error.code, 'error': str(error)})
     except DirectoryError as error:
         handler._send(error.status, {'code': 'node_connection_error', 'error': str(error)})
     except sqlite3.Error as error:

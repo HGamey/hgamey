@@ -122,7 +122,7 @@ class NodeRead:
                               "asset_write_limits": dict(ASSET_WRITE_LIMITS)},
                 "target_binding": {"header": "X-Expected-Node-ID", "query": "expected_node_id",
                                    "unbound_legacy_requests": "accepted_without_target_guarantee"},
-                "capabilities": ["node.target-v1", "node.doctor-v1", "node.runtime-v1", "node.protocol-compat-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.federation-v1", "results.compare-v1", "results.cross-compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
+                "capabilities": ["node.target-v1", "node.doctor-v1", "node.runtime-v1", "node.protocol-compat-v1", "devices.registry-v1", "devices.lanes-v1", "results.index-v1", "results.compare-v1", "results.cross-compare-v1", "research.state-v1", "research.watch-v1", "research.criteria-v1", "research.evaluation-v1", "fleet.read", "fleet.cached-v1", "fleet.directory-v1", "games.prepare-v1", "games.upload-v1", "games.write-limits-v1",
                                  "jobs.routing-v1", "jobs.list", "jobs.read", "jobs.artifacts", "jobs.download.range", "jobs.history-read-v1",
                                  "jobs.cancel", "jobs.supervised-v1", "jobs.idempotency-v1", "jobs.queue-v1", "jobs.priority-v1", "jobs.durability-v1",
                                  "jobs.execution-policy-v1", "jobs.inputs-v1", "jobs.input-limits-v1", "jobs.export-limits-v1", "jobs.export-cache-root-v1", "jobs.export-cache-cleanup-v1", "jobs.time-budget-v1", "jobs.disk-guard-v1", "jobs.host-capacity-v1", "jobs.state-events-v1", "jobs.research-link-v1",
@@ -130,7 +130,6 @@ class NodeRead:
                                  "jobs.session-recovery-v1", "jobs.session-recovery-chain-v1"] +
                                 (["jobs.execution-reconcile-v1"] if self.jobs.worker_entry else []) +
                                 (["jobs.require-device-binding-v1"] if getattr(self.jobs, "require_device_binding", False) else []) +
-                                (["jobs.cross-node-inputs-v1"] if getattr(self.jobs, "directory", None) is not None else []) +
                                 (["jobs.experiment-v1"] if "experiment" in self.jobs.bins else []) +
                                 (["games.device-lanes-v1"] if getattr(self.jobs, "deployments", None)
                                  and self.jobs.deployments.device_binding_available else []) +

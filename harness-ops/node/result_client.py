@@ -16,11 +16,8 @@ HELP = """用法:
   pf-node results list [--job-id ID] [--game-id ID] [--game-version VERSION]
       [--device TEXT] [--research-id ID] [--direction-id ID] [--outcome VALUE]
       [--limit 1..100] [--cursor CURSOR]
-  pf-node results search --node NAME [--node OTHER] [同 list 的过滤与 limit]
-  pf-node results search --node NAME --source-node-id ID --revision N --cursor CURSOR [同原过滤]
   pf-node results compare FILE
   pf-node results show ID
-  pf-node results show ID --node NAME --source-node-id ID --revision N
   pf-node results register FILE
   pf-node results import FILE --adapter doom-lr4-026-v1|gol-optimize-v1 [--import-id ID]
       [--game-id ID] [--game-version VERSION] [--device TEXT] [--research-id ID] [--direction-id ID]
@@ -30,16 +27,10 @@ HELP = """用法:
 register 使用文件内固定 result_id；import 在读文件前打印指定或生成的 import_id。
 写入核对显式目标与能力，只提交一次。回执未知时，用 show 或 import-status 查询原 ID，
 不换 ID、不自动重发。登记不表示测量、收益、设备恢复或同状态资格已经验证。
-search 只读检索 1–4 个已绑定目录节点，必须显式指定 hub --node-id / PF_NODE_ID。
-首屏从 /nodes 冻结目标；续页使用原 source.node_id/revision/cursor，不重新选目标或回第一页。
-各节点独立分页，limit 按每节点计；部分失败仍输出完整 JSON，退出码 2。未自动重试。
-远端 show 需完整冻结的 --node/--source-node-id/--revision 及 hub 显式 node-id，
-只读 remote-result，不查询目录选新版。原件回源节点，不代理或转发凭据。
-compare 只读至多 16 KiB UTF-8 spec，需显式 node-id；单次业务 GET。
-本地 schema 需 results.compare-v1；新 phonefarm/result-cross-compare@1 需 results.cross-compare-v1，
-只凭明确新 schema 使用跨节点路由，targets 冻结目录{name,node_id,revision}；
-每列含 node_id 与显式 baseline_column_id（null/自身/另一列），不默认跨机合并。
-远端 show 也需 results.cross-compare-v1；失败分项输出完整 JSON 并 exit2，不自动重试。
+list/show 只读中心结果索引；原件链接也留在中心，执行节点离线不影响已归集内容。
+compare 只读至多 16 KiB UTF-8 spec，需显式中心 node-id；单次业务 GET。
+phonefarm/result-cross-compare@1 为每列声明 baseline_column_id（null/自身/另一列），
+不带 targets 或列 node_id；执行出处由中心已登记结果提供。
 spec.schema=phonefarm/result-compare@1，node_id 为原目标，columns 为 2–4 个候选列（首列基线），
 rows 为 1–16 个指标行，各行 metric_indexes 明确选原数组索引或 null；不按名称自动配对。
 返回登记值差/正基准百分比及原描述差异，不代表科学可比、统计显著或已采纳。
@@ -50,9 +41,6 @@ MAX_REGISTER = 256 << 10
 MAX_COMPARE = 16 << 10
 MAX_RESPONSE = 6 << 20
 OUTCOMES = {"gain", "no_gain", "regression", "failed", "not_run", "unknown"}
-SEARCH_STATUSES = {"ok", "unavailable", "unauthorized", "unsupported", "identity_mismatch",
-                   "configuration_changed", "disabled", "no_credentials", "unknown_node", "busy",
-                   "invalid_cursor"}
 
 
 class RequestError(Exception):
@@ -191,61 +179,12 @@ def _compare_spec(path, node_id):
                        for index in indexes)):
             raise ValueError("每行 metric_indexes 须与列数相同，值为 0..255 整数或 null")
     if spec["schema"] == "phonefarm/result-cross-compare@1":
-        targets = spec.get("targets")
-        if not isinstance(targets, list) or not 1 <= len(targets) <= 4:
-            raise ValueError("跨节点比较需要 1–4 个冻结远端来源")
-        for source in targets:
-            _validate_source(source, node_id)
-        if len({source["name"] for source in targets}) != len(targets) or len({source["node_id"] for source in targets}) != len(targets):
-            raise ValueError("跨节点来源名或节点 ID 重复")
-        if any(not isinstance(column.get("node_id"), str)
-               or (column.get("baseline_column_id") is not None and not isinstance(column["baseline_column_id"], str))
-               for column in columns):
-            raise ValueError("列 node_id 和非空 baseline_column_id 必须是字符串")
-        node_ids, column_ids = {source["node_id"] for source in targets}, {column["id"] for column in columns}
-        if {column.get("node_id") for column in columns} - {node_id} != node_ids:
-            raise ValueError("跨节点列必须使用全部且仅使用所选来源")
+        column_ids = {column['id'] for column in columns}
         for column in columns:
-            if (column.get("node_id") not in node_ids | {node_id}
-                    or "baseline_column_id" not in column
-                    or (column["baseline_column_id"] is not None and column["baseline_column_id"] not in column_ids)):
-                raise ValueError("每列需明确 node_id 和 baseline_column_id（null 或所选列 ID）")
+            if ('baseline_column_id' not in column or column['baseline_column_id'] is not None
+                    and column['baseline_column_id'] not in column_ids):
+                raise ValueError('每列需明确 baseline_column_id（null 或所选列 ID）')
     return spec
-
-
-def _validate_source(source, hub_id):
-    if (not isinstance(source, dict) or set(source) != {"name", "node_id", "revision"}
-            or not isinstance(source["name"], str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", source["name"]) or source["name"] == "local"
-            or not isinstance(source["node_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", source["node_id"])
-            or source["node_id"] == hub_id or type(source["revision"]) is not int or source["revision"] < 1):
-        raise ValueError("远端来源须为冻结目录 name/node_id/revision，不能是本节点、URL 或凭据")
-
-
-def _remote_show(client, identity, args):
-    if client.target.expected_node_id is None:
-        raise ValueError("远端 show 需要显式 hub --node-id / PF_NODE_ID")
-    options = _options(args, {"node", "source_node_id", "revision"})
-    if set(options) != {"node", "source_node_id", "revision"} or not re.fullmatch(r"[1-9][0-9]*", options["revision"]):
-        raise ValueError("远端 show 需要完整 --node/--source-node-id/--revision；不从目录选新版")
-    source = {"name": options["node"], "node_id": options["source_node_id"], "revision": int(options["revision"])}
-    _validate_source(source, client.target.expected_node_id)
-    capabilities = client.require_capability()["capabilities"]
-    if "node.target-v1" not in capabilities or "results.cross-compare-v1" not in capabilities:
-        raise ValueError("hub 缺少 node.target-v1 或 results.cross-compare-v1；未降级查询")
-    value = client.request("GET", "/remote-result?" + urllib.parse.urlencode({"target": json.dumps(source, separators=(",", ":")), "result_id": identity}))
-    actual, status, record = value.get("source"), value.get("status"), value.get("result")
-    if (value.get("result_id") != identity or not isinstance(actual, dict)
-            or any(actual.get(key) != item for key, item in source.items())
-            or status not in SEARCH_STATUSES | {"not_found"}):
-        raise RequestError("远端详情未绑定原来源版本或结果 ID；未自动重试")
-    if status == "ok":
-        if (not isinstance(record, dict) or record.get("node_id") != source["node_id"]
-                or record.get("result_id") != identity or not isinstance(record.get("manifest"), dict)
-                or record["manifest"].get("result_id") != identity):
-            raise RequestError("远端详情原记录身份未确认；未自动重试")
-    elif record is not None:
-        raise RequestError("失败详情混入未确认结果；未自动重试")
-    return value
 
 
 def _compare(client, path):
@@ -271,8 +210,8 @@ def _compare(client, path):
         raise RequestError("比较回包未绑定原 spec、基线或登记值范围；保留原选择，未自动重试")
     failed = False
     for column, requested in zip(columns, spec["columns"]):
-        expected_node = requested["node_id"] if cross else target.expected_node_id
-        if (not isinstance(column, dict) or column.get("node_id") != expected_node
+        expected_node = target.expected_node_id
+        if (not isinstance(column, dict) or (not cross and column.get("node_id") != expected_node)
                 or (cross and column.get("baseline_column_id") != requested["baseline_column_id"])
                 or any(column.get(key) != requested[key] for key in ("id", "label", "result_id"))
                 or column.get("status") not in ("available", "unavailable")):
@@ -303,100 +242,6 @@ def _compare(client, path):
     return value
 
 
-def _search(client, args):
-    nodes, query = [], {}
-    allowed = set(LABELS) | {"job_id", "outcome", "limit", "cursor", "source_node_id", "revision"}
-    while args:
-        option = args.pop(0)
-        key = option[2:].replace("-", "_") if option.startswith("--") else ""
-        if (key != "node" and (key not in allowed or key in query)) or not args:
-            raise ValueError("无效、重复或缺值的 search 选项；用 results --help 查看用法")
-        value = args.pop(0)
-        if key == "node":
-            if not re.fullmatch(r"[a-z0-9_-]{1,64}", value) or value == "local":
-                raise ValueError("--node 须为已有目录登记名；本节点请用 results list")
-            nodes.append(value)
-        else:
-            query[key] = value
-    if not 1 <= len(nodes) <= 4 or len(set(nodes)) != len(nodes):
-        raise ValueError("search 需选择 1–4 个不同的 --node")
-    if "job_id" in query and not re.fullmatch(r"[0-9a-f]{12}", query["job_id"]):
-        raise ValueError("job_id 须为 12 位任务 ID；搜索时分别作用于各源节点")
-    if "outcome" in query and query["outcome"] not in OUTCOMES:
-        raise ValueError("outcome 不在支持的结果状态中")
-    if "limit" in query and (not query["limit"].isdigit() or not 1 <= int(query["limit"]) <= 100):
-        raise ValueError("limit 须为每节点 1–100")
-    source_id, revision = query.pop("source_node_id", None), query.pop("revision", None)
-    if "cursor" in query:
-        if len(nodes) != 1 or not query["cursor"] or source_id is None or revision is None:
-            raise ValueError("续页需要一个 --node、原 --source-node-id、--revision 和非空 --cursor")
-        if not re.fullmatch(r"[0-9a-f]{32}", source_id) or not re.fullmatch(r"[1-9][0-9]*", revision):
-            raise ValueError("续页 source-node-id 须为 32 位小写十六进制，revision 须为正整数")
-        targets = [{"name": nodes[0], "node_id": source_id, "revision": int(revision)}]
-    elif source_id is not None or revision is not None:
-        raise ValueError("--source-node-id 与 --revision 仅用于 --cursor 续页；首屏从只读目录选择")
-    else:
-        targets = None
-    if client.target.expected_node_id is None:
-        raise ValueError("search 需要显式 hub --node-id / PF_NODE_ID；先用 node 核对原节点身份")
-    hub = client.target.identity()
-    capabilities = hub.get("capabilities")
-    if (not isinstance(capabilities, list) or "node.target-v1" not in capabilities
-            or "results.federation-v1" not in capabilities):
-        raise ValueError("hub 缺少 node.target-v1 或 results.federation-v1；未降级查询")
-    if targets is None:
-        # A directory read never refreshes or binds a previously unknown source.
-        directory = client.request("GET", "/nodes")
-        items = directory.get("items")
-        if not isinstance(items, list):
-            raise RequestError("节点目录回包无效；未查询远端")
-        targets = []
-        for name in nodes:
-            matches = [item for item in items if isinstance(item, dict) and item.get("name") == name]
-            if len(matches) != 1:
-                raise ValueError(f"目录没有唯一的节点 {name}；先核对目录，未查询远端")
-            entry = matches[0]
-            if not isinstance(entry.get("node_id"), str) or not re.fullmatch(r"[0-9a-f]{32}", entry["node_id"]):
-                raise ValueError(f"目录节点 {name} 尚未绑定身份；请先在目录核对，本查询不自动绑定")
-            if type(entry.get("revision")) is not int or entry["revision"] < 1:
-                raise RequestError("目录节点 revision 无效；未查询远端")
-            targets.append({"name": name, "node_id": entry["node_id"], "revision": entry["revision"]})
-    if len({item["node_id"] for item in targets}) != len(targets):
-        raise ValueError("所选目录项绑定同一 node_id；请只选择其中一项")
-    if any(item["node_id"] == hub["node_id"] for item in targets):
-        raise ValueError("本节点不列入远端 targets；请用 results list")
-    query["targets"] = json.dumps(targets, separators=(",", ":"), ensure_ascii=True)
-    value = client.request("GET", "/result-search?" + urllib.parse.urlencode(query))
-    if type(value.get("partial")) is not bool or not isinstance(value.get("nodes"), list):
-        raise RequestError("跨节点搜索回包无效；未自动重试或回到首屏")
-    expected = {item["name"]: item for item in targets}
-    seen, failed = set(), False
-    for item in value["nodes"]:
-        source = item.get("source") if isinstance(item, dict) else None
-        name = source.get("name") if isinstance(source, dict) else None
-        if not isinstance(name, str) or name not in expected or name in seen:
-            raise RequestError("跨节点搜索回包未保留所选节点；未自动重试")
-        seen.add(name)
-        status = item.get("status")
-        if (not isinstance(status, str) or status not in SEARCH_STATUSES
-                or item.get("requested_cursor") != query.get("cursor")):
-            raise RequestError("跨节点搜索分项状态或游标不符；未自动重试")
-        if status == "ok":
-            if (source.get("node_id") != expected[name]["node_id"]
-                    or type(source.get("revision")) is not int
-                    or source.get("revision") != expected[name]["revision"]
-                    or not isinstance(item.get("items"), list)
-                    or (item.get("next_cursor") is not None and not isinstance(item["next_cursor"], str))):
-                raise RequestError("跨节点结果未绑定原源身份或版本；未自动重试")
-        else:
-            if item.get("items") is not None or item.get("next_cursor") is not None:
-                raise RequestError("跨节点失败分项混有未确认结果；未自动重试")
-            failed = True
-    if seen != set(expected) or value["partial"] != failed:
-        raise RequestError("跨节点搜索回包缺少分项或部分失败状态；未自动重试")
-    return value
-
-
 def _submit(client, path, body, identity, *, importing):
     field = "import_id" if importing else "result_id"
     action = "import-status" if importing else "show"
@@ -422,11 +267,7 @@ def main(args, *, target):
     try:
         command = args.pop(0)
         client = Client(target)
-        if command == "search":
-            value = _search(client, args)
-            print(json.dumps(value, ensure_ascii=False, allow_nan=False))
-            return 2 if value["partial"] else 0
-        elif command == "compare" and len(args) == 1:
+        if command == "compare" and len(args) == 1:
             value = _compare(client, args[0])
             print(json.dumps(value, ensure_ascii=False, allow_nan=False))
             return 2 if value["partial"] else 0
@@ -440,11 +281,6 @@ def main(args, *, target):
                 raise ValueError("limit 须为 1–100")
             client.require_capability()
             value = client.request("GET", "/results" + ("?" + urllib.parse.urlencode(query) if query else ""))
-        elif command == "show" and len(args) > 1:
-            identity = identifier(args.pop(0))
-            value = _remote_show(client, identity, args)
-            print(json.dumps(value, ensure_ascii=False, allow_nan=False))
-            return 0 if value["status"] == "ok" else 2
         elif command in ("show", "import-status") and len(args) == 1:
             importing = command == "import-status"
             identity = identifier(args[0], importing=importing)
