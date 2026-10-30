@@ -295,7 +295,7 @@ class Remote:
             for holder in holders:
                 if serial in holder['aliases']:
                     names.update(holder['aliases'])
-            item = {**d, 'enabled': True,
+            item = {**d,
                     'aliases': sorted(names - {serial}),
                     'capabilities': caps['actions'] if caps['available'] and d['transport'] == 'adb' else [],
                     'holder': None}
@@ -313,7 +313,7 @@ class Remote:
         for sess in active:
             if sess['serial'] not in present:
                 out.append({'serial': sess['serial'], 'transport': 'adb', 'state': 'offline',
-                    'enabled': True, 'aliases': [],
+                    'aliases': [],
                     'capabilities': [], 'holder': {'kind': 'remote', **sess}})
         return {'devices': out, 'capabilities': caps, 'lock_storage_error': occ_err,
                 'global_holders': holders}

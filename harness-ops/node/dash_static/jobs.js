@@ -764,7 +764,8 @@
     const selection = job.device_selection;
     facts('execution-info', [
       ...(remoteJob(job) ? [['执行电脑', `${computerName(job.execution_node_id)} · ${job.connection?.status === 'ready' ? '已连接' : '已断开'}`],
-        ['最近收到那台电脑的状态', time(job.observed_at)], ['停止请求', job.stop_requested ? '已记下，待那台电脑确认' : '无']] : []),
+        ['最近收到那台电脑的状态', time(job.observed_at)], ['停止请求', job.stop_requested ? '已记下，待那台电脑确认' : '无'],
+        ['原件', {pending: '在那台电脑上', copying: '正在复制到本机', complete: '已复制到本机', error: `复制失败：${job.artifacts_sync?.error || '原因未报告'}`}[job.artifacts_sync?.status] || '未报告']] : []),
       ...(selection ? [['选定手机', [selection.model, selection.serial].filter(Boolean).join(' · ') || selection.ref]] : []),
       ['执行阶段', job.phase === 'submission_unknown' ? '等待那台电脑受理' : PHASES[job.phase] || '旧版记录未提供'],
       ['请求的进程策略', job.execution_policy || '旧记录未提供'],

@@ -12,11 +12,14 @@
     serial: null, binding: null, session: null, sessionFresh: false, sessionError: "", live: null, frame: null, url: null,
     requests: [], selectedRequest: null, posting: false, querying: false, authBusy: false, refreshing: false,
     revision: 0, imageRevision: 0, refreshCtl: null, timer: 0,
-    acquireScope: "global", acquireBinding: null, bindingBusy: false, bindingError: "", bindingRevision: 0 };
+    acquireScope: "global", acquireBinding: null, bindingBusy: false, bindingError: "", bindingRevision: 0, computers: null };
 
   function message(value) { return typeof value === "string" ? value : value?.message || value?.error || "请求失败"; }
   function msg(text, err) { $("msg").textContent = text || ""; $("msg").classList.toggle("err", !!err); }
   const dev = (serial, action) => "/devices/" + encodeURIComponent(serial) + "/" + action;
+  // A device is chosen by its platform reference (node_id/raw_serial); sessions, frames, receipts and holders keep
+  // the phone's own serial, so they are compared with this.
+  const rawOf = serial => state.devices.find(d => d.serial === serial)?.raw_serial ?? (/^[0-9a-f]{32}\//.test(serial || "") ? serial.slice(33) : serial);
   const query = (values) => "?" + new URLSearchParams(values).toString();
   function save() {
     try { sessionStorage.setItem(STORAGE, JSON.stringify({ serial: state.serial, binding: state.binding,
@@ -44,7 +47,8 @@
         const value = await r.json();
         if (!r.ok) {
           const e = new Error(message(value.error || `HTTP ${r.status}`)); e.httpStatus = r.status; e.data = value;
-          if (r.status === 401) { if (value.need_operator) setOp(null); else location.href = "/dash/login"; }
+          if (r.status === 401) location.href = "/dash/login";
+          if (r.status === 403 && value.need_steer) setOp(null);
           throw e;
         }
         return value;
@@ -62,7 +66,7 @@
     if (state.op !== name) { state.sessionFresh = false; invalidateFrame(); }
     state.op = name;
     $("op-login").hidden = !!name; $("op-name").hidden = !name; $("op-logout").hidden = !name;
-    $("op-name").textContent = name ? "操作员：" + name : "";
+    $("op-name").textContent = name ? "可操作" : ""; $("op-name").title = name || "";
   }
   function selectedDevice() { return state.devices.find(d => d.serial === state.serial); }
   function validDeviceBinding(value) {
@@ -75,7 +79,7 @@
     if (state.acquireScope !== "device") return "";
     if (state.capabilities?.device_binding_v1 !== true) return "节点未声明按登记设备接管能力，不会改为全域请求。";
     if (state.bindingBusy) return "正在读取设备登记…";
-    return validDeviceBinding(state.acquireBinding) && state.acquireBinding.serial === state.serial ? "" : state.bindingError || "先显式读取当前设备的登记绑定。";
+    return validDeviceBinding(state.acquireBinding) && state.acquireBinding.serial === rawOf(state.serial) ? "" : state.bindingError || "先显式读取当前设备的登记绑定。";
   }
   function clearAcquireBinding() { state.acquireBinding = null; state.bindingError = ""; state.bindingBusy = false; state.bindingRevision++; }
   function scopeText(session) {
@@ -88,7 +92,7 @@
     try {
       const value = await call("GET", "/devices/resolve" + query({serial}), null, {target});
       if (revision !== state.bindingRevision) return;
-      if (HGTarget.problem(target) || value.node_id !== target.node_id || !validDeviceBinding(value.binding) || value.binding.serial !== serial) throw new Error("登记绑定与固定节点或当前设备不一致");
+      if (HGTarget.problem(target) || value.node_id !== target.node_id || !validDeviceBinding(value.binding) || value.binding.serial !== rawOf(serial)) throw new Error("登记绑定与固定节点或当前设备不一致");
       state.acquireBinding = value.binding;
     } catch (error) { if (revision === state.bindingRevision) state.bindingError = error.message; }
     finally { if (revision === state.bindingRevision) { state.bindingBusy = false; render(); } }
@@ -102,17 +106,16 @@
   function sessionReason(action) {
     if (!HGTarget.canWrite()) return HGTarget.problem() || "节点未提供目标约束协议，设备观察与操作禁用。";
     if (state.binding && HGTarget.problem(state.binding.target || null)) return HGTarget.problem(state.binding.target || null);
-    if (!state.op) return "先使用操作员令牌登录。";
+    if (!state.op) return "先用掌舵密码解锁。";
     if (document.hidden) return "页面已暂停，返回后须重新确认状态。";
     if (!state.devicesFresh) return "设备状态未确认：" + state.devicesError;
     if (state.capabilities?.available !== true) return state.capabilities?.reason || "节点未提供可用的远程会话能力。";
     const d = selectedDevice();
     if (!d) return "先选择设备。";
     if (d.transport === "hdc") return "本批尚不支持 HDC 设备操作。";
-    if (!d.enabled) return "此设备未对远程操作开放。";
     if (!state.binding?.session_id) return state.binding?.acquisition_id ? "接管结果未确认，请查询原会话。" : "尚未建立本页可核验的会话。";
     if (!state.sessionFresh) return state.sessionError || "会话状态未确认，请查询。";
-    if (state.session?.session_id !== state.binding.session_id || state.session?.serial !== state.serial) return "会话身份不匹配。";
+    if (state.session?.session_id !== state.binding.session_id || state.session?.serial !== rawOf(state.serial)) return "会话身份不匹配。";
     if (state.session.phase !== "ready" && !(action === "release" && state.session.phase === "starting")) return PHASE[state.session.phase] || PHASE.unknown;
     if (state.session.live_owner !== true) return "未确认活跃 owner，禁止新操作。";
     if (state.session.recovery?.required !== false) return "恢复状态未确认或仍需核查，禁止新操作。";
@@ -123,10 +126,22 @@
   function holderText(d) {
     const h = d.holder;
     if (!state.devicesFresh) return "上次观测；当前状态未知";
-    if (!h) return d.enabled ? "当前目录未报告占用" : "未对远程开放";
-    if (h.kind === "remote") return `${h.operator || "操作员"} · ${PHASE[h.phase] || PHASE.unknown}${h.serial && h.serial !== d.serial ? " · 全域占用来自 " + h.serial : ""}`;
+    if (!h) return "当前目录未报告占用";
+    if (h.kind === "remote") return `${h.operator || "操作员"} · ${PHASE[h.phase] || PHASE.unknown}${h.serial && h.serial !== (d.raw_serial ?? d.serial) ? " · 全域占用来自 " + h.serial : ""}`;
     if (h.kind === "experiment") return "实验占用：" + (h.label || "未知");
     return "设备 lease 占用或待核查";
+  }
+  // Phones on another joined computer name it; this computer's phones read as before.
+  function where(d) {
+    const id = d.execution_node_id;
+    if (!id || id === HGTarget.binding()?.node_id) return "";
+    return `${state.computers?.get(id) || "电脑 " + id.slice(0, 8)} · `;
+  }
+  async function loadComputers() {
+    try {
+      const r = await HGTarget.fetch("/dash/api/nodes", { credentials: "same-origin", cache: "no-store" });
+      if (r.ok) state.computers = new Map(((await r.json()).items || []).map(item => [item.node_id, item.name]));
+    } catch (_) { /* ids still show */ }
   }
   function invalidateFrame() { ++state.imageRevision; if (state.frame) state.frame.inputValid = false; }
   function frameTime(frame) { return typeof frame?.captured_at === "number" ? frame.captured_at * 1000 : Date.parse(frame?.captured_at); }
@@ -191,14 +206,14 @@
   function render() {
     $("devices").replaceChildren(...state.devices.map(d => {
       const li = document.createElement("li"), b = document.createElement("button"), serial = document.createElement("span"), sub = document.createElement("span");
-      b.type = "button"; b.setAttribute("aria-pressed", String(d.serial === state.serial)); serial.className = "dev-serial"; serial.textContent = d.serial;
-      sub.className = "dev-sub" + (d.holder ? " dev-held" : ""); sub.textContent = `${d.model || d.transport || "设备"} · ${holderText(d)}`;
+      b.type = "button"; b.setAttribute("aria-pressed", String(d.serial === state.serial)); serial.className = "dev-serial"; serial.textContent = d.raw_serial ?? d.serial;
+      sub.className = "dev-sub" + (d.holder ? " dev-held" : ""); sub.textContent = `${where(d)}${d.model || d.transport || "设备"} · ${holderText(d)}`;
       b.append(serial, sub); b.addEventListener("click", () => select(d.serial)); li.append(b); return li;
     }));
     if (!state.devices.length) { const p = document.createElement("li"); p.className = "note"; p.textContent = state.devicesFresh ? "当前目录没有设备" : "设备目录尚未确认"; $("devices").append(p); }
     const d = selectedDevice(), reason = sessionReason(), h = d?.holder;
-    const reconnect = !state.binding && h?.kind === "remote" && h.serial === state.serial && h.session_id;
-    const canTake = HGTarget.canWrite() && state.op && state.devicesFresh && d?.enabled && actionSupported("acquire") && !state.posting && !state.authBusy
+    const reconnect = !state.binding && h?.kind === "remote" && h.serial === rawOf(state.serial) && h.session_id;
+    const canTake = HGTarget.canWrite() && state.op && state.devicesFresh && d && actionSupported("acquire") && !state.posting && !state.authBusy
       && !state.binding && (!h || reconnect) && (reconnect || !acquireBindingProblem());
     const fixed = state.binding, fixedScope = fixed ? (fixed.device_binding ? "device" : "global") : state.acquireScope;
     $("take-scope").value = fixedScope; $("take-scope").disabled = !!fixed || !!reconnect || !state.op || state.posting || state.authBusy || state.bindingBusy;
@@ -209,7 +224,7 @@
     const chosen = fixed?.device_binding || (!fixed && state.acquireScope === "device" ? state.acquireBinding : null);
     $("take-binding-json").hidden = !chosen; $("take-binding-json").textContent = chosen ? JSON.stringify(chosen, null, 2) : "";
     $("take-binding-info").textContent = fixed ? "原接管或会话身份已固定，查询不会重新选择设备绑定。实际范围以下方会话回执为准。" : reconnect ? "将连接已有会话并读取其原范围，不创建新接管。" : acquireBindingProblem() || (chosen ? "登记绑定已读取，新接管将固定此范围；可与其他已绑定设备并行，全域操作仍会互斥。" : "默认保持兼容全域。显式按登记设备接管前只读核对宿主登记，不采样手机。");
-    $("cur-serial").textContent = state.serial || "";
+    $("cur-serial").textContent = state.serial ? rawOf(state.serial) : "";
     $("take").textContent = reconnect ? "连接已有会话" : "接管设备"; $("take").disabled = !canTake;
     $("release").disabled = !canAction("release"); $("renew").disabled = !canAction("renew");
     $("check-session").disabled = !!(state.binding && HGTarget.problem(state.binding.target || null)) || !state.op || !state.serial || state.refreshing || state.authBusy || state.posting || !(state.binding || reconnect);
@@ -247,7 +262,7 @@
   }
   function validateSession(s, binding) {
     const unavailable = s?.session_id == null && ["unknown", "starting", "closed"].includes(s?.phase);
-    if (!s || (typeof s.session_id !== "string" && !unavailable) || s.serial !== binding.serial
+    if (!s || (typeof s.session_id !== "string" && !unavailable) || s.serial !== rawOf(binding.serial)
       || (binding.session_id && s.session_id !== binding.session_id && !(unavailable && s.phase === "unknown"))
       || (binding.acquisition_id && s.acquisition_id !== binding.acquisition_id)) throw new Error("会话回包身份不匹配，未获得操作资格");
     if (binding.binding_recorded && (binding.device_binding ? s.lease_scope !== "device" || !validDeviceBinding(s.device_binding) || Object.keys(binding.device_binding).some(key => s.device_binding[key] !== binding.device_binding[key]) : s.device_binding || s.lease_scope === "device")) throw new Error("会话设备范围与原接管声明不一致，请保留原请求查询");
@@ -273,10 +288,10 @@
       const who = await call("GET", "/whoami", null, { signal: ctl.signal });
       if (revision !== state.revision || ctl.signal.aborted) return;
       setOp(who.operator);
-      if (!state.op) { state.devicesFresh = false; state.devicesError = "尚未登录操作员"; return; }
       const r = await call("GET", "/devices", null, { signal: ctl.signal });
       if (revision !== state.revision || ctl.signal.aborted) return;
       if (!Array.isArray(r.devices)) throw new Error("设备目录格式不正确");
+      if (!state.computers && r.devices.some(d => d.execution_node_id && d.execution_node_id !== HGTarget.binding()?.node_id)) await loadComputers();
       state.devices = r.devices; state.capabilities = r.capabilities; state.devicesFresh = !r.lock_storage_error; state.devicesError = r.lock_storage_error || "";
       if (r.lock_storage_error) invalidateFrame();
       const binding = state.binding && { ...state.binding };
@@ -316,7 +331,7 @@
     const size = result.original_size || (result.source_width && result.source_height ? [result.source_width, result.source_height] : meta.size);
     if (!Array.isArray(size) || size.length !== 2 || !size.every(n => Number.isInteger(n) && n > 0)) throw new Error("截图未提供可用的像素尺寸");
     if (![result.width, result.height].every(n => Number.isInteger(n) && n > 0)) throw new Error("截图未提供传输图片尺寸");
-    for (const [key, expected] of [["frame_id", r.id], ["session_id", r.session_id], ["serial", r.serial]]) {
+    for (const [key, expected] of [["frame_id", r.id], ["session_id", r.session_id], ["serial", rawOf(r.serial)]]) {
       if (result[key] != null && result[key] !== expected) throw new Error("截图内容的设备、会话或 frame 身份不匹配");
     }
     if (!current()) return;
@@ -328,7 +343,7 @@
       if (decoded.naturalWidth !== result.width || decoded.naturalHeight !== result.height) throw new Error("图片解码尺寸与截图回执不一致");
       if (!current()) return;
       const frame = { request_id: r.id, frame_id: result.frame_id || null, serial: r.serial, session_id: r.session_id,
-        bound: result.frame_id === r.id && result.session_id === r.session_id && result.serial === r.serial,
+        bound: result.frame_id === r.id && result.session_id === r.session_id && result.serial === rawOf(r.serial),
         width: size[0], height: size[1], imageWidth: decoded.naturalWidth, imageHeight: decoded.naturalHeight,
         rotation: Number.isInteger(result.rotation) && result.rotation >= 0 && result.rotation <= 3 ? result.rotation : null,
         captured_at: result.captured_at ?? meta.captured_at ?? null, decoded: true, displayed: false, inputValid: true };
@@ -372,7 +387,7 @@
   async function acquire() {
     if ($("take").disabled) return;
     const holder = selectedDevice()?.holder;
-    if (holder?.kind === "remote" && holder.serial === state.serial && holder.session_id) {
+    if (holder?.kind === "remote" && holder.serial === rawOf(state.serial) && holder.session_id) {
       await connectExisting(holder); return;
     }
     supersedeRead();
@@ -448,18 +463,25 @@
     });
   }
   document.addEventListener("hgamey-target-change", () => { if (!HGTarget.canWrite()) invalidateFrame(); render(); });
+  // Actions need the dashboard's steer password, the same as every other page.
+  async function steer(unlock, pw) {
+    const r = await HGTarget.fetch(`/dash/api/steer/${unlock ? "unlock" : "lock"}`, { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-HG": "1" }, body: JSON.stringify(unlock ? { pw } : {}) });
+    const value = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(message(value.error || `HTTP ${r.status}`));
+  }
   $("op-login").addEventListener("submit", async ev => {
     ev.preventDefault(); if (state.authBusy) return; supersedeRead(); state.authBusy = true; render();
-    const token = $("op-token").value.trim(); $("op-token").value = "";
-    try { const r = await call("POST", "/login", { token }); setOp(r.operator); await HGTarget.refresh(); msg("已登录，正在查询会话。"); }
+    const pw = $("op-token").value; $("op-token").value = "";
+    try { await steer(true, pw); await HGTarget.refresh(); msg("已解锁，正在查询会话。"); }
     catch (e) { msg(e.message, true); }
     finally { state.authBusy = false; render(); refresh(); }
   });
   $("op-logout").addEventListener("click", async () => {
     if (state.authBusy || state.posting) return; supersedeRead(); state.authBusy = true; render();
-    try { await call("POST", "/logout", {}); setOp(null); state.devicesFresh = false; msg("已退出操作员。退出登录不代表设备已交回；原会话和请求 ID 已保留。"); }
-    catch (e) { state.sessionFresh = false; invalidateFrame(); msg("退出结果未确认：" + e.message, true); }
-    finally { state.authBusy = false; render(); }
+    try { await steer(false); setOp(null); msg("已上锁。上锁不代表设备已交回；原会话和请求 ID 已保留。"); }
+    catch (e) { msg("上锁结果未确认：" + e.message, true); }
+    finally { state.authBusy = false; render(); refresh(); }
   });
   $("take").addEventListener("click", acquire);
   $("take-scope").addEventListener("change", () => { if ($("take-scope").disabled) return; clearAcquireBinding(); state.acquireScope = $("take-scope").value; render(); });

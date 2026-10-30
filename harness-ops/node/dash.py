@@ -278,7 +278,7 @@ class Dash:
             return self._showcase(h, sub[3] if len(sub) == 4 else None)
         if len(sub) == 2 and sub[0] == "static" and sub[1] in SHOWCASE_STATIC:
             return self._static(h, sub[1], query)
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("doctor.js", "doctor.css", "target.js", "job-state.js", "gol.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research-task.js", "research-compare.js", "research.css", "results.js", "results-federation.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("doctor.js", "doctor.css", "target.js", "job-state.js", "gol.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research-task.js", "research-compare.js", "research.css", "results.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1], query)
         self.last_view = _now()
         self.wake.set()
