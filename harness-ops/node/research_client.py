@@ -22,7 +22,7 @@ from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION
 HELP = """用法:
   pf-node research recipes [ID]
   pf-node research plan-template exploration|confirmation --research-revision N [--recipe ID]
-  pf-node research list KIND [--research-id ID] [--state STATE] [--request-id ID]
+  pf-node research list KIND [--research-id ID] [--state STATE] [--request-id ID] [--follows ID]
       [--limit 1..100] [--cursor CURSOR]
   pf-node research show KIND ID [--revision N]
   pf-node research history KIND ID [--limit 1..100] [--cursor CURSOR]
@@ -51,6 +51,7 @@ plan-template 离线输出 next_experiment JSON 草稿（title、plan、research
 方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
 最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。research list 必须带 KIND，可选值同前；FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
+research 列表可用 --follows <研究ID> 只取它的接续任务。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
 --attach 直接附本机 PNG、JPEG、SVG、MP4 或 WebM，可重复；图片至多 16 MiB，视频至多 128 MiB。实验 Python 只保证有标准库。
 --ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
@@ -126,6 +127,7 @@ def parser():
     listing.add_argument("kind", choices=KINDS)
     listing.add_argument("--research-id", type=identifier)
     listing.add_argument("--request-id", type=identifier)
+    listing.add_argument("--follows", type=identifier)
     listing.add_argument("--state")
     showing = commands.add_parser("show")
     history = commands.add_parser("history")
@@ -773,7 +775,9 @@ def main(argv, *, target):
                 raise ValueError("--request-id 筛选仅用于 feedback")
             if args.state is not None and args.kind == "feedback":
                 raise ValueError("feedback 不提供 state 筛选")
-            path = f"/research-state/{args.kind}" + _query(args, ("research_id", "state", "request_id", "limit", "cursor"))
+            if args.follows is not None and args.kind != "research":
+                raise ValueError("--follows 筛选仅用于 research")
+            path = f"/research-state/{args.kind}" + _query(args, ("research_id", "state", "request_id", "follows", "limit", "cursor"))
         elif args.command == "show":
             path = f"/research-state/{args.kind}/{args.id}" + _query(args, ("revision",))
         elif args.command == "history":

@@ -963,8 +963,8 @@ class NodeResearch:
 
     def list(self, kind, query):
         self._kind(kind)
-        limit = self._page(query, {"research_id", "state", "request_id"})
-        filters = {key: query[key][0] for key in ("research_id", "state", "request_id") if query.get(key) and query[key][0]}
+        limit = self._page(query, {"research_id", "state", "request_id", "follows"})
+        filters = {key: query[key][0] for key in ("research_id", "state", "request_id", "follows") if query.get(key) and query[key][0]}
         for key, value in filters.items():
             if key == "state":
                 if value not in STATES[kind]:
@@ -973,13 +973,15 @@ class NodeResearch:
                 identifier(value)
                 if key == "request_id" and kind != "feedback":
                     raise ValueError("request_id filter is only supported for feedback")
+                if key == "follows" and kind != "research":
+                    raise ValueError("follows filter is only supported for research")
         binding = [self.node_id, "list", kind, filters]
         with self._db() as db:
             upper, after = self._cursor(query, binding, self._upper(db))
             terms = ["r.sequence IN (SELECT MAX(sequence) FROM revisions WHERE kind=? AND sequence<=? GROUP BY id)"]
             params = [kind, upper]
             for key, value in filters.items():
-                terms.append("r." + key + "=?")
+                terms.append("json_extract(r.data,'$.follows')=?" if key == "follows" else "r." + key + "=?")
                 params.append(value)
             if after is not None:
                 terms.append("r.sequence<?"); params.append(after)

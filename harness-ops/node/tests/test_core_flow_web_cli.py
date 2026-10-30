@@ -471,6 +471,12 @@ class CoreFlowTests(unittest.TestCase):
         studies = self.web("GET", "/research-state/research?limit=100")[1]["items"]
         self.assertEqual({item["id"]: item["follows"] for item in studies},
                          {"sr-child": "sr-root", "sr-root": None})
+        children = self.web("GET", "/research-state/research?follows=sr-root&limit=100")
+        self.assertEqual(children[0], 200, children[1])
+        self.assertEqual([item["id"] for item in children[1]["items"]], ["sr-child"])
+        code, out, err = self.pf(token, "research", "list", "research", "--follows", "sr-root")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([item["id"] for item in json.loads(out)["items"]], ["sr-child"])
         self.assertIn("research link", self.pf(token, "research", "--help")[1])
         code, _, err = self.pf(token, "research", "link", "sr-child", "none")
         self.assertEqual(code, 0, err)
