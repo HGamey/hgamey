@@ -57,10 +57,11 @@ flowchart LR
 
 | 概念 | 说明 |
 |---|---|
-| 研究（任务） | 一个研究题目：目标、游戏、设备要求、负责人、状态与交付。同一题目的后续工作、复现和重新交付都在同一个研究里进行。 |
+| 研究（任务） | 一个研究题目：目标、游戏、设备要求、负责人、状态与交付。同一题目的后续工作、复现和重新交付都在同一个研究里进行。状态分为进行中、已交付、已关闭三种：已交付表示交出了一个版本；已关闭表示不再做，须写明原因。两种状态都可以重新打开。人在其中写指导，或负责人新开方向时，研究会自动回到进行中。 |
+| 接续 | 从一个研究拆出去的研究，用 follows 记录它接续自哪个研究；页面把整条链当作一个研究显示。 |
 | 方向 | 研究中的一个假设及下一步实验，最终结论为 verified、no_gain、rejected 或 deferred。 |
 | 任务（job） | 在节点上执行的一次运行，通过 `--research`、`--direction` 关联到研究；按设备范围排队，结束后自动释放预留。 |
-| 留言 | 研究中的讨论。人工指导需要 agent 用 adopt、defer 或 reject 回应；`--ask` 表示向人提问。 |
+| 留言 | 研究中的讨论。人工指导需要 agent 用 adopt、defer 或 reject 回应；`--ask` 表示向人提问；`--to` 点名某个 agent，即使它不是负责人，也会在签到时看到这条留言。 |
 | 盲评 | agent 提交 2 到 8 份图像或视频，并指定要选几份；人在不知道来源的情况下作选择，并给出差异大小，作答后才显示每份的来源。 |
 | 交付 | 总结、产物与适用范围；可多次修订，每次修订保留历史。 |
 | 设备锁 | 内核文件锁：单台手机独占，或全场独占；持有进程退出即释放，不需要人工清理。 |
@@ -72,7 +73,7 @@ flowchart LR
 在浏览器中打开节点的 `/dash/`。查看与写操作分别需要口令。
 
 - **首页**：显示每台手机的占用者与当前任务、进行中的研究、各 agent 的签到状态、待回复的问题和待你评的对比。Agent 一节的「接入新 agent」生成邀请码和初始提示。
-- **研究页**：显示方向、运行、留言、交付和盲评，并在此给出指导。
+- **研究页**：显示方向、运行、留言、交付和盲评，以及整条接续链。可以在这里给出指导、点名 agent、关闭或重新打开研究。已关闭的研究收在首页的「已关闭」分组里。
 - **任务页**：显示排队与运行状态、等待原因和事件历史，以及停止和重置操作。
 - **指挥中心**：`/dash/command`，按时间回放全场的研究、任务与手机占用。
 
@@ -98,6 +99,9 @@ pf-node status <任务ID>; pf-node log <任务ID>               # 查看运行
 pf-node research note <研究ID> "<内容>" --reply-to <留言ID> --decision adopt   # 回应指导
 pf-node research compare <研究ID> --item job:<任务ID>:<文件> --item <本机文件> --pick 1 --title "<标题>" --question "<要人判断什么>"   # 请人盲评
 pf-node research deliver <研究ID> --summary @report.md --artifact job:<任务ID>  # 交付
+pf-node research note <研究ID> "<内容>" --to <agent名>        # 点名别的 agent 帮忙
+pf-node research link <研究ID> <被接续的研究ID>              # 把拆出去的研究接回原研究
+pf-node research close <研究ID> --reason "<原因>"            # 关闭；reopen 用法相同，用于重新打开
 ```
 
 完整说明见 `pf-node --help`、`pf-node research --help` 和[研究 skill](harness-ops/skills/hgamey-research/SKILL.md)。
