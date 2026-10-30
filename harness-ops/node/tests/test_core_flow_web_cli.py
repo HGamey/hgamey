@@ -757,6 +757,56 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(item["public"]["phase"], "queued")
         self.assertEqual(item["public"]["queue"]["state"], "claimed")
 
+    def test_phonefarm_sampling_a_phone_is_not_someone_holding_it(self):
+        """PF's own ~30 s sampling (label "observation") holds each idle phone for a moment; the home page shows those
+        phones idle, and the count of idle phones matches, while a real holder on another phone still shows."""
+        serials = ("S1", "S2", "S3")
+        lock = {}
+
+        class Goals:
+            def list(self):
+                return []
+
+            def harness_support(self):
+                return {"ok": False}
+
+        class Monitor:
+            @staticmethod
+            def snapshot():
+                return {"devices": [{"serial": s, "online": True, "state": "device"} for s in serials],
+                        "lock": lock, "age_s": 1, "error": None, "deferred": False}
+
+        def held_by(labels):
+            entries = [{"scope": "device", "device_id": "d" + s, "serial": s, "label": label, "job_id": None, "state": "active"}
+                       for s, label in labels.items()]
+            lock.clear()
+            lock.update({"status": "held", "held_by": ", ".join(labels.values()),
+                         "lease": {"status": "held", "entries": entries, "device_scopes": {"devices": [
+                             {"device_id": "d" + s, "status": "held" if s in labels else "clear"} for s in serials]}}})
+
+        board = dash.Dash.__new__(dash.Dash)
+        board.job_service, board.goals, board.monitor = self.jobs, Goals(), Monitor()
+        board.shot_dir, board.steered, board._steer_pass = str(self.tmp), lambda _h: False, lambda: "steer"
+        registry = {"devices": [{"device_id": "d" + s, "aliases": [s]} for s in serials]}
+
+        held_by({s: "observation" for s in serials})   # all three sampled at once, as on mbp1
+        home = board.home(object())
+        self.assertEqual([(slot["holder"], slot["busy"]) for slot in home["slots"] if slot], [(None, False)] * 3)
+        self.assertFalse(home["busy"])
+        self.assertEqual([dash.Dash._device_busy(s, lock, registry) for s in serials], [False] * 3)
+
+        held_by({"S1": "selfsr@S1", "S2": "observation", "S3": "observation"})   # a real holder beside the sampling
+        home = board.home(object())
+        self.assertEqual([(slot["holder"], slot["busy"]) for slot in home["slots"] if slot],
+                         [({"kind": "external", "label": "selfsr@S1"}, True), (None, False), (None, False)])
+        self.assertTrue(home["busy"])
+        self.assertEqual([dash.Dash._device_busy(s, lock, registry) for s in serials], [True, False, False])
+
+        script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
+        self.assertIn("idle = on.filter(s => s.online !== false && !s.busy).length", script)
+        self.assertIn("${idle} 台空闲", script)
+        self.assertNotIn("空 ${free} 位", script, "the count is of idle phones, not of empty slots")
+
     def test_home_has_no_gol_or_demo_panels_and_reports_are_separate(self):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")

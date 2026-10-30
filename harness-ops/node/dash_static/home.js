@@ -107,7 +107,7 @@
     return s.busy ? `<span class="tag warn">占用</span>` : `<span class="tag ok">空闲</span>`;
   }
   function renderPhones(h) {
-    const on = h.slots.filter(Boolean), free = h.slots.length - on.length;
+    const on = h.slots.filter(Boolean), idle = on.filter(s => s.online !== false && !s.busy).length;
     $("phones").innerHTML = on.map(s => {
       const job = s.holder?.kind === "job" ? s.holder : null, global = s.global_holder;
       const thumb = s.shot_at && HGTarget.canWrite()
@@ -125,7 +125,7 @@
         <div class="stats">${stat(s.soc_c == null ? null : num(s.soc_c, 0), "°", "芯片", s.soc_c >= 45)}${stat(s.battery_c == null ? null : num(s.battery_c, 0), "°", "电池", s.battery_c >= 40)}${stat(s.battery_pct, "%", "电量", false)}</div>
         ${doing}</div></div>`;
     }).join("") || `<p class="empty-row">${h.fleet_age_s == null ? (h.fleet_err ? "读不到手机：" + esc(h.fleet_err) : "正在读手机状态…") : "现在没有手机接入"}</p>`;
-    $("phones-more").textContent = on.length ? `${on.length} 台${free > 0 ? ` · 空 ${free} 位` : ""}` : "";
+    $("phones-more").textContent = on.length ? `${on.length} 台 · ${idle ? `${idle} 台空闲` : "都在用"}` : "";
   }
   function renderQuestions(h) {
     const questions = h.questions || [];

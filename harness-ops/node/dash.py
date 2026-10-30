@@ -96,6 +96,18 @@ SHOWCASE_STATIC = frozenset((
 TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/doctor"}
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
+# PF's own sampling (EphemeralObservation, devlease.rs) holds each idle phone for a moment every ~30 s to read its
+# temperatures and battery and take the screenshot. That is not someone using the phone.
+SAMPLING = "observation"
+
+
+def _holders(held):
+    """The lock's held_by (PF joins every holder's label with ", ") without PF's own sampling; None if nothing is left."""
+    return ", ".join(x for x in (held or "").split(", ") if x and x != SAMPLING) or None
+
+
+def _sampling_only(held):
+    return bool(held) and _holders(held) is None
 JOBS_SHOWN = 30
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
 REDACT = re.compile(r"(Bearer\s+|sk-[A-Za-z0-9]{4})[A-Za-z0-9._\-]{8,}|((?:api[_-]?key|token|secret|password)\s*[=:]\s*)\S+", re.I)
@@ -610,9 +622,9 @@ class Dash:
     def _holder(self, serial, lock, known=()):
         """Who holds this phone: a node job (with its research and agent) or an outside lock label."""
         entry = next((e for e in (lock.get("lease") or {}).get("entries", [])
-                      if e.get("serial") == serial and e.get("state") == "active"), None)
+                      if e.get("serial") == serial and e.get("state") == "active" and e.get("label") != SAMPLING), None)
         jid, label = (entry or {}).get("job_id"), (entry or {}).get("label")
-        held = lock.get("held_by") if lock.get("status") == "held" else None
+        held = _holders(lock.get("held_by")) if lock.get("status") == "held" else None
         global_job = aimed = None
         if not entry and held:
             # A node job's own label, or an experiment's lock under it: job-<id>[-<what>][@<serial>].
@@ -633,7 +645,7 @@ class Dash:
     def _global_holder(self, serial, lock, known=()):
         if lock.get("status") != "held":
             return None
-        held = lock.get("held_by")
+        held = _holders(lock.get("held_by"))
         match = re.fullmatch(r"job-([0-9a-f]{12})(?:-[^@]*)?(?:@(.+))?", held or "")
         if not match or not self.job_service:
             return None
@@ -768,15 +780,23 @@ class Dash:
 
     @staticmethod
     def _device_busy(serial, lock, registry):
-        scopes = (lock.get("lease") or {}).get("device_scopes") or {}
-        devices = scopes.get("devices") or []
+        lease = lock.get("lease") or {}
+        devices = (lease.get("device_scopes") or {}).get("devices") or []
         for device in registry.get("devices", []):
-            if serial in (device.get("aliases") or []):
+            aliases = device.get("aliases") or []
+            if serial in aliases:
                 state = next((item.get("status") for item in devices if item.get("device_id") == device.get("device_id")), None)
                 if state is not None:
-                    return state != "clear"
+                    holding = [e for e in lease.get("entries", []) if e.get("state") == "active"
+                               and (e.get("device_id") == device.get("device_id") or e.get("serial") in aliases)]
+                    return state != "clear" and not (holding and all(e.get("label") == SAMPLING for e in holding))
                 break
-        return lock.get("status") != "free"
+        # Without a registry scope, PF's lease entries still name the phone each holder has (a global entry, or one
+        # whose phone is unknown, holds them all).
+        entries = [e for e in lease.get("entries", []) if e.get("state") == "active"]
+        if lock.get("status") != "free" and entries:
+            return any(e.get("label") != SAMPLING and (e.get("scope") == "global" or e.get("serial") in (serial, None)) for e in entries)
+        return lock.get("status") != "free" and not _sampling_only(lock.get("held_by"))
 
     # ── 汇总 ──
     def home(self, h):
@@ -821,14 +841,14 @@ class Dash:
                                             "demo": goal["demo"]},
                           "waiting_goal": waiting and {"run_id": waiting["run_id"],
                                                        "summary": waiting["state"].get("goal_summary") or waiting["intent"],
-                                                       "holder": lock.get("held_by")}})
+                                                       "holder": _holders(lock.get("held_by"))}})
         while len(slots) < SLOTS_MIN:
             slots.append(None)
         return {"now": _now(), "slots": slots, "tasks": self._tasks(), "questions": self._questions(), "reviews": self._reviews(),
                 "agents": self._agents(), "fleet_age_s": snapshot["age_s"],
                 "fleet_err": snapshot["error"], "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
-                "busy": lock["status"] != "free",
+                "busy": lock["status"] != "free" and not _sampling_only(lock.get("held_by")),
                 # 沿 phonefarm 事实展示；标签不作为任务或目标的身份。
                 "lock": {"status": lock.get("status"), "lease": lock.get("lease"),
                          "held_by": lock.get("held_by"), "since": lock.get("since"), "stale": lock.get("stale"),
