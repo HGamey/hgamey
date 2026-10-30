@@ -149,6 +149,12 @@ def manifest(value, internal=False):
             path = text(source.get("path"), 2048, True)
             if path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
                 raise ValueError("source path must be relative to job/out")
+        elif kind == "attachment":
+            object_fields(source, {"name", "kind", "attachment_id", "filename", "local_path"})
+            if not re.fullmatch(r"[0-9a-f]{32}", source.get("attachment_id", "")):
+                raise ValueError("attachment source requires a 32-character attachment_id")
+            source["filename"] = text(source.get("filename"), 128, True)
+            source["local_path"] = text(source.get("local_path"), 2048, True)
         elif kind == "external_reference":
             object_fields(source, {"name", "kind", "locator", "declared_size", "declared_sha256"})
             source["locator"] = text(source.get("locator"), 4096, True)
@@ -257,6 +263,20 @@ class NodeResults:
                     raise ValueError("adapter referenced a different import")
                 row.update(status="available", size=imported["size"], sha256=imported["sha256"])
                 documents[name] = imported["document"]
+            elif kind == "attachment":
+                root = SafeRoot(self.jobs.data_root)
+                try:
+                    try:
+                        path = "_research/attachments/" + source["attachment_id"]
+                        metadata = root.read_json(path + ".json", 64 << 10)
+                        with root.open_file(path) as stream:
+                            before = os.fstat(stream.fileno())
+                            row.update(status="available", size=before.st_size, stamp=list(stamp(before)),
+                                       sha256=metadata["sha256"])
+                    except (OSError, ValueError, KeyError):
+                        row.update(status="unavailable", reason="attachment is missing or unreadable")
+                finally:
+                    root.close()
             else:
                 try:
                     with self.jobs._read_root.open_file(source["job_id"] + "/out/" + source["path"]) as stream:
@@ -369,13 +389,20 @@ class NodeResults:
         item = {"name": source["name"], "status": observation["status"], "reason": observation["reason"], "url": None}
         if source["kind"] == "imported_json":
             item.update(status="available", reason=None)
-        elif source["kind"] == "job_output":
+        elif source["kind"] in {"job_output", "attachment"}:
+            root = SafeRoot(self.jobs.data_root) if source["kind"] == "attachment" else None
             try:
-                with self.jobs._read_root.open_file(source["job_id"] + "/out/" + source["path"]) as stream:
+                path = ("_research/attachments/" + source["attachment_id"] if root is not None
+                        else source["job_id"] + "/out/" + source["path"])
+                opener = root.open_file if root is not None else self.jobs._read_root.open_file
+                with opener(path) as stream:
                     same = list(stamp(os.fstat(stream.fileno()))) == observation.get("stamp")
                 item.update(status="available" if same else "changed", reason=None if same else "source no longer matches its registration observation")
             except (OSError, ValueError):
                 item.update(status="unavailable", reason="source is no longer readable through the registered path")
+            finally:
+                if root is not None:
+                    root.close()
         if item["status"] == "available":
             item["url"] = "/results/" + quote(rid, safe="") + "/sources/" + quote(source["name"], safe="")
         return item
@@ -459,12 +486,19 @@ class NodeResults:
             if media_kind is not None:
                 raise MediaError(415, "media_unsupported", "imported JSON is not an evaluation media source")
             return self.imported(source["import_id"], source=True)
-        if source["kind"] != "job_output" or not observation.get("stamp"):
+        if source["kind"] not in {"job_output", "attachment"} or not observation.get("stamp"):
             raise ResultError(409, "result_source_unbound", "source was not bound to readable local bytes at registration")
+        root = SafeRoot(self.jobs.data_root) if source["kind"] == "attachment" else None
         try:
-            stream = self.jobs._read_root.open_file(source["job_id"] + "/out/" + source["path"])
+            path = ("_research/attachments/" + source["attachment_id"] if root is not None
+                    else source["job_id"] + "/out/" + source["path"])
+            opener = root.open_file if root is not None else self.jobs._read_root.open_file
+            stream = opener(path)
         except (OSError, ValueError):
             raise ResultError(404, "result_source_unavailable", "registered source is missing or unreadable") from None
+        finally:
+            if root is not None:
+                root.close()
         try:
             if list(stamp(os.fstat(stream.fileno()))) != observation["stamp"]:
                 raise ResultError(409, "result_source_changed", "source changed after registration; old result was not rewritten")

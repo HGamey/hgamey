@@ -9,6 +9,10 @@ TERMINAL_DIRECTIONS = {"verified", "no_gain", "rejected", "deferred"}
 OPEN_RESEARCH = {"active", "idle", "paused"}
 NOTE_STYLE = "写留言：先说结论，再给依据（数字、任务号、提交号、文件）。一条只讲一件事，200 字以内，细节放报告或附件。用平常话和通用术语，不自造词，不用比喻和口号。不写客套、致谢，不复述对方，不写「我将……」式的预告。不确定就直说不确定。"
 DELIVERY_STYLE = "交付写清：作为依据的每个任务是否有效，无效的写原因；完整复现命令（pf-node 提交命令和实验提交号）；适用条件。exit 0 不等于有效，无效的任务不能当结论依据。"
+COMPARE_DUTY = "画质和性能都要和基线比，不能只报自己的数。画质：同一画面截原生全分辨率、你的做法、参照算法（如 GSR、双线性），用 research compare 请人盲评。性能：同场景、同时长、同起始温度逐个测。等人时做别的方向；交付放对比图或视频。"
+COMPARE_HELP = (COMPARE_DUTY + "\n"
+    "pf-node research compare <研究ID> --item <job:ID:PATH 或本机文件> ×N [--pick K] --title \"<标题>\" --question \"<要人判断什么>\" [--direction <方向ID>]\n"
+    "N 为 2–8，PNG/JPEG 与 MP4/WebM 可混；洗牌后显示 A、B、C……，输出请求 ID、网页链接和素材对应。")
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
     "设备锁序列化实际操作；仅 claimed 扣运行名额，确认宿主完成的终态自动释放任务预留。完成未知时保留独占范围，由负责人或管理员 reset。",
@@ -23,6 +27,7 @@ LOOP = [
     "图在自己机器上画，用 research note --attach 附上；实验 Python 只保证有标准库。",
     "devlock busy 默认等到拿锁或取消；DEVLOCK_WAIT_SECONDS 可指定等待秒数，0 立即失败。单机用 phonefarm lease --serial <串号>（已注册设备走 lane），多机才用全局 devlock。",
     "需要人判断时发 request，然后继续做其他方向，不要停下来等人。",
+    COMPARE_DUTY,
     "为研究提交任务时加 --research <研究ID>，网页的手机占用和任务页才看得到这个任务；属于某方向时再加 --direction <方向ID>，运行会挂到该方向下。",
     "用自己的 token 提交任务、写 research、发言，记录都会落在你的名下。",
     "每轮结束用 pf-node agents status <你的名字> \"<在做什么>\" 更新状态。",
@@ -35,6 +40,28 @@ LOOP = [
 def _latest(db, kind):
     return db.execute("SELECT r.* FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id AND r.revision=o.revision "
                       "WHERE o.kind=? ORDER BY r.sequence", (kind,)).fetchall()
+
+
+def _comparison_picks(jobs, request, answers):
+    spec = request.get("evaluation") or {}
+    if spec.get("schema") != "phonefarm/compare@1":
+        return []
+    for answer in reversed(answers):
+        value = (answer["data"].get("evaluation") or {})
+        if value.get("schema") != "phonefarm/compare-feedback@1":
+            continue
+        picked = []
+        for slot in value["picked"]:
+            item = spec["items"]["ABCDEFGH".index(slot)]
+            reference = request["evidence_refs"][item if type(item) is int else item["ref"]]
+            row = jobs.results._row(reference["result_id"])
+            sources = json.loads(row["manifest"])["sources"]
+            source = next(source for source in sources if source["name"] == reference["source_name"])
+            original = (f"job:{source['job_id']}:{source['path']}" if source["kind"] == "job_output"
+                        else source["local_path"])
+            picked.append({"slot": slot, "source": original})
+        return picked
+    return []
 
 
 def duties(jobs, name, now=None):
@@ -50,11 +77,16 @@ def duties(jobs, name, now=None):
         mine = {rid: data for rid, data in owned.items() if data["state"] in OPEN_RESEARCH}
         notes = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "note")
                  if row["research_id"] in owned]
-        requests = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "request")
-                    if row["research_id"] in mine]
+        requests = []
+        for row in _latest(db, "request"):
+            data, audit = json.loads(row["data"]), json.loads(row["audit"])
+            evaluation = data.get("type") == "evaluation"
+            if ((row["research_id"] in mine and not evaluation)
+                    or (row["research_id"] in owned and evaluation and audit.get("actor_label") == name)):
+                requests.append((row, data, audit))
         feedback = {}
-        for row in db.execute("SELECT request_id, sequence FROM revisions WHERE kind='feedback'").fetchall():
-            feedback.setdefault(row["request_id"], []).append(row["sequence"])
+        for row in db.execute("SELECT request_id, sequence, data FROM revisions WHERE kind='feedback' ORDER BY sequence").fetchall():
+            feedback.setdefault(row["request_id"], []).append({"sequence": row["sequence"], "data": json.loads(row["data"])})
         directions = {}
         for row in _latest(db, "direction"):
             if row["research_id"] in owned:
@@ -88,13 +120,18 @@ def duties(jobs, name, now=None):
         if data["state"] != "open":
             continue
         answers = feedback.get(row["id"], [])
+        evaluation = data.get("type") == "evaluation"
         if answers:
+            text = (f"评价 {row['id']}（{data['title']}）已有 {len(answers)} 条反馈；读取后在方向记录采纳、暂缓或拒绝和理由，再关闭请求"
+                    if evaluation else f"请求 {row['id']}（{data['title']}）已有 {len(answers)} 条反馈；处理后关闭请求")
+            command = (f"pf-node research list feedback --request-id {row['id']}" if evaluation
+                       else f"pf-node research show request {row['id']}")
             owed.append({"kind": "process_feedback", "research_id": row["research_id"], "target": row["id"],
-                         "unread": max(answers) > seen,
-                         "text": f"请求 {row['id']}（{data['title']}）已有 {len(answers)} 条反馈；处理后关闭请求",
-                         "command": f"pf-node research show request {row['id']}"})
+                         "unread": max(answer["sequence"] for answer in answers) > seen, "text": text, "command": command,
+                         **({"picked": _comparison_picks(jobs, data, answers)} if evaluation else {})})
         else:
-            waiting.append({"research_id": row["research_id"], "request_id": row["id"], "title": data["title"],
+            waiting.append({**({"kind": "evaluation"} if evaluation else {}),
+                            "research_id": row["research_id"], "request_id": row["id"], "title": data["title"],
                             "overdue": data["due_at"] is not None and data["due_at"] < now})
 
     active, blocked, finished = [], [], []

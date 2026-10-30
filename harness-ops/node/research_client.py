@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 import tempfile
 import time
@@ -15,7 +16,7 @@ import urllib.error
 import urllib.parse
 import uuid
 from cli_time import utc
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP
 
 
 HELP = """用法:
@@ -33,11 +34,12 @@ HELP = """用法:
   pf-node research operation ID
   pf-node research events [--after N | --cursor CURSOR] [--research-id ID] [--limit 1..500]
       [--wait-seconds 0..15]
-  pf-node research media REQUEST A|B --revision N --output FILE
+  pf-node research media REQUEST A|B|C... --revision N --output FILE
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
   pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask]
       [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
+  pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
   pf-node research thread ID                      # 按时间读研究里的留言
   pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|url:URL ...
       [--game-version V] [--device D ...]          # 交付：总结、产物、适用范围；状态变为 delivered
@@ -49,7 +51,7 @@ plan-template 离线输出 next_experiment JSON 草稿（title、plan、research
 最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。research list 必须带 KIND，可选值同前；FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
---attach 直接附本机 PNG、JPEG 或 SVG，可重复，单文件至多 16 MiB；实验 Python 只保证有标准库。
+--attach 直接附本机 PNG、JPEG、SVG、MP4 或 WebM，可重复；图片至多 16 MiB，视频至多 128 MiB。实验 Python 只保证有标准库。
 --ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 conclude 读取方向当前 revision 写入结论与 state_reason；可用 --evidence 重复引用任务产物，未回应人工留言时仍拒绝。
@@ -71,7 +73,7 @@ media 只读下载固定版本的一个槽位，需显式 node-id 与评价能�
 图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
 没有自动重试或续传；失败只清理本次 partial。下载完整不表示已解码、看过或已提交评价。
 """
-HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE
+HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE + "\n" + COMPARE_HELP
 
 KINDS = ("research", "direction", "request", "feedback", "note")
 MAX_DATA = 64 << 10
@@ -79,6 +81,9 @@ MAX_BODY = 128 << 10
 MAX_RESPONSE = 8 << 20
 MEDIA_LIMITS = {"image/png": 16 << 20, "image/jpeg": 16 << 20,
                 "video/mp4": 128 << 20, "video/webm": 128 << 20}
+ATTACHMENT_LIMITS = {**MEDIA_LIMITS, "image/svg+xml": 16 << 20}
+ATTACHMENT_EXTENSIONS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                         ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm"}
 
 
 def identifier(value):
@@ -167,8 +172,15 @@ def parser():
     note.add_argument("--reply-to", type=identifier)
     note.add_argument("--decision", choices=("adopt", "defer", "reject"))
     note.add_argument("--evidence", action="append", default=[])
-    note.add_argument("--attach", action="append", type=Path, help="附加本机 PNG、JPEG 或 SVG，可重复")
+    note.add_argument("--attach", action="append", type=Path, help="附加本机 PNG、JPEG、SVG、MP4 或 WebM，可重复")
     note.add_argument("--ask", action="store_true")
+    comparison = commands.add_parser("compare")
+    comparison.add_argument("id", type=identifier)
+    comparison.add_argument("--item", action="append", required=True)
+    comparison.add_argument("--pick", type=integer, default=1)
+    comparison.add_argument("--title", required=True)
+    comparison.add_argument("--question", required=True)
+    comparison.add_argument("--direction", type=identifier)
     thread = commands.add_parser("thread")
     thread.add_argument("id", type=identifier)
     deliver = commands.add_parser("deliver")
@@ -179,7 +191,7 @@ def parser():
     deliver.add_argument("--device", action="append", default=[])
     media = commands.add_parser("media")
     media.add_argument("id", type=identifier)
-    media.add_argument("slot", choices=("A", "B"))
+    media.add_argument("slot", choices=tuple("ABCDEFGH"))
     media.add_argument("--revision", type=integer, required=True)
     media.add_argument("--output", required=True)
     return root
@@ -565,20 +577,99 @@ def _artifact(item, node_id, option="--artifact"):
 def _attachment(client, path):
     if not path.is_file():
         raise ValueError("--attach 需要本机普通文件")
-    if path.stat().st_size > 16 << 20:
-        raise ValueError("--attach 单文件不能超过 16 MiB")
-    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}.get(path.suffix.lower())
+    mime = ATTACHMENT_EXTENSIONS.get(path.suffix.lower())
     if mime is None:
-        raise ValueError("--attach 只接受 PNG、JPEG 或 SVG")
+        raise ValueError("--attach 只接受 PNG、JPEG、SVG、MP4 或 WebM")
+    maximum = ATTACHMENT_LIMITS[mime]
+    if path.stat().st_size > maximum:
+        raise ValueError(f"--attach 单文件不能超过 {maximum >> 20} MiB")
     with path.open("rb") as stream:
-        raw = stream.read((16 << 20) + 1)
-    if len(raw) > 16 << 20:
-        raise ValueError("--attach 单文件不能超过 16 MiB")
+        raw = stream.read(maximum + 1)
+    if len(raw) > maximum:
+        raise ValueError(f"--attach 单文件不能超过 {maximum >> 20} MiB")
     attachment_id = uuid.uuid4().hex
     value = client.request("POST", "/research-attachments", raw, headers={
         "X-Attachment-ID": attachment_id, "X-Filename": path.name, "Content-Type": mime})
     return {"kind": "attachment", "attachment_id": value["attachment_id"], "node_id": value["node_id"],
             "filename": value["filename"], "content_type": value["content_type"], "sha256": value["sha256"]}
+
+
+def _comparison_kind(path):
+    kind = {".png": "image", ".jpg": "image", ".jpeg": "image",
+            ".mp4": "video", ".webm": "video"}.get(Path(path).suffix.lower())
+    if kind is None:
+        raise ValueError("--item 只接受 PNG、JPEG、MP4 或 WebM")
+    return kind
+
+
+def _comparison_source(client, item, index):
+    if item.startswith("job:"):
+        reference = _artifact(item, None, "--item")
+        if "path" not in reference:
+            raise ValueError("--item 的 job 产物路径不能为空")
+        kind = _comparison_kind(reference["path"])
+        source = {"name": f"item-{index + 1}", "kind": "job_output",
+                  "job_id": reference["job_id"], "path": reference["path"]}
+    else:
+        path = Path(item)
+        kind = _comparison_kind(path)
+        attachment = _attachment(client, path)
+        base = path.name if re.fullmatch(r"[A-Za-z0-9._-]{1,48}", path.name) else "source"
+        source = {"name": f"item-{index + 1}-{base}", "kind": "attachment", "attachment_id": attachment["attachment_id"],
+                  "filename": attachment["filename"], "local_path": item}
+    return source, kind
+
+
+def _compare(client, args):
+    if not 2 <= len(args.item) <= 8:
+        raise ValueError("research compare 需要 2 到 8 个 --item")
+    if not 1 <= args.pick <= len(args.item):
+        raise ValueError("--pick 必须在 1 到素材数之间")
+    client.require_evaluation()
+    current = client.request("GET", f"/research-state/research/{args.id}")
+    directions = []
+    if args.direction:
+        direction = client.request("GET", f"/research-state/direction/{args.direction}")
+        if direction.get("research_id") != args.id:
+            raise ValueError("--direction 不属于这个研究；未登记或创建评价")
+        directions = [{"id": args.direction, "revision": direction["revision"]}]
+    prepared = [_comparison_source(client, item, index) for index, item in enumerate(args.item)]
+    sources, kinds = [item[0] for item in prepared], [item[1] for item in prepared]
+    result_id, request_id = "r-" + uuid.uuid4().hex[:16], "ev-" + uuid.uuid4().hex[:12]
+    job_ids = {source.get("job_id") for source in sources}
+    manifest = {"schema": "phonefarm/result@1", "result_id": result_id, "title": args.title,
+                "job_id": job_ids.pop() if len(job_ids) == 1 else None,
+                "labels": {"research_id": args.id, "direction_id": args.direction},
+                "origin": {"evidence_origin": "unknown"}, "outcome": "unknown", "sources": sources,
+                "limitations": ["仅登记人工对比素材，不代表实验有效或画质结论"]}
+    print(f"pf-node: 登记 result_id={result_id}；仅提交一次。", file=sys.stderr, flush=True)
+    client.request("POST", "/results", json.dumps(manifest, ensure_ascii=False, separators=(",", ":"),
+                                                  allow_nan=False).encode("utf-8"))
+    node_id = client.target.identity()["node_id"]
+    order = list(range(len(sources)))
+    for index in range(len(order) - 1, 0, -1):
+        other = secrets.randbelow(index + 1)
+        order[index], order[other] = order[other], order[index]
+    data = {"research_id": args.id, "type": "evaluation", "title": args.title, "need": args.question,
+            "why": "需要人工比较多份素材的主观差异", "resume_hint": None,
+            "context": {"research_revision": current["revision"], "directions": directions},
+            "evidence_refs": [{"kind": "result_source", "node_id": node_id, "result_id": result_id,
+                               "source_name": source["name"]} for source in sources],
+            "evaluation": {"schema": "phonefarm/compare@1", "pick": args.pick,
+                           "items": [{"ref": index, "media_kind": kinds[index]} for index in order]}}
+    operation_id = uuid.uuid4().hex
+    body = json.dumps({"schema": "phonefarm/research-write@1", "operation_id": operation_id,
+                       "base_revision": None, "data": data, "actor_label": None, "reason": None},
+                      ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    print(f"pf-node: request/{request_id} operation_id={operation_id}", file=sys.stderr, flush=True)
+    client.request("POST", f"/research-state/request/{request_id}", body)
+    query = urllib.parse.urlencode({"kind": "request", "id": request_id})
+    print(json.dumps({"schema_version": 1, "node_id": node_id, "research_id": args.id,
+                      "result_id": result_id, "request_id": request_id,
+                      "url": client.target.url + "/dash/research?" + query,
+                      "slots": {"ABCDEFGH"[position]: args.item[index] for position, index in enumerate(order)}},
+                     ensure_ascii=False, allow_nan=False))
+    return 0
 
 
 def _conclude(client, args):
@@ -609,6 +700,8 @@ def _task(client, args):
     client.require_capability(write=True)
     if args.command == "conclude":
         return _conclude(client, args)
+    if args.command == "compare":
+        return _compare(client, args)
     if args.command == "note":
         node_id = client.target.identity()["node_id"]
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
@@ -661,7 +754,7 @@ def main(argv, *, target):
     try:
         if args.command in ("create", "update"):
             return _write(client, args)
-        if args.command in ("claim", "assign", "note", "thread", "deliver", "conclude"):
+        if args.command in ("claim", "assign", "note", "compare", "thread", "deliver", "conclude"):
             return _task(client, args)
         if args.command == "media":
             return _media(client, args)

@@ -44,7 +44,7 @@ from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_search import NodeResultSearch
 from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
-from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE, ATTACHMENT_MAX
+from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE, ATTACHMENT_MAX, ATTACHMENT_LIMITS
 import job_experiment
 from node_media import MediaError
 from node_fleet import FleetState
@@ -1107,7 +1107,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-search"], ["remote-result"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"]):
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
-                return self._read_get(parts[2:], parse_qs(u.query))
+                return self._read_get(parts[2:], parse_qs(u.query), dashboard=True)
             if board and parts[:1] == ["dash"]:  # 实时看板自己管认证（查看密码，不是管理 token）
                 try:
                     return board.handle_get(self, parts, u.query)
@@ -1118,7 +1118,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return
             return self._read_get(parts, parse_qs(u.query))
 
-        def _read_get(self, parts, q):
+        def _read_get(self, parts, q, dashboard=False):
             try:
                 if parts[:1] == ["live"]:
                     if len(parts) != 2 or parts[1] not in {"status", "frame", "stream"}:
@@ -1213,12 +1213,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if len(parts) == 2:
                         return self._send(200, research.list(parts[1], q))
                     if len(parts) == 4 and parts[3] == "history":
-                        return self._send(200, research.history(parts[1], unquote(parts[2]), q))
+                        return self._send(200, research.history(parts[1], unquote(parts[2]), q, blind=dashboard))
                     if len(parts) == 3:
                         if set(q) - {"revision", "expected_node_id"} or any(len(v) != 1 for v in q.values()):
                             raise ValueError("unsupported research object query")
                         revision = int(q["revision"][0]) if "revision" in q else None
-                        return self._send(200, research.get(parts[1], unquote(parts[2]), revision))
+                        return self._send(200, research.get(parts[1], unquote(parts[2]), revision, blind=dashboard))
                 if len(parts) == 2 and parts[0] == "research-operations":
                     return self._send(200, research.operation(unquote(parts[1])))
                 if parts == ["research-events"]:
@@ -1632,10 +1632,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if not (self.headers.get("X-Expected-Node-ID") or
                         parse_qs(urlparse(self.path).query).get("expected_node_id")):
                     raise ResearchError(400, "target_required", "attachment upload requires an expected node identity")
-                length = self._upload_length(ATTACHMENT_MAX, 1)
+                content_type = self.headers.get("Content-Type", "").split(";")[0].strip()
+                length = self._upload_length(ATTACHMENT_LIMITS.get(content_type, ATTACHMENT_MAX), 1)
                 attachment_id = self.headers.get("X-Attachment-ID", "")
                 filename = self.headers.get("X-Filename", "")
-                content_type = self.headers.get("Content-Type", "").split(";")[0].strip()
                 self.connection.settimeout(30)
                 raw = self.rfile.read(length)
                 if len(raw) != length:

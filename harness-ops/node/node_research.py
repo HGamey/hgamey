@@ -17,12 +17,14 @@ from node_read import encode_cursor, decode_cursor
 from node_results import ResultError, encoded, identifier, object_fields, text
 from node_result_compare import compare as compare_results
 import node_research_criteria as criteria_rules
-from node_media import LIMITS, MediaError
+from node_media import LIMITS, MediaError, inspect_media
 
 MAX_DATA = 64 << 10
 MAX_WRITE = 128 << 10
 ATTACHMENT_MAX = 16 << 20
-ATTACHMENT_TYPES = {"image/png", "image/jpeg", "image/svg+xml"}
+ATTACHMENT_LIMITS = {"image/png": 16 << 20, "image/jpeg": 16 << 20, "image/svg+xml": 16 << 20,
+                     "video/mp4": 128 << 20, "video/webm": 128 << 20}
+ATTACHMENT_TYPES = set(ATTACHMENT_LIMITS)
 AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")  # same rule as node_agents.NAME
 STATES = {
     "research": {"active", "idle", "paused", "closed", "delivered"},
@@ -98,7 +100,7 @@ def refs(value):
                     or "/" in filename or "\\" in filename or "\x00" in filename):
                 raise ValueError("evidence attachment requires a safe filename")
             if ref.get("content_type") not in ATTACHMENT_TYPES:
-                raise ValueError("evidence attachment type must be PNG, JPEG or SVG")
+                raise ValueError("evidence attachment type must be PNG, JPEG, SVG, MP4 or WebM")
         else:
             identifier(ref.get("result_id"))
             if kind == "result_source":
@@ -113,14 +115,44 @@ def unique(items, key):
 
 def evaluation(kind, value, evidence_refs):
     if kind == "request":
-        object_fields(value, {"schema", "media_kind", "slots"})
-        if value.get("schema") != "phonefarm/ab-evaluation@1" or value.get("media_kind") not in LIMITS:
-            raise ValueError("evaluation requires phonefarm/ab-evaluation@1 and image/video")
-        slots = object_fields(value.get("slots"), {"A", "B"})
-        if set(slots) != {"A", "B"} or any(type(i) is not int or not 0 <= i < len(evidence_refs) for i in slots.values()):
-            raise ValueError("evaluation slots must select two evidence reference indices")
-        if slots["A"] == slots["B"] or any(evidence_refs[i]["kind"] != "result_source" for i in slots.values()):
-            raise ValueError("evaluation slots must be distinct registered source reference indices")
+        schema = value.get("schema")
+        if schema == "phonefarm/ab-evaluation@1":
+            object_fields(value, {"schema", "media_kind", "slots"})
+            if value.get("media_kind") not in LIMITS:
+                raise ValueError("evaluation requires image/video")
+            slots = object_fields(value.get("slots"), {"A", "B"})
+            if set(slots) != {"A", "B"} or any(type(i) is not int or not 0 <= i < len(evidence_refs) for i in slots.values()):
+                raise ValueError("evaluation slots must select two evidence reference indices")
+            if slots["A"] == slots["B"] or any(evidence_refs[i]["kind"] != "result_source" for i in slots.values()):
+                raise ValueError("evaluation slots must be distinct registered source reference indices")
+        elif schema == "phonefarm/compare@1":
+            object_fields(value, {"schema", "items", "pick"})
+            items = value.get("items")
+            if not isinstance(items, list) or not 2 <= len(items) <= 8:
+                raise ValueError("comparison requires 2 to 8 items")
+            if type(value.get("pick")) is not int or not 1 <= value["pick"] <= len(items):
+                raise ValueError("comparison pick must be within the item count")
+            selected = []
+            for item in items:
+                if type(item) is int:
+                    index = item
+                else:
+                    object_fields(item, {"ref", "media_kind"})
+                    index = item.get("ref")
+                    if item.get("media_kind") not in LIMITS:
+                        raise ValueError("comparison item requires image/video")
+                if type(index) is not int or not 0 <= index < len(evidence_refs) or evidence_refs[index]["kind"] != "result_source":
+                    raise ValueError("comparison items must select registered source reference indices")
+                selected.append(index)
+            if len(set(selected)) != len(selected):
+                raise ValueError("comparison item indices must be distinct")
+        else:
+            raise ValueError("evaluation requires phonefarm/ab-evaluation@1 or phonefarm/compare@1")
+    elif value.get("schema") == "phonefarm/compare-feedback@1":
+        fields = {"schema", "picked", "unable", "difference", "client_display", "identity_revealed"}
+        object_fields(value, fields)
+        if set(value) != fields or not isinstance(value["picked"], list) or type(value["unable"]) is not bool:
+            raise ValueError("comparison feedback requires picked and unable")
     else:
         fields = {"schema", "preference", "difference", "reviewed", "client_display", "identity_revealed"}
         object_fields(value, fields)
@@ -441,15 +473,20 @@ class NodeResearch:
                 or filename in (".", "..") or "/" in filename or "\\" in filename or "\x00" in filename):
             raise ValueError("attachment filename must be a single safe filename")
         if content_type not in ATTACHMENT_TYPES:
-            raise ValueError("attachments must be PNG, JPEG or SVG")
-        if not isinstance(raw, bytes) or len(raw) > ATTACHMENT_MAX:
-            raise ValueError("attachment exceeds the 16 MiB limit")
+            raise ValueError("attachments must be PNG, JPEG, SVG, MP4 or WebM")
+        maximum = ATTACHMENT_LIMITS[content_type]
+        if not isinstance(raw, bytes) or len(raw) > maximum:
+            raise ValueError(f"attachment exceeds the {maximum >> 20} MiB limit")
         if content_type == "image/png" and not raw.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("attachment is not a PNG")
         if content_type == "image/jpeg" and not raw.startswith(b"\xff\xd8\xff"):
             raise ValueError("attachment is not a JPEG")
         if content_type == "image/svg+xml" and b"<svg" not in raw[:1024]:
             raise ValueError("attachment is not an SVG")
+        if content_type == "video/mp4" and (len(raw) < 12 or raw[4:8] != b"ftyp"):
+            raise ValueError("attachment is not an MP4")
+        if content_type == "video/webm" and not raw.startswith(b"\x1a\x45\xdf\xa3"):
+            raise ValueError("attachment is not a WebM")
         metadata = {"schema_version": 1, "node_id": self.node_id, "attachment_id": attachment_id,
                     "filename": filename, "content_type": content_type, "size": len(raw),
                     "sha256": hashlib.sha256(raw).hexdigest()}
@@ -458,7 +495,7 @@ class NodeResearch:
         try:
             root.mkdir("_research/attachments")
             try:
-                if root.read_json(path + ".json", 64 << 10) == metadata and root.read_bytes(path, ATTACHMENT_MAX) == raw:
+                if root.read_json(path + ".json", 64 << 10) == metadata and root.read_bytes(path, maximum) == raw:
                     return metadata
                 raise ResearchError(409, "research_operation_conflict", "attachment ID already has different content")
             except FileNotFoundError:
@@ -469,7 +506,7 @@ class NodeResearch:
                 os.fsync(stream.fileno())
             root.sync(path)
             if not root.publish_json_once(path + ".json", metadata):
-                if root.read_json(path + ".json", 64 << 10) != metadata or root.read_bytes(path, ATTACHMENT_MAX) != raw:
+                if root.read_json(path + ".json", 64 << 10) != metadata or root.read_bytes(path, maximum) != raw:
                     raise ResearchError(409, "research_operation_conflict", "attachment ID already has different content")
             root.sync("_research/attachments", directory=True)
             return metadata
@@ -576,14 +613,19 @@ class NodeResearch:
     @staticmethod
     def _evaluation_sources(value, bindings):
         spec = value["evaluation"]
-        for index in spec["slots"].values():
+        if spec["schema"] == "phonefarm/ab-evaluation@1":
+            selected = [(index, spec["media_kind"]) for index in spec["slots"].values()]
+        else:
+            selected = [((item if type(item) is int else item["ref"]),
+                         None if type(item) is int else item["media_kind"]) for item in spec["items"]]
+        for index, media_kind in selected:
             binding = bindings[index]
             source = binding.get("source_observation") or {}
-            if (source.get("kind") != "job_output" or source.get("status") != "available"
+            if (source.get("kind") not in {"job_output", "attachment"} or source.get("status") != "available"
                     or binding.get("identity_kind") not in {"content_sha256", "registration_bound"}
                     or type(source.get("size")) is not int or source["size"] < 1):
-                raise ResearchError(409, "research_media_unbound", "A/B slots require registered readable job-output snapshots")
-            if source["size"] > LIMITS[spec["media_kind"]]["max_bytes"]:
+                raise ResearchError(409, "research_media_unbound", "comparison slots require registered readable media snapshots")
+            if media_kind is not None and source["size"] > LIMITS[media_kind]["max_bytes"]:
                 raise MediaError(413, "media_too_large", "registered media exceeds the evaluation byte limit")
 
     @staticmethod
@@ -591,19 +633,42 @@ class NodeResearch:
         value, bindings = json.loads(request["data"]), json.loads(request["bindings"])
         spec = value.get("evaluation")
         if spec is None:
-            raise ResearchError(409, "research_evaluation_required", "the original request revision has no A/B evaluation")
-        return {**spec, "references": {slot: value["evidence_refs"][i] for slot, i in spec["slots"].items()},
-                "evidence_bindings": {slot: bindings[i] for slot, i in spec["slots"].items()}}
+            raise ResearchError(409, "research_evaluation_required", "the original request revision has no evaluation")
+        if spec["schema"] == "phonefarm/compare@1":
+            slots = {"ABCDEFGH"[position]: (item if type(item) is int else item["ref"])
+                     for position, item in enumerate(spec["items"])}
+        else:
+            slots = spec["slots"]
+        return {**spec, "references": {slot: value["evidence_refs"][i] for slot, i in slots.items()},
+                "evidence_bindings": {slot: bindings[i] for slot, i in slots.items()}}
 
     def media(self, oid, slot, revision):
         identifier(oid); positive(revision)
-        if slot not in ("A", "B"):
-            raise ValueError("evaluation media slot must be A or B")
+        if slot not in tuple("ABCDEFGH"):
+            raise ValueError("evaluation media slot must be A through H")
         with self._db() as db:
             request = self._reference(db, "request", oid, revision)
             binding = self._evaluation_binding(request)
+            spec = json.loads(request["data"])["evaluation"]
+        if slot not in binding["references"]:
+            raise ValueError("evaluation media slot is absent from this comparison")
         ref = binding["references"][slot]
-        return self.results.source(ref["result_id"], ref["source_name"], media_kind=binding["media_kind"])
+        if spec["schema"] == "phonefarm/compare@1":
+            item = spec["items"]["ABCDEFGH".index(slot)]
+            media_kind = None if type(item) is int else item["media_kind"]
+        else:
+            media_kind = spec["media_kind"]
+        stream, info = self.results.source(ref["result_id"], ref["source_name"], media_kind=media_kind)
+        if media_kind is None:
+            try:
+                header = stream.read(12)
+                stream.seek(0)
+                media_kind = "video" if header.startswith(b"\x1a\x45\xdf\xa3") or header[4:8] == b"ftyp" else "image"
+                info["media"] = inspect_media(stream, media_kind)
+            except BaseException:
+                stream.close()
+                raise
+        return stream, info
 
     def _validate_links(self, db, kind, oid, value, old):
         observations = {}
@@ -617,6 +682,17 @@ class NodeResearch:
             observations = {"request_state_at_submit": latest["state"], "request_revision_at_submit": latest["revision"],
                             "context_changed_at_submit": self._context_changed(db, rid, context)}
             if "evaluation" in value:
+                answer, spec = value["evaluation"], json.loads(request["data"]).get("evaluation")
+                if answer["schema"] == "phonefarm/compare-feedback@1":
+                    if not spec or spec.get("schema") != "phonefarm/compare@1":
+                        raise ResearchError(409, "research_evaluation_required", "comparison feedback requires a comparison request")
+                    picked = answer["picked"]
+                    letters = set("ABCDEFGH"[:len(spec["items"])])
+                    if (len(set(picked)) != len(picked) or any(not isinstance(slot, str) or slot not in letters for slot in picked)
+                            or not answer["unable"] and picked and len(picked) != spec["pick"]):
+                        raise ValueError("picked must contain distinct comparison slots and match pick, unless unable")
+                elif not spec or spec.get("schema") != "phonefarm/ab-evaluation@1":
+                    raise ResearchError(409, "research_evaluation_required", "A/B feedback requires an A/B request")
                 observations["evaluation_binding"] = self._evaluation_binding(request)
             if value["supersedes"]:
                 prior = self._reference(db, "feedback", value["supersedes"], research_id=rid)
@@ -811,20 +887,32 @@ class NodeResearch:
         if "evaluation" in value:
             spec = value["evaluation"]
             query = urlencode({"revision": row["revision"], "expected_node_id": self.node_id})
-            derived["evaluation"] = {**spec, "media": {slot: "/research-state/request/" + quote(oid) + "/media/" + slot + "?" + query for slot in ("A", "B")},
-                                     "limits": LIMITS[spec["media_kind"]], "blinding": "presentation_only"}
+            if spec["schema"] == "phonefarm/compare@1":
+                slots = list("ABCDEFGH"[:len(spec["items"])])
+                limits = {slot: LIMITS.get(item.get("media_kind")) if isinstance(item, dict) else None
+                          for slot, item in zip(slots, spec["items"])}
+                blinding = "until_feedback"
+            else:
+                slots, limits, blinding = ["A", "B"], LIMITS[spec["media_kind"]], "presentation_only"
+            derived["evaluation"] = {**spec, "media": {slot: "/research-state/request/" + quote(oid) + "/media/" + slot + "?" + query for slot in slots},
+                                     "limits": limits, "blinding": blinding}
         return derived
 
-    def _show(self, db, row):
-        value = json.loads(row["data"])
+    def _show(self, db, row, blind=False):
+        value, bindings = json.loads(row["data"]), json.loads(row["bindings"])
+        if blind and row["kind"] == "request" and (value.get("evaluation") or {}).get("schema") in {
+                "phonefarm/ab-evaluation@1", "phonefarm/compare@1"}:
+            answered = db.execute("SELECT 1 FROM revisions WHERE kind='feedback' AND request_id=? LIMIT 1", (row["id"],)).fetchone()
+            if not answered:
+                value["evidence_refs"], bindings = [], []
         current = db.execute("SELECT * FROM objects WHERE kind=? AND id=?", (row["kind"], row["id"])).fetchone()
         return {"schema_version": 1, "node_id": self.node_id, "kind": row["kind"], "id": row["id"],
                 "research_id": row["research_id"], "revision": row["revision"], "sequence": row["sequence"],
                 "created_at": current["created_at"], "updated_at": row["at"], "data": value,
-                "audit": json.loads(row["audit"]), "evidence_bindings": json.loads(row["bindings"]),
+                "audit": json.loads(row["audit"]), "evidence_bindings": bindings,
                 "derived": self._derived(db, row, value), "current_revision": current["revision"]}
 
-    def get(self, kind, oid, revision=None):
+    def get(self, kind, oid, revision=None, blind=False):
         self._kind(kind); identifier(oid)
         if revision is not None:
             positive(revision)
@@ -833,7 +921,7 @@ class NodeResearch:
                    if revision is not None else self._latest(db, kind, oid))
             if row is None:
                 raise ResearchError(404, "research_not_found", "research object or version was not found")
-            return self._show(db, row)
+            return self._show(db, row, blind)
 
     def open_questions(self):
         with self._db() as db:
@@ -920,7 +1008,7 @@ class NodeResearch:
         cursor = encode_cursor(binding + [upper, rows[limit - 1]["sequence"]]) if len(rows) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": items, "next_cursor": cursor}
 
-    def history(self, kind, oid, query):
+    def history(self, kind, oid, query, blind=False):
         self._kind(kind); identifier(oid)
         limit = self._page(query)
         binding = [self.node_id, "history", kind, oid]
@@ -930,7 +1018,7 @@ class NodeResearch:
             upper, after = self._cursor(query, binding, self._upper(db))
             rows = db.execute("SELECT * FROM revisions WHERE kind=? AND id=? AND sequence<=? AND sequence<? ORDER BY sequence DESC LIMIT ?",
                               (kind, oid, upper, after if after is not None else (1 << 63) - 1, limit + 1)).fetchall()
-            items = [self._show(db, row) for row in rows[:limit]]
+            items = [self._show(db, row, blind) for row in rows[:limit]]
         cursor = encode_cursor(binding + [upper, rows[limit - 1]["sequence"]]) if len(rows) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": items, "next_cursor": cursor}
 

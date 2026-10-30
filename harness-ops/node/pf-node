@@ -95,13 +95,14 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node results import FILE --adapter NAME [--import-id ID] # 仅导入小 JSON，保留原字节
   pf-node results import-status ID         # 找回原导入及全部派生结果
   pf-node research list|show|history ...    # 持久研究、方向、协助请求与反馈，共享版本历史
-  research note 用 --attach 附本机 PNG/JPEG/SVG（单文件至多 16 MiB）；实验 Python 只保证有标准库。
+  research note 用 --attach 附本机 PNG/JPEG/SVG/MP4/WebM（图片至多 16 MiB、视频至多 128 MiB）。
+  pf-node research compare <研究> --item <job:ID:PATH 或本机文件> --item <第二份> [--pick K] --title "<标题>" --question "<问题>"
   pf-node research assess ID --revision N  # 显式pin/判据能力；只读指定版本，partial退出2，规则未知保留
   pf-node research create KIND ID FILE     # 仅登记 data JSON；写前固定 operation ID
   pf-node research update KIND ID FILE --revision N --reason TEXT # 显式并发更新，不自动合并
   pf-node research operation ID            # 原元数据操作回执；未知时不自动重发
   pf-node research events [--after N | --cursor CURSOR] [--wait-seconds 0..15] # 单次读取/有界等待，不自动翻页或确认消费
-  pf-node research media REQUEST A|B --revision N --output FILE # 显式原件下载，核长度/SHA且不覆盖
+  pf-node research media REQUEST A|B|C... --revision N --output FILE # 显式原件下载，核长度/SHA且不覆盖
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 
 - 参数里凡是本机存在的文件/目录（含 --flag=路径 的写法）自动打包上传，在节点上替换成对应路径。

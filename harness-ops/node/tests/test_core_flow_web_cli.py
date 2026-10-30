@@ -20,7 +20,7 @@ sys.path.insert(0, str(NODE))
 import dash
 from http_server_fixture import start_http_server
 from node_service import Jobs, make_handler
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_DUTY, COMPARE_HELP
 
 ADMIN = "core-flow-fixture-admin-token"
 VIEW = "core-flow-view-password"
@@ -288,6 +288,107 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn(DELIVERY_STYLE, self.pf(token, "research", "--help")[1])
         self.assertIn(DELIVERY_STYLE, self.pf(token, "--help")[1])
         self.assertIn(DELIVERY_STYLE, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_compare_reaches_human_feedback_and_agent_checkin(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-compare", self.write(
+            "create-compare", {"title": "主观画质", "objective": "让人比较两个候选"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-compare", self.write(
+            "create-compare-direction", {"research_id": "sr-compare", "title": "候选超分", "hypothesis": "画质需要人评"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-compare")[0], 0)
+        output = Path(self.jobs.path(self.jid, "out"))
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "off.png").write_bytes(b"\x89PNG\r\n\x1a\noff")
+        local = self.tmp / "local.mp4"
+        local.write_bytes(b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp42")
+        items = [f"job:{self.jid}:off.png", str(local)]
+        code, out, err = self.pf(token, "research", "compare", "sr-compare",
+                                 "--item", items[0], "--item", items[1], "--pick", "1",
+                                 "--title", "小字对照", "--question", "哪边的小字更清楚？", "--direction", "d-compare")
+        self.assertEqual(code, 0, err)
+        comparison = json.loads(out)
+        request_id = comparison["request_id"]
+        self.assertIn(f"/dash/research?kind=request&id={request_id}", comparison["url"])
+        self.assertEqual(comparison["research_id"], "sr-compare")
+        self.assertEqual(set(comparison["slots"].values()), set(items))
+        result = self.cli("GET", "/results/" + comparison["result_id"])[1]
+        self.assertEqual([source["kind"] for source in result["manifest"]["sources"]], ["job_output", "attachment"])
+        self.assertEqual(result["manifest"]["sources"][1]["local_path"], str(local))
+        self.assertEqual(result["manifest"]["labels"]["direction_id"], "d-compare")
+        request = self.web("GET", "/research-state/request/" + request_id)[1]
+        self.assertEqual(request["data"]["type"], "evaluation")
+        self.assertEqual(request["data"]["need"], "哪边的小字更清楚？")
+        self.assertEqual(request["data"]["context"]["directions"], [{"id": "d-compare", "revision": 1}])
+        self.assertEqual(request["data"]["evaluation"]["schema"], "phonefarm/compare@1")
+        self.assertEqual(request["data"]["evaluation"]["pick"], 1)
+        self.assertEqual([item["media_kind"] for item in request["data"]["evaluation"]["items"]], ["image", "video"])
+        self.assertEqual((request["data"]["evidence_refs"], request["evidence_bindings"]), ([], []))
+        self.assertNotIn(comparison["result_id"], json.dumps(request))
+        full = self.cli("GET", "/research-state/request/" + request_id)[1]
+        for position, item in enumerate(full["data"]["evaluation"]["items"]):
+            slot = chr(ord("A") + position)
+            source_name = full["data"]["evidence_refs"][item["ref"]]["source_name"]
+            source = result["manifest"]["sources"][item["ref"]]
+            original = items[item["ref"]]
+            self.assertEqual(comparison["slots"][slot], original)
+            self.assertEqual(source["name"], source_name)
+        local_slot = next(slot for slot, original in comparison["slots"].items() if original == str(local))
+        connection = http.client.HTTPConnection(*self.address, timeout=10)
+        connection.request("GET", f"/dash/api/research-state/request/{request_id}/media/{local_slot}?revision=1", headers={
+            "Cookie": self.view_cookie, "X-Expected-Node-ID": self.node_id})
+        response = connection.getresponse()
+        body = response.read()
+        self.assertEqual((response.status, response.getheader("Content-Type"), body), (200, "video/mp4", local.read_bytes()))
+        connection.close()
+        waiting = self.duties(token)
+        self.assertIn(request_id, [item["request_id"] for item in waiting["waiting_on_human"]])
+        self.assertNotIn(request_id, [item.get("target") for item in waiting["duties"]])
+
+        assessment = {"schema": "phonefarm/compare-feedback@1", "picked": ["A"], "unable": False,
+                      "difference": "moderate", "client_display": {"A": "decoded", "B": "decoded"},
+                      "identity_revealed": False}
+        code, feedback = self.web("POST", "/research-state/feedback/f-compare", self.write(
+            "human-compare-feedback", {"request_id": request_id, "request_revision": 1,
+                                        "text": "A 的小字更清楚", "evaluation": assessment}))
+        self.assertEqual(code, 201, feedback)
+        revealed = self.web("GET", "/research-state/request/" + request_id)[1]
+        self.assertEqual(len(revealed["data"]["evidence_refs"]), 2)
+        duties = self.duties(token)["duties"]
+        owed = next(item for item in duties if item["kind"] == "process_feedback" and item["target"] == request_id)
+        self.assertIn("采纳", owed["text"])
+        self.assertEqual(owed["picked"], [{"slot": "A", "source": comparison["slots"]["A"]}])
+        self.assertIn("research list feedback --request-id " + request_id, owed["command"])
+        self.assertNotIn(request_id, [item["request_id"] for item in self.duties(token)["waiting_on_human"]])
+
+    def test_compare_help_is_shared_by_checkin_help_and_skill(self):
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        value = self.duties(token)
+        self.assertIn(COMPARE_DUTY, value["loop"])
+        self.assertIn(COMPARE_HELP, self.pf(token, "research", "--help")[1])
+        self.assertIn(COMPARE_HELP, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_research_note_attaches_local_video(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-video", self.write(
+            "create-video", {"title": "视频附件", "objective": "留言直接带本机视频"}))[0], 201)
+        video = self.tmp / "clip.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp42")
+        code, _, err = self.pf(ADMIN, "research", "note", "sr-video", "同画面视频", "--attach", str(video))
+        self.assertEqual(code, 0, err)
+        thread = self.web("GET", "/research-state/note?research_id=sr-video&limit=10")[1]
+        ref = thread["items"][0]["evidence_refs"][0]
+        self.assertEqual((ref["kind"], ref["filename"], ref["content_type"]),
+                         ("attachment", "clip.mp4", "video/mp4"))
+        connection = http.client.HTTPConnection(*self.address, timeout=10)
+        connection.request("GET", f"/dash/api/research-attachments/{ref['attachment_id']}", headers={
+            "Cookie": self.view_cookie, "X-Expected-Node-ID": self.node_id})
+        response = connection.getresponse()
+        body = response.read()
+        self.assertEqual(response.status, 200, body.decode(errors="replace"))
+        self.assertEqual(response.getheader("Content-Type"), "video/mp4")
+        self.assertEqual(body, video.read_bytes())
+        connection.close()
 
     def test_cli_times_are_utc_and_checkin_declares_timezone(self):
         from agent_client import render_checkin
