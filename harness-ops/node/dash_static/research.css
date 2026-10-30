@@ -339,3 +339,7 @@
   border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); color: var(--ink2); }
 .research-view .task-closed b { color: var(--ink); }
 .research-view .task-closed time { font-size: var(--fs-xs); }
+/* A comparison opened from 去评 lands below the sticky top bar, briefly outlined. */
+.research-view .compare { scroll-margin-top: 72px; }
+.research-view .compare.compare-target { outline: 2px solid var(--acc); outline-offset: 8px; border-radius: 6px; transition: outline-color 1s; }
+.research-view .compare-status { color: var(--muted); }

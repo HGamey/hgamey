@@ -474,7 +474,10 @@
   async function renderDetail(container, record, ctx) {
     // Unlock and selection can both repaint the same record; only the latest paint may fill the container.
     const paint = shown = {record};
-    clearImages(); container.replaceChildren();
+    // Arriving from 去评 (#cmp-<id>), say at once that the comparison is on its way.
+    const target = record.kind === 'research' && location.hash.startsWith('#cmp-') ? location.hash.slice(1) : '';
+    const waiting = target ? compareNote('正在读取待你评的对比…') : el('div');
+    clearImages(); container.replaceChildren(...(target ? [waiting] : []));
     if (record.kind !== 'research') return;
     agents = (await api('/agents').catch(() => ({agents: []}))).agents.filter(agent => agent.enabled !== false);
     if (shown !== paint) return;
@@ -484,16 +487,40 @@
     const scope = chainScope(record, chain);
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
-    const waiting = el('div'), judged = el('div'), reports = el('div');
+    const judged = el('div'), reports = el('div');
     container.append(...[scope.chain && chainStrip(scope, container), ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports].filter(Boolean));
-    const delivered = deliverables(scope, record).then(found => { if (shown === paint) { reports.replaceWith(...found); scope.apply(container); } });
-    const compared = window.HGResearchCompare?.sections(record, ctx, util, scope).then(found => {
-      if (shown !== paint) return;
-      waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || ''); scope.apply(container);
-      if (location.hash.startsWith('#cmp-')) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'start'});
-    }).catch(() => { waiting.remove(); judged.remove(); });
     if (scope.chain) scope.pick(chain[0].id === record.id ? null : record.id);
-    await Promise.all([directionsSection(scope, directions), runsSection(scope, runs), threadSection(record, ctx, thread, scope), compared, delivered]);
+    // Comparisons are what a person comes here to answer. On a long chain the other sections fire dozens of reads and
+    // media loads, so the comparisons go first and the rest of the page starts once they are in place.
+    await comparisons(record, ctx, scope, container, waiting, judged, target, () => shown === paint);
+    if (shown !== paint) return;
+    const delivered = deliverables(scope, record).then(found => { if (shown === paint) { reports.replaceWith(...found); scope.apply(container); } });
+    await Promise.all([directionsSection(scope, directions), runsSection(scope, runs), threadSection(record, ctx, thread, scope), delivered]);
+  }
+  function compareNote(text, retry) {
+    const box = el('section', null, 'research-section compare-section'), head = el('div', null, 'section-head');
+    box.id = 'task-compare-open'; head.append(el('h3', '待你评')); box.append(head, el('p', text, retry ? 'compare-status task-error' : 'compare-status'));
+    if (retry) { const again = el('button', '重试', 'ghost'); again.type = 'button'; again.addEventListener('click', retry); box.append(again); }
+    return box;
+  }
+  async function comparisons(record, ctx, scope, container, waiting, judged, target, current) {
+    if (!window.HGResearchCompare) { waiting.remove(); judged.remove(); return; }
+    let found;
+    try { found = await window.HGResearchCompare.sections(record, ctx, util, scope); }
+    catch (error) {
+      if (!current()) return;
+      // Never drop the section silently: a person sent here to judge must see that the read failed.
+      const failed = compareNote(`对比没读出来：${error.message || '连接中断'}`, () => {
+        const again = compareNote('正在重新读取对比…'); failed.replaceWith(again);
+        comparisons(record, ctx, scope, container, again, judged, target, current);
+      });
+      waiting.replaceWith(failed); return;
+    }
+    if (!current()) return;
+    if (target && !found.open) found.open = compareNote('没有待你评的对比了：可能已经评过或已关闭，评过的在下方「对比」里。');
+    waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || ''); scope.apply(container);
+    const block = target && document.getElementById(target);
+    if (block) { block.scrollIntoView({block: 'start'}); block.classList.add('compare-target'); setTimeout(() => block.classList.remove('compare-target'), 2400); }
   }
 
   // ── Chains of tasks (research.follows)

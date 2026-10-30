@@ -315,7 +315,7 @@
     HGResearchEvaluation.unloadAll('记录已切换，媒体已卸下；再次查看需明确加载。'); HGResearchEvaluation.clearDetail(); HGResearchCriteria.clearDetail(); HGResearchTask.clearDetail($('task-detail'));
     detailController?.abort(); detailController = new AbortController(); detailFresh = false;
     ++historyEpoch; historyCursor = null; historyBusy = false; $('history-list').replaceChildren(); $('more-history').hidden = true; $('load-history').disabled = false; message('history-message', '');
-    $('detail-content').hidden = true; message('detail-message', '正在读取明确版本…'); renderList(); renderControls();
+    $('detail-content').hidden = true; message('detail-message', location.hash.startsWith('#cmp-') ? '正在打开待你评的对比…' : '正在读取明确版本…'); renderList(); renderControls();
     try {
       const value = checkedObject(await request(objectPath(kind, id) + (revision ? `?revision=${revision}` : ''), {target, signal: detailController.signal}), kind, id, target, revision);
       if (disposed || epoch !== detailEpoch) return;

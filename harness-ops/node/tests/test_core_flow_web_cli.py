@@ -1922,6 +1922,82 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_comparison_opened_from_home_comes_first_and_a_failed_read_says_so(self):
+        """去评 lands on the task page with 待你评 shown at once; the comparison is read before the task's other
+        sections, scrolled below the top bar and outlined. If its read fails the section says so with 重试."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import struct, zlib
+
+        def png(rgb):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress((b"\x00" + rgb * 2) * 2)) + chunk(b"IEND", b""))
+        jid = "dddddddddddd"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        (out / "a.png").write_bytes(png(b"\x10\x20\x30"))
+        (out / "b.png").write_bytes(png(b"\x30\x20\x10"))
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-first", "title": "素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": name + ".png"} for name in ("a", "b")]})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-first", self.write(
+            "create-first", {"title": "先评后看", "objective": "去评先出来"}))[0], 201)
+        for i in range(12):
+            self.assertEqual(self.web("POST", f"/research-state/note/n-first-{i}", self.write(f"create-n-first-{i}", {
+                "research_id": "sr-first", "text": f"进展 {i}", "reply_to": None, "decision": None}))[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-first", "source_name": name}
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-first", self.write("create-ev-first", {
+            "research_id": "sr-first", "type": "evaluation", "title": "两张图", "need": "哪张更清楚？", "why": "fixture",
+            "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref("a"), ref("b")],
+            "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": 0, "media_kind": "image"}, {"ref": 1, "media_kind": "image"}], "pick": 1}}))[0], 201)
+        url = "/dash/research?kind=research&id=sr-first#cmp-ev-first"
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 700})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                # The first read of the comparisons fails: the section says so instead of disappearing.
+                lists = "**/dash/api/research-state/request?research_id=*"
+                page.route(lists, lambda route, request: route.abort())
+                page.goto(base + url)
+                page.wait_for_function("() => /对比没读出来/.test(document.getElementById('task-compare-open')?.textContent || '')")
+                page.unroute(lists)
+                order = []
+                page.on("request", lambda request: order.append(request.url))
+                page.click("#task-compare-open button >> text=重试")
+                page.wait_for_selector("#task-compare-open #cmp-ev-first")
+                # A fresh visit: the comparison's reads go before the thread's, and it lands in view, outlined.
+                order.clear()
+                page.goto(base + "/dash")
+                page.goto(base + url)
+                block = "#task-compare-open #cmp-ev-first"
+                page.wait_for_selector(block + ".compare-target")
+                top = page.evaluate("s => document.querySelector(s).getBoundingClientRect().top", block)
+                self.assertTrue(56 <= top <= 120, f"block top {top}: below the sticky top bar, not hidden under it")
+                page.wait_for_selector("#task-thread .discuss-entry")
+                reads = [u for u in order if "/research-state/request?" in u or "/research-state/note?" in u]
+                self.assertTrue(reads and "/research-state/request?" in reads[0], reads[:3])
+                first_note = next(i for i, u in enumerate(reads) if "/research-state/note?" in u)
+                self.assertTrue(all("/research-state/note?" not in u for u in reads[:first_note]))
+                self.assertGreater(first_note, 0)
+            finally:
+                browser.close()
+
     def test_research_copy_criteria_filters_and_navigation_follow_task_terms(self):
         page = (NODE / "dash_static/research.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/research.js").read_text(encoding="utf-8")
