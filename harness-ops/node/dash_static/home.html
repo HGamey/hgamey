@@ -54,13 +54,20 @@
         <div id="phones" class="phone-list"></div>
       </section>
       <section aria-labelledby="h-agents">
-        <div class="sec-head"><h2 id="h-agents">Agent</h2><span id="agents-count" class="count"></span></div>
+        <div class="sec-head"><h2 id="h-agents">Agent</h2><span id="agents-count" class="count"></span><button id="invite-open" class="sec-link" type="button">接入新 agent</button></div>
         <ul id="agents" class="agent-list"></ul>
       </section>
     </aside>
   </div>
 </main>
 <dialog id="dlg-unlock" class="dlg dlg-sm" aria-labelledby="unlock-title"><form id="f-unlock"><h3 id="unlock-title">解锁操作</h3><label for="steer-pw">掌舵密码</label><input type="password" id="steer-pw" name="steer-pw" autocomplete="current-password" required><p id="unlock-msg" class="msg err" role="alert"></p><div class="row-btns"><button class="btn" type="button" data-close>取消</button><button id="unlock-submit-home" class="btn primary" type="submit">解锁</button></div></form></dialog>
+<dialog id="dlg-invite" class="dlg" aria-labelledby="invite-title"><div class="body"><h3 id="invite-title">接入新 agent</h3>
+  <div id="invite-new" hidden><p class="invite-facts">把下面整段发给新 agent；<span id="invite-expires"></span>，用一次就失效。邀请码只在这里显示这一次。</p>
+    <pre id="invite-prompt" class="invite-prompt" tabindex="0"></pre>
+    <div class="row-btns"><button id="invite-copy" class="btn primary" type="button">复制</button><span id="invite-copied" class="msg" role="status"></span></div></div>
+  <div class="row-btns"><button id="invite-make" class="btn" type="button">再生成一个</button><span id="invite-msg" class="msg" role="status"></span></div>
+  <h4 class="invite-h">还没用的邀请码<span id="invite-count" class="count"></span></h4><ul id="invite-list" class="invite-list"></ul>
+  <div class="row-btns"><button class="btn" type="button" data-close>关闭</button></div></div></dialog>
 <dialog id="dlg-research" class="dlg" aria-labelledby="research-title"><form id="research-form"><h3 id="research-title">新建任务</h3>
   <label for="research-objective">目标</label><textarea id="research-objective" name="objective" rows="4" maxlength="2000" required placeholder="例如：优化原神的超分方向，画质不明显下降时提高帧率…"></textarea>
   <div class="dlg-grid">

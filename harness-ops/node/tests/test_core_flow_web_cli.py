@@ -135,6 +135,59 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.web("DELETE", "/agent-invites/" + invited["id"], {})[0], 200)
         self.assertEqual(self.web("GET", "/agent-invites")[1]["invites"], [])
 
+    def test_home_page_invites_an_agent_and_revokes_unused_invitations(self):
+        """接入新 agent: one click shows the whole first prompt with a copy button and lists the unused invitation."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+
+        class Quiet:   # the home page's phone sampling, without phones
+            def request(self, **kw):
+                return None
+
+            def snapshot(self):
+                return {"devices": [], "lock": {"status": "free", "lease": {"entries": []}}, "age_s": 1, "error": None, "deferred": False}
+
+        class Goals:
+            def list(self):
+                return []
+
+            def harness_support(self):
+                return {"ok": False}
+        self.board.monitor, self.board.goals, self.board.shot_dir = Quiet(), Goals(), str(self.tmp)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{base}/dash")
+                page.wait_for_function("() => document.querySelector('main.home')?.getAttribute('aria-busy') === 'false'")
+                page.click("#invite-open")
+                page.wait_for_selector("#invite-prompt:not(:empty)")
+                listed = self.web("GET", "/agent-invites")[1]["invites"]
+                self.assertEqual(len(listed), 1)
+                prompt = page.inner_text("#invite-prompt")
+                for fact in (self.node_id, "hginv_", "pf-node join --invite", "./bin/pf-node checkin"):
+                    self.assertIn(fact, prompt)
+                self.assertTrue(page.is_visible("#invite-copy"))
+                page.wait_for_selector(f'#invite-list li[data-invite="{listed[0]["id"]}"]')
+                page.click(f'#invite-list [data-revoke="{listed[0]["id"]}"]')
+                page.wait_for_function("() => !document.querySelector('#invite-list [data-revoke]')")
+                self.assertEqual(self.web("GET", "/agent-invites")[1]["invites"], [])
+            finally:
+                browser.close()
+
     @staticmethod
     def write(operation, data):
         return {"schema": "phonefarm/research-write@1", "operation_id": operation, "base_revision": None,

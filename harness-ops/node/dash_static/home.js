@@ -166,6 +166,51 @@
     }).join("") || `<li class="empty-row">还没有注册 agent</li>`;
   }
 
+  // 接入新 agent: one click makes a one-use invitation and shows the whole first prompt to paste into the agent;
+  // unused invitations are listed with their expiry and can be revoked.
+  async function invites() {
+    const list = $("invite-list");
+    try {
+      const value = await api("/dash/api/agent-invites"), now = Date.now() / 1000, items = value.invites || [];
+      $("invite-count").textContent = items.length ? String(items.length) : "";
+      list.innerHTML = items.length ? items.sort((a, b) => b.created_at - a.created_at).map(i => `<li data-invite="${esc(i.id)}">
+        <span class="mono">${esc(i.id)}</span><span class="muted">${esc(full(i.created_at))} 生成 · ${i.expires_at <= now ? `<b class="expired">已过期</b>` : `${esc(left(i.expires_at - now))}后过期`}${i.note ? " · " + esc(i.note) : ""}</span>
+        <button class="btn sm" type="button" data-revoke="${esc(i.id)}">撤销</button></li>`).join("") : `<li class="empty-row">没有</li>`;
+    } catch (e) { list.innerHTML = `<li class="empty-row">读不到：${esc(e.message)}</li>`; }
+  }
+  const left = s => s > 129600 ? `${Math.round(s / 86400)} 天` : s >= 3600 ? `${Math.round(s / 3600)} 小时` : `${Math.max(1, Math.round(s / 60))} 分钟`;
+  async function makeInvite() {
+    const b = $("invite-make"), m = $("invite-msg");
+    if (!(await needSteer(makeInvite))) return;
+    b.disabled = true; m.className = "msg"; m.textContent = "生成中…";
+    try {
+      const v = await api("/dash/api/agent-invites", {hours: 24});
+      $("invite-prompt").textContent = v.prompt; $("invite-expires").textContent = `${left(v.expires_at - v.created_at)}内有效`;
+      $("invite-copied").textContent = ""; $("invite-new").hidden = false; m.textContent = "";
+      if (!$("dlg-invite").open) $("dlg-invite").showModal();
+      invites();
+    } catch (e) { m.className = "msg err"; m.textContent = "没有生成：" + e.message; }
+    finally { b.disabled = false; }
+  }
+  $("invite-open").addEventListener("click", makeInvite);
+  $("invite-make").addEventListener("click", makeInvite);
+  $("invite-copy").addEventListener("click", async () => {
+    const text = $("invite-prompt").textContent, out = $("invite-copied");
+    try { await navigator.clipboard.writeText(text); out.textContent = "已复制"; }
+    catch (_) {   // no clipboard (http, older browsers): select it for Ctrl/⌘+C
+      const range = document.createRange(); range.selectNodeContents($("invite-prompt"));
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); out.textContent = "已选中，按 Ctrl/⌘+C 复制";
+    }
+  });
+  $("invite-list").addEventListener("click", async ev => {
+    const b = ev.target.closest("[data-revoke]"); if (!b) return;
+    b.disabled = true; b.textContent = "撤销中…";
+    try {
+      const r = await HGTarget.fetch("/dash/api/agent-invites/" + encodeURIComponent(b.dataset.revoke), {method: "DELETE", credentials: "same-origin", headers: {"X-HG": "1"}});
+      if (!r.ok) { let j = {}; try { j = await r.json(); } catch (_) {} throw new Error(j.error || `HTTP ${r.status}`); }
+      await invites();
+    } catch (e) { b.disabled = false; b.textContent = "撤销"; b.title = "没有撤销：" + e.message; $("invite-msg").className = "msg err"; $("invite-msg").textContent = "没有撤销：" + e.message; }
+  });
   async function needSteer(onReady) {
     if (S.home && S.home.steer) return true;
     S.afterUnlock = onReady || null;
