@@ -79,7 +79,7 @@ class JobsPageMultiNodeTests(unittest.TestCase):
                 browser.close()
 
     def test_an_offline_reset_waits_to_be_delivered_and_is_not_read_as_a_failed_save(self):
-        """Reset on a job its disconnected computer never accepted: the center answers 202 pending, nothing released and
+        """Reset on a job whose disconnected computer has not confirmed acceptance: the center answers 202 pending, nothing released and
         nothing saved yet (storage_committed=false). The page says it has not reached that computer, not that saving failed."""
         try:
             from playwright.sync_api import sync_playwright
@@ -87,18 +87,15 @@ class JobsPageMultiNodeTests(unittest.TestCase):
             if os.environ.get("CI"):
                 raise
             self.skipTest("playwright is not installed")
-        self.worker.jobs.dispatch.close()
-        self.worker.jobs.dispatch.start = lambda: None
-        connector = self.start_worker()
-        connector._json('/node-connect/report', connector.backend.snapshot())
-        connector.close()
-        for name, value in (('node_directory.REFRESH_S', 0), ('job_center.DEADLINE_S', 1)):
-            quiet = patch(name, value)
-            quiet.start()
-            self.addCleanup(quiet.stop)
-        code, unsent = self.submit({'bin': 'fixture', 'argv': ['-c', 'pass'], 'device_access': 'none',
-                                    'execution_node_id': self.worker.jobs.node_id}, 'reset-before-delivery')
-        self.assertEqual((code, unsent['phase']), (200, 'submission_unknown'), unsent)
+        def lost_admission(record, method, path, body, headers, *, deliver):
+            self.assertTrue(deliver())  # The poll took this command; its reply never reached the center.
+            raise ConnectionError('fixture admission reply was lost')
+
+        with patch.object(self.center.jobs.center, 'rpc', side_effect=lost_admission):
+            code, unknown = self.submit({'bin': 'fixture', 'argv': ['-c', 'pass'], 'device_access': 'none',
+                                        'execution_node_id': self.worker.jobs.node_id}, 'reset-unknown-admission')
+        self.assertEqual((code, unknown['phase']), (200, 'submission_unknown'), unknown)
+        self.assertIsNotNone(self.center.jobs.center.targets.get(unknown['id'])['sent_at'])
         board, base = self.center.board, self.center.url
         with sync_playwright() as playwright:
             try:
@@ -115,11 +112,11 @@ class JobsPageMultiNodeTests(unittest.TestCase):
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(base + "/dash/jobs")
-                page.click(f'#task-list button[data-job="{unsent["id"]}"]')
+                page.click(f'#task-list button[data-job="{unknown["id"]}"]')
                 page.wait_for_selector("#reset-panel:not([hidden])")
                 page.click("#reset-panel summary")
                 page.fill("#reset-note", "那台电脑断开了，先记下")
-                with page.expect_response(lambda response: response.url.endswith(f"/jobs/{unsent['id']}/reset"), timeout=40000) as answered:
+                with page.expect_response(lambda response: response.url.endswith(f"/jobs/{unknown['id']}/reset"), timeout=40000) as answered:
                     page.click("#reset-submit")
                 reply = answered.value
                 self.assertEqual(reply.status, 202)
