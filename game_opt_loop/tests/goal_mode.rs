@@ -389,9 +389,9 @@ fn sigint_case(tag: &str, to_group: bool) {
     let script = std::fs::read_to_string(&bin).unwrap().replace(
         "  eval)\n",
         &format!(
-            "  eval)\n    echo started > {}\n    trap 'echo restored > {}; exit 130' INT\n    sleep 20 >/dev/null 2>&1 &\n    wait $!\n",
-            ready.display(),
-            mark.display()
+            "  eval)\n    trap 'echo restored > {}; exit 130' INT\n    echo started > {}\n    sleep 20 >/dev/null 2>&1 &\n    wait $!\n",
+            mark.display(),
+            ready.display()
         ),
     );
     std::fs::write(&bin, script).unwrap();
