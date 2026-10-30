@@ -286,3 +286,6 @@ details.gm pre { font-size: 14px; }
 .home-view .closed-tasks > summary { display: flex; align-items: baseline; gap: var(--sp-2); padding: 0 2px; margin-bottom: var(--sp-2); cursor: pointer; color: var(--ink2); font-size: var(--fs-sm); }
 .home-view .closed-tasks > summary .closed-h { font-weight: 600; }
 .home-view .closed-tasks .report-meta { flex: 0 1 auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
+.home-view .phone-group > .phone-card + .phone-card { border-top: 1px solid var(--grid); }
+.home-view .phone-computer { margin: 0; padding: 12px 14px 0; font-size: var(--fs-sm); font-weight: 600; color: var(--ink2); display: flex; gap: 8px; align-items: baseline; }
+.home-view .phone-computer span { font-weight: 400; color: var(--muted); }

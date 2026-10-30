@@ -71,7 +71,7 @@
   }
   function jobChip(h, j) {
     const state = j.public || j, phone = phoneOf(h, j.job_id);
-    return `<span class="run"><span class="tag ${HGJobState.tone(state)}">${esc(HGJobState.label(state))}</span><span class="run-label">${esc(j.label || j.job_id)}</span>${phone ? `<span class="run-phone" title="${esc(phone.serial)}">${esc(model(phone))}</span>` : ""}</span>`;
+    return `<span class="run"><span class="tag ${HGJobState.tone(state)}">${esc(HGJobState.label(state))}</span><span class="run-label">${esc(j.label || j.job_id)}</span>${phone ? `<span class="run-phone" title="${esc(phone.serial)}">${esc(model(phone))}</span>` : ""}${j.computer ? `<span class="run-phone">在 ${esc(j.computer)}</span>` : ""}</span>`;
   }
   function renderTasks(h) {
     const tasks = (h.tasks || []).filter(t => !["delivered", "closed"].includes(t.state));
@@ -111,9 +111,20 @@
     if (s.holder?.kind === "external") return `<span class="tag warn">外部占用</span>`;
     return s.busy ? `<span class="tag warn">占用</span>` : `<span class="tag ok">空闲</span>`;
   }
+  // Phones on other joined computers, from their last report: no live view, and 空闲 only means last seen idle.
+  function remotePhone(computer, p) {
+    const stat = (v, unit, label, hot) => `<div class="pstat${hot ? " hot" : ""}"><b>${v == null ? "—" : v + unit}</b><span>${label}</span></div>`;
+    const status = !computer.connected ? `<span class="tag bad">已断开</span>` : computer.stale ? `<span class="tag warn">读数过期</span>`
+      : p.idle ? `<span class="tag ok" title="最近看到空闲，用时由那台电脑加锁">空闲</span>` : `<span class="tag warn">不空闲</span>`;
+    return `<div class="phone-card" data-ref="${esc(p.ref)}"><span class="thumb"><span class="ph">无画面</span></span><div class="meta">
+      <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(p.model || p.serial || "未知型号")}</span>${status}</div>
+      <div class="stats">${stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)}${stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40)}${stat(p.battery_pct, "%", "电量", false)}</div></div></div>`;
+  }
   function renderPhones(h) {
-    const on = h.slots.filter(Boolean), idle = on.filter(s => s.online !== false && !s.busy).length;
-    $("phones").innerHTML = on.map(s => {
+    const on = h.slots.filter(Boolean), elsewhere = h.elsewhere || [], usable = elsewhere.filter(c => c.connected);
+    const idle = on.filter(s => s.online !== false && !s.busy).length + usable.reduce((n, c) => n + c.phones.filter(p => p.idle && !c.stale).length, 0);
+    const total = on.length + usable.reduce((n, c) => n + c.phones.length, 0);
+    const local = on.map(s => {
       const job = s.holder?.kind === "job" ? s.holder : null, global = s.global_holder;
       const thumb = s.shot_at && HGTarget.canWrite()
         ? `<img alt="${esc(model(s))} 的画面" width="56" height="120" loading="lazy" src="${esc(HGTarget.url(`/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}`))}">`
@@ -129,8 +140,13 @@
         <div class="phone-head"><span class="name" title="${esc(s.serial)}">${esc(model(s) || "未知型号")}</span>${phoneStatus(s, job, global)}</div>
         <div class="stats">${stat(s.soc_c == null ? null : num(s.soc_c, 0), "°", "芯片", s.soc_c >= 45)}${stat(s.battery_c == null ? null : num(s.battery_c, 0), "°", "电池", s.battery_c >= 40)}${stat(s.battery_pct, "%", "电量", false)}</div>
         ${doing}</div></div>`;
-    }).join("") || `<p class="empty-row">${h.fleet_age_s == null ? (h.fleet_err ? "读不到手机：" + esc(h.fleet_err) : "正在读手机状态…") : "现在没有手机接入"}</p>`;
-    $("phones-more").textContent = on.length ? `${on.length} 台 · ${idle ? `${idle} 台空闲` : "都在用"}` : "";
+    }).join("");
+    const empty = `<p class="empty-row">${h.fleet_age_s == null ? (h.fleet_err ? "读不到手机：" + esc(h.fleet_err) : "正在读手机状态…") : "现在没有手机接入"}</p>`;
+    // One computer reads as before; with phones elsewhere, each computer gets its own heading.
+    $("phones").innerHTML = !elsewhere.length ? local || empty
+      : `<div class="phone-group" data-computer="local"><h3 class="phone-computer">本机</h3>${local || empty}</div>` + elsewhere.map(c =>
+        `<div class="phone-group" data-computer="${esc(c.name)}"><h3 class="phone-computer">${esc(c.name)}<span>${c.connected ? "" : "已断开 · "}${c.sampled_at ? `采样于 ${when(h.now, c.sampled_at)}` : "还没有读数"}</span></h3>${c.phones.map(p => remotePhone(c, p)).join("")}</div>`).join("");
+    $("phones-more").textContent = total ? `${total} 台 · ${idle ? `${idle} 台空闲` : "都在用"}` : "";
   }
   function renderQuestions(h) {
     const questions = h.questions || [];

@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from device_scope import scope as device_scope
 from device_registry import DeviceRegistry, RegistryError
 import agent_duties
+import job_selection
 from node_directory import DirectoryError
 from node_games import GameError, MAX_MANIFEST
 
@@ -763,21 +764,34 @@ class Dash:
         queue = getattr(getattr(self.job_service, "dispatch", None), "queue", None)
         if research is None:
             return []
+        # The center's rows include jobs it sent to other computers; those are read from its record of them.
+        center = getattr(self.job_service, "center", None)
         try:
             tasks = {item["id"]: item for item in self._every_task(research)[0]}
-            rows = queue.rows(("queued", "claimed", "blocked")) if queue is not None else []
-        except (OSError, ValueError, sqlite3.Error):
+            rows = center.task_rows() if center is not None else queue.rows() if queue is not None else []
+        except (OSError, ValueError, sqlite3.Error, DirectoryError):
             return []
         jobs = collections.defaultdict(list)
         for row in rows:
             rid = row["spec"].get("research_id")
-            if rid:
-                meta = self._job_meta(row["job_id"]) or {}
-                jobs[rid].append({"job_id": row["job_id"], "label": meta.get("label"), "state": row["state"],
-                                  "actor_id": meta.get("actor_id"),
-                                  "public": {"state": meta.get("state") or row["state"], "phase": meta.get("phase"),
-                                             "outcome": meta.get("outcome"), "lost": meta.get("lost"),
-                                             "queue": {"state": row["state"]}}})
+            if not rid or row["state"] not in ("queued", "claimed", "blocked", "unknown"):
+                continue
+            remote = center.remote(row["job_id"]) if center is not None else None
+            if remote:
+                try:
+                    status, computer = center.status(row["job_id"]), center.node(remote["execution_node_id"])["name"]
+                except (OSError, ValueError, KeyError, DirectoryError):
+                    continue
+                jobs[rid].append({"job_id": row["job_id"], "label": status.get("label"), "state": row["state"],
+                                  "actor_id": status.get("actor_id"), "computer": computer,
+                                  "public": {key: status.get(key) for key in ("state", "phase", "outcome", "lost", "queue", "stop_requested")}})
+                continue
+            meta = self._job_meta(row["job_id"]) or {}
+            jobs[rid].append({"job_id": row["job_id"], "label": meta.get("label"), "state": row["state"],
+                              "actor_id": meta.get("actor_id"),
+                              "public": {"state": meta.get("state") or row["state"], "phase": meta.get("phase"),
+                                         "outcome": meta.get("outcome"), "lost": meta.get("lost"),
+                                         "queue": {"state": row["state"]}}})
         chains = collections.defaultdict(list)
         for rid, root in self._chains(tasks, {})[0].items():
             chains[root].append(tasks[rid])
@@ -944,7 +958,7 @@ class Dash:
                                                        "holder": _holders(lock.get("held_by"))}})
         while len(slots) < SLOTS_MIN:
             slots.append(None)
-        return {"now": _now(), "slots": slots, "tasks": self._tasks(), "questions": self._questions(), "reviews": self._reviews(),
+        return {"now": _now(), "slots": slots, "elsewhere": self._elsewhere(), "tasks": self._tasks(), "questions": self._questions(), "reviews": self._reviews(),
                 "agents": self._agents(), "fleet_age_s": snapshot["age_s"],
                 "fleet_err": snapshot["error"], "runs": runs, "steer": self.steered(h), "steer_configured": bool(self._steer_pass()),
                 "harness_ready": self.goals.harness_support(),
@@ -953,6 +967,36 @@ class Dash:
                 "lock": {"status": lock.get("status"), "lease": lock.get("lease"),
                          "held_by": lock.get("held_by"), "since": lock.get("since"), "stale": lock.get("stale"),
                          "queue": lock.get("queue") or []}}
+
+    def _elsewhere(self):
+        """Phones on the other joined computers, grouped by computer, from their last report (nothing is sampled).
+        `idle` only says a phone was last seen idle; its computer takes the lock when a job runs there."""
+        directory = getattr(self.job_service, "directory", None) if self.job_service else None
+        if directory is None:
+            return []
+        try:
+            entries = directory.list()
+        except (OSError, ValueError, DirectoryError):
+            return []
+        out = []
+        for entry in entries:
+            snapshot, connected = entry.get("snapshot") or {}, entry["connection"]["status"] == "ready"
+            phones = job_selection.phones(entry["node_id"], entry["name"], snapshot, connected)
+            if not phones:
+                continue
+            fleet = snapshot.get("fleet") or {}
+            row = []
+            for phone in phones:
+                seen = phone["observation"] or {}
+                b, t = seen.get("battery") or {}, seen.get("thermal") or {}
+                row.append({"ref": phone["ref"], "serial": phone["serial"], "idle": phone["idle"],
+                            "model": " ".join(x for x in (seen.get("brand"), seen.get("model")) if x) or None,
+                            "battery_pct": b.get("level_pct"), "soc_c": t.get("soc_max_c"),
+                            "battery_c": b.get("temp_c") or t.get("battery_c")})
+            out.append({"name": entry["name"], "node_id": entry["node_id"], "connected": connected,
+                        "sampled_at": fleet.get("sampled_at"), "stale": bool(entry.get("stale") or fleet.get("stale", True)),
+                        "phones": row})
+        return out
 
     def state(self):
         snapshot = self.monitor.snapshot()
