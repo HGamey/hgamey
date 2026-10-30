@@ -152,6 +152,8 @@ class NodeDirectory:
         node_id = body.get('node_id')
         if not isinstance(node_id, str) or not re.fullmatch(r'[0-9a-f]{32}', node_id):
             raise DirectoryError(400, 'node_id must be the local persistent 32-character identity')
+        if node_id == self.local_node_id:
+            raise DirectoryError(409, 'an execution node cannot use the center identity')
         code = body.get('invite')
         if not isinstance(code, str) or not code:
             raise DirectoryError(400, 'invite is required')
@@ -166,11 +168,12 @@ class NodeDirectory:
                 raise DirectoryError(409, 'invite already used')
             if time.time() >= invite['expires_at']:
                 raise DirectoryError(410, 'invite expired')
+            identity = next((entry for entry in state['nodes'] if entry['node_id'] == node_id), None)
+            if identity is not None and identity['name'] != name:
+                raise DirectoryError(409, 'node identity is already registered under a different name; an administrator must rename it')
             entry = next((entry for entry in state['nodes'] if entry['name'] == name), None)
             if entry is not None and entry['node_id'] not in (None, node_id):
                 raise DirectoryError(409, 'node name is already registered')
-            if entry is None:
-                entry = next((entry for entry in state['nodes'] if entry['node_id'] == node_id), None)
             now = time.time()
             if entry is None:
                 entry = {'name': name, 'node_id': node_id, 'tags': [], 'note': '', 'revision': 1,
@@ -202,10 +205,14 @@ class NodeDirectory:
 
     def update(self, name, body):
         fields = _metadata(body)
+        if 'name' in body:
+            fields['name'] = _name(body['name'])
         with self._locked() as state:
             entry = self._find(state, name)
             if body.get('revision') != entry['revision']:
                 raise DirectoryError(409, 'node configuration revision changed; read it again')
+            if 'name' in fields and any(other is not entry and other['name'] == fields['name'] for other in state['nodes']):
+                raise DirectoryError(409, 'node name is already registered')
             entry.update(fields)
             entry['revision'] += 1
             entry['updated_at'] = time.time()

@@ -61,6 +61,50 @@ class MultiNodeJobTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(Path(fixture.__file__).resolve().parents[1] / 'pf-node'),
                                *args], env=env, capture_output=True, text=True, timeout=15)
 
+    def test_cloned_identity_cannot_take_the_original_workers_tasks(self):
+        directory = self.center.jobs.directory
+        original = directory.get('worker')
+        invitation = directory.invite()
+        code, rejected = self.center.call('POST', '/node-connect/join', {
+            'invite': invitation['code'], 'node_id': self.worker.jobs.node_id, 'name': 'cloned-worker'},
+            token='not-a-machine-credential')
+        self.assertEqual(code, 409, rejected)
+        self.assertEqual(directory.get('worker'), original)
+        self.assertEqual(directory.verify(self.config['token']), self.worker.jobs.node_id)
+        self.start_worker()
+        finished = threading.Event()
+        commit = self.worker.jobs.dispatch._commit_completion
+
+        def committed(*args, **kwargs):
+            value = commit(*args, **kwargs)
+            finished.set()
+            return value
+
+        with patch.object(self.worker.jobs.dispatch, '_commit_completion', side_effect=committed):
+            code, job = self.submit({'bin': 'fixture', 'argv': ['-c', "print('original-worker')"],
+                                    'device_access': 'none', 'execution_node_id': self.worker.jobs.node_id},
+                                   'after-cloned-join')
+            self.assertEqual(code, 200, job)
+            self.assertTrue(finished.wait(10))
+        self.assertEqual(self.worker.jobs.status(job['id'])['outcome'], 'succeeded')
+        self.assertIn(b'original-worker', self.worker.jobs.log_from(job['id'], 0, 1024))
+        self.assertEqual(self.center.jobs.center.targets.get(job['id'])['execution_node_id'],
+                         self.worker.jobs.node_id)
+
+    def test_only_an_admin_can_rename_a_node_through_the_cli(self):
+        directory = self.center.jobs.directory
+        before = directory.get('worker')
+        args = ('nodes', 'update', 'worker', '--revision', str(before['revision']), '--rename', 'renamed-worker')
+        denied = self.cli(*args)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn('HTTP 403', denied.stdout)
+        self.assertEqual(directory.get('worker'), before)
+        with patch.object(self, 'agent', self.center.admin):
+            result = self.cli(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(directory.get('renamed-worker')['node_id'], self.worker.jobs.node_id)
+        self.assertEqual(directory.verify(self.config['token']), self.worker.jobs.node_id)
+
     def test_reported_disconnect_returns_cached_status_and_pending_stop_without_transport(self):
         self.worker.jobs.dispatch.close()
         self.worker.jobs.dispatch.start = lambda: None

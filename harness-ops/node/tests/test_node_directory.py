@@ -51,6 +51,34 @@ class NodeDirectoryTests(unittest.TestCase):
             self.directory.update('remote', {'revision': entry['revision'], 'note': 'old revision'})
         self.assertEqual(conflict.exception.status, 409)
 
+    def test_join_cannot_reuse_the_center_identity_or_rename_an_existing_node(self):
+        joined = self.join()
+        before = self.directory.list()
+        for identity, name in ((REMOTE, 'cloned'), (LOCAL, 'center-clone')):
+            invitation = self.directory.invite()
+            with self.subTest(node_id=identity):
+                with self.assertRaises(DirectoryError) as error:
+                    self.directory.join({'invite': invitation['code'], 'name': name, 'node_id': identity})
+                self.assertEqual(error.exception.status, 409)
+                self.assertEqual(self.directory.list(), before)
+                self.assertEqual(self.directory.verify(joined['token']), REMOTE)
+                self.assertIn(invitation['id'], [item['id'] for item in self.directory.invites()])
+
+    def test_admin_rename_keeps_the_machine_credential_snapshot_and_identity(self):
+        joined = self.join()
+        snapshot = {'at': 123, 'queue': {'items': []}}
+        original = self.directory.report(REMOTE, snapshot)
+        renamed = self.directory.update('remote', {'revision': original['revision'], 'name': 'lab-b'})
+        self.assertEqual((renamed['name'], renamed['node_id'], renamed['snapshot']), ('lab-b', REMOTE, snapshot))
+        self.assertEqual(self.directory.verify(joined['token']), REMOTE)
+        self.assertEqual(self.directory.get('lab-b'), renamed)
+        invitation = self.directory.invite()
+        self.directory.join({'invite': invitation['code'], 'name': 'occupied', 'node_id': 'c' * 32})
+        with self.assertRaises(DirectoryError) as error:
+            self.directory.update('lab-b', {'revision': renamed['revision'], 'name': 'occupied'})
+        self.assertEqual(error.exception.status, 409)
+        self.assertEqual(self.directory.get('lab-b'), renamed)
+
     def test_offline_preserves_the_last_complete_snapshot_and_rejoin_identity(self):
         joined = self.join()
         snapshot = {'at': 123, 'fleet': {'devices': [{'serial': 'fixture-only'}], 'age_s': 12},

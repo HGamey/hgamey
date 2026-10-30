@@ -24,6 +24,7 @@ def main(args, target=None):
     update = commands.add_parser('update')
     update.add_argument('name')
     update.add_argument('--revision', type=int, required=True)
+    update.add_argument('--rename', help='管理员修改电脑名称，保留原身份、连接和任务')
     update.add_argument('--note')
     update.add_argument('--tag', action='append')
     update.add_argument('--clear-tags', action='store_true')
@@ -42,6 +43,8 @@ def main(args, target=None):
     elif options.command == 'update':
         method, path = 'POST', '/nodes/' + quote(options.name, safe='')
         body = {'revision': options.revision}
+        if options.rename is not None:
+            body['name'] = options.rename
         if options.note is not None:
             body['note'] = options.note
         if options.clear_tags or options.tag is not None:
