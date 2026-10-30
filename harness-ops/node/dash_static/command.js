@@ -627,7 +627,7 @@ async function onEnd() {
   const raw = pick === 'live' ? liveR.value : snapR.value;
   if (pick === 'live') { S.skew = Date.now() / 1000 - raw.at; S.lastOk = Date.now(); }
   if (innerWidth < 1180) toggleRail(false);
-  adopt(raw, pick, false); app.classList.remove('loading');
+  adopt(raw, pick, false); app.classList.remove('booting');
   S.speed = SPEEDS.includes(Number(Q.get('speed'))) ? Number(Q.get('speed')) : 900; $('t-speed').value = String(S.speed);
   $('t-range').value = ['all', '24', '6', 'today'].includes(S.range) ? S.range : (S.range = 'all');
   timeline.setRange(...rangeBounds(S.range));

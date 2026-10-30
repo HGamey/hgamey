@@ -119,8 +119,9 @@ button:disabled { opacity: .45; cursor: default; }
 .mode.stale { border-color: rgba(232, 163, 92, .6); background: rgba(232, 163, 92, .1); } .mode.stale i { background: var(--warn); } .mode.stale b { color: var(--warn); }
 .mode.snap b { color: var(--ink); }
 .tl-controls .live.stale[aria-pressed="true"] { background: var(--warn); border-color: var(--warn); color: #2a1a08; }
-.app.loading .actions, .app.loading .timeline, .app.loading .minimap, .app.loading .rail .block, .app.loading .clock .seg { opacity: .35; pointer-events: none; }
-.app.loading .minimap { opacity: 0; }
+/* Until the first model arrives: controls are inert and dim (the layout itself never changes). */
+.app.booting .actions, .app.booting .timeline, .app.booting .rail .block, .app.booting .clock .seg { opacity: .35; pointer-events: none; }
+.app.booting .minimap { opacity: 0; pointer-events: none; }
 .counts span.alert { color: var(--ink); background: color-mix(in srgb, var(--c) 16%, var(--raise)); }
 button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 207, 192, .1); border-color: rgba(92, 207, 192, .45); }
 @container top (max-width: 980px) { .counts span[data-k="active"], .counts span[data-k="runs"] { display: none; } .mode small { display: none; } }
@@ -220,7 +221,7 @@ button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 20
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink2); font-size: 15px; pointer-events: none; text-align: center; }
 .empty[hidden] { display: none; }
 .empty small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; max-width: 520px; }
-.empty button { pointer-events: auto; margin-top: 14px; }
+.empty button { pointer-events: auto; margin-top: 14px; } .empty button + button { margin-left: 8px; }
 .spinner { width: 22px; height: 22px; margin: 0 auto 10px; border-radius: 50%; border: 2px solid var(--line2); border-top-color: var(--ink2); animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -281,6 +282,5 @@ button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 20
 .help h2 { margin: 0 0 12px; font-size: 15px; }
 .help dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0 0 16px; font-size: 13px; }
 .help dt { font-family: var(--mono); color: var(--gold); } .help dd { margin: 0; color: var(--ink2); }
-.loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }

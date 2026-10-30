@@ -1148,6 +1148,10 @@ class CoreFlowTests(unittest.TestCase):
                 page.wait_for_selector("#retry")
                 self.assertIn("读不到本节点的数据", page.text_content("#empty"))
                 self.assertIn("src=live", page.url)
+                page.unroute("**/dash/api/command")
+                page.click("#retry")  # a plain click: nothing may sit over the error and its buttons
+                page.wait_for_function("() => window.__ready === true")
+                self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "true")
                 self.assertEqual(errors, [])
             finally:
                 browser.close()
