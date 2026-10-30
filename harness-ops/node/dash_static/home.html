@@ -27,10 +27,16 @@
 </header><script src="/dash/static/shell.js"></script>
 <main class="home" aria-busy="true">
   <h1 class="visually-hidden">总览</h1>
+  <div class="home-asks">
   <section id="ask-sec" class="home-ask" aria-labelledby="h-questions" hidden>
     <div class="sec-head"><h2 id="h-questions">待你回复</h2><span id="questions-count" class="count"></span></div>
     <ul id="questions" class="q-list"></ul>
   </section>
+  <section id="review-sec" class="home-ask" aria-labelledby="h-reviews" hidden>
+    <div class="sec-head"><h2 id="h-reviews">待你评</h2><span id="reviews-count" class="count"></span></div>
+    <ul id="reviews" class="q-list"></ul>
+  </section>
+  </div>
   <div class="home-grid">
     <div class="home-main">
       <section aria-labelledby="h-tasks">

@@ -789,7 +789,9 @@ class CoreFlowTests(unittest.TestCase):
         script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
         self.assertLess(page.index('id="object-body"'), page.index('id="task-detail"'))
         self.assertIn('directionsSection', script)
-        self.assertIn('container.append(...[ownerSection(record, ctx), directions, runs, thread, deliverableSection(record)]', script)
+        # Comparisons waiting for a person sit right under the owner; answered ones follow the thread.
+        self.assertIn('container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, deliverableSection(record)]', script)
+        self.assertIn("waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');", script)
 
     def test_owner_agents_refresh_with_detail_and_access(self):
         task = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
@@ -1246,6 +1248,88 @@ class CoreFlowTests(unittest.TestCase):
                         break
                     page.wait_for_timeout(50)
                 self.assertEqual(owner()["data"]["owner"], "agent-a")
+            finally:
+                browser.close()
+
+    def test_a_comparison_is_judged_from_home_and_shows_its_sources_only_after(self):
+        """An agent's A/B waits on the home page; a person picks one in the task page block, without seeing which
+        source is which until the answer is saved. A video in a note plays in place."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import struct, zlib
+
+        def png(rgb):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress((b"\x00" + rgb * 2) * 2)) + chunk(b"IEND", b""))
+        jid = "cccccccccccc"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        (out / "native.png").write_bytes(png(b"\x10\x20\x30"))
+        (out / "upscaled.png").write_bytes(png(b"\x30\x20\x10"))
+        (out / "clip.mp4").write_bytes(b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp42")
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-cmp", "title": "对比素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": name + ".png"} for name in ("native", "upscaled")]})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-cmp", self.write(
+            "create-cmp", {"title": "画质对比", "objective": "人评两张截图"}))[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-cmp", "source_name": name}
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-cmp", self.write("create-ev-cmp", {
+            "research_id": "sr-cmp", "type": "evaluation", "title": "同一帧的两种渲染", "need": "哪张更清楚？", "why": "fixture",
+            "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref("native"), ref("upscaled")],
+            "evaluation": {"schema": "phonefarm/ab-evaluation@1", "media_kind": "image", "slots": {"A": 1, "B": 0}}}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/note/n-clip", self.write("create-n-clip", {
+            "research_id": "sr-cmp", "text": "录屏", "reply_to": None, "decision": None, "ask": False,
+            "evidence_refs": [{"kind": "job", "node_id": self.node_id, "job_id": jid, "path": "clip.mp4"}]}))[0], 201)
+        # The home payload's list (this fixture has no phones, so it is read from the board, not /dash/api/home).
+        reviews = self.board._reviews
+        self.assertEqual([(r["id"], r["items"], r["url"]) for r in reviews()],
+                         [("ev-cmp", 2, "/dash/research?kind=research&id=sr-cmp#cmp-ev-cmp")])
+        self.assertIn('renderReviews(h)', (NODE / "dash_static/home.js").read_text(encoding="utf-8"))
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(base + reviews()[0]["url"])
+                block = "#task-compare-open #cmp-ev-cmp"
+                page.wait_for_selector(block)
+                # Both images decode, and nothing on the block names a source before the answer.
+                page.wait_for_function("s => [...document.querySelectorAll(s + ' figcaption span')].every(e => e.textContent === '2×2')", arg=block)
+                self.assertNotRegex(page.inner_text(block), "native|upscaled|r-cmp")
+                self.assertTrue(page.is_disabled(block + " button[type=submit]"))
+                page.click(block + " .chip-btn.letter >> text=B")
+                page.click(block + " .compare-diff >> text=中")
+                page.click(block + " button[type=submit]")
+                done = "#task-compare-done #cmp-ev-cmp"
+                page.wait_for_selector(done + " .compare-source")
+                answers = self.cli("GET", "/research-state/feedback?request_id=ev-cmp")[1]["items"]
+                self.assertEqual(len(answers), 1)
+                saved = self.cli("GET", "/research-state/feedback/" + answers[0]["id"])[1]
+                self.assertEqual(saved["data"]["evaluation"], {"schema": "phonefarm/ab-feedback@1", "preference": "B", "difference": "moderate",
+                    "reviewed": {"A": True, "B": True}, "client_display": {"A": "decoded", "B": "decoded"}, "identity_revealed": False})
+                self.assertEqual(saved["data"]["text"], "B 更好 · 差别中")
+                self.assertEqual(page.inner_text(done + " .compare-verdict strong"), "B 更好 · 差别中")
+                self.assertEqual(page.eval_on_selector_all(done + " .compare-item.picked", "e => e.map(x => x.dataset.slot)"), ["B"])
+                self.assertEqual(page.eval_on_selector_all(done + " .compare-source a", "e => e.map(x => x.textContent)"),
+                                 ["upscaled.png", "native.png"])
+                self.assertEqual(reviews(), [])
+                # The fixture bytes are only a container header, so the player may give up; the figure and its file link stay.
+                self.assertIn("path=clip.mp4", page.get_attribute("#note-n-clip figure.video figcaption a", "href"))
             finally:
                 browser.close()
 

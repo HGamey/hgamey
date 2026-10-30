@@ -166,7 +166,10 @@
   function requireWrite(continuation) {
     if (writable()) { $('access-panel').hidden = true; return true; }
     writeContinuation = continuation || null;
-    $('access-panel').hidden = false; message('access-message', '写入需要解锁操作。', true); return false;
+    $('access-panel').hidden = false; message('access-message', '写入需要解锁操作。', true);
+    // The click may come from far down the page (a comparison, the composer): bring the password field to it.
+    if (access?.steer_configured) { $('unlock-form').hidden = false; $('access-panel').scrollIntoView({block: 'center'}); $('steer-password').focus({preventScroll: true}); }
+    return false;
   }
   function changeKind() {
     const kind = $('filter-kind').value;
@@ -281,8 +284,11 @@
     $('record-json-summary').textContent = ab ? '完整记录与绑定（会揭示素材标签）' : '完整记录、作者来源与引用绑定';
     renderDerived(record); renderEvidence(record); $('object-json').textContent = JSON.stringify(record, null, 2);
     const target = HGTarget.binding();
-    HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target});
-    HGResearchTask.renderDetail($('task-detail'), record, {writable, requireWrite, reload: () => selectObject(record.kind, record.id)})
+    const compared = HGResearchCompare.isComparison(record), ctx = {writable, requireWrite, reload: () => selectObject(record.kind, record.id)};
+    // A comparison shows as its own block (letters only until answered), not as the engineering A/B view.
+    if (compared) HGResearchEvaluation.clearDetail(); else HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target});
+    HGResearchTask.renderDetail($('task-detail'), record, ctx)
+      .then(() => compared && HGResearchCompare.renderRequest($('task-detail'), record, ctx, HGResearchTask.util))
       .catch(error => message('detail-message', error.message, true));
     const criteriaContainer = $('criteria-detail');
     criteriaContainer.hidden = !(record.kind === 'research' && record.data.criteria);

@@ -166,6 +166,11 @@ details.gm pre { font-size: 14px; }
 .home-view .q-task { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-view .q-meta .btn { flex: none; }
 
+.home-view .home-asks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 0 var(--sp-5); }
+.home-view .home-asks:not(:has(> :not([hidden]))) { display: none; }
+.home-view .q-text b { font-weight: 600; }
+.home-view .q-need { display: block; color: var(--ink2); font-size: var(--fs-base); }
+
 /* 进行中任务 */
 .home-view .task-row { padding: 14px var(--sp-4); display: grid; gap: var(--sp-2); min-width: 0; }
 .home-view .task-title { color: var(--ink); text-decoration: none; font-size: var(--fs-md); font-weight: 600; line-height: 1.5;

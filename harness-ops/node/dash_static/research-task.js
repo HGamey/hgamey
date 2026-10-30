@@ -414,9 +414,16 @@
     if (shown !== paint) return;
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
-    container.append(...[ownerSection(record, ctx), directions, runs, thread, deliverableSection(record)].filter(Boolean));
-    await Promise.all([directionsSection(record, directions), runsSection(record, runs), threadSection(record, ctx, thread)]);
+    const waiting = el('div'), judged = el('div');
+    container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
+    const compared = window.HGResearchCompare?.sections(record, ctx, util).then(found => {
+      if (shown !== paint) return;
+      waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');
+      if (location.hash.startsWith('#cmp-')) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'start'});
+    }).catch(() => { waiting.remove(); judged.remove(); });
+    await Promise.all([directionsSection(record, directions), runsSection(record, runs), threadSection(record, ctx, thread), compared]);
   }
+  const util = {api, write, el, tag, timeEl, speaker, failure};
 
-  window.HGResearchTask = {renderDetail, clearDetail: container => { shown = null; clearImages(); container.replaceChildren(); }};
+  window.HGResearchTask = {renderDetail, util, clearDetail: container => { shown = null; clearImages(); container.replaceChildren(); }};
 })();

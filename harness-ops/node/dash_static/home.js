@@ -44,7 +44,7 @@
         const h = await api("/dash/api/home"); S.home = h;
         $("live").className = "live ok"; $("live-text").textContent = `实时 · ${hm(h.now)}`;
         $("live").title = `最近更新 ${full(h.now)}`;
-        renderQuestions(h); renderTasks(h); renderReports(h); renderPhones(h); renderAgents(h); renderSteerBtn(h);
+        renderQuestions(h); renderReviews(h); renderTasks(h); renderReports(h); renderPhones(h); renderAgents(h); renderSteerBtn(h);
         document.querySelector("main.home").setAttribute("aria-busy", "false");
       } catch (_) {
         $("live").className = "live bad"; $("live-text").textContent = "连不上节点";
@@ -134,6 +134,16 @@
     $("questions").innerHTML = questions.map(q => `<li data-question="${esc(q.id)}" class="q-row">
       <a class="q-text" href="${esc(HGTarget.url(q.url))}">${esc(q.text)}</a>
       <div class="q-meta"><span class="who">${avatar(q.actor_label || "agent")}${esc(q.actor_label || "agent")}</span><span class="q-task" title="${esc(q.research_title || q.research_id)}">${esc(q.research_title || q.research_id)}</span>${when(h.now, q.updated_at)}<a class="btn sm" href="${esc(HGTarget.url(q.url))}">回复</a></div>
+    </li>`).join("");
+  }
+  // Comparisons nobody has judged yet: the agent's question, how many items, and a way to the block on the task page.
+  function renderReviews(h) {
+    const reviews = h.reviews || [];
+    $("review-sec").hidden = !reviews.length;
+    $("reviews-count").textContent = reviews.length > 1 ? String(reviews.length) : "";
+    $("reviews").innerHTML = reviews.map(r => `<li data-review="${esc(r.id)}" class="q-row">
+      <a class="q-text" href="${esc(HGTarget.url(r.url))}"><b>${esc(r.title)}</b>${r.need ? `<span class="q-need">${esc(r.need)}</span>` : ""}</a>
+      <div class="q-meta"><span class="who">${avatar(r.actor_label || "agent")}${esc(r.actor_label || "agent")}</span><span class="q-task" title="${esc(r.research_title || r.research_id)}">${esc(r.research_title || r.research_id)}</span>${when(h.now, r.updated_at)}<a class="btn sm" href="${esc(HGTarget.url(r.url))}">去评 · ${r.items} 个</a></div>
     </li>`).join("");
   }
   const DUTY = {answer_note: "回应留言", process_feedback: "处理反馈", unblock_job: "放行任务", post_status: "报状态", plan_directions: "写方向", deliver: "交付"};

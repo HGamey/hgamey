@@ -271,4 +271,40 @@
   .research-view #detail-actions::-webkit-scrollbar { display: none; }
   .research-view #detail-actions button { flex: none; }
 }
+
+/* 对比：每格一个字母和它的图或视频；答复之前不显示来源 */
 .research-view .research-artifact video { display: block; max-width: 100%; max-height: 480px; background: #0b0d0e; border-radius: var(--radius); }
+.research-view .compare-section > .compare + .compare { margin-top: var(--sp-5); padding-top: var(--sp-5); border-top: 1px dashed var(--line); }
+.research-view .compare-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px var(--sp-2); }
+.research-view .compare-title { font-size: var(--fs-md); font-weight: 650; color: var(--ink); margin-right: 2px; overflow-wrap: anywhere; }
+.research-view .compare-head .muted, .research-view .compare-head time { font-size: var(--fs-xs); color: var(--muted); }
+.research-view .compare-need { margin: 6px 0 0; font-size: var(--fs-base); line-height: 1.7; color: var(--ink); max-width: 80ch; white-space: pre-wrap; overflow-wrap: anywhere; }
+.research-view .compare-grid { display: grid; grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); gap: var(--sp-3); margin-top: var(--sp-3); }
+@media (max-width: 700px) { .research-view .compare-grid { grid-template-columns: minmax(0, 1fr); } }
+.research-view .compare-item { margin: 0; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
+.research-view .compare-item.picked { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc); }
+.research-view .compare-item figcaption { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px var(--sp-2); margin: 0 2px 8px; font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.research-view .compare-letter { font-size: var(--fs-md); font-weight: 650; line-height: 1.2; color: var(--ink); }
+.research-view .compare-item.picked .compare-letter { color: var(--acc-ink); }
+.research-view .compare-media > a { display: block; }
+.research-view .compare-together[hidden] { display: none; }
+.research-view .compare-item :is(img, video) { display: block; width: 100%; max-height: min(70vh, 640px); object-fit: contain; background: #0b0d0e; border-radius: var(--radius); }
+.research-view .compare-source { flex-basis: 100%; font-size: var(--fs-sm); color: var(--ink2); overflow-wrap: anywhere; }
+.research-view .compare-together { margin-top: var(--sp-2); min-height: 30px; padding: 0 12px; font-size: var(--fs-sm); }
+.research-view .compare-answer { display: grid; gap: 10px; margin-top: var(--sp-3); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
+.research-view .compare-picks, .research-view .compare-diff { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.research-view .compare-diff[hidden] { display: none; }
+.research-view .compare-hint { min-width: 4em; font-size: var(--fs-sm); color: var(--muted); }
+.research-view .compare-sep { width: 1px; height: 20px; margin: 0 6px; background: var(--line); }
+.research-view .chip-btn { min-height: 32px; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--ink2); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+.research-view .chip-btn.letter { min-width: 46px; font-weight: 650; }
+.research-view .chip-btn:hover { border-color: var(--ink2); color: var(--ink); }
+.research-view .chip-btn[aria-pressed="true"] { background: var(--acc); border-color: var(--acc); color: var(--on-acc); }
+.research-view .compare-foot { display: flex; align-items: flex-end; gap: var(--sp-2); }
+.research-view .compare-foot textarea { flex: 1; min-width: 0; min-height: 34px; max-height: 240px; padding: 6px 10px; resize: none; font: inherit; font-size: var(--fs-sm); line-height: 1.5; }
+.research-view .compare-foot button.ghost.primary { min-height: 34px; padding: 0 18px; font-weight: 600; }
+.research-view .compare-answer > .note.task-error { margin: 0; color: var(--bad); }
+.research-view .compare-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--sp-2); margin: var(--sp-2) 0 0; padding: 8px 12px; border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); }
+.research-view .compare-who { color: var(--muted); }
+.research-view .compare-comment { color: var(--ink2); overflow-wrap: anywhere; }
+.research-view .compare-verdict time { font-size: var(--fs-xs); }
