@@ -301,7 +301,7 @@
     return item;
   }
   // Directions as they grew: each under the one it is based on (data.based_on), children in list order. The line from
-  // the top to the direction being worked on now (else the latest touched one still standing) is the main line; a
+  // the top to the direction being worked on now (else the newest one still standing) is the main line; a
   // rejected or deferred direction that nothing builds on is a dead end.
   function lineage(entries, jobs) {
     const byId = new Map(entries.map(d => [d.id, d])), kids = new Map(), parent = new Map(), out = [], seen = new Set();
@@ -318,7 +318,7 @@
     };
     for (const d of entries) if (!parent.has(d.id)) walk(d, 0);
     for (const d of entries) walk(d, 0);   // a link that loops leaves its directions at the top level
-    const standing = d => !['rejected', 'deferred'].includes(d.state), latest = list => list.sort((a, b) => b.updated_at - a.updated_at)[0];
+    const standing = d => !['rejected', 'deferred'].includes(d.state), latest = list => list.sort((a, b) => b.created_at - a.created_at)[0];
     const busy = new Set(jobs.filter(job => window.HGJobState?.active(job)).map(job => job.direction_id));
     const target = latest(entries.filter(d => busy.has(d.id))) || latest(entries.filter(standing)) || latest([...entries]);
     const line = new Set();

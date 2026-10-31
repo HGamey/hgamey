@@ -1078,8 +1078,8 @@ class NodeResearch:
                     params.append(value)
             if after is not None:
                 terms.append("r.sequence<?"); params.append(after)
-            rows = db.execute("SELECT r.* FROM revisions r WHERE " + " AND ".join(terms) + " ORDER BY r.sequence DESC LIMIT ?",
-                              (*params, limit + 1)).fetchall()
+            rows = db.execute("SELECT r.*, o.created_at FROM revisions r LEFT JOIN objects o ON o.kind=r.kind AND o.id=r.id WHERE "
+                              + " AND ".join(terms) + " ORDER BY r.sequence DESC LIMIT ?", (*params, limit + 1)).fetchall()
             items, guidance, questions = [], {}, {}
             for row in rows[:limit]:
                 if complete:
@@ -1092,7 +1092,7 @@ class NodeResearch:
                 data = json.loads(row["data"])
                 item = {"kind": kind, "id": row["id"], "research_id": row["research_id"], "revision": row["revision"],
                         "title": row["title"] or data.get("text", "")[:120], "state": row["state"],
-                        "sequence": row["sequence"], "updated_at": row["at"]}
+                        "sequence": row["sequence"], "created_at": row["created_at"], "updated_at": row["at"]}
                 if kind == "research":
                     item["owner"], item["follows"] = data.get("owner"), data.get("follows")
                 if kind == "note":

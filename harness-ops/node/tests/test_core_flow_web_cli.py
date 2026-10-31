@@ -1573,6 +1573,55 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_main_line_ends_at_the_newest_direction_even_after_an_older_one_is_edited(self):
+        """Both views end the main line at the newest standing direction by creation. Editing an older direction (as a
+        based_on backfill with research update does) moves its updated_at, not where the line ends. List items carry
+        created_at, the same as a single read."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.assertEqual(self.web("POST", "/research-state/research/ml-root", self.write(
+            "create-ml-root", {"title": "主线", "objective": "主线停在最新的方向"}))[0], 201)
+        for did, based_on in (("m-a", None), ("m-b", "m-a"), ("m-c", "m-a")):
+            self.assertEqual(self.web("POST", f"/research-state/direction/{did}", self.write("create-" + did, {
+                "research_id": "ml-root", "title": "方向 " + did, "hypothesis": "主线 " + did,
+                "based_on": {"direction_id": based_on, "job_id": None} if based_on else None}))[0], 201)
+        older = self.web("GET", "/research-state/direction/m-b")[1]
+        payload = self.write("edit-m-b", {**older["data"], "hypothesis": "后来补写的假设"})
+        payload.update(base_revision=older["revision"], reason="补写")
+        self.assertEqual(self.web("POST", "/research-state/direction/m-b", payload)[0], 201)
+        items = {item["id"]: item for item in self.web("GET", "/research-state/direction?research_id=ml-root&limit=10")[1]["items"]}
+        self.assertEqual({did: item["created_at"] for did, item in items.items()},
+                         {did: self.web("GET", f"/research-state/direction/{did}")[1]["created_at"] for did in items})
+        self.assertGreater(items["m-b"]["updated_at"], items["m-c"]["updated_at"], "the edit made m-b the latest touched")
+        self.assertLess(items["m-b"]["created_at"], items["m-c"]["created_at"])
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/research?kind=research&id=ml-root")
+                page.wait_for_function("() => document.querySelectorAll('#task-directions .research-direction').length === 3")
+                self.assertEqual(page.eval_on_selector_all("#task-directions .research-direction.on-main", "e => e.map(x => x.dataset.direction)"), ["m-a", "m-c"])
+                page.goto(f"{base}/dash/command")
+                page.wait_for_function("() => window.__ready === true")
+                self.assertEqual(page.evaluate("() => window.__command.world.trees.get('ml-root').main"), "m-c|m-a")
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_a_task_closes_with_a_reason_stays_findable_and_reopens(self):
         """关闭任务 asks why; the closed task shows the reason, folds into 已关闭 on the home page, and 重新打开 makes it active."""
         try:
