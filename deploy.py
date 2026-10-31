@@ -22,6 +22,7 @@ import filecmp
 import json
 import os
 import plistlib
+import pwd
 import secrets
 import shlex
 import shutil
@@ -79,18 +80,32 @@ def load_config(name, config_file=None):
 
 def service_plan(root, node_id, platform, home, environment):
     """The service manager owns the launcher; independent task groups survive its restart."""
+    user = pwd.getpwuid(os.getuid()).pw_name
     args = [sys.executable, str(root / 'harness-ops/node/node_launch.py'), '--config',
             str(root / 'node-launch.json'), '--workdir', str(root), '--no-tunnel']
     if platform == 'darwin':
         label = 'com.hgamey.node.' + node_id
-        filename = home / 'Library/LaunchAgents' / (label + '.plist')
-        content = plistlib.dumps({'Label': label, 'ProgramArguments': args,
+        filename = root / (label + '.plist')
+        installed = '/Library/LaunchDaemons/' + label + '.plist'
+        content = plistlib.dumps({'Label': label, 'UserName': user, 'ProgramArguments': args,
             'WorkingDirectory': str(root), 'EnvironmentVariables': environment, 'KeepAlive': True,
             'StandardOutPath': str(root / 'launcher.log'), 'StandardErrorPath': str(root / 'launcher.log')})
-        domain = 'gui/' + str(os.getuid())
-        return {'path': filename, 'content': content, 'prepare': [],
-                'stop': [['launchctl', 'bootout', domain + '/' + label]],
-                'start': [['launchctl', 'bootstrap', domain, str(filename)]]}
+        stop = ['sudo', '-n', '/bin/launchctl', 'bootout', 'system/' + label]
+        start = ['sudo', '-n', '/bin/launchctl', 'bootstrap', 'system', installed]
+        rule = user + ' ALL=(root) NOPASSWD: ' + ', '.join(' '.join(command[2:]) for command in (stop, start))
+        install = '''set -e
+rule=$(/usr/bin/mktemp)
+trap '/bin/rm -f "$rule"' EXIT
+printf '%s\\n' "$3" > "$rule"
+/usr/sbin/visudo -cf "$rule"
+/usr/bin/install -o root -g wheel -m 644 "$1" "$2"
+/usr/bin/install -d -o root -g wheel -m 755 /etc/sudoers.d
+/usr/bin/install -o root -g wheel -m 440 "$rule" "$4"
+'''
+        return {'path': filename, 'content': content,
+                'prepare': [['sudo', '/bin/sh', '-c', install, 'hgamey-join-service', str(filename),
+                             installed, rule, '/etc/sudoers.d/hgamey-node-' + node_id]],
+                'stop': [stop], 'start': [start]}
     if platform != 'linux':
         raise DeployError('joining a computer currently supports Linux and macOS')
     label = 'hgamey-node-' + node_id + '.service'
@@ -101,7 +116,7 @@ def service_plan(root, node_id, platform, home, environment):
         'Environment=' + ' '.join(word(key + '=' + value) for key, value in environment.items()),
         'KillMode=process', 'Restart=on-failure', '', '[Install]', 'WantedBy=default.target', ''])
     return {'path': home / '.config/systemd/user' / label, 'content': content.encode(),
-            'prepare': [['systemctl', '--user', 'daemon-reload']],
+            'prepare': [['sudo', 'loginctl', 'enable-linger', user], ['systemctl', '--user', 'daemon-reload']],
             'stop': [['systemctl', '--user', 'stop', label]],
             'start': [['systemctl', '--user', 'enable', '--now', label]]}
 
@@ -135,6 +150,8 @@ def join_node(center, invite, name, root, port, ref, fetch, *, home=None):
         'gray_layer': False, 'path_prepend': ['~/.cargo/bin']}
     configuration = root / 'deploy-node.json'
     configuration.write_text(json.dumps(config, indent=1) + '\n')
+    say('join needs sudo to ' + ('install the system LaunchDaemon and its noninteractive restart permission'
+                                if sys.platform == 'darwin' else 'enable lingering for the joining user'))
     for command in service['prepare']:
         run(command)
     # A new launchd job has no service to boot out yet. Future upgrades use stop.

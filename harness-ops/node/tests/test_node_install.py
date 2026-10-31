@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import pwd
+import shlex
 import shutil
 import socket
 import subprocess
@@ -35,6 +37,80 @@ if args[:1]==['fixture-hold']:
     sock.sendall(b'ready');sock.recv(1);os.close(fd);sock.sendall(b'released');sys.exit()
 print('{}');sys.exit(2)
 '''
+
+
+class BootServicePlanTests(unittest.TestCase):
+    def setUp(self):
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.root=Path(temporary.name)/'new node with spaces'
+        self.home=Path(temporary.name)/'home'
+        self.user=pwd.getpwuid(os.getuid()).pw_name
+        self.env={'DEVLOCK_DIR':str(self.root/'locks'),'HG_CONFIG_DIR':str(self.root/'config'),'PATH':'/usr/bin:/bin'}
+
+    def test_macos_boot_plan_installs_a_user_owned_process_in_the_system_domain(self):
+        node_id='a'*32
+        label='com.hgamey.node.'+node_id
+        installed='/Library/LaunchDaemons/'+label+'.plist'
+        plan=deploy.service_plan(self.root,node_id,'darwin',self.home,self.env)
+        plist=plistlib.loads(plan['content'])
+        self.assertEqual(plist.get('UserName'),self.user)
+        self.assertTrue(plist['KeepAlive'])
+        self.assertEqual(plist['WorkingDirectory'],str(self.root))
+        self.assertEqual(plist['EnvironmentVariables'],self.env)
+        self.assertEqual(plan['stop'],[['sudo','-n','/bin/launchctl','bootout','system/'+label]])
+        self.assertEqual(plan['start'],[['sudo','-n','/bin/launchctl','bootstrap','system',installed]])
+        self.assertEqual(len(plan['prepare']),1,'join should need at most one sudo authentication')
+        command=plan['prepare'][0]
+        self.assertEqual(command[:3],['sudo','/bin/sh','-c'])
+        self.assertEqual(command[5:7],[str(plan['path']),installed])
+        self.assertEqual(command[7],self.user+' ALL=(root) NOPASSWD: /bin/launchctl bootout system/'+label+
+                         ', /bin/launchctl bootstrap system '+installed)
+        self.assertEqual(command[8],'/etc/sudoers.d/hgamey-node-'+node_id)
+        self.assertIn('/usr/bin/install -o root -g wheel -m 644 "$1" "$2"',command[3])
+        self.assertIn('/usr/sbin/visudo -cf "$rule"',command[3])
+        self.assertLess(command[3].index('/usr/sbin/visudo'),command[3].index('/usr/bin/install'))
+        self.assertIn('/usr/bin/install -o root -g wheel -m 440 "$rule" "$4"',command[3])
+        self.assertNotIn('LaunchAgents',str(plan))
+
+    def test_linux_boot_plan_enables_linger_before_reloading_the_user_service(self):
+        plan=deploy.service_plan(self.root,'a'*32,'linux',self.home,self.env)
+        self.assertEqual(plan['prepare'],[['sudo','loginctl','enable-linger',self.user],
+                                         ['systemctl','--user','daemon-reload']])
+        self.assertIn('KillMode=process',plan['content'].decode())
+        self.assertIn('WantedBy=default.target',plan['content'].decode())
+
+    def test_macos_rule_validation_failure_never_installs_system_files(self):
+        plan=deploy.service_plan(self.root,'a'*32,'darwin',self.home,self.env)
+        command=plan['prepare'][0]
+        rejected=self.root.parent/'reject-rule'
+        installed=self.root.parent/'record-install'
+        marker=self.root.parent/'installed'
+        rejected.write_text('#!/bin/sh\nexit 42\n');rejected.chmod(0o700)
+        installed.write_text('#!/bin/sh\nprintf installed > "$BOOT_INSTALL_LOG"\n');installed.chmod(0o700)
+        # Run the generated shell without sudo; both privileged tools are fixtures.
+        script=command[3].replace('/usr/sbin/visudo',shlex.quote(str(rejected))).replace(
+            '/usr/bin/install',shlex.quote(str(installed)))
+        result=subprocess.run(['/bin/sh','-c',script,*command[4:]],
+            env={**os.environ,'BOOT_INSTALL_LOG':str(marker)},capture_output=True,text=True)
+        self.assertEqual(result.returncode,42,result.stdout+result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_macos_sudo_failure_stops_join_without_installing_a_login_agent(self):
+        def enrolled(center,invite,name,data):
+            (Path(data)/'_node').mkdir()
+            return {'node_id':'a'*32}
+        error=subprocess.CalledProcessError(1,['sudo','/bin/sh'])
+        stderr=io.StringIO()
+        with patch.object(deploy.sys,'platform','darwin'), patch('node_connector.join',side_effect=enrolled), \
+                patch.object(deploy,'run',side_effect=error) as run, patch.object(deploy,'deploy') as publish, \
+                contextlib.redirect_stderr(stderr):
+            with self.assertRaises(subprocess.CalledProcessError):
+                deploy.join_node('http://fixture.invalid','unused','worker',self.root,8765,'HEAD',False,home=self.home)
+        self.assertEqual(run.call_count,1)
+        publish.assert_not_called()
+        self.assertIn('sudo',stderr.getvalue())
+        self.assertIn('LaunchDaemon',stderr.getvalue())
+        self.assertFalse((self.home/'Library/LaunchAgents').exists())
 
 
 class NodeInstallTests(unittest.TestCase):
@@ -93,6 +169,9 @@ class NodeInstallTests(unittest.TestCase):
             self.process.terminate();self.process.wait(timeout=10)
 
     def service_command(self,argv,**kwargs):
+        if argv[:1]==['sudo']:
+            self.assertEqual(argv,['sudo','loginctl','enable-linger',pwd.getpwuid(os.getuid()).pw_name])
+            return
         self.assertEqual(argv[0],'systemctl',argv)
         if 'stop' in argv:
             self.stop()
@@ -213,8 +292,10 @@ class NodeInstallTests(unittest.TestCase):
         self.assertIn('--no-tunnel',value['ProgramArguments'])
         self.assertIn(str(self.root/'node-launch.json'),value['ProgramArguments'])
         self.assertNotIn('token',str(value).lower())
-        self.assertEqual(plan['start'][0][:2],['launchctl','bootstrap'])
-        self.assertEqual(plan['stop'][0][:2],['launchctl','bootout'])
+        label='com.hgamey.node.'+'a'*32
+        self.assertEqual(plan['start'],[['sudo','-n','/bin/launchctl','bootstrap','system',
+                                        '/Library/LaunchDaemons/'+label+'.plist']])
+        self.assertEqual(plan['stop'],[['sudo','-n','/bin/launchctl','bootout','system/'+label]])
 
 
 if __name__=='__main__':unittest.main()
