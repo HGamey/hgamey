@@ -18,6 +18,7 @@ COLLABORATION = "只处理自己负责的研究，以及别人研究里点名给
 TASK_STATE_HELP = "任务开着就是进行中；关上分两种，有成果的是已交付，没成果的是已关闭（不做了，或者并入了别的任务，要写原因）。关上的任务可以重新打开，接着做完再交付一次，交付会多一个版本。"
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
+    "新开的方向如果是在某个方向的结果上继续，用 research direction add … --based-on <方向ID>[:<任务ID>] 写明；已有方向用 research update 补上。",
     "设备锁序列化实际操作；仅 claimed 扣运行名额，确认宿主完成的终态自动释放任务预留。完成未知时保留独占范围，由负责人或管理员 reset。",
     "recovery required 的已结束任务用原 session 或 adb 还原设备；保存错误修好后用 pf-node reset <id> --note 重存，reset 不证明设备恢复，也不重跑实验。",
     "设备写任务只占一台：研究只有一台 device_requirements 时默认同机；已登记的手机默认走自己的 lane，否则用 --resource device:<串号>，显式参数优先，global 会占全部设备。",

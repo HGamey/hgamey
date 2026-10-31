@@ -184,7 +184,7 @@ def normalize(kind, data):
         "research": {"title", "objective", "game", "constraints", "budgets", "device_requirements", "state", "state_reason", "coverage", "criteria",
                      "owner", "deliverable", "follows"},
         "direction": {"research_id", "title", "hypothesis", "priority", "priority_reason", "prerequisites", "cost_expectation",
-                      "expected_benefit", "next_experiment", "state", "state_reason", "dependencies", "feedback_decisions"},
+                      "expected_benefit", "next_experiment", "state", "state_reason", "dependencies", "feedback_decisions", "based_on"},
         "request": {"research_id", "type", "title", "need", "why", "resume_hint", "context", "supersedes", "state", "close_reason", "due_at"},
         "feedback": {"request_id", "request_revision", "text", "supersedes"},
         # The research's discussion thread: humans and agents post, agents answer guidance with a decision.
@@ -270,6 +270,16 @@ def normalize(kind, data):
             value["hypothesis"] = text(value.get("hypothesis"), 16384, True)
         except ValueError as error:
             raise ValueError(f"direction data.hypothesis: {error}") from None
+        based_on = value.get("based_on")
+        if based_on is None:
+            value["based_on"] = None
+        else:
+            object_fields(based_on, {"direction_id", "job_id"})
+            identifier(based_on.get("direction_id"))
+            based_on.setdefault("job_id", None)
+            if based_on["job_id"] is not None and (not isinstance(based_on["job_id"], str)
+                    or not re.fullmatch(r"[0-9a-f]{12}", based_on["job_id"])):
+                raise ValueError("direction based_on.job_id must have 12 hexadecimal characters")
         for key in ("priority_reason", "cost_expectation", "expected_benefit"):
             value[key] = text(value.get(key), 16384)
         value.setdefault("priority", None)
@@ -740,6 +750,28 @@ class NodeResearch:
             return rid, observations
         if value["next_experiment"] is not None:
             self._reference(db, "research", rid, value["next_experiment"]["research_revision"])
+        based_on = value["based_on"]
+        if based_on is not None:
+            base = self._reference(db, "direction", based_on["direction_id"])
+            chain, cursor = set(), rid
+            while cursor is not None and cursor not in chain:
+                chain.add(cursor)
+                research = self._latest(db, "research", cursor)
+                cursor = json.loads(research["data"]).get("follows") if research is not None else None
+            if base["research_id"] not in chain:
+                raise ValueError("based_on direction must belong to this research or an earlier research in its follows chain")
+            current = db.execute("SELECT created_at FROM objects WHERE kind='direction' AND id=?", (oid,)).fetchone()
+            base_created = db.execute("SELECT created_at FROM objects WHERE kind='direction' AND id=?",
+                                      (base["id"],)).fetchone()[0]
+            if base_created >= (current[0] if current is not None else time.time()):
+                raise ValueError("based_on direction must be created before this direction")
+            if based_on["job_id"] is not None:
+                job = self.results.jobs.dispatch.queue.get(based_on["job_id"])
+                target = self.results.jobs.center.targets.get(based_on["job_id"]) if job is None else None
+                spec = (job["spec"] if job is not None else
+                        target["request"]["spec"] if target is not None else {})
+                if (spec.get("research_id"), spec.get("direction_id")) != (base["research_id"], base["id"]):
+                    raise ValueError("based_on job must belong to the referenced direction")
         for dep in value["dependencies"]:
             if dep["kind"] == "direction" and dep["target_id"] == oid:
                 raise ResearchError(409, "research_dependency_cycle", "direction cannot depend on itself")
@@ -1078,6 +1110,7 @@ class NodeResearch:
                                 question_unanswered=row["id"] in questions[rid] if data.get("ask") is True else None)
                 if kind == "direction":
                     item["hypothesis"] = data["hypothesis"]
+                    item["based_on"] = data.get("based_on")
                     item["metadata_blocked"] = any(dep["blocking"] and dep["resolution"] is None for dep in data["dependencies"])
                 elif kind == "request":
                     item["feedback_count"] = db.execute("SELECT COUNT(*) FROM revisions WHERE kind='feedback' AND request_id=? AND sequence<=?", (row["id"], upper)).fetchone()[0]

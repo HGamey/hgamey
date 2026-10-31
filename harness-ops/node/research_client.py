@@ -28,6 +28,7 @@ HELP = """用法:
   pf-node research history KIND ID [--limit 1..100] [--cursor CURSOR]
   pf-node research assess ID --revision N
   pf-node research create KIND ID FILE [--operation-id ID] [--actor-label TEXT] [--reason TEXT]
+  pf-node research direction add <方向ID> FILE [--based-on <方向ID>[:<任务ID>]] [--operation-id ID] [--actor-label TEXT]
   pf-node research update KIND ID FILE --revision N --reason TEXT [--operation-id ID] [--actor-label TEXT]
   pf-node research conclude <方向ID> verified|no_gain|rejected|deferred --reason "<依据>"
       [--evidence job:ID[:PATH] ...]                 # 读取当前 revision 给方向下结论
@@ -51,6 +52,7 @@ recipes 离线查看优化路线的前提、改动、测量和恢复建议；优
 plan-template 离线输出 next_experiment JSON 草稿（title、plan、research_revision），可带路线，不提交任务。
 把完整输出作为方向 data.next_experiment；不要嵌套进 next_experiment.plan，plan 只收字符串。
 方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
+direction add 把 --based-on 写成 data.based_on={direction_id,job_id}；方向须同任务或在 follows 前链且更早，指定运行须挂在该方向。
 最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。research list 必须带 KIND，可选值同前；FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 research 列表可用 --follows <研究ID> 只取它的接续任务。
@@ -98,6 +100,14 @@ def identifier(value):
     return value
 
 
+def based_on(value):
+    direction, separator, job = value.partition(":")
+    identifier(direction)
+    if separator and not re.fullmatch(r"[0-9a-f]{12}", job):
+        raise argparse.ArgumentTypeError("--based-on 的任务 ID 须为 12 位十六进制字符")
+    return {"direction_id": direction, "job_id": job if separator else None}
+
+
 def integer(value, minimum=1, maximum=None):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]+", value):
         raise argparse.ArgumentTypeError("需要非负十进制整数")
@@ -143,6 +153,15 @@ def parser():
     assessment = commands.add_parser("assess")
     assessment.add_argument("id", type=identifier)
     assessment.add_argument("--revision", type=integer, required=True)
+    direction = commands.add_parser("direction")
+    direction_commands = direction.add_subparsers(dest="direction_command", required=True)
+    add = direction_commands.add_parser("add")
+    add.set_defaults(kind="direction", reason=None, revision=None)
+    add.add_argument("id", type=identifier)
+    add.add_argument("file")
+    add.add_argument("--based-on", type=based_on)
+    add.add_argument("--operation-id", type=identifier)
+    add.add_argument("--actor-label")
     for name in ("create", "update"):
         command = commands.add_parser(name)
         command.add_argument("kind", choices=KINDS)
@@ -533,6 +552,8 @@ def _write(client, args):
     print(f"pf-node: {args.kind}/{args.id} operation_id={operation_id}；仅提交一次。"
           f"回执未知时用 {lookup} 查询原操作。", file=sys.stderr, flush=True)
     data = _data(args.file)
+    if getattr(args, "based_on", None) is not None:
+        data["based_on"] = args.based_on
     if args.kind in ("request", "feedback") and "evaluation" in data:
         client.require_evaluation()
     if args.kind == "research" and "criteria" in data:
@@ -781,6 +802,9 @@ def main(argv, *, target):
         return 0
     client = Client(target)
     try:
+        if args.command == "direction":
+            args.command = "create"
+            return _write(client, args)
         if args.command in ("create", "update"):
             return _write(client, args)
         if args.command in ("claim", "assign", "link", "close", "reopen", "note", "compare", "thread", "deliver", "conclude"):

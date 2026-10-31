@@ -318,6 +318,81 @@ class CoreFlowTests(unittest.TestCase):
         script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
         self.assertIn("job.direction_id === direction.id", script)
 
+    def test_direction_based_on_reads_and_validates_chain_time_and_job(self):
+        def research(rid, follows=None):
+            data = {"title": rid, "objective": "记录实验继承"}
+            if follows is not None:
+                data["follows"] = follows
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, data))[0], 201)
+
+        def direction(rid, did):
+            self.assertEqual(self.web("POST", f"/research-state/direction/{did}", self.write(
+                "create-" + did, {"research_id": rid, "title": did, "hypothesis": "验证继承关系"}))[0], 201)
+            status, record = self.web("GET", f"/research-state/direction/{did}")
+            self.assertEqual(status, 200)
+            return record
+
+        def update(record, operation, based_on):
+            payload = self.write(operation, {**record["data"], "based_on": based_on})
+            payload.update(base_revision=record["revision"], reason="记录方向继承")
+            return self.web("POST", f"/research-state/direction/{record['id']}", payload)
+
+        research("sr-base")
+        research("sr-next", "sr-base")
+        research("sr-unrelated")
+        base = direction("sr-base", "d-base")
+        other = direction("sr-next", "d-other")
+        direction("sr-unrelated", "d-unrelated")
+        current = direction("sr-next", "d-current")
+        direction("sr-next", "d-later")
+        self.assertIsNone(base["data"]["based_on"])
+
+        submitted = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                               "resources": [], "actor_id": "agent-a", "research_id": "sr-base",
+                                               "direction_id": "d-base"}, b"", "based-on-job")
+        jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+
+        status, changed = update(current, "based-on-update", {"direction_id": "d-base", "job_id": None})
+        self.assertEqual(status, 201, changed)
+        current = self.web("GET", "/research-state/direction/d-current")[1]
+        self.assertEqual(current["data"]["based_on"], {"direction_id": "d-base", "job_id": None})
+        status, changed = update(current, "based-on-change", {"direction_id": "d-other", "job_id": None})
+        self.assertEqual(status, 201, changed)
+        current = self.web("GET", "/research-state/direction/d-current")[1]
+        self.assertEqual(current["data"]["based_on"], {"direction_id": "d-other", "job_id": None})
+        status, failure = update(current, "based-on-later", {"direction_id": "d-later", "job_id": None})
+        self.assertEqual((status, failure["code"]), (400, "invalid_research"))
+
+        for did, based_on in (
+                ("d-cross-chain", {"direction_id": "d-unrelated", "job_id": None}),
+                ("d-wrong-job", {"direction_id": "d-other", "job_id": jid})):
+            with self.subTest(rejected=did):
+                status, failure = self.web("POST", f"/research-state/direction/{did}", self.write(
+                    "create-" + did, {"research_id": "sr-next", "title": did, "hypothesis": "拒绝无效继承",
+                                       "based_on": based_on}))
+                self.assertEqual((status, failure["code"]), (400, "invalid_research"))
+                self.assertEqual(self.web("GET", f"/research-state/direction/{did}")[0], 404)
+
+        source = self.tmp / "based-on.json"
+        source.write_text(json.dumps({"research_id": "sr-next", "title": "C 之后继续", "hypothesis": "以选中的 C 为基线"}))
+        code, out, err = self.pf(ADMIN, "research", "direction", "add", "d-continuation", str(source),
+                                 "--based-on", f"d-base:{jid}")
+        self.assertEqual(code, 0, err)
+        code, out, err = self.pf(ADMIN, "research", "show", "direction", "d-continuation")
+        self.assertEqual(code, 0, err)
+        expected = {"direction_id": "d-base", "job_id": jid}
+        self.assertEqual(json.loads(out)["data"]["based_on"], expected)
+        status, listing = self.web("GET", "/research-state/direction?research_id=sr-next&limit=100")
+        self.assertEqual(status, 200)
+        self.assertEqual(next(item for item in listing["items"] if item["id"] == "d-continuation")["based_on"], expected)
+
+        code, out, err = self.pf(ADMIN, "research", "direction", "add", "d-independent", str(source))
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(self.web("GET", "/research-state/direction/d-independent")[1]["data"]["based_on"])
+        self.assertIn("--based-on", self.pf(ADMIN, "research", "--help")[1])
+        self.assertTrue(any("--based-on" in step for step in agent_duties.LOOP))
+
     def test_changed_loop_step_is_marked_new_once_per_agent_in_json_and_text(self):
         tokens = {}
         for name in ("agent-a", "agent-b"):
