@@ -34,6 +34,61 @@ class MultiNodeArtifactsTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_intake_failure_before_log_creation_is_a_terminal_collection_error(self):
+        connector = self.flow.start_worker()
+        artifacts = self.center.jobs.center.artifacts
+        artifacts.close()  # Collect explicitly after the failed intake has returned.
+        write_meta = self.worker.jobs._write_meta
+        failed = []
+
+        def no_space(jid, meta):
+            write_meta(jid, meta)
+            if not failed:
+                failed.append(jid)
+                raise OSError(errno.ENOSPC, 'fixture disk full before log creation')
+
+        with patch.object(self.worker.jobs, '_write_meta', side_effect=no_space):
+            code, job = self.flow.submit({'bin': 'fixture', 'argv': ['-c', 'pass'],
+                'device_access': 'none', 'execution_node_id': self.worker.jobs.node_id}, 'intake-without-log')
+        self.assertEqual(code, 200, job)
+        jid = job['id']
+        status = self.worker.jobs.status(jid)
+        self.assertEqual((status['state'], status['queue']['state'], status['outcome']),
+                         ('finished', 'done', 'failed'))
+        self.assertFalse((self.worker.root / 'jobs' / jid / 'log').exists())
+        code, source = self.worker.call('GET', '/node/executions/' + jid + '/source')
+        self.assertEqual(code, 200, source)
+        self.assertEqual(source['job']['id'], jid)
+        self.assertIsNone(source['completion_problem'])
+        self.assertIsNone(source['log_size'])
+        self.assertEqual(self.worker.call('GET', '/node/executions/ffffffffffff/source')[0], 404)
+        artifacts.collect(jid)
+        synced = artifacts.sync_status(jid)
+        self.assertEqual((synced['status'], synced['final']), ('error', True))
+        self.assertEqual(synced['error'], 'finished execution has no log')
+        self.assertEqual(self.center.jobs._read_root.read_json(jid + '/meta.json')['id'], jid)
+        self.assertFalse((self.center.root / 'jobs' / jid / 'log').exists())
+        self.assertFalse((self.center.root / 'jobs' / jid / '.collected/log.partial').exists())
+        code, reply = self.worker.call('GET', '/jobs/' + jid + '/log')
+        self.assertEqual((code, reply['error']), (409, 'execution has no log'))
+        connector.close()
+        from job_artifacts import JobArtifacts
+        restarted = JobArtifacts(self.center.jobs)
+        self.addCleanup(restarted.close)
+        # Reopening the collector and receiving another terminal observation
+        # must not retry a permanently absent log or forget the known job.
+        with patch('job_artifacts.threading.Thread', side_effect=AssertionError('retried terminal absence')):
+            record = self.center.jobs.center.remote(jid)
+            restarted.observed(record)
+        with patch.object(self.center.jobs.center, 'rpc', side_effect=AssertionError('reread missing log')):
+            self.assertEqual(restarted.metadata(jid)['id'], jid)
+            self.assertIsNone(restarted.completion_problem(jid))
+            self.assertEqual(restarted.inputs(jid)['job_id'], jid)
+            self.assertEqual(restarted.list(jid, {})['items'], [])
+            code, reply = self.center.call('GET', '/jobs/' + jid + '/log')
+            self.assertEqual((code, reply['error']), (409, 'finished execution has no log'))
+        self.assertEqual(len(self.worker.jobs.dispatch.queue.rows()), 1)
+
     def test_short_log_transfers_never_replace_a_previous_log_or_publish_complete(self):
         self.flow.start_worker()
         artifacts = self.center.jobs.center.artifacts

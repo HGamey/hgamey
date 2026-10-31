@@ -662,6 +662,8 @@ class Jobs:
             raise ValueError("offset must be nonnegative; limit must be between 1 and 4194304")
         remote_job = self.center.remote(jid)
         if remote_job and (remote_job.get("artifacts_sync") or {}).get("status") != "complete":
+            if (remote_job.get("artifacts_sync") or {}).get("final"):
+                raise DirectoryError(409, remote_job["artifacts_sync"]["error"])
             try:
                 response = self.center.rpc(remote_job, "GET", "/jobs/" + jid + "/log?" + urlencode({
                     "offset": offset, "limit": limit}), max_bytes=limit)
@@ -671,9 +673,13 @@ class Jobs:
                 raise DirectoryError(response["status"], "execution log could not be read")
             return response["body"]
         self.path(jid)
-        with self._read_root.open_file(jid + "/log") as f:
-            f.seek(offset)
-            return f.read(limit)
+        try:
+            with self._read_root.open_file(jid + "/log") as f:
+                f.seek(offset)
+                return f.read(limit)
+        except FileNotFoundError:
+            self.center.artifacts.require_job(jid)
+            raise DirectoryError(409, "execution has no log") from None
 
     def out_blob(self, jid, rel=None):
         """Return an open regular file plus its metadata. Caller must close it.
@@ -1232,8 +1238,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     problem = jobs.source_completion_problem(parts[2], job)
                     log_size = None
                     if problem is None:
-                        with jobs._read_root.open_file(parts[2] + "/log") as stream:
-                            log_size = os.fstat(stream.fileno()).st_size
+                        try:
+                            with jobs._read_root.open_file(parts[2] + "/log") as stream:
+                                log_size = os.fstat(stream.fileno()).st_size
+                        except FileNotFoundError:
+                            pass  # Finished intake can fail before creating its log.
                     return self._send(200, {"job": job, "completion_problem": problem, "log_size": log_size})
                 if parts == ["whoami"]:
                     agent = getattr(self, "agent", None)

@@ -46,7 +46,7 @@ class JobArtifacts:
         record = self.center.remote(jid)
         saved = record.get('artifact_source')
         if (saved and saved['job']['state'] == 'finished' and saved['completion_problem'] is None
-                and saved.get('log_size') is not None):
+                and 'log_size' in saved):
             return saved
         value = json.loads(self.request(jid, '/node/executions/' + jid + '/source')['body'])
         self.center.targets.update(jid, artifact_source=value)
@@ -179,7 +179,8 @@ class JobArtifacts:
     def list(self, jid, query):
         from node_read import artifact_page
         record = self.center.remote(jid)
-        if record and (record.get('artifacts_sync') or {}).get('status') != 'complete':
+        sync = (record or {}).get('artifacts_sync') or {}
+        if record and sync.get('status') != 'complete' and not sync.get('final'):
             return json.loads(self.request(jid, '/jobs/' + jid + '/artifacts?' + urlencode(query, doseq=True))['body'])
         return artifact_page(self.store, jid, query)
 
@@ -250,6 +251,10 @@ class JobArtifacts:
             self.inputs(jid)
             # A short read is not EOF: the finished source supplies the exact length.
             size = source.get('log_size')
+            if 'log_size' in source and size is None:
+                self.center.targets.update(jid, artifacts_sync={'status': 'error', 'at': time.time(),
+                    'error': 'finished execution has no log', 'final': True})
+                return
             if size is None:
                 raise ValueError('execution source has not confirmed its finished log size')
             temporary = jid + '/.collected/log.partial'
@@ -288,8 +293,9 @@ class JobArtifacts:
 
     def observed(self, record):
         status = record.get('observation') or {}
+        sync = record.get('artifacts_sync') or {}
         if (status.get('state') != 'finished' or status.get('queue', {}).get('state') != 'done'
-                or (record.get('artifacts_sync') or {}).get('status') == 'complete'):
+                or sync.get('status') == 'complete' or sync.get('final')):
             return
         jid = record['id']
 
