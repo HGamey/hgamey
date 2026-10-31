@@ -393,6 +393,70 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("--based-on", self.pf(ADMIN, "research", "--help")[1])
         self.assertTrue(any("--based-on" in step for step in agent_duties.LOOP))
 
+    def test_research_update_merges_only_supplied_fields(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-partial", self.write(
+            "create-partial", {"title": "部分更新", "objective": "补继承不能清掉结论和证据"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-partial-base", self.write(
+            "create-partial-base", {"research_id": "sr-partial", "title": "基线", "hypothesis": "先得到基线"}))[0], 201)
+        experiment = {"title": "复测", "plan": "同场景复测并保留原始证据", "research_revision": 1}
+        self.assertEqual(self.web("POST", "/research-state/direction/d-partial-target", self.write(
+            "create-partial-target", {"research_id": "sr-partial", "title": "后续", "hypothesis": "在基线上继续",
+                                       "next_experiment": experiment}))[0], 201)
+        output = Path(self.jobs.path(self.jid, "out"))
+        (output / "verified.json").write_text('{"valid":true}')
+        code, out, err = self.pf(ADMIN, "research", "conclude", "d-partial-target", "verified",
+                                 "--reason", "证据已复核", "--evidence", f"job:{self.jid}:verified.json")
+        self.assertEqual(code, 0, err)
+        concluded = self.cli("GET", "/research-state/direction/d-partial-target")[1]
+
+        patch = {"based_on": {"direction_id": "d-partial-base", "job_id": None}}
+        source = self.tmp / "partial-update.json"
+        source.write_text(json.dumps(patch))
+        code, out, err = self.pf(ADMIN, "research", "update", "direction", "d-partial-target", str(source),
+                                 "--revision", str(concluded["revision"]), "--reason", "补写继承",
+                                 "--operation-id", "partial-direction")
+        self.assertEqual(code, 0, err)
+        receipt = json.loads(out)
+        self.assertEqual(receipt["changed_fields"], ["based_on"])
+        updated = self.cli("GET", "/research-state/direction/d-partial-target")[1]
+        for field in ("state", "state_reason", "next_experiment", "evidence_refs"):
+            self.assertEqual(updated["data"][field], concluded["data"][field], field)
+        self.assertEqual(updated["data"]["based_on"], patch["based_on"])
+        self.assertEqual(updated["data"]["evidence_refs"][0]["path"], "verified.json")
+
+        # Replaying the original operation still merges against its base revision, after the object has advanced.
+        envelope = self.write("partial-direction", patch)
+        envelope.update(base_revision=concluded["revision"], reason="补写继承")
+        self.assertEqual(self.cli("POST", "/research-state/direction/d-partial-target", envelope), (201, receipt))
+
+        source.write_text(json.dumps({"based_on": None}))
+        code, out, err = self.pf(ADMIN, "research", "update", "direction", "d-partial-target", str(source),
+                                 "--revision", str(updated["revision"]), "--reason", "显式取消继承")
+        self.assertEqual(code, 0, err)
+        cleared = self.cli("GET", "/research-state/direction/d-partial-target")[1]
+        self.assertIsNone(cleared["data"]["based_on"])
+        self.assertEqual(cleared["data"]["state"], "verified")
+        source.write_text(json.dumps({"title": None}))
+        code, _, _ = self.pf(ADMIN, "research", "update", "direction", "d-partial-target", str(source),
+                             "--revision", str(cleared["revision"]), "--reason", "必填字段不能清空")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.cli("GET", "/research-state/direction/d-partial-target")[1], cleared)
+
+        self.assertEqual(self.web("POST", "/research-state/research/sr-partial-task", self.write(
+            "create-partial-task", {"title": "已交付任务", "objective": "改标题不改变交付状态"}))[0], 201)
+        self.assertEqual(self.pf(ADMIN, "research", "deliver", "sr-partial-task", "--summary", "完成",
+                                 "--artifact", f"job:{self.jid}")[0], 0)
+        delivered = self.cli("GET", "/research-state/research/sr-partial-task")[1]
+        source.write_text(json.dumps({"title": "改后的标题"}))
+        code, out, err = self.pf(ADMIN, "research", "update", "research", "sr-partial-task", str(source),
+                                 "--revision", str(delivered["revision"]), "--reason", "只改标题")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["changed_fields"], ["title"])
+        renamed = self.cli("GET", "/research-state/research/sr-partial-task")[1]["data"]
+        self.assertEqual((renamed["title"], renamed["state"], renamed["objective"], renamed["deliverable"]),
+                         ("改后的标题", "delivered", delivered["data"]["objective"], delivered["data"]["deliverable"]))
+        self.assertIn("update FILE 只写要改的字段", self.pf(ADMIN, "research", "--help")[1])
+
     def test_changed_loop_step_is_marked_new_once_per_agent_in_json_and_text(self):
         tokens = {}
         for name in ("agent-a", "agent-b"):

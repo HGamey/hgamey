@@ -835,7 +835,18 @@ class NodeResearch:
             positive(base)
         actor = text(envelope.get("actor_label"), 128)
         reason = text(envelope.get("reason"), 16384, base is not None)
-        value = normalize(kind, envelope.get("data"))
+        patch = envelope.get("data")
+        patch_fields = set(patch) if isinstance(patch, dict) else set()
+        base_value = None
+        if base is not None and isinstance(patch, dict):
+            with self._db() as db:
+                base_row = db.execute("SELECT data FROM revisions WHERE kind=? AND id=? AND revision=?",
+                                      (kind, oid, base)).fetchone()
+            if base_row is not None:
+                base_value = json.loads(base_row["data"])
+                patch = {**base_value, **patch}
+        value = normalize(kind, patch)
+        changed_fields = sorted(key for key in patch_fields if base_value is not None and value.get(key) != base_value.get(key))
         request = encoded({"kind": kind, "id": oid, "base_revision": base, "data": value, "actor_label": actor, "reason": reason})
         with self._db() as db:
             receipt = self._operation(db, operation_id, request)
@@ -901,7 +912,8 @@ class NodeResearch:
             db.execute("INSERT INTO objects VALUES (?,?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET revision=excluded.revision,updated_at=excluded.updated_at",
                        (kind, oid, rid, revision, now, now))
             receipt = {"schema_version": 1, "node_id": self.node_id, "operation_id": operation_id,
-                       "object": {"kind": kind, "id": oid, "revision": revision}, "event_seq": sequence, "committed_at": now}
+                       "object": {"kind": kind, "id": oid, "revision": revision}, "event_seq": sequence, "committed_at": now,
+                       **({"changed_fields": changed_fields} if base is not None else {})}
             db.execute("INSERT INTO operations VALUES (?,?,?)", (operation_id, request, encoded(receipt)))
         # Commit precedes notification. Readers hold this condition across their final
         # empty read and wait registration, so a concurrent commit cannot be missed.

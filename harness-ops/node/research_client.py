@@ -51,7 +51,7 @@ HELP = """用法:
 recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
 plan-template 离线输出 next_experiment JSON 草稿（title、plan、research_revision），可带路线，不提交任务。
 把完整输出作为方向 data.next_experiment；不要嵌套进 next_experiment.plan，plan 只收字符串。
-方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
+create 和 direction add 的方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
 direction add 把 --based-on 写成 data.based_on={direction_id,job_id}；方向须同任务或在 follows 前链且更早，指定运行须挂在该方向。
 最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。research list 必须带 KIND，可选值同前；FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
@@ -59,6 +59,7 @@ research 列表可用 --follows <研究ID> 只取它的接续任务。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
 --attach 直接附本机 PNG、JPEG、SVG、MP4 或 WebM，可重复；图片至多 16 MiB，视频至多 128 MiB。实验 Python 只保证有标准库。
 --ask 把留言标为问人；首页列出未回复问题，人用 reply_to 回复后关闭，agent 继续做其他方向。
+update FILE 只写要改的字段，没写的保持第 N 版值；显式 null 清空可空字段，必填字段不能清空。回执 changed_fields 列出实际变更。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
 link 读取研究当前 revision 更新 follows；目标必须存在且不能是自己，none 取消接续，签到规则不变。
 conclude 读取方向当前 revision 写入结论与 state_reason；可用 --evidence 重复引用任务产物，未回应人工留言时仍拒绝。
