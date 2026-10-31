@@ -207,8 +207,10 @@ def duties(jobs, name, now=None):
                          "text": f"{rid}（{data['title']}）还没有方向；先写下要试的方向",
                          "command": f"pf-node research create direction <方向ID> <文件>   # research_id={rid}"})
         elif data["state"] == "active" and all(state in TERMINAL_DIRECTIONS for state in states):
+            reason = data.get("state_reason")
             owed.append({"kind": "deliver", "research_id": rid,
-                         "text": f"{rid} 的方向都已有结论；交付，或者再开一个方向",
+                         "text": f"{rid} 的方向都已有结论；交付，或者再开一个方向"
+                                 + (f"（任务是因为「{reason}」重新打开的）" if reason else ""),
                          "command": f"pf-node research deliver {rid} --summary <文件> --artifact job:<任务ID>"})
     for rid, data in owned.items():
         states = [state for _, state in directions.get(rid, [])]

@@ -768,6 +768,42 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn(concept, self.pf(token, "research", "--help")[1])
         self.assertIn(concept, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
 
+    def test_deliver_duty_keeps_the_reopen_reason_after_the_note_is_answered(self):
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        for rid in ("sr-reopened-delivery", "sr-first-delivery"):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": rid, "objective": "交付待办保留重开原因"}))[0], 201)
+            self.assertEqual(self.pf(token, "research", "claim", rid)[0], 0)
+            did = "d-" + rid
+            self.assertEqual(self.web("POST", f"/research-state/direction/{did}", self.write(
+                "create-" + did, {"research_id": rid, "title": "已验证方向", "hypothesis": "结论已复核"}))[0], 201)
+            self.assertEqual(self.pf(token, "research", "conclude", did, "verified", "--reason", "复测通过")[0], 0)
+        original = "sr-first-delivery 的方向都已有结论；交付，或者再开一个方向"
+        first = next(item for item in self.duties(token)["duties"]
+                     if item["kind"] == "deliver" and item["research_id"] == "sr-first-delivery")
+        self.assertEqual(first["text"], original)
+
+        self.assertEqual(self.pf(token, "research", "deliver", "sr-reopened-delivery", "--summary", "第一版",
+                                 "--artifact", f"job:{self.jid}")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-delivery-reopen", self.write(
+            "human-delivery-reopen", {"research_id": "sr-reopened-delivery", "text": "请补一组复现",
+                                       "reply_to": None, "decision": None}))[0], 201)
+        reason = self.web("GET", "/research-state/research/sr-reopened-delivery")[1]["data"]["state_reason"]
+        self.assertEqual(reason, "人工留言 n-delivery-reopen 重新打开任务")
+        self.assertEqual(self.pf(token, "research", "note", "sr-reopened-delivery", "采纳，补复现",
+                                 "--reply-to", "n-delivery-reopen", "--decision", "adopt")[0], 0)
+        expected = ("sr-reopened-delivery 的方向都已有结论；交付，或者再开一个方向"
+                    "（任务是因为「人工留言 n-delivery-reopen 重新打开任务」重新打开的）")
+        for _ in range(2):
+            pending = self.duties(token)["duties"]
+            reopened = next(item for item in pending if item["kind"] == "deliver"
+                            and item["research_id"] == "sr-reopened-delivery")
+            self.assertEqual(reopened["text"], expected)
+            first = next(item for item in pending if item["kind"] == "deliver"
+                         and item["research_id"] == "sr-first-delivery")
+            self.assertEqual(first["text"], original)
+
     def test_research_note_attaches_local_video(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-video", self.write(
             "create-video", {"title": "视频附件", "objective": "留言直接带本机视频"}))[0], 201)
