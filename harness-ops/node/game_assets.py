@@ -18,7 +18,7 @@ import urllib.request
 from urllib.parse import urlsplit
 import uuid
 
-from artifact_io import SafeRoot, relative_path, stamp
+from artifact_io import SafeRoot, relative_path, stamp, matches_persisted_stamp
 from game_deploy_recipe import validate_recipe, validate_installation, validate_initialization, validate_scene
 from job_runtime import runner_alive
 
@@ -257,7 +257,7 @@ class AssetCache:
                             receipt = {}
                         if (isinstance(receipt, dict) and receipt.get("schema") == RECEIPT_SCHEMA and receipt.get("sha256") == sha
                                 and receipt.get("size") == size == info.st_size
-                                and receipt.get("identity") == list(stamp(info))
+                                and matches_persisted_stamp(stamp(info), receipt.get("identity"))
                                 and isinstance(receipt.get("verified_at"), (int, float))):
                             return _observation("verified", size, size, verified_at=receipt["verified_at"])
                         return _observation("unknown", size, info.st_size, "completed object needs verification")
@@ -477,7 +477,7 @@ class AssetCache:
             if self.observe(asset)["state"] == "verified":
                 return {"state": "verified", "offset": asset["size"], "error": None, "cache_hit": True}
             info = self._info(store, "partial/" + asset["sha256"] + ".part")
-            if state == "verified" or info is None or list(stamp(info)) != record["sealed_identity"]:
+            if state == "verified" or info is None or not matches_persisted_stamp(stamp(info), record["sealed_identity"]):
                 return {"state": "unknown", "offset": None, "error": "sealed upload content identity changed"}
             return {"state": "sealed", "offset": asset["size"], "error": None}
         if state == "failed":
@@ -621,13 +621,13 @@ class AssetCache:
                 raise AssetUploadError(409, "upload_identity_changed", "previously verified content changed")
             rel = "partial/" + asset["sha256"] + ".part"
             info = self._info(store, rel)
-            if info is None or list(stamp(info)) != record["sealed_identity"]:
+            if info is None or not matches_persisted_stamp(stamp(info), record["sealed_identity"]):
                 raise AssetUploadError(409, "upload_identity_changed", "sealed upload content identity changed")
             progress("verifying", info.st_size)
             with store.open_file(rel) as stream:
                 digest, count = self._digest(stream)
                 identity = stamp(os.fstat(stream.fileno()))
-            if list(identity) != record["sealed_identity"]:
+            if identity != stamp(info):
                 raise AssetUploadError(409, "upload_identity_changed", "sealed upload changed during verification")
             if count != asset["size"] or digest.hexdigest() != asset["sha256"]:
                 reason = "uploaded content failed size/hash verification"

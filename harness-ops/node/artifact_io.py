@@ -136,6 +136,11 @@ def stamp(st):
     return (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
+def matches_persisted_stamp(current, saved):
+    # Device numbers can change on remount; the remaining file facts persist.
+    return tuple(current)[1:] == tuple(saved or ())[1:]
+
+
 def open_child(parent, name, directory=None):
     if not name or "/" in name or name in (".", ".."):
         raise ValueError("invalid artifact component")

@@ -10,7 +10,7 @@ import sqlite3
 import time
 from urllib.parse import quote
 
-from artifact_io import SafeRoot, describe_file, stamp
+from artifact_io import SafeRoot, describe_file, stamp, matches_persisted_stamp
 from node_read import encode_cursor, decode_cursor
 from node_media import inspect_media, MediaError
 
@@ -403,7 +403,7 @@ class NodeResults:
         elif source["kind"] in {"job_output", "attachment"}:
             try:
                 with self._open_source(source) as stream:
-                    same = list(stamp(os.fstat(stream.fileno()))) == observation.get("stamp")
+                    same = matches_persisted_stamp(stamp(os.fstat(stream.fileno())), observation.get("stamp"))
                 item.update(status="available" if same else "changed", reason=None if same else "source no longer matches its registration observation")
             except (OSError, ValueError):
                 item.update(status="unavailable", reason="source is no longer readable through the registered path")
@@ -497,11 +497,12 @@ class NodeResults:
         except (OSError, ValueError):
             raise ResultError(404, "result_source_unavailable", "registered source is missing or unreadable") from None
         try:
-            if list(stamp(os.fstat(stream.fileno()))) != observation["stamp"]:
+            before = stamp(os.fstat(stream.fileno()))
+            if not matches_persisted_stamp(before, observation["stamp"]):
                 raise ResultError(409, "result_source_changed", "source changed after registration; old result was not rewritten")
             media = inspect_media(stream, media_kind) if media_kind is not None else None
             info = describe_file(stream, self.jobs._sha_cache, self.jobs._out_guard)
-            if list(stream.artifact_stamp) != observation["stamp"]:
+            if stream.artifact_stamp != before:
                 raise ResultError(409, "result_source_changed", "source changed before the download snapshot was prepared")
             if observation.get("sha256") and info["sha256"] != observation["sha256"]:
                 raise ResultError(409, "result_source_changed", "source bytes no longer match the registered JSON")
