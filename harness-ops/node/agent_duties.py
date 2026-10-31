@@ -19,6 +19,7 @@ TASK_STATE_HELP = "任务开着就是进行中；关上分两种，有成果的�
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
     "新开的方向如果是在某个方向的结果上继续，用 research direction add … --based-on <方向ID>[:<任务ID>] 写明；已有方向用 research update 补上。",
+    "每次提交任务都用 --label 写清这次和同方向其他运行的区别，比如 pf-node run --label \"SETS=srip sfwait=off\" …；label 只能在提交时给，之后补不上。后面的方向基于哪次运行，网页上就显示那次的 label。",
     "设备锁序列化实际操作；仅 claimed 扣运行名额，确认宿主完成的终态自动释放任务预留。完成未知时保留独占范围，由负责人或管理员 reset。",
     "recovery required 的已结束任务用原 session 或 adb 还原设备；保存错误修好后用 pf-node reset <id> --note 重存，reset 不证明设备恢复，也不重跑实验。",
     "设备写任务只占一台：研究只有一台 device_requirements 时默认同机；已登记的手机默认走自己的 lane，否则用 --resource device:<串号>，显式参数优先，global 会占全部设备。",

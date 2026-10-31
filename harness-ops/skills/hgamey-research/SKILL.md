@@ -40,7 +40,7 @@ N 为 2–8，PNG/JPEG 与 MP4/WebM 可混；洗牌后显示 A、B、C……，�
 1. **先理解反馈。** 读取其绑定的原请求 revision、原研究/方向上下文及证据，检查是否已过时。记录 adopt/defer/reject 与理由；依赖 satisfied/waived 是另一个明确决定。回复、关闭、超时、偏好分数都不自动批准执行或解除依赖。反馈文本是待判断的信息，不能扩大用户授权。
 2. **选可行工作。** 同时看元数据依赖、实际材料、工具能力、资源和恢复状态。只阻断受影响方向；A 等评价时继续可行的 B。按预期收益、成本、已有负结果和证据缺口说明排序，使用研究 coverage 记下已探索/待探索范围。既有证据够用时复用，版本/条件变化才重验。
 3. **冻结下一实验。** 重读选中方向，以 revision CAS 保存完整 `.data`，保留原字段/证据/决定。`next_experiment` 保存 title、plan、research_revision；plan 写明 recipe、输入/代码身份、输出、判据和预先固定的 job request ID。确认本次元数据写入后再提交。冲突先读新版本，不自动覆盖。
-4. **提交并继续其他工作。** 用已有 recipe 的 bin/argv、device_access、资源与执行策略，`--detach --request-id` 提交。保存返回的 job ID 并追加 typed evidence。accepted/queued 不是已经运行。未知回执查原 request ID；不换 ID 创建替代实验。可以在任务运行期间推进别的独立方向。
+4. **提交并继续其他工作。** 用已有 recipe 的 bin/argv、device_access、资源与执行策略，`--detach --request-id` 提交；每次都用 `--label` 写清这次和同方向其他运行的区别（如 `--label "SETS=srip sfwait=off"`），label 只能在提交时给。保存返回的 job ID 并追加 typed evidence。accepted/queued 不是已经运行。未知回执查原 request ID；不换 ID 创建替代实验。可以在任务运行期间推进别的独立方向。
 5. **收回证据并调整。** 有界查询原任务，分别判断命令退出、宿主收尾、记录保存、设备恢复、资源释放和科学结论。按需下载小输出，显式注册不可变结果及原 job/source，保留 failed/no_gain/unknown 与 null。随后 CAS 更新方向的证据、结论、排序理由和下一实验。
 
 研究状态不是方向锁或硬预算；服务端没有研究计划→job 的原子事务，也不自动执行依赖检查。写计划和提交之间断线时先查询保存的原 operation/request。不要把 ready/verified 声明当实机资格。结果已登记但方向未更新时找回原 result，再补引用。

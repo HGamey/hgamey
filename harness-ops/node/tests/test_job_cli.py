@@ -259,6 +259,19 @@ class JobCLI(unittest.TestCase):
             self.assertIn("job:<任务>:<路径>", text, name)
             self.assertIn("--ask", text, name)
 
+    def test_the_loop_and_the_skill_ask_for_a_label_on_every_submission(self):
+        """A run can only be labelled when it is submitted, and the web names the run a direction builds on by its label,
+        so check-in and the research skill ask for one on every submission, saying how it differs from its siblings."""
+        sys.path.insert(0, str(CLI.parent))
+        self.addCleanup(sys.path.remove, str(CLI.parent))
+        from agent_duties import LOOP
+        step = next(step for step in LOOP if "--label" in step)
+        self.assertIn("每次提交任务都用 --label 写清这次和同方向其他运行的区别", step)
+        self.assertEqual(LOOP.index(step), next(i for i, s in enumerate(LOOP) if "--based-on" in s) + 1, "next to the based_on step")
+        skill = (CLI.parent.parent / "skills/hgamey-research/SKILL.md").read_text()
+        submit = next(line for line in skill.splitlines() if line.startswith("4. **提交并继续其他工作。**"))
+        self.assertIn("每次都用 `--label` 写清这次和同方向其他运行的区别", submit)
+
     def test_submission_retries_same_request_and_recovers_without_another_job(self):
         posts, gets = [], []
         meta = {"id": JOB, "state": "running", "phase": "queued", "request_id": "study-001"}
