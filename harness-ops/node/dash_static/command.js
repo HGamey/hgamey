@@ -33,15 +33,19 @@ function normalize(raw, src) {
     return seen.slice(seen.indexOf(id)).sort(earlier)[0];   // a cycle: its earliest task stands as the root
   };
   for (const t of all) rootOf.set(t.id, root(t.id));
+  // Steps in the task page's order: the root, then each task right after the one it follows (siblings by creation).
+  const kids = new Map();
+  for (const m of [...all].sort((a, b) => earlier(a.id, b.id))) if (rootOf.get(m.id) !== m.id && byId.has(m.follows)) (kids.get(m.follows) || kids.set(m.follows, []).get(m.follows)).push(m);
+  const walk = (m, out) => { out.push(m); for (const k of kids.get(m.id) || []) if (!out.includes(k)) walk(k, out); return out; };
   const tasks = all.filter(t => rootOf.get(t.id) === t.id).map(t => {
-    const steps = all.filter(m => rootOf.get(m.id) === t.id).sort((a, b) => earlier(a.id, b.id)), last = steps[steps.length - 1];
+    const steps = walk(t, []), last = [...steps].sort((a, b) => earlier(a.id, b.id)).pop();
     return steps.length > 1 ? {...t, state: last.state, updated_at: last.updated_at, owner: last.owner, steps} : t;
   });
   const onTree = x => rootOf.has(x.research_id), lift = x => ({...x, research_id: rootOf.get(x.research_id)});
   const jobs = (raw.jobs || []).filter(onTree).map(lift);
   const agents = [...new Set([...(raw.agents || []), ...jobs.map(j => j.agent).filter(Boolean)])];
   return {src, at: raw.at, source: raw.source, history: raw.history || null, agents, tasks, jobs,
-    dirs: (raw.directions || []).filter(onTree).map(lift), notes: (raw.notes || []).filter(n => onTree(n) && n.at).map(lift),
+    dirs: (raw.directions || []).filter(onTree).map(d => ({...lift(d), task_id: d.research_id})), notes: (raw.notes || []).filter(n => onTree(n) && n.at).map(lift),
     phones: (raw.phones || []).map(p => ({...p, key: phoneKey(p.brand)})), phonesAt: raw.phones_sampled_at || raw.at};
 }
 
@@ -472,10 +476,11 @@ function showTip(e, html) {
 function tipHtml(node) {
   const tr = world.trees.get(node.dataset.tree); if (!tr) return '';
   if (node.dataset.kind === 'root') return tipFor.root(tr);
+  if (node.dataset.kind === 'stub') { const part = tr.parts.get('s:' + node.dataset.key); return part ? tipFor.stub(tr, part) : ''; }
   const part = tr.parts.get((node.dataset.kind === 'chip' ? 'g:' : 'j:') + node.dataset.key); if (!part) return '';
   if (node.dataset.kind === 'chip') return tipFor.chip(tr, part);
   const j = part.j, s = jobAt(j, S.now), waited = j.claimed && j.queued && j.claimed - j.queued > 30;
-  return `<b>${esc(j.kind)} · ${s === 'running' ? '进行中' : OUTCOME[s] || s}</b>${esc(short(tr.shape.task.title))}<br><span class="mono">${esc(agentName(j.agent))} · ${esc(brandOf(j))} · ${hm(begun(j))}${j.ended && s !== 'running' ? `–${hm(j.ended)} · ${mins(j)} 分钟` : ''}${waited ? ` · 排队 ${ago(j.claimed - j.queued)}` : ''}</span>`;
+  return `<b>${esc(j.kind)}${j.label ? ' · ' + esc(short(j.label, 24)) : ''} · ${s === 'running' ? '进行中' : OUTCOME[s] || s}</b>${esc(short(tr.shape.task.title))}<br><span class="mono">${esc(agentName(j.agent))} · ${esc(brandOf(j))} · ${hm(begun(j))}${j.ended && s !== 'running' ? `–${hm(j.ended)} · ${mins(j)} 分钟` : ''}${waited ? ` · 排队 ${ago(j.claimed - j.queued)}` : ''}</span>`;
 }
 // Tabbing to a task brings it into view through the camera (the stage itself never scrolls).
 stage.addEventListener('focusin', e => {

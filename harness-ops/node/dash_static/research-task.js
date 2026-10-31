@@ -300,6 +300,33 @@
     item.append(tag(HGJobState.label(job), HGJobState.tone(job)), link, facts);
     return item;
   }
+  // Directions as they grew: each under the one it is based on (data.based_on), children in list order. The line from
+  // the top to the direction being worked on now (else the latest touched one still standing) is the main line; a
+  // rejected or deferred direction that nothing builds on is a dead end.
+  function lineage(entries, jobs) {
+    const byId = new Map(entries.map(d => [d.id, d])), kids = new Map(), parent = new Map(), out = [], seen = new Set();
+    for (const d of entries) {
+      const p = d.based_on && byId.get(d.based_on.direction_id);
+      if (p && p !== d) { parent.set(d.id, p.id); (kids.get(p.id) || kids.set(p.id, []).get(p.id)).push(d); }
+    }
+    const walk = (d, depth) => {
+      if (seen.has(d.id)) return;
+      const above = [];
+      for (let id = parent.get(d.id); id && !above.includes(id); id = parent.get(id)) above.push(id);
+      seen.add(d.id); out.push({d, depth, parent: parent.get(d.id) || null, above: above.map(id => byId.get(id).research_id)});
+      for (const k of kids.get(d.id) || []) walk(k, depth + 1);
+    };
+    for (const d of entries) if (!parent.has(d.id)) walk(d, 0);
+    for (const d of entries) walk(d, 0);   // a link that loops leaves its directions at the top level
+    const standing = d => !['rejected', 'deferred'].includes(d.state), latest = list => list.sort((a, b) => b.updated_at - a.updated_at)[0];
+    const busy = new Set(jobs.filter(job => window.HGJobState?.active(job)).map(job => job.direction_id));
+    const target = latest(entries.filter(d => busy.has(d.id))) || latest(entries.filter(standing)) || latest([...entries]);
+    const line = new Set();
+    for (let id = target?.id; id && !line.has(id); id = parent.get(id)) line.add(id);
+    for (const row of out) { row.main = line.has(row.d.id); row.dead = !standing(row.d) && !kids.has(row.d.id) && !row.main; }
+    return out;
+  }
+  const runName = job => `${job.label || (job.argv || [])[0] || job.bin || job.id}${job.started ? ' · ' + short(job.started) : ''}`;
   async function directionsSection(scope, section) {
     const list = el('div', null, 'research-directions'), head = el('div', null, 'section-head'), count = el('span', null, 'count');
     head.append(el('h3', '探索过程'), count);
@@ -314,15 +341,30 @@
       const entries = per.flatMap(([directions]) => directions.items.slice().reverse());
       const jobs = {items: per.flatMap(([, value]) => value.items)}, results = {items: per.flatMap(([, , value]) => value.items)};
       count.textContent = entries.length ? String(entries.length) : '';
-      list.replaceChildren(...(entries.length ? entries.map(direction => {
-        const item = el('article', null, 'research-direction'), top = el('div', null, 'direction-head');
-        item.dataset.direction = direction.id; item.dataset.task = direction.research_id;
+      const grown = lineage(entries, jobs.items), byId = new Map(entries.map(d => [d.id, d])), picked = new Set(entries.map(d => d.based_on?.job_id).filter(Boolean));
+      const article = ({d: direction, depth, main, above}) => {
+        const item = el('article', null, 'research-direction' + (main ? ' on-main' : '')), top = el('div', null, 'direction-head');
+        item.dataset.direction = direction.id; item.dataset.task = direction.research_id; item.style.setProperty('--depth', depth);
+        indent.push([item, depth, above]);
         const link = el('a', direction.title || direction.id, 'direction-title');
         link.href = HGTarget.url(`/dash/research?kind=direction&id=${encodeURIComponent(direction.id)}`);
         const title = el('div', null, 'direction-name'); title.append(...[scope.tag(direction.research_id), link].filter(Boolean));
         top.append(title, tag(DIRECTION_STATE[direction.state] || direction.state, DIRECTION_TONE[direction.state] || 'off'));
+        item.append(top);
+        // What it builds on: the run picked from its parent, named; the parent too when that is another task's.
+        const base = direction.based_on && byId.get(direction.based_on.direction_id);
+        if (base) {
+          const from = el('p', null, 'direction-base'), run = direction.based_on.job_id && jobs.items.find(job => job.id === direction.based_on.job_id);
+          from.append('基于 ');
+          if (base.research_id !== direction.research_id || !direction.based_on.job_id) from.append(el('b', `「${clip(base.title || base.id, 24)}」`));
+          if (direction.based_on.job_id) {
+            const name = el('a', run ? runName(run) : `任务 ${direction.based_on.job_id}`); name.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(direction.based_on.job_id)}`);
+            from.append(...(base.research_id !== direction.research_id ? [' 里的 '] : []), name, ' 那次运行');
+          }
+          item.append(from);
+        }
         const hypothesis = el('p', direction.hypothesis, 'direction-hypothesis');
-        item.append(top, hypothesis);
+        item.append(hypothesis);
         if ((direction.hypothesis || '').length > 140) {
           hypothesis.classList.add('clamped');
           const more = el('button', '展开', 'link-btn'); more.type = 'button'; more.setAttribute('aria-expanded', 'false');
@@ -330,7 +372,9 @@
           item.append(more);
         }
         const related = el('ul', null, 'direction-runs');
-        for (const job of jobs.items.filter(job => job.direction_id === direction.id || results.items.some(result => result.labels?.direction_id === direction.id && result.job_id === job.id))) related.append(runRow(job));
+        for (const job of jobs.items.filter(job => job.direction_id === direction.id || results.items.some(result => result.labels?.direction_id === direction.id && result.job_id === job.id))) {
+          const row = runRow(job); if (picked.has(job.id)) { row.classList.add('picked'); row.title = '后面的方向基于这次运行'; } related.append(row);
+        }
         for (const result of results.items.filter(result => result.labels?.direction_id === direction.id)) {
           const row = el('li', null, 'run-row'), link = el('a', result.title || result.result_id), [label, tone] = RESULT_OUTCOME[result.outcome] || [result.outcome, 'off'];
           link.href = HGTarget.url(`/dash/results#result=${encodeURIComponent(result.result_id)}`);
@@ -338,7 +382,26 @@
         }
         if (related.childElementCount) item.append(related);
         return item;
-      }) : [el('p', '还没有方向', 'empty')]));
+      };
+      const indent = [];
+      // Dead ends that sit together (same parent, same task) fold into one row that opens in place.
+      const shown = [];
+      for (let i = 0; i < grown.length; i++) {
+        if (!grown[i].dead) { shown.push(article(grown[i])); continue; }
+        const run = [grown[i]];
+        while (grown[i + 1]?.dead && grown[i + 1].parent === grown[i].parent && grown[i + 1].d.research_id === grown[i].d.research_id) run.push(grown[++i]);
+        const items = run.map(article), fold = el('button', null, 'direction-fold');
+        fold.type = 'button'; fold.dataset.task = run[0].d.research_id; fold.style.setProperty('--depth', run[0].depth); fold.setAttribute('aria-expanded', 'false');
+        indent.push([fold, run[0].depth, run[0].above]);
+        fold.textContent = `▸ ${run.length} 条没往下走的分支：${run.map(x => `${clip(x.d.title || x.d.id, 18)}（${DIRECTION_STATE[x.d.state] || x.d.state}）`).join('、')}`;
+        items.forEach(item => item.classList.add('folded'));
+        fold.onclick = () => { fold.remove(); items.forEach(item => item.classList.remove('folded')); };
+        shown.push(fold, ...items);
+      }
+      list.replaceChildren(...(entries.length ? shown : [el('p', '还没有方向', 'empty')]));
+      // Looking at one task, a direction is indented only under what that task shows.
+      const relayer = () => { for (const [item, depth, above] of indent) item.style.setProperty('--depth', scope.segment ? above.filter(id => id === scope.segment).length : depth); };
+      scope.onPick.push(relayer); relayer();
       scope.apply(list);
     } catch (error) { list.replaceChildren(el('p', '读取方向失败：' + failure(error), 'note')); }
   }
@@ -495,7 +558,7 @@
     // Arriving from 去评 (#cmp-<id>), say at once that the comparison is on its way.
     const target = record.kind === 'research' && location.hash.startsWith('#cmp-') ? location.hash.slice(1) : '';
     const waiting = target ? compareNote('正在读取待你评的对比…') : el('div');
-    clearImages(); container.replaceChildren(...(target ? [waiting] : []));
+    clearImages(); dropChain(); container.replaceChildren(...(target ? [waiting] : []));
     if (record.kind !== 'research') return;
     // A task that others follow (or that follows one) shows the whole chain: a strip of its tasks, every section merged.
     // The chain is asked for while the owner list is read.
@@ -508,8 +571,8 @@
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
     const judged = el('div'), reports = el('div');
-    container.append(...[scope.chain && chainStrip(scope, container), ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports].filter(Boolean));
-    if (scope.chain) scope.pick(chain[0].id === record.id ? null : record.id);
+    container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports].filter(Boolean));
+    if (scope.chain) { chainTree(scope, container); scope.pick(chain[0].id === record.id ? null : record.id); }
     // Comparisons are what a person comes here to answer. On a long chain the other sections fire dozens of reads and
     // media loads, so the comparisons go first and the rest of the page starts once they are in place.
     await comparisons(record, ctx, scope, container, waiting, judged, target, () => shown === paint);
@@ -575,23 +638,36 @@
       pick() {}};
     return scope;
   }
-  function chainStrip(scope, container) {
-    const strip = el('nav', null, 'chain-strip'), all = el('button', '全部', 'chain-seg');
-    strip.setAttribute('aria-label', '接续任务'); all.type = 'button'; all.onclick = () => scope.pick(null); strip.append(all);
-    scope.ids.forEach((id, i) => {
+  // The chain as a tree in the task list, under its root's row: 全部, then each task indented under the one it follows.
+  // When the root is not in the list (filtered out, or the list is not in yet) it stands above the task instead.
+  let chainNav = null;
+  function chainTree(scope, container) {
+    const nav = el('nav', null, 'chain-strip'), all = el('button', '全部', 'chain-seg');
+    nav.setAttribute('aria-label', '接续任务'); all.type = 'button'; all.onclick = () => scope.pick(null); nav.append(all);
+    const depth = new Map();
+    for (const id of scope.ids) {
       const m = scope.members.get(id), seg = el('button', null, 'chain-seg');
-      if (i) strip.append(el('span', '→', 'chain-arrow'));
-      seg.type = 'button'; seg.dataset.seg = id; seg.title = m.title; seg.onclick = () => scope.pick(id);
+      depth.set(id, depth.has(m.follows) ? depth.get(m.follows) + 1 : 0);
+      seg.type = 'button'; seg.dataset.seg = id; seg.title = m.title; seg.style.setProperty('--depth', depth.get(id)); seg.onclick = () => scope.pick(id);
+      if (depth.get(id)) seg.classList.add('nested');
       seg.append(el('b', m.n), el('span', clip(m.title, 18), 'chain-title'), el('small', `${m.owner || '无人负责'} · ${TASK_STATE[m.state] || m.state}`));
-      strip.append(seg);
-    });
+      nav.append(seg);
+    }
     scope.pick = id => {
       scope.segment = id;
-      for (const seg of strip.querySelectorAll('.chain-seg')) seg.setAttribute('aria-pressed', String((seg.dataset.seg || null) === id));
+      for (const seg of nav.querySelectorAll('.chain-seg')) seg.setAttribute('aria-pressed', String((seg.dataset.seg || null) === id));
       scope.apply(container); scope.onPick.forEach(fn => fn());
     };
-    return strip;
+    chainNav = {root: scope.ids[0], node: nav, container};
+    placeChain();
   }
+  function placeChain() {
+    if (!chainNav) return;
+    const row = [...document.querySelectorAll('#object-list > li[data-id]')].find(li => li.dataset.id === chainNav.root);
+    if (row && chainNav.node.parentNode !== row) row.append(chainNav.node);
+    else if (!row && chainNav.node.parentNode !== chainNav.container) chainNav.container.prepend(chainNav.node);
+  }
+  function dropChain() { chainNav?.node.remove(); chainNav = null; }
   // The newest delivery reads in full; older ones in the chain fold under it and are read when opened.
   async function deliverables(scope, record) {
     if (!scope.chain) return [deliverableSection(record)].filter(Boolean);
@@ -619,5 +695,5 @@
   }
   const util = {api, write, el, tag, timeEl, speaker, failure, near};
 
-  window.HGResearchTask = {renderDetail, util, clearDetail: container => { shown = null; clearImages(); container.replaceChildren(); }};
+  window.HGResearchTask = {renderDetail, util, placeChain, clearDetail: container => { shown = null; clearImages(); dropChain(); container.replaceChildren(); }};
 })();

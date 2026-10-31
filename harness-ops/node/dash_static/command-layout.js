@@ -1,40 +1,83 @@
-// Where everything sits in the world. One tree per task: the root orb at the tree's origin, its directions as chips to the
-// right, and each direction's runs stacked beside its chip (in columns when there are many). Every box is known here, so
-// the map never overlaps itself and the overlay can keep clear of it. Trees are packed into columns in creation order.
-import {begun} from './command-util.js';
+// Where everything sits in the world. One tree per task (a chain of tasks is one tree): the root orb at the tree's
+// origin; each direction a chip that hangs under the direction it is based on (data.based_on), so the tree grows to the
+// right one generation at a time. A direction's runs are dots under its chip; when a direction builds on one run of its
+// parent, that run's pill sits on the edge between them. A follow-on task without a direction is a small stub off the
+// root. Every box is known here, so the map never overlaps itself and the overlay can keep clear of it. Trees are
+// packed into columns in creation order.
+import {begun, hm} from './command-util.js';
 
-export const ROW = 30, CHIP_X = 240, CHIP_W = 236, CHIP_H = 58, LEAF_X = CHIP_X + CHIP_W + 46, COL_W = 236, MAX_ROWS = 18;
-export const ORB = 75, LABEL_Y = 100, LABEL_W = 300, LABEL_H = 96, PIN_SPACE = 92;
-const GROUP_GAP = 20, GAP_X = 140, GAP_Y = 120;
-const textW = s => [...String(s || '')].reduce((w, c) => w + (c.charCodeAt(0) > 0x2e80 ? 14 : 8), 0);
-export const leafW = j => textW(j.kind) + 104;
+export const CHIP_X = 240, CHIP_W = 236, CHIP_H = 58, GEN_W = CHIP_W + 172, DOT = 12, DOTS_ROW = 18, DOTS_TOP = 10, TAG_H = 18;
+export const PILL_H = 22, STUB_H = 26, ORB = 75, LABEL_Y = 100, LABEL_W = 300, LABEL_H = 96, PIN_SPACE = 92;
+const NODE_GAP = 22, GAP_X = 140, GAP_Y = 120, PILL_X = 14, PILL_MAX = 138, STUB_MAX = 260;
+const textW = (s, px = 14) => [...String(s || '')].reduce((w, c) => w + (c.charCodeAt(0) > 0x2e80 ? px : px * .58), 0);
+export const pillW = label => Math.round(Math.min(PILL_MAX, textW(label, 11) + 30));
+export const stubW = label => Math.round(Math.min(STUB_MAX, textW(label, 11) + 22));
+// A run is named by its label; runs without one by what they did and when they started.
+export const runLabel = j => j.label || `${j.kind || '实验'} ${hm(begun(j))}`;
+// The chain's tasks in order (①, ② …) and how a follow-on task is named on its directions and stub.
+const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+export const stepMark = (task, id) => { const i = (task.steps || [task]).findIndex(s => s.id === id); return CIRCLED[i] || `(${i + 1})`; };
 
 function treeShape(task, dirs, jobs) {
   const order = (a, b) => (begun(a) || a.queued || a.started || 0) - (begun(b) || b.queued || b.started || 0) || (a.id < b.id ? -1 : 1);
   const mine = jobs.filter(j => j.research_id === task.id).sort(order);
-  const known = new Set(dirs.map(d => d.id));
-  const loose = mine.filter(j => !known.has(j.direction_id));
-  const groups = [...(loose.length ? [{key: 'trunk', dir: null, jobs: loose}] : []),
-    ...dirs.map(d => ({key: d.id, dir: d, jobs: mine.filter(j => j.direction_id === d.id)}))];
-  let right = ORB + 40;
-  for (const g of groups) {
-    const n = g.jobs.length, cols = Math.ceil(n / MAX_ROWS), rows = Math.max(1, Math.ceil(n / Math.max(1, cols)));   // balanced columns
-    g.rows = rows; g.cols = cols; g.band = Math.max(CHIP_H + 18, rows * ROW + 16);
-    const bow = cols === 1 && n > 2 ? Math.min(80, 10 + rows * 4) : 0, half = Math.max(1, (rows - 1) / 2 * ROW);
-    g.slots = new Map();
-    g.jobs.forEach((j, i) => {
-      const c = Math.floor(i / rows), r = i % rows, dy = (r - (rows - 1) / 2) * ROW;
-      const x = LEAF_X + c * COL_W + bow * (1 - (dy / half) ** 2);
-      g.slots.set(j.id, {x, dy, w: leafW(j), col: c});
-      right = Math.max(right, x + leafW(j));
-    });
-    right = Math.max(right, CHIP_X + CHIP_W);
+  const byKey = new Map(), root = {key: 'root', kids: []};
+  const node = (key, x) => { const n = {key, kids: [], ...x}; byKey.set(key, n); return n; };
+  const loose = mine.filter(j => !dirs.some(d => d.id === j.direction_id));
+  if (loose.length) root.kids.push(node('trunk', {dir: null, jobs: loose}));
+  // A direction hangs under the one it is based on when that one is on this tree and older (so there is never a cycle);
+  // otherwise it hangs off the root as before.
+  for (const d of dirs) {
+    const on = d.based_on, parent = on && byKey.get(on.direction_id);
+    const n = node(d.id, {dir: d, jobs: mine.filter(j => j.direction_id === d.id), tagged: d.task_id && d.task_id !== task.id ? d.task_id : null});
+    n.parent = parent && parent.dir ? parent : root;
+    n.pick = n.parent !== root && on.job_id && n.parent.jobs.some(j => j.id === on.job_id) ? on.job_id : null;
+    n.parent.kids.push(n);
   }
-  const total = groups.reduce((a, g) => a + g.band, 0) + GROUP_GAP * Math.max(0, groups.length - 1);
-  let y = -total / 2;
-  for (const g of groups) { g.y = y + g.band / 2; y += g.band + GROUP_GAP; for (const s of g.slots.values()) s.y = g.y + s.dy; }
-  const box = {x0: -LABEL_W / 2 - 10, x1: right + 10, y0: Math.min(-total / 2, -ORB - PIN_SPACE) - 10, y1: Math.max(total / 2, LABEL_Y + LABEL_H) + 10};
-  return {id: task.id, task, groups, box, w: box.x1 - box.x0, h: box.y1 - box.y0};
+  for (const s of (task.steps || []).slice(1)) if (!dirs.some(d => d.task_id === s.id)) root.kids.push(node('stub:' + s.id, {stub: s}));
+  // Each node's extent above and below its line: a chip with its task tag over it and its dots under it, or a stub.
+  const nodes = [...byKey.values()];
+  for (const n of nodes) {
+    n.depth = n.parent && n.parent !== root ? n.parent.depth + 1 : 1;
+    if (n.stub) { n.up = n.down = STUB_H / 2; continue; }
+    n.rows = Math.ceil(n.jobs.length / DOTS_ROW);
+    n.up = CHIP_H / 2 + (n.tagged ? TAG_H : 0); n.down = CHIP_H / 2 + (n.rows ? DOTS_TOP + n.rows * DOT : 0);
+  }
+  // Leaves are stacked top to bottom; a parent sits level with the middle of its children.
+  const place = (n, top) => {
+    if (!n.kids.length) { n.y = top + n.up; return n.y + n.down; }
+    let at = top;
+    for (const k of n.kids) at = place(k, at) + NODE_GAP;
+    n.y = Math.max((n.kids[0].y + n.kids[n.kids.length - 1].y) / 2, top + n.up);
+    return Math.max(at - NODE_GAP, n.y + n.down);
+  };
+  let at = 0;
+  for (const k of root.kids) at = place(k, at) + NODE_GAP;
+  const mid = root.kids.length ? (root.kids[0].y + root.kids[root.kids.length - 1].y) / 2 : 0;
+  let right = ORB + 40, top = Infinity, bottom = -Infinity;
+  const slots = new Map(), pills = [];
+  for (const n of nodes) {
+    n.y -= mid; n.x = CHIP_X + (n.depth - 1) * GEN_W;
+    top = Math.min(top, n.y - n.up); bottom = Math.max(bottom, n.y + n.down);
+    if (n.stub) { right = Math.max(right, n.x + STUB_MAX); continue; }
+    right = Math.max(right, n.x + CHIP_W);
+    n.jobs.forEach((j, i) => slots.set(j.id, {x: n.x + 6 + (i % DOTS_ROW) * DOT + DOT / 2, y: n.y + CHIP_H / 2 + DOTS_TOP + Math.floor(i / DOTS_ROW) * DOT + DOT / 2, node: n}));
+  }
+  // One pill per run that children build on, level with those children and kept apart from its neighbours.
+  for (const n of nodes) {
+    const picked = new Map();
+    for (const k of n.kids) if (k.pick) (picked.get(k.pick) || picked.set(k.pick, []).get(k.pick)).push(k);
+    let floor = -Infinity;
+    for (const [jid, kids] of picked) {
+      const j = n.jobs.find(x => x.id === jid), y = Math.max(floor, kids.reduce((a, k) => a + k.y, 0) / kids.length);
+      const pill = {key: n.key + ':' + jid, parent: n, job: j, kids, x: n.x + CHIP_W + PILL_X, y, w: pillW(runLabel(j))};
+      for (const k of kids) k.via = pill;
+      pills.push(pill); floor = y + PILL_H + 6;
+    }
+  }
+  const nodesOut = nodes.filter(n => n !== root);
+  const box = {x0: -LABEL_W / 2 - 10, x1: right + 10, y0: Math.min(top, -ORB - PIN_SPACE) - 10, y1: Math.max(bottom, LABEL_Y + LABEL_H) + 10};
+  return {id: task.id, task, nodes: nodesOut, pills, slots, box, w: box.x1 - box.x0, h: box.y1 - box.y0};
 }
 
 // Greedy masonry with per-column widths; the column count is chosen once so the whole map suits the stage's aspect.
@@ -56,7 +99,7 @@ function pack(shapes, cols) {
 export function layout(model, aspect, cols = 0) {
   const tasks = [...model.tasks].sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : 1));
   const dirsOf = new Map(tasks.map(t => [t.id, []]));
-  for (const d of [...model.dirs].sort((a, b) => a.created_at - b.created_at)) dirsOf.get(d.research_id)?.push(d);
+  for (const d of [...model.dirs].sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : 1))) dirsOf.get(d.research_id)?.push(d);
   const shapes = tasks.map(t => treeShape(t, dirsOf.get(t.id), model.jobs));
   if (!cols) {
     let best = Infinity;

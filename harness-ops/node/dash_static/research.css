@@ -333,16 +333,34 @@
 .research-view .compare-verdict time { font-size: var(--fs-xs); }
 
 /* 接续任务：顶部链条，合并后的每条带一个任务标签 */
-.research-view .chain-strip { display: flex; align-items: stretch; flex-wrap: wrap; gap: 6px; margin: var(--sp-3) 0 0; }
-.research-view .chain-seg { display: inline-grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0 6px; max-width: 260px; min-height: 34px;
-  padding: 5px 12px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); color: var(--ink2); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
-.research-view .chain-seg:first-child { display: inline-flex; align-items: center; }
+/* A chain's tasks as a tree under its root in the task list: 全部, then each task under the one it follows. */
+.research-view .chain-strip { display: grid; gap: 1px; margin: 0 0 var(--sp-2) var(--sp-2); }
+.research-view .chain-seg { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0 6px; width: 100%; box-sizing: border-box;
+  margin-left: calc(var(--depth, 0) * 14px); max-width: calc(100% - var(--depth, 0) * 14px);
+  padding: 5px 10px; border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--ink2); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+.research-view .chain-seg.nested::before { content: ""; position: absolute; left: -9px; top: -2px; width: 7px; height: 15px;
+  border-left: 1px solid var(--axis, var(--line)); border-bottom: 1px solid var(--axis, var(--line)); border-bottom-left-radius: 5px; }
+.research-view .chain-seg:first-child { display: block; width: auto; justify-self: start; color: var(--acc-ink); }
 .research-view .chain-seg b { font-weight: 650; color: var(--ink); }
 .research-view .chain-seg .chain-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
 .research-view .chain-seg small { grid-column: 2; font-size: var(--fs-xs); color: var(--muted); }
-.research-view .chain-seg:hover { border-color: var(--ink2); }
-.research-view .chain-seg[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); box-shadow: 0 0 0 1px var(--acc); }
-.research-view .chain-arrow { align-self: center; color: var(--muted); }
+.research-view .chain-seg:hover { background: var(--panel); }
+.research-view .chain-seg[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); }
+/* 探索过程 as it grew: each direction under the one it is based on; the line to the current direction is gold. */
+.research-view { --lineage: #C8902E; --lineage-soft: #FFF8EB; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .research-view { --lineage: #E2B562; --lineage-soft: #241D10; } }
+:root[data-theme="dark"] .research-view { --lineage: #E2B562; --lineage-soft: #241D10; }
+.research-view .research-direction, .research-view .direction-fold { margin-left: calc(var(--depth, 0) * 22px); }
+.research-view .research-direction.on-main { border-color: color-mix(in srgb, var(--lineage) 55%, var(--line)); background: var(--lineage-soft); box-shadow: inset 3px 0 0 var(--lineage); }
+.research-view .research-direction.folded { display: none; }
+.research-view .direction-base { margin: 4px 0 0; font-size: var(--fs-sm); color: color-mix(in srgb, var(--lineage) 70%, var(--ink)); }
+.research-view .direction-base b { font-weight: 600; }
+.research-view .direction-base a { color: inherit; font-weight: 600; }
+.research-view .direction-fold { justify-self: stretch; text-align: left; padding: 8px 12px; border: 1px dashed var(--line); border-radius: var(--radius-lg); background: transparent;
+  color: var(--muted); font: inherit; font-size: var(--fs-sm); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.research-view .direction-fold:hover { color: var(--ink2); border-color: var(--ink2); }
+.research-view .run-row.picked a { color: color-mix(in srgb, var(--lineage) 70%, var(--ink)); font-weight: 600; }
+.research-view .run-row.picked::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--lineage); flex: none; margin-left: -12px; margin-right: -3px; }
 .research-view .chain-tag { display: inline-block; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: baseline;
   padding: 0 7px; border-radius: 999px; background: var(--wash); color: var(--ink2); font-size: var(--fs-xs); font-weight: 500; line-height: 1.7; }
 .research-view .direction-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }

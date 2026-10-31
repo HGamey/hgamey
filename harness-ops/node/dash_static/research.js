@@ -180,12 +180,14 @@
     $('objects-heading').textContent = listKind === 'research' ? '任务' : KINDS[listKind]; $('object-count').textContent = `${records.length} 条已载入`;
     $('object-list').replaceChildren(...records.map(item => {
       const li = el('li'), button = el('button', null, 'research-choice'); button.type = 'button'; button.setAttribute('aria-current', String(keyOf(item) === keyOf(selection)));
+      if (item.kind === 'research') li.dataset.id = item.id;
       if (item.kind === 'research') button.append(el('strong', item.title || item.id), el('span', `${stateText(item.kind, item.state)} · ${item.owner || '无人负责'} · ${time(item.active_at || item.updated_at)}${item.follow_ons ? ` · 含 ${item.follow_ons} 个接续任务` : ''}`, 'research-meta'));
       else button.append(el('strong', item.title || item.id), el('span', `${item.id} · v${item.revision} · ${stateText(item.kind, item.state)}`, 'research-meta'), el('span', `记录于 ${time(item.updated_at)}`, 'research-meta'));
       if (item.kind === 'direction') button.append(el('span', item.metadata_blocked === true ? '存在未解的局部阻断依赖' : item.metadata_blocked === false ? '未解的阻断依赖：无；设备资格另核' : '依赖摘要未提供', 'research-meta'));
       if (item.kind === 'request') button.append(el('span', `${Number.isInteger(item.feedback_count) ? item.feedback_count : '未知'} 条答复；依赖是否解除另记`, 'research-meta'));
       button.addEventListener('click', () => { syncURL(item.kind, item.id, true); selectObject(item.kind, item.id); $('object-title').focus(); }); li.append(button); return li;
     }));
+    window.HGResearchTask?.placeChain();   // a chain's tree hangs under its root's row
     $('more-objects').hidden = !listCursor; $('more-objects').disabled = listBusy;
   }
   // A record just read from the server also refreshes its list row, so an owner change shows in both places.

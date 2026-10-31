@@ -1474,6 +1474,105 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_chain_grows_along_what_each_direction_is_based_on(self):
+        """Directions hang under the direction (and run) they are based on, on the task page and in the command view.
+        The chain's tasks are a tree in the task list under the root; 探索过程 is indented by based_on with 「基于 …」,
+        the line to the newest standing direction is marked and a rejected dead end folds. In the command view a
+        direction is one generation right of its parent, the run it builds on is a pill on the edge and a gold dot,
+        the main line runs to the newest standing direction, and a follow-on task without directions is a stub."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        for rid, follows in (("lin-root", None), ("lin-next", "lin-root"), ("lin-side", "lin-root"), ("lin-rep", "lin-next")):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": "继承 " + rid, "objective": "沿着继承往外长", "follows": follows}))[0], 201)
+
+        def direction(did, rid, title, based_on=None, **extra):
+            self.assertEqual(self.web("POST", f"/research-state/direction/{did}", self.write("create-" + did, {
+                "research_id": rid, "title": title, "hypothesis": "继承 " + did, "based_on": based_on, **extra}))[0], 201)
+
+        def run(did, rid, operation):
+            submitted = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none", "resources": [],
+                                                   "actor_id": "agent-a", "research_id": rid, "direction_id": did}, b"", operation)
+            return submitted["job"]["id"] if "job" in submitted else submitted["id"]
+
+        direction("d-a", "lin-root", "方向 A：基线")
+        direction("d-b", "lin-root", "方向 B：在 A 上改", {"direction_id": "d-a", "job_id": None})
+        picked, other = run("d-b", "lin-root", "run-b-c"), run("d-b", "lin-root", "run-b-e")
+        direction("d-x", "lin-root", "方向 X：试过放弃", {"direction_id": "d-a", "job_id": None}, state="rejected", state_reason="没有收益")
+        direction("d-c", "lin-next", "方向 C：以 B 的那次运行为基础", {"direction_id": "d-b", "job_id": picked})
+        direction("d-d", "lin-rep", "方向 D：复现 C", {"direction_id": "d-c", "job_id": None})
+        self.assertEqual({d["id"]: d["based_on"] for d in self.web("GET", "/command")[1]["directions"] if d["id"] in ("d-a", "d-c")},
+                         {"d-a": None, "d-c": {"direction_id": "d-b", "job_id": picked}}, "the command model carries based_on")
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/research?kind=research&id=lin-root")
+                # The chain is a tree under its root's row in the task list, not a strip over the task.
+                tree = '#object-list li[data-id="lin-root"] .chain-strip'
+                page.wait_for_selector(tree)
+                self.assertEqual(page.locator("#task-detail .chain-strip").count(), 0)
+                self.assertEqual(page.eval_on_selector_all(tree + " .chain-seg", "e => e.map(x => [x.dataset.seg || 'all', x.classList.contains('nested')])"),
+                                 [["all", False], ["lin-root", False], ["lin-next", True], ["lin-rep", True], ["lin-side", True]])
+                self.assertEqual(page.get_attribute('.chain-seg[data-seg="lin-rep"]', "style"), "--depth: 2;")
+                # 探索过程: each direction under the one it builds on, the run it builds on named, the main line marked.
+                page.wait_for_function("() => document.querySelectorAll('#task-directions .research-direction').length === 5")
+                rows = page.eval_on_selector_all("#task-directions .research-direction", """e => e.map(x => [x.dataset.direction,
+                  getComputedStyle(x).getPropertyValue('--depth').trim(), x.classList.contains('on-main'), x.offsetParent !== null])""")
+                self.assertEqual(rows, [["d-a", "0", True, True], ["d-b", "1", True, True], ["d-c", "2", True, True], ["d-d", "3", True, True],
+                                        ["d-x", "1", False, False]])
+                self.assertIn("1 条没往下走的分支：方向 X：试过放弃（已排除）", page.text_content("#task-directions .direction-fold"))
+                based = lambda did: page.text_content(f'#task-directions [data-direction="{did}"] .direction-base')
+                self.assertEqual(based("d-b"), "基于 「方向 A：基线」")
+                self.assertTrue(based("d-c").startswith("基于 「方向 B：在 A 上改」 里的 ") and based("d-c").endswith(" 那次运行"), based("d-c"))
+                self.assertTrue(page.get_attribute('[data-direction="d-c"] .direction-base a', "href").endswith(f"#job={picked}"))
+                self.assertEqual(sorted(page.eval_on_selector_all('[data-direction="d-b"] .run-row', "e => e.map(x => [x.dataset.job, x.classList.contains('picked')])")),
+                                 sorted([[picked, True], [other, False]]), "the run a later direction builds on is marked in its list")
+                page.click("#task-directions .direction-fold")
+                self.assertTrue(page.is_visible('[data-direction="d-x"]'), "the fold opens in place")
+                page.click('.chain-seg[data-seg="lin-next"]')
+                self.assertEqual(page.eval_on_selector_all("#task-directions .research-direction:not(.seg-out)", "e => e.map(x => x.dataset.direction)"), ["d-c"])
+                self.assertIn("方向 B：在 A 上改", based("d-c"), "on its own, a step still names what it builds on")
+                self.assertEqual(page.evaluate("() => getComputedStyle(document.querySelector('[data-direction=\"d-c\"]')).getPropertyValue('--depth').trim()"), "0",
+                                 "and is not indented under directions that are not shown")
+                page.click(".chain-seg:not([data-seg])")
+                self.assertEqual(page.evaluate("() => getComputedStyle(document.querySelector('[data-direction=\"d-c\"]')).getPropertyValue('--depth').trim()"), "2")
+                # Command view: one generation per based_on, the picked run as a pill and a gold dot, the main line, a stub.
+                page.goto(f"{base}/dash/command")
+                page.wait_for_function("() => window.__ready === true")
+                shape = page.evaluate("""() => { const tr = window.__command.world.trees.get('lin-root');
+                  return {depth: Object.fromEntries(tr.shape.nodes.map(n => [n.key, n.depth])), main: tr.main,
+                          pills: tr.shape.pills.map(p => [p.parent.key, p.job.id, p.kids.map(k => k.key)]),
+                          picked: [...document.querySelectorAll('.tree[data-tree="lin-root"] .leaf.picked')].map(x => x.dataset.key),
+                          tags: Object.fromEntries([...document.querySelectorAll('.tree[data-tree="lin-root"] .chip')].map(x => [x.dataset.key, x.querySelector('.step')?.textContent || ''])),
+                          x: Object.fromEntries([...document.querySelectorAll('.tree[data-tree="lin-root"] .chip.rejected')].map(x => [x.dataset.key, x.classList.contains('main')])),
+                          stub: document.querySelector('.tree[data-tree="lin-root"] .stub')?.textContent}; }""")
+                self.assertEqual(shape["depth"], {"d-a": 1, "d-b": 2, "d-x": 2, "d-c": 3, "d-d": 4, "stub:lin-side": 1})
+                self.assertEqual(shape["pills"], [["d-b", picked, ["d-c"]]])
+                self.assertEqual(shape["picked"], [picked])
+                self.assertEqual(shape["main"], "d-d|d-c|d-b|d-a")
+                self.assertEqual(shape["x"], {"d-x": False}, "the rejected branch is drawn, off the main line")
+                self.assertEqual((shape["tags"]["d-a"], shape["tags"]["d-c"][:1], shape["tags"]["d-d"][:1]), ("", "②", "③"), "a follow-on's directions name their task")
+                self.assertTrue(shape["stub"].startswith("④ 继承 lin-side") and shape["stub"].endswith("无方向"), shape["stub"])
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_a_task_closes_with_a_reason_stays_findable_and_reopens(self):
         """关闭任务 asks why; the closed task shows the reason, folds into 已关闭 on the home page, and 重新打开 makes it active."""
         try:
@@ -1581,8 +1680,9 @@ class CoreFlowTests(unittest.TestCase):
         self.assertLess(page.index('id="object-body"'), page.index('id="task-detail"'))
         self.assertIn('directionsSection', script)
         # Comparisons waiting for a person sit right under the owner; answered ones follow the thread.
-        # A chain's strip leads; the delivery report (the newest one in a chain) fills the last place once read.
-        self.assertIn('container.append(...[scope.chain && chainStrip(scope, container), ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports]', script)
+        # A chain's task tree sits in the task list under its root's row; the delivery report (the newest one in a chain)
+        # fills the last place once read.
+        self.assertIn('container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports]', script)
         self.assertIn("reports.replaceWith(...found)", script)
         self.assertIn("waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');", script)
 
