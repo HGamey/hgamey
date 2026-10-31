@@ -961,6 +961,20 @@ class CoreFlowTests(unittest.TestCase):
         _, notes = self.web("GET", "/research-state/note?research_id=sr-artifacts&limit=100")
         self.assertEqual(len(notes["items"]), 1, "rejected artifact references must not create notes")
 
+    def test_delivery_error_names_the_missing_job_or_artifact_path(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-delivery-errors", self.write(
+            "create-delivery-errors", {"title": "交付错误定位", "objective": "指出哪条产物引用无法解析"}))[0], 201)
+        missing_job_id = "0" * 12 if self.jid != "0" * 12 else "f" * 12
+        cases = ((f"job:{self.jid}:charts/missing.png", "任务里没有这个路径"),
+                 (f"job:{missing_job_id}:charts/missing.png", "任务不存在"))
+        for reference, reason in cases:
+            with self.subTest(reference=reference):
+                code, _, err = self.pf(ADMIN, "research", "deliver", "sr-delivery-errors", "--summary", "定位错误",
+                                       "--artifact", f"job:{self.jid}", "--artifact", reference)
+                self.assertNotEqual(code, 0, err)
+                self.assertIn(reference, err)
+                self.assertIn(reason, err)
+
     def test_jobs_carry_their_research_to_the_task_page_and_the_phone(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
             "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)

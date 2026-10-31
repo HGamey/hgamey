@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -141,6 +142,17 @@ class TargetClient(unittest.TestCase):
         self.assertEqual(calls[-1]["path"], "/remote/node")
         self.assertTrue(all(c["method"] == "GET" for c in calls))
         self.assertNotIn("hgag_fixture-agent", discovery.stderr + action.stderr)
+
+    def test_identity_connection_failure_names_url_reason_and_no_write(self):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            endpoint = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        result = self.cli("pf-node", ["node"], {"PF_NODE_URL": endpoint,
+                                               "PF_NODE_TOKEN_FILE": str(self.credential)})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(endpoint, result.stderr)
+        self.assertIn("连接被拒绝", result.stderr)
+        self.assertIn("未写入", result.stderr)
 
     def test_export_caches_clear_posts_to_the_clear_route(self):
         def route(call):

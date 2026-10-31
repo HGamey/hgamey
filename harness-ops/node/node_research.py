@@ -544,14 +544,19 @@ class NodeResearch:
                     raise ValueError("remote evidence must be an explicit external reference")
                 try:
                     if kind == "job":
-                        self.results._job_exists(ref["job_id"])
+                        reference = "job:" + ref["job_id"] + (":" + ref["path"] if ref.get("path") is not None else "")
+                        try:
+                            self.results._job_exists(ref["job_id"])
+                        except ResultError:
+                            raise ResearchError(404, "research_reference_not_found",
+                                                f"引用 {reference} 无法解析：任务不存在") from None
                         if ref.get("path") is not None:
                             try:
                                 with self.results.jobs.center.artifacts.open_output(ref["job_id"], ref["path"]):
                                     pass
                             except (OSError, ValueError):
                                 raise ResearchError(404, "research_reference_not_found",
-                                                    "referenced job artifact is absent or outside job/out") from None
+                                                    f"引用 {reference} 无法解析：任务里没有这个路径，或路径越出 job/out") from None
                         binding["identity_kind"] = "job_reference"
                     elif kind == "attachment":
                         stream, info = self.attachment(ref["attachment_id"])
@@ -572,6 +577,10 @@ class NodeResearch:
                             binding["source_observation"] = {k: v for k, v in observation.items() if k != "stamp"}
                             binding["identity_kind"] = ("content_sha256" if observation.get("sha256") else
                                 "registration_bound" if observation.get("stamp") else "unverified")
+                except ResearchError as error:
+                    if error.payload.get("code") == "research_reference_not_found":
+                        raise
+                    raise ResearchError(404, "research_reference_not_found", "referenced job, result or registered source is absent") from None
                 except ValueError:
                     raise ResearchError(404, "research_reference_not_found", "referenced job, result or registered source is absent") from None
             output.append(binding)

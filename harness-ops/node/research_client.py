@@ -303,7 +303,7 @@ class Client:
 
     def http_error(self, error):
         status, code, revision, retry_after = error.code, None, None, None
-        validation = owner = None
+        validation = owner = reference_error = None
         try:
             raw = error.read(MAX_DATA + 1)
             value = _json(raw) if len(raw) <= MAX_DATA else None
@@ -322,9 +322,12 @@ class Client:
                     and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", candidate)):
                 owner = candidate
             candidate = value.get("error") if isinstance(value, dict) else None
-            if (status == 400 and code == "invalid_research" and isinstance(candidate, str)
-                    and 0 < len(candidate) <= 4096 and all(32 <= ord(char) != 127 for char in candidate)):
-                validation = candidate
+            if (isinstance(candidate, str) and 0 < len(candidate) <= 4096
+                    and all(32 <= ord(char) != 127 for char in candidate)):
+                if status == 400 and code == "invalid_research":
+                    validation = candidate
+                elif status == 404 and code == "research_reference_not_found":
+                    reference_error = candidate
         except (ValueError, UnicodeError, OSError, http.client.HTTPException, RecursionError):
             pass
         finally:
@@ -335,6 +338,8 @@ class Client:
                 message += f"（负责人 {owner}；可用 research note 留言）"
         elif validation is not None:
             message = "研究数据校验失败：" + validation
+        elif reference_error is not None:
+            message = "研究引用无法解析：" + reference_error + "；不据此自动重新提交"
         elif status == 409:
             message = "操作内容、对象版本、原目标或原件状态冲突；保留原 ID，先读取当前状态"
         elif 300 <= status < 400:

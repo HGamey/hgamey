@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -76,6 +77,17 @@ def credentials(explicit_file=None, *, environ=None):
     raise TargetError("credential_unavailable", "认证需显式 --token-file、PF_NODE_TOKEN 或 PF_NODE_TOKEN_FILE")
 
 
+def _connection_reason(error):
+    reason = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(reason, ConnectionRefusedError):
+        return "连接被拒绝"
+    if isinstance(reason, TimeoutError):
+        return "连接超时"
+    if isinstance(reason, ssl.SSLError):
+        return "TLS 错误：" + str(reason)
+    return str(reason) or type(reason).__name__
+
+
 class Target:
     def __init__(self, connection_url, credential, expected_node_id=None, *,
                  credential_source="explicit", identity_path="/node"):
@@ -127,8 +139,9 @@ class Target:
             if status == 409:
                 raise TargetError("target_mismatch", "节点拒绝原预期目标；保留原 URL/node_id，未写入") from None
             raise TargetError("identity_unavailable", f"无法确认节点身份（HTTP {status}）；未写入") from None
-        except (OSError, urllib.error.URLError, http.client.HTTPException, ValueError, UnicodeError):
-            raise TargetError("identity_unavailable", "节点身份请求未确认；未写入") from None
+        except (OSError, urllib.error.URLError, http.client.HTTPException, ValueError, UnicodeError) as error:
+            reason = _connection_reason(error)
+            raise TargetError("identity_unavailable", f"无法通过 {self.url} 确认节点身份：{reason}；未写入") from None
         actual = node_id(value.get("node_id"))
         if self.expected_node_id is not None and actual != self.expected_node_id:
             raise TargetError("target_mismatch", "节点身份与原预期 node_id 不同；未写入或查询原记录")
