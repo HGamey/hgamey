@@ -40,6 +40,13 @@ class JobTargets:
     def update(self, jid, **fields):
         with self.queue._transaction(write=True) as db:
             value = self._value(db.execute('SELECT value FROM job_targets WHERE job_id=?', (jid,)).fetchone())
+            if 'observation' in fields:
+                previous = value.get('observation') or {}
+                changed = not previous or previous.get('status_revision') != fields['observation'].get('status_revision')
+                # Compare the saved version under the write transaction: a
+                # repeated heartbeat (or concurrent observer) is not a change.
+                value['status_observed_at'] = (fields['observed_at'] if changed else
+                    value.get('status_observed_at', value.get('observed_at')))
             value.update(fields)
             db.execute('UPDATE job_targets SET value=? WHERE job_id=?', (json.dumps(value), jid))
             return value

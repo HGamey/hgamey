@@ -324,8 +324,11 @@ class JobCenter:
                 continue
             status = record.get('observation') or {'queue': {'state': (
                 'done' if record.get('stop') and record.get('sent_at') is None else 'unknown')}}
+            # Check-in cursors are local: the worker may have committed before
+            # the previous check-in, while its report arrived afterwards.
             rows.append({'job_id': record['id'], 'spec': record['request']['spec'],
-                         'state': status['queue']['state'], 'status_committed_at': status.get('status_committed_at')})
+                         'state': status['queue']['state'],
+                         'status_committed_at': record.get('status_observed_at', record.get('observed_at'))})
         return rows
 
     def queue_snapshot(self):
