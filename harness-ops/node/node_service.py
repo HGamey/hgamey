@@ -1475,7 +1475,17 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(e.status, {"error": str(e)})
             except (SessionError, DeploymentError) as e:
                 return self._send(e.status, e.payload)
-            except (KeyError, FileNotFoundError):
+            except (KeyError, FileNotFoundError) as error:
+                if (isinstance(error, FileNotFoundError) and len(parts) == 3
+                        and parts[0] == "jobs" and parts[2] in {"out", "artifacts"}):
+                    try:
+                        jobs.center.artifacts.require_job(parts[1])
+                    except (KeyError, FileNotFoundError):
+                        pass
+                    else:
+                        path = q.get("path", [""])[0]
+                        return self._send(404, {"code": "artifact_path_not_found", "path": path,
+                                                "error": "no such artifact path: " + (path or ".")})
                 return self._send(404, {"code": "job_not_found", "error": "no such job"})
             except ExportError as e:
                 return self._send(e.status, e.payload)

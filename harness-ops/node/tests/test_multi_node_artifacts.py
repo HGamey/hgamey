@@ -34,6 +34,40 @@ class MultiNodeArtifactsTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_missing_paths_keep_the_remote_job_identity_before_and_after_collection(self):
+        connector = self.flow.start_worker()
+        artifacts = self.center.jobs.center.artifacts
+        artifacts.close()
+        completed = threading.Event()
+        commit = self.worker.jobs.dispatch._commit_completion
+
+        def committed(*args, **kwargs):
+            result = commit(*args, **kwargs)
+            completed.set()
+            return result
+
+        with patch.object(self.worker.jobs.dispatch, '_commit_completion', side_effect=committed):
+            code, job = self.flow.submit({'bin': 'fixture', 'argv': ['-c', 'pass'],
+                'device_access': 'none', 'execution_node_id': self.worker.jobs.node_id}, 'missing-output')
+            self.assertEqual(code, 200, job)
+            self.assertTrue(completed.wait(10))
+        jid = job['id']
+        self.assertEqual(self.center.call('GET', '/jobs/' + jid)[1]['state'], 'finished')
+        for collected in (False, True):
+            if collected:
+                artifacts.collect(jid)
+                self.assertEqual(artifacts.sync_status(jid)['status'], 'complete')
+                connector.close()
+            for route in ('out', 'out?meta=1', 'artifacts'):
+                with self.subTest(collected=collected, route=route):
+                    query = '&' if '?' in route else '?'
+                    code, _, raw = self.get('/jobs/' + jid + '/' + route + query + 'path=missing/nested')
+                    value = json.loads(raw)
+                    self.assertEqual(code, 404, value)
+                    self.assertEqual(value['code'], 'artifact_path_not_found', value)
+                    self.assertEqual(value['path'], 'missing/nested')
+                    self.assertIn('missing/nested', value['error'])
+
     def test_intake_failure_before_log_creation_is_a_terminal_collection_error(self):
         connector = self.flow.start_worker()
         artifacts = self.center.jobs.center.artifacts
