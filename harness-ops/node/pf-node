@@ -307,11 +307,12 @@ def admin_restart():
 class ClientError(Exception):
     def __init__(self, code, body):
         detail = [f"HTTP {code}：节点请求被拒绝或未确认"]
-        error_code, error_text = response_error_code(body), response_error_text(body)
-        if error_code is not None:
-            detail.append(f"code={error_code}")
-        if error_text is not None:
-            detail.append(f"error={error_text}")
+        if 400 <= code < 500:
+            error_code, error_text = response_error_code(body), response_error_text(body)
+            if error_code is not None:
+                detail.append(f"code={error_code}")
+            if error_text is not None:
+                detail.append(f"error={error_text}")
         super().__init__("；".join(detail))
         self.code, self.body = code, body
 
