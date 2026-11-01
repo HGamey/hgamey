@@ -349,7 +349,15 @@ def call(method, path, data=None, headers=None, timeout=60, attempts=5, raise_4x
                 if raise_errors or stop or (e.code < 500 and raise_4xx):
                     raise ClientError(e.code, body)
                 if e.code < 500:
-                    sys.exit(f"pf-node: HTTP {e.code}，请求被拒绝；未跟随重定向")
+                    detail = [f"pf-node: HTTP {e.code}，请求被拒绝"]
+                    if 300 <= e.code < 400:
+                        detail.append("未跟随重定向")
+                    code, error = response_error_code(body), response_error_text(body)
+                    if code is not None:
+                        detail.append(f"code={code}")
+                    if error is not None:
+                        detail.append(f"error={error}")
+                    sys.exit("；".join(detail))
             err = e
         # http.client.IncompleteRead 等（经 Cloudflare 读到一半断流）也重试
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
