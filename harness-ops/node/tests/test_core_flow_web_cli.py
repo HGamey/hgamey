@@ -2891,6 +2891,90 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_comparison_answer_unlocks_beside_submit_and_says_it_is_not_saved_until_it_is(self):
+        """Locked, the answer form asks for the steer password beside 提交 instead of sending the person to the top of
+        the page. Until the answer is saved the form says it is not submitted and what is missing; a wrong password
+        keeps the choices; the right one saves the answer."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import struct, zlib
+
+        def png(rgb, width=64, height=32):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress((b"\x00" + rgb * width) * height)) + chunk(b"IEND", b""))
+        jid = "cccccccccccc"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        names = {"ask-native": b"\x10\x20\x30", "ask-ours": b"\x30\x20\x10"}
+        for name, rgb in names.items():
+            (out / (name + ".png")).write_bytes(png(rgb))
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-ask", "title": "作答素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": name + ".png"} for name in names]})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-ask", self.write(
+            "create-ask", {"title": "图片盲评", "objective": "提交了才算"}))[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-ask", "source_name": name}
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-ask", self.write("create-ev-ask", {
+            "research_id": "sr-ask", "type": "evaluation", "title": "哪张更清楚", "need": "选 1 个", "why": "fixture",
+            "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref(name) for name in names],
+            "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": i, "media_kind": "image"} for i in range(2)], "pick": 1}}))[0], 201)
+        import collections
+        # The unlock route counts wrong passwords and sets its cookie as on plain LAN HTTP (Dash.__init__ is skipped here).
+        self.board.fails, self.board._lan_plain = collections.defaultdict(list), True
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/research?kind=research&id=sr-ask")
+                form = "#cmp-ev-ask .compare-answer"
+                page.wait_for_selector(form)
+                status = lambda: page.text_content(f"{form} .compare-status")
+                password = f'{form} input[type="password"]'
+                send = f'{form} button[type="submit"]'
+                self.assertEqual(status(), "还没提交 · 先选 1 个")
+                page.click(f"{form} .chip-btn.letter >> text=B")
+                self.assertEqual(status(), "还没提交 · 再选差别大小")
+                self.assertTrue(page.is_disabled(send))
+                page.click(f'{form} [data-diff="moderate"]')
+                self.assertEqual(status(), "还没提交 · 填掌舵口令后提交")
+                self.assertTrue(page.is_visible(password), "the password is asked for beside 提交")
+                self.assertEqual(page.text_content(send), "解锁并提交")
+                page.locator("#cmp-ev-ask").scroll_into_view_if_needed()
+                top = page.evaluate("() => scrollY")
+                page.fill(password, "not-the-password")
+                page.click(send)
+                page.wait_for_function(f"() => document.querySelector('{form} .compare-status').textContent.startsWith('没有提交：')")
+                self.assertEqual(page.evaluate("() => scrollY"), top, "nobody is sent to the top of the page")
+                self.assertTrue(page.is_hidden("#access-panel"))
+                self.assertEqual(page.get_attribute(f"{form} .chip-btn.letter >> text=B", "aria-pressed"), "true", "the choice is kept")
+                page.fill(password, STEER)
+                self.assertEqual(status(), "还没提交 · 可以提交")
+                page.click(send)
+                page.wait_for_selector("#cmp-ev-ask .compare-verdict")
+                saved = self.web("GET", "/research-state/request?research_id=sr-ask&full=1&feedback=latest")[1]["items"]
+                self.assertEqual([(r["id"], r["latest_feedback"]["data"]["evaluation"]["picked"]) for r in saved], [("ev-ask", ["B"])])
+                self.assertIn("B 更好", page.text_content("#cmp-ev-ask .compare-verdict"))
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_a_comparison_stays_where_it_landed_when_videos_above_it_load(self):
         """去评 lands on the second of two comparisons. The first one's videos are held back until after the landing;
         when they load (portrait, unlike the browser's default box) the comparison does not move."""

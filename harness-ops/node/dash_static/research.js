@@ -166,19 +166,11 @@
       }
     }
   }
-  async function setAccess(body, lock = false) {
-    if (accessBusy) return; accessBusy = true; renderControls(); $('unlock-submit').disabled = true;
-    try { await request(`${API}/steer/${lock ? 'lock' : 'unlock'}`, {body}); $('unlock-form').hidden = true; message('unlock-message', ''); }
-    catch (error) { message('unlock-message', failText(error), true); }
-    finally {
-      $('steer-password').value = ''; $('unlock-submit').disabled = false; accessBusy = false; await loadAccess();
-      if (access?.steer) {
-        $('access-panel').hidden = true;
-        const action = writeContinuation; writeContinuation = null;
-        const shouldRender = action ? await action() : true;
-        if (shouldRender !== false && detailFresh && detail) renderDetail(detail);
-      }
-    }
+  // Unlocks for a write started inside the page (a comparison's answer): nothing is repainted, so what was chosen there
+  // stays; the controls above follow the new access.
+  async function unlockInPlace(pw) {
+    await request(`${API}/steer/unlock`, {body: {pw}});
+    access = await request(`${API}/access`); accessError = ''; $('access-panel').hidden = true; renderControls();
   }
   function requireWrite(continuation) {
     if (writable()) { $('access-panel').hidden = true; return true; }
@@ -305,7 +297,7 @@
     $('record-json-summary').textContent = ab ? '完整记录与绑定（会揭示素材标签）' : '完整记录、作者来源与引用绑定';
     renderDerived(record); renderEvidence(record); $('object-json').textContent = JSON.stringify(record, null, 2);
     const target = HGTarget.binding();
-    const compared = HGResearchCompare.isComparison(record), ctx = {writable, requireWrite, reload: () => selectObject(record.kind, record.id)};
+    const compared = HGResearchCompare.isComparison(record), ctx = {writable, requireWrite, unlock: unlockInPlace, reload: () => selectObject(record.kind, record.id)};
     // A comparison shows as its own block (letters only until answered), not as the engineering A/B view.
     if (compared) HGResearchEvaluation.clearDetail(); else HGResearchEvaluation.renderDetail($('evaluation-detail'), record, {node, target});
     HGResearchTask.renderDetail($('task-detail'), record, ctx)

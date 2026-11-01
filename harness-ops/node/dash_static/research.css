@@ -327,6 +327,10 @@
 .research-view .compare-foot textarea { flex: 1; min-width: 0; min-height: 34px; max-height: 240px; padding: 6px 10px; resize: none; font: inherit; font-size: var(--fs-sm); line-height: 1.5; }
 .research-view .compare-foot button.ghost.primary { min-height: 34px; padding: 0 18px; font-weight: 600; }
 .research-view .compare-answer > .note.task-error { margin: 0; color: var(--bad); }
+.research-view .compare-foot input[type="password"] { width: 11em; min-height: 34px; padding: 0 10px; font: inherit; font-size: var(--fs-sm); }
+.research-view .compare-answer > .compare-status { margin: 0; color: var(--warn); font-size: var(--fs-sm); font-weight: 600; }
+.research-view .compare-answer > .compare-status::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
+.research-view .compare-answer > .compare-status.task-error { color: var(--bad); }
 .research-view .task-report-missed .task-error { color: var(--bad); }
 .research-view .compare-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--sp-2); margin: var(--sp-2) 0 0; padding: 8px 12px; border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); }
 .research-view .compare-who { color: var(--muted); }

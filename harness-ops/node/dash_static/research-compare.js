@@ -232,14 +232,17 @@
 
   function form(record, s, state, ctx, U) {
     const box = U.el('form', null, 'compare-answer'), picks = U.el('div', null, 'compare-picks'), diff = U.el('div', null, 'compare-diff');
-    const comment = U.el('textarea'), send = U.el('button', '提交', 'ghost primary'), status = U.el('p', null, 'note');
+    const comment = U.el('textarea'), send = U.el('button', '提交', 'ghost primary'), status = U.el('p', null, 'compare-status');
+    // Locked, the steer password is asked for right here, beside 提交, so nothing chosen is lost and no one is sent away.
+    const password = U.el('input'), locked = () => !ctx.writable();
+    Object.assign(password, {type: 'password', autocomplete: 'off', placeholder: '掌舵口令'}); password.setAttribute('aria-label', '掌舵口令');
     let picked = [], other = null, degree = null;
     picks.setAttribute('role', 'group'); picks.setAttribute('aria-label', `选 ${s.pick} 个`);
     diff.setAttribute('role', 'group'); diff.setAttribute('aria-label', '差别');
     status.setAttribute('role', 'status');
     comment.rows = 1; comment.maxLength = 16384; comment.placeholder = '补充一句（可选）'; comment.setAttribute('aria-label', '补充');
     send.type = 'submit';
-    const choice = (label, onClick, cls = '') => { const b = U.el('button', label, 'chip-btn ' + cls); b.type = 'button'; b.setAttribute('aria-pressed', 'false'); b.onclick = onClick; return b; };
+    const choice = (label, onClick, cls = '') => { const b = U.el('button', label, 'chip-btn ' + cls); b.type = 'button'; b.setAttribute('aria-pressed', 'false'); b.onclick = () => { failed = ''; onClick(); }; return b; };
     picks.append(U.el('span', `选 ${s.pick} 个`, 'compare-hint'));
     const letters = s.slots.map(({slot}) => choice(slot, () => {
       other = null;
@@ -252,22 +255,28 @@
     diff.append(U.el('span', '差别', 'compare-hint'), ...Object.entries(DIFF).map(([key, label]) => {
       const b = choice(label, () => { degree = degree === key ? null : key; paint(); }); b.dataset.diff = key; return b;
     }));
-    const foot = U.el('div', null, 'compare-foot'); foot.append(comment, send);
+    const foot = U.el('div', null, 'compare-foot'); foot.append(comment, password, send);
     box.append(picks, diff, foot, status);
     function ready() { return other !== null || picked.length === s.pick && degree !== null; }
+    // Until the answer is saved the form says so, and what is still missing.
+    let failed = '';
     function paint() {
       letters.forEach((b, i) => b.setAttribute('aria-pressed', String(picked.includes(s.slots[i].slot))));
       same.setAttribute('aria-pressed', String(other === 'same')); unable.setAttribute('aria-pressed', String(other === 'unable'));
       diff.hidden = picked.length === 0;
       for (const b of diff.querySelectorAll('[data-diff]')) b.setAttribute('aria-pressed', String(b.dataset.diff === degree));
-      send.disabled = !ready();
+      password.hidden = !locked(); send.textContent = send.dataset.busy ? '提交中…' : locked() ? '解锁并提交' : '提交';
+      send.disabled = !ready() || !!send.dataset.busy || locked() && !password.value;
+      const next = other === null && picked.length < s.pick ? `先选 ${s.pick} 个` : !ready() ? '再选差别大小' : locked() && !password.value ? '填掌舵口令后提交' : '可以提交';
+      status.textContent = send.dataset.busy ? '提交中…' : failed ? `没有提交：${failed}` : `还没提交 · ${next}`;
+      status.classList.toggle('task-error', !!failed && !send.dataset.busy);
     }
     paint();
+    password.addEventListener('input', () => { failed = ''; paint(); });
     comment.addEventListener('input', () => { comment.style.height = 'auto'; comment.style.height = Math.min(comment.scrollHeight + 2, 240) + 'px'; });
     box.onsubmit = async event => {
       event.preventDefault();
       if (!ready() || send.dataset.busy) return;
-      if (!ctx.requireWrite(() => box.requestSubmit())) return;
       const display = Object.fromEntries(s.slots.map(({slot}) => [slot, state[slot]]));
       const v = other === 'unable' ? {unable: true} : other === 'same' ? {same: true} : {picked: picked.slice().sort(), difference: degree};
       const evaluation = s.legacy
@@ -277,14 +286,14 @@
         : {schema: 'phonefarm/compare-feedback@1', picked: v.picked || [], unable: !!v.unable, difference: v.unable ? null : v.same ? 'none' : degree,
            client_display: display, identity_revealed: false};
       const text = comment.value.trim() || verdictText(v, s.pick);
-      send.dataset.busy = '1'; send.disabled = true; send.textContent = '提交中…'; status.textContent = ''; status.classList.remove('task-error');
+      send.dataset.busy = '1'; failed = ''; paint();
       try {
+        if (locked()) { await ctx.unlock(password.value); password.value = ''; }
         await U.write('feedback', 'fb-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
                       {request_id: record.id, request_revision: record.revision, text, supersedes: null, evidence_refs: [], evaluation}, null, null);
         await ctx.reload();
       } catch (error) {
-        status.textContent = '没有提交：' + U.failure(error); status.classList.add('task-error');
-        delete send.dataset.busy; send.textContent = '提交'; paint();
+        failed = U.failure(error); delete send.dataset.busy; paint();
       }
     };
     return box;
