@@ -8,6 +8,7 @@ import test_node_games as fixture
 import test_job_experiment as experiment
 import test_multi_node_jobs as multi
 from test_device_scope import PROGRAM, bound
+from node_service import Jobs
 
 
 class JobDeviceDefaults(unittest.TestCase):
@@ -123,6 +124,18 @@ class JobDeviceDefaults(unittest.TestCase):
         self.save_registry()
         again = self.submit(spec, 'old-none')
         self.assertEqual((again['id'], again['device_access'], again['resources']), (job['id'], 'none', []))
+
+    def test_standalone_jobs_infer_local_phones_without_an_http_node_directory(self):
+        root = str(self.env.root / 'standalone')
+        jobs = Jobs(root, {'fixture': (sys.executable, root), 'phonefarm': self.jobs.bins['phonefarm']})
+        self.addCleanup(jobs._read_root.close)
+        self.addCleanup(jobs.center.close)
+        self.addCleanup(jobs.dispatch.close)
+        jobs.dispatch.start = lambda: None
+        with patch.object(jobs.leases, 'snapshot', return_value=self.lease):
+            job = jobs.start({'bin': 'fixture', 'argv': ['-c', 'pass', '91253241019A']}, b'', 'standalone')
+        self.assertEqual((job['device_access'], job['resources']), ('write', ['device:REDMAGIC']))
+        self.assertEqual(job['device_binding'], bound('REDMAGIC', '91253241019A'))
 
 
 class MultiNodeDeviceDefaults(unittest.TestCase):

@@ -50,7 +50,8 @@ def select(jobs, request, *, infer_access=True):
     # Only registered aliases count, including phones on outbound-only nodes.
     # No fleet sampling or admission is needed to recognize an argv item.
     candidates = phones(jobs.node_id, 'local', {'queue': {'lease': jobs.leases.snapshot(refresh=True)}}, True)
-    for entry in jobs.directory.list():
+    directory = getattr(jobs, 'directory', None)  # Standalone Jobs has only its local phones.
+    for entry in directory.list() if directory is not None else []:
         candidates.extend(phones(entry['node_id'], entry['name'], entry.get('snapshot') or {},
                                  entry['connection']['status'] == 'ready'))
     matched = [item for arg in spec.get('argv', []) for item in candidates
