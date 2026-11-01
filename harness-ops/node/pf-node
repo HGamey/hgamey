@@ -22,7 +22,7 @@ Agent 每轮从这里开始（最短完整路径）：
   设备写任务只占一台：研究只有一台 device_requirements 时默认同机；否则显式 --resource device:<串号>，参数优先于研究默认。
   单机操作也可用 phonefarm lease --serial <串号> -- <命令>（已注册别名归同一设备锁）；devlock busy 默认等到拿锁或取消；DEVLOCK_WAIT_SECONDS 可指定等待秒数，0 立即失败。
   pf-node --experiment <分支|提交> --research <研究> --detach experiment <脚本.py|.sh> ...  # 跑实验仓库里固定提交的脚本
-  --experiment 不能与 --inputs 同用：代码取自固定提交，输入走脚本参数，本机存在的文件会自动上传；短提交号唯一时接受。
+  --experiment 不能与 --inputs 同用：代码取自固定提交，输入走脚本参数；短提交号唯一时接受。
 
   pf-node phonefarm eval --request r.json --json --lock-label judge
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
@@ -109,7 +109,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node research media REQUEST A|B|C... --revision N --output FILE # 显式原件下载，核长度/SHA且不覆盖
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 
-- 参数里凡是本机存在的文件/目录（含 --flag=路径 的写法）自动打包上传，在节点上替换成对应路径。
+- 参数里，本机存在的文件会自动上传，路径改写成 @in/N/文件名；目录也自动打包上传（含 --flag=路径 的写法）。
 - @out 是本次任务在节点上的输出目录；任务结束后它的内容下载到 -o 指定的目录（缺省 ./pf-node-out/<id>）。
   下载分块进行（PF_NODE_CHUNK 字节一块，缺省 2MB），断了自动续，最后校验 sha256；中途中断的进度存在
   <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
@@ -165,7 +165,7 @@ Agent 每轮从这里开始（最短完整路径）：
   status_revision 仅覆盖 Node 的 committed_status，不能据相同版本推断 worker、lease、日志或控制资格未变。
   事件不是无损执行历史；head 不是已处理位置，消费者处理后自行保存 next_cursor。Ctrl-C 不取消任务。
 - --device-access none|write|recovery 显式声明设备访问；adb 未声明时按 none 提交，不预留整机，
-  adb 写设备必须显式 write。experiment 等原本默认 none 的任务省略此参数时，argv 中完整一项匹配登记别名，
+  adb 写设备必须显式 write。experiment 等原本默认 none 的任务省略此参数时，argv 中完整一项匹配登记设备 ID 或别名，
   就按 write 预留对应手机并选执行电脑；同机多台一起预留。显式 none 或没有匹配时照旧。recovery 必须配 --recovery-for 原资源保留任务 ID，
   资源由父任务继承，不能同时传 --resource。设备恢复由任务自身步骤负责并记录结果，终态自动释放；宿主完成未知时由负责人或管理员 reset；设备仍用原 session 或 adb 还原。
 - --device-binding FILE 只读 devices-resolve 保存的 JSON 文件，核其 node_id 与当前目标；只将 binding 放入 job spec，
@@ -1767,6 +1767,14 @@ def main():
     jid = meta["id"]
     print(f"pf-node: 提交已记录 job={jid} phase={meta.get('phase', 'unknown')} request_id={request_id}",
           file=sys.stderr)
+    if experiment is not None:
+        omissions = []
+        if research_id is None:
+            omissions.append("没有 --research，任务页看不到")
+        if wall_seconds is None:
+            omissions.append("没有 --max-runtime-seconds，卡住不会自动停")
+        if omissions:
+            print("提醒：这条运行" + "；".join(omissions), file=sys.stderr)
     warn_global_job(meta)
     if detach:
         print(jid)

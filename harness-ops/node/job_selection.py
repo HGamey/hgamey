@@ -47,7 +47,7 @@ def select(jobs, request, *, infer_access=True):
     spec = request['spec']
     if not infer_access or 'device_access' in original or device_access(original) != 'none':
         return node_id, request, phone
-    # Only registered aliases count, including phones on outbound-only nodes.
+    # Only registered device IDs and aliases count, including phones on outbound-only nodes.
     # No fleet sampling or admission is needed to recognize an argv item.
     candidates = phones(jobs.node_id, 'local', {'queue': {'lease': jobs.leases.snapshot(refresh=True)}}, True)
     directory = getattr(jobs, 'directory', None)  # Standalone Jobs has only its local phones.
@@ -55,7 +55,7 @@ def select(jobs, request, *, infer_access=True):
         candidates.extend(phones(entry['node_id'], entry['name'], entry.get('snapshot') or {},
                                  entry['connection']['status'] == 'ready'))
     matched = [item for arg in spec.get('argv', []) for item in candidates
-               if item['device_binding'] and arg in item['aliases']
+               if item['device_binding'] and arg in (item['device_id'], *item['aliases'])
                and (phone is None and 'execution_node_id' not in original or item['node_id'] == node_id)]
     if not matched:
         return node_id, request, phone

@@ -132,6 +132,24 @@ class ExperimentJobTests(unittest.TestCase):
         self.assertEqual(self.finished(jid)["exit"], 0)
         self.assertEqual(Path(self.jobs.path(jid, "out", "sh.txt")).read_text(), "sh hello\n")
 
+    def test_missing_research_and_runtime_are_reminders_not_rejections(self):
+        code, jid, err = self.pf("--experiment", "main", "--device-access", "none", "--detach",
+                                 "experiment", "probe/run.py")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(jid)
+        self.assertIn("提醒：这条运行没有 --research，任务页看不到；没有 --max-runtime-seconds，卡住不会自动停", err)
+
+        write = {"schema": "phonefarm/research-write@1", "operation_id": "exp-reminders",
+                 "base_revision": None, "data": {"title": "提醒回归", "objective": "验证漏参提醒"},
+                 "actor_label": None, "reason": None}
+        self.assertEqual(self.call("POST", "/research-state/research/sr-reminders", write)[0], 201)
+        code, jid, err = self.pf("--experiment", "main", "--research", "sr-reminders",
+                                 "--max-runtime-seconds", "60", "--device-access", "none", "--detach",
+                                 "experiment", "probe/run.py")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(jid)
+        self.assertNotIn("提醒：这条运行", err)
+
     def test_specs_outside_the_contract_are_refused(self):
         base = {"bin": "experiment", "argv": ["probe/run.py"], "device_access": "none", "experiment": {"commit": self.commit}}
         for change in ({"experiment": None}, {"argv": ["../escape.py"]}, {"argv": ["/tmp/escape.py"]},

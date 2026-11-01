@@ -69,6 +69,11 @@ class JobDeviceDefaults(unittest.TestCase):
         self.assertEqual(self.env.board._reserved('91253241019A', owners)['job_id'], job['id'])
         self.assertIsNone(self.env.board._reserved('hdc:88X9K26901026869', owners))
 
+    def test_a_positional_registered_device_id_defaults_to_write_with_resources(self):
+        job = self.submit(self.spec('REDMAGIC'), 'default-device-id')
+        self.assertEqual(job['device_access'], 'write')
+        self.assertEqual(job['resources'], ['device:REDMAGIC'])
+
     def test_explicit_access_and_non_matching_arguments_keep_their_defaults(self):
         cases = [self.spec('91253241019A', device_access='none'),
                  self.spec('not-registered'), self.spec('--phone=91253241019A'),

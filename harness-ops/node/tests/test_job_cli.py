@@ -177,6 +177,8 @@ class JobCLI(unittest.TestCase):
                 self.assertIn("用完整提交号", str(rejected.exception))
         self.assertIn("--experiment 不能与 --inputs", cli["main"].__globals__["__doc__"])
         self.assertIn("本机存在的文件会自动上传", cli["main"].__globals__["__doc__"])
+        self.assertIn("- 参数里，本机存在的文件会自动上传，路径改写成 @in/N/文件名；目录也自动打包上传（含 --flag=路径 的写法）。",
+                      cli["main"].__globals__["__doc__"])
 
     def test_job_id_subcommand_help_is_local_and_out_explains_subdirectory_export(self):
         env = {key: value for key, value in os.environ.items() if not key.startswith("PF_")}
