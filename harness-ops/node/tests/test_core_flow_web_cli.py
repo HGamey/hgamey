@@ -3,6 +3,8 @@
 Requests are shaped the way the shipped clients send them: dashboard calls carry only the
 cookies and headers the page scripts set, token calls mirror pf-node. No workers or devices.
 """
+import contextlib
+import hashlib
 import http.client
 import json
 import os
@@ -12,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from http.server import ThreadingHTTPServer
@@ -39,6 +42,34 @@ class NoDevices:
     def snapshot(self):
         return {"schema_version": 1, "devices": [], "lock": {"status": "unknown"},
                 "sampled_at": None, "age_s": None}
+
+
+class EndsEarly:
+    """A stored file whose long read stops after `cuts[slot]` bytes, the way a dropped link ends a response."""
+
+    def __init__(self, stream, slot, cuts):
+        self.stream, self.slot, self.cuts = stream, slot, cuts
+
+    def __enter__(self):
+        self.stream.__enter__()
+        return self
+
+    def __exit__(self, *details):
+        return self.stream.__exit__(*details)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+    def read(self, size):
+        if size == 1 or self.slot not in self.cuts:
+            return self.stream.read(size)
+        if not self.cuts[self.slot]:
+            del self.cuts[self.slot]
+            time.sleep(0.3)   # what was sent reaches the browser before the connection drops
+            return b""
+        data = self.stream.read(min(size, self.cuts[self.slot]))
+        self.cuts[self.slot] -= len(data)
+        return data
 
 
 class CoreFlowTests(unittest.TestCase):
@@ -73,6 +104,70 @@ class CoreFlowTests(unittest.TestCase):
         submitted = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
                                                "resources": [], "actor_id": "agent-a"}, b"", "core-flow-job")
         self.jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+
+    def _large_comparison(self, rid, kinds):
+        """A comparison (`kinds`: slot → media kind) of real media followed by noise, long enough for a read to take
+        many writes, waiting on the page of task sr-<rid>. Returns the files by slot and the page's path."""
+        import base64, struct, zlib
+
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 32, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress((b"\x00" + b"\x10\x20\x30" * 64) * 32)) + chunk(b"IEND", b""))
+        clip = base64.b64decode("GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAQCEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggEeTbuMU6uEHFO7a1OsggPs7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiECfQAAAAAAAFlSua8GuAQAAAAAAADjXgQFzxYhxERJxo71UCZyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhAX14QDgibCBoLqBWpqBAhJUw2f8c3OgY8CAZ8iaRaOHRU5DT0RFUkSHjUxhdmY2MC4xNi4xMDBzc9ZjwItjxYhxERJxo71UCWfIoUWjh0VOQ09ERVJEh5RMYXZjNjAuMzEuMTAyIGxpYnZweGfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDIuMDAwMDAwMDAwAB9DtnVCR+eBAKPWgQAAgPAFAJ0BKqAAWgAARwiFhYiFhIgCAgJ1qgP4AgaaE+CGqpNdxDqqTXcQ6qk13EOqpNdxDqqTXcQYAP7/TRL//FhX8WFfxYV/8WFf/PzO7cX85gCjmIEAZAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQDIABECAAEQEAAYABhYL/QACICBAAAAo5iBASwAEQIAARAQABgAGFgv9AAIgIEAAACjmIEBkAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQH0ABECAAEQEAAYABhYL/QACICBAAAAo5iBAlgAEQIAARAQABgAGFgv9AAIgIEAAACjl4ECvADxAQABEBAUYABhYL/QACICBAAAo5iBAyAAEQIAARAQABgAGFgv9AAIgIEAAACjmIEDhAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQPoABECAAEQEAAYABhYL/QACICBAAAAo5iBBEwAEQIAARAQABgAGFgv9AAIgIEAAACjmIEEsAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQUUABECAAEQEAAYABhYL/QACICBAAAAo5iBBXgAEQIAARAQABgAGFgv9AAIgIEAAACjmIEF3AARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQZAABECAAEQEAAYABhYL/QACICBAAAAo5iBBqQAEQIAARAQABgAGFgv9AAIgIEAAACjl4EHCADxAQABEBAUYABhYL/QACICBAAAo5iBB2wAEQIAARAQABgAGFgv9AAIgIEAAAAcU7trkbuPs4EAt4r3gQHxggGf8IED")
+        jid = "abababababab"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        files, sources = {}, []
+        for slot, kind in kinds.items():
+            files[slot] = (clip if kind == "video" else png) + os.urandom(3 << 20)
+            name = f"{rid}-{slot}" + (".webm" if kind == "video" else ".png")
+            (out / name).write_bytes(files[slot])
+            sources.append({"name": slot, "kind": "job_output", "job_id": jid, "path": name})
+        result = "r-" + rid
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": result, "title": "下载素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": sources})[0], 201)
+        research = "sr-" + rid
+        self.assertEqual(self.web("POST", f"/research-state/research/{research}", self.write(
+            "create-" + research, {"title": "大文件盲评", "objective": "断了也能下完"}))[0], 201)
+        self.assertEqual(self.cli("POST", f"/research-state/request/{rid}", self.write("create-" + rid, {
+            "research_id": research, "type": "evaluation", "title": "哪个更清楚", "need": "选 1 个", "why": "fixture",
+            "context": {"research_revision": 1, "directions": []},
+            "evidence_refs": [{"kind": "result_source", "node_id": self.node_id, "result_id": result, "source_name": slot} for slot in kinds],
+            "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": i, "media_kind": kind} for i, kind in enumerate(kinds.values())], "pick": 1}}))[0], 201)
+        return files, f"/dash/research?kind=research&id={research}"
+
+    def _reads_ending_early(self, cuts):
+        """Long reads of the slots in `cuts` end after that many bytes, once."""
+        real = self.jobs.research.media
+
+        def media(oid, slot, revision):
+            stream, info = real(oid, slot, revision)
+            return EndsEarly(stream, slot, cuts), info
+        return mock.patch.object(self.jobs.research, "media", media)
+
+    @contextlib.contextmanager
+    def _browser_page(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": "http://%s:%d" % self.address}])
+                yield context.new_page()
+            finally:
+                browser.close()
 
     def request(self, method, path, body=None, headers=None):
         connection = http.client.HTTPConnection(*self.address, timeout=10)
@@ -2864,7 +2959,7 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual({tuple(s[1:]) for s in seen}, {tuple(seen[0][1:])}, "every slot shows in the same box, one at a time")
                 text = page.text_content(viewer)
                 self.assertFalse([name for name in [*sources, "r-view", ".png", ".webm"] if name in text], text)
-                self.assertTrue(all("/media/" in src for src in page.eval_on_selector_all(f"{viewer} .viewer-media", "e => e.map(x => x.getAttribute('src'))")))
+                self.assertTrue(all(src.startswith("blob:") for src in page.eval_on_selector_all(f"{viewer} .viewer-media", "e => e.map(x => x.getAttribute('src'))")))
                 page.keyboard.press("Escape")
                 page.wait_for_selector("dialog.compare-viewer", state="detached")
 
@@ -2892,9 +2987,9 @@ class CoreFlowTests(unittest.TestCase):
                 browser.close()
 
     def test_a_video_comparison_downloads_every_clip_before_any_plays(self):
-        """Clips are not streamed: each downloads in full, once, with progress on the block; nothing plays, zooms or
-        switches until every clip is in. Then the grid and the viewer play the local copies, and switching reads
-        nothing more over the network."""
+        """Clips are not streamed: each downloads in full, one read at a time, with progress on the block; nothing plays,
+        zooms or switches until every clip is in. Then the grid and the viewer play the local copies, and switching
+        reads nothing more over the network."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -2936,39 +3031,196 @@ class CoreFlowTests(unittest.TestCase):
                 page.on("pageerror", lambda error: errors.append(str(error)))
 
                 def hold(route, request):
-                    # Every read of a clip is kept back until the test lets them through, like a slow link.
-                    reads.append((request.url, request.headers.get("range")))
+                    # Every read of a clip is kept back until the test lets it through, like a slow link.
+                    reads.append((request.url.split("/media/")[1].split("?")[0], request.headers.get("range")))
                     held.append(route)
                 page.route("**/research-state/request/ev-dl/media/*", hold)
                 page.goto(f"{base}/dash/research?kind=research&id=sr-dl")
                 block = "#cmp-ev-dl"
                 page.wait_for_selector(f"{block} .compare-load:not([hidden])")
-                for _ in range(100):
-                    if len(held) == 2:
-                        break
-                    page.wait_for_timeout(50)
+
+                def next_read():
+                    for _ in range(100):
+                        if held:
+                            return held.pop()
+                        page.wait_for_timeout(50)
+                    self.fail(f"no read after {reads}")
+                first = next_read()
                 self.assertIn("正在下载 2 段视频", page.text_content(f"{block} .compare-load"))
                 self.assertEqual(page.eval_on_selector_all(f"{block} video", "e => e.map(v => v.getAttribute('src'))"), [None, None],
                                  "no clip plays from the network")
                 self.assertEqual(page.eval_on_selector_all(f"{block} .compare-zoom", "e => e.map(b => b.disabled)"), [True, True])
                 self.assertTrue(page.is_disabled(f"{block} .compare-together"))
-                for route in held:
+                order = [("A", "bytes=0-0"), ("B", "bytes=0-0"), ("A", "bytes=1-"), ("B", "bytes=1-")]
+                route = first
+                for i in range(len(order)):
+                    page.wait_for_timeout(100)
+                    self.assertEqual(reads, order[:i + 1], "with one read out, no other is asked for")
                     route.continue_()
+                    if i + 1 < len(order):
+                        route = next_read()
                 page.wait_for_function(f"() => [...document.querySelectorAll('{block} video')].every(v => v.src.startsWith('blob:') && v.readyState >= 2)")
                 self.assertEqual(page.text_content(f"{block} .compare-load span"), "已下载 2 段视频 · 0.0 MB", "the line stays, so nothing below moves")
                 self.assertTrue(page.is_hidden(f"{block} .compare-load progress"))
                 self.assertTrue(page.is_enabled(f"{block} .compare-together"))
-                self.assertEqual(sorted(url.split("/media/")[1].split("?")[0] for url, _ in reads), ["A", "B"], "each clip is read once")
-                self.assertEqual([r for _, r in reads], [None, None], "in full, not streamed in ranges")
+                self.assertEqual(reads, order, "each clip's first byte, then the rest of each in turn")
                 page.click(f'{block} .compare-item[data-slot="A"] .compare-zoom')
                 viewer = "dialog.compare-viewer[open]"
                 page.wait_for_function(f"() => [...document.querySelectorAll('{viewer} video')].every(v => v.src.startsWith('blob:') && v.readyState >= 2)")
                 page.keyboard.press("ArrowRight")
                 page.wait_for_function(f"() => document.querySelector('{viewer} video.shown').dataset.slot === 'B'")
-                self.assertEqual(len(reads), 2, "switching reads nothing more")
+                self.assertEqual(len(reads), 4, "switching reads nothing more")
                 self.assertEqual(errors, [])
             finally:
                 browser.close()
+
+    def test_a_download_the_link_cuts_carries_on_from_the_next_byte_by_itself(self):
+        """Files come one at a time. A read cut off halfway, a 502, a 530 and a network error are each picked up a few
+        seconds later with no click: the resume asks only for the bytes still missing, the line says what is happening,
+        and the local copies are byte for byte the files, pictures as well as videos."""
+        files, path = self._large_comparison("ev-cut", {"A": "video", "B": "video", "C": "image", "D": "image"})
+        cut, cuts = 1 << 20, {"A": 1 << 20}
+        total = f"{sum(map(len, files.values())) / 1048576:.1f}"
+        block, line = "#cmp-ev-cut", "#cmp-ev-cut .compare-load span"
+        reads, held, versions, errors = [], [], [], []
+        faults = {"B": [502], "C": [530], "D": ["reset", "whole file"]}
+
+        def relay(route, request):
+            slot, asked = request.url.split("/media/")[1].split("?")[0], request.headers.get("range")
+            reads.append((slot, asked))
+            fault = faults[slot].pop(0) if asked != "bytes=0-0" and faults.get(slot) else None
+            if asked == f"bytes={cut + 1}-":
+                versions.append(request.headers.get("if-range"))
+                held.append(route)
+            elif fault == "reset":
+                route.abort("connectionreset")
+            elif fault == "whole file":   # a resume answered with the whole file must not be stitched onto what is held
+                route.continue_(headers={k: v for k, v in request.all_headers().items() if k not in ("range", "if-range")})
+            elif fault:
+                route.fulfill(status=fault, body="")
+            else:
+                route.continue_()
+        with self._reads_ending_early(cuts), self._browser_page() as page:
+            page.add_init_script("""{ const create = URL.createObjectURL; window.blobs = {}; URL.createObjectURL = blob => { const url = create.call(URL, blob); window.blobs[url] = blob; return url; }; }""")
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.route("**/research-state/request/ev-cut/media/*", relay)
+            page.goto(f"http://%s:%d{path}" % self.address)
+            for _ in range(200):
+                if held:
+                    break
+                page.wait_for_timeout(50)
+            first = [(slot, "bytes=0-0") for slot in "ABCD"]
+            self.assertEqual(reads, [*first, ("A", "bytes=1-"), ("A", f"bytes={cut + 1}-")], "with one file out, no other is asked for")
+            page.wait_for_timeout(300)
+            self.assertEqual(len(reads), 6, "with one file out, no other is asked for")
+            self.assertTrue(versions[0], "a resume says which version of the file it continues")
+            self.assertEqual(page.text_content(line), f"连接断了，几秒后接着下 · 1.0 / {total} MB")
+            self.assertEqual(page.text_content(f'{block} .compare-item[data-slot="A"] figcaption span'), "1.0 / 3.0 MB")
+            self.assertTrue(page.is_visible(f"{block} .compare-load progress"))
+            self.assertTrue(page.is_hidden(f"{block} .compare-load button:has-text('重试')"))
+            self.assertEqual(page.eval_on_selector_all(f"{block} video", "e => e.map(v => v.getAttribute('src'))"), [None, None])
+            held[0].continue_()
+            page.wait_for_function(f"() => [...document.querySelectorAll('{block} video')].every(v => v.src.startsWith('blob:') && v.readyState >= 2)"
+                                   f" && [...document.querySelectorAll('{block} img')].every(i => i.complete && i.naturalWidth === 64)", timeout=30000)
+            self.assertEqual(reads, [*first, ("A", "bytes=1-"), ("A", f"bytes={cut + 1}-"), ("B", "bytes=1-"), ("B", "bytes=1-"),
+                                     ("C", "bytes=1-"), ("C", "bytes=1-"), ("D", "bytes=1-"), ("D", "bytes=1-")])
+            copies = page.evaluate(f"""async () => Object.fromEntries(await Promise.all([...document.querySelectorAll('{block} .compare-item')].map(async item => {{
+                const blob = window.blobs[item.querySelector('video, img').src], hash = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
+                return [item.dataset.slot, [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('')];
+            }})))""")
+            self.assertEqual(copies, {slot: hashlib.sha256(data).hexdigest() for slot, data in files.items()})
+            self.assertEqual(page.text_content(line), f"已下载 2 段视频和 2 张图片 · {total} MB")
+            self.assertTrue(page.is_hidden(f"{block} .compare-load progress"))
+            self.assertEqual(page.eval_on_selector_all(f"{block} .compare-zoom", "e => e.map(b => b.disabled)"), [False] * 4)
+            self.assertEqual(errors, [])
+
+    def test_a_file_the_node_refuses_says_so_the_others_still_come_and_retry_resumes_it(self):
+        """A refusal waiting will not cure is not called a broken link: the line names the file and the reason, the next
+        file still comes, and 重试 asks only for the bytes still missing."""
+        files, path = self._large_comparison("ev-no", {"A": "image", "B": "image"})
+        cut, cuts = 1 << 20, {"A": 1 << 20}
+        block, line = "#cmp-ev-no", "#cmp-ev-no .compare-load span"
+        reads, refuse = [], [404]
+
+        def relay(route, request):
+            asked = request.headers.get("range")
+            reads.append((request.url.split("/media/")[1].split("?")[0], asked))
+            if asked == f"bytes={cut + 1}-" and refuse:
+                route.fulfill(status=refuse.pop(), body="")
+            else:
+                route.continue_()
+        with self._reads_ending_early(cuts), self._browser_page() as page:
+            page.route("**/research-state/request/ev-no/media/*", relay)
+            page.goto(f"http://%s:%d{path}" % self.address)
+            page.wait_for_function(f"() => document.querySelector('{line}')?.textContent === 'A 没下载下来：HTTP 404'", timeout=20000)
+            page.wait_for_function(f"() => document.querySelector('{block} .compare-item[data-slot=\"B\"] img').naturalWidth === 64")
+            self.assertEqual(page.eval_on_selector(f'{block} .compare-item[data-slot="A"] img', "i => i.getAttribute('src')"), None)
+            self.assertEqual(page.eval_on_selector_all(f"{block} .compare-zoom", "e => e.map(b => b.disabled)"), [True, True])
+            page.click(f"{block} .compare-load button:has-text('重试')")
+            page.wait_for_function(f"() => document.querySelector('{block} .compare-item[data-slot=\"A\"] img').naturalWidth === 64")
+            self.assertEqual(reads, [("A", "bytes=0-0"), ("B", "bytes=0-0"), ("A", "bytes=1-"), ("A", f"bytes={cut + 1}-"), ("B", "bytes=1-"), ("A", f"bytes={cut + 1}-")])
+            self.assertEqual(page.text_content(line), f"已下载 2 张图片 · {sum(map(len, files.values())) / 1048576:.1f} MB")
+            self.assertTrue(page.is_hidden(f"{block} .compare-load button:has-text('重试')"))
+
+    def test_a_read_that_goes_quiet_is_given_up_and_picked_up_again(self):
+        """A dead link need not raise anything: a read with no bytes for half a minute counts as cut off."""
+        _, path = self._large_comparison("ev-quiet", {"A": "image", "B": "image"})
+        block, line = "#cmp-ev-quiet", "#cmp-ev-quiet .compare-load span"
+        reads, held = [], []
+
+        def relay(route, request):
+            asked = request.headers.get("range")
+            reads.append((request.url.split("/media/")[1].split("?")[0], asked))
+            if asked == "bytes=1-" and not held:
+                held.append(route)   # never answered
+            else:
+                route.continue_()
+        with self._browser_page() as page:
+            page.clock.install()
+            page.route("**/research-state/request/ev-quiet/media/*", relay)
+            page.goto(f"http://%s:%d{path}" % self.address)
+            for _ in range(200):
+                if held:
+                    break
+                page.wait_for_timeout(50)
+            self.assertTrue(held)
+            page.clock.fast_forward(29000)
+            self.assertEqual(reads, [("A", "bytes=0-0"), ("B", "bytes=0-0"), ("A", "bytes=1-")], "not before it has been quiet for 30 seconds")
+            page.clock.fast_forward(2000)
+            page.wait_for_function(f"() => document.querySelector('{line}').textContent.startsWith('连接断了，几秒后接着下')")
+            page.wait_for_function(f"() => [...document.querySelectorAll('{block} img')].every(i => i.complete && i.naturalWidth === 64)", timeout=20000)
+            self.assertEqual(reads, [("A", "bytes=0-0"), ("B", "bytes=0-0"), ("A", "bytes=1-"), ("A", "bytes=1-"), ("B", "bytes=1-")])
+            page.unroute_all(behavior="ignoreErrors")   # the read never answered
+
+    def test_a_page_painted_again_during_a_download_keeps_it(self):
+        """A repaint attaches the new block to the download already running: nothing is read again."""
+        files, path = self._large_comparison("ev-again", {"A": "image", "B": "image"})
+        block, line = "#cmp-ev-again", "#cmp-ev-again .compare-load span"
+        reads, held = [], []
+
+        def relay(route, request):
+            asked = request.headers.get("range")
+            reads.append((request.url.split("/media/")[1].split("?")[0], asked))
+            if asked == "bytes=1-" and not held:
+                held.append(route)
+            else:
+                route.continue_()
+        with self._browser_page() as page:
+            page.route("**/research-state/request/ev-again/media/*", relay)
+            page.goto(f"http://%s:%d{path}" % self.address)
+            for _ in range(200):
+                if held:
+                    break
+                page.wait_for_timeout(50)
+            self.assertTrue(held)
+            page.evaluate(f"() => {{ document.querySelector('{block}').dataset.painted = 'before'; }}")
+            page.click("#refresh-all")
+            page.wait_for_selector(f"{block}:not([data-painted])")
+            self.assertTrue(page.text_content(line).startswith("正在下载 2 张图片"), page.text_content(line))
+            held[0].continue_()
+            page.wait_for_function(f"() => [...document.querySelectorAll('{block} img')].every(i => i.complete && i.naturalWidth === 64)", timeout=20000)
+            self.assertEqual(reads, [("A", "bytes=0-0"), ("B", "bytes=0-0"), ("A", "bytes=1-"), ("B", "bytes=1-")])
+            self.assertEqual(page.text_content(line), f"已下载 2 张图片 · {sum(map(len, files.values())) / 1048576:.1f} MB")
 
     def test_a_ranking_is_answered_in_the_order_the_letters_are_clicked(self):
         """A comparison that asks for every item is a ranking: letters are clicked best to worst (a ranked letter takes

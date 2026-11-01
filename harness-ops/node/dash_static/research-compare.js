@@ -70,112 +70,161 @@
     return items.map((item, i) => [item, i]).sort(([a, i], [b, j]) => (step.get(a.research_id) ?? 0) - (step.get(b.research_id) ?? 0) || i - j).map(([item]) => item);
   }
 
-  // Videos and type probes wait until the block is near the screen (the task page's reader when it has one).
+  // A block's files wait until it is near the screen (the task page's reader when it has one).
   let near = (node, run) => run();
-  // A slot whose kind the record does not state is asked for its type with a one-byte read before an element is chosen.
   function media(record, item, state, done, clips) {
     const path = `/dash/api/research-state/request/${encodeURIComponent(record.id)}/media/${item.slot}?revision=${record.revision}`;
     const holder = document.createElement('div'), size = document.createElement('span');
-    holder.className = 'compare-media'; state[item.slot] = 'not_loaded';
-    const kind = item.kind ? Promise.resolve(item.kind) : new Promise(resolve => near(holder, () => resolve(
-      HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', headers: {Range: 'bytes=0-0'}})
-        .then(r => { r.body?.cancel(); return /^video\//.test(r.headers.get('Content-Type') || '') ? 'video' : 'image'; }, () => 'image'))));
+    holder.className = 'compare-media waiting'; state[item.slot] = 'not_loaded';
+    const file = fileFor(`${record.id}@${record.revision}/${item.slot}`, path);
+    const entry = clips.add({slot: item.slot, file, size, kind: item.kind});
+    // A slot whose kind the record does not state takes it from the file's first read.
+    const kind = item.kind ? Promise.resolve(item.kind) : new Promise(resolve => near(holder, () => {
+      const seen = () => { if (!file.total && !file.error) return; file.watch.delete(seen); resolve(/^video\//.test(file.type) ? 'video' : 'image'); };
+      file.watch.add(seen); ask(file, false); seen();
+    }));
     const ready = kind.then(async k => {
-      const node = element(k === 'video' ? null : HGTarget.url(path), k, item, state, size);
-      if (k === 'video') holder.classList.add('waiting');
+      entry.kind = k;
+      const node = element(k, item, state, size);
       holder.append(node); done();
-      if (k !== 'video') return {slot: item.slot, url: HGTarget.url(path), kind: k};
-      const copy = await clips.add({key: `${record.id}@${record.revision}/${item.slot}`, path, slot: item.slot, size});
-      node.src = copy.url; node.controls = true; holder.classList.remove('waiting'); done();
+      const copy = await entry.copy;
+      size.textContent = `${mb(copy.bytes)} MB`; node.src = copy.url;
+      if (k === 'video') node.controls = true;
+      holder.classList.remove('waiting'); done();
       return {slot: item.slot, url: copy.url, kind: k};
     });
     return {holder, size, ready, kind};
   }
-  function element(url, kind, item, state, size) {
+  // The element shows the local copy; its source is set when the copy is in.
+  function element(kind, item, state, size) {
     const node = document.createElement(kind === 'video' ? 'video' : 'img');
     const shown = () => {
       state[item.slot] = 'decoded';
       const w = node.videoWidth || node.naturalWidth, h = node.videoHeight || node.naturalHeight;
       size.textContent = [w && h ? `${w}×${h}` : '', Number.isFinite(node.duration) ? `${node.duration.toFixed(1)} 秒` : ''].filter(Boolean).join(' · ');
     };
-    node.onerror = () => { state[item.slot] = 'failed'; size.textContent = '读取失败'; };
-    if (node.tagName === 'VIDEO') {   // its source is the local copy, set once every clip of the block is in
+    node.onerror = () => { state[item.slot] = 'failed'; size.textContent = '下载完了，但打不开'; };
+    if (node.tagName === 'VIDEO') {
       Object.assign(node, {controls: false, preload: 'auto', playsInline: true, muted: true});
       node.onloadstart = () => { if (state[item.slot] === 'not_loaded') state[item.slot] = 'unknown'; };
       node.onloadedmetadata = node.onloadeddata = shown;
       return node;
     }
-    node.alt = item.slot; node.decoding = 'async'; node.loading = 'lazy';
-    node.onload = () => node.decode().then(shown, node.onerror);
-    node.src = url;
+    node.decoding = 'async';
+    node.onload = () => { node.alt = item.slot; node.decode().then(shown, node.onerror); };
     return node;
   }
 
-  // A video comparison plays from local copies: every clip is downloaded in full first, with progress, and only then
-  // can any be played, zoomed or switched. The grid and the viewer share the copies, so a switch never waits on the
-  // network and every clip shows the same moment. Nothing is re-encoded. A copy is kept while its request is shown.
-  const copies = new Map();   // `${request}@${revision}/${slot}` → {url, bytes}
+  // Every file of a comparison comes through here, one read at a time across the page, and the grid and the viewer show
+  // the local copies: a switch never waits on the network and every clip shows the same moment. Nothing is re-encoded.
+  // What has arrived stays: when the link cuts a read off or refuses it, the next read a few seconds later asks for the
+  // bytes still missing, with nobody clicking. A file's first read is its first byte, which gives the size and type of
+  // everything asked for before the long reads begin. A file is kept while its request is shown.
+  const QUIET = 30000;   // a read with no bytes for this long has been cut off, whatever the browser thinks
+  const files = new Map(), queue = new Set();   // `${request}@${revision}/${slot}` → what is held of that file
+  let reading = null;
+  const mb = n => (n / 1048576).toFixed(1);
+  const tell = file => file.watch.forEach(see => see());
+  const needed = file => !file.url && !file.gone && !file.error && (file.whole || !file.total);
+  const cutOff = error => error instanceof TypeError || error.name === 'AbortError' || [408, 429, 502, 503, 504].includes(error.status) || error.status >= 520 && error.status <= 530;
+  const rest = (file, seconds) => new Promise(done => { const timer = setTimeout(done, seconds * 1000); file.stop = () => { clearTimeout(timer); done(); }; });
+  function fileFor(key, path) {
+    if (!files.has(key)) files.set(key, {path, parts: [], bytes: 0, total: 0, type: '', tag: '', whole: false, down: false, error: null, url: null, gone: false, stop: null, watch: new Set()});
+    return files.get(key);
+  }
   function keep(requests) {
     const shown = new Set(requests.map(r => `${r.id}@${r.revision}/`));
-    for (const [key, copy] of copies) if (!shown.has(key.slice(0, key.lastIndexOf('/') + 1))) { URL.revokeObjectURL(copy.url); copies.delete(key); }
+    for (const [key, file] of files) if (!shown.has(key.slice(0, key.lastIndexOf('/') + 1))) {
+      file.gone = true; file.stop?.(); queue.delete(file); files.delete(key);
+      if (file.url) URL.revokeObjectURL(file.url);
+    }
   }
-  async function download(path, progress) {
-    const response = await HGTarget.fetch(path, {credentials: 'same-origin'});
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const total = Number(response.headers.get('Content-Length')) || 0, reader = response.body.getReader(), parts = [];
-    let bytes = 0; progress(0, total);
-    for (;;) { const {done, value} = await reader.read(); if (done) break; parts.push(value); bytes += value.length; progress(bytes, total); }
-    return {url: URL.createObjectURL(new Blob(parts, {type: response.headers.get('Content-Type') || ''})), bytes};
+  // Asks for a file's first read, or for all of it.
+  function ask(file, whole) {
+    file.whole ||= whole; file.error = null;
+    if (needed(file)) queue.add(file);
+    pump(); tell(file);
   }
-  const mb = n => (n / 1048576).toFixed(1);
-  // One block's clips: once it knows how many there are (`expect`), they download together (at once, or from `start()`),
-  // the line shows the total and then what is held locally, and every clip is handed its copy only when all are in.
-  // A failed clip is retried from the line. `all` settles when the copies are in.
+  async function pump() {
+    if (reading) return;
+    const asked = [...queue], file = reading = asked.find(f => !f.total) || asked[0] || null;
+    if (!file) return;
+    await carryOn(file);
+    if (!needed(file)) queue.delete(file);
+    reading = null; pump();
+  }
+  // Reads until the file is whole, its size is what was asked for, or the node refuses it for a reason waiting will not cure.
+  async function carryOn(file) {
+    tell(file);
+    for (let pause = 2; ;) {
+      const sizing = !file.total, held = file.bytes;
+      let failed = null;
+      try { await read(file); } catch (error) { failed = error; }
+      if (file.gone) return;
+      if (failed && !cutOff(failed)) { file.error = failed; file.down = false; return tell(file); }
+      if (file.total && file.bytes >= file.total) {
+        file.url = URL.createObjectURL(new Blob(file.parts, {type: file.type})); file.parts = [];
+        return tell(file);
+      }
+      if (!failed && sizing && file.total) return;
+      if (file.bytes > held) { pause = 2; if (!failed) continue; }
+      file.down = true; tell(file);
+      await rest(file, pause); pause = Math.min(15, pause * 2);
+      if (file.gone) return;
+    }
+  }
+  async function read(file) {
+    const control = new AbortController();
+    let quiet;
+    const alive = () => { clearTimeout(quiet); quiet = setTimeout(() => control.abort(), QUIET); };
+    file.stop = () => control.abort(); alive();
+    try {
+      const headers = {Range: file.total ? `bytes=${file.bytes}-` : 'bytes=0-0'};
+      if (file.tag) headers['If-Range'] = file.tag;
+      const response = await HGTarget.fetch(file.path, {credentials: 'same-origin', cache: 'no-store', signal: control.signal, headers});
+      if (!response.ok) { response.body?.cancel(); throw Object.assign(new Error(`HTTP ${response.status}`), {status: response.status}); }
+      if (response.status !== 206) { file.parts = []; file.bytes = 0; }   // the range was not honoured or the file changed: all of it follows
+      file.total = Number(response.headers.get('X-Total-Size')); file.type = response.headers.get('Content-Type') || ''; file.tag = response.headers.get('ETag') || '';
+      file.down = false; tell(file);
+      const reader = response.body.getReader();
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) return;
+        alive(); file.parts.push(value); file.bytes += value.length; tell(file);
+      }
+    } finally { clearTimeout(quiet); }
+  }
+  // One block's files on one line, which keeps its place so nothing below moves when the download ends. Pictures show as
+  // each arrives; videos get their copies together, once every video of the block is in. A file the node refused is
+  // retried from the line.
   function loader(U, onDone) {
     const line = U.el('div', null, 'compare-load'), bar = U.el('progress'), text = U.el('span'), go = U.el('button', '下载视频后播放', 'ghost'), again = U.el('button', '重试', 'ghost');
-    go.type = again.type = 'button'; line.hidden = true; line.append(bar, text, go, again);
-    const list = [];
-    let expected = null, started = false, settle;
-    const all = new Promise(done => { settle = done; });
-    const complete = () => expected !== null && list.length === expected && list.every(c => c.copy);
+    go.type = again.type = 'button'; line.append(bar, text, go, again);
+    const list = [], isVideo = c => c.kind === 'video';
+    const what = items => !items.every(c => c.kind) ? `${items.length} 个文件`
+      : [[items.filter(isVideo).length, '段视频'], [items.filter(c => !isVideo(c)).length, '张图片']].filter(([n]) => n).map(([n, unit]) => `${n} ${unit}`).join('和 ');
+    let finished = false;
     const paint = () => {
-      const got = list.reduce((a, c) => a + c.got, 0), total = list.every(c => c.total) ? list.reduce((a, c) => a + c.total, 0) : 0, failed = list.filter(c => c.error);
-      // The line keeps its place once shown, so nothing below it moves when the download ends.
-      line.hidden = !expected; bar.hidden = !started || !!failed.length || complete(); go.hidden = started; again.hidden = !failed.length;
+      const wanted = list.filter(c => c.file.whole), failed = list.filter(c => c.file.error), left = wanted.filter(c => !c.file.url && !c.file.error);
+      const got = wanted.reduce((a, c) => a + c.file.bytes, 0), total = wanted.every(c => c.file.total) ? wanted.reduce((a, c) => a + c.file.total, 0) : 0;
+      const amount = `${mb(got)}${total ? ` / ${mb(total)}` : ''} MB`;
+      bar.hidden = !left.length || !!failed.length; go.hidden = !list.some(c => isVideo(c) && !c.file.whole); again.hidden = !failed.length;
       bar.max = total || 1; bar.value = total ? got : 0;
-      text.textContent = !started ? `${expected} 段视频，下载到本地后再播放和切换`
-        : complete() ? `已下载 ${expected} 段视频 · ${mb(got)} MB`
-        : failed.length ? `第 ${failed.map(c => c.slot).join('、')} 段没下载下来：${failed[0].error}`
-        : `正在下载 ${expected} 段视频 · ${mb(got)}${total ? ` / ${mb(total)}` : ''} MB`;
+      text.textContent = list.every(c => c.file.url) ? `已下载 ${what(list)} · ${mb(got)} MB`
+        : failed.length ? `${failed.map(c => c.slot).join('、')} 没下载下来：${U.failure(failed[0].file.error)}`
+        : list.some(c => c.file.down) ? `连接断了，几秒后接着下${total ? ` · ${amount}` : ''}`
+        : !left.length ? `${what(list.filter(c => !c.file.url))}，下载到本地后再播放和切换`
+        : reading && !list.some(c => c.file === reading) ? `排队等前面的下完 · ${what(left)}`
+        : `正在下载 ${what(wanted)} · ${amount}`;
+      for (const {file, size} of list) if (!file.url) size.textContent = file.bytes > 1 ? `${mb(file.bytes)} / ${mb(file.total)} MB` : file.total ? `${mb(file.total)} MB` : '';
+      if (!list.every(c => c.kind)) return;
+      for (const c of list) if (c.give && c.file.url && (!isVideo(c) || list.filter(isVideo).every(v => v.file.url))) { c.give(c.file); c.give = null; }
+      if (!finished && list.every(c => c.file.url)) { finished = true; onDone(); }
     };
-    const finish = () => {
-      paint();
-      if (!complete()) return;
-      list.forEach(c => c.resolve(c.copy)); settle(); onDone();
-    };
-    const fetchOne = c => {
-      c.error = null; c.got = 0;
-      download(c.path, (got, total) => { c.got = got; c.total = total; c.size.textContent = total ? `${mb(got)} / ${mb(total)} MB` : `${mb(got)} MB`; paint(); })
-        .then(copy => { copies.set(c.key, copy); c.copy = copy; c.size.textContent = `${mb(copy.bytes)} MB`; finish(); },
-              error => { c.error = U.failure(error); paint(); });
-    };
-    const start = () => {
-      if (started || !expected) return;
-      started = true; list.filter(c => !c.copy).forEach(fetchOne); finish();
-    };
-    go.onclick = start; again.onclick = () => list.filter(c => c.error).forEach(fetchOne);
-    return {line, start, all,
-      // How many clips the block has; a block shown before still holds its copies and needs no download.
-      expect(n) { expected = n; if (n && list.length === n && list.every(c => c.copy)) started = true; finish(); },
-      add(c) {
-        return new Promise(resolve => {
-          const copy = copies.get(c.key), entry = {...c, resolve, got: copy?.bytes || 0, total: copy?.bytes || 0, copy, error: null};
-          list.push(entry);
-          if (copy) c.size.textContent = `${mb(copy.bytes)} MB`; else if (started) fetchOne(entry);
-          finish();
-        });
-      },
-      get started() { return started; }};
+    const start = all => list.forEach(c => { if (all || !isVideo(c)) ask(c.file, true); });
+    go.onclick = () => start(true); again.onclick = () => list.filter(c => c.file.error).forEach(c => ask(c.file, true));
+    return {line, start, paint,
+      add(c) { c.copy = new Promise(give => { c.give = give; }); c.file.watch.add(paint); list.push(c); return c; }};
   }
 
   // The in-page viewer: every slot stacked in one box at the same size, so switching (arrow keys, A–D or the letter
@@ -279,24 +328,23 @@
     };
     grid.addEventListener('play', sync, true); grid.addEventListener('pause', sync, true);
     const placed = () => { together.hidden = players().length < 2; together.disabled = players().filter(p => p.src).length < 2; };
-    // Videos wait for their local copies: no play, zoom or switch before every clip of the block is in.
+    // No play, zoom or switch before every file of the block is in.
     const clips = loader(U, () => grid.querySelectorAll('.compare-zoom').forEach(b => { b.disabled = false; }));
     const ready = [], kinds = [];
     // A picture (or a slot's ⤢) opens the viewer on that slot, inside this page.
-    const zoom = async slot => { clips.start(); viewer(article, await Promise.all(ready), slot, U); };
+    const zoom = async slot => { clips.start(true); viewer(article, await Promise.all(ready), slot, U); };
     for (const item of s.slots) {
       const card = U.el('figure', null, 'compare-item'), cap = U.el('figcaption'), m = media(record, item, state, placed, clips), open = U.el('button', '⤢', 'compare-zoom');
-      card.dataset.slot = item.slot; open.type = 'button'; open.title = '放大对比'; open.setAttribute('aria-label', `放大对比 ${item.slot}`); open.onclick = () => zoom(item.slot);
+      card.dataset.slot = item.slot; open.type = 'button'; open.disabled = true; open.title = '放大对比'; open.setAttribute('aria-label', `放大对比 ${item.slot}`); open.onclick = () => zoom(item.slot);
       cap.append(U.el('b', item.slot, 'compare-letter'), m.size, open);
       card.append(cap, m.holder); grid.append(card); cards.set(item.slot, card); ready.push(m.ready); kinds.push(m.kind);
     }
     const counted = found => {
       const n = found.filter(k => k === 'video').length;
       together.hidden = n < 2; together.disabled = true;   // in place from the start, usable once the copies are in
-      if (n) grid.querySelectorAll('.compare-zoom').forEach(b => { b.disabled = true; });
-      clips.expect(n);
-      // Waiting to be judged, the clips download as soon as the block is near; otherwise from the line's button.
-      if (n && !answer && record.data.state === 'open') near(grid, clips.start);
+      clips.paint();
+      // Near the screen pictures download, and clips too when waiting to be judged; otherwise clips wait for the line's button.
+      near(grid, () => clips.start(!answer && record.data.state === 'open'));
     };
     // Kinds the record states are counted at once, so the line holds its place before the page lands anywhere.
     if (s.slots.every(item => item.kind)) counted(s.slots.map(item => item.kind)); else Promise.all(kinds).then(counted);
