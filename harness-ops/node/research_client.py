@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import uuid
 from cli_time import utc
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION, TASK_STATE_HELP
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION, TASK_STATE_HELP, REQUEST_CLOSE_HELP
 
 
 HELP = """用法:
@@ -750,7 +750,20 @@ def _task(client, args):
                 "ask": args.ask, "to": args.to, "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]
                 + [_attachment(client, path) for path in args.attach or []]}
         return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
-    current = client.request("GET", f"/research-state/research/{args.id}")
+    try:
+        current = client.request("GET", f"/research-state/research/{args.id}")
+    except RequestError as error:
+        if args.command != "close" or error.status != 404 or error.code != "research_not_found":
+            raise
+        try:
+            request = client.request("GET", f"/research-state/request/{args.id}")
+        except RequestError:
+            raise error from None
+        if (request.get("kind") != "request" or request.get("id") != args.id
+                or type(request.get("revision")) is not int):
+            raise error
+        hint = REQUEST_CLOSE_HELP.replace("<ID>", args.id).replace("--revision N", f"--revision {request['revision']}")
+        raise ValueError("这个 ID 是盲评请求，不能用 research close；" + hint) from None
     data, owner = current["data"], current["data"].get("owner")
     if args.command == "claim":
         me = client.request("GET", "/whoami").get("agent")

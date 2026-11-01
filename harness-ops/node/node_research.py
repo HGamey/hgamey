@@ -261,7 +261,10 @@ def normalize(kind, data):
         deliverable = value.setdefault("deliverable", None)
         if deliverable is not None:
             object_fields(deliverable, {"summary", "artifacts", "applies_to"})
-            deliverable["summary"] = text(deliverable.get("summary"), 16384, True)
+            try:
+                deliverable["summary"] = text(deliverable.get("summary"), 16384, True)
+            except ValueError as error:
+                raise ValueError(f"research data.deliverable.summary: {error}") from None
             deliverable["artifacts"] = refs(deliverable.get("artifacts", []))
             if not deliverable["artifacts"]:
                 raise ValueError("a deliverable names at least one artifact (job, result or external locator)")
@@ -353,7 +356,7 @@ def normalize(kind, data):
         unique(context["directions"], "id")
         value["close_reason"] = text(value.get("close_reason"), 16384, value["state"] == "closed")
         if value["state"] == "open" and value["close_reason"] is not None:
-            raise ValueError("an open request must have null close_reason")
+            raise ValueError('an open request must have null close_reason；关闭盲评请求要在 FILE 同时写 state=closed 和 close_reason：{"state":"closed","close_reason":"…"}')
         due = value.setdefault("due_at", None)
         if due is not None and (type(due) not in (int, float) or not math.isfinite(due) or due < 0):
             raise ValueError("due_at must be a finite timestamp or null")

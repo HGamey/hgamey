@@ -552,6 +552,55 @@ class CoreFlowTests(unittest.TestCase):
                          ("改后的标题", "delivered", delivered["data"]["objective"], delivered["data"]["deliverable"]))
         self.assertIn("update FILE 只写要改的字段", self.pf(ADMIN, "research", "--help")[1])
 
+    def test_closing_a_comparison_by_research_command_gives_request_update_syntax(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-close-guide", self.write(
+            "create-close-guide", {"title": "关闭旧盲评", "objective": "指出请求关闭命令"}))[0], 201)
+        output = Path(self.jobs.path(self.jid, "out"))
+        output.mkdir(parents=True, exist_ok=True)
+        for name in ("a", "b"):
+            (output / (name + ".png")).write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-close-guide",
+            "title": "关闭指引素材", "sources": [
+                {"name": name, "kind": "job_output", "job_id": self.jid, "path": name + ".png"} for name in ("a", "b")]})[0], 201)
+        refs = [{"kind": "result_source", "node_id": self.node_id, "result_id": "r-close-guide", "source_name": name}
+                for name in ("a", "b")]
+        request = {"research_id": "sr-close-guide", "type": "evaluation", "title": "旧盲评", "need": "排序", "why": "fixture",
+                   "context": {"research_revision": 1, "directions": []}, "evidence_refs": refs,
+                   "evaluation": {"schema": "phonefarm/compare@1", "pick": 2,
+                                  "items": [{"ref": 0, "media_kind": "image"}, {"ref": 1, "media_kind": "image"}]}}
+        created = self.web("POST", "/research-state/request/ev-close-guide", self.write("create-close-guide-request", request))
+        self.assertEqual(created[0], 201, created)
+        code, _, err = self.pf(ADMIN, "research", "close", "ev-close-guide", "--reason", "新版替代")
+        self.assertNotEqual(code, 0, err)
+        self.assertIn("research update request ev-close-guide FILE", err)
+        self.assertIn('{"state":"closed","close_reason":"…"}', err)
+
+    def test_request_close_reason_error_says_state_must_change_too(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-close-reason", self.write(
+            "create-close-reason", {"title": "请求关闭字段", "objective": "同时写状态和原因"}))[0], 201)
+        request = {"research_id": "sr-close-reason", "type": "guidance", "title": "旧请求", "need": "选择", "why": "fixture",
+                   "context": {"research_revision": 1, "directions": []}}
+        self.assertEqual(self.web("POST", "/research-state/request/ev-close-reason",
+                                  self.write("create-close-reason-request", request))[0], 201)
+        source = self.tmp / "close-reason-only.json"
+        source.write_text(json.dumps({"close_reason": "新版替代"}))
+        code, _, err = self.pf(ADMIN, "research", "update", "request", "ev-close-reason", str(source),
+                               "--revision", "1", "--reason", "关闭旧请求")
+        self.assertNotEqual(code, 0, err)
+        self.assertIn("state=closed", err)
+        self.assertIn("close_reason", err)
+
+    def test_update_error_names_the_missing_deliverable_summary(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-deliverable-field", self.write(
+            "create-deliverable-field", {"title": "交付字段定位", "objective": "指出缺失的总结字段"}))[0], 201)
+        source = self.tmp / "artifacts-only.json"
+        source.write_text(json.dumps({"deliverable": {"artifacts": [
+            {"kind": "job", "job_id": self.jid, "node_id": self.node_id}]}}))
+        code, _, err = self.pf(ADMIN, "research", "update", "research", "sr-deliverable-field", str(source),
+                               "--revision", "1", "--reason", "只补产物")
+        self.assertNotEqual(code, 0, err)
+        self.assertIn("deliverable.summary", err)
+
     def test_changed_loop_step_is_marked_new_once_per_agent_in_json_and_text(self):
         tokens = {}
         for name in ("agent-a", "agent-b"):
@@ -826,6 +875,7 @@ class CoreFlowTests(unittest.TestCase):
         token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
         value = self.duties(token)
         self.assertIn(COMPARE_DUTY, value["loop"])
+        self.assertIn("要换掉旧的盲评", COMPARE_HELP)
         self.assertIn(COMPARE_HELP, self.pf(token, "research", "--help")[1])
         self.assertIn(COMPARE_HELP, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
 
