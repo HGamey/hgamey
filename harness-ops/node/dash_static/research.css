@@ -386,3 +386,9 @@
 .research-view .compare { scroll-margin-top: 72px; }
 .research-view .compare.compare-target { outline: 2px solid var(--acc); outline-offset: 8px; border-radius: 6px; transition: outline-color 1s; }
 .research-view .compare-status { color: var(--muted); }
+/* Video comparisons download every clip before any plays: the line shows the total, each slot its own share. */
+.research-view .compare-load { display: flex; align-items: center; gap: var(--sp-2); min-height: 32px; margin: var(--sp-2) 0; font-size: var(--fs-sm); color: var(--ink2); }
+.research-view .compare-load button { min-height: 0; height: 28px; padding: 0 12px; }
+.research-view .compare-load span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.research-view .compare-load progress { width: min(320px, 50%); height: 8px; }
+.research-view .compare-media.waiting video { background: var(--wash); }

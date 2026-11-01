@@ -67,15 +67,23 @@
   // Videos and type probes wait until the block is near the screen (the task page's reader when it has one).
   let near = (node, run) => run();
   // A slot whose kind the record does not state is asked for its type with a one-byte read before an element is chosen.
-  function media(record, item, state, done) {
+  function media(record, item, state, done, clips) {
     const path = `/dash/api/research-state/request/${encodeURIComponent(record.id)}/media/${item.slot}?revision=${record.revision}`;
     const holder = document.createElement('div'), size = document.createElement('span');
     holder.className = 'compare-media'; state[item.slot] = 'not_loaded';
     const kind = item.kind ? Promise.resolve(item.kind) : new Promise(resolve => near(holder, () => resolve(
       HGTarget.fetch(path, {credentials: 'same-origin', cache: 'no-store', headers: {Range: 'bytes=0-0'}})
         .then(r => { r.body?.cancel(); return /^video\//.test(r.headers.get('Content-Type') || '') ? 'video' : 'image'; }, () => 'image'))));
-    const ready = kind.then(k => { holder.append(element(HGTarget.url(path), k, item, state, size)); done(); return {slot: item.slot, url: HGTarget.url(path), kind: k}; });
-    return {holder, size, ready};
+    const ready = kind.then(async k => {
+      const node = element(k === 'video' ? null : HGTarget.url(path), k, item, state, size);
+      if (k === 'video') holder.classList.add('waiting');
+      holder.append(node); done();
+      if (k !== 'video') return {slot: item.slot, url: HGTarget.url(path), kind: k};
+      const copy = await clips.add({key: `${record.id}@${record.revision}/${item.slot}`, path, slot: item.slot, size});
+      node.src = copy.url; node.controls = true; holder.classList.remove('waiting'); done();
+      return {slot: item.slot, url: copy.url, kind: k};
+    });
+    return {holder, size, ready, kind};
   }
   function element(url, kind, item, state, size) {
     const node = document.createElement(kind === 'video' ? 'video' : 'img');
@@ -85,17 +93,83 @@
       size.textContent = [w && h ? `${w}×${h}` : '', Number.isFinite(node.duration) ? `${node.duration.toFixed(1)} 秒` : ''].filter(Boolean).join(' · ');
     };
     node.onerror = () => { state[item.slot] = 'failed'; size.textContent = '读取失败'; };
-    if (node.tagName === 'VIDEO') {
-      Object.assign(node, {controls: true, preload: 'metadata', playsInline: true, muted: true});
+    if (node.tagName === 'VIDEO') {   // its source is the local copy, set once every clip of the block is in
+      Object.assign(node, {controls: false, preload: 'auto', playsInline: true, muted: true});
       node.onloadstart = () => { if (state[item.slot] === 'not_loaded') state[item.slot] = 'unknown'; };
       node.onloadedmetadata = node.onloadeddata = shown;
-      near(node, () => { node.src = url + '#t=0.1'; });   // paints the first frame without playing
       return node;
     }
     node.alt = item.slot; node.decoding = 'async'; node.loading = 'lazy';
     node.onload = () => node.decode().then(shown, node.onerror);
     node.src = url;
     return node;
+  }
+
+  // A video comparison plays from local copies: every clip is downloaded in full first, with progress, and only then
+  // can any be played, zoomed or switched. The grid and the viewer share the copies, so a switch never waits on the
+  // network and every clip shows the same moment. Nothing is re-encoded. A copy is kept while its request is shown.
+  const copies = new Map();   // `${request}@${revision}/${slot}` → {url, bytes}
+  function keep(requests) {
+    const shown = new Set(requests.map(r => `${r.id}@${r.revision}/`));
+    for (const [key, copy] of copies) if (!shown.has(key.slice(0, key.lastIndexOf('/') + 1))) { URL.revokeObjectURL(copy.url); copies.delete(key); }
+  }
+  async function download(path, progress) {
+    const response = await HGTarget.fetch(path, {credentials: 'same-origin'});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const total = Number(response.headers.get('Content-Length')) || 0, reader = response.body.getReader(), parts = [];
+    let bytes = 0; progress(0, total);
+    for (;;) { const {done, value} = await reader.read(); if (done) break; parts.push(value); bytes += value.length; progress(bytes, total); }
+    return {url: URL.createObjectURL(new Blob(parts, {type: response.headers.get('Content-Type') || ''})), bytes};
+  }
+  const mb = n => (n / 1048576).toFixed(1);
+  // One block's clips: once it knows how many there are (`expect`), they download together (at once, or from `start()`),
+  // the line shows the total and then what is held locally, and every clip is handed its copy only when all are in.
+  // A failed clip is retried from the line. `all` settles when the copies are in.
+  function loader(U, onDone) {
+    const line = U.el('div', null, 'compare-load'), bar = U.el('progress'), text = U.el('span'), go = U.el('button', '下载视频后播放', 'ghost'), again = U.el('button', '重试', 'ghost');
+    go.type = again.type = 'button'; line.hidden = true; line.append(bar, text, go, again);
+    const list = [];
+    let expected = null, started = false, settle;
+    const all = new Promise(done => { settle = done; });
+    const complete = () => expected !== null && list.length === expected && list.every(c => c.copy);
+    const paint = () => {
+      const got = list.reduce((a, c) => a + c.got, 0), total = list.every(c => c.total) ? list.reduce((a, c) => a + c.total, 0) : 0, failed = list.filter(c => c.error);
+      // The line keeps its place once shown, so nothing below it moves when the download ends.
+      line.hidden = !expected; bar.hidden = !started || !!failed.length || complete(); go.hidden = started; again.hidden = !failed.length;
+      bar.max = total || 1; bar.value = total ? got : 0;
+      text.textContent = !started ? `${expected} 段视频，下载到本地后再播放和切换`
+        : complete() ? `已下载 ${expected} 段视频 · ${mb(got)} MB`
+        : failed.length ? `第 ${failed.map(c => c.slot).join('、')} 段没下载下来：${failed[0].error}`
+        : `正在下载 ${expected} 段视频 · ${mb(got)}${total ? ` / ${mb(total)}` : ''} MB`;
+    };
+    const finish = () => {
+      paint();
+      if (!complete()) return;
+      list.forEach(c => c.resolve(c.copy)); settle(); onDone();
+    };
+    const fetchOne = c => {
+      c.error = null; c.got = 0;
+      download(c.path, (got, total) => { c.got = got; c.total = total; c.size.textContent = total ? `${mb(got)} / ${mb(total)} MB` : `${mb(got)} MB`; paint(); })
+        .then(copy => { copies.set(c.key, copy); c.copy = copy; c.size.textContent = `${mb(copy.bytes)} MB`; finish(); },
+              error => { c.error = U.failure(error); paint(); });
+    };
+    const start = () => {
+      if (started || !expected) return;
+      started = true; list.filter(c => !c.copy).forEach(fetchOne); finish();
+    };
+    go.onclick = start; again.onclick = () => list.filter(c => c.error).forEach(fetchOne);
+    return {line, start, all,
+      // How many clips the block has; a block shown before still holds its copies and needs no download.
+      expect(n) { expected = n; if (n && list.length === n && list.every(c => c.copy)) started = true; finish(); },
+      add(c) {
+        return new Promise(resolve => {
+          const copy = copies.get(c.key), entry = {...c, resolve, got: copy?.bytes || 0, total: copy?.bytes || 0, copy, error: null};
+          list.push(entry);
+          if (copy) c.size.textContent = `${mb(copy.bytes)} MB`; else if (started) fetchOne(entry);
+          finish();
+        });
+      },
+      get started() { return started; }};
   }
 
   // The in-page viewer: every slot stacked in one box at the same size, so switching (arrow keys, A–D or the letter
@@ -111,7 +185,7 @@
       node.className = 'viewer-media'; node.dataset.slot = slot; button.type = 'button'; button.dataset.slot = slot;
       if (kind === 'video') Object.assign(node, {muted: true, playsInline: true, preload: 'auto', loop: true});
       else { node.alt = slot; node.decoding = 'sync'; }
-      node.src = kind === 'video' ? url + '#t=0.1' : url;
+      node.src = url;
       stage.append(node); rail.append(button);
       return {slot, node, button, video: kind === 'video'};
     });
@@ -198,18 +272,30 @@
       else players().forEach(p => { p.currentTime = 0; p.play().catch(() => {}); });
     };
     grid.addEventListener('play', sync, true); grid.addEventListener('pause', sync, true);
-    const placed = () => { together.hidden = players().length < 2; };
-    const ready = [];
+    const placed = () => { together.hidden = players().length < 2; together.disabled = players().filter(p => p.src).length < 2; };
+    // Videos wait for their local copies: no play, zoom or switch before every clip of the block is in.
+    const clips = loader(U, () => grid.querySelectorAll('.compare-zoom').forEach(b => { b.disabled = false; }));
+    const ready = [], kinds = [];
     // A picture (or a slot's ⤢) opens the viewer on that slot, inside this page.
-    const zoom = async slot => viewer(article, await Promise.all(ready), slot, U);
+    const zoom = async slot => { clips.start(); viewer(article, await Promise.all(ready), slot, U); };
     for (const item of s.slots) {
-      const card = U.el('figure', null, 'compare-item'), cap = U.el('figcaption'), m = media(record, item, state, placed), open = U.el('button', '⤢', 'compare-zoom');
+      const card = U.el('figure', null, 'compare-item'), cap = U.el('figcaption'), m = media(record, item, state, placed, clips), open = U.el('button', '⤢', 'compare-zoom');
       card.dataset.slot = item.slot; open.type = 'button'; open.title = '放大对比'; open.setAttribute('aria-label', `放大对比 ${item.slot}`); open.onclick = () => zoom(item.slot);
       cap.append(U.el('b', item.slot, 'compare-letter'), m.size, open);
-      card.append(cap, m.holder); grid.append(card); cards.set(item.slot, card); ready.push(m.ready);
+      card.append(cap, m.holder); grid.append(card); cards.set(item.slot, card); ready.push(m.ready); kinds.push(m.kind);
     }
+    const counted = found => {
+      const n = found.filter(k => k === 'video').length;
+      together.hidden = n < 2; together.disabled = true;   // in place from the start, usable once the copies are in
+      if (n) grid.querySelectorAll('.compare-zoom').forEach(b => { b.disabled = true; });
+      clips.expect(n);
+      // Waiting to be judged, the clips download as soon as the block is near; otherwise from the line's button.
+      if (n && !answer && record.data.state === 'open') near(grid, clips.start);
+    };
+    // Kinds the record states are counted at once, so the line holds its place before the page lands anywhere.
+    if (s.slots.every(item => item.kind)) counted(s.slots.map(item => item.kind)); else Promise.all(kinds).then(counted);
     grid.addEventListener('click', event => { const image = event.target.closest('.compare-media img'); if (image) zoom(image.closest('.compare-item').dataset.slot); });
-    article.append(grid, together);
+    article.append(clips.line, grid, together);
     if (answer) {
       for (const letter of v?.picked || []) cards.get(letter)?.classList.add('picked');
       const line = U.el('p', null, 'compare-verdict');
@@ -304,6 +390,7 @@
   async function sections(record, ctx, U, scope) {
     if (U.near) near = U.near;
     const requests = (await chainRequests(scope?.ids || [record.id], U)).filter(isComparison);
+    keep(requests);
     // The newest answer is shown when it carries a judgement; otherwise the answers are read one by one as before.
     const answers = await Promise.all(requests.map(r => r.latest_feedback === null ? null
       : verdict(r.latest_feedback?.data?.evaluation) ? r.latest_feedback : load(r, U).catch(() => null)));
@@ -324,6 +411,7 @@
 
   async function renderRequest(container, record, ctx, U) {
     if (!isComparison(record)) return;
+    keep([record]);
     const answer = await load(record, U).catch(() => null), box = U.el('section', null, 'research-section compare-section');
     box.append(block(record, answer, ctx, U)); container.append(box);
   }

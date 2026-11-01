@@ -114,7 +114,7 @@ ANSI = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]|\r")
 REDACT = re.compile(r"(Bearer\s+|sk-[A-Za-z0-9]{4})[A-Za-z0-9._\-]{8,}|((?:api[_-]?key|token|secret|password)\s*[=:]\s*)\S+", re.I)
 HEADERS = {"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
            "X-Content-Type-Options": "nosniff",
-           "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+           "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
                                       "script-src 'self'; frame-ancestors 'none'"}
 
 

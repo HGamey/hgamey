@@ -2891,6 +2891,85 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_video_comparison_downloads_every_clip_before_any_plays(self):
+        """Clips are not streamed: each downloads in full, once, with progress on the block; nothing plays, zooms or
+        switches until every clip is in. Then the grid and the viewer play the local copies, and switching reads
+        nothing more over the network."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import base64
+        clip = base64.b64decode("GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAQCEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHYTbuMU6uEElTDZ1OsggEeTbuMU6uEHFO7a1OsggPs7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirXsYMPQkBNgI1MYXZmNjAuMTYuMTAwV0GNTGF2ZjYwLjE2LjEwMESJiECfQAAAAAAAFlSua8GuAQAAAAAAADjXgQFzxYhxERJxo71UCZyBACK1nIN1bmSIgQCGhVZfVlA4g4EBI+ODhAX14QDgibCBoLqBWpqBAhJUw2f8c3OgY8CAZ8iaRaOHRU5DT0RFUkSHjUxhdmY2MC4xNi4xMDBzc9ZjwItjxYhxERJxo71UCWfIoUWjh0VOQ09ERVJEh5RMYXZjNjAuMzEuMTAyIGxpYnZweGfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDIuMDAwMDAwMDAwAB9DtnVCR+eBAKPWgQAAgPAFAJ0BKqAAWgAARwiFhYiFhIgCAgJ1qgP4AgaaE+CGqpNdxDqqTXcQ6qk13EOqpNdxDqqTXcQYAP7/TRL//FhX8WFfxYV/8WFf/PzO7cX85gCjmIEAZAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQDIABECAAEQEAAYABhYL/QACICBAAAAo5iBASwAEQIAARAQABgAGFgv9AAIgIEAAACjmIEBkAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQH0ABECAAEQEAAYABhYL/QACICBAAAAo5iBAlgAEQIAARAQABgAGFgv9AAIgIEAAACjl4ECvADxAQABEBAUYABhYL/QACICBAAAo5iBAyAAEQIAARAQABgAGFgv9AAIgIEAAACjmIEDhAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQPoABECAAEQEAAYABhYL/QACICBAAAAo5iBBEwAEQIAARAQABgAGFgv9AAIgIEAAACjmIEEsAARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQUUABECAAEQEAAYABhYL/QACICBAAAAo5iBBXgAEQIAARAQABgAGFgv9AAIgIEAAACjmIEF3AARAgABEBAAGAAYWC/0AAiAgQAAAKOYgQZAABECAAEQEAAYABhYL/QACICBAAAAo5iBBqQAEQIAARAQABgAGFgv9AAIgIEAAACjl4EHCADxAQABEBAUYABhYL/QACICBAAAo5iBB2wAEQIAARAQABgAGFgv9AAIgIEAAAAcU7trkbuPs4EAt4r3gQHxggGf8IED")   # a real 2 s 160×90 VP8 clip
+        jid = "dddddddddddd"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        names = ["dl-native", "dl-ours"]
+        for name in names:
+            (out / (name + ".webm")).write_bytes(clip)
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-dl", "title": "下载素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": name + ".webm"} for name in names]})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-dl", self.write(
+            "create-dl", {"title": "视频盲评", "objective": "先下完再看"}))[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-dl", "source_name": name}
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-dl", self.write("create-ev-dl", {
+            "research_id": "sr-dl", "type": "evaluation", "title": "哪段更流畅", "need": "选 1 个", "why": "fixture",
+            "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref(name) for name in names],
+            "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": i, "media_kind": "video"} for i in range(2)], "pick": 1}}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors, held, reads = [], [], []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+
+                def hold(route, request):
+                    # Every read of a clip is kept back until the test lets them through, like a slow link.
+                    reads.append((request.url, request.headers.get("range")))
+                    held.append(route)
+                page.route("**/research-state/request/ev-dl/media/*", hold)
+                page.goto(f"{base}/dash/research?kind=research&id=sr-dl")
+                block = "#cmp-ev-dl"
+                page.wait_for_selector(f"{block} .compare-load:not([hidden])")
+                for _ in range(100):
+                    if len(held) == 2:
+                        break
+                    page.wait_for_timeout(50)
+                self.assertIn("正在下载 2 段视频", page.text_content(f"{block} .compare-load"))
+                self.assertEqual(page.eval_on_selector_all(f"{block} video", "e => e.map(v => v.getAttribute('src'))"), [None, None],
+                                 "no clip plays from the network")
+                self.assertEqual(page.eval_on_selector_all(f"{block} .compare-zoom", "e => e.map(b => b.disabled)"), [True, True])
+                self.assertTrue(page.is_disabled(f"{block} .compare-together"))
+                for route in held:
+                    route.continue_()
+                page.wait_for_function(f"() => [...document.querySelectorAll('{block} video')].every(v => v.src.startsWith('blob:') && v.readyState >= 2)")
+                self.assertEqual(page.text_content(f"{block} .compare-load span"), "已下载 2 段视频 · 0.0 MB", "the line stays, so nothing below moves")
+                self.assertTrue(page.is_hidden(f"{block} .compare-load progress"))
+                self.assertTrue(page.is_enabled(f"{block} .compare-together"))
+                self.assertEqual(sorted(url.split("/media/")[1].split("?")[0] for url, _ in reads), ["A", "B"], "each clip is read once")
+                self.assertEqual([r for _, r in reads], [None, None], "in full, not streamed in ranges")
+                page.click(f'{block} .compare-item[data-slot="A"] .compare-zoom')
+                viewer = "dialog.compare-viewer[open]"
+                page.wait_for_function(f"() => [...document.querySelectorAll('{viewer} video')].every(v => v.src.startsWith('blob:') && v.readyState >= 2)")
+                page.keyboard.press("ArrowRight")
+                page.wait_for_function(f"() => document.querySelector('{viewer} video.shown').dataset.slot === 'B'")
+                self.assertEqual(len(reads), 2, "switching reads nothing more")
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_a_comparison_answer_unlocks_beside_submit_and_says_it_is_not_saved_until_it_is(self):
         """Locked, the answer form asks for the steer password beside 提交 instead of sending the person to the top of
         the page. Until the answer is saved the form says it is not submitted and what is missing; a wrong password
@@ -3048,8 +3127,9 @@ class CoreFlowTests(unittest.TestCase):
                 top, margin = page.evaluate(position)
                 self.assertTrue(56 <= top <= 120 and abs(top - margin) < 1, f"landed at {top} (scroll margin {margin})")
                 videos = f"#{above} video"
-                page.wait_for_function(f"() => {{ const v = [...document.querySelectorAll('{videos}')]; return v.length === 2 && v.every(x => x.currentSrc); }}")
-                self.assertEqual(page.eval_on_selector_all(videos, "e => e.map(x => x.readyState)"), [0, 0], "the videos above wait until after the landing")
+                page.wait_for_function(f"() => document.querySelector('#{above} .compare-load span').textContent.startsWith('正在下载 2 段视频')")
+                self.assertEqual(page.eval_on_selector_all(videos, "e => e.map(x => [x.getAttribute('src'), x.readyState])"), [[None, 0], [None, 0]],
+                                 "the videos above wait until after the landing")
                 gate["open"] = True
                 for route in gate["held"]:
                     route.continue_()
