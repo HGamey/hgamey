@@ -47,8 +47,12 @@ def text(value, maximum=1024, required=False):
 
 
 def object_fields(value, allowed):
-    if not isinstance(value, dict) or set(value) - set(allowed):
+    if not isinstance(value, dict):
         raise ValueError("object contains unsupported fields")
+    unknown = set(value) - set(allowed)
+    if unknown:
+        names = ", ".join(json.dumps(name, ensure_ascii=True) for name in sorted(unknown))
+        raise ValueError(f"object contains unsupported field(s): {names}")
     return value
 
 

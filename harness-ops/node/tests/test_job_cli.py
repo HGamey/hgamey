@@ -180,6 +180,38 @@ class JobCLI(unittest.TestCase):
         self.assertIn("- 参数里，本机存在的文件会自动上传，路径改写成 @in/N/文件名；目录也自动打包上传（含 --flag=路径 的写法）。",
                       cli["main"].__globals__["__doc__"])
 
+    def test_job_rejection_reason_is_not_repeated(self):
+        cli = self.load_cli()
+        error = cli["ClientError"](400, b'{"code":"invalid_job","error":"specific rejection reason"}')
+        with mock.patch.dict(cli["submit_job"].__globals__, call=mock.Mock(side_effect=error)), \
+                self.assertRaises(SystemExit) as rejected:
+            cli["submit_job"]({"bin": "fixture"}, b"", "duplicate-reason")
+        self.assertEqual(str(rejected.exception).count("specific rejection reason"), 1)
+
+    def test_unknown_first_word_guidance_uses_node_bins_and_server_rejection(self):
+        cli = self.load_cli()
+        main = cli["main"]
+        node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "jobs.time-budget-v1",
+                                      "jobs.experiment-v1"], execution={"bins": ["experiment"]})
+        for options in ([], ["--max-runtime-seconds", "30"]):
+            with self.subTest(options=options):
+                submit = mock.Mock()
+                command = [str(CLI), "--experiment", "a" * 40, *options, "detach", "experiment", "soak.sh"]
+                with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(node).encode()),
+                                     pack=mock.Mock(), submit_job=submit), \
+                        mock.patch.object(sys, "argv", command), self.assertRaises(SystemExit) as rejected:
+                    main()
+                self.assertIn("detach 不是 pf-node 的子命令，也不是这个节点能跑的程序；子命令见 --help，选项要带 --",
+                              str(rejected.exception))
+                submit.assert_not_called()
+
+        error = cli["ClientError"](400, json.dumps({"code": "invalid_job", "error": 'bin 只能是 ["adb"]'}).encode())
+        with mock.patch.dict(cli["submit_job"].__globals__, call=mock.Mock(side_effect=error)), \
+                self.assertRaises(SystemExit) as rejected:
+            cli["submit_job"]({"bin": "wait", "argv": [JOB, "--timeout", "240"]}, b"", "unknown-wait")
+        self.assertIn("wait 不是 pf-node 的子命令，也不是这个节点能跑的程序；子命令见 --help，选项要带 --",
+                      str(rejected.exception))
+
     def test_job_id_subcommand_help_is_local_and_out_explains_subdirectory_export(self):
         env = {key: value for key, value in os.environ.items() if not key.startswith("PF_")}
         commands = ("out", "status", "log", "wait", "kill", "artifacts", "inputs", "input-reference",

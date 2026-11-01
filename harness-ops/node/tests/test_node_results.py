@@ -356,6 +356,25 @@ class NodeResultTests(unittest.TestCase):
         self.assertEqual(len(self.workers), 1, "metadata operations must not create execution jobs")
         self.assertEqual(len(self.jobs.dispatch.queue.rows()), 1)
 
+    def test_register_rejection_preserves_server_reason_and_unknown_field(self):
+        manifest = registration("unsupported-field", None)
+        manifest["description"] = "This is not a result manifest field"
+        source = self.root / "unsupported-result.json"
+        source.write_text(json.dumps(manifest))
+        rejected = self.cli("register", str(source))
+        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+        self.assertIn('object contains unsupported field(s): "description"', rejected.stderr)
+        self.assertIn("code=invalid_result", rejected.stderr)
+        self.assertEqual(self.api("GET", "/results/unsupported-field")[0], 404)
+
+    def test_register_and_import_without_file_print_their_own_usage(self):
+        for command in ("register", "import"):
+            with self.subTest(command=command):
+                rejected = self.cli(command)
+                self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                self.assertIn(f"pf-node results {command}", rejected.stderr)
+                self.assertNotIn("无效的 results 命令", rejected.stderr)
+
     def test_readonly_share_discovery_boundaries_and_no_credential_leak(self):
         """只读分享链：发现→详情→下载原件；越界/符号链接来源不可读、不泄漏；凭据不出现在响应。"""
         raw = b'{ "timing": {"gpu_ms": 2.413}, "power_w": null }\n'

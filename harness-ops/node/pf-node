@@ -244,6 +244,11 @@ JOB_ID_HELP = {
     "resume": "用法: pf-node resume <任务ID>",
     "execution-reconcile": "用法: pf-node execution-reconcile <任务ID> [--force]",
 }
+SUBCOMMANDS = frozenset({
+    "join", "nodes", "agents", "live", "games", "results", "research", "doctor", "job-sources", "job-events",
+    "devices-resolve", "devices", "devices-set", "admin-restart", "request", "export-caches", "queue", "whoami",
+    "checkin", "phones", "fleet", "node", "jobs",
+}) | frozenset(JOB_ID_HELP)
 
 URL = TOKEN = TARGET = None
 CHUNK = 2 << 20
@@ -251,6 +256,16 @@ CHUNK = 2 << 20
 
 def continuation():
     return TARGET.command() if TARGET is not None else "pf-node"
+
+
+def program_guidance(word):
+    return f"{word} 不是 pf-node 的子命令，也不是这个节点能跑的程序；子命令见 --help，选项要带 --"
+
+
+def unknown_program(word, node, routing=False):
+    if not routing and word not in SUBCOMMANDS and word not in node.get("execution", {}).get("bins", []):
+        return program_guidance(word)
+    return None
 
 
 def brief_job_line(job):
@@ -545,7 +560,10 @@ def submit_job(spec, body, request_id):
                      f"请用 {continuation()} request {request_id} 核对原节点已有任务，"
                      "并检查恢复目标条件；不要换 request_id 盲目重投。")
         reason = response_error_text(e.body) if 400 <= e.code < 500 else None
-        sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{e}" + (f"：{reason}" if reason else ""))
+        detail = str(e)
+        if reason is not None and reason.startswith("bin 只能是"):
+            detail += "；" + program_guidance(spec.get("bin"))
+        sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{detail}")
     except (SystemExit, ValueError, KeyError, KeyboardInterrupt, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         print(f"pf-node: 提交结果未知，request_id={request_id}：{e}；"
               f"请用 {continuation()} request {request_id} 查询，再用 status <job> 或 cancel <job> 核查/撤销；"
@@ -1504,6 +1522,9 @@ def main():
         submission_node = require_idempotent_jobs(require_recovery=device_access is not None,
                                                  execution_policy=execution_policy, inputs=inputs, device_binding=binding_envelope, time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
         if not routing and args[0] not in submission_node.get("execution", {}).get("bins", []):
+            guidance = unknown_program(args[0], submission_node)
+            if guidance is not None:
+                sys.exit("pf-node: " + guidance)
             sys.exit("pf-node: --inputs 仅用于节点提供的程序作业；未提交")
     if time_budget is not None or host_slots is not None or disk_guard is not None or priority is not None:
         if submission_node is None:
@@ -1511,6 +1532,9 @@ def main():
                                                      execution_policy=execution_policy, device_binding=binding_envelope,
                                                      time_budget=time_budget, host_slots=host_slots, disk_guard=disk_guard, priority=priority)
         if not routing and args[0] not in submission_node.get("execution", {}).get("bins", []):
+            guidance = unknown_program(args[0], submission_node)
+            if guidance is not None:
+                sys.exit("pf-node: " + guidance)
             sys.exit("pf-node: 优先级、运行预算、磁盘软保护和显式宿主 slots 仅用于普通程序作业；不用于管理/内部准备/typed recovery，未提交")
     if args[0] == "games":
         from game_client import main as games_main
@@ -1712,6 +1736,9 @@ def main():
         sys.exit("pf-node: 节点缺少 jobs.research-link-v1；未提交，不丢弃 --research")
     experiment = None
     if (experiment_ref is not None) != (binname == "experiment"):
+        guidance = unknown_program(binname, submission_node, routing)
+        if guidance is not None:
+            sys.exit("pf-node: " + guidance)
         sys.exit("pf-node: 实验任务写成 pf-node --experiment <分支|提交> experiment <脚本> ...；两者缺一不可")
     if experiment_ref is not None:
         if "jobs.experiment-v1" not in submission_node.get("capabilities", []):

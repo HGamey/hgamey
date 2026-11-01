@@ -67,7 +67,7 @@ def field_names(names):
 def refs(value):
     for ref in array(value):
         if not isinstance(ref, dict):
-            raise ValueError("evidence reference must be an object")
+            raise ValueError('evidence reference must be an object; example {"kind":"job","node_id":"…","job_id":"…","path":"…"}')
         kind = ref.get("kind")
         fields = {"job": {"job_id", "path"}, "result": {"result_id"},
                   "result_source": {"result_id", "source_name"}, "external": {"locator"},

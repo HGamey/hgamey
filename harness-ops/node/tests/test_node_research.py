@@ -229,6 +229,18 @@ class NodeResearchTests(unittest.TestCase):
         self.assertEqual(created.returncode, 0, created.stderr)
         self.assertEqual(self.read("direction", "templated")["data"]["next_experiment"], draft)
 
+    def test_evidence_ref_string_error_shows_object_example_and_skill_scope(self):
+        self.create("research", "study", {"title": "Fixture study", "objective": "Exercise evidence guidance"})
+        self.create("direction", "evidence", self.direction("Evidence reference shape"))
+        current = self.read("direction", "evidence")
+        code, reply = self.write("direction", "evidence", "string-evidence", {
+            **current["data"], "evidence_refs": ["job:0123456789ab:report.json"]}, 1, "Exercise evidence guidance")
+        self.assertEqual(code, 400, reply)
+        self.assertIn('{"kind":"job","node_id":"…","job_id":"…","path":"…"}', reply["error"])
+        skill = (NODE.parent / "skills/hgamey-research/SKILL.md").read_text()
+        self.assertIn("data 里的 evidence_refs 是对象", skill)
+        self.assertIn("job:… 这种字符串只用在 note、deliver 的参数里", skill)
+
     def test_feedback_preserves_context_until_explicit_direction_resolution(self):
         self.create("research", "study", {"title": "Fixture study", "objective": "Original evaluation criteria"})
         self.create("direction", "a", self.direction("Waiting direction"))

@@ -101,13 +101,16 @@ class Client:
                 raise RequestError("节点回包超过上限；结果未确认")
             value = _json(raw)
         except urllib.error.HTTPError as error:
-            status, code = error.code, None
+            status, code, reason = error.code, None, None
             try:
                 raw = error.read((64 << 10) + 1)
                 value = _json(raw) if len(raw) <= 64 << 10 else None
                 candidate = value.get("code") if isinstance(value, dict) else None
                 if isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", candidate):
                     code = candidate
+                candidate = value.get("error") if isinstance(value, dict) else None
+                if isinstance(candidate, str):
+                    reason = candidate
             except (ValueError, UnicodeError, OSError, http.client.HTTPException):
                 pass
             finally:
@@ -121,7 +124,8 @@ class Client:
                 message = "原记录或入口不存在；不据此自动重新提交"
             elif status == 413 and code == "result_cross_compare_too_large":
                 message = "跨节点比较超过 6 MiB，请减少列或指标；没有截断或自动重查"
-            raise RequestError(f"{message}（HTTP {status}" + (f", code={code}" if code else "") + "）",
+            raise RequestError(f"{message}（HTTP {status}" + (f", code={code}" if code else "")
+                               + (f", error={reason}" if reason is not None else "") + "）",
                                status=status, code=code) from None
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
             raise RequestError("网络回执未确认；未自动重试") from None
@@ -288,6 +292,10 @@ def main(args, *, target):
             value = client.request("GET", ("/result-imports/" if importing else "/results/") + identity)
             if value.get("import_id" if importing else "result_id") != identity:
                 raise RequestError("回包未绑定原 ID；结果未确认")
+        elif command in ("register", "import") and not args:
+            usage = ("register FILE" if command == "register" else
+                     "import FILE --adapter doom-lr4-026-v1|gol-optimize-v1 [--import-id ID]")
+            raise ValueError(f"用法: pf-node results {usage}")
         elif command == "register" and len(args) == 1:
             client.require_capability(write=True)
             # The target is printed before reading; this ID is defined by the file itself.
