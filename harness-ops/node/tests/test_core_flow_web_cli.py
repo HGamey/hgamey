@@ -2967,15 +2967,14 @@ class CoreFlowTests(unittest.TestCase):
         self.assertTrue(board._device_busy("UNKNOWN", {"status": "unknown", "lease": {}}, registry))
 
     def test_a_device_write_job_keeps_its_phone_between_its_locks(self):
-        # A device-write job reserves the node's phones from claim until someone releases it. Between its
-        # own locks (an experiment cooling the phone, say) its phone still shows it and the others show the
-        # reservation; a lock or lease, when there is one, still decides first.
+        # A single-device write job reserves only its phone between its own locks (while cooling, say).
+        # Other phones stay unreserved; a lock or lease, when there is one, still decides first.
         self.assertEqual(self.web("POST", "/research-state/research/sr-ab", self.write(
             "ab-task", {"title": "原神超分 A/B", "objective": "复现第 7 组"}))[0], 201)
         self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
         token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
         code, out, err = self.pf(token, "--research", "sr-ab", "--label", "selfsr 第 7 组", "--device-access", "write",
-                                 "--detach", "fixture", "-c", "pass", "S1", "6")
+                                 "--detach", "fixture", "-c", "pass", "--serial", "S1", "6")
         self.assertEqual(code, 0, err)
         jid = out.strip()
         board = dash.Dash.__new__(dash.Dash)
@@ -2988,7 +2987,7 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(mine, {"kind": "job", "job_id": jid, "label": "selfsr 第 7 组", "actor_id": "agent-a",
                                 "research_id": "sr-ab", "research_title": "原神超分 A/B", "state": mine["state"],
                                 "reserved": True})
-        self.assertEqual(board._reserved("S2", owners, phones)["kind"], "global")
+        self.assertIsNone(board._reserved("S2", owners, phones))
         held = {"status": "held", "held_by": f"job-{jid}-selfsr-native-1@S1", "lease": {"entries": []}}
         self.assertNotIn("reserved", board._holder("S1", held, phones))
         # Terminal jobs release their scheduling reservation without a manual release step.

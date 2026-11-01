@@ -749,10 +749,14 @@ class Dash:
     def _reserved(self, serial, owners, known=()):
         """The job that reserved this phone in the queue while it holds no lock, e.g. between measurements."""
         for row in owners:
+            scope = device_scope(row["spec"])
+            if scope["scope"] == "device" and serial not in (scope["binding"]["device_id"], scope["binding"]["serial"]):
+                continue
             meta = self._job_meta(row["job_id"])
-            entry = meta and self._job_holder(meta, row["job_id"], serial, True, known=known)
+            entry = meta and self._job_holder(meta, row["job_id"], serial, False, known=known)
             if entry:
-                return {**entry, "reserved": True, **({"state": "blocked"} if row["state"] == "blocked" else {})}
+                return {**entry, "kind": "global" if scope["scope"] == "global" else "job", "reserved": True,
+                        **({"state": "blocked"} if row["state"] == "blocked" else {})}
         return None
 
     def _tasks(self):
