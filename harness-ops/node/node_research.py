@@ -1115,10 +1115,15 @@ class NodeResearch:
                         owner = json.loads(research["data"]).get("owner") if research else None
                         guidance[rid] = set(self._unanswered_guidance(db, rid, owner))
                         questions[rid] = set(self._unanswered_questions(db, rid))
+                    unanswered = None
+                    if audit.get("auth_channel") == "dashboard_steer":
+                        pending = (self._unanswered_guidance(db, rid, data["to"]) if data.get("to") is not None
+                                   else guidance[rid])
+                        unanswered = row["id"] in pending
                     item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"], to=data.get("to"),
                                 evidence_refs=data["evidence_refs"], actor_label=audit.get("actor_label"),
                                 auth_channel=audit.get("auth_channel"), ask=data.get("ask", False),
-                                unanswered=row["id"] in guidance[rid] if audit.get("auth_channel") == "dashboard_steer" else None,
+                                unanswered=unanswered,
                                 question_unanswered=row["id"] in questions[rid] if data.get("ask") is True else None)
                 if kind == "direction":
                     item["hypothesis"] = data["hypothesis"]

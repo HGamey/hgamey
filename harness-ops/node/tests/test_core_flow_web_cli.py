@@ -673,6 +673,8 @@ class CoreFlowTests(unittest.TestCase):
                               "reply_to": None, "decision": None}))[0], 201)
         owed = [item for item in self.duties(tokens["agent-b"])["duties"] if item["kind"] == "answer_note"]
         self.assertEqual([(item["research_id"], item["target"]) for item in owed], [("sr-collab", "n-collab")])
+        notes = self.web("GET", "/research-state/note?research_id=sr-collab&limit=10")[1]["items"]
+        self.assertIs(next(item for item in notes if item["id"] == "n-collab")["unanswered"], True)
         self.assertNotIn("n-collab", [item.get("target") for item in self.duties(tokens["agent-a"])["duties"]])
         self.assertIn(COLLABORATION, self.duties(tokens["agent-b"])["loop"])
         self.assertIn(COLLABORATION, self.pf(tokens["agent-b"], "research", "--help")[1])
@@ -687,6 +689,8 @@ class CoreFlowTests(unittest.TestCase):
                                "--reply-to", "n-collab", "--decision", "adopt", "--evidence", "job:" + jid)
         self.assertEqual(code, 0, err)
         self.assertNotIn("n-collab", [item.get("target") for item in self.duties(tokens["agent-b"])["duties"]])
+        notes = self.web("GET", "/research-state/note?research_id=sr-collab&limit=10")[1]["items"]
+        self.assertIs(next(item for item in notes if item["id"] == "n-collab")["unanswered"], False)
         code, _, err = self.pf(tokens["agent-a"], "research", "deliver", "sr-collab", "--summary", "原任务继续交付",
                                "--artifact", "job:" + jid)
         self.assertEqual(code, 0, err)
