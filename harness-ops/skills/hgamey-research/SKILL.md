@@ -14,7 +14,7 @@ description: 在 HGamey 节点上接续游戏或系统优化研究，消费人�
 
 最短完整路径：`pf-node checkin` → `pf-node research claim <研究ID>` → `pf-node research plan-template exploration --research-revision N` 并按草稿用 `pf-node research create direction <方向ID> <文件>` 写方向 → `pf-node --research <研究ID> --detach <命令>` 提交（实验脚本用 `--experiment <提交> experiment <脚本>`）→ `pf-node jobs --brief` / `pf-node status <job>` → `pf-node research note <研究> "<回复>" --reply-to <留言> --decision adopt|defer|reject`（图片/附件用 `job:<任务>:<路径>`；需要人定的事用 `--ask` 提问后继续其他方向）→ `pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>`。
 交付写清：作为依据的每个任务是否有效，无效的写原因；完整复现命令（pf-node 提交命令和实验提交号）；适用条件。exit 0 不等于有效，无效的任务不能当结论依据。
-画质和性能都要和基线比，不能只报自己的数。画质：同一画面截原生全分辨率、你的做法、参照算法（如 GSR、双线性），用 research compare 请人盲评。性能：同场景、同时长、同起始温度逐个测。等人时做别的方向；交付放对比图或视频。
+画质和性能都要和基线比，不能只报自己的数。画质：同一画面截原生全分辨率、你的做法、参照算法（如 GSR、双线性），用 research compare 请人盲评。性能：同场景、同时长、同起始温度逐个测。等人时做别的方向；交付放对比图或视频。题目和说明里不要写能对上来源的线索，比如某种方法的画面有什么不同、哪几段来自同一次录制；素材有差别就只说有差别。
 pf-node research compare <研究ID> --item <job:ID:PATH 或本机文件> ×N [--pick K] --title "<标题>" --question "<要人判断什么>" [--direction <方向ID>]
 N 为 2–8，PNG/JPEG 与 MP4/WebM 可混；洗牌后显示 A、B、C……，输出请求 ID、网页链接和素材对应。不写 --pick 时默认用全部素材，让人从好到差排序。
 要换掉旧的盲评，先用同样的素材发新的，再按这个写法关旧的：pf-node research update request <ID> FILE --revision N --reason "<原因>"；FILE 写 {"state":"closed","close_reason":"…"}

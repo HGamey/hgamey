@@ -874,10 +874,16 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
         token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
         value = self.duties(token)
+        hint = "题目和说明里不要写能对上来源的线索，比如某种方法的画面有什么不同、哪几段来自同一次录制；素材有差别就只说有差别。"
+        self.assertTrue(any(hint in step for step in value["loop"]))
         self.assertIn(COMPARE_DUTY, value["loop"])
         self.assertIn("要换掉旧的盲评", COMPARE_HELP)
-        self.assertIn(COMPARE_HELP, self.pf(token, "research", "--help")[1])
-        self.assertIn(COMPARE_HELP, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
+        help_text = self.pf(token, "research", "--help")[1]
+        self.assertIn(hint, help_text)
+        self.assertIn(COMPARE_HELP, help_text)
+        skill = (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn(hint, skill)
+        self.assertIn(COMPARE_HELP, skill)
 
     def test_addressed_note_brings_another_agent_into_the_same_research(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-collab", self.write(
