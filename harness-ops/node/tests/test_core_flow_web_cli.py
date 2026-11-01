@@ -2970,6 +2970,91 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_ranking_is_answered_in_the_order_the_letters_are_clicked(self):
+        """A comparison that asks for every item is a ranking: letters are clicked best to worst (a ranked letter takes
+        itself and the places after it back), each neighbouring pair gets how much better, and the answer saves picked in
+        click order with gaps. Answered, one line reads the places and gaps, each card shows its place and its source."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        import struct, zlib
+
+        def png(rgb, width=64, height=32):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress((b"\x00" + rgb * width) * height)) + chunk(b"IEND", b""))
+        jid = "bbbbbbbbbbbb"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        methods = {"rk-native": b"\x10\x20\x30", "rk-bilinear": b"\x30\x20\x10", "rk-sgsr": b"\x20\x30\x10", "rk-ours": b"\x10\x30\x20"}
+        for name, rgb in methods.items():
+            (out / (name + ".png")).write_bytes(png(rgb))
+        self.assertEqual(self.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": "r-rank", "title": "排序素材",
+            "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"], "sources": [
+                {"name": name, "kind": "job_output", "job_id": jid, "path": name + ".png"} for name in methods]})[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/research/sr-rank", self.write(
+            "create-rank", {"title": "排序盲评", "objective": "排出先后"}))[0], 201)
+        ref = lambda name: {"kind": "result_source", "node_id": self.node_id, "result_id": "r-rank", "source_name": name}
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-rank", self.write("create-ev-rank", {
+            "research_id": "sr-rank", "type": "evaluation", "title": "从好到差排", "need": "四种做法排出先后", "why": "fixture",
+            "context": {"research_revision": 1, "directions": []}, "evidence_refs": [ref(name) for name in methods],
+            "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": i, "media_kind": "image"} for i in range(4)], "pick": 4}}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 900})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/research?kind=research&id=sr-rank")
+                form = "#cmp-ev-rank .compare-answer"
+                page.wait_for_selector(form)
+                status = lambda: page.text_content(f"{form} .compare-status")
+                letter = lambda name: page.click(f'{form} .compare-picks .chip-btn.letter:text-is("{name}"), {form} .compare-picks .chip-btn.letter:text-matches("^{name} ")')
+                places = lambda: page.eval_on_selector_all(f"{form} .compare-place", "e => e.map(x => x.textContent)")
+                self.assertEqual(status(), "还没提交 · 从好到差依次点 4 个")
+                for name in ("C", "A", "D"):
+                    letter(name)
+                self.assertEqual(places(), ["① C", "② A", "③ D"])
+                self.assertEqual(status(), "还没提交 · 再点第 4 名（还剩 1 个）")
+                letter("D")   # takes ③ back
+                for name in ("B", "D"):
+                    letter(name)
+                self.assertEqual(places(), ["① C", "② A", "③ B", "④ D"])
+                self.assertEqual(status(), "还没提交 · 再选 C 和 A 差多少")
+                self.assertTrue(page.is_disabled(f'{form} button[type="submit"]'))
+                gap = lambda i, key: page.click(f'{form} .compare-gap >> nth={i} >> [data-gap="{key}"]')
+                gap(0, "small")
+                gap(1, "none")
+                self.assertEqual(status(), "还没提交 · 再选 B 和 D 差多少")
+                gap(2, "large")
+                self.assertEqual(status(), "还没提交 · 可以提交")
+                page.click(f'{form} button[type="submit"]')
+                page.wait_for_selector("#cmp-ev-rank .compare-verdict")
+                saved = self.web("GET", "/research-state/request?research_id=sr-rank&full=1&feedback=latest")[1]["items"][0]["latest_feedback"]["data"]["evaluation"]
+                self.assertEqual((saved["picked"], saved["gaps"], saved["difference"]), (["C", "A", "B", "D"], ["small", "none", "large"], None))
+                self.assertIn("C ›小› A ≈ B ›大› D", page.text_content("#cmp-ev-rank .compare-verdict"))
+                page.wait_for_function("() => document.querySelectorAll('#cmp-ev-rank .compare-source').length === 4")
+                cards = page.eval_on_selector_all("#cmp-ev-rank .compare-item", """e => e.map(x => [x.dataset.slot, x.querySelector('.compare-rank')?.textContent,
+                                                  x.querySelector('.compare-source a')?.textContent])""")
+                self.assertEqual(cards, [["A", "②", "rk-native.png"], ["B", "③", "rk-bilinear.png"], ["C", "①", "rk-sgsr.png"], ["D", "④", "rk-ours.png"]])
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_a_comparison_answer_unlocks_beside_submit_and_says_it_is_not_saved_until_it_is(self):
         """Locked, the answer form asks for the steer password beside 提交 instead of sending the person to the top of
         the page. Until the answer is saved the form says it is not submitted and what is missing; a wrong password

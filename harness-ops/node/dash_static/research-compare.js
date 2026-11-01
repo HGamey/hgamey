@@ -1,10 +1,13 @@
 /* Comparisons an agent asks a human to judge: N images or videos shown as A, B, C…, of which the human picks k
-   (the agent sets both) and says how large the difference is. Which source sits behind each letter is shown only
+   (the agent sets both) and says how large the difference is; when k is N the human ranks them all, best first,
+   and says how much better each is than the next. Which source sits behind each letter is shown only
    once the comparison has an answer. Reads phonefarm/ab-evaluation@1 (two slots, pick one) and phonefarm/compare@1. */
 (() => {
   'use strict';
   const LETTERS = 'ABCDEFGH';
-  const DIFF = {small: '小', moderate: '中', large: '大'};
+  const DIFF = {small: '小', moderate: '中', large: '大'}, GAP = {none: '差不多', ...DIFF}, RANK = '①②③④⑤⑥⑦⑧';
+  // A comparison that asks for every item is a ranking.
+  const ranks = s => !s.legacy && s.slots.length > 1 && s.pick === s.slots.length;
 
   // One shape for both schemas: the slots in order, how many to pick, each slot's evidence ref and media kind.
   function spec(record) {
@@ -28,13 +31,16 @@
       return {same: value.preference === 'no_preference', unable: value.preference !== 'no_preference', difference: value.difference};
     }
     if (value.schema === 'phonefarm/compare-feedback@1')
-      return value.unable ? {unable: true} : value.picked?.length ? {picked: value.picked, difference: value.difference} : {same: true, difference: value.difference};
+      return value.unable ? {unable: true} : value.picked?.length ? {picked: value.picked, difference: value.difference, gaps: value.gaps?.length ? value.gaps : null}
+        : {same: true, difference: value.difference};
     return null;
   }
   function verdictText(v, pick) {
     if (!v) return '';
     if (v.unable) return '无法判断';
     if (v.same) return '差不多';
+    // A ranking reads best to worst with how far apart each neighbour is: B ›小› D ≈ A ›大› C.
+    if (v.gaps) return v.picked[0] + v.gaps.map((gap, i) => (gap === 'none' ? ' ≈ ' : ` ›${DIFF[gap]}› `) + v.picked[i + 1]).join('');
     const chosen = v.picked.join('、') + (pick === 1 ? ' 更好' : ' 入选');
     return DIFF[v.difference] ? `${chosen} · 差别${DIFF[v.difference]}` : chosen;
   }
@@ -297,7 +303,11 @@
     grid.addEventListener('click', event => { const image = event.target.closest('.compare-media img'); if (image) zoom(image.closest('.compare-item').dataset.slot); });
     article.append(clips.line, grid, together);
     if (answer) {
-      for (const letter of v?.picked || []) cards.get(letter)?.classList.add('picked');
+      if (v?.gaps) v.picked.forEach((letter, i) => {   // a ranking: each card carries its place; the best is marked
+        const card = cards.get(letter); card?.querySelector('figcaption').prepend(U.el('span', RANK[i] || `(${i + 1})`, 'compare-rank'));
+        if (i === 0) card?.classList.add('picked');
+      });
+      else for (const letter of v?.picked || []) cards.get(letter)?.classList.add('picked');
       const line = U.el('p', null, 'compare-verdict');
       line.append(U.el('span', U.speaker(answer.audit || {}), 'compare-who'), U.el('strong', verdictText(v, s.pick) || '已答复'));
       if (answer.data.text && answer.data.text !== verdictText(v, s.pick)) line.append(U.el('span', answer.data.text, 'compare-comment'));
@@ -322,38 +332,69 @@
     // Locked, the steer password is asked for right here, beside 提交, so nothing chosen is lost and no one is sent away.
     const password = U.el('input'), locked = () => !ctx.writable();
     Object.assign(password, {type: 'password', autocomplete: 'off', placeholder: '掌舵口令'}); password.setAttribute('aria-label', '掌舵口令');
-    let picked = [], other = null, degree = null;
-    picks.setAttribute('role', 'group'); picks.setAttribute('aria-label', `选 ${s.pick} 个`);
+    // Ranking, letters are clicked best to worst; each neighbouring pair then gets how far apart they are (gaps).
+    const ranking = ranks(s), order = U.el('div', null, 'compare-order');
+    let picked = [], gaps = [], other = null, degree = null;
+    const ask = ranking ? '从好到差依次点' : `选 ${s.pick} 个`;
+    picks.setAttribute('role', 'group'); picks.setAttribute('aria-label', ask);
     diff.setAttribute('role', 'group'); diff.setAttribute('aria-label', '差别');
     status.setAttribute('role', 'status');
     comment.rows = 1; comment.maxLength = 16384; comment.placeholder = '补充一句（可选）'; comment.setAttribute('aria-label', '补充');
     send.type = 'submit';
     const choice = (label, onClick, cls = '') => { const b = U.el('button', label, 'chip-btn ' + cls); b.type = 'button'; b.setAttribute('aria-pressed', 'false'); b.onclick = () => { failed = ''; onClick(); }; return b; };
-    picks.append(U.el('span', `选 ${s.pick} 个`, 'compare-hint'));
+    picks.append(U.el('span', ask, 'compare-hint'));
     const letters = s.slots.map(({slot}) => choice(slot, () => {
       other = null;
-      picked = picked.includes(slot) ? picked.filter(x => x !== slot) : [...(s.pick === 1 ? [] : picked), slot].slice(-s.pick);
+      if (ranking) {   // a ranked letter takes itself and every place after it back
+        const at = picked.indexOf(slot);
+        picked = at >= 0 ? picked.slice(0, at) : [...picked, slot];
+        gaps = picked.slice(1).map((_, i) => gaps[i] ?? null);
+      } else picked = picked.includes(slot) ? picked.filter(x => x !== slot) : [...(s.pick === 1 ? [] : picked), slot].slice(-s.pick);
       paint();
     }, 'letter'));
-    const same = choice('差不多', () => { other = other === 'same' ? null : 'same'; picked = []; paint(); });
-    const unable = choice('无法判断', () => { other = other === 'unable' ? null : 'unable'; picked = []; paint(); });
+    const same = choice('差不多', () => { other = other === 'same' ? null : 'same'; picked = []; gaps = []; paint(); });
+    const unable = choice('无法判断', () => { other = other === 'unable' ? null : 'unable'; picked = []; gaps = []; paint(); });
     picks.append(...letters, U.el('span', null, 'compare-sep'), same, unable);
     diff.append(U.el('span', '差别', 'compare-hint'), ...Object.entries(DIFF).map(([key, label]) => {
       const b = choice(label, () => { degree = degree === key ? null : key; paint(); }); b.dataset.diff = key; return b;
     }));
     const foot = U.el('div', null, 'compare-foot'); foot.append(comment, password, send);
-    box.append(picks, diff, foot, status);
-    function ready() { return other !== null || picked.length === s.pick && degree !== null; }
+    box.append(picks, order, diff, foot, status);
+    order.setAttribute('aria-label', '名次');
+    // The places so far, ① B ‹差不多 小 中 大› ② D …, each gap a choice of how much better the one before is.
+    function places() {
+      order.replaceChildren(...picked.flatMap((letter, i) => {
+        const place = U.el('span', null, 'compare-place'); place.append(U.el('b', RANK[i] || `(${i + 1})`), ` ${letter}`);
+        if (i === 0) return [place];
+        const group = U.el('span', null, 'compare-gap'); group.setAttribute('role', 'group'); group.setAttribute('aria-label', `${picked[i - 1]} 比 ${letter} 好多少`);
+        group.append(...Object.entries(GAP).map(([key, label]) => {
+          const b = choice(label, () => { gaps[i - 1] = gaps[i - 1] === key ? null : key; paint(); });
+          b.dataset.gap = key; b.setAttribute('aria-pressed', String(gaps[i - 1] === key)); return b;
+        }));
+        return [group, place];
+      }));
+    }
+    function ready() {
+      if (other !== null) return true;
+      return ranking ? picked.length === s.slots.length && gaps.every(Boolean) : picked.length === s.pick && degree !== null;
+    }
     // Until the answer is saved the form says so, and what is still missing.
     let failed = '';
     function paint() {
-      letters.forEach((b, i) => b.setAttribute('aria-pressed', String(picked.includes(s.slots[i].slot))));
+      letters.forEach((b, i) => {
+        const at = picked.indexOf(s.slots[i].slot);
+        b.setAttribute('aria-pressed', String(at >= 0)); b.textContent = ranking && at >= 0 ? `${s.slots[i].slot} ${RANK[at] || ''}` : s.slots[i].slot;
+      });
       same.setAttribute('aria-pressed', String(other === 'same')); unable.setAttribute('aria-pressed', String(other === 'unable'));
-      diff.hidden = picked.length === 0;
+      diff.hidden = ranking || picked.length === 0; order.hidden = !ranking || picked.length === 0; if (ranking) places();
       for (const b of diff.querySelectorAll('[data-diff]')) b.setAttribute('aria-pressed', String(b.dataset.diff === degree));
       password.hidden = !locked(); send.textContent = send.dataset.busy ? '提交中…' : locked() ? '解锁并提交' : '提交';
       send.disabled = !ready() || !!send.dataset.busy || locked() && !password.value;
-      const next = other === null && picked.length < s.pick ? `先选 ${s.pick} 个` : !ready() ? '再选差别大小' : locked() && !password.value ? '填掌舵口令后提交' : '可以提交';
+      const open = gaps.findIndex(gap => !gap);
+      const next = ranking && other === null && picked.length < s.slots.length
+          ? (picked.length ? `再点第 ${picked.length + 1} 名（还剩 ${s.slots.length - picked.length} 个）` : `从好到差依次点 ${s.slots.length} 个`)
+        : ranking && other === null && open >= 0 ? `再选 ${picked[open]} 和 ${picked[open + 1]} 差多少`
+        : other === null && picked.length < s.pick ? `先选 ${s.pick} 个` : !ready() ? '再选差别大小' : locked() && !password.value ? '填掌舵口令后提交' : '可以提交';
       status.textContent = send.dataset.busy ? '提交中…' : failed ? `没有提交：${failed}` : `还没提交 · ${next}`;
       status.classList.toggle('task-error', !!failed && !send.dataset.busy);
     }
@@ -364,13 +405,15 @@
       event.preventDefault();
       if (!ready() || send.dataset.busy) return;
       const display = Object.fromEntries(s.slots.map(({slot}) => [slot, state[slot]]));
-      const v = other === 'unable' ? {unable: true} : other === 'same' ? {same: true} : {picked: picked.slice().sort(), difference: degree};
+      // Picks keep the order they were clicked in: for a ranking that order is the answer.
+      const v = other === 'unable' ? {unable: true} : other === 'same' ? {same: true}
+        : ranking ? {picked: picked.slice(), gaps: gaps.slice(), difference: null} : {picked: picked.slice(), difference: degree};
       const evaluation = s.legacy
         ? {schema: 'phonefarm/ab-feedback@1', preference: v.unable ? 'unable_to_judge' : v.same ? 'no_preference' : v.picked[0],
            difference: v.unable ? 'unknown' : v.same ? 'none' : degree,
            reviewed: v.unable ? {A: null, B: null} : {A: true, B: true}, client_display: display, identity_revealed: false}
-        : {schema: 'phonefarm/compare-feedback@1', picked: v.picked || [], unable: !!v.unable, difference: v.unable ? null : v.same ? 'none' : degree,
-           client_display: display, identity_revealed: false};
+        : {schema: 'phonefarm/compare-feedback@1', picked: v.picked || [], unable: !!v.unable, difference: v.unable || v.gaps ? null : v.same ? 'none' : degree,
+           ...(v.gaps ? {gaps: v.gaps} : {}), client_display: display, identity_revealed: false};
       const text = comment.value.trim() || verdictText(v, s.pick);
       send.dataset.busy = '1'; failed = ''; paint();
       try {
