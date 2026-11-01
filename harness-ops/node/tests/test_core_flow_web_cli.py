@@ -612,6 +612,51 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn("research list feedback --request-id " + request_id, owed["command"])
         self.assertNotIn(request_id, [item["request_id"] for item in self.duties(token)["waiting_on_human"]])
 
+    def test_compare_defaults_to_full_ranking_with_gaps(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-ranking", self.write(
+            "create-ranking", {"title": "四格排序", "objective": "全部素材从好到差排列"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-ranking")[0], 0)
+        output = Path(self.jobs.path(self.jid, "out"))
+        output.mkdir(parents=True, exist_ok=True)
+        items = []
+        for name in ("native", "ours", "gsr", "bilinear"):
+            path = output / (name + ".png")
+            path.write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+            items.append(f"job:{self.jid}:{name}.png")
+        args = ["research", "compare", "sr-ranking", "--title", "超分排序", "--question", "从好到差排列"]
+        for item in items:
+            args += ["--item", item]
+        code, out, err = self.pf(token, *args)
+        self.assertEqual(code, 0, err)
+        comparison = json.loads(out)
+        request_id = comparison["request_id"]
+        request = self.cli("GET", "/research-state/request/" + request_id)[1]
+        self.assertEqual(request["data"]["evaluation"]["pick"], len(items))
+
+        ranking, gaps = ["C", "A", "D", "B"], ["small", "moderate", "large"]
+        assessment = {"schema": "phonefarm/compare-feedback@1", "picked": ranking, "unable": False,
+                      "gaps": gaps, "difference": None,
+                      "client_display": {slot: "decoded" for slot in "ABCD"}, "identity_revealed": False}
+        for index, bad_gaps in enumerate((["none"], ["small", "unknown", "large"])):
+            rejected = self.web("POST", f"/research-state/feedback/f-ranking-bad-{index}", self.write(
+                f"ranking-bad-{index}", {"request_id": request_id, "request_revision": 1,
+                                          "text": "无效间距", "evaluation": {**assessment, "gaps": bad_gaps}}))
+            self.assertEqual(rejected[0], 400, rejected)
+        code, feedback = self.web("POST", "/research-state/feedback/f-ranking", self.write(
+            "human-ranking", {"request_id": request_id, "request_revision": 1,
+                                "text": "C、A、D、B", "evaluation": assessment}))
+        self.assertEqual(code, 201, feedback)
+        saved = self.cli("GET", "/research-state/feedback/f-ranking")[1]["data"]["evaluation"]
+        self.assertEqual(saved["picked"], ranking)
+        self.assertEqual(saved["gaps"], gaps)
+        self.assertIsNone(saved["difference"])
+        owed = next(item for item in self.duties(token)["duties"]
+                    if item["kind"] == "process_feedback" and item["target"] == request_id)
+        self.assertEqual(owed["picked"], [{"slot": slot, "source": comparison["slots"][slot]} for slot in ranking])
+        self.assertEqual(owed["gaps"], gaps)
+
     def test_request_chain_reads_full_comparisons_and_latest_feedback_in_one_page(self):
         for rid, title, follows in (("sr-chain-root", "根任务", None), ("sr-chain-next", "接续任务", "sr-chain-root")):
             data = {"title": title, "objective": "一次读取链上的盲评", "follows": follows}

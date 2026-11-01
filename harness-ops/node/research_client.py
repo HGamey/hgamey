@@ -211,7 +211,7 @@ def parser():
     comparison = commands.add_parser("compare")
     comparison.add_argument("id", type=identifier)
     comparison.add_argument("--item", action="append", required=True)
-    comparison.add_argument("--pick", type=integer, default=1)
+    comparison.add_argument("--pick", type=integer, default=None)
     comparison.add_argument("--title", required=True)
     comparison.add_argument("--question", required=True)
     comparison.add_argument("--direction", type=identifier)
@@ -664,7 +664,8 @@ def _comparison_source(client, item, index):
 def _compare(client, args):
     if not 2 <= len(args.item) <= 8:
         raise ValueError("research compare 需要 2 到 8 个 --item")
-    if not 1 <= args.pick <= len(args.item):
+    pick = len(args.item) if args.pick is None else args.pick
+    if not 1 <= pick <= len(args.item):
         raise ValueError("--pick 必须在 1 到素材数之间")
     client.require_evaluation()
     current = client.request("GET", f"/research-state/research/{args.id}")
@@ -696,7 +697,7 @@ def _compare(client, args):
             "context": {"research_revision": current["revision"], "directions": directions},
             "evidence_refs": [{"kind": "result_source", "node_id": node_id, "result_id": result_id,
                                "source_name": source["name"]} for source in sources],
-            "evaluation": {"schema": "phonefarm/compare@1", "pick": args.pick,
+            "evaluation": {"schema": "phonefarm/compare@1", "pick": pick,
                            "items": [{"ref": index, "media_kind": kinds[index]} for index in order]}}
     operation_id = uuid.uuid4().hex
     body = json.dumps({"schema": "phonefarm/research-write@1", "operation_id": operation_id,

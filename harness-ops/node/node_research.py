@@ -150,9 +150,14 @@ def evaluation(kind, value, evidence_refs):
             raise ValueError("evaluation requires phonefarm/ab-evaluation@1 or phonefarm/compare@1")
     elif value.get("schema") == "phonefarm/compare-feedback@1":
         fields = {"schema", "picked", "unable", "difference", "client_display", "identity_revealed"}
-        object_fields(value, fields)
-        if set(value) != fields or not isinstance(value["picked"], list) or type(value["unable"]) is not bool:
+        object_fields(value, fields | {"gaps"})
+        if not fields.issubset(value) or not isinstance(value["picked"], list) or type(value["unable"]) is not bool:
             raise ValueError("comparison feedback requires picked and unable")
+        if "gaps" in value:
+            gaps = value["gaps"]
+            if (not isinstance(gaps, list) or len(gaps) != max(0, len(value["picked"]) - 1)
+                    or any(gap not in ("none", "small", "moderate", "large") for gap in gaps)):
+                raise ValueError("comparison feedback gaps must match adjacent picks and use none/small/moderate/large")
     else:
         fields = {"schema", "preference", "difference", "reviewed", "client_display", "identity_revealed"}
         object_fields(value, fields)

@@ -13,7 +13,7 @@ DELIVERY_STYLE = "交付写清：作为依据的每个任务是否有效，无�
 COMPARE_DUTY = "画质和性能都要和基线比，不能只报自己的数。画质：同一画面截原生全分辨率、你的做法、参照算法（如 GSR、双线性），用 research compare 请人盲评。性能：同场景、同时长、同起始温度逐个测。等人时做别的方向；交付放对比图或视频。"
 COMPARE_HELP = (COMPARE_DUTY + "\n"
     "pf-node research compare <研究ID> --item <job:ID:PATH 或本机文件> ×N [--pick K] --title \"<标题>\" --question \"<要人判断什么>\" [--direction <方向ID>]\n"
-    "N 为 2–8，PNG/JPEG 与 MP4/WebM 可混；洗牌后显示 A、B、C……，输出请求 ID、网页链接和素材对应。")
+    "N 为 2–8，PNG/JPEG 与 MP4/WebM 可混；洗牌后显示 A、B、C……，输出请求 ID、网页链接和素材对应。不写 --pick 时默认用全部素材，让人从好到差排序。")
 COLLABORATION = "只处理自己负责的研究，以及别人研究里点名给你的留言。接续的工作（复现、长稳、改进）在原任务里做：负责人加方向、重新交付；被点名帮忙的，把任务挂到原研究上（--research），结果用留言回在原留言下面。"
 TASK_STATE_HELP = "任务开着就是进行中；关上分两种，有成果的是已交付，没成果的是已关闭（不做了，或者并入了别的任务，要写原因）。关上的任务可以重新打开，接着做完再交付一次，交付会多一个版本。"
 LOOP = [
@@ -51,10 +51,10 @@ def _latest(db, kind):
                       "WHERE o.kind=? ORDER BY r.sequence", (kind,)).fetchall()
 
 
-def _comparison_picks(jobs, request, answers):
+def _comparison_answer(jobs, request, answers):
     spec = request.get("evaluation") or {}
     if spec.get("schema") != "phonefarm/compare@1":
-        return []
+        return {"picked": []}
     for answer in reversed(answers):
         value = (answer["data"].get("evaluation") or {})
         if value.get("schema") != "phonefarm/compare-feedback@1":
@@ -69,8 +69,8 @@ def _comparison_picks(jobs, request, answers):
             original = (f"job:{source['job_id']}:{source['path']}" if source["kind"] == "job_output"
                         else source["local_path"])
             picked.append({"slot": slot, "source": original})
-        return picked
-    return []
+        return {"picked": picked, **({"gaps": value["gaps"]} if value.get("gaps") else {})}
+    return {"picked": []}
 
 
 def duties(jobs, name, now=None):
@@ -159,7 +159,7 @@ def duties(jobs, name, now=None):
                        else f"pf-node research show request {row['id']}")
             owed.append({"kind": "process_feedback", "research_id": row["research_id"], "target": row["id"],
                          "unread": max(answer["sequence"] for answer in answers) > seen, "text": text, "command": command,
-                         **({"picked": _comparison_picks(jobs, data, answers)} if evaluation else {})})
+                         **(_comparison_answer(jobs, data, answers) if evaluation else {})})
         else:
             if not evaluation and row["research_id"] not in mine:
                 continue
