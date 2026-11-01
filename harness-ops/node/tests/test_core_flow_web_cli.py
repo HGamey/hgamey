@@ -2751,6 +2751,46 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_access_that_arrives_after_the_task_does_not_paint_it_again(self):
+        """For a viewer, access read after the task is shown changes nothing that may be done, so the task is not
+        painted again (which would read its comparisons and media a second time)."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.assertEqual(self.web("POST", "/research-state/research/sr-acc", self.write(
+            "create-acc", {"title": "权限晚到", "objective": "只画一次"}))[0], 201)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 800})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors, held, reads = [], [], []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.on("request", lambda request: reads.append(request.url) if "/research-state/request?research_id=sr-acc" in request.url else None)
+                page.route("**/dash/api/access", lambda route, request: held.append(route))   # access arrives after the task
+                with page.expect_response(lambda r: "/research-state/request?research_id=sr-acc" in r.url):
+                    page.goto(f"{base}/dash/research?kind=research&id=sr-acc")
+                page.wait_for_selector("#task-directions")
+                self.assertEqual(len(held), 1)
+                self.assertEqual(page.text_content("#access-message"), "正在读取权限…")
+                held[0].continue_()
+                page.wait_for_function("() => document.getElementById('access-message').textContent !== '正在读取权限…'")
+                page.wait_for_load_state("networkidle")
+                self.assertEqual(len(reads), 1, reads)
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_a_comparison_opens_in_a_viewer_that_switches_slots_in_place(self):
         """A picture opens an in-page, near full-screen viewer (no new page). Arrow keys and the A–D buttons switch the
         slot shown in the same box; only letters appear. Videos keep one clock across a switch. Esc closes it."""

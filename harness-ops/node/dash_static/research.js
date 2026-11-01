@@ -143,11 +143,28 @@
     }
     renderEvents(); renderCriteriaTransfer(); renderAssistanceTransfer();
   }
+  // The task shown is painted again only when what may be written changed: its parts ask nothing else of access,
+  // and painting again reads all of it (comparisons, media) once more.
   async function loadAccess() {
+    const could = writable();
     accessBusy = true; renderControls();
     try { access = await request(`${API}/access`); accessError = ''; $('login-link').hidden = true; }
     catch (error) { access = null; accessError = failText(error); $('login-link').hidden = error.status !== 401; }
-    finally { accessBusy = false; if (!disposed) { renderControls(); if (!writeContinuation && detailFresh && detail) renderDetail(detail); } }
+    finally { accessBusy = false; if (!disposed) { renderControls(); if (!writeContinuation && detailFresh && detail && writable() !== could) renderDetail(detail); } }
+  }
+  async function setAccess(body, lock = false) {
+    if (accessBusy) return; accessBusy = true; renderControls(); $('unlock-submit').disabled = true;
+    try { await request(`${API}/steer/${lock ? 'lock' : 'unlock'}`, {body}); $('unlock-form').hidden = true; message('unlock-message', ''); }
+    catch (error) { message('unlock-message', failText(error), true); }
+    finally {
+      $('steer-password').value = ''; $('unlock-submit').disabled = false; accessBusy = false; await loadAccess();
+      if (access?.steer) {
+        $('access-panel').hidden = true;
+        const action = writeContinuation; writeContinuation = null;
+        const shouldRender = action ? await action() : true;
+        if (shouldRender !== false && detailFresh && detail) renderDetail(detail);
+      }
+    }
   }
   async function setAccess(body, lock = false) {
     if (accessBusy) return; accessBusy = true; renderControls(); $('unlock-submit').disabled = true;
