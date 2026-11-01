@@ -57,8 +57,8 @@ class JobCenter:
                 raise ValueError(f'direction_id must name a direction on research {research_id}: {error}') from None
         return {'spec': spec, 'research_devices': list(research_devices)}
 
-    def select_request(self, spec):
-        return job_selection.select(self.local, self.prepare_request(spec))
+    def select_request(self, spec, *, infer_access=True):
+        return job_selection.select(self.local, self.prepare_request(spec), infer_access=infer_access)
 
     def start(self, spec, body, request_id=None, *, admit=None, selection=None):
         key = self.local.dispatch.request_key(request_id or uuid.uuid4().hex)
@@ -70,7 +70,10 @@ class JobCenter:
             if previous.get('stop') or self.refresh(previous):
                 return self.status(previous['id'])
             return self.transfer(previous, body)
-        node_id, request, phone = selection or self.select_request(spec)
+        # Requests already in the local queue retain their original defaults,
+        # even if an argv item has become a registered alias since submission.
+        node_id, request, phone = selection or self.select_request(
+            spec, infer_access=self.local.dispatch.queue.by_request(key) is None)
         if node_id == self.local.node_id and phone is None:
             return self.local.accept(request, body, key, job_id=secrets.token_hex(6), admit=admit)
         # The center's queue never reserves the worker's CPU or phone.

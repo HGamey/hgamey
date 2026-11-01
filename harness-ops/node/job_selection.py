@@ -1,7 +1,7 @@
 """Choose a phone once from observations; the selected node owns admission and locks."""
 from urllib.parse import quote, unquote
 
-from device_scope import conflicts, serial_from_argv
+from device_scope import conflicts, device_access, serial_from_argv
 
 
 def phones(node_id, name, snapshot, connected):
@@ -41,7 +41,30 @@ def catalog(jobs):
     return sorted(result, key=lambda item: item['ref'])
 
 
-def select(jobs, request):
+def select(jobs, request, *, infer_access=True):
+    original = request['spec']
+    node_id, request, phone = _select(jobs, request)
+    spec = request['spec']
+    if not infer_access or 'device_access' in original or device_access(original) != 'none':
+        return node_id, request, phone
+    # Only registered aliases count, including phones on outbound-only nodes.
+    # No fleet sampling or admission is needed to recognize an argv item.
+    candidates = phones(jobs.node_id, 'local', {'queue': {'lease': jobs.leases.snapshot(refresh=True)}}, True)
+    for entry in jobs.directory.list():
+        candidates.extend(phones(entry['node_id'], entry['name'], entry.get('snapshot') or {},
+                                 entry['connection']['status'] == 'ready'))
+    matched = [item for arg in spec.get('argv', []) for item in candidates
+               if item['device_binding'] and arg in item['aliases']
+               and (phone is None and 'execution_node_id' not in original or item['node_id'] == node_id)]
+    if not matched:
+        return node_id, request, phone
+    phone = phone or matched[0]
+    resources = ['device:' + item['device_id'] for item in matched if item['node_id'] == phone['node_id']]
+    spec = {**spec, 'device_access': 'write', 'resources': sorted(set(spec.get('resources', []) + resources))}
+    return phone['node_id'], {**request, 'spec': spec}, phone
+
+
+def _select(jobs, request):
     spec = dict(request['spec'])
     node_id = spec.pop('execution_node_id', jobs.node_id)
     model, reference = spec.pop('device_model', None), spec.pop('device_ref', None)
