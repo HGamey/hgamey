@@ -844,6 +844,10 @@ class NodeResearch:
                                       (kind, oid, base)).fetchone()
             if base_row is not None:
                 base_value = json.loads(base_row["data"])
+                if (kind in ("research", "direction") and "state" in patch_fields and "state_reason" not in patch_fields
+                        and patch["state"] != base_value.get("state")):
+                    patch["state_reason"] = None
+                    patch_fields.add("state_reason")
                 patch = {**base_value, **patch}
         value = normalize(kind, patch)
         changed_fields = sorted(key for key in patch_fields if base_value is not None and value.get(key) != base_value.get(key))

@@ -110,6 +110,7 @@ def duties(jobs, name, now=None):
             JOIN revisions prev ON prev.kind=cur.kind AND prev.id=cur.id AND prev.revision=cur.revision-1
             WHERE cur.kind='research' AND json_extract(cur.data,'$.state')='active'
               AND json_extract(prev.data,'$.state') IN ('closed','delivered') ORDER BY cur.sequence""").fetchall()
+        reopen_reasons = {row["research_id"]: json.loads(row["data"]).get("state_reason") for row in reopened}
 
     owed, waiting = [], []
     answered = {data["reply_to"] for _, data, audit in notes if audit.get("actor_label") == name and data["reply_to"]}
@@ -209,7 +210,7 @@ def duties(jobs, name, now=None):
                          "text": f"{rid}（{data['title']}）还没有方向；先写下要试的方向",
                          "command": f"pf-node research create direction <方向ID> <文件>   # research_id={rid}"})
         elif data["state"] == "active" and all(state in TERMINAL_DIRECTIONS for state in states):
-            reason = data.get("state_reason")
+            reason = reopen_reasons.get(rid)
             owed.append({"kind": "deliver", "research_id": rid,
                          "text": f"{rid} 的方向都已有结论；交付，或者再开一个方向"
                                  + (f"（任务是因为「{reason}」重新打开的）" if reason else ""),

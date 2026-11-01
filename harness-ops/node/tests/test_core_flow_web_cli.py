@@ -837,6 +837,40 @@ class CoreFlowTests(unittest.TestCase):
                          and item["research_id"] == "sr-first-delivery")
             self.assertEqual(first["text"], original)
 
+    def test_pause_resume_clears_stale_reason_without_claiming_a_reopen(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-pause-resume", self.write(
+            "create-pause-resume", {"title": "暂停再恢复", "objective": "恢复不是重新打开"}))[0], 201)
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        self.assertEqual(self.pf(token, "research", "claim", "sr-pause-resume")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/direction/d-pause-resume", self.write(
+            "create-d-pause-resume", {"research_id": "sr-pause-resume", "title": "已有结论",
+                                       "hypothesis": "恢复后继续交付"}))[0], 201)
+        self.assertEqual(self.pf(token, "research", "conclude", "d-pause-resume", "verified",
+                                 "--reason", "复测通过")[0], 0)
+        source = self.tmp / "research-state-patch.json"
+        current = self.cli("GET", "/research-state/research/sr-pause-resume")[1]
+        source.write_text(json.dumps({"state": "paused", "state_reason": "等设备到货"}))
+        self.assertEqual(self.pf(token, "research", "update", "research", "sr-pause-resume", str(source),
+                                 "--revision", str(current["revision"]), "--reason", "暂停等待设备")[0], 0)
+        paused = self.cli("GET", "/research-state/research/sr-pause-resume")[1]
+        source.write_text(json.dumps({"state": "active"}))
+        code, out, err = self.pf(token, "research", "update", "research", "sr-pause-resume", str(source),
+                                 "--revision", str(paused["revision"]), "--reason", "设备已到，恢复")
+        self.assertEqual(code, 0, err)
+        resumed = self.cli("GET", "/research-state/research/sr-pause-resume")[1]
+        self.assertEqual((resumed["data"]["state"], resumed["data"]["state_reason"]), ("active", None))
+        self.assertEqual(json.loads(out)["changed_fields"], ["state", "state_reason"])
+        deliver = next(item for item in self.duties(token)["duties"] if item["kind"] == "deliver"
+                       and item["research_id"] == "sr-pause-resume")
+        self.assertEqual(deliver["text"], "sr-pause-resume 的方向都已有结论；交付，或者再开一个方向")
+
+        source.write_text(json.dumps({"state": "paused"}))
+        code, _, _ = self.pf(token, "research", "update", "research", "sr-pause-resume", str(source),
+                             "--revision", str(resumed["revision"]), "--reason", "缺少新的暂停理由")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.cli("GET", "/research-state/research/sr-pause-resume")[1], resumed)
+
     def test_research_note_attaches_local_video(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-video", self.write(
             "create-video", {"title": "视频附件", "objective": "留言直接带本机视频"}))[0], 201)
