@@ -30,6 +30,7 @@ from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_DUTY, COMPARE_HELP,
 ADMIN = "core-flow-fixture-admin-token"
 VIEW = "core-flow-view-password"
 STEER = "core-flow-steer-password"
+COMPARE_MAPPING_HINT = "字母和来源的对应不要写进留言、报告、方向或标签；人答完以后，页面和签到都会给出来源，不用另外记。"
 
 
 def forbidden(*args, **kwargs):
@@ -702,6 +703,7 @@ class CoreFlowTests(unittest.TestCase):
                                  "--item", items[0], "--item", items[1], "--pick", "1",
                                  "--title", "小字对照", "--question", "哪边的小字更清楚？", "--direction", "d-compare")
         self.assertEqual(code, 0, err)
+        self.assertEqual(err.count(COMPARE_MAPPING_HINT), 2)
         comparison = json.loads(out)
         request_id = comparison["request_id"]
         self.assertIn(f"/dash/research?kind=request&id={request_id}", comparison["url"])
@@ -876,13 +878,16 @@ class CoreFlowTests(unittest.TestCase):
         value = self.duties(token)
         hint = "题目和说明里不要写能对上来源的线索，比如某种方法的画面有什么不同、哪几段来自同一次录制；素材有差别就只说有差别。"
         self.assertTrue(any(hint in step for step in value["loop"]))
+        self.assertTrue(any(COMPARE_MAPPING_HINT in step for step in value["loop"]))
         self.assertIn(COMPARE_DUTY, value["loop"])
         self.assertIn("要换掉旧的盲评", COMPARE_HELP)
         help_text = self.pf(token, "research", "--help")[1]
         self.assertIn(hint, help_text)
+        self.assertIn(COMPARE_MAPPING_HINT, help_text)
         self.assertIn(COMPARE_HELP, help_text)
         skill = (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8")
         self.assertIn(hint, skill)
+        self.assertIn(COMPARE_MAPPING_HINT, skill)
         self.assertIn(COMPARE_HELP, skill)
 
     def test_addressed_note_brings_another_agent_into_the_same_research(self):

@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import uuid
 from cli_time import utc
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION, TASK_STATE_HELP, REQUEST_CLOSE_HELP
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION, TASK_STATE_HELP, REQUEST_CLOSE_HELP, COMPARE_MAPPING_HELP
 
 
 HELP = """用法:
@@ -720,11 +720,13 @@ def _compare(client, args):
     print(f"pf-node: request/{request_id} operation_id={operation_id}", file=sys.stderr, flush=True)
     client.request("POST", f"/research-state/request/{request_id}", body)
     query = urllib.parse.urlencode({"kind": "request", "id": request_id})
+    print("pf-node: " + COMPARE_MAPPING_HELP, file=sys.stderr, flush=True)
     print(json.dumps({"schema_version": 1, "node_id": node_id, "research_id": args.id,
                       "result_id": result_id, "request_id": request_id,
                       "url": client.target.url + "/dash/research?" + query,
                       "slots": {"ABCDEFGH"[position]: args.item[index] for position, index in enumerate(order)}},
-                     ensure_ascii=False, allow_nan=False))
+                     ensure_ascii=False, allow_nan=False), flush=True)
+    print("pf-node: " + COMPARE_MAPPING_HELP, file=sys.stderr, flush=True)
     return 0
 
 
