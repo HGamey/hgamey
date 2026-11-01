@@ -305,17 +305,25 @@
     }));
   }
 
-  function block(record, answer, ctx, U) {
-    const s = spec(record), v = verdict(answer?.data.evaluation), state = {};
-    const article = U.el('article', null, 'compare' + (answer ? ' answered' : ''));
+  function block(record, answer, ctx, U, fold) {
+    const folded = fold && !answer && record.data.state !== 'open';
+    const article = U.el(folded ? 'details' : 'article', null, 'compare' + (answer ? ' answered' : folded ? ' compare-closed' : ''));
     article.id = 'cmp-' + record.id; article.dataset.request = record.id;
-    const head = U.el('div', null, 'compare-head');
+    const head = U.el(folded ? 'summary' : 'div', null, 'compare-head');
     head.append(U.el('strong', record.data.title, 'compare-title'));
     if (answer) head.append(U.tag('已评', 'ok'));
     else if (record.data.state === 'open') head.append(U.tag('待评', 'warn'));
     else head.append(U.tag('已关闭', 'off'));
-    head.append(U.el('span', record.audit?.actor_label || '', 'muted'), U.timeEl(record.created_at));
-    article.append(head, U.el('p', record.data.need, 'compare-need'));
+    const fill = () => { head.append(U.el('span', record.audit?.actor_label || '', 'muted'), U.timeEl(record.created_at)); contents(article, record, answer, ctx, U); };
+    article.append(head);
+    if (!folded) fill();
+    // A closed comparison nobody answered is one line: its question and files are read only if someone opens it.
+    else article.addEventListener('toggle', function opened() { if (article.open) { article.removeEventListener('toggle', opened); fill(); } });
+    return article;
+  }
+  function contents(article, record, answer, ctx, U) {
+    const s = spec(record), v = verdict(answer?.data.evaluation), state = {};
+    article.append(U.el('p', record.data.need, 'compare-need'));
     const grid = U.el('div', null, 'compare-grid'), cards = new Map(), n = s.slots.length;
     grid.style.setProperty('--cols', n === 4 ? 2 : Math.min(n, 3));
     // With two or more videos, one button starts them all from the beginning (and pauses them all while any plays).
@@ -371,7 +379,6 @@
         card.querySelector('figcaption').append(where);
       }));
     } else if (record.data.state === 'open') article.append(form(record, s, state, ctx, U));
-    return article;
   }
 
   function form(record, s, state, ctx, U) {
@@ -485,11 +492,11 @@
     // The newest answer is shown when it carries a judgement; otherwise the answers are read one by one as before.
     const answers = await Promise.all(requests.map(r => r.latest_feedback === null ? null
       : verdict(r.latest_feedback?.data?.evaluation) ? r.latest_feedback : load(r, U).catch(() => null)));
-    const open = [], done = [];
+    const open = [], done = [], closed = [];
     requests.forEach((r, i) => {
-      const item = block(r, answers[i], ctx, U), mark = scope?.tag(r.research_id);
+      const item = block(r, answers[i], ctx, U, true), mark = scope?.tag(r.research_id);
       if (mark) { item.querySelector('.compare-head').prepend(mark); item.dataset.task = r.research_id; }
-      (answers[i] || r.data.state !== 'open' ? done : open).push(item);
+      (answers[i] ? done : r.data.state !== 'open' ? closed : open).push(item);
     });
     const section = (items, title, id) => {
       if (!items.length) return null;
@@ -497,7 +504,7 @@
       box.id = id; head.append(U.el('h3', title), U.el('span', items.length > 1 ? String(items.length) : '', 'count'));
       box.append(head, ...items); return box;
     };
-    return {open: section(open, '待你评', 'task-compare-open'), done: section(done, '对比', 'task-compare-done')};
+    return {open: section(open, '待你评', 'task-compare-open'), done: section([...done, ...closed], '对比', 'task-compare-done')};
   }
 
   async function renderRequest(container, record, ctx, U) {

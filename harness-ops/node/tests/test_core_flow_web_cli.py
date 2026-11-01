@@ -105,7 +105,7 @@ class CoreFlowTests(unittest.TestCase):
                                                "resources": [], "actor_id": "agent-a"}, b"", "core-flow-job")
         self.jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
 
-    def _large_comparison(self, rid, kinds):
+    def _large_comparison(self, rid, kinds, title="哪个更清楚", need="选 1 个"):
         """A comparison (`kinds`: slot → media kind) of real media followed by noise, long enough for a read to take
         many writes, waiting on the page of task sr-<rid>. Returns the files by slot and the page's path."""
         import base64, struct, zlib
@@ -132,7 +132,7 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.web("POST", f"/research-state/research/{research}", self.write(
             "create-" + research, {"title": "大文件盲评", "objective": "断了也能下完"}))[0], 201)
         self.assertEqual(self.cli("POST", f"/research-state/request/{rid}", self.write("create-" + rid, {
-            "research_id": research, "type": "evaluation", "title": "哪个更清楚", "need": "选 1 个", "why": "fixture",
+            "research_id": research, "type": "evaluation", "title": title, "need": need, "why": "fixture",
             "context": {"research_revision": 1, "directions": []},
             "evidence_refs": [{"kind": "result_source", "node_id": self.node_id, "result_id": result, "source_name": slot} for slot in kinds],
             "evaluation": {"schema": "phonefarm/compare@1", "items": [{"ref": i, "media_kind": kind} for i, kind in enumerate(kinds.values())], "pick": 1}}))[0], 201)
@@ -3271,6 +3271,53 @@ class CoreFlowTests(unittest.TestCase):
             page.wait_for_function(f"() => [...document.querySelectorAll('{block} img')].every(i => i.complete && i.naturalWidth === 64)", timeout=20000)
             self.assertEqual(reads, [("A", "bytes=0-0"), ("B", "bytes=0-0"), ("A", "bytes=1-"), ("B", "bytes=1-")])
             self.assertEqual(page.text_content(line), f"已下载 2 张图片 · {sum(map(len, files.values())) / 1048576:.1f} MB")
+
+    def test_a_closed_comparison_nobody_answered_is_one_line_until_it_is_opened(self):
+        """Nobody will answer it, and its old question may hold clues a person judging the others should not see: the task
+        page shows its title and 已关闭, and reads its question and files only if it is opened. One that was answered
+        stays in full, closed or not."""
+        clue = "A 是原生，B 是超分"
+        _, path = self._large_comparison("ev-shut", {"A": "image", "B": "image"}, title="旧的一组", need=clue)
+        shut = self.cli("GET", "/research-state/request/ev-shut")[1]["data"]
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-judged", self.write("create-ev-judged", {
+            **shut, "title": "答过的一组", "need": "答过的题目"}))[0], 201)
+        self.assertEqual(self.web("POST", "/research-state/feedback/f-judged", self.write("answer-ev-judged", {
+            "request_id": "ev-judged", "request_revision": 1, "text": "A 更清楚", "evaluation": {
+                "schema": "phonefarm/compare-feedback@1", "picked": ["A"], "unable": False, "difference": "moderate",
+                "client_display": {"A": "decoded", "B": "decoded"}, "identity_revealed": False}}))[0], 201)
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-waiting", self.write("create-ev-waiting", {
+            **shut, "title": "等人评的一组", "need": "等人评的题目"}))[0], 201)
+        for rid in ("ev-shut", "ev-judged"):
+            current = self.cli("GET", f"/research-state/request/{rid}")[1]
+            closing = {**self.write(f"close-{rid}", {**current["data"], "state": "closed", "close_reason": "重新出题"}), "base_revision": current["revision"], "reason": "重新出题"}
+            self.assertEqual(self.cli("POST", f"/research-state/request/{rid}", closing)[0], 201)
+        row, reads = "#cmp-ev-shut", []
+        with self._browser_page() as page:
+            page.on("request", lambda request: reads.append(request.url) if "/request/ev-shut/media/" in request.url else None)
+            page.goto(f"http://%s:%d{path}" % self.address)
+            pictures = lambda block: f"() => [...document.querySelectorAll('{block} .compare-media img')].length === 2 && [...document.querySelectorAll('{block} .compare-media img')].every(i => i.naturalWidth === 64)"
+            page.wait_for_function(pictures("#cmp-ev-waiting"), timeout=20000)
+            page.locator(row).scroll_into_view_if_needed()   # as near the screen as can be, and still nothing is read
+            page.wait_for_function(pictures("#cmp-ev-judged"), timeout=20000)
+            self.assertEqual(page.eval_on_selector_all("#task-compare-done > .compare", "e => e.map(x => x.id)"), ["cmp-ev-judged", "cmp-ev-shut"])
+            self.assertFalse(clue in page.content(), "its question is not on the page until it is opened")
+            self.assertEqual(reads, [], "its files are not read until it is opened")
+            self.assertEqual(page.text_content(f"{row} > summary"), "旧的一组已关闭")
+            self.assertLess(page.eval_on_selector(f"{row} > summary", "e => e.getBoundingClientRect().height"), 40, "one line")
+            self.assertEqual(page.text_content("#cmp-ev-judged .compare-need"), "答过的题目")
+            self.assertTrue(page.is_visible("#cmp-ev-judged .compare-verdict"))
+            self.assertEqual(page.text_content("#cmp-ev-waiting .compare-need"), "等人评的题目")
+            page.click(f"{row} > summary")
+            page.wait_for_function(pictures(row), timeout=20000)
+            self.assertEqual(page.text_content(f"{row} .compare-need"), clue)
+            self.assertEqual(len(reads), 4, "each file's first byte and the rest of it")
+            self.assertEqual(page.locator(f"{row} form").count(), 0, "still closed: nothing to answer")
+            page.click(f"{row} > summary")
+            self.assertTrue(page.is_hidden(f"{row} .compare-need"))
+            page.click(f"{row} > summary")
+            page.wait_for_function(f"() => document.querySelector('{row}').open")
+            self.assertEqual(page.locator(f"{row} .compare-grid").count(), 1, "opened again, it is not built again")
+            self.assertEqual(len(reads), 4)
 
     def test_a_ranking_is_answered_in_the_order_the_letters_are_clicked(self):
         """A comparison that asks for every item is a ranking: letters are clicked best to worst (a ranked letter takes

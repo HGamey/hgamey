@@ -392,6 +392,15 @@
 .research-view .task-closed time { font-size: var(--fs-xs); }
 /* A comparison opened from 去评 lands below the sticky top bar, briefly outlined. */
 .research-view .compare { scroll-margin-top: 72px; }
+/* A closed comparison nobody answered: one line until it is opened. */
+.research-view .compare-section > .compare-closed + .compare-closed { margin-top: var(--sp-1); padding-top: 0; border-top: 0; }
+.research-view .compare-closed > summary { align-items: center; flex-wrap: nowrap; padding: 2px 0; list-style: none; }
+.research-view .compare-closed > summary::-webkit-details-marker { display: none; }
+.research-view .compare-closed > summary::before { content: '▸'; color: var(--muted); }
+.research-view .compare-closed[open] > summary::before { content: '▾'; }
+.research-view .compare-closed:not([open]) .compare-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: 500; color: var(--ink2); }
+.research-view .compare-closed > summary > .tag { flex: none; }
+.research-view .compare-section > .compare-closed[open] { margin-bottom: var(--sp-4); }
 .research-view .compare.compare-target { outline: 2px solid var(--acc); outline-offset: 8px; border-radius: 6px; transition: outline-color 1s; }
 .research-view .compare-status { color: var(--muted); }
 /* Video comparisons download every clip before any plays: the line shows the total, each slot its own share. */
