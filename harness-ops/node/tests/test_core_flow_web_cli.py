@@ -1217,6 +1217,16 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertIn(reference, err)
                 self.assertIn(reason, err)
 
+    def test_delivery_error_names_the_missing_result(self):
+        self.assertEqual(self.web("POST", "/research-state/research/sr-result-errors", self.write(
+            "create-result-errors", {"title": "结果引用错误定位", "objective": "指出哪个结果引用无法解析"}))[0], 201)
+        reference = "result:r-missing-evidence"
+        code, _, err = self.pf(ADMIN, "research", "deliver", "sr-result-errors", "--summary", "定位错误",
+                               "--artifact", f"job:{self.jid}", "--artifact", reference)
+        self.assertNotEqual(code, 0, err)
+        self.assertIn(reference, err)
+        self.assertIn("结果不存在", err)
+
     def test_jobs_carry_their_research_to_the_task_page_and_the_phone(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
             "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)

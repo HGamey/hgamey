@@ -576,14 +576,20 @@ class NodeResearch:
                             raise ValueError("attachment evidence does not match its immutable bytes")
                         binding.update(identity_kind="attachment_reference", attachment_sha256=info["sha256"])
                     else:
-                        row = self.results._row(ref["result_id"])
+                        reference = "result:" + ref["result_id"] + (":" + ref["source_name"] if kind == "result_source" else "")
+                        try:
+                            row = self.results._row(ref["result_id"])
+                        except ResultError:
+                            raise ResearchError(404, "research_reference_not_found",
+                                                f"引用 {reference} 无法解析：结果不存在") from None
                         binding.update(identity_kind="result_reference", result_sequence=row["sequence"],
                                        result_registered_at=row["registered_at"])
                         if kind == "result_source":
                             observation = next((item for item in json.loads(row["observations"])
                                                 if item["name"] == ref["source_name"]), None)
                             if observation is None:
-                                raise ValueError("result source is absent")
+                                raise ResearchError(404, "research_reference_not_found",
+                                                    f"引用 {reference} 无法解析：结果里没有这个已登记的源文件")
                             binding["source_observation"] = {k: v for k, v in observation.items() if k != "stamp"}
                             binding["identity_kind"] = ("content_sha256" if observation.get("sha256") else
                                 "registration_bound" if observation.get("stamp") else "unverified")
