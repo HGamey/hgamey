@@ -2282,6 +2282,48 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_an_agent_who_joins_shows_in_the_live_command_view_without_a_reload(self):
+        """Live, the command view takes in a model whose only change is a new agent: the rail counts and lists it."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/command")
+                page.wait_for_function("() => window.__ready === true")
+                before = len(self.web("GET", "/command")[1]["agents"])
+                self.assertEqual(page.text_content("#agents-n"), f"{before} 个")
+                self.jobs.agents.create({"name": "agent-late"})
+                # Polls go on until one reads a model with the new agent (rebuilt after a few seconds); nothing else changed.
+                for _ in range(4):
+                    with page.expect_response(lambda r: r.url.endswith("/dash/api/command"), timeout=30000) as polled:
+                        pass
+                    if "agent-late" in polled.value.text():
+                        break
+                else:
+                    self.fail("no poll read the new agent")
+                page.wait_for_function(f"() => document.getElementById('agents-n').textContent === '{before + 1} 个'", timeout=3000)
+                self.assertTrue(page.is_visible('#roster li[data-agent="agent-late"]'))
+                self.assertEqual(page.get_attribute("#t-live", "aria-pressed"), "true")
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_pages_link_versioned_assets_the_browser_may_keep(self):
         def get(path):
             connection = http.client.HTTPConnection(*self.address, timeout=10)

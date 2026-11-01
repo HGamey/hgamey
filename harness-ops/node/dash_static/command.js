@@ -564,7 +564,8 @@ async function poll(now) {
   try {
     const raw = await fetchModel('live');
     S.skew = Date.now() / 1000 - raw.at; S.lastOk = Date.now(); S.misses = 0; S.error = null;
-    const sig = JSON.stringify([raw.research?.length, raw.directions?.length, raw.notes?.length, raw.jobs?.length, raw.jobs?.map(j => [j.ended, j.claimed, j.queued]).flat().reduce((a, b) => a + (b || 0), 0), raw.research?.map(r => r.updated_at).reduce((a, b) => a + b, 0), raw.directions?.map(r => r.updated_at).reduce((a, b) => a + b, 0)]);
+    // What can change on screen: the agents, how many of each record, and the times runs and records moved.
+    const sig = JSON.stringify([raw.agents, raw.research?.length, raw.directions?.length, raw.notes?.length, raw.jobs?.length, raw.jobs?.map(j => [j.ended, j.claimed, j.queued]).flat().reduce((a, b) => a + (b || 0), 0), raw.research?.map(r => r.updated_at).reduce((a, b) => a + b, 0), raw.directions?.map(r => r.updated_at).reduce((a, b) => a + b, 0)]);
     if (sig !== S.sig && S.src === 'live') { S.sig = sig; adopt(raw, 'live', true); if (S.live) { S.T1 = wallNow(); refresh(true); } else refresh(false); }
     else if (S.src === 'live') { S.M.phones = normalize(raw, 'live').phones; }
     pollTimer = setTimeout(poll, POLL_MS);
