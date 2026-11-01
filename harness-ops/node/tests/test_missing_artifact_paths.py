@@ -67,3 +67,14 @@ class MissingArtifactPathTests(TestCase):
         self.assertIn("job_not_found", result.stderr)
         self.assertIn("no such job", result.stderr)
         self.assertNotIn("未跟随重定向", result.stderr)
+
+    def test_cli_pause_prints_the_missing_job_code_and_error(self):
+        cli = Path(__file__).resolve().parents[1] / "pf-node"
+        env = dict(os.environ, PF_NODE_URL="http://%s:%s" % self.server.server_address,
+                   PF_NODE_TOKEN=self.admin, PF_NODE_ID=self.node.node_id)
+        env.pop("PF_NODE_TOKEN_FILE", None)
+        result = subprocess.run([sys.executable, str(cli), "pause", "ffffffffffff"],
+                                env=env, cwd=self.root, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("job_not_found", result.stderr)
+        self.assertIn("no such job", result.stderr)
