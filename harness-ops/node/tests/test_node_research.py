@@ -1,8 +1,11 @@
 """Research metadata is durable collaboration state, not an execution scheduler."""
 import base64
 from concurrent.futures import ThreadPoolExecutor
+import contextlib
 import copy
 from http.server import ThreadingHTTPServer
+import http.client
+import io
 import json
 import os
 from pathlib import Path
@@ -17,6 +20,7 @@ from urllib.parse import urlencode, urlsplit
 NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
 import dash
+import research_client
 from node_fleet import FleetState
 from node_read import decode_cursor, encode_cursor
 from node_service import Jobs, make_handler, readonly_token
@@ -96,6 +100,30 @@ class NodeResearchTests(unittest.TestCase):
         env.thread.start()
         env.url = "http://127.0.0.1:" + str(env.server.server_port)
         self.assertEqual(env.jobs.games.node_id, self.pin)
+
+    def test_post_connection_drop_after_write_points_to_operation_lookup(self):
+        target = mock.Mock()
+        target.command.return_value = "pf-node"
+        written = []
+
+        def record_write(method, path, body, headers):
+            written.append(json.loads(body))
+            return object()
+
+        target.request.side_effect = record_write
+        target.opener.open.side_effect = http.client.RemoteDisconnected("dropped after write")
+        client = research_client.Client(target)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = research_client._post(client, "note", "n-dropped",
+                                           {"research_id": "study", "text": "write once"}, None, None)
+        self.assertEqual(result, 2)
+        self.assertEqual(len(written), 1)
+        self.assertEqual(target.opener.open.call_count, 1)
+        operation_id = written[0]["operation_id"]
+        self.assertEqual(json.loads(stdout.getvalue())["operation_id"], operation_id)
+        self.assertIn(f"pf-node research operation {operation_id}", stderr.getvalue())
+        self.assertIn("不重发 POST", stderr.getvalue())
 
     def test_cas_operation_replay_cycle_rollback_and_restart_history(self):
         source = self.env.root / "research-data.json"

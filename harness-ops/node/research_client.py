@@ -593,8 +593,22 @@ def _post(client, kind, oid, data, base, reason):
     body = json.dumps({"schema": "phonefarm/research-write@1", "operation_id": operation_id, "base_revision": base,
                        "data": data, "actor_label": None, "reason": reason},
                       ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    lookup = f"{client.target.command()} research operation {operation_id}"
     print(f"pf-node: {kind}/{oid} operation_id={operation_id}", file=sys.stderr, flush=True)
-    print(json.dumps(client.request("POST", f"/research-state/{kind}/{oid}", body), ensure_ascii=False))
+    try:
+        value = client.request("POST", f"/research-state/{kind}/{oid}", body)
+    except RequestError as error:
+        if error.status is not None:
+            raise
+        _error(error, operation_id=operation_id, kind=kind, identity=oid)
+        print(f"pf-node: 保留原 operation_id={operation_id}；仅用 {lookup} 查询。"
+              "不换 ID、不重发 POST、不自动合并草稿。", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print(f"pf-node: 写入回执未确认；保留原 operation_id={operation_id}，用 {lookup} 查询。"
+              "不换 ID、不重发 POST。", file=sys.stderr)
+        return 130
+    print(json.dumps(value, ensure_ascii=False))
     return 0
 
 
