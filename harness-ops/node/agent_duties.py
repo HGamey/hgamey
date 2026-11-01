@@ -96,7 +96,7 @@ def duties(jobs, name, now=None):
         for row in _latest(db, "request"):
             data, audit = json.loads(row["data"]), json.loads(row["audit"])
             evaluation = data.get("type") == "evaluation"
-            if ((row["research_id"] in mine and not evaluation)
+            if ((row["research_id"] in owned and not evaluation)
                     or (row["research_id"] in owned and evaluation and audit.get("actor_label") == name)):
                 requests.append((row, data, audit))
         feedback = {}
@@ -160,6 +160,8 @@ def duties(jobs, name, now=None):
                          "unread": max(answer["sequence"] for answer in answers) > seen, "text": text, "command": command,
                          **({"picked": _comparison_picks(jobs, data, answers)} if evaluation else {})})
         else:
+            if not evaluation and row["research_id"] not in mine:
+                continue
             waiting.append({**({"kind": "evaluation"} if evaluation else {}),
                             "research_id": row["research_id"], "request_id": row["id"], "title": data["title"],
                             "overdue": data["due_at"] is not None and data["due_at"] < now})

@@ -511,6 +511,35 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn(DELIVERY_STYLE, self.pf(token, "--help")[1])
         self.assertIn(DELIVERY_STYLE, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
 
+    def test_request_feedback_remains_owner_duty_after_terminal_state(self):
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        for terminal in ("delivered", "closed"):
+            with self.subTest(terminal=terminal):
+                rid, request_id = "sr-request-" + terminal, "rq-after-" + terminal
+                self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                    "create-" + rid, {"title": rid, "objective": "终态后仍处理请求回答"}))[0], 201)
+                self.assertEqual(self.pf(token, "research", "claim", rid)[0], 0)
+                current = self.cli("GET", f"/research-state/research/{rid}")[1]
+                self.assertEqual(self.agent(token, "POST", f"/research-state/request/{request_id}", self.write(
+                    "create-" + request_id, {"research_id": rid, "type": "guidance", "title": "选择下一步",
+                                              "need": "确定复测范围", "why": "影响后续方向",
+                                              "context": {"research_revision": current["revision"], "directions": []},
+                                              "due_at": None}))[0], 201)
+                if terminal == "delivered":
+                    self.assertEqual(self.pf(token, "research", "deliver", rid, "--summary", "先交付",
+                                             "--artifact", f"job:{self.jid}")[0], 0)
+                else:
+                    self.assertEqual(self.pf(token, "research", "close", rid, "--reason", "先停止")[0], 0)
+                self.assertNotIn(request_id, [item["request_id"] for item in self.duties(token)["waiting_on_human"]])
+                self.assertEqual(self.web("POST", f"/research-state/feedback/f-after-{terminal}", self.write(
+                    "answer-after-" + terminal, {"request_id": request_id, "request_revision": 1,
+                                                  "text": "按同场景复测", "supersedes": None}))[0], 201)
+                pending = self.duties(token)["duties"]
+                owed = next(item for item in pending if item["kind"] == "process_feedback" and item["target"] == request_id)
+                self.assertEqual(owed["research_id"], rid)
+                self.assertEqual(self.cli("GET", f"/research-state/request/{request_id}")[1]["data"]["state"], "open")
+
     def test_compare_reaches_human_feedback_and_agent_checkin(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-compare", self.write(
             "create-compare", {"title": "主观画质", "objective": "让人比较两个候选"}))[0], 201)
