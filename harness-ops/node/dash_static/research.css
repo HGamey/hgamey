@@ -327,6 +327,7 @@
 .research-view .compare-foot textarea { flex: 1; min-width: 0; min-height: 34px; max-height: 240px; padding: 6px 10px; resize: none; font: inherit; font-size: var(--fs-sm); line-height: 1.5; }
 .research-view .compare-foot button.ghost.primary { min-height: 34px; padding: 0 18px; font-weight: 600; }
 .research-view .compare-answer > .note.task-error { margin: 0; color: var(--bad); }
+.research-view .task-report-missed .task-error { color: var(--bad); }
 .research-view .compare-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--sp-2); margin: var(--sp-2) 0 0; padding: 8px 12px; border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); }
 .research-view .compare-who { color: var(--muted); }
 .research-view .compare-comment { color: var(--ink2); overflow-wrap: anywhere; }

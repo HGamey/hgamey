@@ -1740,6 +1740,56 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_chains_newest_report_that_cannot_be_read_keeps_its_place(self):
+        """On a chain page the newest delivery leads. When its read fails it stays first and says it was not read,
+        with a retry; the older report stays folded instead of passing for the newest. The retry shows it."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        for rid, follows in (("rp-old", None), ("rp-new", "rp-old")):
+            self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+                "create-" + rid, {"title": "交付 " + rid, "objective": "最新的交付在前", "follows": follows}))[0], 201)
+            self.assertEqual(self.pf(ADMIN, "research", "deliver", rid, "--summary", "# 报告 " + rid, "--artifact", f"job:{self.jid}",
+                                     "--game-version", "5.1", "--device", "FixturePhone")[0], 0)
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors, reads = [], []
+
+                def once(route, request):
+                    # The first read of the newer task's record is cut off; later ones go through.
+                    reads.append(request.url)
+                    return route.abort("connectionreset") if len(reads) == 1 else route.continue_()
+                page.route("**/dash/api/research-state/research/rp-new*", once)
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/research?kind=research&id=rp-old")
+                page.wait_for_selector("#task-report")
+                report = page.text_content("#task-report")
+                self.assertIn("② 交付 rp-new 的交付报告", report)
+                self.assertIn("没读到这份交付报告。", report)
+                self.assertNotIn("报告 rp-old", report, "the older report does not stand in for the newest")
+                self.assertEqual(page.eval_on_selector_all(".report-older summary", "e => e.map(x => x.textContent.split(' · ')[0])"), ["① 交付 rp-old 的交付报告"])
+                self.assertEqual(page.locator(".task-report:not(.task-report-missed)").count(), 0)
+                page.click("#task-report button:has-text('重试')")
+                page.wait_for_function("() => document.getElementById('task-report').textContent.includes('报告 rp-new')")
+                self.assertEqual(page.locator(".task-report-missed").count(), 0)
+                self.assertEqual(len(reads), 2)
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_the_main_line_ends_at_the_newest_direction_even_after_an_older_one_is_edited(self):
         """Both views end the main line at the newest standing direction by creation. Editing an older direction (as a
         based_on backfill with research update does) moves its updated_at, not where the line ends. List items carry

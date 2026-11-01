@@ -674,9 +674,24 @@
     const read = m => m.id === record.id ? Promise.resolve(record) : api(`/research-state/research/${encodeURIComponent(m.id)}`).catch(() => null);
     const done = [...scope.members.values()].filter(m => m.state === 'delivered' || m.id === record.id && record.data.deliverable)
       .sort((a, b) => (b.id === record.id ? record.updated_at : b.updated_at) - (a.id === record.id ? record.updated_at : a.updated_at));
-    let newest = null;
-    while (done.length && !newest) { const r = await read(done.shift()); if (r?.data.deliverable) newest = r; }
+    // The newest delivery leads. One that could not be read keeps its place and says so, with a retry: an older one
+    // must not pass for the newest. A delivered task whose record has no report is passed over.
+    let newest = null, missed = null;
+    while (done.length && !newest && !missed) { const m = done.shift(), r = await read(m); if (r === null) missed = m; else if (r.data.deliverable) newest = r; }
     const tagged = r => { const section = deliverableSection(r), mark = scope.tag(r.id); if (mark) section.querySelector('.section-head').prepend(mark); return section; };
+    const unread = m => {
+      const box = el('section', null, 'research-section task-report task-report-missed'), head = el('div', null, 'section-head');
+      const status = el('p', '没读到这份交付报告。', 'note task-error'), again = el('button', '重试', 'ghost');
+      box.id = 'task-report'; box.dataset.task = m.id; again.type = 'button';
+      head.append(el('h2', `${m.n} ${m.title} 的交付报告`)); box.append(head, status, again);
+      again.onclick = async () => {
+        again.disabled = true; status.textContent = '读取中…';
+        const r = await read(m);
+        if (r?.data.deliverable) { const section = tagged(r); section.dataset.task = r.id; section.classList.toggle('seg-out', box.classList.contains('seg-out')); box.replaceWith(section); return; }
+        status.textContent = '没读到这份交付报告。'; again.disabled = false;
+      };
+      return box;
+    };
     const older = done.map(m => {
       const box = el('details', null, 'research-section report-older');
       box.dataset.task = m.id; box.append(el('summary', `${m.n} ${m.title} 的交付报告 · ${short(m.id === record.id ? record.updated_at : m.updated_at)}`));
@@ -689,6 +704,7 @@
       });
       return box;
     });
+    if (missed) return [unread(missed), ...older];
     if (!newest) return older;
     const section = tagged(newest); section.dataset.task = newest.id;
     return [section, ...older];
