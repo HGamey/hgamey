@@ -126,6 +126,8 @@ button:disabled { opacity: .45; cursor: default; }
 button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 207, 192, .1); border-color: rgba(92, 207, 192, .45); }
 @container top (max-width: 980px) { .counts span[data-k="active"], .counts span[data-k="closed"], .counts span[data-k="runs"] { display: none; } .mode small { display: none; } }
 @container top (max-width: 700px) { .counts span[data-k="tasks"], .counts span[data-k="done"] { display: none; } }
+/* Phone width: the actions scroll sideways instead of running off the screen out of reach. */
+@container top (max-width: 560px) { .actions { flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; } .actions > * { flex: none; } .top { gap: 8px; padding: 0 10px; } }
 
 /* Map */
 .stage { grid-area: stage; position: relative; overflow: hidden; cursor: grab; min-width: 0; touch-action: none;
