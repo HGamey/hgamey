@@ -14,8 +14,8 @@ class ArtifactChanged(ValueError):
     """A writer changed an artifact while it was being described or archived."""
 
 
-EXPORT_LIMITS = {"scope": "directory_export_cache_generation", "source_bytes": 512 << 20,
-                 "compressed_bytes": 512 << 20, "entries": 4096, "max_depth": 64,
+EXPORT_LIMITS = {"scope": "directory_export_cache_generation", "source_bytes": 2 << 30,
+                 "compressed_bytes": 2 << 30, "entries": 4096, "max_depth": 64,
                  "min_free_bytes": 64 << 20}
 
 

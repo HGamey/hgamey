@@ -409,6 +409,19 @@ class NodeResultTests(unittest.TestCase):
         self.assertIn("采到数据集", skill)
         self.assertIn("dataset", skill)
 
+    def test_dataset_list_exposes_which_result_supersedes_each_version(self):
+        old = registration("dataset-old-version", None)
+        old.update(sources=[], metrics=[], dataset={**dataset(), "version": "v20"})
+        new = registration("dataset-current-version", None)
+        new.update(sources=[], metrics=[], dataset={**dataset(), "version": "v10"}, supersedes=old["result_id"])
+        self.assertEqual(self.api("POST", "/results", old)[0], 201)
+        self.assertEqual(self.api("POST", "/results", new)[0], 201)
+        listed = self.cli("list", "--datasets")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        items = {item["result_id"]: item for item in json.loads(listed.stdout)["items"]}
+        self.assertEqual(items["dataset-old-version"]["superseded_by"], "dataset-current-version")
+        self.assertIsNone(items["dataset-current-version"]["superseded_by"])
+
     def test_dataset_help_lists_optional_field_types_and_numeric_timestamp(self):
         help_result = self.cli("--help")
         self.assertEqual(help_result.returncode, 0, help_result.stderr)

@@ -51,9 +51,10 @@ HELP = """用法:
 recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
 plan-template 离线输出 next_experiment JSON 草稿（title、plan、research_revision），可带路线，不提交任务。
 把完整输出作为方向 data.next_experiment；不要嵌套进 next_experiment.plan，plan 只收字符串。
-create 和 direction add 的方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
+create research 的任务 data 必填 title、objective。
+create direction 和 direction add 的方向 data 必填 research_id、title、hypothesis；next_experiment 只收 title、plan、research_revision。
 direction add 把 --based-on 写成 data.based_on={direction_id,job_id}；方向须同任务或在 follows 前链且更早，指定运行须挂在该方向。
-最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
+方向最小结构：{"research_id":"…","title":"…","hypothesis":"…","next_experiment":<plan-template 的输出>}。
 KIND 为 research/direction/request/feedback/note。research list 必须带 KIND，可选值同前；FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 research 列表可用 --follows <研究ID> 只取它的接续任务。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。

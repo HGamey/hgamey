@@ -58,6 +58,11 @@ class ArtifactIOTests(unittest.TestCase):
             return real_open(path, flags, *args, **kwargs)
         return patch.object(artifact_io.os, "open", opening)
 
+    def test_directory_export_limits_fit_dataset_batches_without_changing_space_reserve(self):
+        self.assertEqual(artifact_io.EXPORT_LIMITS["source_bytes"], 2 << 30)
+        self.assertEqual(artifact_io.EXPORT_LIMITS["compressed_bytes"], 2 << 30)
+        self.assertEqual(artifact_io.EXPORT_LIMITS["min_free_bytes"], 64 << 20)
+
     def test_file_swap_to_symlink_at_open_is_rejected(self):
         def swap():
             self.file.unlink()

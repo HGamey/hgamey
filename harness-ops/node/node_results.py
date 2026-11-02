@@ -436,13 +436,19 @@ class NodeResults:
                     params.append(val)
             rows = db.execute("SELECT * FROM results WHERE " + " AND ".join(terms) + " ORDER BY sequence DESC LIMIT ?",
                               (*params, limit + 1)).fetchall()
+            superseded_by = {}
+            replacements = db.execute("""SELECT result_id, json_extract(manifest, '$.supersedes') FROM results
+                WHERE json_extract(manifest, '$.supersedes') IS NOT NULL ORDER BY sequence""").fetchall()
+            for replacement in replacements:
+                superseded_by[replacement[1]] = replacement[0]
         items = []
         for row in rows[:limit]:
             value = json.loads(row["manifest"])
             items.append({"result_id": row["result_id"], "title": row["title"], "job_id": row["job_id"],
                           "labels": value["labels"], "outcome": row["outcome"], "registered_at": row["registered_at"],
                           "provenance": json.loads(row["provenance"]), "metric_count": len(value["metrics"]),
-                          "source_count": len(value["sources"]), "dataset": value.get("dataset")})
+                          "source_count": len(value["sources"]), "dataset": value.get("dataset"),
+                          "superseded_by": superseded_by.get(row["result_id"])})
         cursor = encode_cursor([self.node_id, filters, upper, rows[limit - 1]["sequence"]]) if len(rows) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": items, "next_cursor": cursor}
 

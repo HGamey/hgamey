@@ -40,17 +40,17 @@
     }
   }
 
-  // Each name once, the one with the newest registration first; its versions highest first, unversioned last.
+  // Each name once, the one with the newest registration first; current versions before superseded ones.
   function grouped(items) {
     const names = new Map();
     for (const item of items) { const name = item.dataset.name || item.title || item.result_id; if (!names.has(name)) names.set(name, []); names.get(name).push(item); }
-    const newest = list => Math.max(...list.map(item => item.registered_at));
+    const newest = list => Math.max(...list.map(item => item.registered_at)), obsolete = item => item.superseded_by ? 1 : 0;
     return [...names].sort(([, a], [, b]) => newest(b) - newest(a)).map(([name, list]) => [name, list.sort((a, b) =>
-      (a.dataset.version == null) - (b.dataset.version == null) || String(b.dataset.version).localeCompare(String(a.dataset.version), undefined, {numeric: true}) || b.registered_at - a.registered_at)]);
+      obsolete(a) - obsolete(b) || (a.dataset.version == null) - (b.dataset.version == null) || String(b.dataset.version).localeCompare(String(a.dataset.version), undefined, {numeric: true}) || b.registered_at - a.registered_at)]);
   }
 
   function row(item) {
-    const d = item.dataset, tr = el('tr', null, 'ds-version'), [word, tone] = PAIRING[d.pairing] || [d.pairing, 'warn'], open = el('button', d.version ?? '未写版本', 'ds-open');
+    const d = item.dataset, tr = el('tr', null, 'ds-version'), [word, tone] = PAIRING[d.pairing] || [d.pairing, 'warn'], open = el('button', (d.version ?? '未写版本') + (item.superseded_by ? '（已替代）' : ''), 'ds-open');
     const panel = el('tr', null, 'ds-detail'), cell = el('td'); cell.colSpan = COLUMNS.length; panel.append(cell); panel.hidden = true;
     open.type = 'button'; open.setAttribute('aria-expanded', 'false');
     tr.dataset.result = item.result_id; tr.dataset.pairing = d.pairing;
