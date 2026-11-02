@@ -2442,6 +2442,21 @@ class CoreFlowTests(unittest.TestCase):
                     todo.append("/dash/static/" + spec[2:])
         self.assertIn("/dash/static/three.core.js", seen)
 
+    def test_dashboard_pages_name_their_own_empty_speculation_rules(self):
+        """Every dashboard response names the node's own speculation rules, which prefetch nothing: a CDN in front then
+        does not add rules that prefetch each link on pointerdown (refused with a 503 the browser logs as an error)."""
+        connection = http.client.HTTPConnection(*self.address, timeout=10)
+        for path, login in (("/dash/jobs", True), ("/dash/login", False)):
+            connection.request("GET", path, headers={"Cookie": self.view_cookie} if login else {})
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.getheader("Speculation-Rules"), '"/dash/speculation-rules"', path)
+        connection.close()
+        status, kind, body = self.raw("/dash/speculation-rules", login=False)
+        self.assertEqual((status, kind), (200, "application/speculationrules+json"))
+        rules = json.loads(body)
+        self.assertEqual({key: value for key, value in rules.items() if value}, {}, "no prefetch or prerender rule")
+
     def test_showcase_data_comes_from_the_node_local_snapshot(self):
         self.assertEqual(self.raw("/dash/api/showcase")[0], 404)
         data = self.showcase_snapshot()

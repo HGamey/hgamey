@@ -125,7 +125,12 @@ REDACT = re.compile(r"(Bearer\s+|sk-[A-Za-z0-9]{4})[A-Za-z0-9._\-]{8,}|((?:api[_
 HEADERS = {"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
            "X-Content-Type-Options": "nosniff",
            "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
-                                      "script-src 'self'; frame-ancestors 'none'"}
+                                      "script-src 'self'; frame-ancestors 'none'",
+           # Our own (empty) speculation rules: a CDN in front (Cloudflare Speed Brain) otherwise adds rules that prefetch
+           # every same-origin link on pointerdown; it refuses those no-store prefetches with a 503 that the browser logs
+           # as an error on each click (downloads included). It leaves an origin's own Speculation-Rules header alone.
+           "Speculation-Rules": '"/dash/speculation-rules"'}
+SPECULATION_RULES = b'{"prefetch":[],"prerender":[]}'
 
 
 def _now():
@@ -269,6 +274,8 @@ class Dash:
         sub = parts[1:]
         if sub == ["login"]:
             return self._login_page(h)
+        if sub == ["speculation-rules"]:   # fetched by the browser itself, maybe before login; says nothing
+            return self._send(h, 200, SPECULATION_RULES, "application/speculationrules+json")
         if not self.authed(h):
             if sub and sub[0] == "api":
                 return self._send(h, 401, {"error": "需要查看密码"}, extra={"WWW-Authenticate": 'Basic realm="HGamey dash"'})
