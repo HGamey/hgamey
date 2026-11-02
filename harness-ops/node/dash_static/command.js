@@ -514,7 +514,17 @@ $('t-live').addEventListener('click', () => setLive(!S.live));
 $('b-follow').addEventListener('click', () => { setFollow(true); S.followAt = 0; if (!S.focus) fitAll(); });
 $('b-fit').addEventListener('click', () => { setFollow(false); fitAll(); });
 $('b-help').addEventListener('click', () => $('help').showModal());
-$('rail-toggle').addEventListener('click', () => { S.railAuto = false; toggleRail(); });
+$('rail-toggle').addEventListener('click', () => { S.railAuto = S.railNarrow = false; toggleRail(); });
+// A window narrowed past the breakpoint collapses the rail as a narrow first load does (else the map is left a sliver);
+// widening again brings it back only if that collapse was this one, not the user's own choice since.
+const narrow = matchMedia('(max-width: 1179.98px)');
+narrow.addEventListener('change', () => {
+  if (app.classList.contains('booting')) return;
+  if (narrow.matches) {
+    if (S.railAuto) { S.railAuto = false; S.railNarrow = true; }   // collapsed for the panel: keep it so when the panel closes
+    else if (!app.classList.contains('rail-collapsed')) { toggleRail(false); S.railNarrow = true; }
+  } else if (S.railNarrow) { S.railNarrow = false; toggleRail(true); }
+});
 for (const b of $('src').querySelectorAll('button')) b.addEventListener('click', () => switchSource(b.dataset.src));
 function toggleRail(open = app.classList.contains('rail-collapsed')) {
   app.classList.toggle('rail-collapsed', !open);
@@ -534,7 +544,7 @@ addEventListener('keydown', e => {
   const k = e.key, pan = 120;
   const act = {
     ' ': () => $('t-play').click(), k: () => $('t-play').click(), l: () => setLive(!S.live), c: () => $('b-follow').click(), f: () => $('b-fit').click(), '!': () => $('b-fit').click(),
-    w: () => $('b-wins').click(), '[': () => { S.railAuto = false; toggleRail(); }, '?': () => $('help').showModal(),
+    w: () => $('b-wins').click(), '[': () => { S.railAuto = S.railNarrow = false; toggleRail(); }, '?': () => $('help').showModal(),
     Escape: () => { if (!closePanel()) { setFollow(false); world.highlight(null); } },
     ArrowLeft: () => { setFollow(false); cam.panBy(pan, 0); }, ArrowRight: () => { setFollow(false); cam.panBy(-pan, 0); },
     ArrowUp: () => { setFollow(false); cam.panBy(0, pan); }, ArrowDown: () => { setFollow(false); cam.panBy(0, -pan); },

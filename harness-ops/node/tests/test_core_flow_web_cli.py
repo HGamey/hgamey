@@ -2124,6 +2124,28 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_command_view_collapses_its_rail_when_the_window_narrows(self):
+        """Narrowing a desktop window to phone width collapses the rail as a phone load does, so the map keeps the
+        width; widening again restores it. A rail the user opened by hand stays open."""
+        with self._browser_page() as page:
+            page.set_viewport_size({"width": 1440, "height": 900})
+            page.goto("http://%s:%d/dash/command" % self.address)
+            page.wait_for_function("() => window.__ready === true", timeout=20000)
+            collapsed = "() => document.getElementById('app').classList.contains('rail-collapsed')"
+            self.assertFalse(page.evaluate(collapsed))
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.wait_for_function(collapsed, timeout=5000)
+            page.wait_for_timeout(400)
+            self.assertGreater(page.evaluate("() => document.getElementById('stage').getBoundingClientRect().width"), 300)
+            page.set_viewport_size({"width": 1440, "height": 900})
+            page.wait_for_function("() => !document.getElementById('app').classList.contains('rail-collapsed')", timeout=5000)
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.wait_for_function(collapsed, timeout=5000)
+            page.click("#rail-toggle")
+            page.set_viewport_size({"width": 1440, "height": 900})
+            page.wait_for_timeout(200)
+            self.assertFalse(page.evaluate(collapsed), "the rail opened by hand stays open")
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):
