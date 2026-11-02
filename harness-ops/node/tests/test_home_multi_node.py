@@ -67,5 +67,52 @@ class HomeMultiNodeTests(unittest.TestCase):
                 browser.close()
 
 
+    def test_a_refresh_that_changes_nothing_keeps_the_focused_task(self):
+        """The overview polls every 8 s; an unchanged list is not rewritten, so a focused (or hovered, or selected)
+        task link stays the same element instead of focus falling back to the page."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        code, _ = self.center.call('POST', '/research-state/research/sr-focus', {
+            "schema": "phonefarm/research-write@1", "operation_id": "create-sr-focus", "base_revision": None,
+            "data": {"title": "停在这里的任务", "objective": "键盘"}, "actor_label": None, "reason": None},
+            headers={'X-Expected-Node-ID': self.center.jobs.node_id})
+        self.assertEqual(code, 201)
+
+        class Goals:
+            def list(self):
+                return []
+
+            def harness_support(self):
+                return {"ok": False}
+        board, base = self.center.board, self.center.url
+        board.goals = Goals()
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 1000})
+                context.add_cookies([{"name": "hg_dash", "value": board._cookie_val("test-view"), "url": base}])
+                page = context.new_page()
+                page.goto(base + "/dash")
+                link = '#tasks li[data-task="sr-focus"] a.task-title'
+                page.wait_for_selector(link)
+                page.focus(link)
+                page.eval_on_selector(link, "a => { a.dataset.mark = 'kept'; }")
+                for _ in range(2):
+                    with page.expect_response(lambda r: r.url.endswith("/dash/api/home")):
+                        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")   # the poll's own wake-up
+                    page.wait_for_timeout(100)
+                    self.assertEqual(page.evaluate("document.activeElement.dataset.mark || document.activeElement.tagName"), "kept")
+            finally:
+                browser.close()
+
 if __name__ == "__main__":
     unittest.main()

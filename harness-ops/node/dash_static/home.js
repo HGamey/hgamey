@@ -26,6 +26,9 @@
   const avatar = (name, human = false) => `<span class="av${human ? " human" : ""}" aria-hidden="true">${human ? "人" : initial(name)}</span>`;
   const speaker = note => note.auth_channel === "dashboard_steer" ? "人工" : note.auth_channel === "admin_token" ? "管理员" : note.actor_label || "agent";
   const model = s => s ? (s.model || s.serial) : "";
+  // A polled list is rewritten only when what it shows changed, so a refresh keeps focus, hover and text selection.
+  const shown = new Map();
+  const polled = id => ({set innerHTML(html) { if (shown.get(id) !== html) { $(id).innerHTML = html; shown.set(id, html); } }});
 
   async function api(url, body) {
     const opt = body === undefined ? {cache: "no-store", credentials: "same-origin"}
@@ -49,7 +52,7 @@
       } catch (_) {
         $("live").className = "live bad"; $("live-text").textContent = "连不上节点";
         $("live").title = S.home ? `显示的是 ${full(S.home.now)} 的数据` : "还没读到数据";
-        if (!S.home) $("tasks").innerHTML = `<li class="empty-row">读不到首页数据。<button class="link-btn" type="button" data-retry>重试</button></li>`;
+        if (!S.home) polled("tasks").innerHTML = `<li class="empty-row">读不到首页数据。<button class="link-btn" type="button" data-retry>重试</button></li>`;
       } finally { polling = null; }
     })();
     return polling;
@@ -76,7 +79,7 @@
   function renderTasks(h) {
     const tasks = (h.tasks || []).filter(t => !["delivered", "closed"].includes(t.state));
     $("tasks-count").textContent = tasks.length ? String(tasks.length) : "";
-    $("tasks").innerHTML = tasks.map(t => {
+    polled("tasks").innerHTML = tasks.map(t => {
       const note = t.latest_note;
       return `<li data-task="${esc(t.id)}" class="task-row">
         <a class="task-title" href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a>
@@ -88,12 +91,12 @@
   function renderReports(h) {
     const reports = (h.tasks || []).filter(t => t.state === "delivered");
     $("reports-count").textContent = reports.length ? String(reports.length) : "";
-    $("reports").innerHTML = reports.map(t => `<li data-report="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${[esc(t.owner || "无人负责"), chainOf(t), when(h.now, t.updated_at)].filter(Boolean).join(" · ")}</span></li>`).join("")
+    polled("reports").innerHTML = reports.map(t => `<li data-report="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${[esc(t.owner || "无人负责"), chainOf(t), when(h.now, t.updated_at)].filter(Boolean).join(" · ")}</span></li>`).join("")
       || `<li class="empty-row">还没有交付报告</li>`;
     // Closed tasks stay findable, folded under the reports; reopening one brings it back to 进行中.
     const closed = (h.tasks || []).filter(t => t.state === "closed");
     $("closed-sec").hidden = !closed.length; $("closed-count").textContent = closed.length ? String(closed.length) : "";
-    $("closed").innerHTML = closed.map(t => `<li data-closed="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${[esc(t.state_reason || ""), chainOf(t), when(h.now, t.updated_at)].filter(Boolean).join(" · ")}</span></li>`).join("");
+    polled("closed").innerHTML = closed.map(t => `<li data-closed="${esc(t.id)}"><a href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a><span class="report-meta">${[esc(t.state_reason || ""), chainOf(t), when(h.now, t.updated_at)].filter(Boolean).join(" · ")}</span></li>`).join("");
   }
 
   // Who holds a phone. A research job names its label, its task and its agent.
@@ -143,7 +146,7 @@
     }).join("");
     const empty = `<p class="empty-row">${h.fleet_age_s == null ? (h.fleet_err ? "读不到手机：" + esc(h.fleet_err) : "正在读手机状态…") : "现在没有手机接入"}</p>`;
     // One computer reads as before; with phones elsewhere, each computer gets its own heading.
-    $("phones").innerHTML = !elsewhere.length ? local || empty
+    polled("phones").innerHTML = !elsewhere.length ? local || empty
       : `<div class="phone-group" data-computer="local"><h3 class="phone-computer">本机</h3>${local || empty}</div>` + elsewhere.map(c =>
         `<div class="phone-group" data-computer="${esc(c.name)}"><h3 class="phone-computer">${esc(c.name)}<span>${c.connected ? "" : "已断开 · "}${c.sampled_at ? `采样于 ${when(h.now, c.sampled_at)}` : "还没有读数"}</span></h3>${c.phones.map(p => remotePhone(c, p)).join("")}</div>`).join("");
     $("phones-more").textContent = total ? `${total} 台 · ${idle ? `${idle} 台空闲` : "都在用"}` : "";
@@ -152,7 +155,7 @@
     const questions = h.questions || [];
     $("ask-sec").hidden = !questions.length;
     $("questions-count").textContent = questions.length > 1 ? String(questions.length) : "";
-    $("questions").innerHTML = questions.map(q => `<li data-question="${esc(q.id)}" class="q-row">
+    polled("questions").innerHTML = questions.map(q => `<li data-question="${esc(q.id)}" class="q-row">
       <a class="q-text" href="${esc(HGTarget.url(q.url))}">${esc(q.text)}</a>
       <div class="q-meta"><span class="who">${avatar(q.actor_label || "agent")}${esc(q.actor_label || "agent")}</span><span class="q-task" title="${esc(q.research_title || q.research_id)}">${esc(q.research_title || q.research_id)}</span>${when(h.now, q.updated_at)}<a class="btn sm" href="${esc(HGTarget.url(q.url))}">回复</a></div>
     </li>`).join("");
@@ -162,7 +165,7 @@
     const reviews = h.reviews || [];
     $("review-sec").hidden = !reviews.length;
     $("reviews-count").textContent = reviews.length > 1 ? String(reviews.length) : "";
-    $("reviews").innerHTML = reviews.map(r => `<li data-review="${esc(r.id)}" class="q-row">
+    polled("reviews").innerHTML = reviews.map(r => `<li data-review="${esc(r.id)}" class="q-row">
       <a class="q-text" href="${esc(HGTarget.url(r.url))}"><b>${esc(r.title)}</b>${r.need ? `<span class="q-need">${esc(r.need)}</span>` : ""}</a>
       <div class="q-meta"><span class="who">${avatar(r.actor_label || "agent")}${esc(r.actor_label || "agent")}</span><span class="q-task" title="${esc(r.research_title || r.research_id)}">${esc(r.research_title || r.research_id)}</span>${when(h.now, r.updated_at)}<a class="btn sm" href="${esc(HGTarget.url(r.url))}">去评 · ${r.items} 个</a></div>
     </li>`).join("");
@@ -176,7 +179,7 @@
   function renderAgents(h) {
     const agents = h.agents || [];
     $("agents-count").textContent = agents.length ? String(agents.length) : "";
-    $("agents").innerHTML = agents.map(a => {
+    polled("agents").innerHTML = agents.map(a => {
       const f = freshness(h.now, a.checkin_at);
       const owes = [...new Set(a.owes)].map(k => `<span class="tag warn">${esc(DUTY[k] || k)}</span>`).join("");
       const mine = a.research.length ? `<span class="agent-tasks">负责 ${a.research.length} 个任务</span>` : "";
