@@ -2190,6 +2190,30 @@ class CoreFlowTests(unittest.TestCase):
             self.assertIn("这台节点上没有这个任务（nope）", shown)
             self.assertNotIn("not found", shown)
 
+    def test_login_button_and_command_view_secondary_text_meet_normal_text_contrast(self):
+        """WCAG AA asks 4.5:1 for normal-size text: the login button's white label on its blue (light and dark scheme),
+        and the command view's muted labels on every panel background they sit on."""
+        def luminance(color):
+            channels = [int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            r, g, b = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        def contrast(a, b):
+            high, low = sorted((luminance(a), luminance(b)), reverse=True)
+            return (high + 0.05) / (low + 0.05)
+
+        def tokens(css):
+            return dict(re.findall(r"--([a-z0-9-]+):\s*(#[0-9a-fA-F]{6})", css))
+        login = dash.LOGIN_HTML
+        button = re.search(r"button\{[^}]*background:var\(--([a-z]+)\)[^}]*color:(#fff)", login)
+        for scheme in login.split("@media (prefers-color-scheme:dark)"):
+            value = tokens(scheme).get(button.group(1))
+            if value:
+                self.assertGreaterEqual(contrast(value, "#ffffff"), 4.5, value)
+        css = tokens((Path(dash.__file__).resolve().parent / "dash_static" / "command.css").read_text(encoding="utf-8"))
+        for background in ("bg", "bg2", "raise", "raise2"):
+            self.assertGreaterEqual(contrast(css["muted"], css[background]), 4.5, background)
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):

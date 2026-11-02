@@ -1,7 +1,7 @@
 /* Command view. A grid: rail | top bar over the map | timeline under it | docked detail panel. Chrome never floats over
    the map; the camera fits inside the map's own box. Blue-grey field, gold for delivered/verified/people, teal for success. */
 :root {
-  --bg: #0c1218; --bg2: #10171e; --raise: #141c25; --raise2: #19232e; --ink: #e3eaf0; --ink2: #a3b3c2; --muted: #6b7c8e; --faint: #3d4b59;
+  --bg: #0c1218; --bg2: #10171e; --raise: #141c25; --raise2: #19232e; --ink: #e3eaf0; --ink2: #a3b3c2; --muted: #8192a4; --faint: #3d4b59;
   --line: rgba(150, 175, 200, .12); --line2: rgba(150, 175, 200, .24);
   --gold: #f0c36e; --teal: #5ccfc0; --ice: #8db4f5; --ash: #4c5866; --steel: #8aa1b5; --warn: #e8a35c;
   --sans: "PingFang SC", "HarmonyOS Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;

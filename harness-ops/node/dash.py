@@ -1041,13 +1041,13 @@ class Dash:
 LOGIN_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>HGamey 实时看板</title><link rel="icon" href="data:,">
 <style>
-:root{--bg:#f4f3ef;--card:#fcfcfb;--ink:#0b0b0b;--sub:#52514e;--line:rgba(11,11,11,.12);--acc:#2a78d6;--bad:#d03b3b}
+:root{--bg:#f4f3ef;--card:#fcfcfb;--ink:#0b0b0b;--sub:#52514e;--line:rgba(11,11,11,.12);--acc:#2a78d6;--btn:#2470cc;--bad:#d03b3b}
 @media (prefers-color-scheme:dark){:root{--bg:#0d0d0d;--card:#1a1a19;--ink:#f0efec;--sub:#c3c2b7;--line:rgba(255,255,255,.12);--acc:#3987e5}}
 body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font:16px system-ui,-apple-system,"PingFang SC",sans-serif}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px;width:min(340px,calc(100vw - 32px));box-sizing:border-box}
 h1{margin:0;font-size:22px}.sub{color:var(--sub);margin:4px 0 18px}.err{color:var(--bad)}.hint{color:var(--sub);font-size:13px}
 input,button{width:100%;box-sizing:border-box;font:inherit;padding:11px 12px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--ink)}
-button{margin-top:10px;background:var(--acc);border:0;color:#fff;font-weight:600;cursor:pointer}
+button{margin-top:10px;background:var(--btn);border:0;color:#fff;font-weight:600;cursor:pointer}
 </style></head><body>
 <form method="post" class="card">
 <h1>HGamey 实时看板</h1><p class="sub">真手机实时状态 · 用查看密码只能看</p>{{msg}}
