@@ -323,6 +323,8 @@ class Dash:
             return self._send(h, 200, self.log_tail(jid, int((q.get("bytes") or ["16384"])[0])))
         if sub == ["api", "shot"]:
             return self._shot(h, (q.get("serial") or [""])[0])
+        if sub and sub[0] not in ("api", "static"):   # a mistyped or retired page: say so, with a way back
+            return self._send(h, 404, NOT_FOUND_HTML.encode(), "text/html; charset=utf-8")
         return self._send(h, 404, {"error": "not found"})
 
     def handle_post(self, h, parts, body):
@@ -1041,3 +1043,7 @@ button{margin-top:10px;background:var(--acc);border:0;color:#fff;font-weight:600
 <h1>HGamey 实时看板</h1><p class="sub">真手机实时状态 · 用查看密码只能看</p>{{msg}}
 <input type="password" name="pw" placeholder="查看密码" autofocus autocomplete="current-password" required>
 <button type="submit">进入</button><p class="hint">{{hint}}</p></form></body></html>"""
+
+NOT_FOUND_HTML = LOGIN_HTML.split("<body>")[0].replace("<title>HGamey 实时看板</title>", "<title>HGamey · 没有这个页面</title>") + """<body>
+<style>a{color:var(--acc)}</style><div class="card"><h1>没有这个页面</h1><p class="sub">地址可能拼错了，或这个页面已经搬走。</p>
+<p><a href="/dash">回到总览</a> · <a href="/dash/research">任务</a> · <a href="/dash/jobs">运行</a></p></div></body></html>"""

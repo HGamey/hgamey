@@ -3939,5 +3939,18 @@ class CoreFlowTests(unittest.TestCase):
             page.goto(f"http://%s:%d/dash/maint" % self.address)
             page.wait_for_function("() => document.getElementById('log').textContent === '这台节点上还没有任务日志'", timeout=15000)
 
+    def test_a_page_that_does_not_exist_is_a_page_with_a_way_back(self):
+        """A mistyped dashboard address shows a 404 page linking back; API paths keep their JSON 404."""
+        def get(path):
+            connection = http.client.HTTPConnection(*self.address, timeout=10)
+            connection.request("GET", path, headers={"Cookie": self.view_cookie})
+            response = connection.getresponse(); raw = response.read(); connection.close()
+            return response.status, response.getheader("Content-Type"), raw.decode()
+        status, kind, body = get("/dash/reserch")
+        self.assertEqual((status, kind.split(";")[0]), (404, "text/html"))
+        self.assertIn('<a href="/dash">回到总览</a>', body)
+        status, kind, body = get("/dash/api/nothing-here")
+        self.assertEqual((status, kind.split(";")[0], json.loads(body)), (404, "application/json", {"error": "not found"}))
+
 if __name__ == "__main__":
     unittest.main()
