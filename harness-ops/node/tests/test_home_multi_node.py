@@ -114,5 +114,48 @@ class HomeMultiNodeTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_retry_after_a_first_load_that_could_not_reach_the_node_loads_the_page(self):
+        """If the node could not be reached when the page opened, 重试 (and the next poll) read the node's identity
+        again instead of failing forever on the first attempt."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        code, _ = self.center.call('POST', '/research-state/research/sr-retry', {
+            "schema": "phonefarm/research-write@1", "operation_id": "create-sr-retry", "base_revision": None,
+            "data": {"title": "重试之后", "objective": "断网"}, "actor_label": None, "reason": None},
+            headers={'X-Expected-Node-ID': self.center.jobs.node_id})
+        self.assertEqual(code, 201)
+
+        class Goals:
+            def list(self):
+                return []
+
+            def harness_support(self):
+                return {"ok": False}
+        board, base = self.center.board, self.center.url
+        board.goals = Goals()
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 1000})
+                context.add_cookies([{"name": "hg_dash", "value": board._cookie_val("test-view"), "url": base}])
+                page = context.new_page()
+                page.route("**/dash/api/**", lambda route: route.abort())
+                page.goto(base + "/dash")
+                page.wait_for_selector("#tasks [data-retry]")
+                page.unroute("**/dash/api/**")
+                page.click("#tasks [data-retry]")
+                page.wait_for_selector('#tasks li[data-task="sr-retry"]', timeout=10000)
+            finally:
+                browser.close()
+
 if __name__ == "__main__":
     unittest.main()

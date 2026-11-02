@@ -4,7 +4,7 @@
   const KEY='hgamey.target.pin', ID=/^[0-9a-f]{32}$/, origin=location.origin;
   const rawFetch=window.fetch.bind(window), operator=location.pathname==='/dash/control';
   const discovery=operator?'/dash/api/remote/node':'/dash/api/node';
-  let pin=null, identity=null, verified=false, error='', flight=null, attempted=false;
+  let pin=null, identity=null, verified=false, error='', flight=null, attempted=false, failure='';
   const explicit=new URL(location.href).searchParams.getAll('expected_node_id');
   try { const old=JSON.parse(sessionStorage.getItem(KEY)||'null');if(old?.entry===origin&&ID.test(old.node_id))pin=old; } catch (_) { /* A damaged locator never establishes identity. */ }
   if(explicit.length){if(explicit.length!==1||!ID.test(explicit[0]))error='入口中的目标 ID 无效。';else pin={entry:origin,node_id:explicit[0]};}
@@ -54,12 +54,14 @@
         if(!pin){pin={entry:origin,node_id:value.node_id};persist();}
         if(pin.node_id!==value.node_id)throw localError(`节点身份不匹配：期望 ${pin.node_id}，实际 ${value.node_id}。保留原绑定，操作已停止。`,'target_mismatch');
         verified=true;return value;
-      }catch(e){error=e.name==='AbortError'?'节点身份读取超时，原绑定保留。':e.message;throw e;}
+      }catch(e){error=e.name==='AbortError'?'节点身份读取超时，原绑定保留。':e.message;failure=e.code||'unreachable';throw e;}
       finally{clearTimeout(timer);}
     })();render();
     try{return await flight;}finally{flight=null;render();}
   }
-  async function ready(){if(flight)return flight;if(!attempted)return refresh();if(!verified)throw localError(error||'节点身份未确认。');return identity;}
+  // A read that failed only because the node could not be reached is tried again by the next request (a 重试, the next
+  // poll); a node that answered with another identity stays stopped until the target is refreshed on purpose.
+  async function ready(){if(flight)return flight;if(!attempted||!verified&&!['target_mismatch','invalid_target'].includes(failure))return refresh();if(!verified)throw localError(error||'节点身份未确认。');return identity;}
   async function request(value,init={},options={}){
     const u=new URL(value,location.href),method=(init.method||'GET').toUpperCase();
     if(u.origin!==origin)throw localError('本页请求不能自动转投另一入口。');
