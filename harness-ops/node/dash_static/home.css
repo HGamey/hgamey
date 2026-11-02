@@ -238,6 +238,10 @@ details.gm pre { font-size: 14px; }
   .home-view #goal-btn { display: none; }
   .home-view #live-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .home-view .task-time { margin-left: 0; }
+  /* 已交付/已关闭：标题占一整行，负责人·接续·时间换到下一行 */
+  .home-view .report-list li { flex-wrap: wrap; row-gap: 2px; }
+  .home-view .report-list a { flex-basis: 100%; }
+  .home-view .report-meta, .home-view .closed-tasks .report-meta { flex: 1 1 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 }
 @media (max-width: 420px) {
   .home-view .steer-label { display: none; }
