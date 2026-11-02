@@ -806,6 +806,16 @@
     } finally {
       cancelling.delete(id);
       await Promise.all([loadQueue(), !historical() && selected === id ? selectJob(id, true) : null]);
+      await followStop(id);
+    }
+  }
+  // After a stop request, keep reading the job for a while so 停止请求处理中 turns into how it ended without a click.
+  async function followStop(id) {
+    for (const wait of [1000, 1500, 2000, 3000, 4000, 5000, 6000, 8000]) {
+      if (selected !== id || historical() || !currentJob || currentJob.id !== id || currentJob.state === 'finished' || ['finished', 'interrupted'].includes(currentJob.phase)) return;
+      await new Promise(resolve => setTimeout(resolve, wait));
+      if (selected !== id || historical()) return;
+      await Promise.all([loadQueue(), selectJob(id, true)]);
     }
   }
 

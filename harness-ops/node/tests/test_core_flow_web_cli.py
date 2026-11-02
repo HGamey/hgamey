@@ -4002,6 +4002,33 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(offsets[0], "0")
         self.assertNotIn("0", offsets[1:], "reading again carries on from the byte already read")
 
+    def test_a_stop_request_follows_the_job_until_it_has_ended(self):
+        """After 请求停止 the page keeps reading the job for a while, so 停止请求处理中 turns into how it ended
+        without a click on 刷新任务."""
+        page = self._steered_page()
+        stopped, reads = [], []
+
+        def job(route):
+            response = route.fetch()
+            data = response.json()
+            reads.append(1)
+            if not stopped or len(stopped) < 3:   # running, and still stopping on the first reads after the request
+                data.update(state="running", phase="cancelling" if stopped else "running",
+                            controls={"cancel_supported": True, "force_supported": False, "reason": None})
+            else:
+                data.update(state="finished", phase="finished", outcome="cancelled", exit=130)
+            if stopped:
+                stopped.append(1)
+            route.fulfill(response=response, json=data)
+        page.route(f"**/dash/api/jobs/{self.jid}", job)
+        page.route(f"**/dash/api/jobs/{self.jid}/cancel", lambda route: (stopped.append(1), route.fulfill(json={"accepted": True})))
+        page.goto(f"http://%s:%d/dash/jobs#job={self.jid}" % self.address)
+        page.wait_for_function("() => !document.getElementById('cancel-job').disabled", timeout=20000)
+        before = page.text_content("#job-state")
+        page.click("#cancel-job")
+        self.assertIn("运行", before)
+        page.wait_for_function("() => /已取消|已停止/.test(document.getElementById('job-state').textContent)", timeout=20000)
+        self.assertGreaterEqual(len(stopped), 4, "it read the job again on its own")
 
 if __name__ == "__main__":
     unittest.main()
