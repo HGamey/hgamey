@@ -4055,5 +4055,24 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertGreaterEqual(top, bar - 1, f"{width}px: the note starts below the top bar")
                 self.assertLess(top, bar + 60, f"{width}px: and right under it")
 
+    def test_choosing_a_ranking_gap_by_keyboard_keeps_the_focus_on_it(self):
+        """The places and gaps are rebuilt on every choice; a gap chosen with the keyboard keeps focus on that choice."""
+        _, path = self._large_comparison("ev-one", {"A": "image", "B": "image", "C": "image"})
+        one = self.cli("GET", "/research-state/request/ev-one")[1]["data"]
+        self.assertEqual(self.cli("POST", "/research-state/request/ev-rank3", self.write("create-ev-rank3", {
+            **one, "title": "三个排先后", "evaluation": {**one["evaluation"], "pick": 3}}))[0], 201)
+        block = "#cmp-ev-rank3"
+        with self._browser_page() as page:
+            page.goto(f"http://%s:%d{path}" % self.address)
+            page.wait_for_selector(f"{block} .compare-picks button.letter", timeout=20000)
+            for letter in ("B", "A", "C"):
+                page.click(f"{block} .compare-picks button.letter:text-is('{letter}')")
+            for group in range(2):
+                gap = f"{block} .compare-gap >> nth={group}"
+                page.locator(gap).locator("[data-gap]").first.focus()
+                page.keyboard.press("Enter")
+                self.assertEqual(page.evaluate("[document.activeElement.dataset.gap, document.activeElement.getAttribute('aria-pressed')]"),
+                                 [page.locator(gap).locator("[data-gap]").first.get_attribute("data-gap"), "true"])
+
 if __name__ == "__main__":
     unittest.main()

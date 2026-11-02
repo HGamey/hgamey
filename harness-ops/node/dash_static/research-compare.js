@@ -418,6 +418,9 @@
     order.setAttribute('aria-label', '名次');
     // The places so far, ① B ‹差不多 小 中 大› ② D …, each gap a choice of how much better the one before is.
     function places() {
+      // Rebuilt on every choice: a focused gap button hands its focus to the same button in the same place.
+      const focused = order.contains(document.activeElement) && document.activeElement.dataset.gap
+        ? [[...order.querySelectorAll('.compare-gap')].indexOf(document.activeElement.closest('.compare-gap')), document.activeElement.dataset.gap] : null;
       order.replaceChildren(...picked.flatMap((letter, i) => {
         const place = U.el('span', null, 'compare-place'); place.append(U.el('b', RANK[i] || `(${i + 1})`), ` ${letter}`);
         if (i === 0) return [place];
@@ -428,6 +431,7 @@
         }));
         return [group, place];
       }));
+      if (focused) order.querySelectorAll('.compare-gap')[focused[0]]?.querySelector(`[data-gap="${focused[1]}"]`)?.focus();
     }
     function ready() {
       if (other !== null) return true;
