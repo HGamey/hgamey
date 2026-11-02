@@ -239,7 +239,7 @@ function writeCopy(s) {
   $('kicker').textContent = s.kicker; $('title').textContent = s.title; $('lead').textContent = s.lead;
   $('facts').innerHTML = s.facts.map(([n, unit, what, tone, mark]) => `<div class="${tone || ''}"><dt>${esc(n)}<small>${esc(unit)}</small></dt><dd>${mark ? `<i class="sw ${mark}" aria-hidden="true"></i>` : ''}${esc(what)}</dd></div>`).join('');
   const q = s.quote; $('quote').hidden = !q;
-  if (q) $('quote').innerHTML = `<b>人 · ${stamp(q.at)}</b>${esc(q.text.length > 90 ? q.text.slice(0, 89) + '…' : q.text)}`;
+  if (q) $('quote').innerHTML = `<b>人 · ${stamp(q.at)}</b><span>${esc(q.text.length > 90 ? q.text.slice(0, 89) + '…' : q.text)}</span>`;
 }
 
 // ── Camera
@@ -247,7 +247,8 @@ const cam = {from: null, to: null, t0: 0, ms: 1300};
 function region() {
   const w = innerWidth, h = innerHeight;
   const pad = $('copy').getBoundingClientRect().left || 48, col = $('copy').getBoundingClientRect().width;
-  if (matchMedia('(max-aspect-ratio: 6/5)').matches) return {x: pad, y: 76, w: w - 2 * pad, h: Math.max(160, h * .52 - 76)};
+  // The band of text can be taller than the lower half on a phone: the subject then takes what is left above it.
+  if (matchMedia('(max-aspect-ratio: 6/5)').matches) return {x: pad, y: 76, w: w - 2 * pad, h: Math.max(160, Math.min(h * .52 - 76, $('copy').getBoundingClientRect().top - 76 - 12))};
   const x = pad + col + Math.max(32, pad * .8);
   return {x, y: 76, w: Math.max(200, w - x - pad * .6), h: h - 76 - 70};
 }
@@ -279,7 +280,11 @@ function go(i, instant = false) {
   const copy = $('copy');
   clearTimeout(swap);
   if (instant || prev < 0) writeCopy(s);
-  else { copy.classList.add('out'); swap = setTimeout(() => { writeCopy(s); copy.classList.remove('out'); }, 230); }
+  else {
+    copy.classList.add('out');
+    // The new text can change the room left for the subject (see region), so the flight aims again once it is written.
+    swap = setTimeout(() => { writeCopy(s); copy.classList.remove('out'); if (S && current === i) { cam.to = shot(i); if (!cam.from) place(cam.to); } }, 230);
+  }
   for (const [k, li] of [...dotsBox.children].entries()) { const b = li.firstChild; if (k === i) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current'); }
   $('count').textContent = `${String(i + 1).padStart(2, '0')} / ${String(STEPS.length).padStart(2, '0')}`;
   $('prev').disabled = i === 0; $('next').disabled = i === STEPS.length - 1;
@@ -292,6 +297,26 @@ function go(i, instant = false) {
 // Tags name the step they belong to by its place in the full story, so a story without history still matches them.
 const ORDER = STEPS.map(s => KEYS.indexOf(s.key) + 1);
 function tagsFor(i) { const n = ORDER[i]; for (const [t, steps] of tags) t.element.classList.toggle('off', !steps.includes(n)); }
+// Captions are fixed-size text over a camera that frames the subject smaller on a narrow screen, so neighbours can run
+// into each other (or end up touching). Each shown caption keeps its place if it is clear, else moves the shortest way up or down past the
+// ones already placed (in the order they were made: phones first); one that cannot be placed within three lines' height
+// is hidden. Offsets use the CSS translate property, which adds to the renderer's own transform.
+function declutter() {
+  const placed = [];
+  for (const [t] of tags) {
+    const e = t.element, was = Number(e.dataset.dy || 0);
+    if (e.classList.contains('off') || e.style.display === 'none') { if (was) { e.dataset.dy = 0; e.style.translate = ''; } e.classList.remove('crowd'); continue; }
+    const r = e.getBoundingClientRect(), top = r.top - was, h = r.height;
+    const clear = dy => !placed.some(p => p.l < r.right + 8 && r.left - 8 < p.r && p.t < top + dy + h && top + dy < p.b);
+    const tries = [0, ...placed.flatMap(p => [p.b + 2 - top, p.t - 2 - h - top])].filter(dy => Math.abs(dy) <= 3 * h).sort((a, b) => Math.abs(a) - Math.abs(b));
+    const dy = tries.find(clear);
+    e.classList.toggle('crowd', dy === undefined);
+    const use = dy ?? 0;
+    if (use !== was) { e.dataset.dy = use; e.style.translate = use ? `0 ${use}px` : ''; }
+    if (dy !== undefined) placed.push({l: r.left, r: r.right, t: top + use, b: top + use + h});
+  }
+}
+let decluttered = 0;
 
 $('prev').addEventListener('click', () => { stopAuto(); go(current - 1); });
 $('next').addEventListener('click', () => { stopAuto(); go(current + 1); });
@@ -331,6 +356,7 @@ function frame(now) {
   }
   for (const f of animate) f(t);
   S.render();
+  if (now - decluttered > 250) { decluttered = now; declutter(); }
 }
 
 // ── Auto play (kiosk): hold each step, then hand over to the command view.
@@ -351,7 +377,7 @@ async function play(from) {
 const start = Number(location.hash.slice(1) || Q.get('ch') || 1) - 1;
 if (S) S.resize();   // now that every dot field exists
 go(start, true);
-if (S) { S.render(); $('c').classList.add('on'); }
+if (S) { S.render(); declutter(); $('c').classList.add('on'); }
 requestAnimationFrame(frame);
 if (Q.get('kiosk') || Q.get('auto')) play(start);
 window.__story = {go, steps: STEPS.length, get current() { return current; }};

@@ -2473,6 +2473,61 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_story_on_a_phone_keeps_captions_apart_and_numbers_inside_their_columns(self):
+        """At 390 px the three phones' captions do not run into each other, each number fits its column, and the
+        top bar's 控制台 link stays on one line."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        data = self.showcase_snapshot()
+        t0 = data["at"] - 3600
+        data["phones"] = [{"serial": f"S{i}", "brand": brand, "model": model, "temp_c": 38.0, "state": "device"}
+                          for i, (brand, model) in enumerate([("REDMAGIC", "NX809J"), ("HONOR", "AAP-AN00"), ("HUAWEI", "EMA-AL00U")])]
+        # 10.5 hours of phone runs in the last day: the widest number the first step shows.
+        data["jobs"] = [dict(data["jobs"][0], id=f"j{i}", started=t0 - 80000 + i * 7000, queued=t0 - 80000 + i * 7000,
+                             claimed=t0 - 80000 + i * 7000, ended=t0 - 80000 + i * 7000 + 5400) for i in range(7)]
+        (Path(self.board.showcase_dir) / "data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/showcase#1")
+                page.wait_for_function("() => window.__ready === true")
+                page.wait_for_timeout(600)
+                self.assertIn("10.5", page.text_content("#facts"))
+                found = page.evaluate("""() => {
+                  const shown = [...document.querySelectorAll('.tag')].filter(t => !t.classList.contains('off') && !t.classList.contains('crowd') && t.style.display !== 'none');
+                  const boxes = shown.map(t => t.getBoundingClientRect());
+                  let overlaps = 0;
+                  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+                    const a = boxes[i], b = boxes[j];
+                    if (a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) overlaps++;
+                  }
+                  const phones = shown.filter(t => t.classList.contains('big')).length;
+                  const wide = [...document.querySelectorAll('#facts > div')].filter(d => d.querySelector('dt').scrollWidth > d.clientWidth + 1).length;
+                  return {overlaps, phones, wide, back: document.querySelector('.back').getBoundingClientRect().height};
+                }""")
+                self.assertEqual(found["phones"], 3, found)
+                self.assertEqual(found["overlaps"], 0, found)
+                self.assertEqual(found["wide"], 0, found)
+                self.assertLess(found["back"], 40, found)
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_the_datasets_page_keeps_versions_together_and_always_says_how_they_were_paired(self):
         """Empty, the page just says so. Registered, a name's versions sit together, highest first, and every row says
         whether the low-res side is simulated. Only an opened row reads its previews, manifest and QA report; results
