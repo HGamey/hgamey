@@ -2180,6 +2180,16 @@ class CoreFlowTests(unittest.TestCase):
               try { new RegExp('^(?:' + p + ')$', 'v'); return false; } catch (_) { return true; } }).map(([where]) => where)""", patterns)
         self.assertEqual(bad, [])
 
+    def test_a_link_to_a_missing_task_says_so_in_chinese(self):
+        """/dash/research?kind=research&id=<unknown> explains in the page's language that this node has no such task,
+        instead of showing the API's English error text."""
+        with self._browser_page() as page:
+            page.goto("http://%s:%d/dash/research?kind=research&id=nope" % self.address)
+            page.wait_for_function("() => document.getElementById('detail-message').classList.contains('task-error')", timeout=20000)
+            shown = page.text_content("#detail-message")
+            self.assertIn("这台节点上没有这个任务（nope）", shown)
+            self.assertNotIn("not found", shown)
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):

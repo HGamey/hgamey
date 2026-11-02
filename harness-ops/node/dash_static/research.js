@@ -62,7 +62,7 @@
   const keyOf = value => value ? `${value.kind}/${value.id}` : '';
   const failText = error => error.name === 'AbortError' ? '请求超时或已取消；不能据此判定写入结果。' : error.message;
   function el(tag, value, className) { const item = document.createElement(tag); if (value != null) item.textContent = String(value); if (className) item.className = className; return item; }
-  function message(id, value, error = false) { $(id).textContent = value; $(id).classList.toggle('task-error', error); }
+  function message(id, value, error = false) { $(id).textContent = value; $(id).classList.toggle('task-error', error); $(id).removeAttribute('title'); }
   function facts(element, values) { element.replaceChildren(...values.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
   function jsonDetails(title, value) { const item = el('details', null, 'research-json'); item.append(el('summary', title), el('pre', JSON.stringify(value, null, 2), 'command-box')); return item; }
   function objectLink(kind, id, label, revision, target = HGTarget.binding()) {
@@ -332,7 +332,12 @@
       if (disposed || epoch !== detailEpoch) return;
       detail = value; detailFresh = true; renderDetail(value); if (value.revision === value.current_revision) syncRow(value);
       message('detail-message', value.revision !== value.current_revision ? '这是历史版本。编辑以此版本为基础，若当前已更新会返回冲突。' : '');
-    } catch (error) { if (!disposed && epoch === detailEpoch) message('detail-message', failText(error), true); }
+    } catch (error) {
+      if (disposed || epoch !== detailEpoch) return;
+      // A link to a record this node does not have: say so in words, keep the server's text in the title for diagnosis.
+      if (error.status === 404) { message('detail-message', `这台节点上没有这个${KINDS[kind]}（${id}${revision ? `，版本 ${revision}` : ''}）。可能链接里的 ID 有误，或它在另一台节点上；可在左侧列表中选择。`, true); $('detail-message').title = error.message; }
+      else message('detail-message', failText(error), true);
+    }
     finally { if (!disposed && epoch === detailEpoch) renderControls(); }
   }
   async function loadHistory(append = false) {
