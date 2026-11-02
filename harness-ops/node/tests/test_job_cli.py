@@ -209,8 +209,9 @@ class JobCLI(unittest.TestCase):
         with mock.patch.dict(cli["submit_job"].__globals__, call=mock.Mock(side_effect=error)), \
                 self.assertRaises(SystemExit) as rejected:
             cli["submit_job"]({"bin": "wait", "argv": [JOB, "--timeout", "240"]}, b"", "unknown-wait")
-        self.assertIn("wait 不是 pf-node 的子命令，也不是这个节点能跑的程序；子命令见 --help，选项要带 --",
+        self.assertIn("wait 是 pf-node 子命令，正确写法：pf-node wait <任务ID>；选项写在子命令前",
                       str(rejected.exception))
+        self.assertNotIn("wait 不是 pf-node 的子命令", str(rejected.exception))
 
     def test_job_id_subcommand_help_is_local_and_out_explains_subdirectory_export(self):
         env = {key: value for key, value in os.environ.items() if not key.startswith("PF_")}

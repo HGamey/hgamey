@@ -562,7 +562,12 @@ def submit_job(spec, body, request_id):
         reason = response_error_text(e.body) if 400 <= e.code < 500 else None
         detail = str(e)
         if reason is not None and reason.startswith("bin 只能是"):
-            detail += "；" + program_guidance(spec.get("bin"))
+            word = spec.get("bin")
+            if word in SUBCOMMANDS:
+                usage = JOB_ID_HELP.get(word, f"pf-node {word} --help").removeprefix("用法: ")
+                detail += f"；{word} 是 pf-node 子命令，正确写法：{usage}；选项写在子命令前，选项要带 --"
+            else:
+                detail += "；" + program_guidance(word)
         sys.exit(f"pf-node: 提交被拒绝，request_id={request_id}：{detail}")
     except (SystemExit, ValueError, KeyError, KeyboardInterrupt, urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         print(f"pf-node: 提交结果未知，request_id={request_id}：{e}；"

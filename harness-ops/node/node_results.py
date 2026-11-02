@@ -170,9 +170,10 @@ def manifest(value, internal=False):
     origin = object_fields(value.get("origin") or {}, {"producer", "producer_version", "evidence_origin", "observed_at"})
     evidence = origin.get("evidence_origin", "unknown")
     observed = origin.get("observed_at")
-    if evidence not in {"device", "synthetic", "unknown"} or (observed is not None and
-            (type(observed) not in (int, float) or not math.isfinite(observed) or observed < 0)):
-        raise ValueError("invalid reported evidence origin or observation time")
+    if evidence not in {"device", "synthetic", "unknown"}:
+        raise ValueError("origin.evidence_origin must be device, synthetic or unknown")
+    if observed is not None and (type(observed) not in (int, float) or not math.isfinite(observed) or observed < 0):
+        raise ValueError("origin.observed_at must be a finite nonnegative numeric Unix timestamp or null")
     value["origin"] = {"producer": text(origin.get("producer"), 128), "producer_version": text(origin.get("producer_version"), 128),
                        "evidence_origin": evidence, "observed_at": observed}
     value.setdefault("outcome", "unknown")

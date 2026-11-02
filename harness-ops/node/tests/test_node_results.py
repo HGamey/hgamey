@@ -409,6 +409,38 @@ class NodeResultTests(unittest.TestCase):
         self.assertIn("采到数据集", skill)
         self.assertIn("dataset", skill)
 
+    def test_dataset_help_lists_optional_field_types_and_numeric_timestamp(self):
+        help_result = self.cli("--help")
+        self.assertEqual(help_result.returncode, 0, help_result.stderr)
+        for fragment in ("name/version/capture_method/location 为字符串或 null",
+                         "frames/scenes/size_bytes 为非负整数或 null",
+                         "splits={train,val,test}，各项为非负整数或 null",
+                         "origin.observed_at 用数字 Unix 时间戳（秒）"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, help_result.stdout)
+
+    def test_origin_validation_identifies_the_bad_field(self):
+        for field, value in (("observed_at", "2026-11-03T03:21:00+09:00"), ("evidence_origin", "measured")):
+            with self.subTest(field=field):
+                manifest = registration("invalid-origin-" + field, None)
+                manifest.update(sources=[], metrics=[])
+                manifest["origin"][field] = value
+                code, reply = self.api("POST", "/results", manifest)
+                self.assertEqual(code, 400, reply)
+                self.assertIn("origin." + field, reply["error"])
+
+    def test_register_warns_about_null_dataset_fields_without_rejecting(self):
+        value = dataset()
+        value.update(capture_method=None, frames=None, location=None)
+        manifest = registration("dataset-null-warning", None)
+        manifest.update(sources=[], metrics=[], dataset=value)
+        source = self.root / "dataset-null-warning.json"
+        source.write_text(json.dumps(manifest))
+        registered = self.cli("register", str(source))
+        self.assertEqual(registered.returncode, 0, registered.stderr)
+        self.assertIn("dataset 的 capture_method、frames、location 为空，数据集页签会显示「—」", registered.stderr)
+        self.assertIsNone(json.loads(registered.stdout)["manifest"]["dataset"]["frames"])
+
     def test_dataset_validation_names_bad_fields(self):
         cases = [
             ("frames", "dataset.frames", lambda value: value.update(frames="120")),

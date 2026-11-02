@@ -28,6 +28,8 @@ register 使用文件内固定 result_id；import 在读文件前打印指定或
 写入核对显式目标与能力，只提交一次。回执未知时，用 show 或 import-status 查询原 ID，
 不换 ID、不自动重发。登记不表示测量、收益、设备恢复或同状态资格已经验证。
 采到数据集时，在 register 清单写 dataset 对象；pairing 必填 simulated|real|unpaired|mixed，其余字段可 null，用 list --datasets 筛选。
+dataset 可选字段：name/version/capture_method/location 为字符串或 null；frames/scenes/size_bytes 为非负整数或 null；
+splits={train,val,test}，各项为非负整数或 null。origin.observed_at 用数字 Unix 时间戳（秒），不要写 ISO 8601 字符串。
 list/show 只读中心结果索引；原件链接也留在中心，执行节点离线不影响已归集内容。
 compare 只读至多 16 KiB UTF-8 spec，需显式中心 node-id；单次业务 GET。
 phonefarm/result-cross-compare@1 为每列声明 baseline_column_id（null/自身/另一列），
@@ -42,6 +44,7 @@ MAX_REGISTER = 256 << 10
 MAX_COMPARE = 16 << 10
 MAX_RESPONSE = 6 << 20
 OUTCOMES = {"gain", "no_gain", "regression", "failed", "not_run", "unknown"}
+DATASET_OPTIONAL = ("name", "version", "capture_method", "frames", "scenes", "splits", "size_bytes", "location")
 
 
 class RequestError(Exception):
@@ -308,6 +311,11 @@ def main(args, *, target):
                 raise ValueError("登记需要 phonefarm/result@1；未提交")
             identity = identifier(document.get("result_id"))
             print(f"pf-node: 登记 result_id={identity}；仅提交一次。", file=sys.stderr, flush=True)
+            if isinstance(document.get("dataset"), dict):
+                empty = [key for key in DATASET_OPTIONAL if document["dataset"].get(key) is None]
+                if empty:
+                    print(f"pf-node: 提醒：dataset 的 {'、'.join(empty)} 为空，数据集页签会显示「—」。",
+                          file=sys.stderr, flush=True)
             return _submit(client, "/results", content.encode("utf-8"), identity, importing=False)
         elif command == "import" and args:
             path = args.pop(0)
