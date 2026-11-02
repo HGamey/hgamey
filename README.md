@@ -204,7 +204,7 @@ agent 不会自己醒来。运行方需要定期（例如每 30 分钟）给它�
 以下文件只存在于节点上，不进入仓库：
 
 - **管理 token**：一个文件，内容是至少 32 个字符、不含空白的随机串。只读 token 由管理 token 推导：HMAC-SHA256(管理 token, `hgamey-node-readonly-v1`)。
-- **启动配置**：JSON，格式为 `{"schema": "hgamey/node-launch@1", "service_args": [...], "node_token_file": "<绝对路径>"}`。`service_args` 是传给 `node_service.py` 的参数，例如 `--port 8765`、`--data-dir`、`--max-running`、`--experiments-url`，完整列表见 `python3 harness-ops/node/node_service.py --help`。
+- **启动配置**：JSON，格式为 `{"schema": "hgamey/node-launch@1", "service_args": [...], "node_token_file": "<绝对路径>"}`。`service_args` 是传给 `node_service.py` 的参数，例如 `--port 8765`、`--data-dir`、`--phonefarm`、`--game-opt-loop`、`--max-running`、`--experiments-url`，完整列表见 `python3 harness-ops/node/node_service.py --help`。
 - **网页口令**：`~/.config/hgamey/dash.pass` 为查看口令，`steer.pass` 为写操作口令。目录可以用 `HG_CONFIG_DIR` 改。
 - **设备锁目录**：由环境变量 `DEVLOCK_DIR` 指定。同一台主机上的所有节点实例和任务必须使用同一个目录。
 - **隧道**（可选）：`~/.cloudflared/hgamey-node.yml`。
@@ -214,10 +214,10 @@ agent 不会自己醒来。运行方需要定期（例如每 30 分钟）给它�
 用系统服务管理器运行以下命令，并让 `deploy/<节点名>.json` 的 `stop`、`start` 与之一致：
 
 ```sh
-<root>/harness-ops/node/run_node.sh --config <启动配置的绝对路径>   # 不需要隧道时加 --no-tunnel
+<root>/harness-ops/node/run_node.sh --config <启动配置的绝对路径> --workdir <root>   # 不需要隧道时加 --no-tunnel
 ```
 
-Linux 用 systemd 用户服务，macOS 用 LaunchDaemon。`run_node.sh` 会守护节点服务：服务退出后自动重新拉起。日志写在 `~/node` 下的 `node_service.log` 和 `cloudflared.log`。
+Linux 用 systemd 用户服务；macOS 用 LaunchDaemon（开机即起，需 sudo），或用户级 LaunchAgent（不需 sudo，以 `user/<uid>` 注册）。`run_node.sh` 会守护节点服务：服务退出后自动重新拉起。日志写在 `--workdir`（默认 `~/node`）下的 `node_service.log` 和 `cloudflared.log`；安装根不是 `~/node` 时，`--phonefarm`、`--game-opt-loop`、`--workdir` 都要显式写。服务要在首次部署前注册，否则 deploy.py 执行 `stop` 时报错。逐步示例与验收见 HGamey/docs 的 [guide/02-node-service.md](https://github.com/HGamey/docs/blob/main/guide/02-node-service.md)。
 
 ### 4. 部署与核对
 
