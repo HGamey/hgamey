@@ -144,12 +144,14 @@
     renderDevs(); renderView(); refresh(); if (autoplay && S.scope === "global") play();
   }
 
-  function renderDevs() {
-    $("devs").innerHTML = S.devs.map((d) => {
+  let devsShown = null;
+  function renderDevs() {   // rewritten only when it changed, so the 2 s status refresh keeps a focused phone button
+    const html = S.devs.map((d) => {
       const off = d.state !== "device" && S.scope !== "device", mode = S.statusError ? "unknown" : d.mode;
       return `<button class="dev${d.serial === S.serial ? " sel" : ""}" type="button" data-s="${esc(d.serial)}"${off ? " disabled" : ""}>
         <span class="m">${esc(d.model || d.serial)}</span><span class="s">${esc(d.serial)} · ${off ? esc(d.state) : esc(MODE[mode] || "采集状态未知")}${d.viewers ? ` · ${d.viewers} 人在看` : ""}</span></button>`;
     }).join("") || `<p class="muted">${S.statusError ? "设备目录尚未确认" : "当前目录没有 adb 设备"}</p>`;
+    if (html !== devsShown) { $("devs").innerHTML = html; devsShown = html; }
   }
 
   function renderView() {

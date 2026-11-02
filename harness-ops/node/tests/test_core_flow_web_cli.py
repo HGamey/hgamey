@@ -4124,5 +4124,22 @@ class CoreFlowTests(unittest.TestCase):
             state["jobs"] = []
             page.wait_for_function("() => document.getElementById('log').textContent === '这台节点上还没有任务日志'", timeout=15000)
 
+    def test_the_live_page_keeps_a_focused_phone_button_across_status_refreshes(self):
+        """The live page reads the phones' status every 2 s; an unchanged list keeps the focused phone button."""
+        status = {"devices": [{"serial": "S1", "model": "Phone One", "state": "device", "mode": "idle", "viewers": 0},
+                              {"serial": "S2", "model": "Phone Two", "state": "device", "mode": "idle", "viewers": 0}], "policy": {}}
+        reads = []
+        with self._browser_page() as page:
+            page.route("**/dash/api/live/status*", lambda route: (reads.append(1), route.fulfill(json=status)))
+            page.goto(f"http://%s:%d/dash/live" % self.address)
+            page.wait_for_selector('#devs button[data-s="S2"]', timeout=15000)
+            page.focus('#devs button[data-s="S2"]')
+            page.eval_on_selector('#devs button[data-s="S2"]', "b => { b.dataset.mark = 'kept'; }")
+            seen = len(reads)
+            while len(reads) < seen + 2:
+                page.wait_for_timeout(200)
+            page.wait_for_timeout(100)
+            self.assertEqual(page.evaluate("document.activeElement.dataset.mark || document.activeElement.tagName"), "kept")
+
 if __name__ == "__main__":
     unittest.main()
