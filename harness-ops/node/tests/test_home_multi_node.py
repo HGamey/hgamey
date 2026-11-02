@@ -111,6 +111,27 @@ class HomeMultiNodeTests(unittest.TestCase):
                         page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")   # the poll's own wake-up
                     page.wait_for_timeout(100)
                     self.assertEqual(page.evaluate("document.activeElement.dataset.mark || document.activeElement.tagName"), "kept")
+
+                # A refresh where the row's own text changes (its relative time ticks on) updates that text in place:
+                # the focused link is still the same element.
+                ahead = [0]
+
+                def later(route):
+                    response = route.fetch()
+                    data = response.json()
+                    ahead[0] += 1
+                    data["now"] = data["now"] + 3600 * ahead[0]
+                    route.fulfill(response=response, json=data)
+                page.route("**/dash/api/home", later)
+                page.eval_on_selector(link, "a => { a.kept = true; }")
+                times = []
+                for _ in range(2):
+                    with page.expect_response(lambda r: r.url.endswith("/dash/api/home")):
+                        page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+                    page.wait_for_timeout(100)
+                    times.append(page.text_content('#tasks li[data-task="sr-focus"] .task-time'))
+                    self.assertTrue(page.evaluate("document.activeElement.kept === true"), times)
+                self.assertNotEqual(times[0], times[1], "the row's time did change")
             finally:
                 browser.close()
 

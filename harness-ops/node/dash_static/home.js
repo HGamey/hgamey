@@ -26,9 +26,37 @@
   const avatar = (name, human = false) => `<span class="av${human ? " human" : ""}" aria-hidden="true">${human ? "人" : initial(name)}</span>`;
   const speaker = note => note.auth_channel === "dashboard_steer" ? "人工" : note.auth_channel === "admin_token" ? "管理员" : note.actor_label || "agent";
   const model = s => s ? (s.model || s.serial) : "";
-  // A polled list is rewritten only when what it shows changed, so a refresh keeps focus, hover and text selection.
+  // A polled list is touched only where what it shows changed: rows are matched by their data-* key (data-task,
+  // data-report, ...), inside a row nodes by position, and only the attributes and text that differ are written. A relative time ticking
+  // from 3 to 4 分钟前 therefore changes one text node, and a focused link, hover or text selection elsewhere survives.
   const shown = new Map();
-  const polled = id => ({set innerHTML(html) { if (shown.get(id) !== html) { $(id).innerHTML = html; shown.set(id, html); } }});
+  const keyOf = n => { if (n.nodeType !== 1) return null; for (const a of n.attributes) if (a.name.startsWith("data-")) return `${n.tagName}|${a.name}=${a.value}`; return null; };
+  function morph(from, to) {
+    if (from.nodeType !== to.nodeType || from.nodeName !== to.nodeName) { from.replaceWith(to); return; }
+    if (from.nodeType !== 1) { if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue; return; }
+    for (const a of [...from.attributes]) if (!to.hasAttribute(a.name) && !(a.name === "open" && from.tagName === "DETAILS")) from.removeAttribute(a.name);
+    for (const a of to.attributes) if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
+    reconcile(from, [...to.childNodes], false);
+  }
+  function reconcile(parent, next, rows = true) {
+    const key = n => rows ? keyOf(n) : null, byKey = new Map();
+    for (const n of parent.childNodes) { const k = key(n); if (k && !byKey.has(k)) byKey.set(k, n); }
+    next.forEach((n, i) => {
+      const at = parent.childNodes[i] || null, k = key(n);
+      const match = k ? byKey.get(k) : at && !key(at) ? at : null;
+      if (!match) { parent.insertBefore(n, at); return; }
+      byKey.delete(k);
+      if (match !== at) parent.insertBefore(match, at);
+      morph(match, n);
+    });
+    while (parent.childNodes.length > next.length) parent.lastChild.remove();
+  }
+  const polled = id => ({set innerHTML(html) {
+    if (shown.get(id) === html) return;
+    shown.set(id, html);
+    const fresh = document.createElement("template"); fresh.innerHTML = html;
+    reconcile($(id), [...fresh.content.childNodes]);
+  }});
 
   async function api(url, body) {
     const opt = body === undefined ? {cache: "no-store", credentials: "same-origin"}
