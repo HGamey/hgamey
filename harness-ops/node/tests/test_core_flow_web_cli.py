@@ -3930,5 +3930,14 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(here.fragment, "task-report", "the #place survives both redirects")
             page.wait_for_function("() => document.body.innerText.includes('登录后回到这里')", timeout=20000)
 
+    def test_maintenance_log_says_there_is_no_log_when_the_node_has_no_jobs(self):
+        """With no job to follow, the log pane stops saying it is reading one."""
+        state = {"now": time.time(), "jobs": [], "hist": [], "fleet_age_s": 3, "fleet_err": None, "fleet_skip": None,
+                 "devices": [], "notes": [], "lock": {"status": "clear"}, "shot": None}
+        with self._browser_page() as page:
+            page.route("**/dash/api/state", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(state)))
+            page.goto(f"http://%s:%d/dash/maint" % self.address)
+            page.wait_for_function("() => document.getElementById('log').textContent === '这台节点上还没有任务日志'", timeout=15000)
+
 if __name__ == "__main__":
     unittest.main()

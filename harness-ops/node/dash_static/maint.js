@@ -71,7 +71,7 @@
 
   let logSize = -1, logJob = null;
   async function pollLog() {
-    if (!S.selJob) return;
+    if (!S.selJob) { if (S.state) { $("log").textContent = "这台节点上还没有任务日志"; logJob = null; logSize = -1; } return; }
     const job = (S.state?.jobs || []).find(item => item.id === S.selJob);
     if (job && job.id === logJob && job.log_bytes === logSize) return;
     try {
