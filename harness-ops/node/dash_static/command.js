@@ -18,7 +18,7 @@ function showEmpty(html) { empty.innerHTML = html; empty.hidden = !html; }
 const slow = setTimeout(() => showEmpty('<div><div class="spinner"></div>读取中…</div>'), 300);
 async function fetchModel(src) {
   const r = await fetch(SOURCES[src], {credentials: 'same-origin', cache: 'no-store'});
-  if (r.status === 401) { location.href = '/dash/login?next=' + encodeURIComponent(location.pathname + location.search); throw new Error('需要登录'); }
+  if (r.status === 401) { location.href = '/dash/login?next=' + encodeURIComponent(location.pathname + location.search + location.hash); throw new Error('需要登录'); }
   if (!r.ok) { let msg = `HTTP ${r.status}`; try { msg = (await r.json()).error || msg; } catch (_) {} const e = new Error(msg); e.status = r.status; throw e; }
   return r.json();
 }

@@ -3,6 +3,7 @@
 Requests are shaped the way the shipped clients send them: dashboard calls carry only the
 cookies and headers the page scripts set, token calls mirror pf-node. No workers or devices.
 """
+import collections
 import contextlib
 import hashlib
 import http.client
@@ -10,6 +11,7 @@ import json
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlencode, urlparse
 import subprocess
 import sys
 import tempfile
@@ -3898,6 +3900,35 @@ class CoreFlowTests(unittest.TestCase):
         self.jobs.dispatch.queue.set_state(jid, "done")
         self.assertEqual(board._reservations(), [])
         self.assertIsNone(board._reserved("S1", [], phones))
+
+    def test_logging_in_returns_to_the_task_that_was_asked_for(self):
+        """A link to a task, a job or a comparison opened without a session comes back to that same place after the
+        view password, not to the overview; a next that leaves the dashboard is ignored."""
+        self.board.fails, self.board._lan_plain = collections.defaultdict(list), True
+        self.assertEqual(self.web("POST", "/research-state/research/sr-back", self.write(
+            "create-sr-back", {"title": "登录后回到这里", "objective": "深链接"}))[0], 201)
+        def login(query):
+            connection = http.client.HTTPConnection(*self.address, timeout=10)
+            connection.request("POST", "/dash/login?" + urlencode(query), body="pw=" + VIEW,
+                               headers={"Content-Type": "application/x-www-form-urlencoded"})
+            response = connection.getresponse(); response.read(); connection.close()
+            return response.getheader("Location")
+        self.assertEqual(login({"next": "/dash/jobs", "expected_node_id": self.node_id}),
+                         "/dash/jobs?expected_node_id=" + self.node_id, "older login links keep their node pin")
+        for nxt in ("//evil.example/dash", "https://evil.example/dash/jobs", "/dash/../evil", "/elsewhere"):
+            self.assertEqual(login({"next": nxt}), "/dash", nxt)
+        wanted = "/dash/research?kind=research&id=sr-back"
+        with self._browser_page() as page:
+            page.context.clear_cookies()
+            page.goto(f"http://%s:%d{wanted}#task-report" % self.address)
+            self.assertEqual(urlparse(page.url).path, "/dash/login")
+            page.fill("input[name=pw]", VIEW)
+            page.press("input[name=pw]", "Enter")
+            page.wait_for_url("**/dash/research?**")
+            here = urlparse(page.url)
+            self.assertEqual(here.path + "?" + here.query, wanted)
+            self.assertEqual(here.fragment, "task-report", "the #place survives both redirects")
+            page.wait_for_function("() => document.body.innerText.includes('登录后回到这里')", timeout=20000)
 
 if __name__ == "__main__":
     unittest.main()

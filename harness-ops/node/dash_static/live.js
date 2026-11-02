@@ -176,7 +176,7 @@
     const timeout = setTimeout(() => ctl.abort(), 10000);
     try {
       const r = await HGTarget.fetch(liveURL("status"), { signal: ctl.signal, credentials: "same-origin", cache: "no-store" }, S.target ? {target:S.target} : {});
-      if (r.status === 401) { location.href = "/dash/login"; return; }
+      if (r.status === 401) { location.href = "/dash/login?next=" + encodeURIComponent(location.pathname + location.search + location.hash); return; }
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       if (S.statusCtl !== ctl) return;

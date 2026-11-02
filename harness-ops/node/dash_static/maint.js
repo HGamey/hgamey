@@ -10,7 +10,7 @@
 
   async function getJSON(url) {
     const response = await HGTarget.fetch(url, {cache: "no-store", credentials: "same-origin"});
-    if (response.status === 401) { location.href = "/dash/login"; throw new Error("401"); }
+    if (response.status === 401) { location.href = "/dash/login?next=" + encodeURIComponent(location.pathname + location.search + location.hash); throw new Error("401"); }
     if (!response.ok) throw new Error(response.status);
     return response.json();
   }

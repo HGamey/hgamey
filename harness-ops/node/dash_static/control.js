@@ -47,7 +47,7 @@
         const value = await r.json();
         if (!r.ok) {
           const e = new Error(message(value.error || `HTTP ${r.status}`)); e.httpStatus = r.status; e.data = value;
-          if (r.status === 401) location.href = "/dash/login";
+          if (r.status === 401) location.href = "/dash/login?next=" + encodeURIComponent(location.pathname + location.search + location.hash);
           if (r.status === 403 && value.need_steer) setOp(null);
           throw e;
         }

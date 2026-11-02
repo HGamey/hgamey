@@ -21,7 +21,7 @@ const dayFmt = new Intl.DateTimeFormat('zh-CN', {month: 'numeric', day: 'numeric
 async function load() {
   for (const url of ['/dash/api/showcase', '/dash/api/command']) {
     const r = await fetch(url, {credentials: 'same-origin'}).catch(() => null);
-    if (r?.status === 401) { location.href = '/dash/login?next=' + encodeURIComponent(location.pathname + location.search); return null; }
+    if (r?.status === 401) { location.href = '/dash/login?next=' + encodeURIComponent(location.pathname + location.search + location.hash); return null; }
     if (r?.ok) return {...await r.json(), from: url.endsWith('showcase') ? 'snapshot' : 'live'};
   }
   return null;

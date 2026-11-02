@@ -31,7 +31,7 @@
     const opt = body === undefined ? {cache: "no-store", credentials: "same-origin"}
       : {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json", "X-HG": "1"}, body: JSON.stringify(body)};
     const r = await HGTarget.fetch(url, opt);
-    if (r.status === 401) { location.href = "/dash/login"; throw new Error("401"); }
+    if (r.status === 401) { location.href = "/dash/login?next=" + encodeURIComponent(location.pathname + location.search + location.hash); throw new Error("401"); }
     let j = {}; try { j = await r.json(); } catch (_) { /* An unknown write must not be retried automatically. */ }
     if (!r.ok) { const error = new Error(j.error || `HTTP ${r.status}`); error.data = j; error.status = r.status; throw error; }
     return j;

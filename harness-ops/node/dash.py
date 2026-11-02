@@ -95,6 +95,16 @@ SHOWCASE_STATIC = frozenset((
     "three-output-pass.js", "three-pass.js", "three-shader-pass.js", "three-mask-pass.js", "three-copy-shader.js",
     "three-luminosity-high-pass-shader.js", "three-output-shader.js", "three-rounded-box-geometry.js", "three-css2d-renderer.js"))
 TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/datasets", "/dash/research", "/dash/doctor"}
+# Where a login may return to: a dashboard page, with its query and fragment, on this site only.
+LOGIN_PAGES = TARGET_PAGES | {"/dash/command", "/dash/showcase", "/dash/showcase/command"}
+
+
+def _login_next(value):
+    parsed = urlparse(value)
+    return (not parsed.scheme and not parsed.netloc and value.startswith("/dash") and "\\" not in value
+            and parsed.path.rstrip("/") in LOGIN_PAGES)
+
+
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
 # PF's own sampling (EphemeralObservation, devlease.rs) holds each idle phone for a moment every ~30 s to read its
@@ -235,22 +245,23 @@ class Dash:
         return h.headers.get("CF-Connecting-IP", h.client_address[0])
 
     def _login_redirect(self, h):
+        """Send a page visit to the login form, remembering the page and its query (a task, a job, a node pin) to
+        come back to; the browser keeps any #fragment across both redirects."""
         parsed = urlparse(h.path)
-        values = parse_qs(parsed.query).get("expected_node_id", [])
+        page = parsed.path.rstrip("/") + ("?" + parsed.query if parsed.query else "")
         location = "/dash/login"
-        if (parsed.path.rstrip("/") in TARGET_PAGES and len(values) == 1
-                and re.fullmatch(r"[0-9a-f]{32}", values[0])):
-            location += "?" + urlencode({"next": parsed.path.rstrip("/"), "expected_node_id": values[0]})
+        if page != "/dash" and _login_next(page):
+            location += "?" + urlencode({"next": page})
         return self._redirect(h, location)
 
     def _login_destination(self, h):
         query = parse_qs(urlparse(h.path).query)
         destination = query.get("next", ["/dash"])
         expected = query.get("expected_node_id", [])
-        if len(destination) != 1 or destination[0] not in TARGET_PAGES:
+        if len(destination) != 1 or not _login_next(destination[0]):
             return "/dash"
-        if len(expected) == 1 and re.fullmatch(r"[0-9a-f]{32}", expected[0]):
-            return destination[0] + "?" + urlencode({"expected_node_id": expected[0]})
+        if "?" not in destination[0] and len(expected) == 1 and re.fullmatch(r"[0-9a-f]{32}", expected[0]):
+            return destination[0] + "?" + urlencode({"expected_node_id": expected[0]})   # older login links
         return destination[0]
 
     # ── HTTP 入口：node_service 只调这两个 ──

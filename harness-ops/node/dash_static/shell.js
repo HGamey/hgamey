@@ -158,6 +158,11 @@
       sync();
     }
   }
+  // 「重新登录」回到当前这页（连同任务、#位置），而不是总览
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest('a[href="/dash/login"]');
+    if (a) a.href = "/dash/login?next=" + encodeURIComponent(location.pathname + location.search + location.hash);
+  }, true);
   // 放在 body 里时立即画；万一被放进 head，等 body 出现再画
   if (document.body) build();
   else document.addEventListener("DOMContentLoaded", build, {once: true});
