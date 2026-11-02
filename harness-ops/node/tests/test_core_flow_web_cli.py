@@ -2146,6 +2146,28 @@ class CoreFlowTests(unittest.TestCase):
             page.wait_for_timeout(200)
             self.assertFalse(page.evaluate(collapsed), "the rail opened by hand stays open")
 
+    def test_the_gol_top_bar_on_a_phone_keeps_its_actions_clear_of_the_brand(self):
+        """At 390 px GOL's four top actions (status, unlock, new goal, home) do not fit beside the brand and node: they
+        take their own row instead of squeezing the 实时 badge over the HG mark."""
+        with self._browser_page() as page:
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.goto("http://%s:%d/dash/gol" % self.address)
+            page.wait_for_selector(".shell-top .shell-actions #live")
+            page.wait_for_timeout(300)
+            found = page.evaluate("""() => {
+              const items = [document.querySelector('.shell-brand'), document.querySelector('.shell-node'), ...document.querySelectorAll('.shell-actions > *')]
+                .filter(e => e.getBoundingClientRect().width);
+              const boxes = items.map(e => e.getBoundingClientRect());
+              let overlaps = 0, outside = 0;
+              for (let i = 0; i < boxes.length; i++) {
+                if (boxes[i].left < 0 || boxes[i].right > innerWidth) outside++;
+                for (let j = i + 1; j < boxes.length; j++) { const a = boxes[i], b = boxes[j]; if (a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom) overlaps++; }
+              }
+              return {overlaps, outside, live: document.getElementById('live').getBoundingClientRect().height};
+            }""")
+            self.assertEqual((found["overlaps"], found["outside"]), (0, 0), found)
+            self.assertLess(found["live"], 30, "the status badge stays on one line")
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):

@@ -101,6 +101,8 @@ html { scrollbar-color: var(--line) transparent; }
 @keyframes shell-pop { from { opacity: 0; transform: scale(.97) translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .shell-menu { animation: none; } }
 .shell-actions { grid-area: actions; display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); min-width: 0; }
+/* Actions keep their own width and wrap to a new line rather than squeezing into each other or the brand. */
+.shell-actions > * { flex: none; white-space: nowrap; }
 
 /* 执行目标：平时收在节点按钮下；核对失败时留在正文里 */
 #connection-target:not(.inline) { position: fixed; z-index: 30; top: 62px; left: max(16px, calc(var(--sp-6) + 120px));
@@ -118,6 +120,12 @@ html { scrollbar-color: var(--line) transparent; }
   .shell-tab { height: 32px; padding: 0 12px; }
   .shell-menu { left: auto; right: 0; transform-origin: top right; }
   #connection-target:not(.inline) { top: 104px; left: 16px; }
+  .shell-actions { flex-wrap: wrap; row-gap: 6px; }
+  /* Actions that do not fit beside the brand and node (GOL on a phone: status, unlock, new goal, home) take a row of
+     their own; shell.js sets the class by measuring. */
+  .shell-top.shell-crowded { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "brand node" "actions actions" "nav nav"; }
+  .shell-top.shell-crowded .shell-node { justify-self: start; }
+  .shell-top.shell-crowded .shell-actions { justify-content: flex-start; }
 }
 @media (max-width: 480px) {
   .shell-name { display: none; }

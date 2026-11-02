@@ -123,6 +123,17 @@
     top.append(brand, nodeBtn, nav, actBox);
     if (old) old.replaceWith(top); else document.body.prepend(top);
     document.body.classList.add("has-shell");
+    // 动作放不进品牌和节点旁边时（例如手机上的 GOL 页）单独占一行；动作本身变宽（状态文字）或窗口变化时重新量
+    const fit = () => {
+      top.classList.remove("shell-crowded");
+      const shown = [...actBox.children].filter(n => n.offsetWidth);
+      const gap = parseFloat(getComputedStyle(actBox).columnGap) || 0;
+      const need = shown.reduce((sum, n) => sum + n.offsetWidth, 0) + gap * Math.max(0, shown.length - 1);
+      top.classList.toggle("shell-crowded", need > actBox.clientWidth + 1);
+    };
+    fit();
+    addEventListener("resize", fit);
+    if (window.ResizeObserver) { const ro = new ResizeObserver(fit); for (const n of actBox.children) ro.observe(n); }
     const tab = tabs.querySelector('[aria-current="page"]');
     if (tab && tabs.scrollWidth > tabs.clientWidth) tab.scrollIntoView({block: "nearest", inline: "center"});
     fetch("/dash/api/node").then(r => r.ok ? r.json() : null).then(d => {
