@@ -123,7 +123,12 @@
     if (!capable() || disposed) return;
     const revision = ++listRevision, target = HGTarget.binding();
     listController?.abort(); listController = new AbortController();
-    if (!append) { cursor = null; const filters = new URLSearchParams(); for (const key of FILTERS) { const value = $('filters').elements.namedItem(key).value.trim(); if (value) filters.set(key, value); } listQuery = filters.toString(); }
+    if (!append) {
+      cursor = null; const filters = new URLSearchParams(); for (const key of FILTERS) { const value = $('filters').elements.namedItem(key).value.trim(); if (value) filters.set(key, value); } listQuery = filters.toString();
+      // The address carries the filters, so a reload or a shared link opens the same list (other parameters and the hash stay).
+      const url = new URL(location.href); for (const key of FILTERS) { if (filters.has(key)) url.searchParams.set(key, filters.get(key)); else url.searchParams.delete(key); }
+      if (url.search !== location.search) history.replaceState(null, '', url.pathname + url.search + url.hash);
+    }
     const query = new URLSearchParams(listQuery);
     query.set('limit', '20'); if (append && cursor) query.set('cursor', cursor);
     listBusy = true; $('result-list').setAttribute('aria-busy', 'true'); $('filter-submit').disabled = true; $('more-results').disabled = true;
@@ -135,6 +140,7 @@
       if (!append) records = new Map();
       for (const item of value.items) records.set(item.result_id, item);
       cursor = value.next_cursor || null;
+      if (!append && !records.size && selected) clearSelection();
       message('list-message', records.size ? '选择记录查看声明、来源与当前任务。列表不会检查或扫描全部原件。' : '没有匹配的已登记记录；这不代表节点上没有实验原件。');
     } catch (error) { if (!disposed && revision === listRevision) message('list-message', `目录读取失败：${errorText(error)}${records.size ? ' 上次列表保留，尚未更新。' : ''}`, true); }
     finally { if (!disposed && revision === listRevision) { listBusy = false; $('result-list').setAttribute('aria-busy', 'false'); $('filter-submit').disabled = false; renderList(); } }
@@ -183,6 +189,14 @@
     $('current-job-link').hidden = !m.job_id; if (m.job_id) $('current-job-link').href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(m.job_id)}`);
     $('manifest-view').textContent = JSON.stringify(m, null, 2);
     $('evidence-view').textContent = JSON.stringify({provenance: value.provenance, source_observations: value.source_observations, metric_evidence: value.metric_evidence, current: value.current}, null, 2);
+  }
+  // A filter that matches nothing leaves no record to show beside it: the previous detail is put away, not kept as if it matched.
+  function clearSelection() {
+    selected = ''; ++detailRevision; detailController?.abort(); detailRecord = null;
+    $('detail-content').hidden = true; $('refresh-detail').disabled = true; $('result-detail').setAttribute('aria-busy', 'false');
+    message('detail-message', '筛选后没有记录，之前选中的记录已收起。选择一条记录，查看声明、指标与原件。'); renderCompareControls();
+    const hash = new URLSearchParams(location.hash.slice(1)); hash.delete('result');
+    history.replaceState(null, '', `${location.pathname}${location.search}${hash.toString() ? '#' + hash : ''}`);
   }
   async function selectResult(id) {
     if (!validID(id) || !capable() || disposed) return;

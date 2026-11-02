@@ -104,6 +104,35 @@ class ResultsPageRemoteTests(unittest.TestCase):
             self.assertIn("worker", page.text_content("#execution-info"))
         self.browse(check)
 
+    def test_filters_live_in_the_address_and_a_filter_matching_nothing_puts_the_detail_away(self):
+        """Applying a filter writes it into the address, so a reload or a shared link shows the same list; a filter
+        that matches nothing hides the record that was open instead of leaving it beside an empty list."""
+        here = registration('local-result', None)
+        here.update(title='本机结果', sources=[], metrics=[{**metric(3.1), 'source': None}])
+        self.register(here)
+
+        def check(page, base):
+            page.goto(base + "/dash/results#result=local-result")
+            page.wait_for_function("() => !document.getElementById('detail-content').hidden")
+            page.fill("#filters input[name=game_id]", "fixture-game")
+            page.click("#filter-submit")
+            page.wait_for_function("() => new URLSearchParams(location.search).get('game_id') === 'fixture-game'")
+            self.assertIn("result=local-result", page.url, "a filter that still matches keeps the open record")
+            page.reload()
+            page.wait_for_selector("#result-list li")
+            self.assertEqual(page.input_value("#filters input[name=game_id]"), "fixture-game")
+            page.wait_for_function("() => !document.getElementById('detail-content').hidden")
+            page.fill("#filters input[name=game_id]", "no-such-game")
+            page.click("#filter-submit")
+            page.wait_for_function("() => document.getElementById('list-message').textContent.includes('没有匹配')")
+            self.assertTrue(page.is_hidden("#detail-content"))
+            self.assertNotIn("result=", page.url)
+            self.assertIn("game_id=no-such-game", page.url)
+            page.click("#filter-reset")
+            page.wait_for_selector("#result-list li")
+            self.assertNotIn("game_id", page.url)
+        self.browse(check)
+
     def test_results_from_different_computers_compare_with_a_baseline_per_column(self):
         """Putting this computer's result beside the worker's switches to per-column baselines, all on the first
         column, and asks the center with result ids only: no source list, no node id on a column."""
