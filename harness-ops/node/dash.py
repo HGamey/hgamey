@@ -322,7 +322,7 @@ class Dash:
             jid = (q.get("job") or [""])[0]
             return self._send(h, 200, self.log_tail(jid, int((q.get("bytes") or ["16384"])[0])))
         if sub == ["api", "shot"]:
-            return self._shot(h, (q.get("serial") or [""])[0])
+            return self._shot(h, (q.get("serial") or [""])[0], (q.get("t") or [""])[0])
         if sub and sub[0] not in ("api", "static"):   # a mistyped or retired page: say so, with a way back
             return self._send(h, 404, NOT_FOUND_HTML.encode(), "text/html; charset=utf-8")
         return self._send(h, 404, {"error": "not found"})
@@ -591,12 +591,15 @@ class Dash:
         html = html.replace("{{hint}}", "")
         self._send(h, code, html.encode(), "text/html; charset=utf-8")
 
-    def _shot(self, h, serial=""):
+    def _shot(self, h, serial="", taken=""):
         pat = (re.sub(r"[^0-9A-Za-z_-]", "_", serial) if serial else "*") + ".jpg"
         shots = sorted(glob.glob(os.path.join(self.shot_dir, pat)), key=_mtime)
         if not shots:
             return self._send(h, 404, {"error": "还没有截图"})
-        self._send(h, 200, open(shots[-1], "rb").read(), "image/jpeg")
+        # The overview asks for a shot by the time it was taken (&t=shot_at): that picture never changes, so the
+        # browser may keep it instead of downloading every phone's picture again on each 8 s refresh.
+        cache = {"Cache-Control": "private, max-age=86400"} if taken and taken == str(int(_mtime(shots[-1]))) else None
+        self._send(h, 200, open(shots[-1], "rb").read(), "image/jpeg", extra=cache)
 
     # ── 任务 ──
     def _job_meta(self, jid):

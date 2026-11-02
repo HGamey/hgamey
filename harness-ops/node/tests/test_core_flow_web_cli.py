@@ -4074,5 +4074,24 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual(page.evaluate("[document.activeElement.dataset.gap, document.activeElement.getAttribute('aria-pressed')]"),
                                  [page.locator(gap).locator("[data-gap]").first.get_attribute("data-gap"), "true"])
 
+    def test_a_phone_shot_asked_for_by_its_time_may_be_kept_by_the_browser(self):
+        """The overview names each phone's picture by when it was taken; that URL may be cached, so a refresh does not
+        download every picture again. Without a matching time the answer stays no-store."""
+        shots = self.tmp / "shots"
+        shots.mkdir()
+        (shots / "S1.jpg").write_bytes(b"\xff\xd8fixture")
+        os.utime(shots / "S1.jpg", (1700000000, 1700000000))
+        self.board.shot_dir = str(shots)
+        self.board.monitor = mock.Mock()
+
+        def shot(query):
+            connection = http.client.HTTPConnection(*self.address, timeout=10)
+            connection.request("GET", "/dash/api/shot?" + query, headers={"Cookie": self.view_cookie})
+            response = connection.getresponse(); body = response.read(); connection.close()
+            return response.status, response.getheader("Cache-Control"), body
+        self.assertEqual(shot("serial=S1&t=1700000000"), (200, "private, max-age=86400", b"\xff\xd8fixture"))
+        self.assertEqual(shot("serial=S1&t=1699999999")[1], "no-store", "a newer picture than the one named")
+        self.assertEqual(shot("serial=S1")[1], "no-store")
+
 if __name__ == "__main__":
     unittest.main()
