@@ -7,7 +7,7 @@ import shlex
 import stat
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import unittest
 from unittest import mock
@@ -19,6 +19,7 @@ sys.path.insert(0, str(NODE))
 
 from node_service import Jobs, make_handler
 from node_agents import AgentError, NodeAgents
+from agent_onboarding import invitation_prompt
 
 ADMIN = "agent-registry-fixture-not-production"
 
@@ -273,6 +274,50 @@ class AgentRegistryTests(unittest.TestCase):
         self.assertNotEqual(replay.returncode, 0)
         self.assertIn("used", replay.stderr)
         self.assertEqual(token_file.read_text().strip(), token)
+
+    def test_cli_join_user_agent_passes_a_cloudflare_style_filter(self):
+        seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                agent = self.headers.get("User-Agent", "")
+                seen.append(agent)
+                denied = agent.startswith("Python-urllib")
+                body = (b"error code: 1010" if denied else
+                        json.dumps({"token": "fixture-token", "node_id": "a" * 32}).encode())
+                self.send_response(403 if denied else 201)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        token_file = self.root / "filtered-join.token"
+        joined = self.pf("join", "--invite", "fixture-invite", "--name", "external-agent",
+                         "--token-file", str(token_file), PF_NODE_URL="http://%s:%s" % server.server_address)
+        self.assertEqual(joined.returncode, 0, joined.stderr)
+        self.assertEqual(seen, ["phonefarm-target/1"])
+        self.assertEqual(token_file.read_text(), "fixture-token\n")
+
+    def test_external_agent_prompts_include_task_source_and_permission_escape(self):
+        prompts = {"invitation": invitation_prompt("https://fixture.invalid", "a" * 32, "invite"),
+                   "readme": (NODE.parents[1] / "README.md").read_text()}
+        fragments = ["这次要你做的事：<一句话写清要做什么>", "research list research --state active",
+                     '{"title":"…","objective":"…"}', "research create research <新ID> <文件>",
+                     "没有写权限", "--ask"]
+        for name, prompt in prompts.items():
+            for fragment in fragments:
+                with self.subTest(prompt=name, fragment=fragment):
+                    self.assertIn(fragment, prompt)
 
     def test_onboarding_help_is_available_without_credentials(self):
         for command in [("agents", "--help"), ("join", "--help")]:

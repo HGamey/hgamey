@@ -47,6 +47,15 @@ class BootServicePlanTests(unittest.TestCase):
         self.user=pwd.getpwuid(os.getuid()).pw_name
         self.env={'DEVLOCK_DIR':str(self.root/'locks'),'HG_CONFIG_DIR':str(self.root/'config'),'PATH':'/usr/bin:/bin'}
 
+    def test_reports_uses_the_target_user_agent(self):
+        token = self.root.parent / 'report.token'
+        token.write_text('fixture-token')
+        config = {'nodes': [{'url': 'http://fixture.invalid', 'token_file': str(token)}]}
+        with patch.object(deploy.urllib.request, 'urlopen', return_value=io.BytesIO(b'{}')) as opened:
+            deploy.reports(config, 0)
+        request = opened.call_args.args[0]
+        self.assertEqual(request.get_header('User-agent'), 'phonefarm-target/1')
+
     def test_macos_boot_plan_installs_a_user_owned_process_in_the_system_domain(self):
         node_id='a'*32
         label='com.hgamey.node.'+node_id

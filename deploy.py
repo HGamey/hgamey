@@ -166,7 +166,8 @@ def reports(config, wait):
     found = []
     for node in config["nodes"]:
         token = path(node["token_file"]).read_text().strip()
-        request = urllib.request.Request(node["url"].rstrip("/") + "/node", headers={"Authorization": "Bearer " + token})
+        request = urllib.request.Request(node["url"].rstrip("/") + "/node",
+            headers={"Authorization": "Bearer " + token, "User-Agent": "phonefarm-target/1"})
         deadline = time.monotonic() + wait
         while True:
             try:

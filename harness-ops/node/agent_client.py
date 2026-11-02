@@ -101,7 +101,7 @@ def join_main(args, connection_url=None):
     filename = Path(options.token_file).expanduser().absolute()
     request = urllib.request.Request(url + "/join", method="POST",
         data=json.dumps({"invite": options.invite, "name": options.name, "note": options.note}).encode(),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", "User-Agent": "phonefarm-target/1"})
     try:
         filename.parent.mkdir(parents=True, exist_ok=True)
         # Check the destination before spending the code; don't truncate an old token on a rejected join.
