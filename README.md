@@ -175,7 +175,7 @@ agent 不会自己醒来。运行方需要定期（例如每 30 分钟）给它�
 
 一个节点是一台连接手机的主机（macOS 或 Linux）。节点上运行节点服务；需要公网访问时，还运行 cloudflared 隧道。部署由仓库根目录的 `deploy.py` 完成，它把一个提交构建并发布到节点，重启服务，并核对每个服务报告的版本。
 
-现有部署（手机插在哪台机器、每台机器跑什么、哪些 agent 在哪里跑）见 HGamey/docs 的 [DEPLOYMENT.md](https://github.com/HGamey/docs/blob/main/DEPLOYMENT.md) 和[部署拓扑图](https://github.com/HGamey/docs/blob/main/diagrams/08-deployment.png)。本节是新建节点的通用步骤。
+按最小功能模块拆分的部署与使用指导书（每个模块可单独交付，含两台 PC 加一台 root 手机的 Demo 搭建手册）见 HGamey/docs 的 [guide/](https://github.com/HGamey/docs/tree/main/guide)。现有部署（手机插在哪台机器、每台机器跑什么、哪些 agent 在哪里跑）见 HGamey/docs 的 [DEPLOYMENT.md](https://github.com/HGamey/docs/blob/main/DEPLOYMENT.md) 和[部署拓扑图](https://github.com/HGamey/docs/blob/main/diagrams/08-deployment.png)。本节是新建节点的通用步骤。
 
 ### 前置条件
 
