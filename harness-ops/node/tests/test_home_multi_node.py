@@ -157,5 +157,49 @@ class HomeMultiNodeTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_lock_that_fails_says_so_on_the_button(self):
+        """Clicking 可操作 to lock again: if the lock request fails, the button itself says 上锁失败 (also on a phone,
+        where the label is otherwise hidden) and stays unlocked."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+
+        class Goals:
+            def list(self):
+                return []
+
+            def harness_support(self):
+                return {"ok": False}
+        board, base = self.center.board, self.center.url
+        board.goals = Goals()
+
+        def unlocked(route):
+            response = route.fetch()
+            route.fulfill(response=response, json={**response.json(), "steer": True})
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 390, "height": 844})
+                context.add_cookies([{"name": "hg_dash", "value": board._cookie_val("test-view"), "url": base}])
+                page = context.new_page()
+                page.route("**/dash/api/home*", unlocked)
+                page.route("**/dash/api/steer/lock*", lambda route: route.fulfill(status=500, json={"error": "磁盘满"}))
+                page.goto(base + "/dash")
+                page.wait_for_selector('#steer-btn[aria-pressed="true"]')
+                page.click("#steer-btn")
+                page.wait_for_function("() => document.querySelector('#steer-btn .steer-label').textContent === '上锁失败'", timeout=10000)
+                self.assertTrue(page.is_visible("#steer-btn .steer-label"))
+                self.assertEqual(page.get_attribute("#steer-btn", "aria-pressed"), "true")
+            finally:
+                browser.close()
+
 if __name__ == "__main__":
     unittest.main()

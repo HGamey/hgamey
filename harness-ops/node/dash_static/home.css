@@ -229,6 +229,8 @@ details.gm pre { font-size: 14px; }
 .home-view .live.bad { color: var(--bad); }
 .steer-btn .ic { flex: none; }
 .steer-btn.on { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--line)); background: var(--good-soft); }
+.steer-btn.failed, .steer-btn.on.failed { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); background: transparent; }
+.home-view .steer-btn.failed .steer-label { display: inline; }
 @media (max-width: 1080px) { .home-view .home-grid { grid-template-columns: minmax(0, 1fr) 320px; } }
 @media (max-width: 860px) {
   .home-view .home-grid { grid-template-columns: minmax(0, 1fr); }

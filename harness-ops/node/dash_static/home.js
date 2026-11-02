@@ -256,7 +256,10 @@
     if (!(S.home && S.home.steer)) return needSteer();
     const b = $("steer-btn"); b.disabled = true;
     try { await api("/dash/api/steer/lock", {}); await pollHome(); }
-    catch (e) { b.title = "上锁失败：" + e.message; }
+    catch (e) {   // said on the button itself, not only in its tooltip; it stays unlocked until a lock succeeds
+      b.title = "上锁失败：" + e.message; b.querySelector(".steer-label").textContent = "上锁失败"; b.classList.add("failed");
+      setTimeout(() => { b.classList.remove("failed"); if (S.home) renderSteerBtn(S.home); }, 4000);
+    }
     finally { b.disabled = false; }
   });
   async function steerCall(url, body, msgEl) {
