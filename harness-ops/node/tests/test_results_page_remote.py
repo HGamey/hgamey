@@ -133,6 +133,14 @@ class ResultsPageRemoteTests(unittest.TestCase):
             self.assertNotIn("game_id", page.url)
         self.browse(check)
 
+    def test_the_outcome_filter_offers_every_outcome(self):
+        """The 报告结论 filter lists all six outcomes a result can record, 报告有收益 included."""
+        def check(page, base):
+            page.goto(base + "/dash/results")
+            values = page.eval_on_selector_all("#filters select[name=outcome] option", "e => e.map(o => o.value)")
+            self.assertEqual(values, ["", "gain", "no_gain", "regression", "failed", "not_run", "unknown"])
+        self.browse(check)
+
     def test_results_from_different_computers_compare_with_a_baseline_per_column(self):
         """Putting this computer's result beside the worker's switches to per-column baselines, all on the first
         column, and asks the center with result ids only: no source list, no node id on a column."""
