@@ -4030,5 +4030,30 @@ class CoreFlowTests(unittest.TestCase):
         page.wait_for_function("() => /已取消|已停止/.test(document.getElementById('job-state').textContent)", timeout=20000)
         self.assertGreaterEqual(len(stopped), 4, "it read the job again on its own")
 
+    def test_a_note_link_lands_below_the_top_bar_with_its_first_line_showing(self):
+        """A #note- link to a note taller than the screen shows its author and first line just under the sticky top bar,
+        on a desktop and on a phone; #task-report lands its heading below the bar too."""
+        self.assertEqual(self.web("POST", "/research-state/research/sr-long", self.write(
+            "create-sr-long", {"title": "长留言", "objective": "锚点"}))[0], 201)
+        for n in range(3):
+            self.assertEqual(self.web("POST", f"/research-state/note/n-short-{n}", self.write(
+                f"short-{n}", {"research_id": "sr-long", "text": f"短留言 {n}", "reply_to": None, "decision": None}))[0], 201)
+        long = "第一行在这里\n" + "\n".join(f"第 {n} 行" for n in range(80))
+        self.assertEqual(self.web("POST", "/research-state/note/n-long", self.write(
+            "long", {"research_id": "sr-long", "text": long, "reply_to": None, "decision": None}))[0], 201)
+        for n in range(3, 8):
+            self.assertEqual(self.web("POST", f"/research-state/note/n-short-{n}", self.write(
+                f"short-{n}", {"research_id": "sr-long", "text": f"短留言 {n}", "reply_to": None, "decision": None}))[0], 201)
+        with self._browser_page() as page:
+            for width, height in ((1280, 800), (390, 844)):
+                page.set_viewport_size({"width": width, "height": height})
+                page.goto(f"http://%s:%d/dash/research?kind=research&id=sr-long#note-n-long" % self.address)
+                page.wait_for_function("() => document.getElementById('note-n-long') && scrollY > 0", timeout=20000)
+                page.wait_for_timeout(300)
+                bar = page.eval_on_selector(".shell-top", "e => e.getBoundingClientRect().bottom")
+                top = page.eval_on_selector("#note-n-long", "e => e.getBoundingClientRect().top")
+                self.assertGreaterEqual(top, bar - 1, f"{width}px: the note starts below the top bar")
+                self.assertLess(top, bar + 60, f"{width}px: and right under it")
+
 if __name__ == "__main__":
     unittest.main()

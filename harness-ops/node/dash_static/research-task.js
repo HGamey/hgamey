@@ -483,7 +483,9 @@
       list.replaceChildren(...(roots.length ? roots.map(paint) : [el('div', '还没有留言', 'empty')]));
       scope.apply(list);
       // Each section answers only its own anchor: a note link lands here; #cmp- and #task-report land on theirs.
-      if (location.hash.startsWith('#note-')) document.getElementById(location.hash.slice(1))?.scrollIntoView({block: 'center'});
+      // A note taller than half the screen lands with its author line at the top, not its middle at the centre.
+      const note = location.hash.startsWith('#note-') && document.getElementById(location.hash.slice(1));
+      if (note) note.scrollIntoView({block: note.offsetHeight > innerHeight / 2 ? 'start' : 'center'});
     }
     try { await load(); } catch (error) { list.replaceChildren(); status.textContent = '读取留言失败：' + failure(error); }
     {
