@@ -2168,6 +2168,18 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual((found["overlaps"], found["outside"]), (0, 0), found)
             self.assertLess(found["live"], 30, "the status badge stays on one line")
 
+    def test_every_input_pattern_compiles_as_the_browser_compiles_it(self):
+        """Browsers compile an input's pattern with the v flag, where a bare - in a character class is an error: the
+        field then logs a console error and its native check does nothing."""
+        static = Path(dash.__file__).resolve().parent / "dash_static"
+        patterns = {f"{page.name}: {value}": value.replace("&quot;", '"').replace("&amp;", "&")
+                    for page in sorted(static.glob("*.html")) for value in re.findall(r'\bpattern="([^"]*)"', page.read_text(encoding="utf-8"))}
+        self.assertTrue(patterns)
+        with self._browser_page() as page:
+            bad = page.evaluate("""patterns => Object.entries(patterns).filter(([, p]) => {
+              try { new RegExp('^(?:' + p + ')$', 'v'); return false; } catch (_) { return true; } }).map(([where]) => where)""", patterns)
+        self.assertEqual(bad, [])
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):
