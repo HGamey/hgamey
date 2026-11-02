@@ -38,6 +38,13 @@ def registration(result_id, jid):
             "metrics": [metric()], "claims": [], "limitations": ["Synthetic host evidence only"], "supersedes": None}
 
 
+def dataset():
+    return {"name": "Fixed scene pairs", "version": "2026-11-02", "pairing": "simulated",
+            "capture_method": "Synthetic low-resolution inputs with real native references",
+            "frames": 120, "scenes": 4, "splits": {"train": 80, "val": 20, "test": 20},
+            "size_bytes": 4096000, "location": "node:/datasets/fixed-scene-v1; use the registered sources"}
+
+
 def doom_report():
     return {"schema": "hgamey/lr4-026-original-native-owner-result@1", "at_utc": "2026-10-20T00:00:00Z",
             "status": "FIXED_SCENE_TWO_INDEPENDENT_PAIRS_MODULE_MS_GAIN_OBSERVED_OWNED016_RESTORED",
@@ -374,6 +381,50 @@ class NodeResultTests(unittest.TestCase):
                 self.assertEqual(rejected.returncode, 2, rejected.stderr)
                 self.assertIn(f"pf-node results {command}", rejected.stderr)
                 self.assertNotIn("无效的 results 命令", rejected.stderr)
+
+    def test_dataset_registration_list_filter_and_help(self):
+        ordinary = registration("ordinary-result", None)
+        ordinary.update(sources=[], metrics=[])
+        collected = registration("dataset-result", None)
+        collected.update(sources=[], metrics=[], dataset=dataset())
+        self.assertEqual(self.api("POST", "/results", ordinary)[0], 201)
+        code, registered = self.api("POST", "/results", collected)
+        self.assertEqual(code, 201, registered)
+        self.assertEqual(registered["manifest"]["dataset"], dataset())
+
+        filtered = self.cli("list", "--datasets")
+        self.assertEqual(filtered.returncode, 0, filtered.stderr)
+        page = json.loads(filtered.stdout)
+        self.assertEqual([item["result_id"] for item in page["items"]], ["dataset-result"])
+        self.assertEqual(page["items"][0]["dataset"], dataset())
+        unfiltered = self.cli("list")
+        self.assertEqual(unfiltered.returncode, 0, unfiltered.stderr)
+        items = {item["result_id"]: item for item in json.loads(unfiltered.stdout)["items"]}
+        self.assertEqual(set(items), {"ordinary-result", "dataset-result"})
+        self.assertIsNone(items["ordinary-result"]["dataset"])
+        help_result = self.cli("--help")
+        self.assertIn("--datasets", help_result.stdout)
+        self.assertIn("dataset", help_result.stdout)
+        skill = (NODE.parent / "skills/hgamey-research/SKILL.md").read_text()
+        self.assertIn("采到数据集", skill)
+        self.assertIn("dataset", skill)
+
+    def test_dataset_validation_names_bad_fields(self):
+        cases = [
+            ("frames", "dataset.frames", lambda value: value.update(frames="120")),
+            ("pairing", "dataset.pairing", lambda value: value.update(pairing="paired")),
+            ("unknown", "preview", lambda value: value.update(preview="preview.png")),
+            ("splits", "holdout", lambda value: value.update(splits={"train": 80, "val": 20, "test": 20, "holdout": 1})),
+        ]
+        for name, field, change in cases:
+            with self.subTest(case=name):
+                manifest = registration("invalid-dataset-" + name, None)
+                manifest.update(sources=[], metrics=[], dataset=dataset())
+                change(manifest["dataset"])
+                code, reply = self.api("POST", "/results", manifest)
+                self.assertEqual(code, 400, reply)
+                self.assertIn(field, reply["error"])
+                self.assertEqual(self.api("GET", "/results/invalid-dataset-" + name)[0], 404)
 
     def test_readonly_share_discovery_boundaries_and_no_credential_leak(self):
         """只读分享链：发现→详情→下载原件；越界/符号链接来源不可读、不泄漏；凭据不出现在响应。"""

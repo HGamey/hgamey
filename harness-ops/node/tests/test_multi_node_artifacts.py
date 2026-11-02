@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import test_multi_node_jobs as job_fixture
-from test_node_results import registration
+from test_node_results import registration, dataset
 import test_node_evaluation as evaluation_fixture
 
 
@@ -229,6 +229,7 @@ class MultiNodeArtifactsTests(unittest.TestCase):
         code, reference = self.center.call('GET', '/jobs/' + job['id'] + '/input-reference?path=report.json')
         self.assertEqual(code, 200, reference)
         manifest = registration('remote-result', job['id'])
+        manifest['dataset'] = dataset()
         manifest['sources'] += [{'name': name, 'kind': 'job_output', 'job_id': job['id'], 'path': 'image.png'}
                                 for name in ('image-a', 'image-b')]
         code, result = self.center.call('POST', '/results', manifest,
@@ -236,6 +237,12 @@ class MultiNodeArtifactsTests(unittest.TestCase):
         self.assertEqual(code, 201, result)
         self.assertEqual(result['metric_evidence'][0]['status'], 'matched_source')
         self.assertEqual(result['provenance']['execution_node_id'], self.worker.jobs.node_id)
+        self.assertEqual(result['manifest']['dataset'], dataset())
+        code, collected_results = self.center.call('GET', '/results?datasets=1',
+            token=self.flow.agent, headers={'X-Expected-Node-ID': self.center.jobs.node_id})
+        self.assertEqual(code, 200, collected_results)
+        self.assertEqual([item['result_id'] for item in collected_results['items']], ['remote-result'])
+        self.assertEqual(collected_results['items'][0]['dataset'], dataset())
         url = next(item['url'] for item in result['current']['sources'] if item['name'] == 'report')
         self.assertEqual(self.get(url)[0], 200)
         envelope = evaluation_fixture.NodeEvaluationTests.envelope

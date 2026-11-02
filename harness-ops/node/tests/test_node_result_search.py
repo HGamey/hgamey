@@ -13,6 +13,7 @@ NODE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(NODE))
 from node_service import readonly_token
 import test_node_games as game_fixture
+from test_node_results import dataset
 from node_connection_fixture import connect
 
 
@@ -61,10 +62,13 @@ class NodeResultSearchTests(unittest.TestCase):
             env.tearDown()
             self.assertFalse(env.thread.is_alive())
 
-    def publish(self, env, rid):
-        return self.hub.jobs.results.register({'schema': 'phonefarm/result@1', 'result_id': rid,
+    def publish(self, env, rid, dataset_value=None):
+        manifest = {'schema': 'phonefarm/result@1', 'result_id': rid,
             'title': env.label + ' ' + rid, 'job_id': env.source_job,
-            'labels': {'game_id': 'fixture-game'}, 'outcome': 'unknown'})
+            'labels': {'game_id': 'fixture-game'}, 'outcome': 'unknown'}
+        if dataset_value is not None:
+            manifest['dataset'] = dataset_value
+        return self.hub.jobs.results.register(manifest)
 
     def request(self, *, cursor=None, dash=False, authenticated=True):
         query = {'game_id': 'fixture-game', 'limit': 1}
@@ -113,6 +117,20 @@ class NodeResultSearchTests(unittest.TestCase):
                          {'later-alpha', 'result-alpha', 'result-beta', 'older-alpha', 'older-beta'})
         self.assertNotIn(self.hub.admin, listing.stdout)
         self.assertNotIn(readonly_token(self.hub.admin), listing.stdout)
+        self.assert_read_boundaries()
+
+    def test_dataset_center_remote_provenance_and_offline_filter(self):
+        expected = dataset()
+        record = self.publish(self.alpha, 'dataset-alpha', expected)
+        self.assertEqual(record['manifest']['dataset'], expected)
+        self.assertEqual(record['provenance']['execution_node_id'], self.alpha.jobs.node_id)
+        self.alpha.connector.close()
+        filtered = self.cli('--datasets')
+        self.assertEqual(filtered.returncode, 0, filtered.stderr)
+        page = json.loads(filtered.stdout)
+        self.assertEqual([item['result_id'] for item in page['items']], ['dataset-alpha'])
+        self.assertEqual(page['items'][0]['dataset'], expected)
+        self.assertEqual(self.hub.jobs.results.get('dataset-alpha')['manifest']['dataset'], expected)
         self.assert_read_boundaries()
 
     def test_directory_note_does_not_change_result_identity_or_read_permissions(self):

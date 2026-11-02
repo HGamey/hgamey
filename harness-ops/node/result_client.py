@@ -15,7 +15,7 @@ from result_adapters import LABELS, SCHEMAS
 HELP = """用法:
   pf-node results list [--job-id ID] [--game-id ID] [--game-version VERSION]
       [--device TEXT] [--research-id ID] [--direction-id ID] [--outcome VALUE]
-      [--limit 1..100] [--cursor CURSOR]
+      [--datasets] [--limit 1..100] [--cursor CURSOR]
   pf-node results compare FILE
   pf-node results show ID
   pf-node results register FILE
@@ -27,6 +27,7 @@ HELP = """用法:
 register 使用文件内固定 result_id；import 在读文件前打印指定或生成的 import_id。
 写入核对显式目标与能力，只提交一次。回执未知时，用 show 或 import-status 查询原 ID，
 不换 ID、不自动重发。登记不表示测量、收益、设备恢复或同状态资格已经验证。
+采到数据集时，在 register 清单写 dataset 对象；pairing 必填 simulated|real|unpaired|mixed，其余字段可 null，用 list --datasets 筛选。
 list/show 只读中心结果索引；原件链接也留在中心，执行节点离线不影响已归集内容。
 compare 只读至多 16 KiB UTF-8 spec，需显式中心 node-id；单次业务 GET。
 phonefarm/result-cross-compare@1 为每列声明 baseline_column_id（null/自身/另一列），
@@ -140,11 +141,14 @@ class Client:
         return value
 
 
-def _options(args, allowed):
+def _options(args, allowed, flags=()):
     values = {}
     while args:
         option = args.pop(0)
         key = option[2:].replace("-", "_") if option.startswith("--") else ""
+        if key in flags and key in allowed and key not in values:
+            values[key] = "1"
+            continue
         if key not in allowed or key in values or not args:
             raise ValueError("无效、重复或缺值的 results 选项；用 results --help 查看用法")
         values[key] = args.pop(0)
@@ -276,7 +280,7 @@ def main(args, *, target):
             print(json.dumps(value, ensure_ascii=False, allow_nan=False))
             return 2 if value["partial"] else 0
         elif command == "list":
-            query = _options(args, set(LABELS) | {"job_id", "outcome", "limit", "cursor"})
+            query = _options(args, set(LABELS) | {"job_id", "outcome", "datasets", "limit", "cursor"}, flags={"datasets"})
             if "job_id" in query and not re.fullmatch(r"[0-9a-f]{12}", query["job_id"]):
                 raise ValueError("job_id 须为本节点 12 位任务 ID")
             if "outcome" in query and query["outcome"] not in OUTCOMES:

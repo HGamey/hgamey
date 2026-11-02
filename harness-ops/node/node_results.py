@@ -61,6 +61,51 @@ def label_values(value):
     return {key: text(value.get(key), 128) for key in LABELS}
 
 
+def dataset_count(value, field):
+    if value is not None and (type(value) is not int or not 0 <= value <= 2**53 - 1):
+        raise ValueError(field + " must be a nonnegative safe integer or null")
+    return value
+
+
+def dataset_text(value, field, maximum):
+    try:
+        return text(value, maximum)
+    except ValueError as error:
+        raise ValueError(f"{field}: {error}") from None
+
+
+def dataset_values(value):
+    if not isinstance(value, dict):
+        raise ValueError("dataset must be an object or null")
+    try:
+        value = object_fields(value, {"name", "version", "pairing", "capture_method", "frames", "scenes",
+                                      "splits", "size_bytes", "location"})
+    except ValueError as error:
+        raise ValueError(f"dataset: {error}") from None
+    pairing = value.get("pairing")
+    if pairing not in {"simulated", "real", "unpaired", "mixed"}:
+        raise ValueError("dataset.pairing must be simulated, real, unpaired or mixed")
+    result = {"name": dataset_text(value.get("name"), "dataset.name", 240),
+              "version": dataset_text(value.get("version"), "dataset.version", 128),
+              "pairing": pairing,
+              "capture_method": dataset_text(value.get("capture_method"), "dataset.capture_method", 1024)}
+    for key in ("frames", "scenes"):
+        result[key] = dataset_count(value.get(key), "dataset." + key)
+    splits = value.get("splits")
+    if splits is not None:
+        if not isinstance(splits, dict):
+            raise ValueError("dataset.splits must be an object or null")
+        try:
+            splits = object_fields(splits, {"train", "val", "test"})
+        except ValueError as error:
+            raise ValueError(f"dataset.splits: {error}") from None
+        splits = {key: dataset_count(splits.get(key), "dataset.splits." + key) for key in ("train", "val", "test")}
+    result["splits"] = splits
+    result["size_bytes"] = dataset_count(value.get("size_bytes"), "dataset.size_bytes")
+    result["location"] = dataset_text(value.get("location"), "dataset.location", 4096)
+    return result
+
+
 def job_id(value):
     if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{12}", value)):
         raise ValueError("job_id must be a local 12-character identity or null")
@@ -68,10 +113,14 @@ def job_id(value):
 
 
 def result_query(query):
-    allowed = set(LABELS) | {"job_id", "outcome", "limit", "cursor", "expected_node_id"}
+    allowed = set(LABELS) | {"job_id", "outcome", "datasets", "limit", "cursor", "expected_node_id"}
     if set(query) - allowed or any(len(values) != 1 for values in query.values()):
         raise ValueError("unsupported or repeated result filter")
     filters = {k: query[k][0] for k in (*LABELS, "job_id", "outcome") if query.get(k) and query[k][0]}
+    if "datasets" in query:
+        if query["datasets"] != ["1"]:
+            raise ValueError("datasets filter must be 1")
+        filters["datasets"] = "1"
     for key, val in filters.items():
         text(val, 128, True)
         if key == "job_id":
@@ -109,13 +158,15 @@ def pointer(document, path):
 
 def manifest(value, internal=False):
     value = copy.deepcopy(object_fields(value, {"schema", "result_id", "title", "job_id", "labels", "origin",
-        "outcome", "source_outcome", "sources", "metrics", "claims", "limitations", "supersedes"}))
+        "outcome", "source_outcome", "sources", "metrics", "claims", "limitations", "supersedes", "dataset"}))
     if value.get("schema") != "phonefarm/result@1":
         raise ValueError("expected phonefarm/result@1")
     value["result_id"] = identifier(value.get("result_id"))
     value["title"] = text(value.get("title"), 240, True)
     value["job_id"] = job_id(value.get("job_id"))
     value["labels"] = label_values(value.get("labels"))
+    if value.get("dataset") is not None:
+        value["dataset"] = dataset_values(value["dataset"])
     origin = object_fields(value.get("origin") or {}, {"producer", "producer_version", "evidence_origin", "observed_at"})
     evidence = origin.get("evidence_origin", "unknown")
     observed = origin.get("observed_at")
@@ -377,8 +428,11 @@ class NodeResults:
                 terms.append("sequence<?")
                 params.append(after)
             for key, val in filters.items():
-                terms.append(key + "=?")
-                params.append(val)
+                if key == "datasets":
+                    terms.append("json_extract(manifest, '$.dataset') IS NOT NULL")
+                else:
+                    terms.append(key + "=?")
+                    params.append(val)
             rows = db.execute("SELECT * FROM results WHERE " + " AND ".join(terms) + " ORDER BY sequence DESC LIMIT ?",
                               (*params, limit + 1)).fetchall()
         items = []
@@ -387,7 +441,7 @@ class NodeResults:
             items.append({"result_id": row["result_id"], "title": row["title"], "job_id": row["job_id"],
                           "labels": value["labels"], "outcome": row["outcome"], "registered_at": row["registered_at"],
                           "provenance": json.loads(row["provenance"]), "metric_count": len(value["metrics"]),
-                          "source_count": len(value["sources"])})
+                          "source_count": len(value["sources"]), "dataset": value.get("dataset")})
         cursor = encode_cursor([self.node_id, filters, upper, rows[limit - 1]["sequence"]]) if len(rows) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": items, "next_cursor": cursor}
 
