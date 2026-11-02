@@ -2214,6 +2214,21 @@ class CoreFlowTests(unittest.TestCase):
         for background in ("bg", "bg2", "raise", "raise2"):
             self.assertGreaterEqual(contrast(css["muted"], css[background]), 4.5, background)
 
+    def test_every_page_title_uses_the_same_size(self):
+        """The page titles of the pages under the shared top bar use one scale (the shell's --fs-xl), on a desktop and
+        on a phone."""
+        pages = ("research", "fleet", "jobs", "results", "games", "doctor", "datasets")
+        with self._browser_page() as page:
+            page.route("**/dash/api/**", lambda route: route.abort())   # the titles are static; no page data is needed
+            for width in (1280, 390):
+                page.set_viewport_size({"width": width, "height": 900})
+                sizes = {}
+                for name in pages:
+                    page.goto("http://%s:%d/dash/%s" % (self.address + (name,)))
+                    page.wait_for_selector("main h1")
+                    sizes[name] = page.eval_on_selector("main h1", "h => getComputedStyle(h).fontSize + ' ' + getComputedStyle(h).fontWeight")
+                self.assertEqual(set(sizes.values()), {"20px 650"}, (width, sizes))
+
     def test_the_task_list_puts_the_most_recently_active_task_first(self):
         """A note on an older task makes it the most recent: the list follows activity, not the task record's revision."""
         for rid in ("sr-older", "sr-newer"):

@@ -99,7 +99,6 @@
 /* ══ 任务页（2026-10-29）：左列任务列表，右列一个任务从上到下：标题、负责人、方向、运行、留言、交付 ══ */
 .research-view .jobs-page { max-width: 1320px; padding: var(--sp-6) var(--sp-6) var(--sp-7); }
 .research-view .page-heading { margin-bottom: var(--sp-4); }
-.research-view .jobs-page h1 { font-size: var(--fs-xl); letter-spacing: 0; }
 .research-view .page-heading button.ghost.primary, .research-view #task-note-submit, .research-view .reply-btn.primary { font-weight: 600; }
 .research-view .research-layout { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); border-radius: var(--radius-lg); }
 .research-view .research-browser { padding: var(--sp-4) var(--sp-3); background: var(--card); }
