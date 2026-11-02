@@ -3202,6 +3202,15 @@
       submissionMessage('有一条未确认的提交。请先按原请求 ID 查询；参数未保存在浏览器中。', true, id);
     }
   } catch (_) { /* Storage is optional; manual request lookup remains available. */ }
+  // ?job=<id> (and ?source=) is accepted as a hand-written form of #job=: it moves into the hash, which this page owns.
+  {
+    const url = new URL(location.href), hash = new URLSearchParams(location.hash.slice(1));
+    const moved = ['source', 'source_revision', 'job'].filter(key => url.searchParams.has(key));
+    if (moved.length) {
+      for (const key of moved) { if (!hash.has(key)) hash.set(key, url.searchParams.get(key)); url.searchParams.delete(key); }
+      history.replaceState(null, '', `${url.pathname}${url.search}#${hash}`);
+    }
+  }
   const initialParams = new URLSearchParams(location.hash.slice(1));
   if (initialParams.has('source')) historySource = {source_id: initialParams.get('source'), revision: initialParams.has('source_revision') ? Number(initialParams.get('source_revision')) : null};
   renderJobSource();

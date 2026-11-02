@@ -4063,6 +4063,17 @@ class CoreFlowTests(unittest.TestCase):
         status, kind, body = get("/dash/api/nothing-here")
         self.assertEqual((status, kind.split(";")[0], json.loads(body)), (404, "application/json", {"error": "not found"}))
 
+    def test_a_job_query_link_opens_that_job_and_becomes_a_hash_link(self):
+        """/dash/jobs?job=<id> is a hand-written form of #job=<id>: it shows the job and the address becomes the hash
+        form; an invalid id gets the same format message as the hash form."""
+        facts = "() => document.getElementById('job-info').textContent"
+        with self._browser_page() as page:
+            page.goto(f"http://%s:%d/dash/jobs?job={self.jid}" % self.address)
+            page.wait_for_function(f"() => !document.getElementById('detail-content').hidden && ({facts})().includes('{self.jid}')", timeout=20000)
+            self.assertTrue(page.url.endswith(f"/dash/jobs#job={self.jid}"), page.url)
+            page.goto("http://%s:%d/dash/jobs?job=nope" % self.address)
+            page.wait_for_function("() => document.getElementById('detail-message').textContent.includes('任务 ID 格式不正确')", timeout=20000)
+
     def test_a_job_link_opened_in_the_jobs_tab_shows_that_job(self):
         """Pasting /dash/jobs#job=B into a tab that shows job A changes only the hash; the page follows it."""
         other = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
