@@ -679,6 +679,52 @@ class JobCLI(unittest.TestCase):
         self.assertIn("独立 worker", stderr.getvalue())
         self.assertIn("不是任务终态", stderr.getvalue())
 
+    def test_output_archives_extract_safely_on_a_python_without_extraction_filters(self):
+        """macOS's system python3 (3.9) has no tarfile extraction filters and its extractall() rejects filter=: pf-node
+        still unpacks an output archive there, and still refuses members that would land outside the destination."""
+        import tarfile
+        cli = self.load_cli()
+
+        def archive(*members):
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+                for name, kind, value in members:
+                    info = tarfile.TarInfo(name)
+                    if kind == "file":
+                        info.size, info.mode = len(value), 0o4777
+                        tar.addfile(info, io.BytesIO(value))
+                    elif kind == "dir":
+                        info.type = tarfile.DIRTYPE
+                        tar.addfile(info)
+                    else:
+                        info.type, info.linkname = tarfile.SYMTYPE, value
+                        tar.addfile(info)
+            return buffer.getvalue()
+
+        original = tarfile.TarFile.extractall
+
+        def old_extractall(self, path=".", members=None, *, numeric_owner=False):   # 3.9's signature, no filtering
+            return original(self, path, members, numeric_owner=numeric_owner, filter="fully_trusted")
+        saved = tarfile.data_filter
+        del tarfile.data_filter
+        try:
+            with mock.patch.object(tarfile.TarFile, "extractall", old_extractall), tempfile.TemporaryDirectory() as tmp:
+                dest = os.path.join(tmp, "out")
+                self.assertTrue(cli["_extract"](archive(("sub", "dir", None), ("sub/report.json", "file", b"{}"),
+                                                        ("latest", "link", "sub/report.json")), dest))
+                with open(os.path.join(dest, "latest")) as handle:
+                    self.assertEqual(handle.read(), "{}")
+                self.assertEqual(os.stat(os.path.join(dest, "sub", "report.json")).st_mode & 0o7777, 0o755)
+                for bad in (("../escape", "file", b"x"), ("/tmp/escape", "file", b"x"), ("up", "link", "../.."),
+                            ("abs", "link", "/etc/passwd")):
+                    target = os.path.join(tmp, "bad-" + bad[0].strip("./").replace("/", "-"))
+                    with self.assertRaises(tarfile.TarError, msg=bad):
+                        cli["_extract"](archive(("ok.txt", "file", b"ok"), bad), target)
+                    self.assertFalse(os.path.exists(os.path.join(tmp, "escape")), bad)
+                    self.assertFalse(os.path.exists(os.path.join(target, "ok.txt")), "nothing is extracted from a refused archive")
+        finally:
+            tarfile.data_filter = saved
+
     def test_execution_reconcile_is_explicit_single_post_without_follow(self):
         cli = self.load_cli()
         node = b'{"capabilities":["jobs.execution-reconcile-v1"]}'

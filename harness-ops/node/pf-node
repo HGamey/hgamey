@@ -205,7 +205,7 @@ Agent 每轮从这里开始（最短完整路径）：
 - 目标须显式 --url URL / PF_NODE_URL；写入须 --node-id ID / PF_NODE_ID，可先用 node 只读取得。
 - 凭据只用 --token-file FILE 或 PF_NODE_TOKEN / PF_NODE_TOKEN_FILE；显式文件优先，两种环境凭据冲突即拒绝。
 """
-import gzip, hashlib, http.client, io, json, math, os, re, subprocess, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
+import copy, gzip, hashlib, http.client, io, json, math, os, re, subprocess, sys, tarfile, time, urllib.error, urllib.parse, urllib.request, uuid
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -801,8 +801,39 @@ def _extract(data_or_path, dest):
         if not members:
             return False
         os.makedirs(dest, exist_ok=True)
-        t.extractall(dest, members=members, filter="data")
+        if hasattr(tarfile, "data_filter"):
+            t.extractall(dest, members=members, filter="data")
+        else:   # Python without extraction filters (macOS system python3 3.9): the same refusals, checked here
+            t.extractall(dest, members=_data_members(members, dest))
     return True
+
+
+def _data_members(members, dest):
+    """What tarfile's "data" filter enforces, for Pythons that do not have it: every path and link target stays inside
+    dest, no device or FIFO entries, no setuid/setgid/sticky or group/other-write bits, files owned by whoever runs
+    this. Raises tarfile.TarError naming the first member it refuses; nothing is extracted then."""
+    root = os.path.realpath(dest)
+
+    def inside(path):
+        return os.path.commonpath([root, path]) == root
+
+    out = []
+    for m in members:
+        target = os.path.realpath(os.path.join(root, m.name))
+        if os.path.isabs(m.name) or not inside(target):
+            raise tarfile.TarError(f"归档成员越出目标目录：{m.name}")
+        if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
+            raise tarfile.TarError(f"归档成员不是普通文件、目录或链接：{m.name}")
+        if m.issym() or m.islnk():
+            base = os.path.dirname(target) if m.issym() else root
+            if os.path.isabs(m.linkname) or not inside(os.path.realpath(os.path.join(base, m.linkname))):
+                raise tarfile.TarError(f"归档链接指向目标目录之外：{m.name} -> {m.linkname}")
+        m = copy.copy(m)
+        if m.isfile() or m.isdir():
+            m.mode = (m.mode & 0o755) | (0o600 if m.isfile() else 0o700)
+        m.uid, m.gid, m.uname, m.gname = os.getuid(), os.getgid(), "", ""
+        out.append(m)
+    return out
 
 
 def _sha256(p):
