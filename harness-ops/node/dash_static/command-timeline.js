@@ -50,7 +50,7 @@ export class Timeline {
       if (!ok[i] && !bad[i]) continue;
       const x = this.x(first + i * bucket) + bw * .14, bwid = Math.max(1, bw * .72);
       if (ok[i]) out += `<rect x="${x.toFixed(1)}" y="${Y(ok[i]).toFixed(1)}" width="${bwid.toFixed(1)}" height="${(BASE - Y(ok[i])).toFixed(1)}" rx="1" fill="#5ccfc0" opacity=".85"/>`;
-      if (bad[i]) out += `<rect x="${x.toFixed(1)}" y="${Y(ok[i] + bad[i]).toFixed(1)}" width="${bwid.toFixed(1)}" height="${(Y(ok[i]) - Y(ok[i] + bad[i]) - (ok[i] ? 1 : 0)).toFixed(1)}" rx="1" fill="#4c5866"/>`;
+      if (bad[i]) out += `<rect x="${x.toFixed(1)}" y="${Y(ok[i] + bad[i]).toFixed(1)}" width="${bwid.toFixed(1)}" height="${Math.max(.5, Y(ok[i]) - Y(ok[i] + bad[i]) - (ok[i] ? 1 : 0)).toFixed(1)}" rx="1" fill="#4c5866"/>`;
     }
     for (const t of this.items.people) if (t >= this.d0 && t <= this.d1) out += `<circle cx="${this.x(t).toFixed(1)}" cy="6" r="2.6" fill="#f0c36e"/>`;
     for (const t of this.items.delivered) if (t >= this.d0 && t <= this.d1) {
