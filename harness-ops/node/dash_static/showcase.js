@@ -15,6 +15,7 @@ const agentOf = a => AGENT[a] || [0xa3b3c2, String(a).replace(/-(researcher|agen
 const COLOR = {gold: 0xf0c36e, teal: 0x5ccfc0, ash: 0x4c5866, steel: 0x8aa1b5, ice: 0x8db4f5, white: 0xe3eaf0};
 const stampFmt = new Intl.DateTimeFormat('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
 const stamp = s => stampFmt.format(new Date(s * 1000));
+const dayFmt = new Intl.DateTimeFormat('zh-CN', {month: 'numeric', day: 'numeric'});
 
 // ── Data
 async function load() {
@@ -136,15 +137,16 @@ if (W) {
     groups.history.position.x -= x / 2;
   }
 
-  // The record: finished runs per hour (teal succeeded, grey not), gold pillars where a person replied, a white line
-  // stepping up at each delivery.
+  // The record: finished runs per bar (teal succeeded, grey not), gold pillars where a person replied, a white line
+  // stepping up at each delivery. A longer record gets more hours to a bar, never more bars: the camera backs away to
+  // frame the chart, and a chart that kept growing would end up inside the fog.
   {
     const rec = area('record', 0, -40); sub.record = [];
-    const t0 = Math.min(...data.research.map(r => r.created_at)) - 1800, hours = Math.max(1, Math.ceil((at - t0) / 3600)), step = .46, X = t => (t - t0) / 3600 * step;
-    const per = Array.from({length: hours}, (_, i) => jobs.filter(j => ids.has(j.research_id) && j.ended >= t0 + i * 3600 && j.ended < t0 + (i + 1) * 3600));
+    const t0 = Math.min(...data.research.map(r => r.created_at)) - 1800, hours = Math.max(1, Math.ceil((at - t0) / 3600)), perBar = Math.ceil(hours / 48), count = Math.ceil(hours / perBar), span = perBar * 3600, step = .46, X = t => (t - t0) / span * step;
+    const per = Array.from({length: count}, (_, i) => jobs.filter(j => ids.has(j.research_id) && j.ended >= t0 + i * span && j.ended < t0 + (i + 1) * span));
     const top = Math.max(1, ...per.map(p => p.length)), unit = 3.6 / top, box = new THREE.BoxGeometry(.3, 1, .3);
     const bars = (color, count) => new THREE.InstancedMesh(box, new THREE.MeshStandardMaterial({color, roughness: .45, metalness: .15}), Math.max(1, count));
-    const good = bars(COLOR.teal, hours), bad = bars(0x3a4552, hours), M = new THREE.Matrix4();
+    const good = bars(COLOR.teal, count), bad = bars(0x3a4552, count), M = new THREE.Matrix4();
     let gi = 0, bi = 0;
     per.forEach((p, i) => {
       const k = p.filter(j => j.outcome === 'succeeded').length, f = p.length - k;
@@ -152,8 +154,8 @@ if (W) {
       if (f) bad.setMatrixAt(bi++, M.compose(new THREE.Vector3(i * step, k * unit + f * unit / 2 + .02, 0), new THREE.Quaternion(), new THREE.Vector3(1, f * unit, 1)));
     });
     good.count = gi; bad.count = bi; rec.add(good, bad); sub.record.push(good, bad);
-    const base = new THREE.Mesh(new THREE.BoxGeometry(hours * step + .6, .03, .9), new THREE.MeshStandardMaterial({color: 0x1a232d, roughness: .8}));
-    base.position.set((hours - 1) * step / 2, .015, 0); rec.add(base, moved(shadow(hours * step + 4, 6), (hours - 1) * step / 2, .004, 0));
+    const base = new THREE.Mesh(new THREE.BoxGeometry(count * step + .6, .03, .9), new THREE.MeshStandardMaterial({color: 0x1a232d, roughness: .8}));
+    base.position.set((count - 1) * step / 2, .015, 0); rec.add(base, moved(shadow(count * step + 4, 6), (count - 1) * step / 2, .004, 0));
     const pillar = new THREE.CylinderGeometry(.025, .025, 1, 8), gold = new THREE.MeshStandardMaterial({color: COLOR.gold, roughness: .55, metalness: .2});
     for (const n of humans) {
       const x = X(n.at) - step / 2, p = new THREE.Mesh(pillar, gold); p.scale.y = 4.6; p.position.set(x, 2.3, .55); rec.add(p);
@@ -161,10 +163,13 @@ if (W) {
     }
     const dl = delivered.map(r => r.updated_at).sort((a, b) => a - b), pts = [new THREE.Vector3(-step / 2, .05, -.55)];
     dl.forEach((t, i) => { const x = X(t) - step / 2, y = .05 + (i + 1) / dl.length * 4.3; pts.push(new THREE.Vector3(x, pts.at(-1).y, -.55), new THREE.Vector3(x, y, -.55)); });
-    pts.push(new THREE.Vector3(hours * step - step / 2, pts.at(-1).y, -.55));
+    pts.push(new THREE.Vector3(count * step - step / 2, pts.at(-1).y, -.55));
     rec.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({color: COLOR.white})));
-    const tickStep = hours > 36 ? 12 : 6, first = Math.ceil(t0 / (tickStep * 3600)) * tickStep * 3600;
-    for (let t = first; t < at; t += tickStep * 3600) tagFor([3], `<span class="mono">${stamp(t)}</span>`, 'dim', new THREE.Vector3(X(t) - step / 2, -.1, 1.7), rec);
+    // A few times along the axis however long it is: dates alone once they are a day or more apart, counted from midnight here.
+    const tick = hours <= 30 ? 6 : hours <= 60 ? 12 : [24, 48, 96, 168, 336, 720].find(h => hours / h <= 7) || 1440;
+    for (let t = new Date(t0 * 1000).setHours(0, 0, 0, 0) / 1000; t < at; t += tick * 3600) {
+      if (t >= t0) tagFor([3], `<span class="mono">${tick < 24 ? stamp(t) : dayFmt.format(new Date(t * 1000))}</span>`, 'dim', new THREE.Vector3(X(t) - step / 2, -.1, 1.7), rec);
+    }
   }
 
   // Results: a gold card per delivered report, and the super-resolution networks tried (gold: kept).

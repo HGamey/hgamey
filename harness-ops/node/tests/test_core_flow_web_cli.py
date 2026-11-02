@@ -2471,6 +2471,40 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_story_record_stays_on_screen_however_long_it_gets(self):
+        """A longer record gets more hours to a bar, so the chart never backs the camera away into the fog, and its time
+        labels do not run into each other. The labels are not in the 3D scene, so they alone stayed when it was lost."""
+        import base64
+        data = self.showcase_snapshot()
+        at = data["at"]
+        data["research"][0]["created_at"] = at - 400 * 3600
+        data["jobs"] += [{**data["jobs"][0], "id": f"j-long-{i}", "started": at - i * 21600 - 900, "queued": at - i * 21600 - 900,
+                          "claimed": at - i * 21600 - 800, "ended": at - i * 21600} for i in range(1, 60)]
+        (Path(self.board.showcase_dir) / "data.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        with self._browser_page() as page:
+            page.goto("http://%s:%d/dash/showcase#3" % self.address)
+            page.wait_for_function("() => window.__ready === true")
+            self.assertEqual(page.text_content("#kicker"), "人和 Agent")
+            self.assertFalse(page.evaluate("() => document.body.classList.contains('flat')"), "this test needs the 3D scene")
+            page.wait_for_timeout(2000)   # the camera arrives
+            left = page.evaluate("() => Math.ceil(document.getElementById('copy').getBoundingClientRect().right)")
+            shot = page.screenshot(clip={"x": left, "y": 0, "width": 1280 - left, "height": 800})
+            teal = page.evaluate("""async png => {
+                const image = new Image(); image.src = 'data:image/png;base64,' + png; await image.decode();
+                const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+                const g = canvas.getContext('2d', {willReadFrequently: true}); g.drawImage(image, 0, 0);
+                const {data} = g.getImageData(0, 0, image.width, image.height); let n = 0;
+                for (let i = 0; i < data.length; i += 4) if (data[i + 1] > 110 && data[i + 2] > 90 && data[i] < data[i + 1] * .6) n++;
+                return n;
+            }""", base64.b64encode(shot).decode())
+            self.assertGreater(teal, 300, "the bars are on screen, not lost in the fog")
+            labels = page.evaluate("""() => [...document.querySelectorAll('.tag.dim')].filter(e => e.offsetWidth && !e.classList.contains('off')).map(e => {
+                const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; })""")
+            self.assertGreaterEqual(len(labels), 3)
+            self.assertLessEqual(len(labels), 8)
+            crossing = [(a, b) for i, a in enumerate(labels) for b in labels[i + 1:] if a[2] > b[0] and a[0] < b[2] and a[3] > b[1] and a[1] < b[3]]
+            self.assertEqual(crossing, [], "the time labels do not run into each other")
+
     def test_the_command_view_follows_this_node_live_and_holds_when_left(self):
         try:
             from playwright.sync_api import sync_playwright
