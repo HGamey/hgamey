@@ -4152,6 +4152,28 @@ class CoreFlowTests(unittest.TestCase):
         page.wait_for_function("() => /已取消|已停止/.test(document.getElementById('job-state').textContent)", timeout=20000)
         self.assertGreaterEqual(len(stopped), 4, "it read the job again on its own")
 
+    def test_a_stopped_job_that_held_no_device_is_not_flagged_for_device_recovery(self):
+        """A stopped host-only job (device_access none, no device in scope) reads 已停止; a stopped device job with no
+        recovery report still reads 已停止 · 恢复需核查."""
+        shape = {}
+
+        def job(route):
+            response = route.fetch()
+            data = response.json()
+            data.update(state="finished", phase="finished", outcome="cancelled", exit=130, recovery={"status": "not_reported"}, **shape)
+            if isinstance(data.get("queue"), dict):
+                data["queue"]["device_scope"] = shape["device_scope"]
+            route.fulfill(response=response, json=data)
+        with self._browser_page() as page:
+            page.route(f"**/dash/api/jobs/{self.jid}", job)
+            for access, scope, expected in (("none", {"scope": "none"}, "已停止"), ("write", {"scope": "global"}, "已停止 · 恢复需核查")):
+                shape.clear()
+                shape.update(device_access=access, device_binding=None, device_scope=scope)
+                page.goto("about:blank")
+                page.goto(f"http://%s:%d/dash/jobs#job={self.jid}" % self.address)
+                page.wait_for_function("() => /已停止/.test(document.getElementById('job-state').textContent)", timeout=20000)
+                self.assertEqual(page.text_content("#job-state").strip(), expected, access)
+
     def test_a_note_link_lands_below_the_top_bar_with_its_first_line_showing(self):
         """A #note- link to a note taller than the screen shows its author and first line just under the sticky top bar,
         on a desktop and on a phone; #task-report lands its heading below the bar too."""

@@ -330,6 +330,12 @@
     if (job.storage_error) [label, kind] = [`${label} · 结果保存失败`, 'unknown'];
     return [label, kind];
   }
+  // A job that declared no device access and had no device in its scope never held a phone: stopping it leaves no
+  // device to restore, so it is not flagged for a recovery check. Old records without the declaration keep the flag.
+  function hostOnly(job) {
+    const scope = job.queue?.device_scope || job.device_scope;
+    return job.device_access === 'none' && !job.device_binding && (!scope || scope.scope === 'none');
+  }
   function runStatus(job) {
     // Sent to another computer that has not confirmed taking it: neither queued nor running.
     if (job.phase === 'submission_unknown' || job.state === 'unknown') return ['等待那台电脑受理', 'unknown'];
@@ -342,7 +348,7 @@
     if (job.phase === 'cancelling') return [trigger ? `${trigger} · 停止处理中` : '停止请求处理中', 'unknown'];
     if (job.phase === 'starting') return ['正在启动', 'running'];
     if (trigger) return [`${trigger}${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'unknown'];
-    if (job.outcome === 'cancelled') return job.recovery?.status === 'not_needed' ? ['已取消 · 无需恢复', 'finished'] : ['已停止 · 恢复需核查', 'unknown'];
+    if (job.outcome === 'cancelled') return job.recovery?.status === 'not_needed' ? ['已取消 · 无需恢复', 'finished'] : hostOnly(job) ? ['已停止', 'finished'] : ['已停止 · 恢复需核查', 'unknown'];
     if (job.outcome === 'failed') return [`执行失败${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'failed'];
     if (job.outcome === 'succeeded') return [`命令执行完成${Number.isInteger(job.exit) ? ` · exit ${job.exit}` : ''}`, 'finished'];
     if (job.lost) return ['退出状态丢失', 'unknown'];
@@ -605,7 +611,7 @@
       const result = await post(`${API}/jobs/${encodeURIComponent(id)}/reset`, {note}, {}, undefined, {wait: true});
       const saveError = result.job?.storage_error?.message;
       if (result.pending === true) resetReceipts.set(id, {message: '重置请求已记下，还没送到那台电脑或还没确认；确认前不算已停止，资源也没释放。', error: true});
-      else resetReceipts.set(id, {message: result.released !== true ? '资源尚未释放，请以最新任务状态为准。' : result.storage_committed === true ? '已重置，资源已释放。设备是否还原需另行核对。' : `资源已释放，但结束记录仍未保存${saveError ? `：${saveError}` : ''}。修复后可再次重置。`,
+      else resetReceipts.set(id, {message: result.released !== true ? '资源尚未释放，请以最新任务状态为准。' : result.storage_committed === true ? (hostOnly(job) ? '已重置，资源已释放。' : '已重置，资源已释放。设备是否还原需另行核对。') : `资源已释放，但结束记录仍未保存${saveError ? `：${saveError}` : ''}。修复后可再次重置。`,
         error: result.released !== true || result.storage_committed !== true});
       if (result.released === true) $('reset-note').value = '';
     } catch (error) {
