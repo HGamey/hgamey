@@ -2471,6 +2471,78 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_datasets_page_keeps_versions_together_and_always_says_how_they_were_paired(self):
+        """Empty, the page just says so. Registered, a name's versions sit together, highest first, and every row says
+        whether the low-res side is simulated. Only an opened row reads its previews, manifest and QA report; results
+        with no dataset are not here."""
+        import struct, zlib
+
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 32, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress((b"\x00" + b"\x10\x20\x30" * 64) * 32)) + chunk(b"IEND", b""))
+        jid = "cdcdcdcdcdcd"
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True)
+        self.jobs._write_meta(jid, {"id": jid, "bin": "custom", "argv": ["capture"], "started": 1, "exit": 0})
+        files = {"preview-1.png": png, "preview-2.png": png, "qa_report.json": json.dumps({"kept": 12000, "dropped": {"misaligned": 512}}).encode(),
+                 "manifest.json": b"[" + b"0," * (800 << 10) + b"0]"}
+        for name, data in files.items():
+            (out / name).write_bytes(data)
+        base = "http://%s:%d" % self.address
+        reads, errors = [], []
+        with self._browser_page() as page:
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("request", lambda request: reads.append(request.url.split("/sources/")[1].split("?")[0]) if "/sources/" in request.url else None)
+            self.assertEqual(page.goto(base + "/dash/datasets").status, 200)
+            page.wait_for_function("() => document.getElementById('message').textContent === '还没有登记过数据集。'", timeout=20000)
+            self.assertTrue(page.is_hidden("#datasets"))
+            self.assertEqual(page.get_attribute('.shell-tab[data-tab="data"]', "aria-current"), "page")
+            self.assertEqual(self.web("POST", "/research-state/research/sr-data", self.write("create-sr-data", {"title": "采数据", "objective": "试点"}))[0], 201)
+
+            def register(rid, dataset=None, names=()):
+                body = {"schema": "phonefarm/result@1", "result_id": rid, "title": f"结果 {rid}", "job_id": jid,
+                        "labels": {"game_id": "genshin", "game_version": "5.1", "device": "HONOR", "research_id": "sr-data"},
+                        "origin": {"evidence_origin": "synthetic"}, "limitations": ["fixture"],
+                        "sources": [{"name": name, "kind": "job_output", "job_id": jid, "path": name} for name in names]}
+                if dataset:
+                    body["dataset"] = dataset
+                self.assertEqual(self.cli("POST", "/results", body)[0], 201)
+            blank = {"capture_method": None, "frames": None, "scenes": None, "splits": None, "size_bytes": None, "location": None}
+            register("plain-result")
+            register("ds-old", {**blank, "name": "genshin-sr", "version": "v2", "pairing": "simulated", "capture_method": "framedump", "frames": 12000, "scenes": 16,
+                                "splits": {"train": 9600, "val": 1200, "test": 1200}, "size_bytes": 44023414784, "location": "mbp1 /Volumes/data/genshin-sr-v2"}, files)
+            register("ds-other", {**blank, "name": "ui-crops", "version": None, "pairing": "unpaired"})
+            register("ds-new", {**blank, "name": "genshin-sr", "version": "v10", "pairing": "real"})
+            page.click("#refresh")
+            page.wait_for_selector(".ds-version")
+            rows = page.eval_on_selector_all(".ds-table tbody tr:not(.ds-detail)", "e => e.map(r => [...r.children].map(c => c.textContent))")
+            self.assertEqual([row[0] for row in rows if len(row) == 1], ["genshin-sr2 个版本", "ui-crops1 个版本"], "newest registration first; no plain result")
+            versions = [row for row in rows if len(row) > 1]
+            self.assertEqual([row[:2] for row in versions], [["v10", "真实配对"], ["v2", "模拟低清"], ["未写版本", "无配对"]], "versions together, the highest first")
+            self.assertEqual(versions[1], ["v2", "模拟低清", "genshin 5.1", "HONOR", "framedump", "12,000", "16", "9,600 / 1,200 / 1,200", "41.0 GB"])
+            self.assertEqual(versions[0][4:], ["—"] * 5, "what is not known says nothing")
+            self.assertEqual(page.get_attribute('tr[data-result="ds-old"] .ds-pairing', "class"), "tag warn ds-pairing")
+            self.assertEqual(reads, [], "nothing is read until a row is opened")
+            panel = 'tr[data-result="ds-old"] + .ds-detail'
+            self.assertTrue(page.is_hidden(panel))
+            page.click('tr[data-result="ds-old"]')
+            page.wait_for_function(f"() => document.querySelectorAll('{panel} .ds-preview img').length === 2 && [...document.querySelectorAll('{panel} .ds-preview img')].every(i => i.naturalWidth === 64)", timeout=20000)
+            page.wait_for_function(f"() => document.querySelector('{panel} .ds-file pre')?.textContent.includes('misaligned')")
+            self.assertEqual(json.loads(page.text_content(f"{panel} .ds-file pre")), {"kept": 12000, "dropped": {"misaligned": 512}})
+            self.assertIn("mbp1 /Volumes/data/genshin-sr-v2", page.text_content(f"{panel} .ds-location"))
+            hrefs = page.eval_on_selector_all(f"{panel} .ds-links a", "e => e.map(a => a.getAttribute('href'))")
+            for wanted in ("kind=research&id=sr-data", f"/dash/jobs", f"job={jid}", "result=ds-old"):
+                self.assertTrue(any(wanted in href for href in hrefs), (wanted, hrefs))
+            self.assertIn("split.json：没有登记", page.text_content(panel))
+            self.assertEqual(sorted(reads), ["preview-1.png", "preview-2.png", "qa_report.json"])
+            page.click(f"{panel} summary:has-text('manifest.json')")
+            page.wait_for_function(f"() => document.querySelector('{panel}').textContent.includes('这里只显示开头 1.0 MB')", timeout=20000)
+            self.assertIn("文件 1.6 MB", page.text_content(panel))
+            page.click('tr[data-result="ds-old"]')
+            self.assertTrue(page.is_hidden(panel))
+            self.assertEqual(errors, [])
+
     def test_the_story_record_stays_on_screen_however_long_it_gets(self):
         """A longer record gets more hours to a bar, so the chart never backs the camera away into the fog, and its time
         labels do not run into each other. The labels are not in the 3D scene, so they alone stayed when it was lost."""

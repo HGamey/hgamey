@@ -1,4 +1,4 @@
-// HGamey 工作台外壳：主导航 6 项 + 「更多」菜单；节点身份收进节点名按钮；窄屏两行，标签可横向滚动。
+// HGamey 工作台外壳：主导航 7 项 + 「更多」菜单；节点身份收进节点名按钮；窄屏两行，标签可横向滚动。
 // 每页引入：紧跟旧 header.top 之后放 <script src="/dash/static/shell.js"></script>，外壳随首屏一起画出、替换旧顶栏；
 // 执行目标框由页尾的 target.js 生成，生成时再接上。
 (function () {
@@ -9,6 +9,7 @@
     ["/dash/research#agents-directory", "agent", "Agent"],
     ["/dash/fleet", "device", "设备"],
     ["/dash/jobs", "runs", "运行"],
+    ["/dash/datasets", "data", "数据集"],
   ];
   const MORE = [
     ["/dash/results", "研究结果"],

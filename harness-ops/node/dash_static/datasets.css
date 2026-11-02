@@ -1,0 +1,38 @@
+/* 数据集: one table, each name a group of version rows, so the numbers line up across all of them. */
+.datasets-page { padding-bottom: var(--sp-7); }
+.datasets-page .page-heading { margin-bottom: var(--sp-4); }
+.datasets-page > #message { font-size: var(--fs-base); color: var(--muted); }
+.ds-scroll { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+.ds-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.ds-table th, .ds-table td { padding: 8px 12px; text-align: left; white-space: nowrap; }
+.ds-table .num { text-align: right; }
+.ds-table thead th { font-size: var(--fs-xs); font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); }
+.ds-name th { padding-top: var(--sp-5); font-size: var(--fs-md); font-weight: 650; color: var(--ink); }
+.ds-group:first-of-type .ds-name th { padding-top: var(--sp-3); }
+.ds-name small { margin-left: var(--sp-2); font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
+.ds-version { cursor: pointer; border-top: 1px solid var(--grid); }
+.ds-version:hover { background: var(--wash); }
+.ds-open { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; }
+.ds-open::before { content: '▸'; display: inline-block; width: 14px; color: var(--muted); }
+.ds-open[aria-expanded="true"]::before { content: '▾'; }
+.ds-detail > td { padding: var(--sp-2) var(--sp-4) var(--sp-5) 26px; white-space: normal; background: var(--panel); border-top: 1px solid var(--grid); }
+/* The table may scroll sideways on a narrow screen; what is opened stays in view and wraps to it. */
+.ds-detail > td > * { position: sticky; left: 26px; max-width: min(880px, calc(100vw - 92px)); }
+.ds-record { display: flex; flex-wrap: wrap; gap: 2px var(--sp-3); margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--muted); }
+.ds-record > :first-child { font-size: var(--fs-sm); color: var(--ink); }
+.ds-record .mono { font-family: var(--mono); }
+.ds-section { margin-top: var(--sp-4); }
+.ds-section h3 { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); font-weight: 600; color: var(--ink2); }
+.ds-previews { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--sp-2); margin-bottom: var(--sp-2); max-width: 880px; }
+.ds-preview { display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 9; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--wash); font: inherit; font-size: var(--fs-xs); color: var(--muted); cursor: zoom-in; }
+.ds-preview.failed { cursor: pointer; color: var(--bad-ink); }
+.ds-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.ds-location { margin: 0 0 var(--sp-2); padding: var(--sp-2) var(--sp-3); max-width: 880px; font-family: var(--mono); font-size: var(--fs-xs); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.ds-links { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--sp-3); margin: 0; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.ds-links a { color: var(--blue-ink); text-underline-offset: 3px; font-family: var(--mono); font-size: var(--fs-xs); }
+.ds-file summary { padding: 4px 0; font-family: var(--mono); font-size: var(--fs-xs); color: var(--ink2); cursor: pointer; }
+.ds-file pre { max-height: 360px; margin: 2px 0 var(--sp-2); max-width: 880px; overflow: auto; font-size: var(--fs-xs); white-space: pre; }
+.ds-missing { margin: 4px 0; font-family: var(--mono); }
+.ds-zoom { max-width: 96vw; max-height: 96vh; padding: 0; border: 0; background: none; }
+.ds-zoom::backdrop { background: rgba(0, 0, 0, .8); }
+.ds-zoom img { display: block; max-width: 96vw; max-height: 96vh; cursor: zoom-out; }

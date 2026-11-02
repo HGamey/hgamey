@@ -94,7 +94,7 @@ SHOWCASE_STATIC = frozenset((
     "three.module.js", "three.core.js", "three-effect-composer.js", "three-render-pass.js", "three-unreal-bloom-pass.js",
     "three-output-pass.js", "three-pass.js", "three-shader-pass.js", "three-mask-pass.js", "three-copy-shader.js",
     "three-luminosity-high-pass-shader.js", "three-output-shader.js", "three-rounded-box-geometry.js", "three-css2d-renderer.js"))
-TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/research", "/dash/doctor"}
+TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/datasets", "/dash/research", "/dash/doctor"}
 COOKIE = "hg_dash"
 SLOTS_MIN = 4
 # PF's own sampling (EphemeralObservation, devlease.rs) holds each idle phone for a moment every ~30 s to read its
@@ -264,7 +264,7 @@ class Dash:
             return self._login_redirect(h)
         if dash_live.handle(self, h, sub, query):  # /dash/live 与 /dash/api/live/*
             return
-        if sub in (["gol"], ["jobs"], ["fleet"], ["games"], ["results"], ["research"], ["doctor"]):
+        if sub in (["gol"], ["jobs"], ["fleet"], ["games"], ["results"], ["datasets"], ["research"], ["doctor"]):
             return self._static(h, sub[0] + ".html")
         if sub == ["showcase"]:
             return self._static(h, "showcase.html")
@@ -278,7 +278,7 @@ class Dash:
             return self._showcase(h, sub[3] if len(sub) == 4 else None)
         if len(sub) == 2 and sub[0] == "static" and sub[1] in SHOWCASE_STATIC:
             return self._static(h, sub[1], query)
-        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("doctor.js", "doctor.css", "target.js", "job-state.js", "gol.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research-task.js", "research-compare.js", "research.css", "results.js", "results.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
+        if len(sub) == 2 and sub[0] == "static" and sub[1] in ("doctor.js", "doctor.css", "target.js", "job-state.js", "gol.js", "research.js", "research-plans.json", "research-evaluation.js", "research-criteria.js", "research-task.js", "research-compare.js", "research.css", "results.js", "results.css", "datasets.js", "datasets.css", "jobs.js", "jobs.css", "fleet.js", "fleet.css", "games.js", "games-upload.js", "games-deploy.js", "games.css", "app.css"):
             return self._static(h, sub[1], query)
         self.last_view = _now()
         self.wake.set()
