@@ -38,7 +38,10 @@
     renderSpark(state.hist || []);
     const jobs = state.jobs || [];
     const selected = jobs.find(job => ["running", "preparing", "queued"].includes(job.state)) || jobs[0];
+    const was = S.selJob;
     S.selJob = selected ? selected.id : null;
+    // Another job (or none): its old text must not sit under the new heading while the next log is read.
+    if (S.selJob !== was) { logJob = null; logSize = -1; $("log").textContent = S.selJob ? `读取 ${S.selJob} 的日志…` : "这台节点上还没有任务日志"; if (S.selJob) pollLog(); }
     $("log-title").textContent = selected ? `${selected.label || ""} · ${selected.bin} ${(selected.argv || [])[0] || ""} · ${selected.id}` : "";
   }
 
@@ -75,7 +78,9 @@
     const job = (S.state?.jobs || []).find(item => item.id === S.selJob);
     if (job && job.id === logJob && job.log_bytes === logSize) return;
     try {
-      const response = await getJSON(`/dash/api/log?job=${encodeURIComponent(S.selJob)}&bytes=24000`);
+      const asked = S.selJob;
+      const response = await getJSON(`/dash/api/log?job=${encodeURIComponent(asked)}&bytes=24000`);
+      if (asked !== S.selJob) return;   // the selection moved on while this was read
       if (response.error) { $("log").textContent = response.error; return; }
       logJob = response.job; logSize = response.size;
       const box = $("log"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;

@@ -4093,5 +4093,36 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(shot("serial=S1&t=1699999999")[1], "no-store", "a newer picture than the one named")
         self.assertEqual(shot("serial=S1")[1], "no-store")
 
+    def test_maintenance_log_never_shows_one_job_under_another_jobs_heading(self):
+        """When the followed job changes, the old job's log leaves at once and the new one is read right away."""
+        job = lambda jid: {"id": jid, "state": "running", "label": "JOB-" + jid, "bin": "fixture", "argv": [], "log_bytes": 10}
+        state = {"now": time.time(), "jobs": [job("aaaaaaaaaaaa")], "hist": [], "fleet_age_s": 3, "fleet_err": None,
+                 "fleet_skip": None, "devices": [], "notes": [], "lock": {"status": "clear"}, "shot": None}
+        held = []
+
+        def log(route):
+            jid = parse_qs(urlparse(route.request.url).query)["job"][0]
+            if jid == "bbbbbbbbbbbb":
+                held.append(route)
+                return
+            route.fulfill(json={"job": jid, "size": 10, "text": "LOG-" + jid})
+        with self._browser_page() as page:
+            page.route("**/dash/api/state", lambda route: route.fulfill(json=state))
+            page.route("**/dash/api/log?*", log)
+            page.goto(f"http://%s:%d/dash/maint" % self.address)
+            page.wait_for_function("() => document.getElementById('log').textContent === 'LOG-aaaaaaaaaaaa'", timeout=15000)
+            state["jobs"] = [job("bbbbbbbbbbbb")]
+            page.wait_for_function("() => document.getElementById('log-title').textContent.includes('bbbbbbbbbbbb')", timeout=15000)
+            self.assertNotIn("LOG-aaaaaaaaaaaa", page.text_content("#log"), "the old log left with its job")
+            for _ in range(100):
+                if held:
+                    break
+                page.wait_for_timeout(20)
+            self.assertTrue(held, "the new job's log is read without waiting for the next poll")
+            held[0].fulfill(json={"job": "bbbbbbbbbbbb", "size": 10, "text": "LOG-bbbbbbbbbbbb"})
+            page.wait_for_function("() => document.getElementById('log').textContent === 'LOG-bbbbbbbbbbbb'", timeout=15000)
+            state["jobs"] = []
+            page.wait_for_function("() => document.getElementById('log').textContent === '这台节点上还没有任务日志'", timeout=15000)
+
 if __name__ == "__main__":
     unittest.main()
