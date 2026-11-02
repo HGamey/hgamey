@@ -31,7 +31,7 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 import sqlite3
 import shutil
 import node_doctor
-import argparse, errno, hashlib, hmac, io, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
+import argparse, errno, hashlib, hmac, io, ipaddress, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlencode
 from node_read import NodeRead
@@ -994,7 +994,37 @@ class Jobs:
 
 # ═════════════ HTTP ═════════════
 
-def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=None):
+def request_hostname(value):
+    """Lower-case host name of a Host header, without port or IPv6 brackets."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        return value[1:value.find("]")] if "]" in value else ""
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def legacy_public_host(host, canonical):
+    """True when a browser reached a public DNS name other than the canonical one.
+
+    Loopback, IP literals, single-label and .local names (LAN and on-node
+    access) are never treated as legacy, so only old public addresses move."""
+    if not canonical or not host or host == canonical or host == "localhost" or "." not in host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not host.endswith((".local", ".localhost"))
+
+
+def browser_page_path(path):
+    # Page shells only: the dashboard and the bare root. APIs (including
+    # /dash/api/*) keep answering on every address their clients configured.
+    return path == "/" or path == "/dash" or path.startswith("/dash/") and not path.startswith("/dash/api/")
+
+
+def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=None, canonical_host=None):
+    canonical_host = request_hostname(canonical_host) or None
     if remote is not None:
         remote.device_scopes, remote.leases = jobs.device_scopes, jobs.leases
     jobs.dispatch.start()
@@ -1163,7 +1193,28 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return True
             return False
 
+        def _legacy_redirect(self):
+            # Browser navigations to an old public hostname move to the canonical
+            # one. Anything carrying credentials or not a page stays where it is,
+            # so CLI and agent clients configured with an old URL keep working.
+            if (canonical_host is None or self.headers.get("Authorization")
+                    or not legacy_public_host(request_hostname(self.headers.get("Host")), canonical_host)):
+                return False
+            path = urlparse(self.path).path
+            if not browser_page_path(path):
+                return False
+            target = "https://" + canonical_host + (self.path if self.path.startswith("/") else path)
+            self._send(308, b"", "text/plain", {"Location": target})
+            return True
+
+        def do_HEAD(self):
+            if self._legacy_redirect():
+                return
+            self.send_error(501, "Unsupported method ('HEAD')")
+
         def do_GET(self):
+            if self._legacy_redirect():
+                return
             if node_connection_http.handle(self, "GET",
                     [p for p in urlparse(self.path).path.split("/") if p], directory, board, MAX_UPLOAD, jobs.center):
                 return
@@ -2329,6 +2380,7 @@ def argument_parser():
     ap.add_argument("--history-roots", type=history_path, help="旧作业只读来源的绝对配置路径（hgamey/job-history@1，最多64KiB）")
     ap.add_argument("--export-cache-root", help="当前作业目录导出的独立绝对缓存根；省略保留旧布局，不迁移原件或游戏资源")
     ap.add_argument("--require-device-binding", action="store_true", help="拒绝缺少 device_binding 的设备访问任务（多设备纪律）")
+    ap.add_argument("--canonical-host", help="对外正式域名；浏览器访问其它公网域名的 / 与 /dash 页面时 308 跳到这里，API、POST 和带 Authorization 的请求不跳")
     ap.add_argument("--experiments-url", default=os.environ.get("HGAMEY_EXPERIMENTS_URL") or job_experiment.DEFAULT_URL,
                     help="实验仓库地址；bin experiment 的任务按提交号从这里取代码")
     return ap
@@ -2389,7 +2441,7 @@ def main():
         except Exception as e:  # noqa: BLE001
             log(f"node_remote 起不来，/remote 不可用: {e!r}")
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(McpChild(root), jobs, token, board, fleet=fleet,
-                                                                  remote=remote))
+                                                                  remote=remote, canonical_host=a.canonical_host))
     connector = None
     if jobs.connection:
         from node_connector import NodeConnector, LocalHTTP
