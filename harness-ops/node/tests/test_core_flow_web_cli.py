@@ -11,7 +11,7 @@ import json
 import os
 import re
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 import subprocess
 import sys
 import tempfile
@@ -3965,6 +3965,43 @@ class CoreFlowTests(unittest.TestCase):
             page.wait_for_function(f"() => !document.getElementById('detail-content').hidden && ({facts})().includes('{other}')", timeout=20000)
             self.assertNotIn(self.jid, page.evaluate(facts))
             self.assertIn(f"#job={other}", page.url)
+
+    def _steered_page(self):
+        context = self._browser_page()
+        page = context.__enter__()
+        page.context.add_cookies([{"name": self.steer_cookie.split("=", 1)[0], "value": self.steer_cookie.split("=", 1)[1],
+                                   "url": "http://%s:%d" % self.address}])
+        self.addCleanup(context.__exit__, None, None, None)
+        return page
+
+    def test_reading_the_shown_job_again_keeps_it_on_screen(self):
+        """刷新任务 on the job already shown keeps its details and the log read so far on screen
+        while the new read is in flight, instead of blanking the panel and starting the log from byte 0."""
+        log = Path(self.jobs.path(self.jid, "log"))
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(f"line {n:05d}\n" for n in range(9000)))   # more than one 64 KiB read
+        page = self._steered_page()
+        held, reads, offsets = [], [], []
+        page.route(f"**/dash/api/jobs/{self.jid}", lambda route: (reads.append(1), held.append(route) if len(reads) == 2 else route.continue_()))
+        page.on("request", lambda r: offsets.append(parse_qs(urlparse(r.url).query).get("offset", [""])[0]) if f"/jobs/{self.jid}/log" in r.url else None)
+        page.goto(f"http://%s:%d/dash/jobs#job={self.jid}" % self.address)
+        page.wait_for_function("() => !document.getElementById('detail-content').hidden && document.getElementById('job-log').textContent.length > 0", timeout=20000)
+        page.click("#log-next")
+        page.wait_for_function("() => document.getElementById('job-log').textContent.includes('line 08999')", timeout=20000)
+        page.click("#refresh-detail")
+        for _ in range(100):
+            if held:
+                break
+            page.wait_for_timeout(20)
+        self.assertEqual(len(held), 1)
+        self.assertTrue(page.is_visible("#detail-content"), "the job stays on screen while it is read again")
+        held[0].continue_()
+        page.wait_for_function("() => !document.getElementById('refresh-detail').disabled", timeout=20000)
+        page.wait_for_timeout(300)
+        self.assertIn("line 08999", page.text_content("#job-log"), "the log is not rewound to its first 64 KiB")
+        self.assertEqual(offsets[0], "0")
+        self.assertNotIn("0", offsets[1:], "reading again carries on from the byte already read")
+
 
 if __name__ == "__main__":
     unittest.main()

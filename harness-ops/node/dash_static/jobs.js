@@ -1584,6 +1584,8 @@
       message('detail-message', '任务 ID 格式不正确。', true);
       return;
     }
+    // Reading the shown job again keeps it on screen, its open forms and the log read so far, until the new read lands.
+    const again = keepDirectory && id === selected && !$('detail-content').hidden;
     selected = id;
     currentJob = null;
     stopJobEvents(); syncJobEventScope();
@@ -1599,15 +1601,17 @@
     ++metadataRevision;
     ++logRevision;
     if (!keepDirectory) directory = '';
-    $('detail-content').hidden = true;
-    $('force-form').hidden = true;
-    $('force-confirm').checked = false;
-    $('execution-reconcile-force-form').hidden = true;
-    $('execution-reconcile-force-confirm').checked = false;
-    $('reset-panel').open = false;
-    $('reset-note').value = '';
-    $('detail-placeholder').hidden = false;
-    $('detail-updated').textContent = '';
+    if (!again) {
+      $('detail-content').hidden = true;
+      $('force-form').hidden = true;
+      $('force-confirm').checked = false;
+      $('execution-reconcile-force-form').hidden = true;
+      $('execution-reconcile-force-confirm').checked = false;
+      $('reset-panel').open = false;
+      $('reset-note').value = '';
+      $('detail-placeholder').hidden = false;
+      $('detail-updated').textContent = '';
+    }
     $('refresh-detail').hidden = false;
     busy('refresh-detail', true, '读取中…');
     regionBusy('task-detail', true);
@@ -1628,7 +1632,8 @@
         facts('job-info', [['节点', job.node_id], ['来源', job.source_id], ['来源 revision', job.source_revision], ['任务 ID', job.id], ['命令', job.bin], ['原开始字段', time(job.started)], ['原状态', job.recorded_state], ['原阶段', job.recorded_phase], ['记录中的退出码', job.recorded_exit], ['退出码来源', ({meta: '原 meta', exitcode: '原 exitcode 文件'})[job.recorded_exit_source] || '未记录']]);
         $('historical-record').textContent = JSON.stringify(job.record ?? null, null, 2);
         $('detail-content').hidden = false; $('detail-placeholder').hidden = true;
-        resetLog(); await Promise.all([loadArtifacts(), loadLog()]); return;
+        if (!again) resetLog();
+        await Promise.all([loadArtifacts(), loadLog()]); return;
       }
       currentJob = job;
       renderExportCacheControls();
@@ -1657,7 +1662,7 @@
       $('detail-content').hidden = false;
       $('detail-placeholder').hidden = true;
       message('detail-message', '');
-      resetLog();
+      if (!again) resetLog();   // the same job carries on from the byte already read
       await Promise.all([loadArtifacts(), loadLog(), job.bin === 'phonefarm' && job.argv?.[0] === 'gray-layer' && job.argv?.[1] === 'session' ? loadSession() : null]);
     } catch (error) {
       if (revision === detailRevision) {
