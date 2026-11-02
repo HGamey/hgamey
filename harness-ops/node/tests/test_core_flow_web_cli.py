@@ -3952,5 +3952,19 @@ class CoreFlowTests(unittest.TestCase):
         status, kind, body = get("/dash/api/nothing-here")
         self.assertEqual((status, kind.split(";")[0], json.loads(body)), (404, "application/json", {"error": "not found"}))
 
+    def test_a_job_link_opened_in_the_jobs_tab_shows_that_job(self):
+        """Pasting /dash/jobs#job=B into a tab that shows job A changes only the hash; the page follows it."""
+        other = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                           "resources": [], "actor_id": "agent-a"}, b"", "core-flow-job-2")
+        other = other["job"]["id"] if "job" in other else other["id"]
+        facts = "() => document.getElementById('job-info').textContent"
+        with self._browser_page() as page:
+            page.goto(f"http://%s:%d/dash/jobs#job={self.jid}" % self.address)
+            page.wait_for_function(f"() => !document.getElementById('detail-content').hidden && ({facts})().includes('{self.jid}')", timeout=20000)
+            page.evaluate(f"location.hash = 'job={other}'")
+            page.wait_for_function(f"() => !document.getElementById('detail-content').hidden && ({facts})().includes('{other}')", timeout=20000)
+            self.assertNotIn(self.jid, page.evaluate(facts))
+            self.assertIn(f"#job={other}", page.url)
+
 if __name__ == "__main__":
     unittest.main()

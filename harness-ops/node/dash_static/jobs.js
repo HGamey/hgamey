@@ -3195,5 +3195,12 @@
   else if (initial) message('detail-message', '任务 ID 格式不正确。', true);
   document.addEventListener('hgamey-target-change', () => { resetDirectoryExport(); resetExportCache(); ++deviceBindingRevision; deviceBindingBusy = false; deviceBinding = null; deviceRegistry = null; deviceBindingError = ''; renderAccess(); if (jobEventsBusy && HGTarget.problem(jobEventPosition?.target)) stopJobEvents('节点身份需要重新核对；原浏览位置保留。'); syncJobEventScope(); });
   window.addEventListener('pagehide', resetDirectoryExport);
+  // A #job= link pasted into this tab, or typed, changes only the hash: show that job, not the one already open.
+  window.addEventListener('hashchange', () => {
+    const params = new URLSearchParams(location.hash.slice(1)), source = params.get('source') || '';
+    if (source !== (historySource?.source_id || '') || (source && Number(params.get('source_revision')) !== historySource?.revision)) { location.reload(); return; }
+    const id = params.get('job');
+    if (id && id !== selected) selectCurrentJob(id);
+  });
   refreshAll();
 })();
