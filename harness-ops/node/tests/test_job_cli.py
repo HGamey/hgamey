@@ -403,6 +403,7 @@ class JobCLI(unittest.TestCase):
     def test_host_slots_file_is_opt_in_checked_before_pack_and_preserves_rejection(self):
         cli = self.load_cli(); main = cli["main"]
         slots = {"cpu": 2, "gpu": 1, "io": 0}
+        # Use a task command: help is a document read outside the job queue.
         # A smaller current configuration must not reject an old request locally.
         node = identity(capabilities=["node.target-v1", "jobs.idempotency-v1", "jobs.host-capacity-v1"],
                         execution={"bins": ["phonefarm"], "host_capacity": {"slots": {"cpu": 1, "gpu": 0, "io": 0}}})
@@ -411,13 +412,13 @@ class JobCLI(unittest.TestCase):
             source.write_text(json.dumps(slots))
             for declared in (True, False):
                 call = mock.Mock(return_value=json.dumps(node).encode())
-                pack, submit = mock.Mock(return_value=(["--help"], b"")), mock.Mock(return_value={"id": JOB, "phase": "queued"})
-                command = [str(CLI), *(["--host-slots", str(source)] if declared else []), "--request-id", "original-slots", "--detach", "phonefarm", "--help"]
+                pack, submit = mock.Mock(return_value=(["devices"], b"")), mock.Mock(return_value={"id": JOB, "phase": "queued"})
+                command = [str(CLI), *(["--host-slots", str(source)] if declared else []), "--request-id", "original-slots", "--detach", "phonefarm", "devices"]
                 with mock.patch.dict(main.__globals__, call=call, pack=pack, submit_job=submit), mock.patch.object(sys, "argv", command), \
                         contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     main()
                 spec = submit.call_args.args[0]
-                self.assertEqual(spec["argv"], ["--help"])
+                self.assertEqual(spec["argv"], ["devices"])
                 self.assertEqual(submit.call_args.args[2], "original-slots")
                 if declared:
                     self.assertEqual(spec["host_slots"], slots)
@@ -430,7 +431,7 @@ class JobCLI(unittest.TestCase):
                                             (json.dumps(slots), node, ["--device-access", "recovery", "--recovery-for", JOB])]:
                 source.write_text(raw); pack, submit = mock.Mock(), mock.Mock()
                 with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(response).encode()), pack=pack, submit_job=submit), \
-                        mock.patch.object(sys, "argv", [str(CLI), "--host-slots", str(source), *options, "--detach", "phonefarm", "--help"]), self.assertRaises(SystemExit):
+                        mock.patch.object(sys, "argv", [str(CLI), "--host-slots", str(source), *options, "--detach", "phonefarm", "devices"]), self.assertRaises(SystemExit):
                     main()
                 pack.assert_not_called(); submit.assert_not_called()
         payload = {"code": "host_capacity_exceeded", "error": "exceeds current total", "requested": slots,
@@ -450,13 +451,13 @@ class JobCLI(unittest.TestCase):
         for options, expected in [([], None), (["--max-runtime-seconds", "30"], {"wall_seconds": 30, "timeout_action": "graceful"}),
                                   (["--max-runtime-seconds", "30", "--timeout-action", "escalate"], {"wall_seconds": 30, "timeout_action": "escalate"})]:
             call = mock.Mock(return_value=json.dumps(node).encode())
-            pack, submit = mock.Mock(return_value=(["--help"], b"")), mock.Mock(return_value={"id": JOB, "phase": "queued"})
+            pack, submit = mock.Mock(return_value=(["devices"], b"")), mock.Mock(return_value={"id": JOB, "phase": "queued"})
             with mock.patch.dict(main.__globals__, call=call, pack=pack, submit_job=submit), \
-                    mock.patch.object(sys, "argv", [str(CLI), *options, "--detach", "phonefarm", "--help"]), \
+                    mock.patch.object(sys, "argv", [str(CLI), *options, "--detach", "phonefarm", "devices"]), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 main()
             spec = submit.call_args.args[0]
-            self.assertEqual(spec["argv"], ["--help"])
+            self.assertEqual(spec["argv"], ["devices"])
             if expected is None:
                 self.assertNotIn("time_budget", spec)
             else:
@@ -468,7 +469,7 @@ class JobCLI(unittest.TestCase):
                                    (["--max-runtime-seconds", "30", "--device-access", "recovery", "--recovery-for", JOB], node)]:
             pack, submit = mock.Mock(), mock.Mock()
             with mock.patch.dict(main.__globals__, call=mock.Mock(return_value=json.dumps(response).encode()), pack=pack, submit_job=submit), \
-                    mock.patch.object(sys, "argv", [str(CLI), *options, "--detach", "phonefarm", "--help"]), self.assertRaises(SystemExit):
+                    mock.patch.object(sys, "argv", [str(CLI), *options, "--detach", "phonefarm", "devices"]), self.assertRaises(SystemExit):
                 main()
             pack.assert_not_called()
             submit.assert_not_called()
