@@ -1,5 +1,6 @@
 """Researcher reports F31/F32/F33, through the shipped HTTP and CLI paths."""
 import http.client
+import hashlib
 import json
 from pathlib import Path
 import unittest
@@ -80,6 +81,31 @@ class ResearchFrictionTests(unittest.TestCase):
             expect(block).to_be_visible()
             expect(block.locator('img')).to_have_count(0)
             expect(block.locator('a[download="qa_report.json"]')).to_have_text('qa_report.json')
+
+    def test_cli_reads_json_and_text_attachments_from_a_research_note(self):
+        for filename in ('manifest.json', 'labels.txt'):
+            with self.subTest(filename=filename):
+                raw = json.dumps({'labels': 'x' * (2 << 20)}).encode()
+                source = self.env.tmp / filename
+                source.write_bytes(raw)
+                note = self.run_cli('agent-a', 'note', 'sr-friction', '重建标签',
+                                    '--attach', str(source))['object']['id']
+                _, thread = self.env.web('GET', '/research-state/note?research_id=sr-friction&limit=100')
+                ref = next(row for row in thread['items'] if row['id'] == note)['evidence_refs'][0]
+                output = self.env.tmp / ('downloaded-' + filename)
+                receipt = self.run_cli('agent-a', 'attachment', ref['attachment_id'], '--output', str(output))
+                self.assertEqual(receipt['attachment_id'], ref['attachment_id'])
+                self.assertEqual(receipt['node_id'], self.env.node_id)
+                self.assertEqual(receipt['path'], str(output))
+                self.assertEqual(receipt['mime'], ref['content_type'])
+                self.assertEqual((receipt['size'], receipt['sha256']), (len(raw), hashlib.sha256(raw).hexdigest()))
+                self.assertEqual(output.read_bytes(), raw)
+                # Reuse media's existing publish behavior, including preserving the caller's file.
+                output.write_bytes(b'caller-owned')
+                code, _, _ = self.env.pf(self.tokens['agent-a'], 'research', 'attachment',
+                                        ref['attachment_id'], '--output', str(output))
+                self.assertEqual(code, 2)
+                self.assertEqual(output.read_bytes(), b'caller-owned')
 
     def test_notes_attach_sixteen_mib_json_and_text_without_loading_them_in_the_page(self):
         for filename in ('manifest.json', 'labels.txt'):

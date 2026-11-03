@@ -36,6 +36,7 @@ HELP = """用法:
   pf-node research events [--after N | --cursor CURSOR] [--research-id ID] [--limit 1..500]
       [--wait-seconds 0..15]
   pf-node research media REQUEST A|B|C... --revision N --output FILE
+  pf-node research attachment ID --output FILE
   pf-node research claim ID                       # 用自己的 agent token 认领无人负责的研究
   pf-node research assign ID AGENT|none           # 指派或取消负责人
   pf-node research link ID FOLLOWS|none           # 记录或取消这个任务接续哪个任务
@@ -59,6 +60,7 @@ KIND 为 research/direction/request/feedback/note。research list 必须带 KIND
 research 列表可用 --follows <研究ID> 只取它的接续任务。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
 --attach 直接附本机 PNG、JPEG、SVG、MP4、WebM、JSON 或 TXT，可重复；图片、JSON/TXT 至多 16 MiB，视频至多 128 MiB。实验 Python 只保证有标准库。
+attachment 按留言 evidence_refs 里的 attachment_id 下载原件；流式核对长度和 SHA 后写入 --output，不覆盖已有文件。
 --ask 把留言标为问题；首页列出未回复问题，有 reply_to 回复后关闭，agent 继续做其他方向。
 update FILE 只写要改的字段，没写的保持第 N 版值；显式 null 清空可空字段，必填字段不能清空。回执 changed_fields 列出实际变更。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
@@ -229,6 +231,9 @@ def parser():
     media.add_argument("slot", choices=tuple("ABCDEFGH"))
     media.add_argument("--revision", type=integer, required=True)
     media.add_argument("--output", required=True)
+    attachment = commands.add_parser("attachment")
+    attachment.add_argument("id", type=identifier)
+    attachment.add_argument("--output", required=True)
     return root
 
 
@@ -450,7 +455,7 @@ def _assessment_response(value, args):
                            code="research_assessment_invalid_response")
 
 
-def _media_headers(response):
+def _media_headers(response, limits):
     if response.status != 200:
         raise RequestError("媒体读取未返回完整 200 响应；未发布文件", code="media_invalid_response")
     values = {}
@@ -461,8 +466,8 @@ def _media_headers(response):
         values[name] = found[0].strip()
     mime = values["Content-Type"].split(";", 1)[0].strip().lower()
     length, digest = values["Content-Length"], values["X-Content-SHA256"]
-    if (mime not in MEDIA_LIMITS or not re.fullmatch(r"[0-9]{1,12}", length)
-            or not 1 <= int(length) <= MEDIA_LIMITS[mime]
+    if (mime not in limits or not re.fullmatch(r"[0-9]{1,12}", length)
+            or not 1 <= int(length) <= limits[mime]
             or not re.fullmatch(r"[0-9a-f]{64}", digest)
             or response.headers.get("Transfer-Encoding") is not None
             or response.headers.get("Content-Encoding", "identity").lower() != "identity"):
@@ -470,16 +475,23 @@ def _media_headers(response):
     return mime, int(length), digest
 
 
-def _media(client, args):
+def _download(client, args):
     path = os.path.abspath(args.output)
     # lexists also refuses broken symlinks; the final link repeats this check atomically.
     if os.path.lexists(path):
         raise ValueError("输出文件已存在；未覆盖、未读取媒体")
     if not os.path.isdir(os.path.dirname(path)):
         raise ValueError("输出父目录不存在；未读取媒体")
-    client.require_evaluation(pinned=True)
-    endpoint = f"/research-state/request/{args.id}/media/{args.slot}?revision={args.revision}"
-    request = client.target.request("GET", endpoint, headers={"Accept": ", ".join(MEDIA_LIMITS)})
+    if args.command == "attachment":
+        node_id = client.target.identity()["node_id"]
+        endpoint = f"/research-attachments/{args.id}?expected_node_id={node_id}"
+        limits, reference = ATTACHMENT_LIMITS, {"attachment_id": args.id}
+    else:
+        client.require_evaluation(pinned=True)
+        node_id = client.target.expected_node_id
+        endpoint = f"/research-state/request/{args.id}/media/{args.slot}?revision={args.revision}"
+        limits, reference = MEDIA_LIMITS, {"request_id": args.id, "revision": args.revision, "slot": args.slot}
+    request = client.target.request("GET", endpoint, headers={"Accept": ", ".join(limits)})
     temporary, owned_inode, published = None, None, False
     try:
         try:
@@ -487,7 +499,7 @@ def _media(client, args):
         except urllib.error.HTTPError as error:
             raise client.http_error(error) from None
         with response:
-            mime, length, expected_digest = _media_headers(response)
+            mime, length, expected_digest = _media_headers(response, limits)
             fd, temporary = tempfile.mkstemp(prefix=".pf-research-media-", suffix=".partial",
                                               dir=os.path.dirname(path))
             info = os.fstat(fd)
@@ -514,11 +526,11 @@ def _media(client, args):
             except FileExistsError:
                 raise RequestError("输出路径在下载期间已存在；未覆盖，原件未发布", code="media_output_exists") from None
             published = True
-        print(json.dumps({"schema_version": 1, "node_id": client.target.expected_node_id,
-                          "request_id": args.id, "revision": args.revision, "slot": args.slot,
+        print(json.dumps({"schema_version": 1, "node_id": node_id, **reference,
                           "path": path, "size": received, "sha256": actual_digest, "mime": mime},
                          ensure_ascii=False, allow_nan=False))
-        print("pf-node: 原件长度与 SHA 已核对；下载不表示已解码、查看或提交反馈。", file=sys.stderr)
+        print("pf-node: 原件长度与 SHA 已核对" +
+              ("；下载不表示已解码、查看或提交反馈。" if args.command == "media" else "。"), file=sys.stderr)
         return 0
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
         raise RequestError("媒体读取或本地保存未确认；未自动重试，没有创建反馈", code="media_read_unconfirmed") from None
@@ -841,8 +853,8 @@ def main(argv, *, target):
             return _write(client, args)
         if args.command in ("claim", "assign", "link", "close", "reopen", "note", "compare", "thread", "deliver", "conclude"):
             return _task(client, args)
-        if args.command == "media":
-            return _media(client, args)
+        if args.command in ("media", "attachment"):
+            return _download(client, args)
         if args.command == "list":
             if args.request_id is not None and args.kind != "feedback":
                 raise ValueError("--request-id 筛选仅用于 feedback")

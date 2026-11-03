@@ -391,6 +391,7 @@ class Domain:
     def start_gate(self, command, cwd, job_dir, jid, log_fd):
         env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": os.path.join(job_dir, "out"),
                "TMPDIR": os.path.join(job_dir, "out"), "PF_JOB_ID": jid,
+               "PF_NODE_ID": (Path(job_dir).parents[1] / "_node/id").read_text().strip(),
                "PF_RUNTIME_REPORT": os.path.join(job_dir, "out", ".program-runtime.json"),
                "PF_JOB_IN": os.path.join(job_dir, "in"), "PF_JOB_OUT": os.path.join(job_dir, "out")}
         child = subprocess.Popen(["/bin/sh", "-c", GATE, "phonefarm-gate", *command],

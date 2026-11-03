@@ -58,7 +58,7 @@ value = facts()
 assert value['uid'] == [plan['uid']]*3 and value['gid'] == [plan['gid']]*3, value
 assert value['groups'] == [] and value['no_new_privs'] == '1', value
 assert all(int(v,16) == 0 for v in value['caps'].values()), value
-expected = {'PATH','LANG','HOME','TMPDIR','PF_JOB_IN','PF_JOB_OUT','PF_JOB_ID','PF_RUNTIME_REPORT'}
+expected = {'PATH','LANG','HOME','TMPDIR','PF_JOB_IN','PF_JOB_OUT','PF_JOB_ID','PF_NODE_ID','PF_RUNTIME_REPORT'}
 assert set(os.environ) == expected, value
 report = pathlib.Path(os.environ.pop('PF_RUNTIME_REPORT'))
 assert report == out/'.program-runtime.json'
@@ -73,6 +73,7 @@ temporary.unlink()
 assert os.environ['PATH'] == '/usr/bin:/bin' and os.environ['LANG'] == 'C.UTF-8'
 assert os.environ['HOME'] == os.environ['TMPDIR'] == str(out)
 assert os.environ['PF_JOB_ID'] == plan['jid']
+assert os.environ['PF_NODE_ID'] == plan['node_id']
 assert pathlib.Path(os.environ['PF_JOB_IN']) == pathlib.Path(plan['input']).parent
 assert pathlib.Path(plan['input']).read_text() == 'real-input-payload\n'
 assert pathlib.Path(plan['input']).stat().st_mode & 0o777 == 0o444
@@ -231,6 +232,9 @@ class KernelFixture:
         # private directory or rely on giving the job access to the checkout.
         self.scratch = Path(tempfile.mkdtemp(prefix="phonefarm-cgroup-", dir="/tmp"))
         self.scratch.chmod(0o755)
+        node_id = self.nonce * 2
+        (self.scratch / '_node').mkdir()
+        (self.scratch / '_node/id').write_text(node_id + '\n')
         jobs_root = self.scratch / "jobs"
         jobs_root.mkdir(mode=0o755)
         self.store = SafeRoot(jobs_root)
@@ -247,7 +251,7 @@ class KernelFixture:
         config = self.scratch / "config.json"
         config.write_text(json.dumps({"cgroup_root":str(self.cgroup_root), "uid":self.uid, "gid":self.gid}))
         config.chmod(0o600)
-        plan = {"uid":self.uid, "gid":self.gid, "jid":self.jid, "input":str(self.job / "in/input.txt"),
+        plan = {"uid":self.uid, "gid":self.gid, "jid":self.jid, "node_id":node_id, "input":str(self.job / "in/input.txt"),
                 "migration_target":str(self.cgroup_root / "cgroup.procs"),
                 "denied_write_paths":{name:str(self.job / name) for name in ("meta.json","launch.json","runner.lock")}}
         plan["denied_write_paths"]["input"] = str(self.job / "in/input.txt")

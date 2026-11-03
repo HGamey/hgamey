@@ -391,7 +391,8 @@ class JobDispatch:
         env = dict(self.jobs.pf_env if self.jobs.pf_env is not None else os.environ,
                    DEVLOCK_LABEL=f"job-{jid}", PF_JOB_OUT=self.jobs.path(jid, "out"),
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
-                   PF_JOB_ID=jid, PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
+                   PF_JOB_ID=jid, PF_NODE_ID=self.jobs.node_id,
+                   PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
         if spec.get("actor_id"):
             env["PF_JOB_ACTOR"] = spec["actor_id"]
         if spec.get("research_id"):

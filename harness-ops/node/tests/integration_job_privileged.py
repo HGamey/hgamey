@@ -182,6 +182,9 @@ class PrivilegedFixture(KernelFixture):
         self.report['identity']={'node_uid':self.node_uid,'node_gid':self.node_gid,'job_uid':self.uid,'job_gid':self.gid}
         self.scratch = Path(tempfile.mkdtemp(prefix='phonefarm-privileged-',dir='/tmp'))
         self.scratch.chmod(0o755)
+        node_id = self.nonce * 2
+        (self.scratch / '_node').mkdir()
+        (self.scratch / '_node/id').write_text(node_id + '\n')
         jobs_root = self.scratch/'jobs'; jobs_root.mkdir(mode=0o755)
         os.chown(jobs_root,self.node_uid,self.node_gid)
         control = self.scratch/'control'; control.mkdir(mode=0o700)
@@ -222,7 +225,7 @@ class PrivilegedFixture(KernelFixture):
         (self.scratch/'workload.py').chmod(0o644)
         (self.scratch/'node-helper.py').write_text(NODE_HELPER)
         (self.scratch/'node-helper.py').chmod(0o644)
-        workload_plan = {'uid':self.uid,'gid':self.gid,'jid':self.jid,'input':str(self.job/'in/input.txt'),
+        workload_plan = {'uid':self.uid,'gid':self.gid,'jid':self.jid,'node_id':node_id,'input':str(self.job/'in/input.txt'),
             'migration_target':str(self.cgroup_root/'cgroup.procs'),
             'denied_write_paths':{name:str(self.job/name) for name in ('meta.json','launch.json','runner.lock')}}
         workload_plan['denied_write_paths']['input'] = str(self.job/'in/input.txt')
