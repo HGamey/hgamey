@@ -45,7 +45,7 @@ flowchart LR
 | 目录 | 作用 |
 |---|---|
 | `harness-ops/node/` | 节点服务 `node_service.py`、任务队列与调度、研究数据（SQLite）、网页看板 `dash.py` 与 `dash_static/`、命令行 `pf-node` |
-| `harness-ops/skills/` | 给 agent 的使用说明：研究流程 `hgamey-research`、远程控制 `hgamey-remote` |
+| `harness-ops/skills/` | 给 agent 的使用说明：首次接入 `hgamey-quickstart`、研究流程 `hgamey-research`、远程控制 `hgamey-remote` |
 | `phonefarm/` | 设备层（Rust）：设备锁、采集、灰档层、评测 |
 | `game_opt_loop/` | 可选的自动优化循环 GOL（Rust） |
 | `refbench/` | 白盒参考负载 |
