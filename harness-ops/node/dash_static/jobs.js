@@ -780,6 +780,10 @@
       ['实际完成范围（worker）', management?.completion_scope === 'original_process_group' ? '原进程组（original_process_group）' : management?.completion_scope || '未提供'],
       ['脱组后代', management?.detached_descendants === 'unverified' ? '未验证；不能据原进程组结束判断整棵进程树已结束。' : management?.detached_descendants || '未提供'],
       ['设备访问', ({none: '宿主任务，无设备访问', write: '设备写入', recovery: '恢复任务'})[job.device_access] || '旧记录未提供'], ['声明设备范围', scopeText(job.queue?.device_scope || {scope: job.device_binding ? 'device' : job.device_access === 'none' ? 'none' : 'global', binding: job.device_binding})],
+      ...(job.app_snapshot?.devices || []).map(apps => [`开始时应用 · ${apps.serial}`,
+        `${time(apps.at)} · 前台：${apps.foreground || '未读到'} · 运行中的第三方应用：${apps.running_third_party == null ? '未读到' : apps.running_third_party.join('、') || '无'}`
+        + (apps.errors?.length ? ` · 读取失败：${apps.errors.join('；')}` : '')]),
+      ...(job.app_snapshot?.errors?.length ? [['开始时应用', `${time(job.app_snapshot.at)} · 读取失败：${job.app_snapshot.errors.join('；')}`]] : []),
       ...(job.device_binding ? bindingFacts(job.device_binding) : []), ['恢复目标', job.recovery_for || job.queue?.recovery_for || '无'],
       ['调度状态', ({preparing: '准备中', queued: '排队中', claimed: '执行中 · 占用名额与资源', blocked: '执行范围待核查 · 只保留原排他范围，名额已释放', done: '已结束 · 资源全部释放'})[job.queue?.state] || '未记录'], ['声明资源', job.queue?.resources?.join('、') || '无'], ['等待原因', waitingText(job.queue?.waiting)],
       ...jobPriorityFacts(job),

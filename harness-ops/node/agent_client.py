@@ -139,8 +139,11 @@ def render_checkin(value):
             lines.append(f" - {item['research_id']} / {item['request_id']} {item['title']}{' · 已过期' if item['overdue'] else ''}")
     jobs = value["jobs"]
     finished = jobs["finished_since_last_checkin"]
+    cancelled = sum(item.get("outcome") == "cancelled" for item in finished)
     lines.append(f"任务：进行中 {len(jobs['active'])} · 卡住 {len(jobs['blocked'])} · 上次签到后结束 {len(finished)}"
-                 + (" (" + ", ".join(item["job_id"] for item in finished) + ")" if finished else ""))
+                 + (f"，其中取消 {cancelled}" if cancelled else "")
+                 + (" (" + ", ".join(item["job_id"] + (" [cancelled]" if item.get("outcome") == "cancelled" else "")
+                                     for item in finished) + ")" if finished else ""))
     unlinked = [item["job_id"] for item in jobs["active"] if not item.get("research_id")]
     if unlinked and value["research"]["mine"]:
         lines.append("未关联研究的任务：" + ", ".join(unlinked) + "（之后提交加 --research <研究>）")

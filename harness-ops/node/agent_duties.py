@@ -121,7 +121,7 @@ def duties(jobs, name, now=None):
                      if data.get("ask") is True and audit.get("actor_label") == name}
     answers_by_question, question_answers = set(), []
     for row, data, audit in notes:
-        if data.get("reply_to") not in own_questions or audit.get("auth_channel") not in ("dashboard_steer", "admin_token"):
+        if data.get("reply_to") not in own_questions:
             continue
         answers_by_question.add(data["reply_to"])
         question_answers.append({"research_id": row["research_id"], "id": row["id"], "reply_to": data["reply_to"],
@@ -189,6 +189,7 @@ def duties(jobs, name, now=None):
             meta = jobs.status(row["job_id"])
         except (OSError, ValueError, KeyError):
             continue
+        item["outcome"] = meta.get("outcome")
         if row["state"] == "blocked":
             owed.insert(0, {"kind": "reset_job", "target": row["job_id"],
                             "text": f"任务 {row['job_id']} 的执行范围待核查；运行名额已释放，原独占范围保留到 reset",

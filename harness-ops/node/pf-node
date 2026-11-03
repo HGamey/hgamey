@@ -27,6 +27,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node phonefarm eval --request r.json --json --lock-label judge
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
   pf-node --research <研究> --detach adb -s 91253241019A shell 'su -c "cat /sys/class/kgsl/kgsl-3d0/max_pwrlevel"'
+  pf-node adb -s <串号> pull /sdcard/capture.png capture.png  # pull 的相对路径落在任务 out，可用 artifacts 读取
   pf-node devlock status
   pf-node --detach phonefarm autoloop ...      # stdout 只回任务 id；stderr 显示提交阶段和 request_id
   pf-node --request-id study-001 --resource device:oneplus phonefarm eval ...
@@ -272,6 +273,8 @@ def brief_job_line(job):
     def clean(value):
         return re.sub(r"\s+", " ", str(value)).strip() if value not in (None, "") else "-"
     state = job.get("phase") or job.get("state") or "unknown"
+    if job.get("state") == "finished" and job.get("outcome") == "cancelled":
+        state = "cancelled"
     command = job.get("bin") or "-"
     if job.get("argv"):
         command += " " + str(job["argv"][0])

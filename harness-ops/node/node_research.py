@@ -23,7 +23,8 @@ MAX_DATA = 64 << 10
 MAX_WRITE = 128 << 10
 ATTACHMENT_MAX = 16 << 20
 ATTACHMENT_LIMITS = {"image/png": 16 << 20, "image/jpeg": 16 << 20, "image/svg+xml": 16 << 20,
-                     "video/mp4": 128 << 20, "video/webm": 128 << 20}
+                     "video/mp4": 128 << 20, "video/webm": 128 << 20,
+                     "application/json": 1 << 20, "text/plain": 1 << 20}
 ATTACHMENT_TYPES = set(ATTACHMENT_LIMITS)
 AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")  # same rule as node_agents.NAME
 STATES = {
@@ -451,16 +452,16 @@ class NodeResearch:
 
     @staticmethod
     def _unanswered_questions(db, research_id=None):
-        """Agent questions that have no human reply, oldest first."""
+        """Agent questions that have no reply, oldest first."""
         scope, params = (" AND r.research_id=?", (research_id,)) if research_id is not None else ("", ())
         rows = db.execute("SELECT r.id, r.data, r.audit FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id "
                           "AND r.revision=o.revision WHERE o.kind='note'" + scope + " ORDER BY r.sequence", params).fetchall()
         questions, answered = [], set()
         for row in rows:
             data, audit = json.loads(row["data"]), json.loads(row["audit"])
-            if audit.get("auth_channel") in ("dashboard_steer", "admin_token") and data.get("reply_to"):
+            if data.get("reply_to"):
                 answered.add(data["reply_to"])
-            elif data.get("ask") is True and audit.get("auth_channel") != "dashboard_steer":
+            if data.get("ask") is True and audit.get("auth_channel") != "dashboard_steer":
                 questions.append(row["id"])
         return [note for note in questions if note not in answered]
 
@@ -493,7 +494,7 @@ class NodeResearch:
                 or filename in (".", "..") or "/" in filename or "\\" in filename or "\x00" in filename):
             raise ValueError("attachment filename must be a single safe filename")
         if content_type not in ATTACHMENT_TYPES:
-            raise ValueError("attachments must be PNG, JPEG, SVG, MP4 or WebM")
+            raise ValueError("attachments must be PNG, JPEG, SVG, MP4, WebM, JSON or TXT")
         maximum = ATTACHMENT_LIMITS[content_type]
         if not isinstance(raw, bytes) or len(raw) > maximum:
             raise ValueError(f"attachment exceeds the {maximum >> 20} MiB limit")

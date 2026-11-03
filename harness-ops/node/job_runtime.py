@@ -37,7 +37,7 @@ def _worker_command(job_dir, lock_fd):
 
 
 def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None,
-           privileged_entry=None, service_at_launch=None, time_budget=None, disk_guard=None):
+           privileged_entry=None, service_at_launch=None, time_budget=None, disk_guard=None, app_snapshot=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
     job_dir = os.path.abspath(job_dir)
     if os.path.basename(job_dir) != jid:
@@ -58,6 +58,8 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
         except BlockingIOError:
             raise ValueError("job already has a live worker") from None
         launch_spec = {"command": command, "cwd": os.fspath(cwd)}
+        if app_snapshot is not None:
+            launch_spec['app_snapshot'] = app_snapshot
         if service_at_launch is not None:
             launch_spec["service_at_launch"] = service_at_launch
         if execution_policy is not None:
@@ -400,6 +402,10 @@ def _worker(job_dir, lock_fd, escalation_delays=(15.0, 15.0), contained_config=N
             "scope": "original_process_group", "status": "not_started", "pgid": None,
             "checked_at": None, "error": None}
         store.write_json(jid + "/meta.json", meta)
+        if spec.get('app_snapshot') is not None:
+            from job_apps import capture
+            meta['app_snapshot'] = capture(spec['app_snapshot'])
+            store.write_json(jid + '/meta.json', meta)
         request = read_cancel(store, jid)
         if request:
             meta["cancel"] = _cancellation(request, meta)

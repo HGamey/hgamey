@@ -458,11 +458,23 @@ class Jobs:
             return re.sub(r"@in/", jin + "/", a)
 
         exe, cwd = self.bins[binname]
-        if spec.get("inputs", {}).get("cwd") == "input":
+        adb_args = iter(argv)
+        if binname == "adb":
+            for arg in adb_args:
+                if arg in ("-s", "-t", "-H", "-P", "-L", "--one-device"):
+                    next(adb_args, None)
+                elif not arg.startswith("-"):
+                    break
+            else:
+                arg = None
+            pulling = arg == "pull"
+        else:
+            pulling = False
+        if pulling or spec.get("inputs", {}).get("cwd") == "input":
             # Preserve a configured relative executable when changing its cwd.
             if not os.path.isabs(exe) and os.sep in exe:
                 exe = os.path.abspath(os.path.join(cwd, exe))
-            cwd = jin
+            cwd = jout if pulling else jin
         if spec.get("exe"):  # 用上传的可执行替换（测未合并分支）；只能指向本任务的 in 目录
             exe = os.path.realpath(sub(spec["exe"]))
             if not exe.startswith(os.path.realpath(jin) + "/") or not os.path.isfile(exe):

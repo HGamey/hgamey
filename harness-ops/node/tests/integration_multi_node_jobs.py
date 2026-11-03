@@ -32,6 +32,14 @@ class RoutedLocks(unittest.TestCase):
             adb = node.root / 'adb'
             adb.write_text('''#!/usr/bin/env python3
 import json,os,socket,sys
+observations = {'dumpsys window': 'mCurrentFocus=Window{a u0 test.foreground/.Main}',
+                'ps -A -o NAME': 'NAME\\ntest.foreground\\ntest.background',
+                'pm list packages -3': 'package:test.foreground\\npackage:test.background'}
+command = sys.argv[-1].split('\\n', 1)[0]
+if command in observations:
+    print(observations[command])
+    print('__PF_APP_STATUS__0')
+    sys.exit(0)
 s=socket.create_connection(('127.0.0.1',int(os.environ['FIXTURE_PORT'])))
 s.sendall((json.dumps(sys.argv[1:])+'\\n').encode())
 s.recv(1)
@@ -101,6 +109,9 @@ print('fake-adb-complete')
         first = center.jobs.center.targets.by_request('real-model')
         self.assertEqual(first['execution_node_id'], worker.jobs.node_id)
         self.adb_entered('USB-B')
+        apps = worker.jobs.status(first['id'])['app_snapshot']['devices'][0]
+        self.assertEqual(apps['foreground'], 'test.foreground')
+        self.assertEqual(apps['running_third_party'], ['test.background', 'test.foreground'])
         self.assertFalse(self.probe(worker, 'USB-B-wifi'))
         self.assertFalse(self.probe(worker))
         self.assertTrue(self.probe(worker, 'different-phone'))

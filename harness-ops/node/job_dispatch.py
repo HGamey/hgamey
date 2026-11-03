@@ -16,6 +16,7 @@ from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
 from node_session import recovery_source_out, SessionError
 import job_runtime
+import job_apps
 import job_budget
 import job_capacity
 import job_events
@@ -419,9 +420,16 @@ class JobDispatch:
             env["PF_RECOVERY_OUT"] = recovery_out
         if "phonefarm" in self.jobs.bins:
             env["PHONEFARM_BIN"] = self.jobs.bins["phonefarm"][0]
+        serials = job_apps.targets(spec, observation)
+        app_snapshot = {}
+        if serials is not None:
+            program, cwd = self.jobs.bins.get('phonefarm', (None, None))
+            if program is not None and not os.path.isabs(program) and os.sep in program:
+                program = os.path.abspath(os.path.join(cwd, program))
+            app_snapshot['app_snapshot'] = {'serials': serials, 'phonefarm': program}
         try:
             proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"],
-                                      env=env, execution_policy=policy,
+                                      env=env, execution_policy=policy, **app_snapshot,
                                       **({"time_budget": spec["time_budget"]} if "time_budget" in spec else {}),
                                       **({"disk_guard": spec["disk_guard"]} if "disk_guard" in spec else {}),
                                       service_at_launch=getattr(self.jobs, "service_at_launch", None))

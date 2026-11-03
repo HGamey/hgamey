@@ -100,7 +100,12 @@
           const link = el('a', `任务 ${ref.job_id}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(ref.job_id)}`); item.append(link);
         }
       } else if (ref.kind === 'attachment' && ref.node_id === local) {
-        item.append(/^video\//.test(ref.content_type || '') ? videoFigure(ref, attachmentPath(ref)) : imageFigure(ref, ref.filename, attachmentPath(ref)));
+        if (/^video\//.test(ref.content_type || '')) item.append(videoFigure(ref, attachmentPath(ref)));
+        else if (/^image\//.test(ref.content_type || '')) item.append(imageFigure(ref, ref.filename, attachmentPath(ref)));
+        else {
+          const link = el('a', ref.filename);
+          link.href = HGTarget.url(attachmentPath(ref)); link.download = ref.filename; item.append(link);
+        }
       } else if (ref.kind === 'external') item.append(el('span', ref.locator));
       else if (['result', 'result_source'].includes(ref.kind) && ref.node_id === local) {
         const link = el('a', `结果 ${ref.result_id}${ref.source_name ? ` · 来源 ${ref.source_name}` : ''}`);
