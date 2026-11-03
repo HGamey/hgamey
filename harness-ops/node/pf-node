@@ -25,6 +25,7 @@ Agent 每轮从这里开始（最短完整路径）：
   --experiment 不能与 --inputs 同用：代码取自固定提交，输入走脚本参数；短提交号唯一时接受。
 
   pf-node phonefarm eval --request r.json --json --lock-label judge
+  pf-node phonefarm gray-layer --help       # 只读帮助，不创建任务、不占手机或运行名额
   pf-node -o ./evidence phonefarm eval --request r.json --out @out/ev
   pf-node --research <研究> --detach adb -s 91253241019A shell 'su -c "cat /sys/class/kgsl/kgsl-3d0/max_pwrlevel"'
   pf-node adb -s <串号> pull /sdcard/capture.png capture.png  # pull 的相对路径落在任务 out，可用 artifacts 读取
@@ -1415,6 +1416,15 @@ def main():
             raise SystemExit(1)
         raise
     URL, TOKEN = TARGET.url, TARGET.token
+    if (args[0] == "phonefarm" and args[-1] in ("--help", "-h") and exe is None and not routing
+            and all(not word.startswith("-") for word in args[1:-1])):
+        # Only command words followed by help: an option value named --help
+        # keeps the program's normal argument parsing.
+        query = urllib.parse.urlencode([("command", word) for word in args[1:-1]])
+        reply = json.loads(call("GET", "/phonefarm/help?" + query, attempts=1))
+        sys.stdout.write(reply["stdout"])
+        sys.stderr.write(reply["stderr"])
+        sys.exit(reply["exit"])
     if args[0] == "doctor":
         if (request_id is not None or inputs_path is not None or resources or device_access is not None
                 or recovery_for is not None or execution_policy is not None or time_budget is not None

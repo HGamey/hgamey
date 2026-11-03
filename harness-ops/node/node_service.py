@@ -1262,6 +1262,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def _read_get(self, parts, q, dashboard=False):
             try:
+                if parts == ["phonefarm", "help"]:
+                    executable, cwd = jobs.bins["phonefarm"]
+                    reply = subprocess.run([executable, "help", *q.get("command", [])], cwd=cwd,
+                                           env=jobs.pf_env, stdin=subprocess.DEVNULL,
+                                           capture_output=True, text=True)
+                    return self._send(200, {"node_id": node.node_id, "stdout": reply.stdout,
+                                            "stderr": reply.stderr, "exit": reply.returncode})
                 if parts[:1] == ["live"]:
                     if len(parts) != 2 or parts[1] not in {"status", "frame", "stream"}:
                         return self._send(404, {"code": "live_operation_not_found", "error": "no such live observation operation"})
