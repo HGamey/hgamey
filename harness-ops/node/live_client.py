@@ -3,6 +3,7 @@ import argparse
 import http.client
 import json
 from pathlib import Path
+import time
 import urllib.error
 from urllib.parse import urlencode
 
@@ -61,9 +62,11 @@ def main(target, argv):
                   **({"device_binding": declared} if declared else {})}
         with target.opener.open(target.request("GET", "/live/frame" + suffix), timeout=20) as response:
             metadata = {key: response.headers.get(key) for key in ("X-Frame-Seq", "X-Frame-At", "X-Frame-Mode")}
+            frame_at = metadata.get("X-Frame-At")
+            frame_age = None if frame_at is None else round(max(0, time.time() - float(frame_at)), 3)
             if response.status == 204:
                 print(json.dumps({**result, "state": "no_frame", "saved_to": None, "bytes": 0,
-                                  "frame_headers": metadata}, ensure_ascii=False))
+                                  "frame_age_seconds": frame_age, "frame_headers": metadata}, ensure_ascii=False))
                 return
             if response.headers.get_content_type() != "image/jpeg":
                 raise ValueError("frame response is not JPEG")
@@ -76,8 +79,9 @@ def main(target, argv):
         output = Path(args.output)
         with output.open("xb") as destination:
             destination.write(raw)
-        print(json.dumps({**result, "state": "frame", "saved_to": str(output.absolute()),
-                          "bytes": len(raw), "frame_headers": metadata}, ensure_ascii=False))
+        state = "stale_frame" if metadata.get("X-Frame-Mode") == "stale" else "frame"
+        print(json.dumps({**result, "state": state, "saved_to": str(output.absolute()),
+                          "bytes": len(raw), "frame_age_seconds": frame_age, "frame_headers": metadata}, ensure_ascii=False))
     except (TargetError, urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as error:
         if isinstance(error, TargetError):
             code, message = error.code, str(error)

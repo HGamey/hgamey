@@ -377,14 +377,21 @@ def handle(dash, h, sub, query):
 
 
 def _frame(dash, h, s, q):
-    try:
-        after = int((q.get("after") or ["0"])[0])
-    except ValueError:
-        after = 0
-    f = s.wait_frame(after, 8)
+    one_shot = "after" not in q
+    if one_shot:
+        with s.cond:
+            after = s.seq
+            f = s.wait_frame(after, 8)
+    else:
+        try:
+            after = int(q["after"][0])
+        except ValueError:
+            after = 0
+        f = s.wait_frame(after, 8)
     if f is None:
         return dash._send(h, 503, {"error": s.error or "还没有画面"})
-    dash._send(h, 200, f.jpeg, "image/jpeg", extra={"X-Frame-Seq": str(f.seq), "X-Frame-Mode": f.mode,
+    mode = "stale" if one_shot and f.seq <= after else f.mode
+    dash._send(h, 200, f.jpeg, "image/jpeg", extra={"X-Frame-Seq": str(f.seq), "X-Frame-Mode": mode,
                                                    "X-Frame-At": f"{f.at:.3f}"})
 
 

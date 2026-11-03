@@ -1,6 +1,8 @@
 """Live viewers share PF observations and never bypass a busy device domain."""
 import sys
+import contextlib
 import http.client
+import io
 import json
 import tempfile
 import threading
@@ -9,11 +11,13 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlencode
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from email.message import Message
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dash_live import CaptureError, LiveHub, PFBackend, handle
+from dash_live import CaptureError, LiveHub, PFBackend, _frame, handle
+import live_client
 from node_read import NodeRead
 from node_service import Jobs, make_handler, readonly_token
 
@@ -130,6 +134,29 @@ class HubTests(unittest.TestCase):
         self.assertEqual(second.status()["frame_at"], CAPTURED_AT)
         self.assertEqual(second.viewers, 0)
 
+    def test_one_shot_frame_waits_for_post_request_capture(self):
+        old = b"\xff\xd8old\xff\xd9"
+        backend = FakeBackend([(old, CAPTURED_AT)])
+        hub = self.hub(clear, backend)
+        hub.interval_s = 60
+        stream = hub.open("emu")
+        self.addCleanup(self.stop, stream, backend)
+        cached = stream.wait_frame(0, 1)
+        self.assertEqual((cached.seq, cached.jpeg), (1, old))
+        responses = []
+        dash = SimpleNamespace(_send=lambda h, *args, **kw: responses.append((args, kw)))
+        publisher = threading.Thread(target=lambda: (time.sleep(.05), stream.publish(JPEG, CAPTURED_AT + 20)))
+        publisher.start()
+        try:
+            _frame(dash, None, stream, {})
+        finally:
+            publisher.join(2)
+        self.assertFalse(publisher.is_alive())
+        self.assertEqual(responses[0][0][:2], (200, JPEG))
+        headers = responses[0][1]["extra"]
+        self.assertEqual((headers["X-Frame-Seq"], headers["X-Frame-At"], headers["X-Frame-Mode"]),
+                         ("2", f"{CAPTURED_AT + 20:.3f}", "live"))
+
     def test_held_unknown_recovery_and_queue_never_call_backend(self):
         states = {
             # A different alias/serial is still in the current global domain.
@@ -174,6 +201,49 @@ class HubTests(unittest.TestCase):
         self.assertEqual(stream.seq, 1)
         self.assertEqual(stream.status()["frame_at"], CAPTURED_AT)
         self.assertIn("writer acquired", stream.status()["error"])
+        responses = []
+        dash = SimpleNamespace(_send=lambda h, *args, **kw: responses.append((args, kw)))
+        with patch.object(stream, "wait_frame", return_value=frame) as waiting:
+            _frame(dash, None, stream, {})
+        waiting.assert_called_once_with(1, 8)
+        args, options = responses[0]
+        self.assertEqual(args[:2], (200, frame.jpeg))
+        self.assertEqual(options["extra"]["X-Frame-At"], f"{CAPTURED_AT:.3f}")
+        self.assertEqual(options["extra"]["X-Frame-Mode"], "stale")
+        self.assertEqual(stream.frame, frame)
+
+    def test_cli_marks_stale_frame_and_reports_age(self):
+        for mode, state in (("live", "frame"), ("stale", "stale_frame")):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "frame.jpg"
+                headers = Message()
+                headers["Content-Type"] = "image/jpeg"
+                headers["Content-Length"] = str(len(JPEG))
+                headers["X-Frame-Seq"] = "2"
+                headers["X-Frame-At"] = f"{time.time() - 120:.3f}"
+                headers["X-Frame-Mode"] = mode
+
+                response_headers = headers
+
+                class Response:
+                    status = 200
+                    headers = response_headers
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *_):
+                        pass
+                    def read(self, _limit):
+                        return JPEG
+
+                target = SimpleNamespace(expected_node_id="a" * 32, opener=SimpleNamespace(open=Mock(return_value=Response())),
+                                         require_write=Mock(), request=Mock(return_value=object()))
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    live_client.main(target, ["frame", "emu", "--output", str(output)])
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(result["state"], state)
+                self.assertGreaterEqual(result["frame_age_seconds"], 119)
+                self.assertEqual(output.read_bytes(), JPEG)
 
     def test_bound_capture_keeps_scope_cache_and_legacy_global(self):
         domain = "a" * 32
@@ -250,12 +320,12 @@ else:
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
 
-                def request(operation, *, token=readonly_token(admin), pin=node.node_id):
+                def request(operation, *, token=readonly_token(admin), pin=node.node_id, query_text=query):
                     connection = http.client.HTTPConnection(*server.server_address, timeout=4)
                     headers = {"Authorization": "Bearer " + token}
                     if pin is not None:
                         headers["X-Expected-Node-ID"] = pin
-                    connection.request("GET", "/live/" + operation + "?" + query, headers=headers)
+                    connection.request("GET", "/live/" + operation + "?" + query_text, headers=headers)
                     response = connection.getresponse()
                     result = response.status, dict(response.getheaders()), response.read()
                     connection.close()
@@ -268,7 +338,7 @@ else:
                     code, _, body = request("status")
                     self.assertEqual(code, 200)
                     self.assertEqual(json.loads(body)["devices"][0]["device_binding"], bound)
-                    code, headers, body = request("frame")
+                    code, headers, body = request("frame", query_text=query + "&after=0")
                     self.assertEqual((code, body), (200, JPEG))
                     self.assertEqual(headers["X-Frame-At"], f"{CAPTURED_AT:.3f}")
                     self.assertEqual(len((root / "calls").read_text().splitlines()), 2)
