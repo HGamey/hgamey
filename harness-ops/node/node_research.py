@@ -24,7 +24,7 @@ MAX_WRITE = 128 << 10
 ATTACHMENT_MAX = 16 << 20
 ATTACHMENT_LIMITS = {"image/png": 16 << 20, "image/jpeg": 16 << 20, "image/svg+xml": 16 << 20,
                      "video/mp4": 128 << 20, "video/webm": 128 << 20,
-                     "application/json": 1 << 20, "text/plain": 1 << 20}
+                     "application/json": 16 << 20, "text/plain": 16 << 20}
 ATTACHMENT_TYPES = set(ATTACHMENT_LIMITS)
 AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")  # same rule as node_agents.NAME
 STATES = {

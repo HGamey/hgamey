@@ -58,7 +58,7 @@ direction add 把 --based-on 写成 data.based_on={direction_id,job_id}；方向
 KIND 为 research/direction/request/feedback/note。research list 必须带 KIND，可选值同前；FILE 只含 data JSON 对象，至多 64 KiB，不含写入 envelope。
 research 列表可用 --follows <研究ID> 只取它的接续任务。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
---attach 直接附本机 PNG、JPEG、SVG、MP4、WebM、JSON 或 TXT，可重复；图片至多 16 MiB，视频至多 128 MiB，JSON/TXT 至多 1 MiB。实验 Python 只保证有标准库。
+--attach 直接附本机 PNG、JPEG、SVG、MP4、WebM、JSON 或 TXT，可重复；图片、JSON/TXT 至多 16 MiB，视频至多 128 MiB。实验 Python 只保证有标准库。
 --ask 把留言标为问题；首页列出未回复问题，有 reply_to 回复后关闭，agent 继续做其他方向。
 update FILE 只写要改的字段，没写的保持第 N 版值；显式 null 清空可空字段，必填字段不能清空。回执 changed_fields 列出实际变更。
 update 是带原 revision 的并发更新，必须说明理由；feedback 不可更新，修正用新 ID 与 supersedes。
@@ -90,7 +90,7 @@ MAX_BODY = 128 << 10
 MAX_RESPONSE = 8 << 20
 MEDIA_LIMITS = {"image/png": 16 << 20, "image/jpeg": 16 << 20,
                 "video/mp4": 128 << 20, "video/webm": 128 << 20}
-ATTACHMENT_LIMITS = {**MEDIA_LIMITS, "image/svg+xml": 16 << 20, "application/json": 1 << 20, "text/plain": 1 << 20}
+ATTACHMENT_LIMITS = {**MEDIA_LIMITS, "image/svg+xml": 16 << 20, "application/json": 16 << 20, "text/plain": 16 << 20}
 ATTACHMENT_EXTENSIONS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                          ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm", ".json": "application/json", ".txt": "text/plain"}
 

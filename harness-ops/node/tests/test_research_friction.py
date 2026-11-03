@@ -1,6 +1,7 @@
 """Researcher reports F31/F32/F33, through the shipped HTTP and CLI paths."""
 import http.client
 import json
+from pathlib import Path
 import unittest
 
 import test_core_flow_web_cli as fixture
@@ -79,6 +80,29 @@ class ResearchFrictionTests(unittest.TestCase):
             expect(block).to_be_visible()
             expect(block.locator('img')).to_have_count(0)
             expect(block.locator('a[download="qa_report.json"]')).to_have_text('qa_report.json')
+
+    def test_notes_attach_sixteen_mib_json_and_text_without_loading_them_in_the_page(self):
+        for filename in ('manifest.json', 'labels.txt'):
+            with self.subTest(filename=filename):
+                # A valid JSON string is also a text file, exactly at the requested limit.
+                raw = b'"' + b'x' * ((16 << 20) - 2) + b'"'
+                path = self.env.tmp / filename
+                path.write_bytes(raw)
+                note = self.run_cli('agent-a', 'note', 'sr-friction', '数据集标签',
+                                    '--attach', str(path))['object']['id']
+                with self.env._browser_page() as page:
+                    from playwright.sync_api import expect
+                    attachment_reads = []
+                    page.on('request', lambda request: attachment_reads.append(request.url)
+                            if '/research-attachments/' in request.url else None)
+                    page.goto('http://%s:%d/dash/research?kind=research&id=sr-friction' % self.env.address)
+                    link = page.locator('#note-' + note).locator(f'a[download="{filename}"]')
+                    expect(link).to_have_text(filename)
+                    self.assertEqual(attachment_reads, [], 'opening the note must not load attachment contents')
+                    with page.expect_download() as download:
+                        link.click()
+                    self.assertEqual(download.value.suggested_filename, filename)
+                    self.assertEqual(Path(download.value.path()).read_bytes(), raw)
 
 
 if __name__ == "__main__":

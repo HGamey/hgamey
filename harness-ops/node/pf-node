@@ -859,6 +859,7 @@ def download_out(jid, rel, part_dir, *, prefix=None, source_binding=None):
     if source_binding:
         query["source_revision"] = source_binding["source_revision"]
     base = f"{prefix or '/jobs'}/{jid}/out?" + (urllib.parse.urlencode(query) + "&" if query else "")
+    print("pf-node: 正在准备导出（首次下载目录需在节点打包）…", file=sys.stderr, flush=True)
     for restart in range(5):
         try:
             raw = call("GET", base + "meta=1", timeout=600, attempts=1, raise_errors=True)

@@ -57,6 +57,42 @@ def endpoint(jobs):
 
 
 class ExportCacheTests(unittest.TestCase):
+    def test_cli_announces_export_preparation_before_the_first_directory_is_packed(self):
+        with tempfile.TemporaryDirectory(prefix="export-progress-") as temporary, ExitStack() as cleanup:
+            root = Path(temporary)
+            jobs = Jobs(str(root / "node"), {}, export_cache_root=str(root / "cache"))
+            cleanup.callback(jobs._read_root.close)
+            cleanup.callback(jobs.export_cache.close)
+            out = Path(jobs.path(JID, "out"))
+            out.mkdir(parents=True)
+            raw = b"dataset fixture bytes"
+            (out / "dataset.bin").write_bytes(raw)
+            jobs._write_meta(JID, {"id": JID, "bin": "fixture", "started": 1, "exit": 0})
+            errors = root / "stderr"
+            seen_before_packing = []
+            archive = node_service.archive_directory
+
+            def packing(*args, **kwargs):
+                # The CLI cannot receive metadata until this returns. Observe a
+                # real stderr file here, so a buffered or late message fails too.
+                seen_before_packing.append(errors.read_text())
+                return archive(*args, **kwargs)
+
+            with endpoint(jobs) as (url, request):
+                identity = json.loads(request("/node")[2])
+                env = {"PATH": os.defpath, "HOME": str(root), "NO_PROXY": "*", "LANG": "C.UTF-8",
+                       "PF_NODE_URL": url, "PF_NODE_ID": identity["node_id"], "PF_NODE_TOKEN": TOKEN}
+                with errors.open("w") as stderr, patch.object(node_service, "archive_directory", packing):
+                    cli = subprocess.run([sys.executable, str(NODE / "pf-node"), "--out-dir",
+                                          str(root / "download"), "out", JID], env=env, cwd=root,
+                                         stdout=subprocess.PIPE, stderr=stderr, timeout=10)
+                self.assertEqual(cli.returncode, 0, errors.read_text())
+                self.assertEqual(len(seen_before_packing), 1)
+                self.assertIn("正在准备导出", seen_before_packing[0])
+                self.assertIn("打包", seen_before_packing[0])
+                self.assertIn("sha256 已校验", errors.read_text())
+                self.assertEqual((root / "download/dataset.bin").read_bytes(), raw)
+
     def test_overview_and_clear_all_are_bounded_and_regenerable_only(self):
         with tempfile.TemporaryDirectory(prefix="export-overview-") as temporary, ExitStack() as cleanup:
             root = Path(temporary).resolve()
