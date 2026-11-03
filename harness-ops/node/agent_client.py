@@ -148,6 +148,9 @@ def render_checkin(value):
         lines.append(f"我负责的研究：{item['research_id']} {item['title']}（{item['state']}）")
     for item in value["research"]["unclaimed"]:
         lines.append(f"可认领：{item['research_id']} {item['title']} → pf-node research claim {item['research_id']}")
-    lines.append("每轮做法：")
-    lines += [f" {index}. {step}" for index, step in enumerate(value["loop"], 1)]
+    if value["loop"]:
+        lines.append("每轮做法：")
+        lines += [f" {index}. {step}" for index, step in enumerate(value["loop"], 1)]
+    else:
+        lines.append(value.get("loop_hint", "每轮做法：用 pf-node checkin --rules 查看全文。"))
     return "\n".join(lines)

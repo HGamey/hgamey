@@ -215,8 +215,9 @@ class CoreFlowTests(unittest.TestCase):
                               text=True, timeout=60, cwd=self.tmp)
         return done.returncode, done.stdout, done.stderr
 
-    def duties(self, token):
-        code, out, err = self.pf(token, "checkin", "--json")
+    def duties(self, token, rules=False):
+        args = ("checkin", "--rules", "--json") if rules else ("checkin", "--json")
+        code, out, err = self.pf(token, *args)
         self.assertEqual(code, 0, err)
         return json.loads(out)
 
@@ -614,6 +615,19 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(first_text[0], 0, first_text[2])
         self.assertFalse(any(step.startswith("[新]") for step in first_json["loop"]))
         self.assertNotIn("[新]", first_text[1].split("每轮做法：", 1)[1])
+        self.assertIn(agent_duties.LOOP[0], first_text[1])
+
+        repeated_json = self.duties(tokens["agent-a"])
+        self.assertEqual(repeated_json["loop"], [])
+        self.assertIn("checkin --rules", repeated_json["loop_hint"])
+        repeated_text = self.pf(tokens["agent-b"], "checkin")
+        self.assertEqual(repeated_text[0], 0, repeated_text[2])
+        self.assertNotIn(agent_duties.LOOP[0], repeated_text[1])
+        self.assertIn("每轮做法：用 pf-node checkin --rules 查看全文。", repeated_text[1])
+        self.assertEqual(self.duties(tokens["agent-a"], rules=True)["loop"], agent_duties.LOOP)
+        rules_text = self.pf(tokens["agent-b"], "checkin", "--rules")
+        self.assertEqual(rules_text[0], 0, rules_text[2])
+        self.assertIn(agent_duties.LOOP[0], rules_text[1])
 
         changed_loop = list(agent_duties.LOOP)
         changed_loop[5] += "（已修改）"
@@ -622,7 +636,7 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(changed_json["loop"][5], "[新] " + changed_loop[5])
             self.assertEqual([step for step in changed_json["loop"] if step.startswith("[新]")],
                              [changed_json["loop"][5]])
-            self.assertFalse(any(step.startswith("[新]") for step in self.duties(tokens["agent-a"])["loop"]))
+            self.assertFalse(any(step.startswith("[新]") for step in self.duties(tokens["agent-a"], rules=True)["loop"]))
 
             changed_text = self.pf(tokens["agent-b"], "checkin")
             self.assertEqual(changed_text[0], 0, changed_text[2])
@@ -631,6 +645,26 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(loop_text.count("[新]"), 1)
             next_text = self.pf(tokens["agent-b"], "checkin")
             self.assertNotIn("[新]", next_text[1].split("每轮做法：", 1)[1])
+            self.assertNotIn(changed_loop[0], next_text[1])
+            self.assertIn("checkin --rules", next_text[1])
+
+    def test_status_duty_ignores_idle_or_paused_research_without_active_jobs(self):
+        self.assertEqual(self.cli("POST", "/agents", {"name": "status-agent"})[0], 201)
+        token = self.cli("POST", "/agents/status-agent/token", {})[1]["token"]
+        rid = "sr-status-duty"
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+            "create-status-duty", {"title": "状态提醒条件", "objective": "空闲时不催状态"}))[0], 201)
+        self.assertEqual(self.pf(token, "research", "claim", rid)[0], 0)
+        self.assertIn("post_status", [item["kind"] for item in self.duties(token)["duties"]])
+        for state in ("idle", "paused"):
+            with self.subTest(state=state):
+                current = self.cli("GET", f"/research-state/research/{rid}")[1]
+                source = self.tmp / f"status-{state}.json"
+                source.write_text(json.dumps({"state": state, "state_reason": "当前没有工作进行"}))
+                code, _, err = self.pf(token, "research", "update", "research", rid, str(source),
+                                       "--revision", str(current["revision"]), "--reason", "暂停活动")
+                self.assertEqual(code, 0, err)
+                self.assertNotIn("post_status", [item["kind"] for item in self.duties(token)["duties"]])
 
     def test_note_style_is_shared_by_checkin_help_and_skill(self):
         self.assertLessEqual(len(NOTE_STYLE), 200)
@@ -908,7 +942,7 @@ class CoreFlowTests(unittest.TestCase):
         notes = self.web("GET", "/research-state/note?research_id=sr-collab&limit=10")[1]["items"]
         self.assertIs(next(item for item in notes if item["id"] == "n-collab")["unanswered"], True)
         self.assertNotIn("n-collab", [item.get("target") for item in self.duties(tokens["agent-a"])["duties"]])
-        self.assertIn(COLLABORATION, self.duties(tokens["agent-b"])["loop"])
+        self.assertIn(COLLABORATION, self.duties(tokens["agent-b"], rules=True)["loop"])
         self.assertIn(COLLABORATION, self.pf(tokens["agent-b"], "research", "--help")[1])
         self.assertIn(COLLABORATION, (NODE.parent / "skills/hgamey-research/SKILL.md").read_text(encoding="utf-8"))
 

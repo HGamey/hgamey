@@ -203,7 +203,8 @@ def duties(jobs, name, now=None):
                          "command": f"pf-node status {row['job_id']}"})
 
     status = entry.get("status")
-    if (mine or active) and (status is None or now - status["at"] > STATUS_STALE_SECONDS):
+    if (active or any(data["state"] == "active" for data in mine.values())) and (
+            status is None or now - status["at"] > STATUS_STALE_SECONDS):
         owed.append({"kind": "post_status", "text": "状态" + ("还没报过" if status is None else "超过 30 分钟没更新"),
                      "command": f"pf-node agents status {name} \"<在做什么>\""})
     for rid, data in mine.items():
@@ -238,8 +239,13 @@ def duties(jobs, name, now=None):
             "loop": loop}
 
 
-def checkin(jobs, name):
+def checkin(jobs, name, rules=False):
     """Duties as of now, then remember the check-in so the next one only marks newer items unread."""
     value = duties(jobs, name)
+    show_rules = rules or value["previous_checkin_at"] is None or any(
+        step.startswith("[新] ") for step in value["loop"])
+    if not show_rules:
+        value["loop"] = []
+        value["loop_hint"] = "每轮做法：用 pf-node checkin --rules 查看全文。"
     jobs.agents.record_checkin(name, value["event_head"], _loop_hashes())
     return value

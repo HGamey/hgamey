@@ -2287,7 +2287,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(403, {"code": "agent_token_required",
                                                 "error": "check in with this agent's own token (get an invite, then pf-node join)"})
                     try:
-                        return self._send(200, agent_duties.checkin(jobs, parts[1]))
+                        request = json.loads(body or b"{}")
+                        if not isinstance(request, dict):
+                            raise ValueError("checkin body must be an object")
+                        return self._send(200, agent_duties.checkin(jobs, parts[1], rules=request.get("rules") is True))
                     except AgentError as error:
                         return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if len(parts) == 3 and parts[0] == "agents" and parts[2] == "token":
