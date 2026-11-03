@@ -1,10 +1,12 @@
 """Outbound node enrollment and calls; the center never dials the worker."""
+import base64
 import http.client
 import json
 import logging
 import socket
 import threading
-from urllib.parse import urlsplit, urlencode
+from urllib.parse import urlsplit, urlencode, unquote
+import urllib.request
 
 from artifact_io import SafeRoot
 from node_directory import REFRESH_S
@@ -15,7 +17,21 @@ def exchange(url, method, path, body=b'', headers=None, *, timeout=35, connectio
              stop=None, max_bytes=2 << 20):
     endpoint = urlsplit(url)
     cls = http.client.HTTPSConnection if endpoint.scheme == 'https' else http.client.HTTPConnection
-    connection = cls(endpoint.hostname, endpoint.port, timeout=35)
+    proxy = (urllib.request.getproxies().get('https') if endpoint.scheme == 'https'
+             and not urllib.request.proxy_bypass(endpoint.hostname) else None)
+    if proxy:
+        proxy = urlsplit(proxy if '://' in proxy else 'http://' + proxy)
+        if proxy.scheme != 'http' or not proxy.hostname:
+            raise ValueError('HTTPS node connections require an HTTP CONNECT proxy')
+        connection = cls(proxy.hostname, proxy.port or 80, timeout=35)
+        proxy_headers = {}
+        if proxy.username is not None:
+            credential = unquote(proxy.username) + ':' + unquote(proxy.password or '')
+            proxy_headers['Proxy-Authorization'] = 'Basic ' + base64.b64encode(credential.encode()).decode()
+        # HTTPSConnection wraps the CONNECT tunnel in TLS and verifies the center hostname.
+        connection.set_tunnel(endpoint.hostname, endpoint.port or 443, headers=proxy_headers)
+    else:
+        connection = cls(endpoint.hostname, endpoint.port, timeout=35)
     sock = None
     try:
         connection.connect()
@@ -26,7 +42,8 @@ def exchange(url, method, path, body=b'', headers=None, *, timeout=35, connectio
                 if stop.is_set():
                     raise ConnectionError('node connector is closed')
                 connections.add(sock)
-        connection.request(method, endpoint.path.rstrip('/') + path, body=body, headers=headers or {})
+        connection.request(method, endpoint.path.rstrip('/') + path, body=body,
+                           headers={'User-Agent': 'phonefarm-target/1', **(headers or {})})
         response = connection.getresponse()
         length = response.length
         data = response.read(max_bytes + 1)
