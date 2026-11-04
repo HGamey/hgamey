@@ -174,6 +174,67 @@ class ExperimentJobTests(unittest.TestCase):
         self.assertNotEqual(status["exit"], 0)
         self.assertEqual(status["outcome"], "failed", status)
 
+    def test_only_commits_a_branch_or_tag_reaches_run(self):
+        source = self.tmp / "experiments"
+        git("checkout", "-qb", "ext/team/topic", cwd=source)
+        (source / "probe" / "step.txt").write_text("one\n")
+        git("add", ".", cwd=source)
+        git("commit", "-qm", "step one", cwd=source)
+        inner = git("rev-parse", "HEAD", cwd=source)  # on the branch, not its tip
+        (source / "probe" / "step.txt").write_text("two\n")
+        git("commit", "-qam", "step two", cwd=source)
+        tip = git("rev-parse", "HEAD", cwd=source)
+        git("checkout", "-q", "--detach", "main", cwd=source)
+        (source / "probe" / "tagged.txt").write_text("tag\n")
+        git("add", ".", cwd=source)
+        git("commit", "-qm", "tag only", cwd=source)
+        tagged = git("rev-parse", "HEAD", cwd=source)
+        git("tag", "-a", "-m", "release", "v1", cwd=source)
+        git("checkout", "-q", "--detach", "main", cwd=source)
+        (source / "probe" / "run.py").write_text("open('/dev/null').write('fork')\n")
+        git("commit", "-qam", "fork commit", cwd=source)
+        fork = git("rev-parse", "HEAD", cwd=source)
+        git("checkout", "-q", "main", cwd=source)
+        # The remote holds the fork commit the way GitHub does: as a pull request ref, not a branch or tag.
+        git("push", "-q", str(self.remote), "ext/team/topic", "v1", f"{fork}:refs/pull/1/head", cwd=source)
+
+        for ref, commit in (("ext/team/topic", tip), (inner, inner), ("v1", tagged), (tagged, tagged)):
+            with self.subTest(ref=ref):
+                code, jid, err = self.pf("--experiment", ref, "--device-access", "none", "--detach",
+                                         "experiment", "probe/run.py")
+                self.assertEqual(code, 0, err)
+                status = self.finished(jid)
+                self.assertEqual((status["exit"], status["experiment"]), (0, {"commit": commit}), status)
+
+        for commit in (fork, "0123456789abcdef0123456789abcdef01234567"):
+            with self.subTest(commit=commit):
+                code, _, err = self.pf("--experiment", commit, "--device-access", "none", "--detach",
+                                       "experiment", "probe/run.py")
+                self.assertNotEqual(code, 0)
+                self.assertIn(f"实验提交 {commit} 不在实验仓库", err)
+                self.assertIn("未提交", err)
+
+        # A client that skips the check still cannot run it, even with the object already in the node's mirror.
+        git("-C", self.jobs.experiment_mirror, "fetch", "-q", str(self.remote), "refs/pull/1/head")
+        job = self.jobs.start({"bin": "experiment", "argv": ["probe/run.py"], "device_access": "none",
+                               "experiment": {"commit": fork}}, b"")
+        jid = job["job"]["id"] if "job" in job else job["id"]
+        status = self.finished(jid)
+        self.assertEqual(status["outcome"], "failed", status)
+        self.assertFalse(os.path.exists(self.jobs.path(jid, "in", "experiment")))
+        self.assertIn(f"实验提交 {fork} 不在实验仓库", json.dumps(status, ensure_ascii=False))
+
+    def test_a_shallow_mirror_from_older_nodes_is_rebuilt(self):
+        mirror = self.jobs.experiment_mirror
+        os.makedirs(os.path.dirname(mirror))
+        git("init", "--bare", "-q", mirror)
+        git("-C", mirror, "fetch", "-q", "--depth=1", f"file://{self.remote}", self.commit)
+        code, jid, err = self.pf("--experiment", self.commit, "--device-access", "none", "--detach",
+                                 "experiment", "probe/run.py")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.finished(jid)["exit"], 0)
+        self.assertEqual(git("-C", mirror, "rev-parse", "--is-shallow-repository"), "false")
+
 
 if __name__ == "__main__":
     unittest.main()

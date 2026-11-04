@@ -415,13 +415,33 @@ def pack(argv):
 
 def resolve_experiment(url, ref):
     """A branch, tag or full commit of the experiments repository → the full commit the node will run."""
-    if re.fullmatch(r"[0-9a-f]{40}", ref):
-        return ref
+    full = re.fullmatch(r"[0-9a-f]{40}", ref)
     try:
         # Ask for ref^{} too: only then does ls-remote report the commit an annotated tag points to.
-        done = subprocess.run(["git", "ls-remote", url, ref, ref + "^{}"], capture_output=True, text=True, timeout=60)
+        done = subprocess.run(["git", "ls-remote", url, *(() if full else (ref, ref + "^{}"))],
+                              capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired) as error:
         sys.exit(f"pf-node: 读不到实验仓库 {url}：{error}")
+    if full:
+        # A full id is accepted only when a branch or tag reaches it: GitHub serves fork commits through
+        # the parent's URL, so an unchecked id would bypass the repository's branch rules. The node checks again.
+        if done.returncode:
+            sys.exit(f"pf-node: 读不到实验仓库 {url}：{done.stderr.strip()[-300:]}")
+        tips = (sha for sha, _, name in (line.partition("\t") for line in done.stdout.splitlines())
+                if name.startswith(("refs/heads/", "refs/tags/")))  # not refs/pull/*: those may be fork commits
+        if ref in tips:
+            return ref
+        import tempfile
+        import job_experiment
+        with tempfile.TemporaryDirectory(prefix="pf-node-experiments-") as scratch:
+            mirror = os.path.join(scratch, "experiments.git")
+            try:
+                job_experiment.fetch_refs(mirror, url, timeout=120)
+            except ValueError as error:
+                sys.exit(f"pf-node: 读不到实验仓库 {url}：{error}")
+            if not job_experiment.containing_refs(mirror, ref):
+                sys.exit("pf-node: " + job_experiment.unreachable(url, ref) + "；未提交")
+        return ref
     refs = {name: sha for sha, _, name in (line.partition("\t") for line in done.stdout.splitlines())}
     for name in (f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}"):
         if not done.returncode and name in refs:

@@ -9,6 +9,7 @@ dashboard can tie a held phone back to the job.
 import fcntl
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -16,6 +17,9 @@ DEFAULT_URL = "https://github.com/HGamey/experiments.git"
 COMMIT = re.compile(r"[0-9a-f]{40}")
 ENTRY = re.compile(r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|sh)")
 CHECKOUT = "experiment"
+# Branches and tags of the experiments repository, kept under their own namespace in the mirror.
+REFS = "refs/experiments/"
+REFSPECS = ("+refs/heads/*:" + REFS + "heads/*", "+refs/tags/*:" + REFS + "tags/*")
 
 
 def validate(spec):
@@ -39,15 +43,43 @@ def command(checkout, argv):
     return [interpreter, entry, *argv[1:]]
 
 
+def fetch_refs(mirror, url, timeout=300):
+    """Fetch every branch and tag of `url` into the bare repository `mirror`, pruning deleted ones.
+
+    Only history reachable from those refs arrives. The node never fetches a bare commit id: GitHub serves
+    any commit of the fork network through the parent's URL, which would skip the repository's branch rules.
+    """
+    if os.path.isdir(mirror) and _git("-C", mirror, "rev-parse", "--is-shallow-repository",
+                                      check=False).stdout.strip() == "true":
+        shutil.rmtree(mirror)  # older nodes fetched single commits with --depth=1; such a cache cannot answer reachability
+    if not os.path.isdir(mirror):
+        _git("init", "--bare", "-q", mirror)
+    _git("-C", mirror, "fetch", "-q", "--prune", "--no-tags", url, *REFSPECS, timeout=timeout)
+
+
+def containing_refs(mirror, commit):
+    """Branches and tags of the mirror whose history contains `commit`; empty when the mirror lacks it."""
+    done = _git("-C", mirror, "for-each-ref", "--format=%(refname)", "--contains", commit, REFS, check=False)
+    return done.stdout.split() if not done.returncode else []
+
+
+def unreachable(url, commit):
+    return (f"实验提交 {commit} 不在实验仓库 {url} 的任何分支或标签上，拒绝运行。"
+            f"只能运行实验仓库分支或标签里的提交：先推到实验仓库的分支（外部账号用 ext/<团队>/<主题>），再按分支名或提交号提交")
+
+
 def materialize(mirror, url, commit, dest, timeout=300):
-    """Unpack `commit` of the experiments repository into `dest`, fetching it into `mirror` if needed."""
+    """Unpack `commit` of the experiments repository into `dest` after checking a branch or tag reaches it."""
     os.makedirs(os.path.dirname(mirror), exist_ok=True)
     with open(mirror + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # two jobs preparing at once share one mirror
-        if not os.path.isdir(mirror):
-            _git("init", "--bare", "-q", mirror)
-        if _git("-C", mirror, "cat-file", "-e", commit + "^{commit}", check=False).returncode:
-            _git("-C", mirror, "fetch", "-q", "--no-tags", "--depth=1", url, commit, timeout=timeout)
+        try:
+            fetch_refs(mirror, url, timeout=timeout)
+        except ValueError as error:  # offline: refs fetched earlier still decide, they came from the same URL
+            if not os.path.isdir(mirror) or not containing_refs(mirror, commit):
+                raise ValueError(f"{error}；{unreachable(url, commit)}") from None
+        if not containing_refs(mirror, commit):
+            raise ValueError(unreachable(url, commit))
         os.makedirs(dest)
         archive = subprocess.Popen(["git", "-C", mirror, "archive", "--format=tar", commit],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
