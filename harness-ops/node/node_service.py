@@ -109,6 +109,11 @@ def readonly_token(admin_token):
     return hmac.new(admin_token.encode(), b"hgamey-node-readonly-v1", "sha256").hexdigest()
 
 
+def restart_later():
+    """Exit once the reply is out; the launcher starts the service again, with new code or as a joined computer."""
+    threading.Timer(0.5, lambda: os._exit(0)).start()
+
+
 def rpc_error(id_, code, message):
     return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}}
 
@@ -1131,6 +1136,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def log_message(self, *a):
             pass
+
+        def _restart(self):
+            restart_later()
 
         def _send(self, code, data=b"", ctype="application/json", extra=None):
             if isinstance(data, (dict, list)):
@@ -2300,7 +2308,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                                      selection=selection))
                 if parts == ["admin", "restart"]:  # 交给外层守护循环重新拉起（加载新代码）
                     self._send(200, {"restarting": True})
-                    threading.Timer(0.5, lambda: os._exit(0)).start()
+                    self._restart()
                     return
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:
                     data = json.loads(body or b"{}")
@@ -2491,8 +2499,9 @@ def main():
                                                                   remote=remote, canonical_host=a.canonical_host))
     connector = None
     if jobs.connection:
-        from node_connector import NodeConnector, LocalHTTP
-        connector = NodeConnector(jobs.connection, LocalHTTP(f"http://127.0.0.1:{srv.server_port}", token, jobs.node_id))
+        from node_connector import NodeConnector, LocalHTTP, just_joined
+        connector = NodeConnector(jobs.connection, LocalHTTP(f"http://127.0.0.1:{srv.server_port}", token, jobs.node_id,
+                                                             sample=just_joined(jobs.data_root)))
         connector.start()
     log(f"节点服务 {a.host}:{srv.server_port}  /mcp({len(MCP_ALLOW)} 工具)  /jobs({', '.join(sorted(bins))})"
         f"  entry={os.path.abspath(__file__)}  phonefarm={root}"

@@ -249,11 +249,17 @@ class NodeReadTests(unittest.TestCase):
                     page.fill("#invite-name", "peer")
                     page.click("#invite-submit")
                     self.assertIn("已经在用", page.text_content("#invite-message"))
-                    page.fill("#invite-name", "lab-b")
+                    page.fill("#invite-name", "lab-c")
                     page.click("#invite-submit")
-                    self.assertIn("先填安装根", page.text_content("#invite-message"))
-                    self.assertEqual(json.loads(self.request("/dash/api/node-invites", headers=steer)[2])["invites"], [],
-                                     "no code is made without an install root")
+                    page.wait_for_selector("#invite-result:not([hidden])")
+                    # Without an install root the code is for a node already running: one join code, no install command.
+                    code = page.text_content("#invite-code")
+                    self.assertTrue(code.startswith("HGJ1."), code)
+                    fields = json.loads(base64.urlsafe_b64decode(code[5:] + "=" * (-len(code[5:]) % 4)))
+                    self.assertEqual((fields["center"], fields["name"]), (base, "lab-c"))
+                    self.assertTrue(fields["invite"].startswith("hgninv_"))
+                    self.assertTrue(page.is_hidden("#invite-install"))
+                    page.fill("#invite-name", "lab-b")
                     page.fill("#invite-root", "/srv/hg node")
                     page.fill("#invite-port", "8775")
                     page.click("#invite-submit")
@@ -261,10 +267,13 @@ class NodeReadTests(unittest.TestCase):
                     # One command in the repository root installs and starts the node; no node_connector, no data dir.
                     self.assertRegex(page.text_content("#invite-command"),
                                      r"^python3 deploy\.py join --center http://127\.0\.0\.1:\d+ --invite hgninv_\S+ --name lab-b --root '/srv/hg node' --port 8775$")
+                    self.assertTrue(page.is_visible("#invite-install"))
                     listed = json.loads(self.request("/dash/api/node-invites", headers=steer)[2])["invites"]
-                    self.assertEqual([invite["note"] for invite in listed], ["lab-b"])
-                    page.wait_for_selector(f'#invite-list button[data-invite="{listed[0]["id"]}"]')
-                    page.click(f'#invite-list button[data-invite="{listed[0]["id"]}"]')
+                    self.assertEqual(sorted(invite["note"] for invite in listed), ["lab-b", "lab-c"])
+                    for invite in listed:
+                        page.wait_for_selector(f'#invite-list button[data-invite="{invite["id"]}"]')
+                        page.click(f'#invite-list button[data-invite="{invite["id"]}"]')
+                        page.wait_for_selector(f'#invite-list button[data-invite="{invite["id"]}"]', state="detached")
                     page.wait_for_selector("#invite-none:not([hidden])")
                     self.assertEqual(json.loads(self.request("/dash/api/node-invites", headers=steer)[2])["invites"], [])
 

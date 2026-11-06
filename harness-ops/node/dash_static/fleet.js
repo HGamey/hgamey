@@ -8,7 +8,7 @@
   let localIdentity = null, localQueue = null, localQueueError = '', localReceivedAt = 0, directoryKnown = false, directoryFailed = false;
   let selected = new URLSearchParams(location.hash.slice(1)).get('node') || 'local', entries = new Map();
   if (!/^[a-z0-9_-]{1,64}$/.test(selected)) selected = 'local';
-  let access = null, accessBusy = false, accessError = '', editor = null, writing = false, inviteBusy = false;
+  let access = null, accessBusy = false, accessError = '', editor = null, writing = false, inviteBusy = false, joining = false, joined = null;
   let runtimeBusy = false, runtimeNotice = '', runtimeError = false;
   let deviceRegistry = null, registryBusy = false, registryWriting = false, registryAttempted = false, registryController = null;
   let registryError = '', registryNotice = '', registryReadAt = null, deviceEditor = null;
@@ -133,13 +133,13 @@
     renderManagement();
   }
   function refreshNote() {
-    $('refresh-note').textContent = authLost ? '登录已失效，自动刷新已暂停。' : document.hidden ? '页面不可见，自动刷新已暂停。' :
+    $('refresh-note').textContent = joined ? '已接入中心，这里不再刷新。' : authLost ? '登录已失效，自动刷新已暂停。' : document.hidden ? '页面不可见，自动刷新已暂停。' :
       !$('auto-refresh').checked ? '自动刷新已关闭，可手动读取目录与快照。' : '可见时每 10 秒读取目录；其他电脑的手机需明确点击才重新采样。';
   }
   function schedule() {
     clearTimeout(timer);
     refreshNote();
-    if (disposed || document.hidden || authLost || !$('auto-refresh').checked) return;
+    if (disposed || joined || document.hidden || authLost || !$('auto-refresh').checked) return;
     timer = setTimeout(() => refresh(), Math.max(AUTO_MS, lastStartedAt + AUTO_MS - Date.now()));
   }
   async function json(path, signal, body, method = body === undefined ? 'GET' : 'POST') {
@@ -310,6 +310,10 @@
   function renderManagement() {
     const entry = remoteEntry(), writable = directoryKnown && access?.steer && HGTarget.canWrite() && !accessBusy && !writing && !registryWriting;
     $('invite-open').disabled = !writable;
+    // A center with no computers of its own can itself join a center; it then restarts as that center's computer.
+    $('join-open').hidden = !joined && !(directoryKnown && localIdentity?.role === 'center' && entries.size === 0);
+    $('join-open').disabled = $('join-submit').disabled = !writable || joining || !!joined;
+    $('join-submit').setAttribute('aria-busy', String(joining));
     $('invite-submit').disabled = !writable || inviteBusy;
     $('invite-submit').setAttribute('aria-busy', String(inviteBusy));
     $('meta-edit').disabled = !entry || !writable;
@@ -377,6 +381,7 @@
     } finally { writing = false; renderManagement(); schedule(); }
   }
   // Join codes for other computers: shown once, listed until used, revocable.
+  const joinCode = (center, invite, name) => 'HGJ1.' + btoa(JSON.stringify({center, invite, name})).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const shellWord = value => /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
   async function makeInvite() {
     if ($('invite-submit').disabled) return;
@@ -385,12 +390,14 @@
     if (name === 'local' || entries.has(name)) { message('invite-message', `「${name}」已经在用，换一个名字。`, true); return; }
     if (!(hours > 0)) { message('invite-message', '有效时长要大于 0。', true); return; }
     if (port && !(Number.isInteger(Number(port)) && Number(port) >= 1 && Number(port) <= 65535)) { message('invite-message', '端口要在 1–65535 之间。', true); return; }
-    // The installer takes only a new empty directory and checks it there; without one no code is made.
-    if (!root) { message('invite-message', '先填安装根：那台电脑上一个新的空目录。', true); $('invite-root').focus(); return; }
     inviteBusy = true; $('invite-result').hidden = true; message('invite-message', ''); renderManagement();
     try {
       const value = await post('/dash/api/node-invites', {hours, note: name});
-      $('invite-command').textContent = `python3 deploy.py join --center ${shellWord(location.origin)} --invite ${shellWord(value.code)} --name ${name} --root ${shellWord(root)}${port && Number(port) !== 8765 ? ` --port ${Number(port)}` : ''}`;
+      // A running node pastes the join code on its own page; a new computer runs the installer, which takes a new
+      // empty directory (so the command is shown only when one is given).
+      $('invite-code').textContent = joinCode(location.origin, value.code, name);
+      $('invite-command').textContent = root ? `python3 deploy.py join --center ${shellWord(location.origin)} --invite ${shellWord(value.code)} --name ${name} --root ${shellWord(root)}${port && Number(port) !== 8765 ? ` --port ${Number(port)}` : ''}` : '';
+      $('invite-install').hidden = !root;
       $('invite-result').hidden = false;
       message('invite-message', `${time(value.expires_at)} 前有效。`);
       await loadInvites();
@@ -416,10 +423,25 @@
   }
   function openInvite() {
     if ($('invite-open').disabled) return;
-    $('invite-form').hidden = false; $('invite-result').hidden = true; $('invite-command').textContent = ''; message('invite-message', '');
+    $('invite-form').hidden = false; $('invite-result').hidden = true; $('invite-command').textContent = $('invite-code').textContent = ''; message('invite-message', '');
     $('invite-name').focus(); loadInvites();
   }
-  function closeInvite() { $('invite-form').hidden = true; $('invite-command').textContent = ''; }
+  function closeInvite() { $('invite-form').hidden = true; $('invite-command').textContent = $('invite-code').textContent = ''; }
+  // This node joins the center a join code names, then restarts as its computer; its own pages stop with it.
+  async function joinCenter() {
+    if ($('join-submit').disabled) return;
+    const code = $('join-code').value.trim();
+    if (!code) { message('join-message', '先贴入接入码。', true); $('join-code').focus(); return; }
+    joining = true; message('join-message', '正在接入…'); renderManagement();
+    try {
+      joined = await post('/dash/api/center-join', {code});
+      suspend();
+      const link = el('a', '到中心查看 →'); link.href = new URL('/dash/fleet', joined.center).href;
+      $('join-message').classList.remove('task-error');
+      $('join-message').replaceChildren(`已接入 ${joined.center}，节点名 ${joined.name}。这台电脑正在作为从节点重启。`, ' ', link);
+    } catch (error) { message('join-message', error.message, true); if (error.auth) await loadAccess(); }
+    finally { joining = false; renderManagement(); }
+  }
   function processPolicyFacts(node) {
     if (!node?.capabilities?.includes('jobs.execution-policy-v1')) return [['进程执行策略能力', '未提供，执行范围未知']];
     return [['进程执行策略协议', 'jobs.execution-policy-v1'], ...[['process_group', '原进程组策略']].map(([key, label]) => {
@@ -712,11 +734,17 @@
   $('invite-open').addEventListener('click', openInvite);
   $('invite-close').addEventListener('click', closeInvite);
   $('invite-form').addEventListener('submit', event => { event.preventDefault(); makeInvite(); });
-  $('invite-copy').addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText($('invite-command').textContent); $('invite-copy').textContent = '已复制'; }
-    catch (_) { getSelection().selectAllChildren($('invite-command')); $('invite-copy').textContent = '已选中，按 Ctrl+C 复制'; }
-    setTimeout(() => { $('invite-copy').textContent = '复制命令'; }, 2000);
-  });
+  for (const [button, source] of [['invite-copy', 'invite-command'], ['invite-code-copy', 'invite-code']]) {
+    const label = $(button).textContent;
+    $(button).addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText($(source).textContent); $(button).textContent = '已复制'; }
+      catch (_) { getSelection().selectAllChildren($(source)); $(button).textContent = '已选中，按 Ctrl+C 复制'; }
+      setTimeout(() => { $(button).textContent = label; }, 2000);
+    });
+  }
+  $('join-open').addEventListener('click', () => { if (!$('join-open').disabled) { $('join-form').hidden = false; message('join-message', ''); $('join-code').focus(); } });
+  $('join-close').addEventListener('click', () => { if (!joining) $('join-form').hidden = true; });
+  $('join-form').addEventListener('submit', event => { event.preventDefault(); joinCenter(); });
   $('access-toggle').addEventListener('click', () => { if (access?.steer) setAccess(false); else { $('unlock-form').hidden = false; $('steer-password').focus(); } });
   $('unlock-form').addEventListener('submit', event => { event.preventDefault(); setAccess(true); });
   $('unlock-close').addEventListener('click', closeUnlock);
