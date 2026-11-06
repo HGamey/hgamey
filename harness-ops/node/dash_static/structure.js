@@ -1,5 +1,7 @@
 /* 结构: this center, the computers that joined it, their phones and the agents, by network zone. A computer or an
-   agent is in a zone when it carries a `zone:<name>` tag; a phone is where its computer is. Cards and zone labels drag
+   agent is in a zone when it carries a `zone:<name>` tag; a phone is where its computer is. What is shown as online is
+   what the center sees: a computer's link to it, and for a phone that link plus how old its last reading is (a reading
+   a computer reported long ago says nothing about now). Registrations the center has disabled are not phones. Cards and zone labels drag
    (a focused one moves with the arrow keys; on a touch screen, after a long press); the positions stay in this
    browser, one set for wide screens and one for narrow. Only what is running glows: a computer with active jobs, a
    phone an active job is bound to, an agent that started one. */
@@ -10,8 +12,8 @@
   const PLATFORMS = {Darwin: 'macOS', Linux: 'Linux', Windows: 'Windows'};
   // Wide screens: agents | 主节点 | 从节点 | phones, one band per zone. Narrow: zones stacked, one card per row.
   const WIDE = {margin: 16, pad: 20, head: 48, gap: 12, column: 76, group: 22, lane: 28,
-                agent: [228, 54], center: [248, 100], node: [248, 100], phone: [268, 54]};
-  const SMALL = {margin: 8, pad: 12, head: 44, gap: 8, gutter: 18, group: 16, lane: 16, agent: 50, node: 96, phone: 50};
+                agent: [228, 54], center: [248, 100], node: [248, 100], phone: [292, 54]};
+  const SMALL = {least: 300, margin: 8, pad: 12, head: 44, gap: 8, gutter: 18, group: 16, lane: 16, agent: 50, node: 96, phone: 50};
   const ICONS = {
     center: '<rect x="3.5" y="4" width="17" height="6.5" rx="1.6"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="1.6"/><path d="M7 7.25h.01M7 16.75h.01M10.5 7.25h6M10.5 16.75h6"/>',
     node: '<rect x="3" y="4.5" width="18" height="11.5" rx="1.6"/><path d="M8.5 20h7M12 16v4"/>',
@@ -41,14 +43,14 @@
     return node;
   };
   const when = at => new Date(at * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false});
-  function ago(at) {
-    if (!at) return '未签到';
+  function age(at) {
     const s = Math.max(0, Date.now() / 1000 - at);
-    if (s < 60) return '刚刚签到';
-    if (s < 3600) return `${Math.floor(s / 60)} 分钟前签到`;
-    if (s < 86400) return `${Math.floor(s / 3600)} 小时前签到`;
-    return `${Math.floor(s / 86400)} 天前签到`;
+    if (s < 60) return '刚刚';
+    if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+    if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+    return `${Math.floor(s / 86400)} 天前`;
   }
+  const ago = at => at ? age(at) + '签到' : '未签到';
   const os = text => text && text.replace(/\s*\(SDK \d+\)$/, '').replace(/^OpenHarmony-(\d+\.\d+).*$/, 'OpenHarmony $1');
   const zoneOf = tags => (tags.find(tag => tag.startsWith(ZONE_TAG)) || ZONE_TAG + NO_ZONE).slice(ZONE_TAG.length);
 
@@ -61,17 +63,22 @@
   }
 
   // ── What is where ──
-  function model(nodes, phones, agents, jobs) {
+  // A phone's state as the center sees it: its computer's link down (off); up with a current reading that shows the
+  // phone (on) or does not (gone); up with an old or no reading (old: shown as usual, with the reading's age).
+  const PHONE_STATE = {off: '离线', gone: '未接入'};
+  function model(nodes, phones, agents, jobs, registry) {
     const active = jobs.items.filter(HGJobState.active), local = nodes.local;
+    const disabled = new Set(registry.devices.filter(device => !device.enabled).map(device => device.device_id));
     const on = (nodeId, also = () => true) => active.filter(job => job.execution_node_id === nodeId && also(job)).length;
     const phone = item => {
       const seen = item.observation || {}, read = seen.online != null;
+      const state = !item.connected ? 'off' : item.stale ? 'old' : seen.online === true ? 'on' : 'gone';
       return {id: 'p:' + item.ref, kind: 'phone', title: seen.brand && seen.model ? `${seen.brand} ${seen.model}` : item.model || item.device_id,
-              facts: read ? [os(seen.os), seen.root ? 'root' : '无 root', seen.transport].filter(Boolean) : ['无读数'],
-              online: item.connected && seen.online === true, serial: item.serial,
+              facts: read ? [os(seen.os), seen.root ? 'root' : '无 root', seen.transport].filter(Boolean) : ['暂无读数'],
+              state, read: read && item.sampled_at, online: state === 'on' || state === 'old', serial: item.serial,
               jobs: on(item.node_id, job => job.device_binding?.device_id === item.device_id)};
     };
-    const phonesOf = nodeId => phones.items.filter(item => item.node_id === nodeId).map(phone);
+    const phonesOf = nodeId => phones.items.filter(item => item.node_id === nodeId && !(nodeId === local.node_id && disabled.has(item.device_id))).map(phone);
     const center = {id: 'n:' + local.node_id, kind: 'node', role: 'center', title: local.host.hostname, host: null,
                     platform: PLATFORMS[local.host.platform] || local.host.platform, revision: local.service.revision,
                     online: true, seen: null, zone: zoneOf(local.tags || []), jobs: on(local.node_id), phones: phonesOf(local.node_id)};
@@ -112,11 +119,15 @@
   }
   function phoneCard(phone, card) {
     card.className = `st-card st-phone${phone.online ? '' : ' is-off'}${phone.jobs ? ' is-running' : ''}`;
-    const text = el('div', 'st-text'), busy = phone.jobs ? `运行 ${phone.jobs} 个作业` : null;
-    text.append(el('strong', 'st-title', phone.title), el('span', 'st-line', phone.facts.join(' · ')));
+    const text = el('div', 'st-text'), head = el('div', 'st-phone-head'), busy = phone.jobs ? `运行 ${phone.jobs} 个作业` : null;
+    // Beside the name: why it is not shown as online, or how old a reading is that is not current.
+    const note = PHONE_STATE[phone.state] || (phone.state === 'old' && phone.read ? `读数 ${age(phone.read)}` : '');
+    head.append(el('strong', 'st-title', phone.title));
+    if (note) { const tip = el('span', 'st-note', note); tip.title = note; head.append(tip); }
+    text.append(head, el('span', 'st-line', phone.facts.join(' · ')));
     card.title = phone.serial;
     card.replaceChildren(icon('phone'), text, busy ? el('span', 'st-busy', '运行中') : el('i', 'st-dot'));
-    card.setAttribute('aria-label', [phone.title, ...phone.facts, busy || (phone.online ? '在线' : '离线')].join('，'));
+    card.setAttribute('aria-label', [phone.title, ...phone.facts, note, busy || (phone.online ? '在线' : '')].filter(Boolean).join('，'));
   }
   function agentCard(agent, card) {
     card.className = `st-card st-agent${agent.enabled ? '' : ' is-off'}${agent.jobs ? ' is-running' : ''}`;
@@ -214,25 +225,30 @@
   }
 
   // ── Layout: where each card starts (x, y, width, height); what the viewer moved replaces x and y ──
+  // Each zone takes the columns its cards use (agents 0, 主节点 1, 从节点 2, phones 3) and drops to the first place
+  // below what already fills those columns: a zone of agents alone sits beside the computers of another.
   function wide(model) {
-    const P = WIDE, x = {agent: P.pad}, boxes = new Map();
-    x.center = x.agent + P.agent[0] + P.column;
-    x.node = x.center + P.center[0] + P.column;
-    x.phone = x.node + P.node[0] + P.column;
-    let y = 0;
+    const P = WIDE, x = [P.pad], boxes = new Map(), filled = [0, 0, 0, 0];
+    x[1] = x[0] + P.agent[0] + P.column;
+    x[2] = x[1] + P.center[0] + P.column;
+    x[3] = x[2] + P.node[0] + P.column;
     for (const zone of model.zones) {
-      const top = y + P.head;
+      const used = [...zone.agents.length ? [0] : [], ...zone.nodes.map(node => node.role === 'center' ? 1 : 2),
+                    ...zone.nodes.some(node => node.phones.length) ? [3] : []];
+      const first = Math.min(...used), last = Math.max(...used);
+      const top = Math.max(...filled.slice(first, last + 1)) + P.head;
       let agents = top, nodes = top;
-      for (const agent of zone.agents) { boxes.set(agent.id, [x.agent, agents, ...P.agent]); agents += P.agent[1] + P.gap; }
+      for (const agent of zone.agents) { boxes.set(agent.id, [x[0], agents, ...P.agent]); agents += P.agent[1] + P.gap; }
       for (const node of zone.nodes) {
         const [width, height] = P[node.role], stack = node.phones.length * (P.phone[1] + P.gap) - P.gap, block = Math.max(height, stack);
-        boxes.set(node.id, [x[node.role], nodes + (block - height) / 2, width, height]);
-        node.phones.forEach((phone, i) => boxes.set(phone.id, [x.phone, nodes + (block - stack) / 2 + i * (P.phone[1] + P.gap), ...P.phone]));
+        boxes.set(node.id, [x[node.role === 'center' ? 1 : 2], nodes + (block - height) / 2, width, height]);
+        node.phones.forEach((phone, i) => boxes.set(phone.id, [x[3], nodes + (block - stack) / 2 + i * (P.phone[1] + P.gap), ...P.phone]));
         nodes += block + P.group;
       }
-      y = Math.max(agents - P.gap, nodes - P.group, top) + P.pad + P.lane;
+      const bottom = Math.max(agents - P.gap, nodes - P.group, top) + P.pad + P.lane;
+      for (let column = first; column <= last; ++column) filled[column] = bottom;
     }
-    return {boxes, width: x.phone + P.phone[0] + P.pad};
+    return {boxes, width: x[3] + P.phone[0] + P.pad};
   }
   function narrow(model, width) {
     const P = SMALL, boxes = new Map(), full = width - 2 * P.pad, indent = P.pad + P.gutter, branch = full - P.gutter;
@@ -251,10 +267,13 @@
     }
     return {boxes, width};
   }
+  // Below SMALL.least a narrow layout is drawn at that width and scaled down. A stage with no width (a window resized to
+  // nothing) is laid out on the next resize.
   function place() {
     const outer = $('stage').clientWidth, next = outer < NARROW ? 'narrow' : 'wide', P = next === 'wide' ? WIDE : SMALL;
+    if (outer <= 2 * P.margin) return;
     if (next !== mode) { mode = next; moved = load(); $('relayout').disabled = !Object.keys(moved).length; }
-    const width = outer - 2 * P.margin, auto = mode === 'wide' ? wide(data) : narrow(data, width), scale = Math.min(1, width / auto.width);
+    const width = outer - 2 * P.margin, auto = mode === 'wide' ? wide(data) : narrow(data, Math.max(width, P.least)), scale = Math.min(1, width / auto.width);
     frame = {boxes: auto.boxes, scale, width: width / scale, offset: (width / scale - auto.width) / 2, P};
     $('world').style.left = $('world').style.top = P.margin + 'px';
     for (const [id, card] of cards) {
@@ -421,8 +440,9 @@
     clearTimeout(timer);
     $('refresh').disabled = true;
     try {
-      const [nodes, phones, agents, jobs] = await Promise.all([json('/nodes'), json('/phones'), json('/agents'), json('/jobs?state=running&limit=200')]);
-      data = model(nodes, phones, agents, jobs);
+      const [nodes, phones, agents, jobs, registry] = await Promise.all([json('/nodes'), json('/phones'), json('/agents'),
+        json('/jobs?state=running&limit=200'), json('/node/devices')]);
+      data = model(nodes, phones, agents, jobs, registry);
       render();
       message('');
     } catch (error) {

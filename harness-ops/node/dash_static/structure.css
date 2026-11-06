@@ -80,7 +80,12 @@
 .st-center .st-line, .st-center .st-revision { color: color-mix(in srgb, var(--page) 62%, transparent); }
 .st-center .st-role { background: color-mix(in srgb, var(--page) 16%, transparent); color: var(--page); }
 
+.st-phone { gap: var(--sp-2); }
 .st-phone .st-icon { width: 20px; height: 20px; }
+/* The name keeps its width; the note beside it gives way first. */
+.st-phone-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.st-phone-head .st-title { flex: none; max-width: 100%; }
+.st-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .st-avatar {
   flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
   border: 1px solid var(--line); background: var(--wash); color: var(--ink2); font-size: var(--fs-xs); font-weight: 700;
