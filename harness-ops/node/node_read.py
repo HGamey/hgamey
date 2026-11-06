@@ -90,11 +90,12 @@ def decode_cursor(value):
         raise ValueError("invalid cursor") from None
 
 
-def artifact_page(read_root, jid, query, cursor_scope=()):
-    """Read one safe artifact directory; optional scope binds historical cursors."""
+def artifact_page(read_root, jid, query, cursor_scope=(), area="out"):
+    """Read one safe directory of a job's outputs (or, with area="in", of its inputs); optional scope binds historical
+    cursors."""
     rel = relative_path(query.get("path", [""])[0])
     limit = page_size(query, 100)
-    prefix = [*cursor_scope, jid, rel]
+    prefix = [*cursor_scope, jid, rel, *([area] if area != "out" else [])]
     after = ""
     if query.get("cursor"):
         cursor = decode_cursor(query["cursor"][0])
@@ -102,7 +103,7 @@ def artifact_page(read_root, jid, query, cursor_scope=()):
                 and cursor[:-1] == prefix and isinstance(cursor[-1], str)):
             raise ValueError("cursor must belong to this artifact directory")
         after = cursor[-1]
-    target = jid + "/out" + ("/" + rel if rel else "")
+    target = jid + "/" + area + ("/" + rel if rel else "")
     directory = read_root.open_fd(target, directory=True)
     entries = []
     try:

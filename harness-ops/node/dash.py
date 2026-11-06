@@ -94,7 +94,7 @@ SHOWCASE_STATIC = frozenset((
     "three.module.js", "three.core.js", "three-effect-composer.js", "three-render-pass.js", "three-unreal-bloom-pass.js",
     "three-output-pass.js", "three-pass.js", "three-shader-pass.js", "three-mask-pass.js", "three-copy-shader.js",
     "three-luminosity-high-pass-shader.js", "three-output-shader.js", "three-rounded-box-geometry.js", "three-css2d-renderer.js"))
-TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/datasets", "/dash/research", "/dash/doctor", "/dash/structure", "/dash/research/report"}
+TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/datasets", "/dash/research", "/dash/doctor", "/dash/structure", "/dash/research/report", "/dash/research/flow"}
 # Where a login may return to: a dashboard page, with its query and fragment, on this site only.
 LOGIN_PAGES = TARGET_PAGES | {"/dash/command", "/dash/showcase", "/dash/showcase/command"}
 
@@ -286,6 +286,8 @@ class Dash:
             return self._static(h, sub[0] + ".html")
         if sub == ["research", "report"]:
             return self._static(h, "report.html")
+        if sub == ["research", "flow"]:
+            return self._static(h, "flow.html")
         if sub == ["showcase"]:
             return self._static(h, "showcase.html")
         if sub in (["command"], ["showcase", "command"]):

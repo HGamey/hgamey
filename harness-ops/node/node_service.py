@@ -34,7 +34,7 @@ import node_doctor
 import argparse, errno, hashlib, hmac, io, ipaddress, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlencode
-from node_read import NodeRead, image_inventory
+from node_read import NodeRead, artifact_page, image_inventory
 from job_center import JobCenter
 from node_identity import load_identity
 from node_history import JobHistory, HistoryError, load_history_config
@@ -1502,6 +1502,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.log_from(parts[1], off, limit), "application/octet-stream")
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "artifacts":
                     return self._send(200, node.artifacts(parts[1], q))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "input-files":
+                    # The files a job was given, as they sit in its input directory on the computer that ran it.
+                    jobs.status(parts[1])
+                    if jobs.center.remote(parts[1]):
+                        return self._send(409, {"code": "inputs_elsewhere", "error": "this job's inputs are on the computer that ran it"})
+                    return self._send(200, artifact_page(jobs._read_root, parts[1], q, area="in"))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "artifacts-sync":
                     return self._send(200, jobs.center.artifacts.sync_status(parts[1]))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "inputs":

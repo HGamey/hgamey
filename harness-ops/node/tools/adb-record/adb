@@ -1,0 +1,3 @@
+#!/bin/sh
+# A job's adb: the call is written to the job's device record (adb_record.py), then the real adb runs unchanged.
+exec "${PF_ADB_RECORD_PYTHON:-python3}" "$(dirname "$0")/../../adb_record.py" "$@"

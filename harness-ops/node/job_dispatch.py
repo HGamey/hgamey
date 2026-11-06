@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import sys
 import threading
 import tarfile
 import time
@@ -20,6 +22,20 @@ import job_apps
 import job_budget
 import job_capacity
 import job_events
+
+
+ADB_RECORDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "adb-record")
+
+
+def record_adb(env, adb, path):
+    """A job's `adb` is first found in tools/adb-record: each call is written to `path` (its device record), then the
+    node's real adb runs unchanged. Without a real adb on the job's PATH nothing changes."""
+    search = os.pathsep.join(part for part in (env.get("PATH") or "").split(os.pathsep) if os.path.abspath(part or ".") != ADB_RECORDER)
+    real = adb if os.path.isabs(adb) and os.access(adb, os.X_OK) else shutil.which(adb, path=search)
+    if not real or os.path.dirname(os.path.abspath(real)) == ADB_RECORDER:
+        return
+    env.update(PF_REAL_ADB=os.path.abspath(real), PF_ADB_RECORD=path, PF_ADB_RECORD_PYTHON=sys.executable,
+               PATH=os.pathsep.join(filter(None, [ADB_RECORDER, search])))
 
 
 def request_fingerprint(spec, body):
@@ -421,6 +437,7 @@ class JobDispatch:
             env["PF_RECOVERY_OUT"] = recovery_out
         if "phonefarm" in self.jobs.bins:
             env["PHONEFARM_BIN"] = self.jobs.bins["phonefarm"][0]
+        record_adb(env, self.jobs.bins.get("adb", ("adb",))[0], self.jobs.path(jid, "out", ".device-io.jsonl"))
         serials = job_apps.targets(spec, observation)
         app_snapshot = {}
         if serials is not None:
