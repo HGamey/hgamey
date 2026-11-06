@@ -29,12 +29,18 @@ def phones(node_id, name, snapshot, connected):
             'device_binding': ({'schema': 'phonefarm/device-binding@1', 'registry_revision': scopes['registry_revision'],
                                 'device_id': device_id, 'serial': serial}
                                if registered else None),
+            'online': connected and phone.get('online', False), 'root': phone.get('root'), 'os': phone.get('os'),
+            'platform': phone.get('platform'), 'layers': phone.get('layers', []),
+            'remote_actions': (((snapshot.get('remote') or {}).get('capabilities') or {}).get('actions', [])
+                               if phone.get('transport') == 'adb' else []),
             'sampled_at': fleet.get('sampled_at'), 'stale': fleet.get('stale', True), 'observation': phone})
     return list(result.values())
 
 
 def catalog(jobs):
-    result = phones(jobs.node_id, 'local', {'fleet': jobs.fleet.snapshot(), 'queue': jobs.dispatch.snapshot()}, True)
+    remote = getattr(getattr(jobs, 'remote_center', None), 'local', None)
+    result = phones(jobs.node_id, 'local', {'fleet': jobs.fleet.snapshot(), 'queue': jobs.dispatch.snapshot(),
+        'remote': {'capabilities': remote.capabilities() if remote else {}}}, True)
     for entry in jobs.directory.list():
         result.extend(phones(entry['node_id'], entry['name'], entry.get('snapshot') or {},
                              entry['connection']['status'] == 'ready'))

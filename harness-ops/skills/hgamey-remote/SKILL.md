@@ -1,6 +1,6 @@
 ---
 name: hgamey-remote
-description: 通过 HGamey 节点操作已授权的远程 Android 设备：显式绑定节点身份、取得持久会话，提交截图、点击、滑动、输入、按键和应用启停，并查询原请求结果。适用于远程 UI 操作与排查；不提供任意 shell、安装、文件推拉或 logcat。研究目标与反馈接续可另用 hgamey-research。
+description: 通过 HGamey 节点操作已授权的远程 Android 设备：显式绑定节点身份、取得持久会话，提交截图、点击、滑动、输入、按键和应用启停，以及 shell、安装、推文件、日志和诊断，并查询原请求结果。适用于本机与子节点的远程操作。研究目标与反馈接续可另用 hgamey-research。
 ---
 
 # HGamey 远程设备操作
@@ -69,17 +69,21 @@ CLI 退出码：`0` 为正常返回，`1` 为拒绝/失败/未执行或输入错
 | `key` | `key`，Android keycode 0–400，或服务端支持的按键名 |
 | `screenshot` | `max_side`，默认 1280，范围 0–8192；0 请求原尺寸 PNG |
 | `app_start` / `app_stop` | `package`；start 可带 `activity` |
+| `shell` | `cmd`；`timeout_s` 默认 20，最多 120 秒 |
+| `install` | `--file APK`，安装或替换（adb install -r） |
+| `push` | `--file FILE`，`params.path` 指定设备目标路径 |
+| `logcat` / `diagnostics` | 日志快照或只读诊断，参数见 CLI help |
 | `renew` / `release` | `{}` |
 
 `tap/swipe` 必须明确指定源截图：可用 `--frame-id` 或 `params.frame_id`，两处同时给出时必须相同。会话 descriptor 必须声明 `input_contract: frame-bound-v1`，且当前 `input_frame_id` 对应所选截图；节点总能力不能升级旧 owner。缺此合同的会话仍可读取原图和原回执，坐标 POST 返回 `input_contract_unavailable`，不能改用旧 raw API。
 
 截图 `result` 保留 `frame_id`、`session_id`、`serial`、`captured_at` 和 `rotation`。原图尺寸是 `original_size` / `source_width` / `source_height`，`width/height` 是传输图尺寸；图片响应的 `X-Meta` 另含顶层 `size`。坐标用原图像素并须在图内，不能直接用预览像素或猜测旋转。方向未知（`rotation: null`）的图片可看但不能输入；截图须在会话的 `frame_max_age_seconds` 内，当前为 30 秒，重读图片或续期不刷新采集时间。开始截图或任何输入/应用动作会取消原图输入资格；下一次坐标动作需显式取得新截图。PF 在注入前再次核图像尺寸和方向，命令完成不证明应用已响应。
 
-截图原件上限 8 MiB。`shell`、`install`、`uninstall`、`push`、`pull`、`logcat` 当前明确不支持；不退回旧 raw API 或自行运行远程 ADB 来补齐。未知结果只查原动作 ID，不自动截图或换 ID 重放。
+截图原件上限 8 MiB。安装上限 300 MiB，推文件上限 16 MiB；两者使用 HTTP PUT 上传到所选节点，在当前 owner 内执行，回执记录字节数和 sha256。MCP 的 install/push 分别使用 apk_base64/data_base64，仅适合 64 KiB 请求内的小文件；普通文件用 CLI 的 --file。uninstall/pull 尚无独立动作；shell 可运行设备端命令。未知结果只查原动作 ID，不自动截图或换 ID 重放。
 
 ## MCP、网页和进一步资料
 
-`/remote/mcp` 使用操作员认证。工具包括 `hgremote_devices`、`hgremote_acquire`、`hgremote_status`，以及 `hgremote_` 前缀的上表动作。接管必须带 `request_id`；动作必须带 `serial`、`session_id`、`request_id`，tap/swipe 另须 `frame_id`。MCP 客户端也需固定 `X-Expected-Node-ID`、确认节点/动作能力并拒绝跨重定向转发凭据；不能满足这些条件时使用当前 CLI，不照搬旧的仅 Authorization 配置。
+`/remote/mcp` 使用同一个中心 agent token。工具包括 `hgremote_devices`、`hgremote_acquire`、`hgremote_status`，以及 `hgremote_` 前缀的上表动作。接管必须带 `request_id`；动作必须带 `serial`、`session_id`、`request_id`，tap/swipe 另须 `frame_id`。MCP 客户端也需固定 `X-Expected-Node-ID`、确认节点/动作能力并拒绝跨重定向转发凭据；不能满足这些条件时使用当前 CLI，不照搬旧的仅 Authorization 配置。
 
 人可使用节点的 `/dash/control`。共享研究目标、方向、协助与反馈接续见可选的 [hgamey-research](../hgamey-research/SKILL.md)，无需把一次 UI 操作扩展成研究流程。
 

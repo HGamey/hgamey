@@ -1188,10 +1188,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         raise node_remote.RemoteError(503, 'PF remote owner is not configured')
                     if method == 'GET' and parts == ['node', 'remote', 'devices']:
                         self._send(200, remote.devices())
-                    elif method == 'POST' and parts == ['node', 'remote']:
-                        value = json.loads(node_remote._read_body(self, node_remote.JSON_MAX))
+                    elif method in ('POST', 'PUT') and parts == ['node', 'remote']:
+                        value = (json.loads(self.headers['X-Remote-Request']) if method == 'PUT'
+                                 else json.loads(node_remote._read_body(self, node_remote.JSON_MAX)))
                         if value['operation'] not in ('do', 'query', 'resolve'):
                             raise ValueError('unsupported remote operation')
+                        if method == 'PUT':
+                            value['args']['body'] = node_remote._read_body(self,
+                                node_remote.BINARY_UPLOAD[value['args']['action']])
                         node_remote._send_result(self, getattr(remote, value['operation'])(**value['args']))
                     else:
                         self._send(404, {'error': 'no such internal remote operation'})
