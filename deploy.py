@@ -524,10 +524,10 @@ def install_updates(config_file, *, home=None):
     for filename, content in plan['files'].items():
         filename.parent.mkdir(parents=True, exist_ok=True)
         filename.write_bytes(content)
-    update_state(config, enabled=True, paused=config.get('updates_paused', False), status='waiting',
-                 recommended_revision=None, behind=None)
     for command in plan['commands']:
         run(command)
+    initial = {} if update_state(config) else {'status': 'waiting', 'recommended_revision': None, 'behind': None}
+    update_state(config, enabled=True, paused=config.get('updates_paused', False), **initial)
 
 
 def auto_update(config_file, *, fetch=True):

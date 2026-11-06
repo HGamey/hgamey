@@ -25,8 +25,15 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.flow.setUp()
         self.addCleanup(self.flow.doCleanups)
         self.root, self.center = self.flow.root, self.flow.center
+        self.fetches = []
         original = self.flow.service_command
         def commands(argv, **kwargs):
+            if argv[:1] == ['git']:
+                self.assertEqual([str(value) for value in argv],
+                    ['git', '-C', str(deploy.REPO), 'fetch', '-q', 'origin'])
+                self.fetches.append(argv)
+                subprocess.run([str(value) for value in argv], check=True, capture_output=True)
+                return
             if argv[0] == sys.executable and str(argv[1]).endswith('/deploy_overlay.py'):
                 self.assertEqual(argv[2], 'rollback')
                 subprocess.run([str(value) for value in argv], check=True, capture_output=True)
@@ -45,9 +52,9 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.node_id = (self.root / 'data/_node/id').read_text().strip()
         self.center.jobs.service_at_launch['service']['revision'] = self.flow.other
 
-    def auto(self):
+    def auto(self, fetch=False):
         with contextlib.redirect_stdout(self.flow.output):
-            return deploy.auto_update(self.config_file, fetch=False)
+            return deploy.auto_update(self.config_file, fetch=fetch)
 
     def state(self):
         return json.loads((self.root / 'data/_node/update.json').read_text())
@@ -61,7 +68,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 reported.set()
             return entry
         with patch.object(self.center.jobs.directory, 'report', side_effect=observed):
-            self.assertEqual(self.auto(), 0)
+            self.assertEqual(self.auto(fetch=True), 0)
             self.assertTrue(reported.wait(45), 'executor did not report its completed automatic update')
         self.assertEqual(deploy.reports(self.config, 0)[0]['service'], self.flow.other)
         state = self.state()
@@ -72,6 +79,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertEqual(entry['snapshot']['identity']['updates']['status'], 'updated', entry)
         self.assertEqual(entry['node_id'], self.node_id)
         self.assertEqual(self.timer, 'hgamey-node-update-' + self.node_id + '.timer')
+        self.assertEqual(len(self.fetches), 1)
 
     def test_owner_pause_and_resume_survive_another_update_invocation(self):
         def owner(action):
@@ -252,6 +260,18 @@ class UpdateServicePlanTests(unittest.TestCase):
         with patch.object(deploy, 'run'), patch.object(deploy.sys, 'platform', 'linux'):
             deploy.install_updates(config_file, home=self.home)
         self.assertEqual(json.loads(config_file.read_text())['repository'], saved['repository'])
+
+    def test_failed_timer_installation_is_not_reported_as_enabled(self):
+        data = self.root / 'data/_node'; data.mkdir(parents=True)
+        (data / 'id').write_text('a' * 32)
+        config = {'schema': deploy.CONFIG_SCHEMA, 'root': str(self.root), 'work': str(self.root / 'work'),
+            'jobs_roots': [str(self.root / 'data/jobs')], 'stop': [], 'start': [], 'nodes': [], 'gray_layer': False}
+        config_file = self.root / 'deploy-node.json'; config_file.write_text(json.dumps(config))
+        with patch.object(deploy, 'run', side_effect=subprocess.CalledProcessError(1, ['systemctl'])), \
+                patch.object(deploy.sys, 'platform', 'linux'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                deploy.install_updates(config_file, home=self.home)
+        self.assertFalse(deploy.update_state(config).get('enabled', False))
 
 
 if __name__ == '__main__':
