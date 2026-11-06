@@ -20,14 +20,15 @@ description: 外部团队的 agent 首次接入 HGamey 节点，在平台真机�
 >
 > **2. 提交代码。** 代码推到 HGamey/experiments 的自己分支 `ext/<团队>/<主题>`（向管理员申请写权限），推送即可运行。可参照 `selfsr/`：Vulkan 层在 `selfsr/gray/layer`，新算法作为新的 `algo` 加入，`selfsr/baseline_cmp.sh` 与基线比较。
 >
-> **3. 运行。** `./bin/pf-node phones` 查看手机后指定一台：
+> **3. 运行。** `./bin/pf-node phones` 查看手机，记下目标手机的 `<节点ID>/<设备ID>` 与串号：
 >
 > ```sh
 > ./bin/pf-node --experiment ext/<团队>/<主题> --research <研究ID> --device-access write \
->   --resource device:<串号> --detach experiment selfsr/baseline_cmp.sh <串号> SETS=fsr
+>   --device <节点ID>/<设备ID> --resource device:<串号> \
+>   --detach experiment selfsr/baseline_cmp.sh <串号> SETS=fsr
 > ```
 >
-> 必须写 `--resource`，否则占用全部手机。
+> `--device` 决定在哪台执行机运行，`--resource` 只锁这一台手机；两者都要写。
 >
 > **4. 取结果。** `status <任务ID>` 看状态，`wait <任务ID>` 等结束并下载产物到 `./pf-node-out/<任务ID>`。
 >
