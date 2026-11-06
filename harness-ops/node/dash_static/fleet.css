@@ -92,6 +92,8 @@
 .node-choice-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
 .node-choice-head strong { font-size: 14px; overflow-wrap: anywhere; }
 .node-choice-meta { display: block; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin-top: 6px; }
+.node-version { color: var(--ink2); }
+.node-version .task-state { font-size: 11px; padding: 1px 5px; }
 .directory-access { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 16px; border-top: 1px solid var(--grid); padding-top: 14px; }
 .directory-access .note { margin: 0; }
 .directory-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }

@@ -30,6 +30,32 @@
   }
   function facts(node, rows) { node.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
   const sourceDirty = value => value === true ? '有本地修改' : value === false ? '声明无本地修改' : '未知';
+  // Automatic updates: each computer's running version against the center's, which is the recommended one. A computer
+  // reports its own; a snapshot that is no longer current says when it was reported.
+  const UPDATE = {not_installed: '未装自动更新', waiting: '等空闲再更新', building: '正在构建新版本', updated: '刚更新到推荐版本',
+    current: '已是推荐版本', paused: '自动更新已暂停', failed: '更新失败', rolled_back: '更新失败，已回滚到原版本'};
+  const UPDATE_TONE = {waiting: 'running', building: 'running', paused: 'unknown', failed: 'failed', rolled_back: 'failed'};
+  const short = value => typeof value === 'string' && value ? value.slice(0, 8) : '未知';
+  const behind = updates => !updates || updates.status === 'not_installed' ? ''
+    : Number.isSafeInteger(updates.behind) ? (updates.behind ? `落后 ${updates.behind} 个提交` : '') : '落后多少未知';
+  function versionLine(entry) {
+    const identity = entry.snapshot?.identity, updates = identity?.updates, line = el('span', null, 'node-choice-meta node-version');
+    line.append([`版本 ${short(updates?.current_revision || identity?.service?.revision)}`, behind(updates)].filter(Boolean).join(' · '));
+    if (updates) {
+      const state = el('span'); badge(state, UPDATE[updates.status] || '更新状态未知', UPDATE_TONE[updates.status] || '');
+      if (updates.error) state.title = updates.error;
+      line.append(' ', state);
+    }
+    if (updates?.observed_at && entryStale(entry)) line.append(` · 上报于 ${time(updates.observed_at)}`);
+    return line;
+  }
+  function updateFacts(updates, entry) {
+    if (!updates) return [];
+    if (!entry) return [['推荐版本（本节点运行的版本）', updates.recommended_revision]];
+    return [['自动更新', UPDATE[updates.status] || updates.status], ['运行版本', updates.current_revision], ['推荐版本', updates.recommended_revision],
+      ['落后', Number.isSafeInteger(updates.behind) ? `${updates.behind} 个提交` : null], ['更新暂停', updates.paused === true ? '已暂停' : updates.paused === false ? '未暂停' : null],
+      ['更新错误', updates.error || (updates.status === 'not_installed' ? null : '无')], ['更新状态上报时间', time(updates.observed_at)]];
+  }
   function exportCacheFacts(node) {
     const cache = node?.storage?.export_cache;
     if (!node?.capabilities?.includes('jobs.export-cache-root-v1') || !cache) return [['目录导出缓存位置', '未提供；旧节点位置未知，不从任务目录推断。']];
@@ -264,7 +290,8 @@
   function renderDirectory() {
     const local = el('li'), button = el('button', null, 'node-choice');
     button.type = 'button'; button.setAttribute('aria-current', String(selected === 'local'));
-    button.append(el('strong', '本节点'), el('span', text(localIdentity?.node_id), 'node-choice-meta'));
+    button.append(el('strong', '本节点'), el('span', text(localIdentity?.node_id), 'node-choice-meta'),
+      el('span', `版本 ${short(localIdentity?.service?.revision)}${localIdentity?.updates?.recommended_revision ? ' · 推荐版本' : ''}`, 'node-choice-meta node-version'));
     button.addEventListener('click', () => selectNode('local')); local.append(button);
     const rows = [local];
     for (const entry of entries.values()) {
@@ -275,7 +302,7 @@
       const fleet = entry.snapshot?.fleet, devices = fleet?.devices;
       choice.append(head, el('span', `${text(entry.node_id)}${entry.tags?.length ? ` · ${entry.tags.join(' / ')}` : ''}`, 'node-choice-meta'),
         el('span', Array.isArray(devices) ? `${devices.length} 台手机 · 采样于 ${time(fleet.sampled_at)}${fleet.stale || entryStale(entry) ? ' · 已过期' : ''}` : '还没有手机读数', 'node-choice-meta'),
-        el('span', `最近联系：${time(entry.connection?.last_seen_at)}`, 'node-choice-meta'));
+        el('span', `最近联系：${time(entry.connection?.last_seen_at)}`, 'node-choice-meta'), versionLine(entry));
       choice.addEventListener('click', () => selectNode(entry.name)); row.append(choice); rows.push(row);
     }
     $('node-directory').replaceChildren(...rows);
@@ -412,7 +439,7 @@
     $('node-details').hidden = false;
     facts($('node-info'), [...(entry ? [['节点名', entry.name], ['加入时间', time(entry.created_at)], ['标签', entry.tags?.join('、')], ['备注', entry.note]] : [['访问入口', location.origin]]),
       ['节点 ID', node?.node_id || entry?.node_id], ['宿主系统', node?.host?.platform],
-      ...serviceFacts(node?.service), ['服务启动', time(node?.started_at)],
+      ...updateFacts(node?.updates, entry), ...serviceFacts(node?.service), ['服务启动', time(node?.started_at)],
       ['任务目录', node?.storage?.jobs_root], ['数据目录', node?.storage?.data_root],
       ['宿主调度容量（身份快照）', hostSlotsText(node?.execution?.host_capacity?.slots)],
       ['槽位含义', '配置声明的并发调度容量，不代表硬件数量、性能或手机存在；设备采样状态单独显示。'],
