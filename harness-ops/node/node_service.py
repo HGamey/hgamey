@@ -1250,7 +1250,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                                         "steer_configured": bool(board._steer_pass())})
             # Dashboard and token clients share contracts. Only explicit /fleet reads
             # activate device metadata sampling; node/jobs reads stay host-only.
-            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["phones"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"]):
+            if board and parts[:2] == ["dash", "api"] and parts[2:3] in (["doctor"], ["node"], ["nodes"], ["phones"], ["games"], ["uploads"], ["jobs"], ["job-sources"], ["job-events"], ["fleet"], ["queue"], ["requests"], ["leases"], ["results"], ["result-imports"], ["result-cross-compare"], ["result-compare"], ["research-state"], ["research-attachments"], ["research-operations"], ["research-events"], ["agents"], ["experiments"]):
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query), dashboard=True)
@@ -1483,6 +1483,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, {**fleet.request(wait), "node_id": node.node_id})
                 if parts == ["jobs"]:
                     return self._send(200, node.list_jobs(q))
+                if parts == ["experiments", "commits"]:
+                    revs = q.get("rev", [])
+                    if set(q) - {"rev", "expected_node_id"} or not 1 <= len(revs) <= 50 or not all(job_experiment.REV.fullmatch(rev) for rev in revs):
+                        raise ValueError("commit lookup takes 1 to 50 rev values of 7 to 40 lowercase hex digits")
+                    return self._send(200, {"node_id": node.node_id, "repository": jobs.experiment_url,
+                                            "items": job_experiment.commits(jobs.experiment_mirror, jobs.experiment_url, revs)})
                 if parts == ["mcp"]:
                     return self._send(405, b"", extra={"Allow": "POST"})
                 if len(parts) == 2 and parts[0] == "jobs":

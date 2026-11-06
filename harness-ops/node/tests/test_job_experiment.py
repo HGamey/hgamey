@@ -261,6 +261,33 @@ class ExperimentJobTests(unittest.TestCase):
         self.assertEqual(self.finished(jid)["exit"], 0)
         self.assertEqual(git("-C", mirror, "rev-parse", "--is-shallow-repository"), "false")
 
+    def test_a_commit_the_mirror_knows_lists_the_files_it_changed_without_fetching(self):
+        """GET /experiments/commits answers from the node's mirror: full id, author, subject and changed files, for
+        full or short ids. An id it does not know is left out (nothing is fetched); a malformed one is refused."""
+        import job_experiment
+        source = self.tmp / "experiments"
+        (source / "probe" / "run.py").write_text(PROBE + "# changed\n")
+        git("mv", "probe/run.sh", "probe/run2.sh", cwd=source)
+        (source / "doom").mkdir()
+        (source / "doom" / "realtime.txt").write_text("engine\n")
+        git("add", ".", cwd=source)
+        git("commit", "-qm", "ship the engine", cwd=source)
+        second = git("rev-parse", "HEAD", cwd=source)
+        git("push", "-q", str(self.remote), "main", cwd=source)
+        job_experiment.fetch_refs(self.jobs.experiment_mirror, str(self.remote))
+        status, found = self.call("GET", f"/experiments/commits?rev={second[:7]}&rev={self.commit}&rev=deadbee")
+        self.assertEqual(status, 200, found)
+        self.assertEqual([(item["rev"], item["commit"], item["subject"], item["author"]) for item in found["items"]],
+                         [(second[:7], second, "ship the engine", "fixture"), (self.commit, self.commit, "probe", "fixture")])
+        self.assertEqual(found["items"][0]["files"], [{"status": "A", "path": "doom/realtime.txt"}, {"status": "M", "path": "probe/run.py"},
+                                                      {"status": "R", "path": "probe/run2.sh", "from": "probe/run.sh"}])
+        self.assertEqual(found["items"][1]["files"], [{"status": "A", "path": "probe/run.py"}, {"status": "A", "path": "probe/run.sh"}])
+        self.assertIsNone(found["items"][0]["url"], "a repository that is not on GitHub has no page")
+        self.assertEqual(job_experiment.commits(self.jobs.experiment_mirror, "https://github.com/HGamey/experiments.git", [second])[0]["url"],
+                         f"https://github.com/HGamey/experiments/commit/{second}")
+        for bad in ("rev=XYZ1234", "rev=abc", "", "rev=" + "a" * 41):
+            self.assertEqual(self.call("GET", "/experiments/commits?" + bad)[0], 400, bad)
+
 
 if __name__ == "__main__":
     unittest.main()
