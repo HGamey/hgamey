@@ -29,7 +29,8 @@
     const [command, ...operands] = rest, plain = operands.filter(arg => !arg.startsWith('-'));
     if (command === 'push' && plain.length >= 2) return [{serial, command, files: plain.slice(0, -1).map(path => ({path})), to: plain.at(-1)}];
     if (command === 'install' || command === 'install-multiple') return [{serial, command: 'install', files: plain.map(path => ({path}))}];
-    if (['shell', 'exec-out'].includes(command)) return [{serial, command, text: operands.join(' ')}];
+    if (['shell', 'exec-out', 'exec-in'].includes(command)) return [{serial, command, text: operands.join(' ')}];
+    if (command === 'pull' && plain.length) return [{serial, command, source: plain[0], to: plain[1] || null}];
     return command ? [{serial, command, args: operands}] : [];
   }
   const phoneOf = job => job.device_binding ? `${job.device_binding.device_id} · ${job.device_binding.serial}`
@@ -84,13 +85,17 @@
       return cell;
     }
     const installs = record.filter(line => line.command === 'install'), pushes = record.filter(line => line.command === 'push');
-    const shells = record.filter(line => ['shell', 'exec-out', 'exec-in'].includes(line.command));
+    // The platform looks at the phone's apps before a job starts (marked by its status line); that is not the job's.
+    const check = line => (line.text || '').includes('__PF_APP_STATUS__');
+    const shells = record.filter(line => ['shell', 'exec-out', 'exec-in'].includes(line.command) && !check(line));
+    const checks = record.filter(check).length;
     const others = record.filter(line => !['install', 'push', 'shell', 'exec-out', 'exec-in', 'pull'].includes(line.command));
     if (installs.length) cell.append(block(`装的包 · ${installs.length}`, list(installs.flatMap(line => line.files.map(fileLine)))));
     if (pushes.length) cell.append(block(`推的文件 · ${pushes.length}`, list(pushes.map(line => [...line.files.flatMap(fileLine), el('span', '→ ' + line.to, 'flow-meta')]), COMMANDS_SHOWN)));
     if (shells.length) cell.append(block(`执行的命令 · ${shells.length}`, list(shells.map(line => el('code', line.text || '（交互 shell）')), COMMANDS_SHOWN)));
     if (others.length) cell.append(block(`其他 adb 命令 · ${others.length}`, list(others.map(line => el('code', [line.command, ...(line.args || [])].join(' '))), COMMANDS_SHOWN)));
-    if (!installs.length && !pushes.length && !shells.length && !others.length) cell.append(el('p', '没有发给手机的内容', 'note'));
+    if (!installs.length && !pushes.length && !shells.length && !others.length) cell.append(el('p', '作业本身没有发给手机的内容', 'note'));
+    if (checks) cell.append(el('p', `开工前平台查看了手机上的应用（${checks} 条命令）`, 'note flow-check'));
     totals.installs += installs.length; totals.pushes += pushes.length; totals.shells += shells.length;
     return cell;
   }
