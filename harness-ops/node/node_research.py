@@ -194,7 +194,7 @@ def normalize(kind, data):
         "request": {"research_id", "type", "title", "need", "why", "resume_hint", "context", "supersedes", "state", "close_reason", "due_at"},
         "feedback": {"request_id", "request_revision", "text", "supersedes"},
         # The research's discussion thread: humans and agents post, agents answer guidance with a decision.
-        "note": {"research_id", "text", "reply_to", "decision", "ask", "to"},
+        "note": {"research_id", "text", "reply_to", "decision", "ask", "to", "urgent"},
     }
     if kind not in fields:
         raise ValueError("unsupported research object kind")
@@ -375,6 +375,9 @@ def normalize(kind, data):
         value.setdefault("ask", False)
         if type(value["ask"]) is not bool:
             raise ValueError("ask must be a boolean")
+        value.setdefault("urgent", False)
+        if type(value["urgent"]) is not bool:
+            raise ValueError("urgent must be a boolean")
     else:
         identifier(value.get("request_id")); positive(value.get("request_revision"))
         value["text"] = text(value.get("text"), 16384, True)
@@ -1142,6 +1145,7 @@ class NodeResearch:
                     item.update(text=data["text"], reply_to=data["reply_to"], decision=data["decision"], to=data.get("to"),
                                 evidence_refs=data["evidence_refs"], actor_label=audit.get("actor_label"),
                                 auth_channel=audit.get("auth_channel"), ask=data.get("ask", False),
+                                urgent=data.get("urgent", False),
                                 unanswered=unanswered,
                                 question_unanswered=row["id"] in questions[rid] if data.get("ask") is True else None)
                 if kind == "direction":

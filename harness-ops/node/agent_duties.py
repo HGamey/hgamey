@@ -117,6 +117,28 @@ def duties(jobs, name, now=None):
 
     owed, waiting = [], []
     answered = {data["reply_to"] for _, data, audit in notes if audit.get("actor_label") == name and data["reply_to"]}
+    # 紧急留言排在待办最前：点名给这个 agent 的，或它负责的任务上被人标了紧急的，还没回应就先处理。
+    urgent_ids = set()
+    for row, data, audit in notes:
+        if (data.get("urgent") is not True or audit.get("actor_label") == name or row["id"] in answered
+                or data.get("to") not in (None, name) and row["research_id"] not in owned):
+            continue
+        speaker = "human" if audit.get("auth_channel") == "dashboard_steer" else audit.get("actor_label") or "admin token"
+        owed.append({"kind": "urgent_note", "research_id": row["research_id"], "target": row["id"],
+                     "unread": row["sequence"] > seen, "style": NOTE_STYLE,
+                     "text": f"紧急：{speaker} 在 {row['research_id']} 留言：{data['text'][:200]}",
+                     "command": f"pf-node research note {row['research_id']} \"<回复>\" --reply-to {row['id']} "
+                                "--decision adopt|defer|reject"})
+        urgent_ids.add(row["id"])
+    # 指派也进待办：上次签到之后任务被指派到这个 agent 名下（自己认领不算），下次签到就要看到。
+    for row, data in studies:
+        if data.get("owner") != name or row["sequence"] <= seen:
+            continue
+        if json.loads(row["audit"]).get("actor_label") == name:
+            continue
+        owed.append({"kind": "assigned_task", "research_id": row["id"], "target": row["id"], "unread": True,
+                     "text": f"任务 {row['id']}（{data['title']}）指派给你；先看任务和已有方向，再写计划",
+                     "command": f"pf-node research show research {row['id']}"})
     own_questions = {row["id"]: (row, data) for row, data, audit in notes
                      if data.get("ask") is True and audit.get("actor_label") == name}
     answers_by_question, question_answers = set(), []
@@ -131,6 +153,8 @@ def duties(jobs, name, now=None):
             waiting.append({"kind": "note_question", "research_id": row["research_id"], "request_id": question_id,
                             "title": data["text"][:200], "overdue": False})
     for row, data, audit in notes:
+        if row["id"] in urgent_ids:
+            continue
         if row["research_id"] not in owned and data.get("to") != name:
             continue
         if data.get("to") is not None and data["to"] != name:

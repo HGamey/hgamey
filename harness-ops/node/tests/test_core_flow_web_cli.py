@@ -10,6 +10,7 @@ import http.client
 import json
 import os
 import re
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 import subprocess
@@ -1959,6 +1960,119 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_urgent_notes_and_new_assignments_lead_the_next_checkin(self):
+        """K3-2: a note marked 紧急 lands at the top of the addressee's next check-in duties (or the task owner's,
+        when no one is named), and a task newly assigned to an agent shows up there too; self-claims, repeat
+        check-ins and answered notes do not re-raise it."""
+        tokens = {}
+        for name in ("agent-a", "agent-b"):
+            self.assertEqual(self.cli("POST", "/agents", {"name": name})[0], 201)
+            tokens[name] = self.cli("POST", f"/agents/{name}/token", {})[1]["token"]
+        rid = "sr-assign"
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+            "create-assign-urgent", {"title": "指派与紧急", "objective": "签到要看见"}))[0], 201)
+        # A self-claim is not an assignment: the claimer already knows.
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "claim", rid)[0], 0)
+        self.assertNotIn("assigned_task", [item["kind"] for item in self.duties(tokens["agent-a"])["duties"]])
+        # A human reassignment lands in the assignee's next check-in, once.
+        current = self.cli("GET", f"/research-state/research/{rid}")[1]
+        reassign = dict(self.write("assign-urgent", {**current["data"], "owner": "agent-b"}),
+                        base_revision=current["revision"], reason="指派给 agent-b")
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", reassign)[0], 201)
+        duties = self.duties(tokens["agent-b"])["duties"]
+        assigned = [item for item in duties if item["kind"] == "assigned_task"]
+        self.assertEqual([(item["research_id"], item["unread"]) for item in assigned], [(rid, True)])
+        self.assertNotIn("assigned_task", [item["kind"] for item in self.duties(tokens["agent-b"])["duties"]])
+        self.assertNotIn("assigned_task", [item["kind"] for item in self.duties(tokens["agent-a"])["duties"]])
+        # An urgent note leads the addressee's duties and never duplicates as an ordinary one; an urgent note on the
+        # owned task reaches the owner even when nobody is named.
+        self.assertEqual(self.pf(tokens["agent-a"], "research", "note", rid, "先修设备锁，别的事放一放",
+                                 "--to", "agent-b", "--urgent")[0], 0)
+        duties = self.duties(tokens["agent-b"])["duties"]
+        self.assertEqual(duties[0]["kind"], "urgent_note", f"the urgent note leads: {[d['kind'] for d in duties]}")
+        self.assertIn("紧急", duties[0]["text"])
+        self.assertNotIn("answer_note", [item["kind"] for item in duties])
+        self.assertEqual(self.pf(tokens["agent-b"], "research", "note", rid, "收到，先修锁",
+                                 "--reply-to", self.cli("GET", f"/research-state/note?research_id={rid}&limit=5")[1]["items"][-1]["id"],
+                                 "--decision", "adopt")[0], 0)
+        self.assertNotIn("urgent_note", [item["kind"] for item in self.duties(tokens["agent-b"])["duties"]])
+        self.assertEqual(self.web("POST", f"/research-state/note/n-owner-urgent", self.write(
+            "note-owner-urgent", {"research_id": rid, "text": "负责人在就现在看", "reply_to": None, "decision": None,
+                                   "ask": False, "to": None, "urgent": True}))[0], 201)
+        duties = self.duties(tokens["agent-b"])["duties"]
+        self.assertEqual(duties[0]["kind"], "urgent_note")
+        self.assertEqual(self.pf(tokens["agent-b"], "research", "note", rid, "看过了",
+                                 "--reply-to", "n-owner-urgent", "--decision", "adopt")[0], 0)
+        self.assertEqual(self.web("POST", "/research-state/note/n-plain", self.write(
+            "note-plain", {"research_id": rid, "text": "普通的一条", "reply_to": None, "decision": None,
+                            "ask": False, "to": "agent-b", "urgent": False}))[0], 201)
+        kinds = [item["kind"] for item in self.duties(tokens["agent-b"])["duties"]]
+        self.assertEqual(kinds[0], "answer_note", f"a plain note does not lead: {kinds}")
+        self.assertNotIn("urgent_note", kinds)
+
+    def test_the_task_page_leads_with_the_latest_failed_job_and_marks_urgent_notes(self):
+        """K3-2: the task page top shows the latest failed job (job id, one line of reason, time) when there is one
+        and nothing when there is not; the composer's 紧急 checkbox saves a note the page marks 紧急."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        rid = "sr-failed-lead"
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+            "create-failed-lead", {"title": "失败置顶", "objective": "不用翻作业就知道为什么黄了"}))[0], 201)
+
+        def fail(key, label):
+            submitted = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                                   "resources": [], "actor_id": "agent-a", "research_id": rid,
+                                                   "label": label}, b"", key)
+            jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+            self.jobs.dispatch.queue.set_state(jid, "done")
+            now = time.time()
+            (Path(self.jobs.path(jid)) / "meta.json").write_text(json.dumps(
+                {"id": jid, "bin": "fixture", "argv": ["-c", "pass"], "label": label, "actor_id": "agent-a",
+                 "research_id": rid, "started": now - 60, "ended": now, "state": "finished", "phase": "finished",
+                 "outcome": "failed", "exit": 2, "error": "minicap 不在这个镜像里：minicap: not found",
+                 "execution": {"kind": "supervised-v1"}}))
+            return jid
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{base}/dash/research?kind=research&id={rid}")
+                page.wait_for_selector("#task-thread")
+                self.assertFalse(page.is_visible("#task-failed"), "a task with no failed job shows no banner")
+                older = fail("fail-old", "第一次失败")
+                newest = fail("fail-new", "第二次失败")
+                page.reload()
+                page.wait_for_selector("#task-failed .failed-line")
+                self.assertIn(f"作业 {newest}", page.text_content("#task-failed .failed-line"))
+                self.assertIn("minicap", page.text_content("#task-failed .failed-why"))
+                link = page.get_attribute("#task-failed .failed-line a", "href")
+                self.assertIn(newest, link, f"the banner links the latest failure: {link}")
+                # The composer's checkbox saves an urgent note; the thread marks it.
+                page.fill("#task-note-text", "这个失败挡住了 D 轨，请优先看")
+                page.check("#task-note-urgent")
+                page.click("#task-note-submit")
+                page.wait_for_function("() => [...document.querySelectorAll('.discuss-head span')]"
+                                       ".some(x => x.textContent === '紧急')")
+                notes = self.web("GET", f"/research-state/note?research_id={rid}&limit=10")[1]["items"]
+                self.assertEqual([(n["text"], n["urgent"]) for n in notes],
+                                 [("这个失败挡住了 D 轨，请优先看", True)])
+                self.assertEqual(page.is_checked("#task-note-urgent"), False, "the checkbox does not stick")
+            finally:
+                browser.close()
+
     def test_a_chain_grows_along_what_each_direction_is_based_on(self):
         """Directions hang under the direction (and run) they are based on, on the task page and in the command view.
         The chain's tasks are a tree of links in the task list under the root; a task's 探索过程 is indented by based_on
@@ -2367,7 +2481,7 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('directionsSection', script)
         # Comparisons waiting for a person sit right under the owner, then the summary; answered ones follow the thread.
         # A chain's task tree sits in the task list under its root's row; the task's own delivery report is last.
-        self.assertIn('container.append(...[ownerSection(record, ctx), waiting, summary, directions, runs, thread, judged, deliverableSection(record)]', script)
+        self.assertIn('container.append(...[ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)]', script)
         self.assertIn("waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');", script)
 
     def test_owner_agents_refresh_with_detail_and_access(self):

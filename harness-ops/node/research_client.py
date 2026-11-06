@@ -42,7 +42,7 @@ HELP = """用法:
   pf-node research link ID FOLLOWS|none           # 记录或取消这个任务接续哪个任务
   pf-node research close ID --reason TEXT         # 关闭任务（不做了或并入别的任务）
   pf-node research reopen ID --reason TEXT        # 重新打开，之后可再交付一个版本
-  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask] [--to AGENT]
+  pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask] [--to AGENT] [--urgent]
       [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
   pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
   pf-node research thread ID                      # 按时间读研究里的留言
@@ -211,6 +211,7 @@ def parser():
     note.add_argument("--attach", action="append", type=Path, help="附加本机 PNG、JPEG、SVG、MP4、WebM、JSON 或 TXT，可重复")
     note.add_argument("--ask", action="store_true")
     note.add_argument("--to", type=identifier)
+    note.add_argument("--urgent", action="store_true", help="标记为紧急：被点名或负责人下次签到时排在最前")
     comparison = commands.add_parser("compare")
     comparison.add_argument("id", type=identifier)
     comparison.add_argument("--item", action="append", required=True)
@@ -777,7 +778,8 @@ def _task(client, args):
     if args.command == "note":
         node_id = client.target.identity()["node_id"]
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
-                "ask": args.ask, "to": args.to, "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]
+                "ask": args.ask, "to": args.to, "urgent": args.urgent,
+                "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]
                 + [_attachment(client, path) for path in args.attach or []]}
         return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
     try:

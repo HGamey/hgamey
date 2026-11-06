@@ -184,6 +184,12 @@
 .research-view .job-mosaic .more { align-self: center; color: var(--muted); font-size: var(--fs-xs); }
 .research-view .runs-more { margin-top: var(--sp-2); }
 .research-view .notes-more { display: block; margin: 0 0 var(--sp-2); }
+/* 最近失败的作业：只有失败过的任务才有这一栏，没失败就整块不占位 */
+.research-view .failed-job:empty { display: none; }
+.research-view .failed-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); margin: 0; }
+.research-view .failed-line a { font-weight: 600; }
+.research-view .failed-why { color: var(--muted); overflow-wrap: anywhere; }
+.research-view .composer-urgent { display: flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--ink2); white-space: nowrap; cursor: pointer; }
 
 /* 留言 */
 .research-view .discuss-list { display: block; margin: 0; }
