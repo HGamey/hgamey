@@ -1,7 +1,10 @@
 """Descriptor-relative host artifacts. Never reopen a checked untrusted path."""
 import errno
 from contextlib import contextmanager
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows agent clients import this module but never take the export lock
+    fcntl = None
 import hashlib
 import json
 import os
