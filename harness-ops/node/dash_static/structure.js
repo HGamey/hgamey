@@ -1,5 +1,7 @@
 /* 结构: this center, the computers that joined it, their phones and the agents, by network zone. A computer or an
-   agent is in a zone when it carries a `zone:<name>` tag; a phone is where its computer is. Cards and zone labels drag
+   agent is in a zone when it carries a `zone:<name>` tag; a phone is where its computer is. What is shown as online is
+   what the center sees: a computer's link to it, and for a phone that link plus how old its last reading is (a reading
+   a computer reported long ago says nothing about now). Registrations the center has disabled are not phones. Cards and zone labels drag
    (a focused one moves with the arrow keys; on a touch screen, after a long press); the positions stay in this
    browser, one set for wide screens and one for narrow. Only what is running glows: a computer with active jobs, a
    phone an active job is bound to, an agent that started one. */
@@ -10,7 +12,7 @@
   const PLATFORMS = {Darwin: 'macOS', Linux: 'Linux', Windows: 'Windows'};
   // Wide screens: agents | 主节点 | 从节点 | phones, one band per zone. Narrow: zones stacked, one card per row.
   const WIDE = {margin: 16, pad: 20, head: 48, gap: 12, column: 76, group: 22, lane: 28,
-                agent: [228, 54], center: [248, 100], node: [248, 100], phone: [268, 54]};
+                agent: [228, 54], center: [248, 100], node: [248, 100], phone: [292, 54]};
   const SMALL = {least: 300, margin: 8, pad: 12, head: 44, gap: 8, gutter: 18, group: 16, lane: 16, agent: 50, node: 96, phone: 50};
   const ICONS = {
     center: '<rect x="3.5" y="4" width="17" height="6.5" rx="1.6"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="1.6"/><path d="M7 7.25h.01M7 16.75h.01M10.5 7.25h6M10.5 16.75h6"/>',
@@ -41,14 +43,14 @@
     return node;
   };
   const when = at => new Date(at * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false});
-  function ago(at) {
-    if (!at) return '未签到';
+  function age(at) {
     const s = Math.max(0, Date.now() / 1000 - at);
-    if (s < 60) return '刚刚签到';
-    if (s < 3600) return `${Math.floor(s / 60)} 分钟前签到`;
-    if (s < 86400) return `${Math.floor(s / 3600)} 小时前签到`;
-    return `${Math.floor(s / 86400)} 天前签到`;
+    if (s < 60) return '刚刚';
+    if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+    if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+    return `${Math.floor(s / 86400)} 天前`;
   }
+  const ago = at => at ? age(at) + '签到' : '未签到';
   const os = text => text && text.replace(/\s*\(SDK \d+\)$/, '').replace(/^OpenHarmony-(\d+\.\d+).*$/, 'OpenHarmony $1');
   const zoneOf = tags => (tags.find(tag => tag.startsWith(ZONE_TAG)) || ZONE_TAG + NO_ZONE).slice(ZONE_TAG.length);
 
@@ -61,17 +63,22 @@
   }
 
   // ── What is where ──
-  function model(nodes, phones, agents, jobs) {
+  // A phone's state as the center sees it: its computer's link down (off); up with a current reading that shows the
+  // phone (on) or does not (gone); up with an old or no reading (old: shown as usual, with the reading's age).
+  const PHONE_STATE = {off: '离线', gone: '未接入'};
+  function model(nodes, phones, agents, jobs, registry) {
     const active = jobs.items.filter(HGJobState.active), local = nodes.local;
+    const disabled = new Set(registry.devices.filter(device => !device.enabled).map(device => device.device_id));
     const on = (nodeId, also = () => true) => active.filter(job => job.execution_node_id === nodeId && also(job)).length;
     const phone = item => {
       const seen = item.observation || {}, read = seen.online != null;
+      const state = !item.connected ? 'off' : item.stale ? 'old' : seen.online === true ? 'on' : 'gone';
       return {id: 'p:' + item.ref, kind: 'phone', title: seen.brand && seen.model ? `${seen.brand} ${seen.model}` : item.model || item.device_id,
-              facts: read ? [os(seen.os), seen.root ? 'root' : '无 root', seen.transport].filter(Boolean) : ['无读数'],
-              online: item.connected && seen.online === true, serial: item.serial,
+              facts: read ? [os(seen.os), seen.root ? 'root' : '无 root', seen.transport].filter(Boolean) : ['暂无读数'],
+              state, read: read && item.sampled_at, online: state === 'on' || state === 'old', serial: item.serial,
               jobs: on(item.node_id, job => job.device_binding?.device_id === item.device_id)};
     };
-    const phonesOf = nodeId => phones.items.filter(item => item.node_id === nodeId).map(phone);
+    const phonesOf = nodeId => phones.items.filter(item => item.node_id === nodeId && !(nodeId === local.node_id && disabled.has(item.device_id))).map(phone);
     const center = {id: 'n:' + local.node_id, kind: 'node', role: 'center', title: local.host.hostname, host: null,
                     platform: PLATFORMS[local.host.platform] || local.host.platform, revision: local.service.revision,
                     online: true, seen: null, zone: zoneOf(local.tags || []), jobs: on(local.node_id), phones: phonesOf(local.node_id)};
@@ -112,11 +119,15 @@
   }
   function phoneCard(phone, card) {
     card.className = `st-card st-phone${phone.online ? '' : ' is-off'}${phone.jobs ? ' is-running' : ''}`;
-    const text = el('div', 'st-text'), busy = phone.jobs ? `运行 ${phone.jobs} 个作业` : null;
-    text.append(el('strong', 'st-title', phone.title), el('span', 'st-line', phone.facts.join(' · ')));
+    const text = el('div', 'st-text'), head = el('div', 'st-phone-head'), busy = phone.jobs ? `运行 ${phone.jobs} 个作业` : null;
+    // Beside the name: why it is not shown as online, or how old a reading is that is not current.
+    const note = PHONE_STATE[phone.state] || (phone.state === 'old' && phone.read ? `读数 ${age(phone.read)}` : '');
+    head.append(el('strong', 'st-title', phone.title));
+    if (note) { const tip = el('span', 'st-note', note); tip.title = note; head.append(tip); }
+    text.append(head, el('span', 'st-line', phone.facts.join(' · ')));
     card.title = phone.serial;
     card.replaceChildren(icon('phone'), text, busy ? el('span', 'st-busy', '运行中') : el('i', 'st-dot'));
-    card.setAttribute('aria-label', [phone.title, ...phone.facts, busy || (phone.online ? '在线' : '离线')].join('，'));
+    card.setAttribute('aria-label', [phone.title, ...phone.facts, note, busy || (phone.online ? '在线' : '')].filter(Boolean).join('，'));
   }
   function agentCard(agent, card) {
     card.className = `st-card st-agent${agent.enabled ? '' : ' is-off'}${agent.jobs ? ' is-running' : ''}`;
@@ -429,8 +440,9 @@
     clearTimeout(timer);
     $('refresh').disabled = true;
     try {
-      const [nodes, phones, agents, jobs] = await Promise.all([json('/nodes'), json('/phones'), json('/agents'), json('/jobs?state=running&limit=200')]);
-      data = model(nodes, phones, agents, jobs);
+      const [nodes, phones, agents, jobs, registry] = await Promise.all([json('/nodes'), json('/phones'), json('/agents'),
+        json('/jobs?state=running&limit=200'), json('/node/devices')]);
+      data = model(nodes, phones, agents, jobs, registry);
       render();
       message('');
     } catch (error) {

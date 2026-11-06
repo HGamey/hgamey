@@ -25,20 +25,30 @@ class StructurePageTests(unittest.TestCase):
     cli = core.CoreFlowTests.cli
 
     def fixture(self):
-        """The center (no zone) with one phone; a blue-zone computer that reports now; a Chengdu computer last heard
-        from an hour ago; one agent in the blue zone and one on the public network (no city). agent-a's job runs on the
-        blue computer's phone (the page is shown that job as running)."""
+        """The center (no zone) with three registered phones: HONOR read five hours ago, HUAWEI never read, and a
+        registration the center has disabled (a phone that moved to another computer). A blue-zone computer that reports
+        now; a Chengdu computer last heard from an hour ago, whose own last snapshot still says its phone is online. One
+        agent in the blue zone and one on the public network (no city). agent-a's job runs on the blue computer's phone
+        (the page is shown that job as running)."""
         directory = self.jobs.directory
         directory.join({"invite": directory.invite()["code"], "name": "office", "node_id": BLUE, "tags": ["zone:华为蓝区"]})
         directory.report(BLUE, snapshot("thinkcentre", "Linux", "95f55e5c72ae", "RM1", "REDMAGIC", "NX809J", "Android 16 (SDK 36)"))
         directory.join({"invite": directory.invite()["code"], "name": "chengdu", "node_id": CHENGDU, "tags": ["zone:成都公网"]})
         with mock.patch.object(node_directory.time, "time", return_value=time.time() - 3600):
             directory.report(CHENGDU, snapshot("kamico-mac", "Darwin", "e0005d4a11", "OP1", "OnePlus", "PHK110", "Android 15 (SDK 35)"))
-        local = {"stale": False, "sampled_at": time.time(), "devices": [{"serial": "HN1", "transport": "adb", "online": True,
+        local = {"stale": True, "sampled_at": time.time() - 5 * 3600, "devices": [{"serial": "HN1", "transport": "adb", "online": True,
                  "brand": "HONOR", "model": "AAP-AN00", "os": "Android 16 (SDK 36)", "root": False}]}
-        fleet = mock.patch.object(self.jobs.fleet, "snapshot", return_value=local)
-        fleet.start()
-        self.addCleanup(fleet.stop)
+        registered = (("HONOR", "HN1", True), ("HUAWEI", "HD1", True), ("REDMAGIC", "retired-RM1", False))
+        scopes = {"schema": "phonefarm/device-scopes@1", "registry_revision": 3, "unknown": False, "queue_waiting": False,
+                  "global": {"status": "clear", "error": None},
+                  "devices": [{"device_id": d, "aliases": [a], "status": "clear", "error": None} for d, a, _ in registered]}
+        registry = {"schema": "phonefarm/device-registry@1", "revision": 3, "updated_at": "2026-11-06T00:00:00Z",
+                    "devices": [{"device_id": d, "label": d, "aliases": [a], "enabled": on} for d, a, on in registered]}
+        for patch in (mock.patch.object(self.jobs.fleet, "snapshot", return_value=local),
+                      mock.patch.object(self.jobs.leases, "snapshot", return_value={"status": "clear", "error": None, "device_scopes": scopes}),
+                      mock.patch("device_registry.DeviceRegistry.read", return_value=registry)):
+            patch.start()
+            self.addCleanup(patch.stop)
         self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a", "tags": ["glm", "zone:华为蓝区"]})[0], 201)
         self.assertEqual(self.cli("POST", "/agents", {"name": "agent-b", "tags": ["zone:公网"]})[0], 201)
 
@@ -69,13 +79,14 @@ class StructurePageTests(unittest.TestCase):
             page.on("pageerror", lambda error: errors.append(str(error)))
             self.open(page, 1280)
             self.assertEqual(page.get_attribute('.shell-tab[data-tab="structure"]', "aria-current"), "page")
-            self.assertEqual(page.text_content("#facts"), "3 个节点 · 3 台手机 · 2 个 Agent · 3 个网络区域 · 1 个作业在运行")
+            self.assertEqual(page.text_content("#facts"), "3 个节点 · 4 台手机 · 2 个 Agent · 3 个网络区域 · 1 个作业在运行")
             # The center's zone comes first (here the one without a tag); 公网 is a zone of its own, not a city's.
             labels = page.eval_on_selector_all(".st-zone-label", "items => items.map(item => item.textContent)")
-            self.assertEqual(labels, ["未标区域1 个节点 · 1 台手机", "成都公网1 个节点 · 1 台手机", "公网1 个 Agent",
+            self.assertEqual(labels, ["未标区域1 个节点 · 2 台手机", "成都公网1 个节点 · 1 台手机", "公网1 个 Agent",
                                       "华为蓝区1 个节点 · 1 台手机 · 1 个 Agent"])
             center = "n:" + self.node_id
-            members = {"未标区域": [center, f"p:{self.node_id}/HN1"], "成都公网": ["n:" + CHENGDU, f"p:{CHENGDU}/OP1"],
+            # The disabled registration is not drawn.
+            members = {"未标区域": [center, f"p:{self.node_id}/HONOR", f"p:{self.node_id}/HUAWEI"], "成都公网": ["n:" + CHENGDU, f"p:{CHENGDU}/OP1"],
                        "公网": ["a:agent-b"], "华为蓝区": ["n:" + BLUE, f"p:{BLUE}/RM1", "a:agent-a"]}
             cards, zones = self.boxes(page, ".st-card"), self.boxes(page, ".st-zone")
             self.assertEqual(sorted(cards), sorted(sum(members.values(), [])))
@@ -102,6 +113,15 @@ class StructurePageTests(unittest.TestCase):
             self.assertIn("主节点", page.text_content(f'[data-id="{center}"]'))
             self.assertEqual(page.text_content(f'[data-id="p:{BLUE}/RM1"] .st-line'), "Android 16 · root · adb")
             self.assertEqual(page.text_content('[data-id="a:agent-a"] .st-line'), "glm · 运行 1 个作业")
+            # Online is what the center sees. A computer whose link is down has offline phones, whatever its own last
+            # snapshot said; a phone on a linked computer with an old reading is shown as usual, with the reading's age.
+            note = lambda card: page.eval_on_selector(f'[data-id="{card}"]', "c => c.querySelector('.st-note')?.textContent || ''")
+            self.assertEqual(note(f"p:{CHENGDU}/OP1"), "离线")
+            self.assertEqual(note(f"p:{self.node_id}/HONOR"), "读数 5 小时前")
+            self.assertEqual(page.text_content(f'[data-id="p:{self.node_id}/HONOR"] .st-line'), "Android 16 · 无 root · adb")
+            self.assertEqual(note(f"p:{self.node_id}/HUAWEI"), "")
+            self.assertEqual(page.text_content(f'[data-id="p:{self.node_id}/HUAWEI"] .st-line'), "暂无读数")
+            self.assertEqual(note(f"p:{BLUE}/RM1"), "")
             self.assertEqual(errors, [])
 
     def test_a_moved_card_or_zone_stays_where_it_was_put_until_relaid(self):
