@@ -1116,6 +1116,8 @@
   }
   // Platform phones (jobs.routing-v1): one phone by ref, or any phone of a model, on whichever computer has it.
   let platformPhones = null, platformPhonesError = '';
+  // A link from the phone list (?phone=<ref>) opens the form on that phone; the link is read once.
+  let wantedPhone = new URLSearchParams(location.search).get('phone');
   const platformSupported = () => nodeInfo?.capabilities?.includes('jobs.routing-v1') === true;
   function submissionPhone() {
     const body = pendingRequest?.body;
@@ -1129,7 +1131,8 @@
     try {
       const {items} = await json(`${API}/phones`);
       platformPhones = items;
-      const chosen = $('submit-phone').value, models = new Map();
+      const chosen = wantedPhone ? 'ref:' + wantedPhone : $('submit-phone').value, models = new Map();
+      wantedPhone = null;
       for (const phone of items) if (phone.model) models.set(phone.model, [...(models.get(phone.model) || []), phone]);
       const option = (value, label) => { const node = el('option', label); node.value = value; return node; };
       const group = (label, options) => { const node = document.createElement('optgroup'); node.label = label; node.append(...options); return node; };
@@ -3220,6 +3223,11 @@
       for (const key of moved) { if (!hash.has(key)) hash.set(key, url.searchParams.get(key)); url.searchParams.delete(key); }
       history.replaceState(null, '', `${url.pathname}${url.search}#${hash}`);
     }
+  }
+  if (wantedPhone) {
+    const url = new URL(location.href); url.searchParams.delete('phone'); history.replaceState(null, '', url.pathname + url.search + url.hash);
+    if (pendingRequest) wantedPhone = null;
+    else { $('submit-panel').open = true; $('submit-device-scope').value = 'platform'; readPlatformPhones(); }
   }
   const initialParams = new URLSearchParams(location.hash.slice(1));
   if (initialParams.has('source')) historySource = {source_id: initialParams.get('source'), revision: initialParams.has('source_revision') ? Number(initialParams.get('source_revision')) : null};

@@ -29,10 +29,10 @@ body.control-view { background: var(--page); color: var(--ink); }
 .request-receipt h3 { margin: 0 0 8px; font-size: 13px; }
 .request-receipt .out { margin-top: 8px; }
 .request-receipt select { width: 100%; min-width: 0; max-width: 100%; padding: 6px 8px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
-.future-operations { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
-.future-operations summary { cursor: pointer; font-size: 13px; }
-.future-operations fieldset { border: 0; padding: 0; margin: 8px 0 0; min-width: 0; display: grid; gap: 8px; }
-.future-operations input[type=file] { display: block; max-width: 100%; }
+.row label { font-size: 13px; color: var(--ink2); }
+.row input[type=number] { flex: 0 0 5.5em; }
+.row .file { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 100%; min-width: 0; }
+.row .file input[type=file] { flex: 1 1 160px; min-width: 0; max-width: 100%; border: 0; padding: 0; background: none; }
 .control-view :is(button, input, select, summary):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 fieldset#ops { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; min-width: 0; }
 fieldset#ops:disabled { opacity: .55; }

@@ -29,6 +29,12 @@
     <div><h1>节点与设备</h1><p class="page-description">选择节点，查看已有设备、队列与租约观测。节点可达不代表设备存在或可用。</p></div>
     <div class="selected-node-links"><a id="node-jobs-link" class="workspace-link" href="/dash/jobs">所选节点任务 →</a><a id="node-games-link" class="workspace-link" href="/dash/games">所选节点游戏与资源 →</a><a id="node-control-link" class="workspace-link" href="/dash/control">所选节点远程控制 →</a></div>
   </div>
+  <section id="all-phones" class="directory-panel all-phones" aria-labelledby="all-phones-heading">
+    <div class="section-heading"><h2 id="all-phones-heading">全部手机</h2><span id="all-phones-count" class="count-label"></span></div>
+    <div class="phone-row phone-head" aria-hidden="true"><span>手机</span><span>节点</span><span>状态</span><span>系统</span><span>root</span><span>远程能做</span><span></span></div>
+    <ul id="all-phones-list" class="phone-list" aria-label="全部手机"></ul>
+    <p id="all-phones-message" class="note" role="status">正在读取…</p>
+  </section>
   <section class="directory-panel" aria-labelledby="directory-heading">
     <div class="section-heading"><h2 id="directory-heading">节点目录</h2><button id="invite-open" class="ghost" type="button" disabled>生成电脑加入码</button></div>
     <p id="directory-message" class="note" role="status">正在读取目录…</p>
@@ -141,5 +147,7 @@
 <footer class="foot">加入的电脑主动连到这里，约每 30 秒上传一次快照；手机采样需明确请求。</footer>
 <script src="/dash/static/target.js"></script>
 <script src="/dash/static/fleet.js"></script>
+<script src="/dash/static/phone-state.js"></script>
+<script src="/dash/static/fleet-phones.js"></script>
 </body>
 </html>
