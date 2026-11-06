@@ -2586,6 +2586,61 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_command_view_follows_only_from_the_play_button(self):
+        """Z1: free camera movement never follows; pressing play enters follow; dragging mid-play leaves it again."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        data = self.showcase_snapshot()
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(args=["--use-gl=angle", "--use-angle=vulkan"])
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1600, "height": 900})
+                context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/showcase/command?t={data['at']}&paused=1")
+                page.wait_for_function("() => !!window.__command && document.querySelectorAll('.leaf').length === 1")
+                S = lambda expr: page.evaluate(f"() => {{ const c = window.__command; return {expr}; }}")
+
+                def drag():
+                    box = page.locator("#stage").bounding_box()
+                    x, y = box["x"] + box["width"] * .5, box["y"] + box["height"] * .8
+                    page.mouse.move(x, y); page.mouse.down()
+                    for i in range(1, 9):
+                        page.mouse.move(x - 30 * i, y - 10 * i); page.wait_for_timeout(20)
+                    page.mouse.up(); page.wait_for_timeout(120)
+
+                # 1) A manual camera move follows nothing, playing or not.
+                drag()
+                self.assertFalse(S("c.S.follow"))
+
+                # 2) Pressing play is what enters follow.
+                page.click("#t-play")
+                self.assertTrue(S("c.S.playing"))
+                self.assertTrue(S("c.S.follow"))
+                self.assertEqual(page.text_content("#b-follow"), "跟随中")
+
+                # 3) Dragging mid-play leaves follow, and stays out while playback continues.
+                drag()
+                self.assertFalse(S("c.S.follow"))
+                page.wait_for_timeout(900)
+                self.assertTrue(S("c.S.playing"))
+                self.assertFalse(S("c.S.follow"), "free movement during playback is not pulled back into follow")
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_the_story_steps_through_the_snapshot_and_names_each_step(self):
         try:
             from playwright.sync_api import sync_playwright

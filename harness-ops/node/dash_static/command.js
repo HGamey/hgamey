@@ -118,6 +118,7 @@ function seek(t) {
 function setPlaying(on) {
   if (on && !S.live && S.now >= timeline.d1 - 1) seek(timeline.d0);
   S.playing = on; const b = $('t-play'); b.textContent = on ? '❚❚' : '▶'; b.setAttribute('aria-label', on ? '暂停' : '播放');
+  if (on) setFollow(true);   // pressing play hands the camera back to the record; manual moves still take it away
   status();
 }
 function setLive(on) {
