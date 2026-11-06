@@ -9,7 +9,7 @@
     ["/dash/research", "task", "任务"],
     ["/dash/research#agents-directory", "agent", "Agent"],
     ["/dash/fleet", "device", "设备"],
-    ["/dash/jobs", "runs", "运行"],
+    ["/dash/jobs", "runs", "作业"],
     ["/dash/datasets", "data", "数据集"],
   ];
   const MORE = [

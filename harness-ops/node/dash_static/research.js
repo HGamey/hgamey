@@ -262,7 +262,7 @@
       const li = el('li');
       if (ref.kind === 'external') li.append(el('strong', '外部声明（仅文字）'), el('p', `${text(ref.node_id)} · ${text(ref.locator)}`, 'note'));
       else if (ref.node_id === node?.node_id) {
-        const link = el('a', ref.kind === 'job' ? `任务 ${ref.job_id}` : `结果 ${ref.result_id}${ref.source_name ? ` · 来源 ${ref.source_name}` : ''}`);
+        const link = el('a', ref.kind === 'job' ? `作业 ${ref.job_id}` : `结果 ${ref.result_id}${ref.source_name ? ` · 来源 ${ref.source_name}` : ''}`);
         link.href = HGTarget.url(ref.kind === 'job' ? `/dash/jobs#job=${encodeURIComponent(ref.job_id)}` : `/dash/results#result=${encodeURIComponent(ref.result_id)}`); li.append(link);
       } else li.append(el('span', `${ref.kind} · ${text(ref.node_id)} · ${text(ref.job_id || ref.result_id)}（不自动访问其他节点）`));
       return li;

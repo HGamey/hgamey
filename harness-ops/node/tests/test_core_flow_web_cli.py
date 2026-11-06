@@ -1774,9 +1774,10 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_a_chain_of_tasks_reads_as_one(self):
-        """Tasks that follow one another (research.follows) list as their root with a count, read as one page with a
-        strip of the chain and tagged entries, take notes on the chosen task, and draw one tree in the command view."""
+    def test_a_chain_of_tasks_links_each_task_to_its_own_page(self):
+        """Tasks that follow one another (research.follows) list as their root with a count. Each task has its own page
+        with only its own records: the chain is a tree of links under the root's row and 子任务 / 接续自 at the top of
+        the page; a note is written to the task on the page; the command view draws one tree."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -1811,26 +1812,34 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertIn("含 1 个接续任务", page.text_content(".research-choice .research-meta"))
                 page.goto(f"{base}/dash/research?kind=research&id=sr-root")
                 page.wait_for_selector(".chain-strip")
-                self.assertEqual(page.eval_on_selector_all(".chain-seg", "e => e.map(x => x.dataset.seg || 'all')"), ["all", "sr-root", "sr-next"])
-                page.wait_for_function("() => document.querySelectorAll('#task-thread .discuss-entry[data-task]').length === 2")
-                self.assertEqual(page.eval_on_selector_all("#task-thread .discuss-entry .chain-tag", "e => e.map(x => x.textContent[0])"), ["①", "②"])
+                self.assertEqual(page.eval_on_selector_all(".chain-seg", "e => e.map(x => [x.dataset.seg, x.getAttribute('aria-current')])"),
+                                 [["sr-root", "page"], ["sr-next", None]])
+                page.wait_for_function("() => document.querySelectorAll('#task-thread .discuss-entry').length === 1")
+                self.assertEqual(page.eval_on_selector_all("#task-thread .discuss-text", "e => e.map(x => x.textContent)"), ["进展 sr-root"],
+                                 "a task's page holds only its own notes")
+                self.assertEqual(page.eval_on_selector_all("#task-summary .summary-task-title", "e => e.map(x => x.textContent)"), ["任务 sr-next"])
+                # The tree in the list and the 子任务 card both go to the follow-on's own page.
                 page.click('.chain-seg[data-seg="sr-next"]')
-                self.assertEqual(page.eval_on_selector_all("#task-thread .discuss-entry:not(.seg-out) .discuss-text", "e => e.map(x => x.textContent)"), ["进展 sr-next"])
+                page.wait_for_url("**id=sr-next**")
+                page.wait_for_function("() => [...document.querySelectorAll('#task-thread .discuss-text')].map(x => x.textContent).join() === '进展 sr-next'")
+                self.assertEqual(page.get_attribute('.chain-seg[data-seg="sr-next"]', "aria-current"), "page")
+                self.assertEqual(page.text_content("#task-summary .summary-parent"), "接续自 任务 sr-root")
+                self.assertIn("id=sr-root", page.get_attribute("#task-summary .summary-parent a", "href"))
                 page.fill("#task-note-text", "写到第二段")
                 page.click("#task-note-submit")
                 page.wait_for_function("() => [...document.querySelectorAll('.discuss-text')].some(e => e.textContent === '写到第二段')")
                 saved = [n for n in self.web("GET", "/research-state/note?research_id=sr-next&limit=5")[1]["items"] if n["text"] == "写到第二段"]
-                self.assertEqual(len(saved), 1, "a note written with ② selected belongs to ②")
+                self.assertEqual(len(saved), 1, "a note written on ②'s page belongs to ②")
                 page.goto(f"{base}/dash/command")
                 page.wait_for_function("() => window.__ready === true")
                 self.assertEqual(page.evaluate("() => [...window.__command.world.trees.keys()].filter(id => id.startsWith('sr-'))"), ["sr-root"])
             finally:
                 browser.close()
 
-    def test_a_long_chain_reads_what_is_on_screen_first(self):
-        """A chain's page reads what is on screen: below the fold, runs and notes wait until scrolled to, each task's
-        runs are asked for once, an older delivery is read when it is opened, and the folded agent directory is not
-        read at all."""
+    def test_a_task_in_a_chain_reads_only_its_own_records_and_folds_what_agents_did(self):
+        """A follow-on task's page reads its own directions, jobs (once for both sections), notes and comparisons, never
+        the records of the tasks around it; 探索过程 and 作业 open folded to a heading with a count; the folded agent
+        directory is not read at all."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -1839,16 +1848,15 @@ class CoreFlowTests(unittest.TestCase):
             self.skipTest("playwright is not installed")
         for rid, follows in (("sr-a", None), ("sr-b", "sr-a"), ("sr-c", "sr-b")):
             self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
-                "create-" + rid, {"title": "长链 " + rid, "objective": "首屏只读看得到的", "follows": follows}))[0], 201)
-        # A note on a delivered task reopens it, so the note comes first.
-        self.assertEqual(self.web("POST", "/research-state/note/n-long", self.write("create-n-long", {
-            "research_id": "sr-a", "text": "最早的进展", "reply_to": None, "decision": None}))[0], 201)
+                "create-" + rid, {"title": "长链 " + rid, "objective": "只读本任务", "follows": follows}))[0], 201)
+            self.assertEqual(self.web("POST", f"/research-state/note/n-{rid}", self.write("create-n-" + rid, {
+                "research_id": rid, "text": "进展 " + rid, "reply_to": None, "decision": None}))[0], 201)
         for rid in ("sr-a", "sr-b"):
             self.assertEqual(self.pf(ADMIN, "research", "deliver", rid, "--summary", "# 交付 " + rid, "--artifact", f"job:{self.jid}",
                                      "--game-version", "5.1", "--device", "FixturePhone")[0], 0)
         for i in range(20):
             self.assertEqual(self.web("POST", f"/research-state/direction/d-long-{i}", self.write(f"create-d-long-{i}", {
-                "research_id": "sr-c", "title": f"方向 {i}", "hypothesis": "把运行和留言推到屏幕下面"}))[0], 201)
+                "research_id": "sr-c", "title": f"方向 {i}", "hypothesis": "收起来的探索过程"}))[0], 201)
         base = "http://%s:%d" % self.address
         with sync_playwright() as playwright:
             try:
@@ -1865,33 +1873,33 @@ class CoreFlowTests(unittest.TestCase):
                 asked = []
                 page.on("request", lambda request: asked.append(request.url.split("/dash/api", 1)[-1]) if "/dash/api/" in request.url else None)
                 reads = lambda part: [url for url in asked if part in url]
-                settled = "() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))"
                 page.goto(f"{base}/dash/research?kind=research&id=sr-c")
                 page.wait_for_function("() => document.querySelectorAll('#task-directions .research-direction').length === 20")
-                page.wait_for_selector('.task-report[data-task="sr-b"]', state="attached")
-                page.evaluate(settled)
-                self.assertGreater(page.evaluate("() => document.getElementById('task-runs').getBoundingClientRect().top - innerHeight"), 100,
-                                   "the fixture puts runs and notes below the fold")
-                self.assertEqual(reads("/research-state/note?"), [], "notes below the fold are not read yet")
-                self.assertEqual(page.eval_on_selector_all("#task-runs .run-list, #task-thread .discuss-entry", "e => e.length"), 0)
-                self.assertEqual(reads("/research-state/research/sr-a"), [], "the older delivery is not read while folded")
-                page.wait_for_function("() => { scrollTo(0, document.documentElement.scrollHeight); return document.querySelectorAll('#task-thread .discuss-entry').length === 1; }")
-                self.assertEqual(sorted(url.split("research=")[1].split("&")[0] for url in reads("/jobs?research=")), ["sr-a", "sr-b", "sr-c"],
-                                 "directions and runs share one read of each task's runs")
-                self.assertEqual(len(reads("/research-state/note?")), 3)
-                page.click(".chain-seg:not([data-seg])")
-                page.click(".report-older summary")
-                page.wait_for_selector(".report-older .task-report")
-                self.assertIn("交付 sr-a", page.text_content(".report-older"))
-                self.assertEqual(len(reads("/research-state/research/sr-a")), 1)
+                page.wait_for_function("() => document.querySelectorAll('#task-thread .discuss-entry').length === 1")
+                self.assertEqual(page.text_content("#task-thread .discuss-text"), "进展 sr-c")
+                which = lambda part, key: sorted(url.split(key + "=")[1].split("&")[0] for url in reads(part))
+                self.assertEqual(which("/jobs?research=", "research"), ["sr-c"], "one read of this task's jobs for both sections")
+                self.assertEqual(which("/research-state/note?", "research_id"), ["sr-c"])
+                self.assertEqual(which("/research-state/direction?", "research_id"), ["sr-c"])
+                self.assertEqual(which("/research-state/request?", "research_id"), ["sr-c"])
+                self.assertEqual(reads("/research-state/research/sr-a") + reads("/research-state/research/sr-b"), [],
+                                 "the tasks around it are links, not reads")
+                self.assertEqual(page.eval_on_selector_all("#task-detail .task-report", "e => e.length"), 0, "only this task's delivery (none yet)")
+                # 探索过程 and 作业 are folded to their heading line, with a count.
+                folds = page.eval_on_selector_all(".task-fold", "e => e.map(x => [x.closest('section').id, x.open, x.querySelector('summary h3').textContent, x.querySelector('summary .count').textContent])")
+                self.assertEqual(folds, [["task-directions", False, "探索过程", "20"], ["task-runs", False, "作业", ""]])
+                self.assertFalse(page.is_visible("#task-directions .research-direction"))
+                page.click("#task-directions .task-fold > summary")
+                self.assertTrue(page.is_visible('#task-directions [data-direction="d-long-0"]'))
                 self.assertEqual(reads("/duties") + reads("/jobs?limit=50"), [], "the folded agent directory is not read")
             finally:
                 browser.close()
 
     def test_a_chain_grows_along_what_each_direction_is_based_on(self):
         """Directions hang under the direction (and run) they are based on, on the task page and in the command view.
-        The chain's tasks are a tree in the task list under the root; 探索过程 is indented by based_on with 「基于 …」,
-        the line to the newest standing direction is marked and a rejected dead end folds. In the command view a
+        The chain's tasks are a tree of links in the task list under the root; a task's 探索过程 is indented by based_on
+        with 「基于 …」 (naming a direction of the task it follows too), the line to the newest standing direction is
+        marked and a rejected dead end folds. In the command view a
         direction is one generation right of its parent, the run it builds on is a pill on the edge and a gold dot,
         the main line runs to the newest standing direction, and a follow-on task without directions is a stub."""
         try:
@@ -1941,31 +1949,29 @@ class CoreFlowTests(unittest.TestCase):
                 tree = '#object-list li[data-id="lin-root"] .chain-strip'
                 page.wait_for_selector(tree)
                 self.assertEqual(page.locator("#task-detail .chain-strip").count(), 0)
-                self.assertEqual(page.eval_on_selector_all(tree + " .chain-seg", "e => e.map(x => [x.dataset.seg || 'all', x.classList.contains('nested')])"),
-                                 [["all", False], ["lin-root", False], ["lin-next", True], ["lin-rep", True], ["lin-side", True]])
+                self.assertEqual(page.eval_on_selector_all(tree + " .chain-seg", "e => e.map(x => [x.dataset.seg, x.classList.contains('nested')])"),
+                                 [["lin-root", False], ["lin-next", True], ["lin-rep", True], ["lin-side", True]])
                 self.assertEqual(page.get_attribute('.chain-seg[data-seg="lin-rep"]', "style"), "--depth: 2;")
-                # 探索过程: each direction under the one it builds on, the run it builds on named, the main line marked.
-                page.wait_for_function("() => document.querySelectorAll('#task-directions .research-direction').length === 5")
+                # 探索过程 (opened): this task's directions, each under the one it builds on, the main line marked.
+                page.wait_for_function("() => document.querySelectorAll('#task-directions .research-direction').length === 3")
+                page.click("#task-directions .task-fold > summary")
                 rows = page.eval_on_selector_all("#task-directions .research-direction", """e => e.map(x => [x.dataset.direction,
                   getComputedStyle(x).getPropertyValue('--depth').trim(), x.classList.contains('on-main'), x.offsetParent !== null])""")
-                self.assertEqual(rows, [["d-a", "0", True, True], ["d-b", "1", True, True], ["d-c", "2", True, True], ["d-d", "3", True, True],
-                                        ["d-x", "1", False, False]])
+                self.assertEqual(rows, [["d-a", "0", True, True], ["d-b", "1", True, True], ["d-x", "1", False, False]])
                 self.assertIn("1 条没往下走的分支：方向 X：试过放弃（已排除）", page.text_content("#task-directions .direction-fold"))
                 based = lambda did: page.text_content(f'#task-directions [data-direction="{did}"] .direction-base')
                 self.assertEqual(based("d-b"), "基于 「方向 A：基线」")
-                self.assertTrue(based("d-c").startswith("基于 「方向 B：在 A 上改」 里的 ") and based("d-c").endswith(" 那次运行"), based("d-c"))
-                self.assertTrue(page.get_attribute('[data-direction="d-c"] .direction-base a', "href").endswith(f"#job={picked}"))
-                self.assertEqual(sorted(page.eval_on_selector_all('[data-direction="d-b"] .run-row', "e => e.map(x => [x.dataset.job, x.classList.contains('picked')])")),
-                                 sorted([[picked, True], [other, False]]), "the run a later direction builds on is marked in its list")
+                self.assertEqual(sorted(page.eval_on_selector_all('[data-direction="d-b"] .run-row', "e => e.map(x => x.dataset.job)")), sorted([picked, other]))
                 page.click("#task-directions .direction-fold")
                 self.assertTrue(page.is_visible('[data-direction="d-x"]'), "the fold opens in place")
+                # The follow-on's own page: its direction names the one it builds on in the task before, and the job.
                 page.click('.chain-seg[data-seg="lin-next"]')
-                self.assertEqual(page.eval_on_selector_all("#task-directions .research-direction:not(.seg-out)", "e => e.map(x => x.dataset.direction)"), ["d-c"])
-                self.assertIn("方向 B：在 A 上改", based("d-c"), "on its own, a step still names what it builds on")
-                self.assertEqual(page.evaluate("() => getComputedStyle(document.querySelector('[data-direction=\"d-c\"]')).getPropertyValue('--depth').trim()"), "0",
-                                 "and is not indented under directions that are not shown")
-                page.click(".chain-seg:not([data-seg])")
-                self.assertEqual(page.evaluate("() => getComputedStyle(document.querySelector('[data-direction=\"d-c\"]')).getPropertyValue('--depth').trim()"), "2")
+                page.wait_for_url("**id=lin-next**")
+                page.wait_for_function("() => document.querySelectorAll('#task-directions .research-direction').length === 1")
+                page.wait_for_function("() => document.querySelector('#task-directions .direction-base')?.textContent.endsWith('那次作业')")
+                self.assertTrue(based("d-c").startswith("基于 「方向 B：在 A 上改」 里的 ") and based("d-c").endswith(" 那次作业"), based("d-c"))
+                self.assertTrue(page.get_attribute('[data-direction="d-c"] .direction-base a', "href").endswith(f"#job={picked}"))
+                self.assertEqual(page.evaluate("() => getComputedStyle(document.querySelector('[data-direction=\"d-c\"]')).getPropertyValue('--depth').trim()"), "0")
                 # Command view: one generation per based_on, the picked run as a pill and a gold dot, the main line, a stub.
                 page.goto(f"{base}/dash/command")
                 page.wait_for_function("() => window.__ready === true")
@@ -1987,9 +1993,9 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_a_chains_newest_report_that_cannot_be_read_keeps_its_place(self):
-        """On a chain page the newest delivery leads. When its read fails it stays first and says it was not read,
-        with a retry; the older report stays folded instead of passing for the newest. The retry shows it."""
+    def test_a_task_page_shows_its_own_report_and_links_the_task_that_follows(self):
+        """A task page shows only its own delivery report, never the report of the task that follows it; that task is
+        a 子任务 card leading to its own page, which shows its own report and names the task it follows."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -2014,25 +2020,22 @@ class CoreFlowTests(unittest.TestCase):
                 context.add_cookies([{"name": self.view_cookie.split("=", 1)[0], "value": self.view_cookie.split("=", 1)[1], "url": base}])
                 page = context.new_page()
                 errors, reads = [], []
-
-                def once(route, request):
-                    # The first read of the newer task's record is cut off; later ones go through.
-                    reads.append(request.url)
-                    return route.abort("connectionreset") if len(reads) == 1 else route.continue_()
-                page.route("**/dash/api/research-state/research/rp-new*", once)
+                page.on("request", lambda request: reads.append(request.url) if "/research-state/" in request.url else None)
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(f"{base}/dash/research?kind=research&id=rp-old")
                 page.wait_for_selector("#task-report")
+                page.wait_for_selector("#task-thread .section-head")
+                self.assertEqual(page.locator(".task-report").count(), 1)
                 report = page.text_content("#task-report")
-                self.assertIn("② 交付 rp-new 的交付报告", report)
-                self.assertIn("没读到这份交付报告。", report)
-                self.assertNotIn("报告 rp-old", report, "the older report does not stand in for the newest")
-                self.assertEqual(page.eval_on_selector_all(".report-older summary", "e => e.map(x => x.textContent.split(' · ')[0])"), ["① 交付 rp-old 的交付报告"])
-                self.assertEqual(page.locator(".task-report:not(.task-report-missed)").count(), 0)
-                page.click("#task-report button:has-text('重试')")
-                page.wait_for_function("() => document.getElementById('task-report').textContent.includes('报告 rp-new')")
-                self.assertEqual(page.locator(".task-report-missed").count(), 0)
-                self.assertEqual(len(reads), 2)
+                self.assertIn("报告 rp-old", report)
+                self.assertNotIn("报告 rp-new", report, "the report of the task that follows is on its own page")
+                self.assertFalse([url for url in reads if "rp-new" in url], "nothing of the task that follows is read")
+                page.click('#task-summary .summary-task[href*="id=rp-new"]')
+                page.wait_for_url("**id=rp-new**")
+                page.wait_for_function("() => document.getElementById('task-report')?.textContent.includes('报告 rp-new')")
+                self.assertEqual(page.locator(".task-report").count(), 1)
+                self.assertNotIn("报告 rp-old", page.text_content("#task-report"))
+                self.assertIn("交付 rp-old", page.text_content("#task-summary .summary-parent"))
                 self.assertEqual(errors, [])
             finally:
                 browser.close()
@@ -2297,11 +2300,9 @@ class CoreFlowTests(unittest.TestCase):
         script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
         self.assertLess(page.index('id="object-body"'), page.index('id="task-detail"'))
         self.assertIn('directionsSection', script)
-        # Comparisons waiting for a person sit right under the owner; answered ones follow the thread.
-        # A chain's task tree sits in the task list under its root's row; the delivery report (the newest one in a chain)
-        # fills the last place once read.
-        self.assertIn('container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports]', script)
-        self.assertIn("reports.replaceWith(...found)", script)
+        # Comparisons waiting for a person sit right under the owner, then the summary; answered ones follow the thread.
+        # A chain's task tree sits in the task list under its root's row; the task's own delivery report is last.
+        self.assertIn('container.append(...[ownerSection(record, ctx), waiting, summary, directions, runs, thread, judged, deliverableSection(record)]', script)
         self.assertIn("waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');", script)
 
     def test_owner_agents_refresh_with_detail_and_access(self):
@@ -3160,9 +3161,9 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_a_chains_comparisons_and_their_answers_arrive_in_one_read(self):
-        """A chain's comparisons come from one request list read (every task, full records, newest answers): no read
-        per comparison or per answer. Each shows under its task in chain order; the answered one with its verdict."""
+    def test_a_tasks_comparisons_and_their_answers_arrive_in_one_read(self):
+        """A task's comparisons come from one request list read (full records, newest answers): no read per comparison
+        or per answer. In a chain each task's page reads and shows only its own; the answered one with its verdict."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -3212,17 +3213,22 @@ class CoreFlowTests(unittest.TestCase):
                 page = context.new_page()
                 asked = []
                 page.on("request", lambda request: asked.append(request.url.split("/dash/api", 1)[1]) if "/dash/api/research-state/" in request.url else None)
-                page.goto(f"{base}/dash/research?kind=research&id=sr-one")
-                page.wait_for_selector("#task-compare-open #cmp-ev-sr-two")
-                page.wait_for_selector("#task-compare-done #cmp-ev-sr-one .compare-verdict", state="attached")
-                self.assertIn("B 更好", page.text_content("#task-compare-done #cmp-ev-sr-one .compare-verdict"))
-                lists = [url for url in asked if url.startswith("/research-state/request?")]
-                self.assertEqual(len(lists), 1, lists)
-                self.assertIn("research_id=sr-one&research_id=sr-two", lists[0])
-                self.assertIn("full=1", lists[0])
-                self.assertIn("feedback=latest", lists[0])
-                self.assertEqual([url for url in asked if url.startswith(("/research-state/request/ev-", "/research-state/feedback"))
-                                  and "/media/" not in url], [], "no read per comparison or per answer")
+                for rid, shown in (("sr-one", "#task-compare-done #cmp-ev-sr-one .compare-verdict"), ("sr-two", "#task-compare-open #cmp-ev-sr-two")):
+                    asked.clear()
+                    page.goto(f"{base}/dash/research?kind=research&id={rid}")
+                    page.wait_for_selector(shown, state="attached")
+                    page.wait_for_selector("#task-thread .section-head")
+                    self.assertEqual(page.eval_on_selector_all("article[data-request]", "e => e.map(x => x.id)"), ["cmp-ev-" + rid])
+                    lists = [url for url in asked if url.startswith("/research-state/request?")]
+                    self.assertEqual(len(lists), 1, lists)
+                    self.assertIn(f"research_id={rid}", lists[0])
+                    self.assertNotIn("sr-two" if rid == "sr-one" else "sr-one", lists[0])
+                    self.assertIn("full=1", lists[0])
+                    self.assertIn("feedback=latest", lists[0])
+                    self.assertEqual([url for url in asked if url.startswith(("/research-state/request/ev-", "/research-state/feedback"))
+                                      and "/media/" not in url], [], "no read per comparison or per answer")
+                    if rid == "sr-one":
+                        self.assertIn("B 更好", page.text_content(shown))
             finally:
                 browser.close()
 
@@ -3959,7 +3965,7 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('requireWrite', script)
         engineering = page.split('<summary>工程详情</summary>', 1)[1]
         self.assertIn('id="criteria-detail"', engineering)
-        self.assertIn('["/dash/jobs", "runs", "运行"]', shell)
+        self.assertIn('["/dash/jobs", "runs", "作业"]', shell)
         self.assertIn('["/dash/research", "task", "任务"]', shell)
         self.assertIn('["/dash/research#agents-directory", "agent", "Agent"]', shell)
         self.assertIn('id="objects-heading" tabindex="-1">任务</h2>', page)

@@ -29,7 +29,8 @@
     }
     return all.filter((revision, i) => revision.data.deliverable && JSON.stringify(revision.data.deliverable) !== JSON.stringify(all[i + 1]?.data.deliverable));
   }
-  const label = (revision, n) => [`第 ${n} 版`, when(revision.updated_at), by(revision)].join(' · ');
+  // A version's reason says what changed in it; the plain 交付 adds nothing.
+  const label = (revision, n) => [`第 ${n} 版`, when(revision.updated_at), by(revision), revision.audit?.reason !== '交付' && revision.audit?.reason].filter(Boolean).join(' · ');
 
   async function load() {
     if (!id) { $('message').textContent = '没有指定任务。'; return; }

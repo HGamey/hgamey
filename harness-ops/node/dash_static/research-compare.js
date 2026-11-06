@@ -55,10 +55,9 @@
     return answers.items.length ? await U.api(`/research-state/feedback/${encodeURIComponent(answers.items[0].id)}`) : null;
   }
 
-  // A task's (or a whole chain's) comparisons in one read: each full record with its newest answer, page by page,
-  // in chain order as the per-task lists gave them.
-  async function chainRequests(ids, U) {
-    const query = new URLSearchParams(ids.map(id => ['research_id', id])), items = [];
+  // A task's comparisons in one read: each full record with its newest answer, page by page.
+  async function taskRequests(id, U) {
+    const query = new URLSearchParams({research_id: id}), items = [];
     query.set('full', '1'); query.set('feedback', 'latest'); query.set('limit', '100');
     for (let cursor = null; ; ) {
       if (cursor) query.set('cursor', cursor);
@@ -66,8 +65,7 @@
       items.push(...page.items); cursor = page.next_cursor;
       if (!cursor) break;
     }
-    const step = new Map(ids.map((id, i) => [id, i]));
-    return items.map((item, i) => [item, i]).sort(([a, i], [b, j]) => (step.get(a.research_id) ?? 0) - (step.get(b.research_id) ?? 0) || i - j).map(([item]) => item);
+    return items;
   }
 
   // A block's files wait until it is near the screen (the task page's reader when it has one).
@@ -374,7 +372,7 @@
         const where = U.el('span', null, 'compare-source'), card = cards.get(s.slots[i].slot);
         if (source.job) {
           const link = U.el('a', `${source.path}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(source.job)}`);
-          where.append(link, U.el('span', ` · 任务 ${source.job}`, 'muted'));
+          where.append(link, U.el('span', ` · 作业 ${source.job}`, 'muted'));
         } else where.append(source.name);
         card.querySelector('figcaption').append(where);
       }));
@@ -488,18 +486,16 @@
   }
 
   // The research's comparisons: those waiting for a judgement first (the caller puts them at the top), answered ones apart.
-  // On a chain of tasks (`scope`), every task's comparisons, each tagged with its task.
-  async function sections(record, ctx, U, scope) {
+  async function sections(record, ctx, U) {
     if (U.near) near = U.near;
-    const requests = (await chainRequests(scope?.ids || [record.id], U)).filter(isComparison);
+    const requests = (await taskRequests(record.id, U)).filter(isComparison);
     keep(requests);
     // The newest answer is shown when it carries a judgement; otherwise the answers are read one by one as before.
     const answers = await Promise.all(requests.map(r => r.latest_feedback === null ? null
       : verdict(r.latest_feedback?.data?.evaluation) ? r.latest_feedback : load(r, U).catch(() => null)));
     const open = [], done = [], closed = [];
     requests.forEach((r, i) => {
-      const item = block(r, answers[i], ctx, U, true), mark = scope?.tag(r.research_id);
-      if (mark) { item.querySelector('.compare-head').prepend(mark); item.dataset.task = r.research_id; }
+      const item = block(r, answers[i], ctx, U, true);
       (answers[i] ? done : r.data.state !== 'open' ? closed : open).push(item);
     });
     // The comparison a task's top shows: the newest answered ranking, else the newest answered comparison.

@@ -18,8 +18,8 @@ class ReportPageTests(unittest.TestCase):
     def task(self, rid, title):
         self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write("create-" + rid, {"title": title, "objective": "交付页"}))[0], 201)
 
-    def deliver(self, rid, summary):
-        code, _, err = self.pf(core.ADMIN, "research", "deliver", rid, "--summary", summary, "--artifact", f"job:{self.jid}")
+    def deliver(self, rid, summary, *reason):
+        code, _, err = self.pf(core.ADMIN, "research", "deliver", rid, "--summary", summary, "--artifact", f"job:{self.jid}", *reason)
         self.assertEqual(code, 0, err)
 
     def test_the_newest_delivery_reads_in_full_and_earlier_ones_fold(self):
@@ -30,7 +30,8 @@ class ReportPageTests(unittest.TestCase):
         source.write_text(json.dumps({"title": "Doom 装回手机（终）"}))   # a revision that leaves the delivery alone
         code, _, err = self.pf(core.ADMIN, "research", "update", "research", "sr-rep", str(source), "--revision", str(record["revision"]), "--reason", "改标题")
         self.assertEqual(code, 0, err)
-        self.deliver("sr-rep", FINAL)
+        self.deliver("sr-rep", FINAL, "--reason", "补了帧率表")   # what changed goes in the reason, not the report
+        self.assertEqual(self.cli("GET", "/research-state/research/sr-rep/history?limit=1")[1]["items"][0]["audit"]["reason"], "补了帧率表")
         self.task("sr-open", "还在做")
         base = "http://%s:%d" % self.address
         with self._browser_page() as page:
@@ -43,6 +44,7 @@ class ReportPageTests(unittest.TestCase):
             self.assertIn("/dash/research?kind=research&id=sr-rep", page.get_attribute("#report-back", "href"))
             kicker = page.text_content("#report-kicker")
             self.assertTrue(kicker.startswith("交付报告 · 第 2 版 · "), kicker)
+            self.assertIn(" · 补了帧率表", kicker)
             self.assertIn("已交付", kicker)
             report = page.text_content("#report")
             self.assertIn("终版结论", report)
@@ -55,6 +57,7 @@ class ReportPageTests(unittest.TestCase):
             version = page.locator("#report-versions .report-version")
             self.assertEqual(version.count(), 1)
             self.assertTrue(version.locator("summary").text_content().startswith("第 1 版 · "))
+            self.assertNotIn("交付", version.locator("summary").text_content(), "the plain reason adds nothing")
             self.assertEqual(version.locator(".research-report").count(), 0)
             page.click("#report-history > summary")
             version.locator("summary").click()
