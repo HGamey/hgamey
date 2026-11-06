@@ -128,22 +128,22 @@ class FleetState:
                 if self._closed:
                     return
                 self._attempted_at = time.time()
-                lock = self._read_lock()
                 self._refreshing, self._deferred = True, None
+            fleet, error, deferred, lock = None, None, None, dict(status="unknown")
+            try:
+                lock = self._read_lock()
                 # PF tries each device independently; one busy phone must not
                 # disable screenshots of every idle phone.
-                screenshots = now < self._shots_until
-            executable, cwd = (self.leases.bins["phonefarm"] if self.leases else
-                               (os.path.join(self.root, "phonefarm"), self.root))
-            configured = self.leases.env if self.leases and self.leases.env is not None else os.environ
-            env = {k: v for k, v in configured.items() if k not in {"DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"}}
-            command = [executable, "fleet", "--json"]
-            if self.leases is None:
-                command += ["--lock-dir", self.lock_dir]
-            if screenshots:
-                command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
-            fleet, error, deferred = None, None, None
-            try:
+                screenshots = time.monotonic() < self._shots_until
+                executable, cwd = (self.leases.bins["phonefarm"] if self.leases else
+                                   (os.path.join(self.root, "phonefarm"), self.root))
+                configured = self.leases.env if self.leases and self.leases.env is not None else os.environ
+                env = {k: v for k, v in configured.items() if k not in {"DEVLOCK_LABEL", "DEVLOCK_INSTANCE_ID"}}
+                command = [executable, "fleet", "--json"]
+                if self.leases is None:
+                    command += ["--lock-dir", self.lock_dir]
+                if screenshots:
+                    command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
                 # The PF supervisor bounds and cleans up its own observation group.
                 result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, start_new_session=True,
                                         timeout=40, stdin=subprocess.DEVNULL, check=False)
@@ -175,14 +175,16 @@ class FleetState:
                     if value.get("lock") is not None and not isinstance(value["lock"], dict):
                         raise ValueError("fleet lock must be an object or null")
                     fleet = value
-            except (subprocess.SubprocessError, OSError, ValueError) as e:
+            except (KeyError, subprocess.SubprocessError, OSError, ValueError) as e:
+                # 缺 phonefarm 可执行文件这类配置问题不许杀死采样线程：线程一死，
+                # ?devices=1 的处理线程会把整份快照答成 503，节点从此传不上观测。
                 error = f"fleet 采样失败: {type(e).__name__} {str(e)[:200]}"
             with self._condition:
                 if fleet is not None:
                     self._fleet, self._sampled_at = fleet, time.time()
                     self._record(fleet)
                 self._error, self._deferred, self._refreshing = error, deferred, False
-                interval = FLEET_EVERY_HELD_S if lock["status"] == "held" else FLEET_EVERY_FREE_S
+                interval = FLEET_EVERY_HELD_S if lock.get("status") == "held" else FLEET_EVERY_FREE_S
                 self._next_at = time.monotonic() + (5 if deferred else interval)
                 self._attempt += 1
                 self._condition.notify_all()
