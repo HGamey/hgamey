@@ -372,16 +372,16 @@ def idle_window(config, automatic):
 
 def publish(name, config, sha, ref, started, before, source, built, work, automatic):
     root = path(config['root'])
-    for argv in config["stop"]:
-        run(argv)
-    jobs = busy(config)  # Record jobs present at publication; never refuse deployment.
     backup = work / "backups" / time.strftime("%Y%m%dT%H%M%S")
     backup.mkdir(parents=True)
     publication, changed = Publication(backup), {}
     cursor = root / "harness-ops"
     release_before = os.readlink(cursor).split("/")[1] if cursor.is_symlink() else None
     started_new = False
+    for argv in config["stop"]:
+        run(argv)
     try:
+        jobs = busy(config)  # Manual publication still records rather than rejects live jobs.
         if config.get('repository'):
             publication.put(source / 'deploy.py', root / 'deploy.py', 0o755)
         for component, _, executable in PROGRAMS:
@@ -514,7 +514,7 @@ def update_service_plan(root, node_id, platform, home):
 def install_updates(config_file, *, home=None):
     config = load_config(None, config_file)
     root = path(config['root'])
-    config['repository'] = str(REPO)
+    config.setdefault('repository', str(REPO))
     # Bootstrap only the updater: the old service can demonstrate its own upgrade.
     if Path(__file__).resolve() != (root / 'deploy.py').resolve():
         shutil.copyfile(__file__, root / 'deploy.py')

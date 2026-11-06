@@ -157,6 +157,18 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertEqual(deploy.reports(self.config, 0)[0]['service'], self.flow.revision)
         self.assertEqual(self.state()['status'], 'failed')
 
+    def test_backup_creation_failure_keeps_the_original_service_running(self):
+        mkdir = Path.mkdir
+        def full(directory, *args, **kwargs):
+            if directory.parent == Path(self.config['work']) / 'backups':
+                raise OSError(28, 'fixture backup filesystem is full')
+            return mkdir(directory, *args, **kwargs)
+        process = self.flow.process
+        with patch.object(Path, 'mkdir', new=full):
+            self.assertEqual(self.auto(), 2)
+        self.assertIsNone(process.poll(), 'publication preparation stopped the old service')
+        self.assertEqual(deploy.reports(self.config, 0)[0]['service'], self.flow.revision)
+
     def test_failed_version_check_restores_files_and_restarts_old_release(self):
         original = (self.root / 'phonefarm/phonefarm').read_bytes()
         build = deploy.build.side_effect
@@ -234,6 +246,12 @@ class UpdateServicePlanTests(unittest.TestCase):
         self.assertEqual(json.loads(config_file.read_text())['repository'], str(deploy.REPO))
         self.assertEqual(run.call_count, 2)
         self.assertTrue(json.loads((data / 'update.json').read_text())['enabled'])
+        saved = json.loads(config_file.read_text())
+        saved['repository'] = str(self.base / 'existing Git checkout')
+        config_file.write_text(json.dumps(saved))
+        with patch.object(deploy, 'run'), patch.object(deploy.sys, 'platform', 'linux'):
+            deploy.install_updates(config_file, home=self.home)
+        self.assertEqual(json.loads(config_file.read_text())['repository'], saved['repository'])
 
 
 if __name__ == '__main__':
