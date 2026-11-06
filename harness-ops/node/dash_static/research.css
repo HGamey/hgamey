@@ -410,3 +410,28 @@
 .research-view .compare-load span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .research-view .compare-load progress { width: min(320px, 50%); height: 8px; }
 .research-view .compare-media.waiting, .research-view .compare-media.waiting video { background: var(--wash); }
+
+/* The top of a task: the conclusion of its delivery, the key comparison and the tasks that follow it. */
+.research-view .task-summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); }
+.research-view .task-summary:not(:has(.summary-block)) { display: none; }
+.research-view .summary-block { padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
+.research-view .summary-block .section-head { display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: var(--sp-2); }
+.research-view .summary-block h2 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
+.research-view .summary-link { margin-left: auto; font-size: var(--fs-sm); white-space: nowrap; }
+.research-view .summary-link::after { content: " →"; }
+.research-view .summary-conclusion .research-report { font-size: var(--fs-base); line-height: 1.7; }
+/* A long conclusion shows its first lines; 展开 shows the rest in place. */
+.research-view .summary-conclusion.clamped .research-report { max-height: 12em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 70%, transparent); }
+.research-view .summary-more { margin-top: var(--sp-2); }
+.research-view .summary-title { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); color: var(--ink2); }
+.research-view .summary-rank { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 0; }
+.research-view .summary-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--wash); font-size: var(--fs-sm); }
+.research-view .summary-chip b { font-weight: 700; }
+.research-view .summary-chip.best { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); background: var(--good-soft); }
+.research-view .summary-gap { font-size: var(--fs-sm); color: var(--muted); }
+.research-view .summary-tasks { list-style: none; margin: 0; padding: 0; }
+.research-view .summary-tasks li + li { border-top: 1px solid var(--grid); }
+.research-view .summary-task { display: flex; align-items: baseline; gap: var(--sp-3); padding: 8px 0 8px calc(var(--depth, 0) * 20px); color: var(--ink); text-decoration: none; }
+.research-view .summary-task:hover .summary-task-title { color: var(--acc-ink); text-decoration: underline; }
+.research-view .summary-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.research-view .summary-task .muted { font-size: var(--fs-sm); }

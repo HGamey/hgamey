@@ -206,7 +206,7 @@
     who.append(avatar(owner), el('span', owner || '无人负责'));
     row.append(who);
     if (record.data.deliverable) {
-      const jump = el('a', '查看交付报告', 'owner-jump'); jump.href = '#task-report'; row.append(jump);
+      const jump = el('a', '查看交付报告', 'owner-jump'); jump.href = HGTarget.url(`/dash/research/report?id=${encodeURIComponent(record.id)}`); row.append(jump);
     }
     // The outcome of the last click outlives the repaint that follows it, and is judged on the owner just read back.
     const outcome = assigned?.id === record.id && record.revision >= assigned.revision ? assigned : null;
@@ -289,6 +289,55 @@
     section.append(markdownReport(value.summary), el('h3', `成果文件 · ${value.artifacts.length}`), list);
     return section;
   }
+
+  // The report's 结论 section (up to the next heading of its level or above); without one, its first paragraph.
+  function conclusion(text) {
+    const lines = String(text).replace(/\r\n?/g, '\n').split('\n'), at = lines.findIndex(line => /^#{1,6}\s*结论/.test(line));
+    if (at >= 0) {
+      const level = /^#+/.exec(lines[at])[0].length, rest = lines.slice(at + 1);
+      const end = rest.findIndex(line => { const head = /^(#+)\s/.exec(line); return head && head[1].length <= level; });
+      return (end < 0 ? rest : rest.slice(0, end)).join('\n').trim();
+    }
+    return lines.join('\n').split(/\n\s*\n/).map(block => block.split('\n').filter(line => !/^#/.test(line)).join('\n').trim()).find(Boolean) || '';
+  }
+  // What a person opens a task for, before its working sections: the conclusion of its delivery, the key comparison
+  // (filled in once the comparisons are read, in `slot`) and the tasks that follow it.
+  function summarySection(record, chain, slot) {
+    const section = el('section', null, 'research-section task-summary');
+    section.id = 'task-summary';
+    const report = record.data.deliverable && conclusion(record.data.deliverable.summary);
+    if (report) {
+      const box = el('div', null, 'summary-block summary-conclusion'), head = el('div', null, 'section-head'), link = el('a', '完整交付报告', 'summary-link');
+      link.href = HGTarget.url(`/dash/research/report?id=${encodeURIComponent(record.id)}`);
+      head.append(el('h2', '结论'), link);
+      const text = markdownReport(report), more = el('button', '展开', 'ghost summary-more');
+      more.type = 'button';
+      more.onclick = () => { box.classList.remove('clamped'); more.remove(); };
+      box.classList.add('clamped');
+      box.append(head, text, more);
+      // Only a conclusion taller than the clamp keeps it.
+      requestAnimationFrame(() => { if (text.scrollHeight <= text.clientHeight + 2) { box.classList.remove('clamped'); more.remove(); } });
+      section.append(box);
+    }
+    section.append(slot);
+    const depth = new Map([[record.id, 0]]), children = [];
+    for (const task of chain) if (depth.has(task.follows) && task.id !== record.id) { depth.set(task.id, depth.get(task.follows) + 1); children.push(task); }
+    if (children.length) {
+      const box = el('div', null, 'summary-block summary-children'), list = el('ul', null, 'summary-tasks');
+      box.append(el('div', null, 'section-head'));
+      box.firstChild.append(el('h2', '子任务'), el('span', String(children.length), 'count'));
+      for (const task of children) {
+        const item = el('li'), link = el('a', null, 'summary-task'), [stateText, tone] = TASK_TONE[task.state] || [task.state, 'off'];
+        link.href = HGTarget.url(`/dash/research?kind=research&id=${encodeURIComponent(task.id)}`);
+        link.style.setProperty('--depth', depth.get(task.id) - 1);
+        link.append(el('span', task.title, 'summary-task-title'), el('span', task.owner || '无人负责', 'muted'), tag(stateText, tone));
+        item.append(link); list.append(item);
+      }
+      box.append(list); section.append(box);
+    }
+    return section;
+  }
+  const TASK_TONE = {active: ['推进中', 'acc'], idle: ['暂空闲', 'off'], paused: ['已暂停', 'warn'], closed: ['已关闭', 'off'], delivered: ['已交付', 'ok']};
 
   const DIRECTION_STATE = {proposed: '待探索', preparing: '准备中', ready: '可开展', running: '进行中', waiting_device: '等待设备',
     waiting_human: '等待协助', waiting_material: '等待素材', awaiting_evaluation: '等待评价', verified: '已验证', no_gain: '无收益', rejected: '已排除', deferred: '已暂缓'};
@@ -577,12 +626,12 @@
     const scope = chainScope(record, chain);
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
-    const judged = el('div'), reports = el('div');
-    container.append(...[ownerSection(record, ctx), waiting, directions, runs, thread, judged, reports].filter(Boolean));
+    const judged = el('div'), reports = el('div'), keySlot = el('div'), summary = summarySection(record, chain, keySlot);
+    container.append(...[ownerSection(record, ctx), waiting, summary, directions, runs, thread, judged, reports].filter(Boolean));
     if (scope.chain) { chainTree(scope, container); scope.pick(chain[0].id === record.id ? null : record.id); }
     // Comparisons are what a person comes here to answer. On a long chain the other sections fire dozens of reads and
     // media loads, so the comparisons go first and the rest of the page starts once they are in place.
-    await comparisons(record, ctx, scope, container, waiting, judged, target, () => shown === paint);
+    await comparisons(record, ctx, scope, container, waiting, judged, target, () => shown === paint, keySlot);
     if (shown !== paint) return;
     const delivered = deliverables(scope, record).then(found => { if (shown === paint) { reports.replaceWith(...found); scope.apply(container); } });
     const steps = [[directions, () => directionsSection(scope, directions)], [runs, () => runsSection(scope, runs)],
@@ -604,8 +653,8 @@
     if (retry) { const again = el('button', '重试', 'ghost'); again.type = 'button'; again.addEventListener('click', retry); box.append(again); }
     return box;
   }
-  async function comparisons(record, ctx, scope, container, waiting, judged, target, current) {
-    if (!window.HGResearchCompare) { waiting.remove(); judged.remove(); return; }
+  async function comparisons(record, ctx, scope, container, waiting, judged, target, current, keySlot) {
+    if (!window.HGResearchCompare) { waiting.remove(); judged.remove(); keySlot.remove(); return; }
     let found;
     try { found = await window.HGResearchCompare.sections(record, ctx, util, scope); }
     catch (error) {
@@ -613,13 +662,13 @@
       // Never drop the section silently: a person sent here to judge must see that the read failed.
       const failed = compareNote(`对比没读出来：${error.message || '连接中断'}`, () => {
         const again = compareNote('正在重新读取对比…'); failed.replaceWith(again);
-        comparisons(record, ctx, scope, container, again, judged, target, current);
+        comparisons(record, ctx, scope, container, again, judged, target, current, keySlot);
       });
       waiting.replaceWith(failed); return;
     }
     if (!current()) return;
     if (target && !found.open) found.open = compareNote('没有待你评的对比了：可能已经评过或已关闭，评过的在下方「对比」里。');
-    waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || ''); scope.apply(container);
+    waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || ''); keySlot.replaceWith(found.key || ''); scope.apply(container);
     const block = target && document.getElementById(target);
     if (block) { block.scrollIntoView({block: 'start'}); block.classList.add('compare-target'); setTimeout(() => block.classList.remove('compare-target'), 2400); }
   }
@@ -716,7 +765,7 @@
     const section = tagged(newest); section.dataset.task = newest.id;
     return [section, ...older];
   }
-  const util = {api, write, el, tag, timeEl, speaker, failure, near};
+  const util = {api, write, el, tag, timeEl, speaker, failure, near, markdownReport, evidenceList};
 
   window.HGResearchTask = {renderDetail, util, placeChain, clearDetail: container => { shown = null; clearImages(); dropChain(); container.replaceChildren(); }};
 })();

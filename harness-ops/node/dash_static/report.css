@@ -1,0 +1,19 @@
+/* 交付报告: a single reading column; the report's own type comes from research.css. */
+.report-view .report-page { max-width: 920px; }
+.report-page .back-link { display: inline-flex; align-items: center; gap: var(--sp-1); max-width: 100%; margin-bottom: var(--sp-4);
+  font-size: var(--fs-sm); color: var(--ink2); text-decoration: none; }
+.report-page .back-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.report-page .back-link:hover { color: var(--acc-ink); }
+.report-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 0 0 var(--sp-2); font-size: var(--fs-sm); color: var(--muted); }
+.report-page h1 { margin: 0 0 var(--sp-5); }
+.report-page #report { padding-bottom: var(--sp-5); }
+.report-page .report-files { margin: var(--sp-6) 0 var(--sp-2); font-size: var(--fs-base); font-weight: 650; }
+.report-history { margin-top: var(--sp-4); padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
+.report-history > summary { cursor: pointer; font-size: var(--fs-sm); font-weight: 600; color: var(--ink2); }
+.report-history ol { list-style: none; margin: var(--sp-2) 0 0; padding: 0; }
+.report-history li + li { border-top: 1px solid var(--grid); }
+.report-version { padding: var(--sp-2) 0; }
+.report-version > summary { cursor: pointer; font-size: var(--fs-sm); color: var(--ink2); font-variant-numeric: tabular-nums; }
+.report-version[open] > summary { margin-bottom: var(--sp-3); }
+/* The task's title is the page's h1; a report's own top heading sits a step below it. */
+.report-page .research-report h1 { font-size: var(--fs-lg); }

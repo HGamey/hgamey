@@ -2251,7 +2251,7 @@ class CoreFlowTests(unittest.TestCase):
     def test_every_page_title_uses_the_same_size(self):
         """The page titles of the pages under the shared top bar use one scale (the shell's --fs-xl), on a desktop and
         on a phone."""
-        pages = ("research", "fleet", "jobs", "results", "games", "doctor", "datasets", "structure")
+        pages = ("research", "fleet", "jobs", "results", "games", "doctor", "datasets", "structure", "research/report")
         with self._browser_page() as page:
             page.route("**/dash/api/**", lambda route: route.abort())   # the titles are static; no page data is needed
             for width in (1280, 390):

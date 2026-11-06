@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark">
+<title>交付报告 · HGamey</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/dash/static/app.css"><link rel="stylesheet" href="/dash/static/jobs.css"><link rel="stylesheet" href="/dash/static/research.css"><link rel="stylesheet" href="/dash/static/report.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+</head>
+<body class="jobs-view research-view report-view">
+<a class="skip-link" href="#report-title">跳到交付报告</a>
+<header class="top"><div class="top-right"></div></header><script src="/dash/static/shell.js"></script>
+<main class="jobs-page report-page">
+  <a id="report-back" class="back-link" href="/dash/research"><svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14"><path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>任务</span></a>
+  <p id="report-kicker" class="report-kicker"></p>
+  <h1 id="report-title" tabindex="-1">交付报告</h1>
+  <p id="message" class="note" role="status">正在读取…</p>
+  <div id="report" hidden></div>
+  <details id="report-history" class="report-history" hidden><summary></summary><ol id="report-versions"></ol></details>
+</main>
+<script src="/dash/static/target.js"></script><script src="/dash/static/job-state.js"></script><script src="/dash/static/research-task.js"></script><script src="/dash/static/report.js"></script>
+</body>
+</html>
