@@ -71,6 +71,9 @@ class AllPhonesTests(unittest.TestCase):
                 local + "/HUAWEI": ["HUAWEIHD1", host, "未接入", "—", "—", "不可远程", [f"派作业 /dash/jobs?phone={local}%2FHUAWEI"]],
             })
             self.assertEqual(page.text_content("#all-phones-count"), "4 台 · 2 台在线")
+            # A table: every column starts at the same place on every row, whatever links a row has.
+            self.assertEqual(page.eval_on_selector_all("#all-phones .phone-row", """rows => [...Array(7).keys()].map(i =>
+                new Set(rows.map(row => Math.round(row.children[i].getBoundingClientRect().left))).size)"""), [1] * 7)
             self.assertEqual(sorted(page.eval_on_selector_all(".phone-row:is(.is-off, .is-gone)", "rows => rows.map(row => row.dataset.ref)")),
                              sorted([CHENGDU + "/OP1", local + "/HUAWEI"]))
 
