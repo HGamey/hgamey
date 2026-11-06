@@ -61,8 +61,9 @@ class TaskSummaryTests(unittest.TestCase):
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + "/dash/research?kind=research&id=sr-top")
             page.wait_for_selector("#task-summary .summary-compare .summary-chip span")
+            page.wait_for_selector("#task-summary .summary-outputs h2")   # 成果 is read after the page shows
             blocks = page.eval_on_selector_all("#task-summary .summary-block h2", "hs => hs.map(h => h.textContent)")
-            self.assertEqual(blocks, ["结论", "关键对比", "子任务"])
+            self.assertEqual(blocks, ["结论", "成果", "关键对比", "子任务"])
             # The summary comes before every working section (a comparison waiting for a person stays right under the owner).
             order = page.eval_on_selector_all("#task-detail > section", "ss => ss.map(s => s.id || s.className)")
             self.assertEqual(order[:2], ["research-section task-owner", "task-summary"])
