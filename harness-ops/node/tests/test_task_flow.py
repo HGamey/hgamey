@@ -115,6 +115,30 @@ class TaskFlowTests(unittest.TestCase):
             self.assertEqual(page.eval_on_selector_all(f"{row} .flow-columns > .flow-cell", "e => new Set(e.map(x => x.getBoundingClientRect().left)).size"), 1,
                              "on a phone the three columns stack")
 
+    def test_an_adb_pull_comes_back_and_the_platforms_app_check_is_not_the_jobs(self):
+        """A `pf-node adb pull` job: what it pulled is in 返回给 agent. An experiment whose device record starts with the
+        platform's look at the phone's apps before the job: that is one line of its own, not the job's commands."""
+        now = time.time()
+        honor = {"device_access": "write", "resources": ["device:HONOR"],
+                 "device_binding": {"schema": "phonefarm/device-binding@1", "registry_revision": 1, "device_id": "HONOR", "serial": "HN1"}}
+        self.job(SENT, now - 60, bin="adb", argv=["-s", "HN1", "pull", "/sdcard/fps.txt", "fps.txt"], **honor)
+        out = self.job(UNRECORDED, now - 30, bin="experiment", argv=["doom/tap.sh"], **honor)
+        check = lambda text: {"at": now, "serial": "HN1", "command": "shell", "text": text + "\nprintf '\\n__PF_APP_STATUS__%s\\n' \"$?\""}
+        record = [check("dumpsys window"), check("ps -A -o NAME"), check("pm list packages -3"),
+                  {"at": now, "serial": "HN1", "command": "shell", "text": "input tap 1 2"}]
+        (out / ".device-io.jsonl").write_text("".join(json.dumps(line) + "\n" for line in record))
+        self.assertEqual(self.web("POST", "/research-state/research/sr-flow", self.write(
+            "create-sr-flow", {"title": "装回手机", "objective": "数据流向"}))[0], 201)
+        with self._browser_page() as page:
+            page.goto("http://%s:%d/dash/research/flow?id=sr-flow" % self.address)
+            page.wait_for_function("() => document.querySelectorAll('#flow-jobs > li.flow-job:not(.note)').length === 2")
+            pull, checked = (f'#flow-jobs > li[data-job="{jid}"]' for jid in (SENT, UNRECORDED))
+            self.assertIn("从手机取回 · 1/sdcard/fps.txt → fps.txt", page.text_content(f"{pull} .flow-out"))
+            self.assertEqual(page.text_content(f"{pull} .flow-phone .note"), "作业本身没有发给手机的内容")
+            self.assertEqual(page.eval_on_selector_all(f"{checked} .flow-phone .flow-block li", "e => e.map(x => x.textContent)"), ["input tap 1 2"])
+            self.assertEqual(page.text_content(f"{checked} .flow-check"), "开工前平台查看了手机上的应用（3 条命令）")
+            self.assertEqual(page.text_content("#total-phone"), "装包 0 · 推文件 0 · 命令 1")
+
     def test_the_files_a_job_was_given_are_listed_from_its_input_directory(self):
         self.fixture()
         code, top = self.web("GET", f"/jobs/{SENT}/input-files?path=")
