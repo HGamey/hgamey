@@ -1297,6 +1297,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, node.identity())
                 if parts == ["phones"]:
                     import job_selection
+                    fleet.request()
                     return self._send(200, {"node_id": jobs.node_id, "items": job_selection.catalog(jobs)})
                 if parts == ["node", "snapshot"]:
                     observation = fleet.request(5) if q.get("devices") == ["1"] else fleet.snapshot()

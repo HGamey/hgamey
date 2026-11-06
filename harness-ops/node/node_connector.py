@@ -97,7 +97,7 @@ class LocalHTTP:
             timeout=None, max_bytes=max_bytes, connections=self._connections, guard=self._guard, stop=self._stop)
 
     def snapshot(self):
-        response = self.request('GET', '/node/snapshot', b'', {})
+        response = self.request('GET', '/node/snapshot?devices=1', b'', {})
         if response['status'] != 200:
             raise OSError('local snapshot returned HTTP ' + str(response['status']))
         snapshot = json.loads(response['body'])

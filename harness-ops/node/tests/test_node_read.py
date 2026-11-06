@@ -130,9 +130,11 @@ class NodeReadTests(unittest.TestCase):
             self.assertEqual(ready["connection"]["status"], "ready", ready)
             self.assertEqual(ready["node_id"], remote_node.node_id)
             self.assertIsNone(ready["snapshot"]["fleet"]["devices"])
-            self.assertIsNone(remote_fleet._thread, "directory polling must not activate device sampler")
-            self.assertEqual(ready, self.get_json("/dash/api/nodes/peer", headers=view))
-            self.assertEqual(self.get_json("/nodes")["local"]["node_id"], self.node.node_id)
+            self.assertIsNotNone(remote_fleet._thread, "outbound reports must keep the device sampler active")
+            with patch.object(self.jobs.directory, 'request', wraps=self.jobs.directory.request) as relay:
+                self.assertEqual(ready, self.get_json("/dash/api/nodes/peer", headers=view))
+                self.assertEqual(self.get_json("/nodes")["local"]["node_id"], self.node.node_id)
+                relay.assert_not_called()  # Cached directory reads never ask the worker to sample.
             self.assertEqual(ready["snapshot"]["identity"]["storage"]["data_root"], remote_jobs.data_root)
 
             # Explicit device refresh uses the existing remote sampler route, not a job or MCP call.
@@ -156,6 +158,8 @@ class NodeReadTests(unittest.TestCase):
                 connector.close()
             remote_jobs.directory.close()
             remote_fleet.close()
+            if remote_fleet._thread:
+                remote_fleet._thread.join()
             remote_server.shutdown()
             remote_server.server_close()
             remote_thread.join()
