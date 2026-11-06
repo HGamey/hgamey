@@ -114,6 +114,11 @@ def duties(jobs, name, now=None):
             WHERE cur.kind='research' AND json_extract(cur.data,'$.state')='active'
               AND json_extract(prev.data,'$.state') IN ('closed','delivered') ORDER BY cur.sequence""").fetchall()
         reopen_reasons = {row["research_id"]: json.loads(row["data"]).get("state_reason") for row in reopened}
+        # 只有前一版负责人不是本人、这一版是本人才算改派：人改目标、关任务都不动 owner，不算指派。
+        prev_owner = {row["id"]: json.loads(prev["data"]).get("owner") for row, data in studies
+                      if data.get("owner") == name
+                      for prev in [db.execute("SELECT data FROM revisions WHERE kind='research' AND id=? AND revision=?",
+                                              (row["id"], row["revision"] - 1)).fetchone()] if prev is not None}
 
     owed, waiting = [], []
     answered = {data["reply_to"] for _, data, audit in notes if audit.get("actor_label") == name and data["reply_to"]}
@@ -130,9 +135,9 @@ def duties(jobs, name, now=None):
                      "command": f"pf-node research note {row['research_id']} \"<回复>\" --reply-to {row['id']} "
                                 "--decision adopt|defer|reject"})
         urgent_ids.add(row["id"])
-    # 指派也进待办：上次签到之后任务被指派到这个 agent 名下（自己认领不算），下次签到就要看到。
+    # 指派也进待办：上次签到之后任务被改派到这个 agent 名下（owner 从别人变成自己；本人认领不算），下次签到就要看到。
     for row, data in studies:
-        if data.get("owner") != name or row["sequence"] <= seen:
+        if data.get("owner") != name or row["sequence"] <= seen or prev_owner.get(row["id"]) == name:
             continue
         if json.loads(row["audit"]).get("actor_label") == name:
             continue
