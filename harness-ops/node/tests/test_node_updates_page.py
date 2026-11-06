@@ -48,7 +48,11 @@ class NodeUpdatesPageTests(unittest.TestCase):
             listed = response.json()
             listed["local"]["updates"] = {"recommended_revision": RECOMMENDED}
             for entry in listed["items"]:
-                entry["snapshot"]["identity"]["updates"] = REPORTED[entry["name"]]
+                identity = entry["snapshot"]["identity"]
+                if REPORTED[entry["name"]] is None:   # a version from before automatic updates reports nothing about them
+                    identity.pop("updates", None)
+                else:
+                    identity["updates"] = REPORTED[entry["name"]]
             route.fulfill(response=response, json=listed)
         page.route("**/dash/api/nodes", reported)
         page.route("**/dash/api/nodes?*", reported)
@@ -96,6 +100,22 @@ class NodeUpdatesPageTests(unittest.TestCase):
             self.assertTrue(rows["chengdu"].startswith("版本 bbbbbbbb · 落后 5 个提交 自动更新已暂停 · 上报于 "), rows["chengdu"])
             self.assertEqual(rows["office"], "版本 aaaaaaaa · 落后多少未知 等空闲再更新")
             self.assertEqual(rows["lab"], f"版本 {RECOMMENDED[:8]} 已是推荐版本")
+
+    def test_a_computer_that_reports_nothing_about_updates_runs_a_version_without_an_updater(self):
+        self.fixture()
+        REPORTED_BEFORE = dict(REPORTED)
+        self.addCleanup(lambda: (REPORTED.clear(), REPORTED.update(REPORTED_BEFORE)))
+        REPORTED["chengdu"] = None
+        with self._browser_page() as page:
+            self.open(page)
+            rows = dict(page.eval_on_selector_all("#node-directory .node-choice", """cs => cs.slice(1).map(c => [c.querySelector('strong').textContent,
+                c.querySelector('.node-version').textContent])"""))
+            self.assertEqual(rows["chengdu"], "版本 bbbbbbbb 未装自动更新")
+            page.click('#node-directory .node-choice:has-text("chengdu")')
+            page.wait_for_function("() => document.getElementById('node-info').textContent.includes('自动更新')")
+            facts = dict(zip(page.eval_on_selector_all("#node-info dt", "e => e.map(x => x.textContent)"),
+                             page.eval_on_selector_all("#node-info dd", "e => e.map(x => x.textContent)")))
+            self.assertEqual(facts["自动更新"], "未装自动更新")
 
 
 if __name__ == "__main__":
