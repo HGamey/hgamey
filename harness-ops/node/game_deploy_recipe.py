@@ -121,3 +121,55 @@ def validate_scene(value, assets):
             or sum(a["size"] for a in selected) > 1 << 20):
         raise ValueError("scene seeds must be two positive-size manifest assets totaling at most 1 MiB")
     return copy.deepcopy(value)
+
+
+OPENING = "hgamey/game-opening@1"
+MATCH = re.compile(r"[A-Za-z0-9._*-]{1,128}\Z")
+ROOT = re.compile(r"(?:/[A-Za-z0-9._-]{1,128}){1,32}\Z")
+
+
+def validate_opening(value):
+    """How a result is opened in an installed game: which result files go where under the app's own data directory,
+    and the `am start` arguments that open it. What a file replaces is kept beside it and put back by "open the
+    original" (see `notes`); the platform never installs or removes the app."""
+    if (not isinstance(value, dict)
+            or set(value) != {"schema", "package", "root", "files", "launch", "wait_seconds", "notes"}
+            or value.get("schema") != OPENING):
+        raise ValueError("unsupported game opening schema or fields")
+    if not isinstance(value["package"], str) or not PACKAGE.fullmatch(value["package"]):
+        raise ValueError("opening package must be an Android package name")
+    if not isinstance(value["root"], str) or not ROOT.fullmatch(value["root"]) or "/../" in value["root"] + "/" or "/./" in value["root"] + "/":
+        raise ValueError("opening root must be an absolute device directory")
+    files = value["files"]
+    if not isinstance(files, list) or not 1 <= len(files) <= 16:
+        raise ValueError("opening files must contain 1–16 entries")
+    targets = set()
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {"match", "to", "result"} or type(item["result"]) is not bool:
+            raise ValueError("opening file requires match, to and result")
+        if not isinstance(item["match"], str) or not MATCH.fullmatch(item["match"]) or item["match"].strip(".*") == "":
+            raise ValueError("opening match must be a file name, where * stands for any characters")
+        if not isinstance(item["to"], list) or not 1 <= len(item["to"]) <= 8:
+            raise ValueError("opening to must list 1–8 places")
+        for place in item["to"]:
+            directory = isinstance(place, str) and place.endswith("/")
+            parts = place.rstrip("/").split("/") if isinstance(place, str) else [""]
+            if any(not COMPONENT.fullmatch(part) or part in {".", ".."} for part in parts):
+                raise ValueError("opening places are paths under the root; a directory ends with /")
+            if "*" in item["match"] and not directory:
+                raise ValueError("a file name with * can only go to directories")
+            target = (place, item["match"]) if directory else (place, None)
+            if target in targets:
+                raise ValueError("opening places must be distinct")
+            targets.add(target)
+    if not any(item["result"] for item in files):
+        raise ValueError("opening needs at least one file that is a result to choose")
+    launch = value["launch"]
+    if (not isinstance(launch, list) or not 1 <= len(launch) <= 32
+            or any(not isinstance(arg, str) or not arg or len(arg) > 1024 or any(ord(c) < 32 for c in arg) for arg in launch)):
+        raise ValueError("opening launch must be 1–32 am start arguments")
+    if type(value["wait_seconds"]) is not int or not 1 <= value["wait_seconds"] <= 300:
+        raise ValueError("opening wait_seconds must be 1–300")
+    if not isinstance(value["notes"], str) or not value["notes"].strip() or len(value["notes"]) > 4096:
+        raise ValueError("opening notes must be nonempty text")
+    return copy.deepcopy(value)

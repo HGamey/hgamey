@@ -201,6 +201,7 @@
       const jump = el('a', '查看交付报告', 'owner-jump'); jump.href = HGTarget.url(`/dash/research/report?id=${encodeURIComponent(record.id)}`); row.append(jump);
     }
     const flow = el('a', '数据流向', 'owner-jump'); flow.href = HGTarget.url(`/dash/research/flow?id=${encodeURIComponent(record.id)}`); row.append(flow);
+    if (record.data.deliverable) { const play = el('a', '打开游戏', 'owner-jump'); play.href = HGTarget.url(`/dash/research/open?id=${encodeURIComponent(record.id)}`); row.append(play); }
     // The outcome of the last click outlives the repaint that follows it, and is judged on the owner just read back.
     const outcome = assigned?.id === record.id && record.revision >= assigned.revision ? assigned : null;
     if (outcome) {
