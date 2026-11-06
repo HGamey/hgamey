@@ -99,6 +99,27 @@ class AdbRecordTests(unittest.TestCase):
         self.assertEqual([(line["command"], line["serial"]) for line in lines], [("push", "S1"), ("shell", "S1")])
         self.assertEqual((lines[0]["files"][0]["size"], lines[0]["to"], lines[1]["text"]), (3, "/data/local/tmp/lib.so", "input tap 10 20"))
 
+    def test_an_adb_job_is_itself_recorded_and_runs_the_nodes_adb_unchanged(self):
+        """`pf-node adb …`: the job's command is the node's own adb (an absolute path under the device lock), which
+        no PATH lookup reaches; its call is recorded all the same."""
+        self.real.write_text('#!/bin/sh\necho "real-adb $*"\nexit 3\n')
+        devlock = self.tmp / "bin" / "devlock"
+        devlock.write_text(f"#!{sys.executable}\nimport os,sys\nargs=sys.argv[sys.argv.index('--')+1:]\nos.execv(args[0],args)\n")
+        devlock.chmod(0o755)
+        root = str(self.tmp / "node")
+        jobs = Jobs(root, {"adb": (str(self.real), root), "devlock": (str(devlock), root)}, max_running=1)
+        self.addCleanup(jobs._read_root.close)
+        jobs.dispatch.start = lambda: None
+        jobs.leases.snapshot = lambda **kwargs: {"status": "clear", "entries": [], "error": None}
+        jid = jobs.start({"bin": "adb", "argv": ["-s", "S1", "shell", "input", "tap", "1", "2"],
+                          "device_access": "write", "resources": ["device:S1"]}, b"")["id"]
+        jobs.dispatch.tick()
+        until(lambda: jobs._read_meta(jid).get("phase") == "finished" and not job_runtime.runner_alive(jobs._read_root, jid))
+        self.assertEqual(jobs._read_meta(jid)["exit"], 3)
+        self.assertIn("real-adb -s S1 shell input tap 1 2\n", Path(jobs.path(jid, "log")).read_text())
+        lines = [json.loads(line) for line in Path(jobs.path(jid, "out", ".device-io.jsonl")).read_text().splitlines()]
+        self.assertEqual([(line["command"], line["serial"], line["text"]) for line in lines], [("shell", "S1", "input tap 1 2")])
+
 
 if __name__ == "__main__":
     unittest.main()

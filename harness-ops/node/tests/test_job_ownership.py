@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from node_service import Jobs, _job_lock_args
 from job_queue import RequestConflict
+from job_dispatch import ADB_RECORDER
 
 
 class JobOwnershipTests(unittest.TestCase):
@@ -66,10 +67,13 @@ class JobOwnershipTests(unittest.TestCase):
             with self.subTest(bin=name):
                 argv = ["argument with spaces"] if name == "adb" else ["fixture.apk", "7", "fixture-serial", "a" * 64]
                 cache = [] if name == "adb" else ["--cache-root", os.path.join(self.jobs.data_root, "_games", "cache")]
+                # An adb job's call goes through the device recorder, which runs the node's adb unchanged.
+                program = (["/usr/bin/env", "PF_REAL_ADB=" + self.bins["adb"][0], os.path.join(ADB_RECORDER, "adb")]
+                           if name == "adb" else [self.bins[name][0]])
                 meta = self.jobs.start({"bin": name, "argv": argv}, b"")
                 self.assertEqual(self.jobs._read_root.read_json(meta["id"] + "/prepared.json")["command"],
                                  [self.bins["devlock"][0], "run", meta["lock_label"], "--",
-                                  self.bins[name][0], *cache, *argv])
+                                  *program, *cache, *argv])
                 self.assertEqual(meta["lock_mode"], "devlock_run")
                 with self.assertRaisesRegex(ValueError, "lease helper"):
                     self.jobs.start({"bin": name, "exe": "@in/helper"}, b"")

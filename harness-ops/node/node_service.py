@@ -65,7 +65,7 @@ import job_budget
 from job_capacity import normalize_slots, check_fit, CapacityExceeded
 from runtime_identity import ConfiguredPrograms, ProgramCompatibilityError
 from job_events import NodeJobEvents, JobEventError
-from job_dispatch import JobDispatch, file_lock
+from job_dispatch import JobDispatch, file_lock, ADB_RECORDER
 from job_queue import RequestConflict, job_priority
 from job_policy import require_policy
 from node_lease import LeaseState, device_access, job_lease_receipts
@@ -494,6 +494,10 @@ class Jobs:
             command += ["--device-binding", json.dumps(spec["device_binding"], separators=(",", ":"))]
         if binname == "fetch_apk":
             command = [exe, "--cache-root", os.path.join(self.data_root, "_games", "cache")] + command[1:]
+        if binname == "adb" and not spec.get("exe"):
+            # The job's own adb call is recorded like any adb its scripts run (job_dispatch.record_adb): the recorder
+            # runs this same adb with the same arguments, input and output, and returns its exit status.
+            command = ["/usr/bin/env", "PF_REAL_ADB=" + command[0], os.path.join(ADB_RECORDER, "adb"), *command[1:]]
         if external_lock:
             command = [self.bins["devlock"][0], "run", owner, "--"] + command
         self._read_root.write_json(jid + "/prepared.json", {"command": command, "cwd": cwd})
