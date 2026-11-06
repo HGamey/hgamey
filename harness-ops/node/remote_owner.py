@@ -1,4 +1,5 @@
 """Host-only gateway to the configured PF remote owner and its durable mailbox."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -163,6 +164,16 @@ class PFRemote:
 
     def submit(self, ref, request):
         return self._call(["action", "--session", str(self._path(ref)), "--request", "-", "--json"], request)
+
+    def upload(self, ref, body):
+        digest = hashlib.sha256(body).hexdigest()
+        # Publish complete bytes before the request. Repeated identical uploads
+        # keep the same request content, so PF returns the original receipt.
+        with tempfile.NamedTemporaryFile(dir=self._path(ref), delete=False) as output:
+            output.write(body)
+            temporary = output.name
+        os.replace(temporary, self._path(ref) / ('upload-' + digest + '.apk'))
+        return digest
 
     def receipt(self, ref, request_id):
         return self._call(["status", "--session", str(self._path(ref)), "--request-id", request_id, "--json"])

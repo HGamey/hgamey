@@ -24,7 +24,7 @@ OUTPUT_CAP = 256 << 10
 JSON_MAX = 64 << 10
 APK_MAX = 300 << 20
 FILE_MAX = 16 << 20
-MCP_MAX = JSON_MAX          # Only typed short requests; files use the game distribution API.
+MCP_MAX = JSON_MAX          # Small base64 uploads fit here; ordinary files use HTTP PUT.
 TEXT_MAX = 1000
 RATE_CAPACITY, RATE_REFILL = 60.0, 10.0
 COST = {"shell": 3, "screenshot": 2, "install": 20, "push": 5, "pull": 5, "logcat": 3, "diagnostics": 3, "uninstall": 5}
@@ -139,10 +139,10 @@ def _run(argv, timeout, cap=OUTPUT_CAP, env=None):
         return {'exit': None if limited else proc.returncode, 'stdout': out.read(cap), 'stderr': err.read(cap)}
 
 
-ACTIONS = {'screenshot', 'tap', 'swipe', 'text', 'key', 'app_start', 'app_stop', 'logcat', 'diagnostics'}
+ACTIONS = {'screenshot', 'tap', 'swipe', 'text', 'key', 'app_start', 'app_stop', 'logcat', 'diagnostics', 'shell', 'install', 'push'}
 INPUT_CONTRACT = 'frame-bound-v1'
-UNSUPPORTED = {'shell', 'install', 'uninstall', 'push', 'pull'}
-BINARY_UPLOAD = {}  # Legacy uploads are refused before reading their body.
+UNSUPPORTED = {'uninstall', 'pull'}
+BINARY_UPLOAD = {'install': APK_MAX, 'push': FILE_MAX}
 
 
 def valid_request_id(value, field='request_id'):
@@ -155,6 +155,7 @@ def validate_action(action, params):
     fields = {'tap': {'frame_id', 'x', 'y'}, 'swipe': {'frame_id', 'x1', 'y1', 'x2', 'y2', 'ms'},
               'text': {'text'}, 'key': {'key'}, 'screenshot': {'max', 'max_side'}, 'logcat': {'lines', 'pid'},
               'app_start': {'package', 'activity'}, 'app_stop': {'package'}, 'diagnostics': {'package'},
+              'shell': {'cmd', 'timeout_s'}, 'install': set(), 'push': {'path'},
               'renew': set(), 'release': set()}
     if set(params) - fields[action]:
         raise RemoteError(400, 'unsupported action parameters')
@@ -162,7 +163,15 @@ def validate_action(action, params):
     def integer(key, low, high):
         if type(p.get(key)) is not int or not low <= p[key] <= high:
             raise RemoteError(400, f'{key} requires integer {low}..{high}')
-    if action in ('tap', 'swipe'):
+    if action == 'shell':
+        if not isinstance(p.get('cmd'), str):
+            raise RemoteError(400, 'cmd requires a string')
+        p.setdefault('timeout_s', SHELL_TIMEOUT_DEFAULT)
+        integer('timeout_s', 1, SHELL_TIMEOUT_MAX)
+    elif action == 'push':
+        if not isinstance(p.get('path'), str):
+            raise RemoteError(400, 'path requires a string')
+    elif action in ('tap', 'swipe'):
         valid_request_id(p.get('frame_id'), 'frame_id')
         for key in ('x', 'y') if action == 'tap' else ('x1', 'y1', 'x2', 'y2'):
             integer(key, 0, 100000)
@@ -409,10 +418,10 @@ class Remote:
         if not SERIAL_RE.fullmatch(serial or '') or not isinstance(params, dict):
             raise RemoteError(400, 'invalid serial or action object')
         if action in UNSUPPORTED:
-            raise RemoteError(501, f'{action} 尚无持久 owner/恢复合同；未发出设备动作', capability='unsupported')
+            raise RemoteError(501, f'尚未提供 {action} 独立动作', capability='unsupported')
         if action not in ACTIONS | {'acquire', 'renew', 'release'}:
             raise RemoteError(404, f'没有动作 {action}')
-        if body is not None:
+        if body is not None and action not in BINARY_UPLOAD:
             raise RemoteError(400, 'typed remote actions only accept JSON')
         self.rate.take(op['id'], COST.get(action, 1))
         outcome = None
@@ -437,6 +446,10 @@ class Remote:
                                           code='action_unavailable', request_id=rid, session_id=params.get('session_id'))
                 cleaned = {k: v for k, v in params.items() if k not in ('request_id', 'session_id', 'acquisition_id')}
                 normalized = validate_action(action, cleaned)
+                if action in BINARY_UPLOAD:
+                    if body is None:
+                        raise RemoteError(400, 'upload body is required')
+                    normalized['sha256'] = self.backend.upload(sess.ref, body)
                 mapped = {'app_start': 'start_app', 'app_stop': 'stop_app'}.get(action, action)
                 outcome = self._submit(sess, mapped, normalized, rid)
                 if action == 'screenshot' and outcome.get('status') == 'completed':
@@ -479,8 +492,12 @@ for _action, _props in {
     'logcat': {'lines': {'type': 'integer', 'minimum': 1, 'maximum': 2000, 'default': 200},
                'pid': {'type': 'integer', 'minimum': 1, 'maximum': 2147483647}},
     'diagnostics': {'package': {'type': 'string', 'pattern': r'^[A-Za-z0-9_.]{1,200}$'}},
+    'shell': {'cmd': {'type': 'string'}, 'timeout_s': {'type': 'integer', 'minimum': 1, 'maximum': 120, 'default': 20}},
+    'install': {'apk_base64': {'type': 'string'}},
+    'push': {'data_base64': {'type': 'string'}, 'path': {'type': 'string'}},
 }.items():
     _required = ['serial', 'session_id', 'request_id']
+    _required += {'shell': ['cmd'], 'install': ['apk_base64'], 'push': ['path', 'data_base64']}.get(_action, [])
     _input_hint = ''
     if _action in ('tap', 'swipe'):
         _props['frame_id'] = {'type': 'string', 'pattern': r'^[A-Za-z0-9_.-]{1,64}$'}
@@ -672,7 +689,7 @@ def handle(remote, h, method, parts, query, board=None, node=None):
                     raise RemoteError(405, "session 用 POST 获取、DELETE 释放")
             if action in UNSUPPORTED:
                 h.close_connection = True
-                raise RemoteError(501, f"{action} 尚无持久 owner/恢复合同；未发出设备动作")
+                raise RemoteError(501, f"尚未提供 {action} 独立动作")
             if action in BINARY_UPLOAD:
                 if method != "PUT":
                     raise RemoteError(405, f"{action} 用 PUT，请求体是文件本身（application/octet-stream）")

@@ -1,6 +1,7 @@
 """Route center-authenticated remote operations over the existing machine connection."""
 import json
 from urllib.parse import unquote, quote
+from job_selection import catalog
 
 from node_remote import RemoteError, INPUT_CONTRACT, UNSUPPORTED
 
@@ -15,6 +16,9 @@ class RemoteCenter:
         node_id, serial = reference.split('/', 1)
         if node_id != self.jobs.node_id:
             self.jobs.center.node(node_id)
+        selected = next((phone for phone in catalog(self.jobs) if phone['ref'] == reference), None)
+        if selected is not None:
+            return node_id, selected['serial']
         return node_id, unquote(serial)
 
     def call(self, node_id, operation, args):
@@ -23,9 +27,14 @@ class RemoteCenter:
                 raise RemoteError(503, 'PF remote owner is not configured on this computer')
             return getattr(self.local, operation)(**args)
         try:
-            response = self.jobs.center.rpc({'execution_node_id': node_id}, 'POST', '/node/remote',
-                json.dumps({'operation': operation, 'args': args}).encode(),
-                {'Content-Type': 'application/json'}, max_bytes=8 << 20)
+            args = dict(args)
+            body = args.pop('body', None)
+            request = json.dumps({'operation': operation, 'args': args})
+            response = self.jobs.center.rpc({'execution_node_id': node_id},
+                'PUT' if body is not None else 'POST', '/node/remote',
+                body if body is not None else request.encode(),
+                {'Content-Type': 'application/octet-stream', 'X-Remote-Request': request} if body is not None
+                else {'Content-Type': 'application/json'}, max_bytes=8 << 20)
         except ConnectionError as error:
             raise RemoteError(503, str(error), query_required=operation == 'do') from error
         headers = {key.lower(): value for key, value in response['headers'].items()}
@@ -57,11 +66,13 @@ class RemoteCenter:
             sources.append((entry['node_id'], entry['name'], snapshot.get('remote') or {},
                             snapshot.get('at'), entry['connection']))
         devices, global_holders, caps = [], [], []
+        phones = {(phone['node_id'], phone['serial']): phone for phone in catalog(self.jobs)}
         for node_id, name, value, observed_at, connection in sources:
             caps.append(value.get('capabilities') or {})
             for device in value.get('devices', []):
                 raw = device['serial']
-                devices.append({**device, 'serial': node_id + '/' + quote(raw, safe=''),
+                phone = phones.get((node_id, raw), {})
+                devices.append({**phone, **device, 'serial': node_id + '/' + quote(raw, safe=''),
                     'raw_serial': raw, 'execution_node_id': node_id, 'node_name': name,
                     'observed_at': observed_at, 'connection': connection})
             global_holders.extend({**holder, 'execution_node_id': node_id} for holder in value.get('global_holders', []))

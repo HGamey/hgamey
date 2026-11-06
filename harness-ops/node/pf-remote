@@ -34,7 +34,7 @@ def main(argv=None):
     identity.add_argument('--acquisition-id')
     action = subs.add_parser('action')
     action.add_argument('serial')
-    action.add_argument('action', choices=['tap','swipe','text','key','screenshot','logcat','diagnostics','app_start','app_stop','renew','release'])
+    action.add_argument('action', choices=['tap','swipe','text','key','screenshot','logcat','diagnostics','app_start','app_stop','shell','install','push','renew','release'])
     action_identity = action.add_mutually_exclusive_group(required=True)
     action_identity.add_argument('--session-id')
     action_identity.add_argument('--acquisition-id', help='release a starting acquisition before its session ID is known')
@@ -45,6 +45,7 @@ def main(argv=None):
     action.add_argument('--pid', type=int, help='optional logcat process ID, 1..2147483647')
     action.add_argument('--package', help='optional Android package for diagnostics; omit for basic system and shell identity facts')
     action.add_argument('--out', help='new output file for a completed screenshot')
+    action.add_argument('--file', help='local APK for install or local file for push; push destination is params.path')
     receipt = subs.add_parser('receipt')
     receipt.add_argument('serial')
     receipt.add_argument('request_id')
@@ -141,8 +142,17 @@ def main(argv=None):
             path += '/requests/' + quote(args.request_id, safe='') + '?' + urlencode(
                 {'session_id': args.session_id, **({'image': '1'} if args.out else {})})
     query_context.update(url=target.url, node_id=target.expected_node_id)
-    request = target.request(method, path, json.dumps(body).encode() if body is not None else None,
-                             {'Content-Type': 'application/json'})
+    if args.command == 'action' and args.action in ('install', 'push'):
+        if not args.file:
+            ap.error('install/push require --file')
+        path += '?' + urlencode(body)
+        with open(args.file, 'rb') as source:
+            body = source.read()
+        method, content_type = 'PUT', 'application/octet-stream'
+    else:
+        body = json.dumps(body).encode() if body is not None else None
+        content_type = 'application/json'
+    request = target.request(method, path, body, {'Content-Type': content_type})
     try:
         response = target.opener.open(request, timeout=30)
     except HTTPError as error:

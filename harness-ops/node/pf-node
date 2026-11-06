@@ -14,6 +14,9 @@ Agent 每轮从这里开始（最短完整路径）：
   设备锁序列化实际设备操作；任务预留只在执行中占调度资源，终态自动释放。
   宿主完成未知时由负责人或管理员用 reset 一步停止并释放预留；保存错误修复后也用 reset 重存，不重跑实验。
 
+跨电脑选手机：先 pf-node phones，复制 ref，再 pf-node --device <ref> phonefarm ... --serial @serial。
+所有命令仍只连接中心、使用同一个 token；--execution-node 指定执行电脑，--node-id 不是执行电脑选择器。
+
   pf-node checkin                            # 用你自己的 token：现在该做的事，以及每轮做法
   pf-node join --invite <码> --name <名字> --token-file <路径> # 向管理员拿邀请码；只需 PF_NODE_URL
   pf-node research claim|note|thread|deliver # 认领研究、留言和回应、读留言、交付（research --help）

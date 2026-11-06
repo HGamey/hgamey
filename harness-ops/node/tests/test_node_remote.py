@@ -35,7 +35,7 @@ class FakePF:
     """Persist only the backend contract; do not emulate a device or lease."""
     available, reason = True, None
     input_contract = "frame-bound-v1"
-    actions = ["screenshot", "tap", "swipe", "text", "key", "start_app", "stop_app", "renew", "release"]
+    actions = ["screenshot", "tap", "swipe", "text", "key", "start_app", "stop_app", "renew", "release", "shell", "install", "push"]
 
     def __init__(self, path):
         self.path = path
@@ -131,6 +131,12 @@ class FakePF:
 
     def close(self):
         self.closed = True
+
+    def upload(self, ref, body):
+        digest = hashlib.sha256(body).hexdigest()
+        self.data.setdefault("uploads", {})[ref["id"] + ":" + digest] = base64.b64encode(body).decode()
+        self.save()
+        return digest
 
     def mutations(self):
         return [call for call in self.calls if call[0] in ("start", "submit")]
@@ -653,7 +659,7 @@ class RemoteHttpTests(Base):
         self.assertEqual([c[2] for c in self.backend.calls if c[0] == "submit"],
                          ["frame-1", "frame-tap", "frame-2", "uncertain-swipe"])
 
-    def test_http_mcp_query_pending_and_unsupported_upload_without_body_read(self):
+    def test_http_mcp_query_pending_and_uploads_share_the_owner(self):
         auth = self.bearer(self.alice_token)
         self.assertEqual(self.req("GET", "/remote/devices", headers=self.bearer(self.admin))[0], 200)
         status, _, raw = self.req("GET", "/remote/devices", headers=auth)
@@ -674,20 +680,25 @@ class RemoteHttpTests(Base):
         self.assertEqual((status, data), (200, PNG))
         self.assertEqual(self.backend.mutations(), before)
 
-        # A request with a declared upload body but no sent bytes must fail now,
-        # rather than blocking to read or forward any legacy upload.
+        data = b"fixture APK bytes"
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=2)
         try:
-            conn.putrequest("PUT", f"/remote/devices/{SERIAL}/install")
-            conn.putheader("Authorization", "Bearer " + self.alice_token)
-            conn.putheader("Content-Type", "application/octet-stream")
-            conn.putheader("Content-Length", "1024")
-            conn.endheaders()
+            conn.request("PUT", f"/remote/devices/{SERIAL}/install?session_id={sid}&request_id=http-install",
+                         body=data, headers={**auth, "Content-Type": "application/octet-stream"})
             response = conn.getresponse()
-            self.assertEqual(response.status, 501)
-            response.read()
+            self.assertEqual(response.status, 200)
+            receipt = json.loads(response.read())
         finally:
             conn.close()
+        self.assertEqual(receipt["status"], "completed")
+        ref = self.backend.data["refs"][0]["id"]
+        digest = hashlib.sha256(data).hexdigest()
+        self.assertEqual(self.backend.data["requests"][ref + ":http-install"]["params"], {"sha256": digest})
+        self.assertEqual(base64.b64decode(self.backend.data["uploads"][ref + ":" + digest]), data)
+        self.assertEqual(self.backend.mutations(), before + [("submit", ref, "http-install")])
+        before = self.backend.mutations()
+        status, _, data = self.req("GET", f"/remote/devices/{SERIAL}/requests/http-install?session_id={sid}", headers=auth)
+        self.assertEqual((status, json.loads(data)), (200, receipt))
         self.assertEqual(self.backend.mutations(), before)
 
         def rpc(method, params=None, token=None):
@@ -699,7 +710,7 @@ class RemoteHttpTests(Base):
         self.assertEqual(rpc("initialize")["result"]["serverInfo"]["name"], "hgamey-remote")
         names = {tool["name"] for tool in rpc("tools/list")["result"]["tools"]}
         self.assertTrue({"hgremote_acquire", "hgremote_status", "hgremote_screenshot"} <= names)
-        self.assertTrue({"hgremote_shell", "hgremote_install", "hgremote_push"}.isdisjoint(names))
+        self.assertTrue({"hgremote_shell", "hgremote_install", "hgremote_push"} <= names)
         self.backend.starting.add("bob-attempt")
         result = rpc("tools/call", {"name": "hgremote_acquire", "arguments": {
             "serial": SERIAL, "request_id": "bob-attempt"}}, self.bob_token)["result"]
