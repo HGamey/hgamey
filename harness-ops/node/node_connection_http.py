@@ -65,7 +65,9 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
         if node_id is None:
             handler._send(401, {'code': 'unauthorized', 'error': 'node connection token required'})
             return True
-        if len(route) == 4 and route[:2] == ['node-connect', 'assets'] and method == 'GET':
+        if route == ['node-connect', 'update'] and method == 'GET':
+            handler._send(200, {'revision': center.local.service_at_launch['service']['revision']})
+        elif len(route) == 4 and route[:2] == ['node-connect', 'assets'] and method == 'GET':
             record = center.targets.get(route[2])
             if record is None or record['execution_node_id'] != node_id:
                 raise DirectoryError(404, 'asset destination is not assigned to this execution node')

@@ -17,6 +17,7 @@ that exist only in the installation are left alone. Jobs present at publication 
 commands only, no secrets.
 """
 import argparse
+from contextlib import contextmanager, ExitStack
 import fcntl
 import filecmp
 import json
@@ -29,6 +30,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -45,6 +47,10 @@ KEEP = 5
 
 
 class DeployError(RuntimeError):
+    pass
+
+
+class RolledBack(DeployError):
     pass
 
 
@@ -145,6 +151,7 @@ def join_node(center, invite, name, root, port, ref, fetch, *, home=None):
     service['path'].parent.mkdir(parents=True, exist_ok=True)
     service['path'].write_bytes(service['content'])
     config = {'schema': CONFIG_SCHEMA, 'name': name, 'root': str(root), 'work': str(root / 'deploy-work'),
+        'repository': str(REPO),
         'jobs_roots': [str(data / 'jobs')], 'stop': service['stop'], 'start': service['start'],
         'nodes': [{'url': 'http://127.0.0.1:' + str(port), 'token_file': str(token_file)}],
         'gray_layer': False, 'path_prepend': ['~/.cargo/bin']}
@@ -157,6 +164,8 @@ def join_node(center, invite, name, root, port, ref, fetch, *, home=None):
     # A new launchd job has no service to boot out yet. Future upgrades use stop.
     first = sys.platform == 'darwin'
     result = deploy(name, {**config, 'stop': []} if first else config, ref, fetch, False)
+    if result == 0:
+        install_updates(configuration, home=home)
     say('joined; upgrades: python3 deploy.py --config ' + shlex.quote(str(configuration)))
     return result
 
@@ -319,7 +328,7 @@ def prune(directory, keep, protect):
         shutil.rmtree(old, ignore_errors=True)
 
 
-def deploy(name, config, ref, fetch, force):
+def deploy(name, config, ref, fetch, force, *, automatic=False):
     root, work = path(config["root"]), path(config["work"])
     work.mkdir(parents=True, exist_ok=True)
     with open(work / "lock", "w") as lock:
@@ -336,52 +345,99 @@ def deploy(name, config, ref, fetch, force):
         source = work / "src"
         extract(sha, source)
         built = build(sha, source, work, config)
-        for argv in config["stop"]:
-            run(argv)
-        jobs = busy(config)  # Record jobs present at publication; never refuse deployment.
-        backup = work / "backups" / time.strftime("%Y%m%dT%H%M%S")
-        backup.mkdir(parents=True)
-        publication, changed = Publication(backup), {}
-        cursor = root / "harness-ops"
-        release_before = os.readlink(cursor).split("/")[1] if cursor.is_symlink() else None
-        try:
-            for component, _, executable in PROGRAMS:
-                changed[component] = publication.component(source / component, root / component)
-                changed[component] += publication.put(built / executable, root / component / executable, 0o755)
-            if config["gray_layer"]:
-                for file in GRAY_LAYER:
-                    changed["phonefarm"] += publication.put(built / file, root / "phonefarm/knobs/gray/build/out" / file, 0o644)
-            (source / "harness-ops/node/runtime-build.json").write_text(json.dumps(
-                {"schema": "hgamey/source-build@1", "repository": "HGamey/hgamey", "revision": sha, "dirty": False}) + "\n")
-            overlay = json.loads(subprocess.run(
-                [sys.executable, str(source / "harness-ops/node/deploy_overlay.py"), "activate", "--root", str(root),
-                 "--source", str(source / "harness-ops"), "--keep", "10"],
-                check=True, capture_output=True, text=True).stdout)
-        except BaseException:
-            say("publication failed; putting the previous files back")
-            publication.undo()
-            if release_before and os.readlink(cursor).split("/")[1] != release_before:
-                run([sys.executable, source / "harness-ops/node/deploy_overlay.py", "rollback", "--root", root, "--run", release_before])
-            for argv in config["start"]:
+        with idle_window(config, automatic) as idle:
+            if not idle:
+                return 3
+            return publish(name, config, sha, ref, started, before, source, built, work, automatic)
+
+
+@contextmanager
+def idle_window(config, automatic):
+    if not automatic:
+        yield True
+        return
+    # Job launch already holds intake; keep that same lock across publication.
+    # A request received during the build can finish before we decide to switch.
+    with ExitStack() as locks:
+        for root in config['jobs_roots']:
+            stream = locks.enter_context(open(path(root) / '.intake.lock', 'a'))
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+        paused = load_config(None, path(config['root']) / 'deploy-node.json').get('updates_paused', False)
+        yield not paused and not any(job['state'] in ('claimed', 'preparing') for job in busy(config))
+
+
+def publish(name, config, sha, ref, started, before, source, built, work, automatic):
+    root = path(config['root'])
+    for argv in config["stop"]:
+        run(argv)
+    jobs = busy(config)  # Record jobs present at publication; never refuse deployment.
+    backup = work / "backups" / time.strftime("%Y%m%dT%H%M%S")
+    backup.mkdir(parents=True)
+    publication, changed = Publication(backup), {}
+    cursor = root / "harness-ops"
+    release_before = os.readlink(cursor).split("/")[1] if cursor.is_symlink() else None
+    started_new = False
+    try:
+        if config.get('repository'):
+            publication.put(source / 'deploy.py', root / 'deploy.py', 0o755)
+        for component, _, executable in PROGRAMS:
+            changed[component] = publication.component(source / component, root / component)
+            changed[component] += publication.put(built / executable, root / component / executable, 0o755)
+        if config["gray_layer"]:
+            for file in GRAY_LAYER:
+                changed["phonefarm"] += publication.put(built / file, root / "phonefarm/knobs/gray/build/out" / file, 0o644)
+        (source / "harness-ops/node/runtime-build.json").write_text(json.dumps(
+            {"schema": "hgamey/source-build@1", "repository": "HGamey/hgamey", "revision": sha, "dirty": False}) + "\n")
+        overlay = json.loads(subprocess.run(
+            [sys.executable, str(source / "harness-ops/node/deploy_overlay.py"), "activate", "--root", str(root),
+             "--source", str(source / "harness-ops"), "--keep", "10"],
+            check=True, capture_output=True, text=True).stdout)
+        if automatic:
+            for argv in config['start']:
                 run(argv)
-            raise
-        finally:
-            publication.save()
+            started_new = True
+            after = reports(config, wait=120)
+            if not all(report.get(key) == sha for report in after for key in ('service', 'phonefarm', 'game_opt_loop')):
+                raise DeployError('updated service does not report the recommended version')
+    except BaseException as error:
+        say("publication failed; putting the previous files back")
+        if started_new:
+            for argv in config['stop']:
+                run(argv)
+        publication.undo()
+        if release_before and os.readlink(cursor).split("/")[1] != release_before:
+            run([sys.executable, source / "harness-ops/node/deploy_overlay.py", "rollback", "--root", root, "--run", release_before])
+        for argv in config["start"]:
+            run(argv)
+        if automatic:
+            restored = reports(config, wait=120)
+            if any(current.get(key) != previous.get(key) for current, previous in zip(restored, before)
+                   for key in ('service', 'phonefarm', 'game_opt_loop')):
+                raise DeployError('rollback did not restore the previous running version') from error
+            raise RolledBack(str(error)) from error
+        raise
+    finally:
+        publication.save()
+    if not automatic:
         for argv in config["start"]:
             run(argv)
         after = reports(config, wait=120)
-        ok = all(report.get(key) == sha for report in after for key in ("service", "phonefarm", "game_opt_loop"))
-        receipt = {"schema": SCHEMA, "node": name, "commit": sha, "ref": ref, "status": "succeeded" if ok else "check_failed",
-                   "started_at": started, "finished_at": time.time(), "harness_release": overlay["run_id"],
-                   "files_changed": changed, "backup": str(backup), "forced_over": jobs, "before": before, "after": after}
-        (root / "deploy-state" / overlay["run_id"] / "deploy.json").write_text(json.dumps(receipt, indent=1) + "\n")
-        prune(work / "builds", KEEP, sha)
-        prune(work / "backups", KEEP, backup.name)
-        print(json.dumps(receipt, indent=1))
-        if not ok:
-            say("a node does not report the deployed commit; see 'after' above. To go back: "
-                f"python3 deploy.py {name} --ref <previous commit>")
-        return 0 if ok else 1
+    ok = all(report.get(key) == sha for report in after for key in ("service", "phonefarm", "game_opt_loop"))
+    receipt = {"schema": SCHEMA, "node": name, "commit": sha, "ref": ref, "status": "succeeded" if ok else "check_failed",
+               "started_at": started, "finished_at": time.time(), "harness_release": overlay["run_id"],
+               "files_changed": changed, "backup": str(backup), "forced_over": jobs, "before": before, "after": after}
+    (root / "deploy-state" / overlay["run_id"] / "deploy.json").write_text(json.dumps(receipt, indent=1) + "\n")
+    prune(work / "builds", KEEP, sha)
+    prune(work / "backups", KEEP, backup.name)
+    print(json.dumps(receipt, indent=1))
+    if not ok:
+        say("a node does not report the deployed commit; see 'after' above. To go back: "
+            f"python3 deploy.py {name} --ref <previous commit>")
+    return 0 if ok else 1
 
 
 def status(name, config):
@@ -396,8 +452,144 @@ def status(name, config):
     return 0
 
 
+def update_path(config):
+    return path(config['jobs_roots'][0]).parent / '_node/update.json'
+
+
+def write_json(filename, value):
+    with tempfile.NamedTemporaryFile(mode='w', dir=filename.parent, delete=False) as stream:
+        json.dump(value, stream, indent=1)
+        temporary = stream.name
+    os.replace(temporary, filename)
+
+
+def update_state(config, **fields):
+    filename = update_path(config)
+    try:
+        value = json.loads(filename.read_text())
+    except FileNotFoundError:
+        value = {}
+    if fields:
+        value.update(fields, observed_at=time.time())
+        write_json(filename, value)
+    return value
+
+
+def pause_updates(config_file, paused):
+    config = load_config(None, config_file)
+    config['updates_paused'] = paused
+    write_json(path(config_file), config)
+    return update_state(config, paused=paused, status='paused' if paused else 'waiting')
+
+
+def update_service_plan(root, node_id, platform, home):
+    """Run outside the node service, which publication stops and restarts."""
+    args = [sys.executable, str(root / 'deploy.py'), 'auto', '--config', str(root / 'deploy-node.json')]
+    if platform == 'darwin':
+        label = 'com.hgamey.node-update.' + node_id
+        source = root / (label + '.plist')
+        target = '/Library/LaunchDaemons/' + label + '.plist'
+        content = plistlib.dumps({'Label': label, 'UserName': pwd.getpwuid(os.getuid()).pw_name,
+            'ProgramArguments': args, 'WorkingDirectory': str(root), 'StartInterval': 60, 'RunAtLoad': True,
+            'EnvironmentVariables': {'HOME': str(home), 'PATH': os.environ.get('PATH', os.defpath)},
+            'StandardOutPath': str(root / 'auto-update.log'), 'StandardErrorPath': str(root / 'auto-update.log')})
+        commands = [['sudo', '/usr/bin/install', '-o', 'root', '-g', 'wheel', '-m', '644', str(source), target],
+                    ['sudo', '/bin/launchctl', 'bootstrap', 'system', target]]
+        return {'files': {source: content}, 'commands': commands}
+    label = 'hgamey-node-update-' + node_id
+    directory = home / '.config/systemd/user'
+    word = lambda value: json.dumps(value, ensure_ascii=False).replace('%', '%%')
+    service = '\n'.join(['[Unit]', 'Description=Update the idle HGamey execution node', '', '[Service]',
+        'Type=oneshot', 'ExecStart=' + ' '.join(word(value) for value in args),
+        'WorkingDirectory=' + str(root).replace('%', '%%'),
+        'Environment=' + word('PATH=' + os.environ.get('PATH', os.defpath)), ''])
+    timer = '\n'.join(['[Unit]', 'Description=Check the HGamey recommended version', '', '[Timer]',
+        'OnBootSec=30', 'OnUnitInactiveSec=60', '', '[Install]', 'WantedBy=timers.target', ''])
+    return {'files': {directory / (label + '.service'): service.encode(),
+                      directory / (label + '.timer'): timer.encode()},
+            'commands': [['systemctl', '--user', 'daemon-reload'],
+                         ['systemctl', '--user', 'enable', '--now', label + '.timer']]}
+
+
+def install_updates(config_file, *, home=None):
+    config = load_config(None, config_file)
+    root = path(config['root'])
+    config['repository'] = str(REPO)
+    # Bootstrap only the updater: the old service can demonstrate its own upgrade.
+    if Path(__file__).resolve() != (root / 'deploy.py').resolve():
+        shutil.copyfile(__file__, root / 'deploy.py')
+    write_json(root / 'deploy-node.json', config)
+    node_id = (update_path(config).parent / 'id').read_text().strip()
+    plan = update_service_plan(root, node_id, sys.platform, home or Path.home())
+    for filename, content in plan['files'].items():
+        filename.parent.mkdir(parents=True, exist_ok=True)
+        filename.write_bytes(content)
+    update_state(config, enabled=True, paused=config.get('updates_paused', False), status='waiting',
+                 recommended_revision=None, behind=None)
+    for command in plan['commands']:
+        run(command)
+
+
+def auto_update(config_file, *, fetch=True):
+    global REPO
+    config = load_config(None, config_file)
+    REPO = path(config['repository'])
+    state = update_state(config)
+    if config.get('updates_paused'):
+        update_state(config, status='paused', paused=True)
+        return 0
+    try:
+        sys.path.insert(0, str(path(config['root']) / 'harness-ops/node'))
+        from node_connector import exchange
+        connection = json.loads((update_path(config).parent / 'center.json').read_text())
+        response = exchange(connection['url'], 'GET', '/node-connect/update', headers={
+            'Authorization': 'Bearer ' + connection['token'], 'X-Expected-Node-ID': connection['center_id']})
+        if response['status'] != 200:
+            raise DeployError('center recommendation returned HTTP ' + str(response['status']))
+        revision = json.loads(response['body'])['revision']
+        current = reports(config, wait=0)[0]['service']
+        update_state(config, recommended_revision=revision, current_revision=current, error=None,
+                     behind=state.get('behind') if state.get('recommended_revision') == revision else None)
+        if current == revision:
+            update_state(config, status='current', behind=0)
+            return 0
+        if fetch:
+            run(['git', '-C', REPO, 'fetch', '-q', 'origin'])
+        behind = int(git('rev-list', '--count', current + '..' + revision))
+        if any(job['state'] in ('claimed', 'preparing') for job in busy(config)):
+            update_state(config, status='waiting', behind=behind)
+            return 0
+        update_state(config, behind=behind, status='building')
+        result = deploy(config.get('name', 'joined'), config, revision, False, False, automatic=True)
+        paused = load_config(None, config_file).get('updates_paused', False)
+        update_state(config, status=('paused' if paused else 'waiting') if result == 3 else 'updated',
+                     paused=paused, behind=behind if result == 3 else 0,
+                     current_revision=current if result == 3 else revision)
+        return 0
+    except (DeployError, OSError, ValueError, KeyError, subprocess.CalledProcessError, sqlite3.Error) as error:
+        update_state(config, status='rolled_back' if isinstance(error, RolledBack) else 'failed', error=str(error))
+        say('automatic update failed: ' + str(error))
+        return 2
+
+
 def main(argv=None):
+    global REPO
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ['auto']:
+        parser = argparse.ArgumentParser(description='Follow the center version while idle; preserve the old version on failure.')
+        parser.add_argument('--config', required=True)
+        action = parser.add_mutually_exclusive_group()
+        action.add_argument('--install', action='store_true', help='install the periodic updater without changing the running node')
+        action.add_argument('--pause', action='store_true', help='pause automatic updates on this computer')
+        action.add_argument('--resume', action='store_true', help='resume automatic updates')
+        args = parser.parse_args(argv[1:])
+        if args.install:
+            install_updates(args.config)
+            return 0
+        if args.pause or args.resume:
+            print(json.dumps(pause_updates(args.config, args.pause)))
+            return 0
+        return auto_update(args.config)
     if argv[:1] == ['join']:
         parser = argparse.ArgumentParser(description='Install this computer as an outbound HGamey execution node.', allow_abbrev=False)
         parser.add_argument('--center', required=True)
@@ -425,6 +617,8 @@ def main(argv=None):
         parser.error('provide a node name or --config')
     try:
         config = load_config(args.node, args.config)
+        if config.get('repository'):
+            REPO = path(config['repository'])
         name = args.node or config.get('name', 'joined')
         if args.status:
             return status(name, config)

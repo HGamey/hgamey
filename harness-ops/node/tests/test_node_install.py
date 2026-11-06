@@ -184,6 +184,10 @@ class NodeInstallTests(unittest.TestCase):
         self.assertEqual(argv[0],'systemctl',argv)
         if 'stop' in argv:
             self.stop()
+        elif argv[-1].endswith('.timer'):
+            node_id=(self.root/'data/_node/id').read_text().strip()
+            self.assertEqual(argv,['systemctl','--user','enable','--now',
+                                  'hgamey-node-update-'+node_id+'.timer'])
         elif 'enable' in argv:
             self.process=subprocess.Popen([sys.executable,str(self.root/'harness-ops/node/node_launch.py'),
                 '--config',str(self.root/'node-launch.json'),'--workdir',str(self.root),'--no-tunnel'],
