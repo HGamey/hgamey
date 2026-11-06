@@ -31,7 +31,8 @@
   function facts(node, rows) { node.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
   const sourceDirty = value => value === true ? '有本地修改' : value === false ? '声明无本地修改' : '未知';
   // Automatic updates: each computer's running version against the center's, which is the recommended one. A computer
-  // reports its own; a snapshot that is no longer current says when it was reported.
+  // reports its own; a snapshot that is no longer current says when it was reported. A computer that reports nothing
+  // about updates runs a version from before them, so it has no updater.
   const UPDATE = {not_installed: '未装自动更新', waiting: '等空闲再更新', building: '正在构建新版本', updated: '刚更新到推荐版本',
     current: '已是推荐版本', paused: '自动更新已暂停', failed: '更新失败', rolled_back: '更新失败，已回滚到原版本'};
   const UPDATE_TONE = {waiting: 'running', building: 'running', paused: 'unknown', failed: 'failed', rolled_back: 'failed'};
@@ -41,16 +42,14 @@
   function versionLine(entry) {
     const identity = entry.snapshot?.identity, updates = identity?.updates, line = el('span', null, 'node-choice-meta node-version');
     line.append([`版本 ${short(updates?.current_revision || identity?.service?.revision)}`, behind(updates)].filter(Boolean).join(' · '));
-    if (updates) {
-      const state = el('span'); badge(state, UPDATE[updates.status] || '更新状态未知', UPDATE_TONE[updates.status] || '');
-      if (updates.error) state.title = updates.error;
-      line.append(' ', state);
-    }
+    const state = el('span'); badge(state, updates ? UPDATE[updates.status] || '更新状态未知' : UPDATE.not_installed, UPDATE_TONE[updates?.status] || '');
+    if (updates?.error) state.title = updates.error;
+    line.append(' ', state);
     if (updates?.observed_at && entryStale(entry)) line.append(` · 上报于 ${time(updates.observed_at)}`);
     return line;
   }
   function updateFacts(updates, entry) {
-    if (!updates) return [];
+    if (!updates) return entry ? [['自动更新', UPDATE.not_installed]] : [];
     if (!entry) return [['推荐版本（本节点运行的版本）', updates.recommended_revision]];
     return [['自动更新', UPDATE[updates.status] || updates.status], ['运行版本', updates.current_revision], ['推荐版本', updates.recommended_revision],
       ['落后', Number.isSafeInteger(updates.behind) ? `${updates.behind} 个提交` : null], ['更新暂停', updates.paused === true ? '已暂停' : updates.paused === false ? '未暂停' : null],
