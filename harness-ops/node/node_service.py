@@ -34,7 +34,7 @@ import node_doctor
 import argparse, errno, hashlib, hmac, io, ipaddress, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlencode
-from node_read import NodeRead
+from node_read import NodeRead, image_inventory
 from job_center import JobCenter
 from node_identity import load_identity
 from node_history import JobHistory, HistoryError, load_history_config
@@ -1548,6 +1548,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, jobs.session(parts[1], request_id=unquote(parts[4])))
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "out":
                     return self._out(parts[1], q)
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "images":
+                    return self._send(200, image_inventory(jobs._read_root, parts[1]))
             except (ResearchError, MediaError, RegistryError, JobEventError, HistoryError) as e:
                 return self._send(e.status, e.payload)
             except ResultError as e:

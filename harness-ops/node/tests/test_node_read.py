@@ -439,6 +439,37 @@ class NodeReadTests(unittest.TestCase):
         self.assertEqual(self.board.last_view, 0)
         self.assertFalse(self.board.wake.is_set())
 
+    def test_job_image_inventory_hashes_images_and_skips_links_and_non_images(self):
+        """K3: the task page's mosaic reads one bounded, hashed inventory of a job's images."""
+        jid = self.fixture(1)
+        out = Path(self.jobs.path(jid, "out"))
+        frame = b"\x89PNG\r\n\x1a\n" + b"same-frame" * 8
+        (out / "frame-1.png").write_bytes(frame)
+        (out / "nested" / "frame-2.png").write_bytes(frame)
+        (out / "levelup.jpg").write_bytes(b"\xff\xd8jpeg-different-tier")
+        (out / "metrics.json").write_text('{"fps": 60}')
+        (out / "sneaky.png").symlink_to(out / "metrics.json")
+        value = self.get_json(f"/jobs/{jid}/images")
+        self.assertEqual(value["job_id"], jid)
+        self.assertFalse(value["truncated"])
+        self.assertEqual({image["path"] for image in value["images"]},
+                         {"frame-1.png", "nested/frame-2.png", "levelup.jpg"})
+        by_path = {image["path"]: image for image in value["images"]}
+        self.assertEqual(by_path["frame-1.png"]["sha256"], hashlib.sha256(frame).hexdigest())
+        self.assertEqual(by_path["nested/frame-2.png"]["sha256"], by_path["frame-1.png"]["sha256"],
+                         "byte-identical screenshots share one hash the page can group by")
+        self.assertNotEqual(by_path["levelup.jpg"]["sha256"], by_path["frame-1.png"]["sha256"])
+        for image in value["images"]:
+            self.assertEqual(image["bytes"], Path(self.jobs.path(jid, "out", image["path"])).stat().st_size)
+        auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}
+        self.assertEqual(self.get_json(f"/dash/api/jobs/{jid}/images", headers=auth), value)
+        self.assertEqual(self.request("/dash/api/jobs/foo/images", headers=auth)[0], 404)
+        self.assertEqual(self.request(f"/dash/api/jobs/{jid}/images")[0], 401)
+        self.assertEqual(self.request(f"/jobs/{jid}/images", token="wrong")[0], 401)
+        empty = self.fixture(2)
+        self.assertEqual(self.get_json(f"/jobs/{empty}/images"),
+                         {"schema_version": 1, "job_id": empty, "images": [], "total_images": 0, "truncated": False})
+
     def test_queued_job_state_is_not_running_and_running_filter_keeps_unfinished(self):
         self.jobs.bins["phonefarm"] = (sys.executable, str(self.root))
         auth = {"Cookie": f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"}

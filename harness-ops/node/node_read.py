@@ -1,6 +1,7 @@
 """Host-only node identity and generic job/output discovery. No device probing."""
 import base64
 import copy
+import hashlib
 import json
 import math
 import os
@@ -12,10 +13,61 @@ import subprocess
 import time
 import uuid
 import job_input_archive
-from artifact_io import relative_path, EXPORT_LIMITS
+from artifact_io import open_child, relative_path, EXPORT_LIMITS
 from game_assets import ASSET_WRITE_LIMITS
 from job_policy import process_policies
 from runtime_identity import read_build_info, runtime_snapshot
+
+
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".svg")
+IMAGE_SCAN_ENTRIES = 4000
+IMAGE_SCAN_DEPTH = 16
+
+
+def image_inventory(read_root, jid, limit=120, max_bytes=64 << 20):
+    """One job's image artifacts, newest first, each hashed so the task page can group byte-identical
+    screenshots. Bounded by entry count, depth and total hashed bytes; `truncated` says what was left out."""
+    found, scanned = [], 0
+
+    def scan(dir_fd, prefix, depth):
+        nonlocal scanned
+        if depth > IMAGE_SCAN_DEPTH or scanned >= IMAGE_SCAN_ENTRIES:
+            return
+        for name in sorted(os.listdir(dir_fd)):
+            scanned += 1
+            try:
+                child = open_child(dir_fd, name)   # links and special files are simply not artifacts
+            except (ValueError, OSError):
+                continue
+            try:
+                st = os.fstat(child)
+                if stat.S_ISDIR(st.st_mode):
+                    scan(child, prefix + "/" + name, depth + 1)
+                elif stat.S_ISREG(st.st_mode) and name.lower().endswith(IMAGE_SUFFIXES):
+                    found.append({"path": (prefix + "/" + name).lstrip("/"),
+                                  "bytes": st.st_size, "mtime": st.st_mtime})
+            finally:
+                os.close(child)
+    out_fd = read_root.open_fd(jid + "/out", directory=True)
+    try:
+        scan(out_fd, "", 0)
+    finally:
+        os.close(out_fd)
+    found.sort(key=lambda image: (-image["mtime"], image["path"]))
+    total, hashed = len(found), 0
+    images = []
+    for image in found[:limit]:
+        if hashed + image["bytes"] > max_bytes:
+            break
+        with read_root.open_file(jid + "/out/" + image["path"]) as stream:
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(block)
+            image["sha256"] = digest.hexdigest()
+        hashed += image["bytes"]
+        images.append(image)
+    return {"schema_version": 1, "job_id": jid, "images": images,
+            "total_images": total, "truncated": len(images) < total}
 
 
 def page_size(query, default=50):

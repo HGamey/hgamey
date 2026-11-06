@@ -460,6 +460,35 @@
   }
 
   const RUNS_SHOWN = 8;
+  const MOSAIC_TILES = 12;
+  // One job's screenshots, straight on the task page: each distinct image is a tile, byte-identical
+  // screenshots collapse into one tile labelled with their count ("8 张完全相同" reads as "nothing changed").
+  function mosaic(box, job) {
+    near(box, async () => {
+      try {
+        const page = await api(`/jobs/${encodeURIComponent(job.id)}/images`);
+        const groups = new Map();
+        for (const image of page.images) {
+          const group = groups.get(image.sha256);
+          if (group) group.count++;
+          else groups.set(image.sha256, {image, count: 1});
+        }
+        const tiles = [...groups.values()], extra = tiles.length - MOSAIC_TILES;
+        for (const {image, count} of tiles.slice(0, MOSAIC_TILES)) {
+          const tile = el('figure', null, 'mosaic-tile'), link = el('a'), img = el('img');
+          link.href = HGTarget.url(artifactPath({job_id: job.id, path: image.path}));
+          link.target = '_blank'; link.rel = 'noopener';
+          img.alt = image.path; img.loading = 'lazy';
+          const epoch = imageEpoch;
+          near(tile, () => loadImage(img, {job_id: job.id, path: image.path}, IMAGE_TYPES[extension(image.path)], epoch));
+          link.append(img); tile.append(link);
+          if (count > 1) tile.append(el('span', `${count} 张完全相同`, 'dup'));
+          box.append(tile);
+        }
+        if (extra > 0) box.append(el('span', `+${extra} 张`, 'dup more'));
+      } catch (error) { /* a job without readable images keeps its plain row */ }
+    });
+  }
   // 作业: what agents ran for this task, newest first, folded to a count and how they went.
   async function runsSection(section, jobs) {
     const list = el('ul', null, 'run-list'), {box, count, brief} = folded(section, '作业');
@@ -470,6 +499,7 @@
       count.textContent = items.length ? String(items.length) : '';
       brief.textContent = tally(items, job => HGJobState.tone(job), {acc: '运行中', ok: '成功', bad: '失败'});
       const rows = items.map(runRow);
+      rows.forEach((row, index) => mosaic(row, items[index]));
       rows.slice(RUNS_SHOWN).forEach(row => { row.hidden = true; });
       list.replaceChildren(...(rows.length ? rows : [el('li', '暂无作业', 'empty')]));
       if (rows.length > RUNS_SHOWN) {
