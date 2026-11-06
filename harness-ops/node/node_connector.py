@@ -3,6 +3,7 @@ import base64
 import http.client
 import json
 import logging
+import os
 import socket
 import threading
 from urllib.parse import urlsplit, urlencode, unquote
@@ -79,17 +80,31 @@ def join(center, invite, name, data_root):
     try:
         store.write_json('_node/center.json', {'url': center, 'center_id': result['center_id'],
                                              'token': result['token']})
+        store.write_json(JOINED, {'center': center})
     finally:
         store.close()
     return result['node']
 
 
+JOINED = '_node/joined.json'   # left by a join; the next start samples the phones once, so the center sees them
+
+
+def just_joined(data_root):
+    """Whether this start is the first since joining (it takes the mark). Otherwise phones are sampled only on request."""
+    try:
+        os.remove(os.path.join(data_root, JOINED))
+        return True
+    except FileNotFoundError:
+        return False
+
+
 class LocalHTTP:
-    def __init__(self, url, token, node_id):
-        self.url, self.token, self.node_id = url, token, node_id
+    def __init__(self, url, token, node_id, sample=False):
+        self.url, self.token, self.node_id, self.sample = url, token, node_id, sample
         self._connections, self._guard, self._stop = set(), threading.Lock(), threading.Event()
         self._events_cursor = self._pending_cursor = None
         self.has_more = False
+        self._reports = 0
 
     def request(self, method, path, body, headers, max_bytes=2 << 20):
         return exchange(self.url, method, path, body, {**headers,
@@ -97,7 +112,12 @@ class LocalHTTP:
             timeout=None, max_bytes=max_bytes, connections=self._connections, guard=self._guard, stop=self._stop)
 
     def snapshot(self):
-        response = self.request('GET', '/node/snapshot', b'', {})
+        # Just joined: the first report goes out at once and the one right after it samples the phones. A computer that
+        # cannot sample them reports without them.
+        sample, self._reports = self.sample and self._reports == 1, self._reports + 1
+        response = self.request('GET', '/node/snapshot?devices=1', b'', {}) if sample else None
+        if response is None or response['status'] != 200:
+            response = self.request('GET', '/node/snapshot', b'', {})
         if response['status'] != 200:
             raise OSError('local snapshot returned HTTP ' + str(response['status']))
         snapshot = json.loads(response['body'])
@@ -110,7 +130,7 @@ class LocalHTTP:
         page = json.loads(updates['body'])
         snapshot['executions'] = page['items']
         snapshot['execution_events'] = page['events']
-        self._pending_cursor, self.has_more = page['next_cursor'], page['has_more']
+        self._pending_cursor, self.has_more = page['next_cursor'], page['has_more'] or self.sample and self._reports == 1
         return snapshot
 
     def acknowledge(self):

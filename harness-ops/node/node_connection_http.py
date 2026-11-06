@@ -1,4 +1,6 @@
 """Machine enrollment and outbound transport endpoints, separate from agent auth."""
+import base64
+import binascii
 from contextlib import closing
 import json
 import sqlite3
@@ -7,12 +9,42 @@ from urllib.parse import urlparse, parse_qs
 from node_directory import DirectoryError, MAX_RESPONSE
 from job_inputs import InputError, MAX_FILE, _source_file
 from artifact_io import SafeRoot, describe_file
+import node_connector
+
+REFUSED = {'invite not found': '中心没有这个接入码：可能已被撤销，到中心重新生成一个',
+           'invite already used': '这个接入码已经用过了，到中心重新生成一个',
+           'invite expired': '这个接入码已过期，到中心重新生成一个',
+           'node name is already registered': '中心已有同名节点，到中心换个名字重新生成'}
+JOIN_CODE = 'HGJ1.'   # a join code: this prefix, then base64url of {"center", "invite", "name"} (made on the center's page)
+
+
+def join_center(value, data_root):
+    """Enroll this computer with the center a join code names. The service then restarts and runs as that center's
+    computer: its phones are reported there, and its own web pages and center services stop."""
+    code = value.get('code')
+    if not isinstance(code, str) or not code.strip().startswith(JOIN_CODE):
+        raise ValueError('这不是接入码：它在中心的「节点与设备」页生成，以 ' + JOIN_CODE + ' 开头')
+    data = code.strip()[len(JOIN_CODE):]
+    try:
+        fields = json.loads(base64.urlsafe_b64decode(data + '=' * (-len(data) % 4)))
+    except (ValueError, binascii.Error):
+        raise ValueError('接入码不完整，重新复制一次') from None
+    center, invite, name = (fields.get(key) if isinstance(fields, dict) else None for key in ('center', 'invite', 'name'))
+    if not (isinstance(center, str) and center.startswith(('http://', 'https://')) and isinstance(invite, str) and isinstance(name, str)):
+        raise ValueError('接入码不完整，重新复制一次')
+    try:
+        node = node_connector.join(center, invite, name, data_root)
+    except OSError as error:
+        raise DirectoryError(502, f'连不上中心 {center}：{error}') from None
+    except ValueError as error:   # the center's refusal
+        raise ValueError(REFUSED.get(str(error), f'中心没有接受：{error}')) from None
+    return {'center': center, 'name': node['name'], 'node_id': node['node_id']}
 
 
 def handle(handler, method, parts, directory, board, upload_limit, center):
     web = parts[:2] == ['dash', 'api']
     route = parts[2:] if web else parts
-    if route[:1] not in (['node-invites'], ['node-connect']):
+    if route[:1] not in (['node-invites'], ['node-connect']) and not (web and route == ['center-join']):
         return False
     try:
         def body(limit):
@@ -32,7 +64,7 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
                 raise DirectoryError(400, 'node connection request must be a JSON object')
             return value
 
-        if route[0] == 'node-invites':
+        if route[0] in ('node-invites', 'center-join'):
             if web:
                 if board is None or not board.authed(handler):
                     handler._send(401, {'code': 'unauthorized', 'error': '需要查看密码'})
@@ -46,7 +78,12 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
                 if handler.agent:
                     handler._send(403, {'code': 'forbidden', 'error': 'node invitations require administrator access'})
                     return True
-            if method == 'GET' and len(route) == 1:
+            if route == ['center-join'] and method == 'POST':
+                handler._send(201, join_center(document(), center.local.data_root))
+                handler._restart()
+            elif route == ['center-join']:
+                handler._send(404, {'error': 'joining a center is a POST'})
+            elif method == 'GET' and len(route) == 1:
                 handler._send(200, {'invites': directory.invites()})
             elif method == 'POST' and len(route) == 1:
                 value = document()

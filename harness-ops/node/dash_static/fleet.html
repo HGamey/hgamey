@@ -36,7 +36,7 @@
     <p id="all-phones-message" class="note" role="status">正在读取…</p>
   </section>
   <section class="directory-panel" aria-labelledby="directory-heading">
-    <div class="section-heading"><h2 id="directory-heading">节点目录</h2><button id="invite-open" class="ghost" type="button" disabled>生成电脑加入码</button></div>
+    <div class="section-heading"><h2 id="directory-heading">节点目录</h2><div class="directory-actions"><button id="join-open" class="ghost" type="button" hidden disabled>接入中心</button><button id="invite-open" class="ghost" type="button" disabled>生成电脑加入码</button></div></div>
     <p id="directory-message" class="note" role="status">正在读取目录…</p>
     <ul id="node-directory" class="node-directory" aria-label="选择节点"></ul>
     <div class="directory-access"><p id="access-message" class="note" role="status">正在读取操作权限…</p><button id="access-toggle" class="ghost" type="button" disabled>解锁目录操作</button></div>
@@ -49,20 +49,35 @@
       <div class="section-heading"><h3>生成电脑加入码</h3><button id="invite-close" class="ghost" type="button">关闭</button></div>
       <div class="registration-fields">
         <label>节点名<input id="invite-name" pattern="[a-z0-9_\-]{1,64}" maxlength="64" required placeholder="lab-b"><span class="field-help">小写字母、数字、下划线或连字符</span></label>
-        <label>安装根<input id="invite-root" placeholder="例如 ~/hgamey-node" spellcheck="false"><span class="field-help">那台电脑上新的空目录</span></label>
-        <label>端口<input id="invite-port" type="number" min="1" max="65535" step="1" placeholder="8765"><span class="field-help">只监听本机</span></label>
+        <label>安装根<input id="invite-root" placeholder="例如 ~/hgamey-node" spellcheck="false"><span class="field-help">新装的电脑才填：那台电脑上新的空目录</span></label>
+        <label>端口<input id="invite-port" type="number" min="1" max="65535" step="1" placeholder="8765"><span class="field-help">新装的电脑才填；只监听本机</span></label>
         <label>有效时长（小时）<input id="invite-hours" type="number" min="1" max="720" step="1" value="24" required></label>
       </div>
       <div class="directory-actions"><button id="invite-submit" class="ghost primary" type="submit">生成</button></div>
       <div id="invite-result" class="invite-result" hidden>
-        <p class="note">在那台电脑的 HGamey 仓库根目录运行；它会装好并启动节点服务（需要 Python 3、Rust/Cargo、Git、adb）。加入码只显示这一次。</p>
-        <pre id="invite-command" class="command-box"></pre>
-        <div class="directory-actions"><button id="invite-copy" class="ghost" type="button">复制命令</button></div>
+        <h4>已经在运行的节点</h4>
+        <p class="note">在那台节点的「节点与设备」页点「接入中心」，贴进去。只显示这一次。</p>
+        <pre id="invite-code" class="command-box"></pre>
+        <div class="directory-actions"><button id="invite-code-copy" class="ghost" type="button">复制接入码</button></div>
+        <div id="invite-install" hidden>
+          <h4>新装的电脑</h4>
+          <p class="note">在那台电脑的 HGamey 仓库根目录运行；它会装好并启动节点服务（需要 Python 3、Rust/Cargo、Git、adb）。</p>
+          <pre id="invite-command" class="command-box"></pre>
+          <div class="directory-actions"><button id="invite-copy" class="ghost" type="button">复制命令</button></div>
+        </div>
       </div>
       <p id="invite-message" class="note" role="status"></p>
       <h4>未使用的加入码</h4>
       <ul id="invite-list" class="invite-list"></ul>
       <p id="invite-none" class="note">没有。</p>
+    </form>
+    <form id="join-form" class="registration-form" autocomplete="off" hidden>
+      <div class="section-heading"><h3>接入中心</h3><button id="join-close" class="ghost" type="button">关闭</button></div>
+      <div class="registration-fields">
+        <label class="wide-field">接入码<input id="join-code" required spellcheck="false" placeholder="HGJ1.…"><span class="field-help">在中心的「节点与设备」页生成。接入后这台电脑成为它的从节点，手机归它调度，这里的页面关闭。</span></label>
+      </div>
+      <div class="directory-actions"><button id="join-submit" class="ghost primary" type="submit">接入</button></div>
+      <p id="join-message" class="note" role="status"></p>
     </form>
   </section>
   <section class="node-card" aria-labelledby="node-heading">
