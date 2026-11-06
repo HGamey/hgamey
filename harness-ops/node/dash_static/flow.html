@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark">
+<title>数据流向 · HGamey</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/dash/static/app.css"><link rel="stylesheet" href="/dash/static/jobs.css"><link rel="stylesheet" href="/dash/static/research.css"><link rel="stylesheet" href="/dash/static/report.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+</head>
+<body class="jobs-view research-view report-view flow-view">
+<a class="skip-link" href="#flow-title">跳到数据流向</a>
+<header class="top"><div class="top-right"></div></header><script src="/dash/static/shell.js"></script>
+<main class="jobs-page report-page flow-page">
+  <a id="flow-back" class="back-link" href="/dash/research"><svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14"><path d="M10 3.5 5.5 8l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>任务</span></a>
+  <p class="report-kicker">数据流向</p>
+  <h1 id="flow-title" tabindex="-1">数据流向</h1>
+  <p id="message" class="note" role="status">正在读取…</p>
+  <div id="flow" hidden>
+    <div class="flow-columns flow-totals" aria-label="合计">
+      <section><h2>平台从 agent 收到</h2><p id="total-in" class="flow-total"></p></section>
+      <section><h2>发给手机</h2><p id="total-phone" class="flow-total"></p></section>
+      <section><h2>返回给 agent</h2><p id="total-out" class="flow-total"></p></section>
+    </div>
+    <ol id="flow-jobs" class="flow-jobs"></ol>
+  </div>
+</main>
+<script src="/dash/static/target.js"></script><script src="/dash/static/job-state.js"></script><script src="/dash/static/research-task.js"></script><script src="/dash/static/task-outputs.js"></script><script src="/dash/static/flow.js"></script>
+</body>
+</html>

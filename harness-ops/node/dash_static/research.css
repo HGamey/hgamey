@@ -472,3 +472,38 @@
 .research-view .output-github::after { content: " ↗"; }
 .research-view .report-outputs h3 { margin: var(--sp-4) 0 var(--sp-1); font-size: var(--fs-base); }
 .research-view .output-more { margin-top: var(--sp-1); }
+
+/* 数据流向: job by job, three columns (flow.js) */
+.flow-view .report-page.flow-page { max-width: 1360px; }
+.flow-view .flow-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-3); }
+.flow-view .flow-totals { margin-bottom: var(--sp-4); }
+.flow-view .flow-totals section { padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
+.flow-view .flow-totals h2 { margin: 0 0 var(--sp-1); font-size: var(--fs-base); }
+.flow-view .flow-total { margin: 0; font-size: var(--fs-sm); color: var(--ink2); }
+.flow-view .flow-jobs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-3); }
+.flow-view .flow-job { padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); min-width: 0; }
+.flow-view .flow-job-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-2); margin-bottom: var(--sp-2); font-size: var(--fs-sm); }
+.flow-view .flow-job-head a { font-weight: 600; }
+.flow-view .flow-label { flex: 1 1 260px; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+.flow-view .flow-cell { min-width: 0; font-size: var(--fs-sm); }
+.flow-view .flow-cell + .flow-cell { border-left: 1px solid var(--grid); padding-left: var(--sp-3); }
+.flow-view .flow-block + .flow-block { margin-top: var(--sp-2); }
+.flow-view .flow-block h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.flow-view :is(.flow-command, .flow-list code) { display: block; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-view .flow-list { list-style: none; margin: 0; padding: 0; }
+.flow-view .flow-list > li { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; padding: 2px 0; min-width: 0; }
+.flow-view .flow-list > li.output-file { border-top: 0; padding: 2px 0; }
+.flow-view .flow-file { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; min-width: 0; }
+.flow-view .flow-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.flow-view .flow-phone-name { margin: 0 0 var(--sp-1); font-weight: 600; }
+.flow-view .flow-outcome { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; margin: 0 0 var(--sp-1); }
+.flow-view .flow-log { display: inline-block; margin-top: var(--sp-2); font-size: 12px; }
+.flow-view .flow-cell .output-commit { border-top: 0; padding-top: 0; }
+@media (max-width: 900px) {
+  .flow-view .flow-columns { grid-template-columns: minmax(0, 1fr); }
+  .flow-view .flow-cell + .flow-cell { border-left: 0; padding-left: 0; border-top: 1px solid var(--grid); padding-top: var(--sp-2); }
+  .flow-view .flow-job .flow-cell::before { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 650; color: var(--ink2); }
+  .flow-view .flow-job .flow-in::before { content: "平台从 agent 收到"; }
+  .flow-view .flow-job .flow-phone::before { content: "发给手机"; }
+  .flow-view .flow-job .flow-out::before { content: "返回给 agent"; }
+}

@@ -12,7 +12,8 @@ window.HGTaskOutputs = (() => {
     image: /\.(png|jpe?g|webp|gif|bmp)$/i, video: /\.(mp4|webm|mov|mkv)$/i, report: /\.(md|html?|pdf)$/i};
   const kindOf = path => Object.keys(EXT).find(kind => EXT[kind].test(path)) || (/(^|\/)(report|summary)[^/]*\.json$/i.test(path) ? 'report' : 'other');
   const STATUS = {A: '新增', M: '修改', D: '删除', R: '重命名', C: '复制', T: '类型变化'};
-  const PLATFORM = new Set(['lease-receipts']);   // the platform's records in a job's output, not the agent's work
+  // The platform's records in a job's output (lease receipts, its device record and runtime report), not the agent's work.
+  const platform = name => name === 'lease-receipts' || name.startsWith('.');
   const FILES_PER_JOB = 300, DIRECTORIES_PER_JOB = 30;
   const GITHUB = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:commit|tree|blob)\/([0-9a-f]{7,40})(?:[/?#]|$)/;
   const HEX = /\b[0-9a-f]{7,40}\b/g;
@@ -23,7 +24,7 @@ window.HGTaskOutputs = (() => {
 
   // A job's output tree, breadth first, without the platform's records; bounded so a job of thousands of frames
   // stays a short read.
-  async function tree(job) {
+  async function tree(job, listing = 'artifacts', skip = () => false) {
     const files = [], queue = [''];
     let reads = 0, more = false;
     while (queue.length) {
@@ -32,9 +33,10 @@ window.HGTaskOutputs = (() => {
       let cursor = null;
       do {
         ++reads;
-        const page = await U().api(`/jobs/${encodeURIComponent(job)}/artifacts?${new URLSearchParams({path, limit: '200', ...(cursor ? {cursor} : {})})}`);
+        const page = await U().api(`/jobs/${encodeURIComponent(job)}/${listing}?${new URLSearchParams({path, limit: '200', ...(cursor ? {cursor} : {})})}`);
         for (const item of page.items) {
-          if (item.kind === 'directory' && !(path === '' && PLATFORM.has(item.name))) queue.push(item.path);
+          if (path === '' && (listing === 'artifacts' ? platform(item.name) : skip(item.name))) continue;
+          if (item.kind === 'directory') queue.push(item.path);
           else if (item.kind === 'file') files.push({job, path: item.path, size: item.size, kind: kindOf(item.path)});
         }
         cursor = page.next_cursor;
@@ -51,6 +53,14 @@ window.HGTaskOutputs = (() => {
     }));
     return out;
   }
+
+  // What the node's experiments mirror knows about these commit ids (at most 50); a failed read is returned, not thrown.
+  const lookup = revs => U().api(`/experiments/commits?${new URLSearchParams(revs.slice(0, 50).map(rev => ['rev', rev]))}`).catch(error => ({error}));
+  // A commit the mirror does not know still shows, by id and with its page when that can be named.
+  const unknownCommit = (rev, source, repository) => {
+    const page = repoPage(repository);
+    return {rev, commit: rev, source, url: page && rev.length === 40 ? `${page}/commit/${rev}` : null, files: null};
+  };
 
   // Everything the delivery of `record` produced. `jobs` is the task's job list (one read the task page already makes).
   async function read(record, jobs) {
@@ -77,18 +87,16 @@ window.HGTaskOutputs = (() => {
     const jobIds = new Set([...(jobs || []).map(job => job.id), ...delivered]);
     for (const [hex] of String(deliverable.summary || '').matchAll(HEX)) if (!jobIds.has(hex) && wanted.size < 50) want(hex, '报告里提到');
     const [trees, found] = await Promise.all([
-      pool(whole, 4, tree),
-      wanted.size ? U().api(`/experiments/commits?${new URLSearchParams([...wanted.keys()].map(rev => ['rev', rev]))}`).catch(error => ({error})) : null]);
+      pool(whole, 4, job => tree(job)), wanted.size ? lookup([...wanted.keys()]) : null]);
     trees.forEach((value, i) => { if (value.error) unread.push(whole[i]); else { files.push(...value.files); if (value.more) unread.push(whole[i] + '（只列出一部分）'); } });
     // Every commit a job ran is shown, known to the mirror or not; a hex string from the report only when it is a commit.
     // What the delivery itself names (a link, the report) comes before the code its jobs ran.
     const known = new Map((found?.items || []).map(item => [item.rev, item]));
     const rank = source => source === '交付引用' ? 0 : source === '报告里提到' ? 1 : 2;
-    const page = repoPage(found?.repository);
     const commits = [...wanted].sort((a, b) => rank(a[1]) - rank(b[1])).flatMap(([rev, source]) => {
       const item = known.get(rev);
       if (item) return [{...item, source}];
-      return source === '报告里提到' ? [] : [{rev, commit: rev, source, url: page && rev.length === 40 ? `${page}/commit/${rev}` : null, files: null}];
+      return source === '报告里提到' ? [] : [unknownCommit(rev, source, found?.repository)];
     });
     const unique = [...new Map(commits.map(commit => [commit.commit, commit])).values()];
     return {files, commits: unique, results, links, unread, lookup: found?.error ? found.error.message : ''};
@@ -197,5 +205,5 @@ window.HGTaskOutputs = (() => {
     return section;
   }
 
-  return {read, brief, full, kindOf};
+  return {read, brief, full, kindOf, tree, pool, lookup, unknownCommit, commitRow, fileRow, size, LABEL};
 })();
