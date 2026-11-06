@@ -11,7 +11,7 @@
   // Wide screens: agents | 主节点 | 从节点 | phones, one band per zone. Narrow: zones stacked, one card per row.
   const WIDE = {margin: 16, pad: 20, head: 48, gap: 12, column: 76, group: 22, lane: 28,
                 agent: [228, 54], center: [248, 100], node: [248, 100], phone: [268, 54]};
-  const SMALL = {margin: 8, pad: 12, head: 44, gap: 8, gutter: 18, group: 16, lane: 16, agent: 50, node: 96, phone: 50};
+  const SMALL = {least: 300, margin: 8, pad: 12, head: 44, gap: 8, gutter: 18, group: 16, lane: 16, agent: 50, node: 96, phone: 50};
   const ICONS = {
     center: '<rect x="3.5" y="4" width="17" height="6.5" rx="1.6"/><rect x="3.5" y="13.5" width="17" height="6.5" rx="1.6"/><path d="M7 7.25h.01M7 16.75h.01M10.5 7.25h6M10.5 16.75h6"/>',
     node: '<rect x="3" y="4.5" width="18" height="11.5" rx="1.6"/><path d="M8.5 20h7M12 16v4"/>',
@@ -214,25 +214,30 @@
   }
 
   // ── Layout: where each card starts (x, y, width, height); what the viewer moved replaces x and y ──
+  // Each zone takes the columns its cards use (agents 0, 主节点 1, 从节点 2, phones 3) and drops to the first place
+  // below what already fills those columns: a zone of agents alone sits beside the computers of another.
   function wide(model) {
-    const P = WIDE, x = {agent: P.pad}, boxes = new Map();
-    x.center = x.agent + P.agent[0] + P.column;
-    x.node = x.center + P.center[0] + P.column;
-    x.phone = x.node + P.node[0] + P.column;
-    let y = 0;
+    const P = WIDE, x = [P.pad], boxes = new Map(), filled = [0, 0, 0, 0];
+    x[1] = x[0] + P.agent[0] + P.column;
+    x[2] = x[1] + P.center[0] + P.column;
+    x[3] = x[2] + P.node[0] + P.column;
     for (const zone of model.zones) {
-      const top = y + P.head;
+      const used = [...zone.agents.length ? [0] : [], ...zone.nodes.map(node => node.role === 'center' ? 1 : 2),
+                    ...zone.nodes.some(node => node.phones.length) ? [3] : []];
+      const first = Math.min(...used), last = Math.max(...used);
+      const top = Math.max(...filled.slice(first, last + 1)) + P.head;
       let agents = top, nodes = top;
-      for (const agent of zone.agents) { boxes.set(agent.id, [x.agent, agents, ...P.agent]); agents += P.agent[1] + P.gap; }
+      for (const agent of zone.agents) { boxes.set(agent.id, [x[0], agents, ...P.agent]); agents += P.agent[1] + P.gap; }
       for (const node of zone.nodes) {
         const [width, height] = P[node.role], stack = node.phones.length * (P.phone[1] + P.gap) - P.gap, block = Math.max(height, stack);
-        boxes.set(node.id, [x[node.role], nodes + (block - height) / 2, width, height]);
-        node.phones.forEach((phone, i) => boxes.set(phone.id, [x.phone, nodes + (block - stack) / 2 + i * (P.phone[1] + P.gap), ...P.phone]));
+        boxes.set(node.id, [x[node.role === 'center' ? 1 : 2], nodes + (block - height) / 2, width, height]);
+        node.phones.forEach((phone, i) => boxes.set(phone.id, [x[3], nodes + (block - stack) / 2 + i * (P.phone[1] + P.gap), ...P.phone]));
         nodes += block + P.group;
       }
-      y = Math.max(agents - P.gap, nodes - P.group, top) + P.pad + P.lane;
+      const bottom = Math.max(agents - P.gap, nodes - P.group, top) + P.pad + P.lane;
+      for (let column = first; column <= last; ++column) filled[column] = bottom;
     }
-    return {boxes, width: x.phone + P.phone[0] + P.pad};
+    return {boxes, width: x[3] + P.phone[0] + P.pad};
   }
   function narrow(model, width) {
     const P = SMALL, boxes = new Map(), full = width - 2 * P.pad, indent = P.pad + P.gutter, branch = full - P.gutter;
@@ -251,10 +256,13 @@
     }
     return {boxes, width};
   }
+  // Below SMALL.least a narrow layout is drawn at that width and scaled down. A stage with no width (a window resized to
+  // nothing) is laid out on the next resize.
   function place() {
     const outer = $('stage').clientWidth, next = outer < NARROW ? 'narrow' : 'wide', P = next === 'wide' ? WIDE : SMALL;
+    if (outer <= 2 * P.margin) return;
     if (next !== mode) { mode = next; moved = load(); $('relayout').disabled = !Object.keys(moved).length; }
-    const width = outer - 2 * P.margin, auto = mode === 'wide' ? wide(data) : narrow(data, width), scale = Math.min(1, width / auto.width);
+    const width = outer - 2 * P.margin, auto = mode === 'wide' ? wide(data) : narrow(data, Math.max(width, P.least)), scale = Math.min(1, width / auto.width);
     frame = {boxes: auto.boxes, scale, width: width / scale, offset: (width / scale - auto.width) / 2, P};
     $('world').style.left = $('world').style.top = P.margin + 'px';
     for (const [id, card] of cards) {
