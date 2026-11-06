@@ -537,6 +537,7 @@
         const main = el('div', null, 'discuss-main'), top = el('div', null, 'discuss-head');
         top.append(el('span', speaker(note), 'discuss-from'));
         if (note.to) top.append(el('span', '→ ' + note.to, 'discuss-to'));
+        if (note.urgent) top.append(tag('紧急', 'bad'));
         if (human) top.append(tag('指导', 'acc plain'));
         if (note.unanswered === true) top.append(tag('agent 未回应', 'warn'));
         if (note.ask) top.append(tag(note.question_unanswered === true ? '问人 · 待回复' : '问人', note.question_unanswered === true ? 'warn' : 'plain'));
@@ -586,11 +587,15 @@
       // default reader.
       const to = el('select', null, 'composer-to'), owner = record.data.owner;
       to.id = 'task-note-to'; to.setAttribute('aria-label', '点名');
+      // 紧急: the note lands first in the assignee's next check-in duties, above the ordinary queue.
+      const urgent = el('input'); urgent.type = 'checkbox'; urgent.id = 'task-note-urgent';
+      const urgentLabel = el('label', null, 'composer-urgent'); urgentLabel.setAttribute('for', 'task-note-urgent');
+      urgentLabel.setAttribute('aria-label', '标为紧急'); urgentLabel.append(urgent, '紧急');
       to.onchange = () => { input.placeholder = to.value ? `写给 ${to.value}…` : owner ? `写给 ${owner} 的指导…` : '留言…'; };
       to.replaceChildren(new Option(owner ? `给负责人 ${owner}` : '不点名', ''),
                          ...(agents || []).filter(agent => agent.name !== owner).map(agent => new Option(`点名 ${agent.name}`, agent.name)));
       to.onchange();
-      foot.append(to, el('span', 'Enter 发送 · Shift+Enter 换行', 'composer-hint'), button);
+      foot.append(to, el('span', 'Enter 发送 · Shift+Enter 换行', 'composer-hint'), urgentLabel, button);
       form.append(chip, input, foot);
       const setReply = id => {
         replyTo = id; chip.hidden = !id;
@@ -616,8 +621,9 @@
         button.disabled = true; button.textContent = '发送中…'; status.textContent = '';
         try {
           await write('note', 'n-' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
-                      {research_id: record.id, text, reply_to: replyTo, decision: null, ask: false, evidence_refs: [], to: to.value || null}, null, null);
-          setReply(null); input.value = ''; to.value = ''; to.onchange(); grow(); await load();
+                      {research_id: record.id, text, reply_to: replyTo, decision: null, ask: false, evidence_refs: [],
+                       to: to.value || null, urgent: urgent.checked}, null, null);
+          setReply(null); input.value = ''; to.value = ''; to.onchange(); urgent.checked = false; grow(); await load();
         } catch (error) { status.textContent = '发送失败：' + failure(error) + '。内容还在输入框里。'; }
         finally { button.disabled = false; button.textContent = '发送'; }
       };
@@ -631,6 +637,23 @@
       });
     }
     section.append(status);
+  }
+
+  // 最近失败的作业放在任务页顶部：作业号、一行失败原因和时间；任务没有失败过的作业就不显示。
+  async function failedSection(section, jobs) {
+    try {
+      const items = (await jobs()).items;
+      const bad = items.filter(job => job.outcome === 'failed')
+        .sort((a, b) => (b.ended || b.started || 0) - (a.ended || a.started || 0))[0];
+      if (!bad) { section.remove(); return; }
+      const why = typeof bad.error === 'string' ? bad.error : bad.error?.message || bad.note
+        || (Number.isInteger(bad.exit) ? `exit ${bad.exit}` : '原因未记录');
+      const link = el('a', `作业 ${bad.id}`);
+      link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(bad.id)}`);
+      const line = el('p', null, 'failed-line');
+      line.append(tag('最近失败', 'bad'), link, el('span', clip(why, 120), 'failed-why'), timeEl(bad.ended || bad.started));
+      section.append(line);
+    } catch (error) { section.remove(); }
   }
 
   async function renderDetail(container, record, ctx) {
@@ -654,7 +677,9 @@
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
     const judged = el('div'), keySlot = el('div'), outputSlot = el('div'), summary = summarySection(record, chain, keySlot, outputSlot);
-    container.append(...[ownerSection(record, ctx), waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
+    const failed = el('section', null, 'research-section failed-job'); failed.id = 'task-failed';
+    container.append(...[ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
+    failedSection(failed, jobs);
     if (chain.length > 1) chainTree(chain, record, container);
     // Comparisons are what a person comes here to answer, so they go first and the rest starts once they are in place.
     await comparisons(record, ctx, container, waiting, judged, target, () => shown === paint, keySlot);
