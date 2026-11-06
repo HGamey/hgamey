@@ -88,9 +88,10 @@ class ExperimentJobTests(unittest.TestCase):
         connection.close()
         return response.status, json.loads(raw) if raw else None
 
-    def pf(self, *args):
+    def pf(self, *args, client_env=None):
         env = {k: v for k, v in os.environ.items() if not k.startswith("PF_")}
         env.update(PF_NODE_URL="http://%s:%d" % self.address, PF_NODE_TOKEN=ADMIN, PF_NODE_ID=self.node_id)
+        env.update(client_env or {})
         done = subprocess.run([sys.executable, str(NODE / "pf-node"), *args], env=env, capture_output=True,
                               text=True, timeout=120, cwd=self.tmp)
         return done.returncode, done.stdout.strip(), done.stderr
@@ -223,6 +224,31 @@ class ExperimentJobTests(unittest.TestCase):
         self.assertEqual(status["outcome"], "failed", status)
         self.assertFalse(os.path.exists(self.jobs.path(jid, "in", "experiment")))
         self.assertIn(f"实验提交 {fork} 不在实验仓库", json.dumps(status, ensure_ascii=False))
+
+    def test_a_client_without_fcntl_submits_a_non_tip_commit(self):
+        source = self.tmp / "experiments"
+        git("checkout", "-qb", "ext/team/topic", cwd=source)
+        (source / "probe" / "step.txt").write_text("inner\n")
+        git("add", ".", cwd=source)
+        git("commit", "-qm", "inner", cwd=source)
+        inner = git("rev-parse", "HEAD", cwd=source)
+        (source / "probe" / "step.txt").write_text("tip\n")
+        git("commit", "-qam", "tip", cwd=source)
+        git("push", "-q", str(self.remote), "ext/team/topic", cwd=source)
+
+        # Only the CLI lacks fcntl; the node still uses its real materialize lock.
+        blocked = self.tmp / "without-fcntl"
+        blocked.mkdir()
+        (blocked / "sitecustomize.py").write_text('import sys\nsys.modules["fcntl"] = None\n')
+        code, jid, err = self.pf("--experiment", inner, "--device-access", "none", "--detach",
+                                 "experiment", "probe/run.py", client_env={"PYTHONPATH": str(blocked)})
+        self.assertEqual(code, 0, err)
+        status = self.finished(jid)
+        self.assertEqual((status["exit"], status["experiment"]), (0, {"commit": inner}), status)
+        self.assertEqual(Path(self.jobs.path(jid, "in", "experiment", "probe", "step.txt")).read_text(),
+                         "inner\n")
+        probe = json.loads(Path(self.jobs.path(jid, "out", "probe.json")).read_text())
+        self.assertEqual(probe["PF_EXPERIMENT_COMMIT"], inner)
 
     def test_a_shallow_mirror_from_older_nodes_is_rebuilt(self):
         mirror = self.jobs.experiment_mirror
