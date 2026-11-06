@@ -1408,7 +1408,7 @@ class CoreFlowTests(unittest.TestCase):
         tasks = {item["id"]: item for item in board._tasks()}
         self.assertIn("sr-active", tasks)
         self.assertEqual(tasks["sr-report"]["state"], "delivered")
-        self.assertEqual(tasks["sr-report"]["report_url"], "/dash/research?kind=research&id=sr-report#task-report")
+        self.assertEqual(tasks["sr-report"]["report_url"], "/dash/research/report?id=sr-report")
 
     def test_job_artifact_paths_are_shared_by_cli_notes_and_delivery(self):
         self.assertEqual(self.web("POST", "/research-state/research/sr-artifacts", self.write(
@@ -1633,7 +1633,7 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(code, 0, err)
         [row] = board._tasks()
         self.assertEqual((row["id"], row["state"], row["owner"], row["follow_ons"], row["report_url"]),
-                         ("sr-chain-root", "delivered", "agent-a", 2, "/dash/research?kind=research&id=sr-chain-root#task-report"))
+                         ("sr-chain-root", "delivered", "agent-a", 2, "/dash/research/report?id=sr-chain-root"))
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
         self.assertIn("`含 ${t.follow_ons} 个接续任务`", script)
 
@@ -1994,8 +1994,9 @@ class CoreFlowTests(unittest.TestCase):
                 browser.close()
 
     def test_a_task_page_shows_its_own_report_and_links_the_task_that_follows(self):
-        """A task page shows only its own delivery report, never the report of the task that follows it; that task is
-        a 子任务 card leading to its own page, which shows its own report and names the task it follows."""
+        """A task page shows only its own delivery (its conclusion at the top, a link to its report at the bottom), never
+        that of the task that follows it; that task is a 子任务 card leading to its own page, which shows its own and
+        names the task it follows."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -2005,7 +2006,7 @@ class CoreFlowTests(unittest.TestCase):
         for rid, follows in (("rp-old", None), ("rp-new", "rp-old")):
             self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
                 "create-" + rid, {"title": "交付 " + rid, "objective": "最新的交付在前", "follows": follows}))[0], 201)
-            self.assertEqual(self.pf(ADMIN, "research", "deliver", rid, "--summary", "# 报告 " + rid, "--artifact", f"job:{self.jid}",
+            self.assertEqual(self.pf(ADMIN, "research", "deliver", rid, "--summary", f"# 报告 {rid}\n\n结论 {rid}", "--artifact", f"job:{self.jid}",
                                      "--game-version", "5.1", "--device", "FixturePhone")[0], 0)
         base = "http://%s:%d" % self.address
         with sync_playwright() as playwright:
@@ -2025,16 +2026,16 @@ class CoreFlowTests(unittest.TestCase):
                 page.goto(f"{base}/dash/research?kind=research&id=rp-old")
                 page.wait_for_selector("#task-report")
                 page.wait_for_selector("#task-thread .section-head")
+                report = lambda: (page.text_content("#task-summary .summary-conclusion .research-report"),
+                                  page.get_attribute("#task-report .summary-link", "href").split("?", 1)[1].split("&")[0])
                 self.assertEqual(page.locator(".task-report").count(), 1)
-                report = page.text_content("#task-report")
-                self.assertIn("报告 rp-old", report)
-                self.assertNotIn("报告 rp-new", report, "the report of the task that follows is on its own page")
+                self.assertEqual(report(), ("结论 rp-old", "id=rp-old"), "the delivery of the task that follows is on its own page")
                 self.assertFalse([url for url in reads if "rp-new" in url], "nothing of the task that follows is read")
                 page.click('#task-summary .summary-task[href*="id=rp-new"]')
                 page.wait_for_url("**id=rp-new**")
-                page.wait_for_function("() => document.getElementById('task-report')?.textContent.includes('报告 rp-new')")
+                page.wait_for_selector('#task-report .summary-link[href*="id=rp-new"]')
                 self.assertEqual(page.locator(".task-report").count(), 1)
-                self.assertNotIn("报告 rp-old", page.text_content("#task-report"))
+                self.assertEqual(report(), ("结论 rp-new", "id=rp-new"))
                 self.assertIn("交付 rp-old", page.text_content("#task-summary .summary-parent"))
                 self.assertEqual(errors, [])
             finally:
@@ -3148,7 +3149,7 @@ class CoreFlowTests(unittest.TestCase):
                 page.wait_for_selector(block + ".compare-target")
                 top = page.evaluate("s => document.querySelector(s).getBoundingClientRect().top", block)
                 self.assertTrue(56 <= top <= 120, f"block top {top}: below the sticky top bar, not hidden under it")
-                page.wait_for_selector("#task-thread .discuss-entry")
+                page.wait_for_selector("#task-thread .discuss-entry", state="attached")   # older notes are folded
                 page.wait_for_function("() => !document.querySelector('[aria-busy=true]')")
                 # Once the thread is in, the block is still top-aligned: its top sits at its own scroll margin.
                 after, margin = page.evaluate("s => { const e = document.querySelector(s); return [e.getBoundingClientRect().top, parseFloat(getComputedStyle(e).scrollMarginTop)]; }", block)
@@ -3915,8 +3916,9 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
-    def test_a_report_link_from_home_lands_on_the_report_once_the_thread_is_in(self):
-        """#task-report is the last section: the page lands on it after the long thread above has loaded."""
+    def test_an_older_link_to_the_report_on_the_task_page_opens_the_report_page(self):
+        """The task page keeps only the delivery's conclusion and a link; a #task-report link (as older notes and
+        messages carry) opens the report's own page."""
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -3944,8 +3946,8 @@ class CoreFlowTests(unittest.TestCase):
                 context.add_cookies([{"name": name, "value": value, "url": base}])
                 page = context.new_page()
                 page.goto(base + "/dash/research?kind=research&id=sr-landing#task-report")
-                page.wait_for_selector("#task-thread .discuss-entry")
-                page.wait_for_function("() => Math.abs(document.getElementById('task-report').getBoundingClientRect().top - 72) < 50")
+                page.wait_for_url("**/dash/research/report?id=sr-landing**")
+                page.wait_for_function("() => document.getElementById('report')?.textContent.includes('帧率 +18%')")
             finally:
                 browser.close()
 

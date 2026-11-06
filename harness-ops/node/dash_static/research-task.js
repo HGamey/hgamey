@@ -268,17 +268,14 @@
     form.append(why, ok, no); box.append(open, form);
     return box;
   }
+  const reportUrl = record => HGTarget.url(`/dash/research/report?id=${encodeURIComponent(record.id)}`);
+  // The delivery reads in full on its own page; its conclusion is at the top of this one.
   function deliverableSection(record) {
-    const value = record.data.deliverable;
-    if (!value) return null;
-    const section = el('section', null, 'research-section task-report'), list = evidenceList(value.artifacts);
-    section.id = 'task-report';
-    const head = el('div', null, 'section-head');
-    head.append(el('h2', '交付报告'), tag('已交付', 'ok'));
-    const scope = [value.applies_to.game_version && `游戏版本 ${value.applies_to.game_version}`, ...value.applies_to.devices].filter(Boolean).join(' · ');
+    if (!record.data.deliverable) return null;
+    const section = el('section', null, 'research-section task-report'), head = el('div', null, 'section-head'), link = el('a', '完整交付报告', 'summary-link');
+    section.id = 'task-report'; link.href = reportUrl(record);
+    head.append(el('h2', '交付报告'), tag('已交付', 'ok'), link);
     section.append(head);
-    if (scope) section.append(el('p', '适用：' + scope, 'report-scope'));
-    section.append(markdownReport(value.summary), el('h3', `成果文件 · ${value.artifacts.length}`), list);
     return section;
   }
 
@@ -306,7 +303,7 @@
     const report = record.data.deliverable && conclusion(record.data.deliverable.summary);
     if (report) {
       const box = el('div', null, 'summary-block summary-conclusion'), head = el('div', null, 'section-head'), link = el('a', '完整交付报告', 'summary-link');
-      link.href = HGTarget.url(`/dash/research/report?id=${encodeURIComponent(record.id)}`);
+      link.href = reportUrl(record);
       head.append(el('h2', '结论'), link);
       const text = markdownReport(report), more = el('button', '展开', 'ghost summary-more');
       more.type = 'button';
@@ -484,6 +481,7 @@
   }
 
   const DECISION = {adopt: ['采纳', 'ok'], defer: ['暂缓', 'off'], reject: ['拒绝', 'bad']};
+  const NOTES_SHOWN = 5;
   async function threadSection(record, ctx, section) {
     const list = el('div', null, 'discuss-list'), status = el('p', null, 'note'), head = el('div', null, 'section-head'), count = el('span', null, 'count');
     let replyTo = null, byId = new Map();
@@ -529,6 +527,17 @@
         return entry;
       }
       list.replaceChildren(...(roots.length ? roots.map(paint) : [el('div', '还没有留言', 'empty')]));
+      // The newest few threads show; older ones fold, except one still waiting for a person or the one a link opens.
+      const thread = note => [note, ...(children.get(note.id) || []).flatMap(thread)];
+      const linked = location.hash.startsWith('#note-') ? location.hash.slice(6) : '';
+      const older = roots.slice(0, -NOTES_SHOWN).filter(root => !thread(root).some(note => note.question_unanswered === true || note.id === linked));
+      if (older.length) {
+        const hidden = older.map(root => document.getElementById('note-' + root.id)), n = older.flatMap(thread).length;
+        const more = el('button', `更早的 ${n} 条留言`, 'link-btn notes-more'); more.type = 'button';
+        hidden.forEach(entry => { entry.hidden = true; });
+        more.onclick = () => { hidden.forEach(entry => { entry.hidden = false; }); more.remove(); };
+        list.prepend(more);
+      }
       // Each section answers only its own anchor: a note link lands here; #cmp- and #task-report land on theirs.
       // A note taller than half the screen lands with its author line at the top, not its middle at the centre.
       const note = location.hash.startsWith('#note-') && document.getElementById(location.hash.slice(1));
@@ -602,6 +611,7 @@
     const waiting = target ? compareNote('正在读取待你评的对比…') : el('div');
     clearImages(); dropChain(); container.replaceChildren(...(target ? [waiting] : []));
     if (record.kind !== 'research') return;
+    if (location.hash === '#task-report' && record.data.deliverable) { location.replace(reportUrl(record)); return; }
     // Only this task's own records are read. The tasks it follows or that follow it (its chain) are links: a tree in
     // the task list, and 接续自 / 子任务 at the top. The chain is asked for while the owner list is read.
     const chained = api(`/tasks?chain=${encodeURIComponent(record.id)}`).then(value => value.items, () => []);
@@ -620,8 +630,6 @@
     await comparisons(record, ctx, container, waiting, judged, target, () => shown === paint, keySlot);
     if (shown !== paint) return;
     await Promise.all([directionsSection(record, directions, jobs), runsSection(runs, jobs), threadSection(record, ctx, thread)]);
-    // The report is last, so a 交付报告 link lands once everything above it that will be read now is in.
-    if (shown === paint && location.hash === '#task-report') document.getElementById('task-report')?.scrollIntoView({block: 'start'});
   }
   function compareNote(text, retry) {
     const box = el('section', null, 'research-section compare-section'), head = el('div', null, 'section-head');

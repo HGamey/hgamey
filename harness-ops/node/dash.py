@@ -844,7 +844,7 @@ class Dash:
             if state == "closed":
                 task["state_reason"] = (research.get("research", latest["id"])["data"].get("state_reason") or "")[:200]
             elif state == "delivered":
-                task["report_url"] = "/dash/research?" + urlencode({"kind": "research", "id": root}) + "#task-report"
+                task["report_url"] = "/dash/research/report?" + urlencode({"id": latest["id"]})
             else:
                 notes = [n for n in (self._latest_note(research, t["id"]) for t in members) if n]
                 task["latest_note"] = max(notes, key=lambda n: n["updated_at"]) if notes else None

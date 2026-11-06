@@ -176,6 +176,7 @@
 .research-view .run-row a:hover { text-decoration: underline; }
 .research-view .run-facts { display: flex; flex: none; gap: var(--sp-3); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .research-view .runs-more { margin-top: var(--sp-2); }
+.research-view .notes-more { display: block; margin: 0 0 var(--sp-2); }
 
 /* 留言 */
 .research-view .discuss-list { display: block; margin: 0; }
@@ -225,7 +226,6 @@
 .research-view .research-report th { background: var(--wash); font-weight: 600; }
 .research-view .research-report :is(th, td) { padding: 6px 12px; border: 1px solid var(--line); }
 .research-view .research-report pre { padding: var(--sp-3); background: var(--panel); border-radius: var(--radius); font: 12px/1.6 var(--mono); }
-.research-view .task-report > h3 { margin: var(--sp-5) 0 var(--sp-2); font-size: var(--fs-base); }
 .research-view .research-artifact { margin: var(--sp-2) 0; }
 .research-view .research-artifact img { max-height: 480px; background: var(--panel); border-radius: var(--radius); border: 1px solid var(--line); }
 
