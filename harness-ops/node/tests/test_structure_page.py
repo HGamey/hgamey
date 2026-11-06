@@ -25,7 +25,7 @@ class StructurePageTests(unittest.TestCase):
     cli = core.CoreFlowTests.cli
 
     def fixture(self):
-        """The center (no zone) with three registered phones: HONOR read five hours ago, HUAWEI never read, and a
+        """The center (no zone) with three registered phones: HONOR in a reading from five hours ago, HUAWEI not in it, and a
         registration the center has disabled (a phone that moved to another computer). A blue-zone computer that reports
         now; a Chengdu computer last heard from an hour ago, whose own last snapshot still says its phone is online. One
         agent in the blue zone and one on the public network (no city). agent-a's job runs on the blue computer's phone
@@ -103,10 +103,10 @@ class StructurePageTests(unittest.TestCase):
             classes = dict(page.eval_on_selector_all(".st-card", "cs => cs.map(c => [c.dataset.id, c.className])"))
             running = {card for card, name in classes.items() if "is-running" in name}
             self.assertEqual(running, {"a:agent-a", "n:" + BLUE, f"p:{BLUE}/RM1"})
-            self.assertEqual({card for card, name in classes.items() if "is-off" in name}, {"n:" + CHENGDU, f"p:{CHENGDU}/OP1"})
+            self.assertEqual({card for card, name in classes.items() if "is-off" in name}, {"n:" + CHENGDU, f"p:{CHENGDU}/OP1", f"p:{self.node_id}/HUAWEI"})
             self.assertEqual(page.eval_on_selector_all(".st-link.is-running", "ls => ls.length"), 3)
             self.assertEqual(page.eval_on_selector_all(".st-packet", "ps => ps.length"), 3)
-            self.assertEqual(page.eval_on_selector_all(".st-link.is-off", "ls => ls.length"), 2)
+            self.assertEqual(page.eval_on_selector_all(".st-link.is-off", "ls => ls.length"), 3)
             self.assertIn("从节点", page.text_content(f'[data-id="n:{BLUE}"]'))
             self.assertIn("thinkcentre", page.text_content(f'[data-id="n:{BLUE}"]'))
             self.assertIn("离线 · 最后在线", page.text_content(f'[data-id="n:{CHENGDU}"]'))
@@ -114,12 +114,13 @@ class StructurePageTests(unittest.TestCase):
             self.assertEqual(page.text_content(f'[data-id="p:{BLUE}/RM1"] .st-line'), "Android 16 · root · adb")
             self.assertEqual(page.text_content('[data-id="a:agent-a"] .st-line'), "glm · 运行 1 个作业")
             # Online is what the center sees. A computer whose link is down has offline phones, whatever its own last
-            # snapshot said; a phone on a linked computer with an old reading is shown as usual, with the reading's age.
+            # snapshot said. On a linked computer the newest reading decides: a phone in it is shown as usual, with the
+            # reading's age when it is old; a phone not in it is not there.
             note = lambda card: page.eval_on_selector(f'[data-id="{card}"]', "c => c.querySelector('.st-note')?.textContent || ''")
             self.assertEqual(note(f"p:{CHENGDU}/OP1"), "离线")
             self.assertEqual(note(f"p:{self.node_id}/HONOR"), "读数 5 小时前")
             self.assertEqual(page.text_content(f'[data-id="p:{self.node_id}/HONOR"] .st-line'), "Android 16 · 无 root · adb")
-            self.assertEqual(note(f"p:{self.node_id}/HUAWEI"), "")
+            self.assertEqual(note(f"p:{self.node_id}/HUAWEI"), "未接入")
             self.assertEqual(page.text_content(f'[data-id="p:{self.node_id}/HUAWEI"] .st-line'), "暂无读数")
             self.assertEqual(note(f"p:{BLUE}/RM1"), "")
             self.assertEqual(errors, [])

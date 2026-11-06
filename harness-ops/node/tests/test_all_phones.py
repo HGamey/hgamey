@@ -19,8 +19,8 @@ class AllPhonesTests(unittest.TestCase):
 
     def fixture(self):
         """A blue-zone computer that reports now and declares remote actions; a Chengdu computer last heard from an hour
-        ago, which declares none. The center: HONOR read five hours ago, HUAWEI never read, and a disabled registration
-        (a phone that moved to another computer)."""
+        ago, which declares none. The center: HONOR in a reading from five hours ago, HUAWEI not in it, and a disabled
+        registration (a phone that moved to another computer)."""
         directory = self.jobs.directory
         directory.join({"invite": directory.invite()["code"], "name": "office", "node_id": BLUE, "tags": ["zone:华为蓝区"]})
         directory.report(BLUE, {**snapshot("thinkcentre", "Linux", "95f55e5c72ae", "RM1", "REDMAGIC", "NX809J", "Android 16 (SDK 36)"),
@@ -68,10 +68,11 @@ class AllPhonesTests(unittest.TestCase):
                                    [f"派作业 /dash/jobs?phone={CHENGDU}%2FOP1"]],
                 local + "/HONOR": ["HONOR AAP-AN00HN1", host, "在线读数 5 小时前", "Android 16", "无 root", "不可远程",
                                    [f"派作业 /dash/jobs?phone={local}%2FHONOR"]],
-                local + "/HUAWEI": ["HUAWEIHD1", host, "在线暂无读数", "—", "—", "不可远程", [f"派作业 /dash/jobs?phone={local}%2FHUAWEI"]],
+                local + "/HUAWEI": ["HUAWEIHD1", host, "未接入", "—", "—", "不可远程", [f"派作业 /dash/jobs?phone={local}%2FHUAWEI"]],
             })
-            self.assertEqual(page.text_content("#all-phones-count"), "4 台 · 3 台在线")
-            self.assertEqual(page.eval_on_selector_all(".phone-row.is-off", "rows => rows.map(row => row.dataset.ref)"), [CHENGDU + "/OP1"])
+            self.assertEqual(page.text_content("#all-phones-count"), "4 台 · 2 台在线")
+            self.assertEqual(sorted(page.eval_on_selector_all(".phone-row:is(.is-off, .is-gone)", "rows => rows.map(row => row.dataset.ref)")),
+                             sorted([CHENGDU + "/OP1", local + "/HUAWEI"]))
 
             # 派作业 opens the job form on that phone.
             page.click(f'.phone-row[data-ref="{blue}"] a:has-text("派作业")')
@@ -88,6 +89,24 @@ class AllPhonesTests(unittest.TestCase):
             self.assertEqual(page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth"), 0)
             self.assertTrue(page.is_hidden(".phone-head"))
             self.assertEqual(errors, [])
+
+
+    def test_the_newest_reading_says_whether_a_phone_is_there_and_with_none_it_shows_as_usual(self):
+        """A fresh reading: HONOR in it is online (no age), HUAWEI not in it is not there. With no reading at all the
+        center cannot say, so both show as usual with nothing read."""
+        self.fixture()
+        self.jobs.fleet.snapshot.return_value = {"stale": False, "sampled_at": time.time(), "devices": [{"serial": "HN1",
+            "transport": "adb", "online": True, "brand": "HONOR", "model": "AAP-AN00", "os": "Android 16 (SDK 36)", "root": False}]}
+        local = self.cli("GET", "/nodes")[1]["local"]["node_id"]
+        state = lambda rows, device: rows[f"{local}/{device}"][2]
+        with self._browser_page() as page:
+            page.goto("http://%s:%d/dash/fleet" % self.address)
+            rows = self.rows(page)
+            self.assertEqual((state(rows, "HONOR"), state(rows, "HUAWEI")), ("在线", "未接入"))
+            self.jobs.fleet.snapshot.return_value = {"stale": True, "sampled_at": None, "devices": []}
+            page.reload()
+            rows = self.rows(page)
+            self.assertEqual((state(rows, "HONOR"), state(rows, "HUAWEI")), ("在线暂无读数", "在线暂无读数"))
 
 
 if __name__ == "__main__":

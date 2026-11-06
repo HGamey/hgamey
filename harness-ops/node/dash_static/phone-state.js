@@ -1,5 +1,6 @@
-// A phone as the center sees it, the same on every page: its computer's link down (off); up with a current reading
-// that shows the phone (on) or does not (gone); up with an old or no reading (old: shown as usual, with the reading's age).
+// A phone as the center sees it, the same on every page. Its computer's link down: off. Otherwise the newest reading
+// decides: the phone in it and online is on (old when the reading is stale: shown as usual, with the reading's age);
+// a reading without the phone, or with it not online, is gone; with no reading at all it is old, with nothing read.
 window.HGPhoneState = (() => {
   'use strict';
   const NOTE = {off: '离线', gone: '未接入'};
@@ -13,7 +14,8 @@ window.HGPhoneState = (() => {
   }
   function of(item) {
     const seen = item.observation || {}, read = seen.online != null;
-    const state = !item.connected ? 'off' : item.stale ? 'old' : seen.online === true ? 'on' : 'gone';
+    const state = !item.connected ? 'off' : seen.online === true ? (item.stale ? 'old' : 'on')
+      : seen.online === false || item.sampled_at ? 'gone' : 'old';
     return {state, online: state === 'on' || state === 'old', read: read && item.sampled_at, seen: read,
             title: seen.brand && seen.model ? `${seen.brand} ${seen.model}` : item.model || item.device_id,
             os: os(seen.os), root: read ? !!seen.root : null, transport: seen.transport};
