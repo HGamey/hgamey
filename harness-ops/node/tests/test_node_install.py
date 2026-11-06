@@ -243,7 +243,8 @@ class NodeInstallTests(unittest.TestCase):
         self.assertEqual(self.center.call('GET','/jobs/'+job['id'])[1]['queue']['state'],'done')
         self.assertEqual(deploy.reports(config,0)[0]['service'],self.other)
         self.assertNotIn(json.loads(connection)['token'],self.output.getvalue())
-        self.assertIn('KillMode=process',next((self.home/'.config/systemd/user').glob('*.service')).read_text())
+        self.assertIn('KillMode=process',
+                      (self.home/'.config/systemd/user'/('hgamey-node-'+node_id+'.service')).read_text())
 
     def test_linux_service_is_accepted_by_systemd(self):
         env={'DEVLOCK_DIR':str(self.root/'locks'),'HG_CONFIG_DIR':str(self.root/'config'),'PATH':'/usr/bin:/bin'}
