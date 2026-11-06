@@ -160,6 +160,46 @@ class NodeReadTests(unittest.TestCase):
             remote_server.server_close()
             remote_thread.join()
 
+    def test_local_node_metadata_is_shared_by_cli_web_and_admin_updates(self):
+        local = self.get_json('/nodes')['local']
+        self.assertEqual((local['name'], local['node_id'], local['tags'], local['note']),
+                         ('local', self.node.node_id, [], ''))
+        view = {'Cookie': f'{dash.COOKIE}={self.board._cookie_val(self.pw)}', 'X-HG': '1',
+                'Content-Type': 'application/json'}
+        body = json.dumps({'revision': local['revision'], 'tags': ['zone:深圳公网'], 'note': '中心机房'})
+        self.assertEqual(self.request('/nodes/local', method='POST', body=body)[0], 401)
+        self.assertEqual(self.request('/dash/api/nodes/local', method='POST', body=body, headers=view)[0], 403)
+        joined = self.jobs.agents.join({'invite': self.jobs.agents.invite()['code'], 'name': 'reader'})
+        self.assertEqual(self.request('/nodes/local', method='POST', token=joined['token'], body=body)[0], 403)
+        self.assertEqual(self.get_json('/nodes')['local'], local)
+        env = {'PATH': os.defpath, 'PF_NODE_URL': 'http://127.0.0.1:' + str(self.server.server_port),
+               'PF_NODE_ID': self.node.node_id, 'PF_NODE_TOKEN': self.admin}
+        cli = [sys.executable, str(Path(__file__).resolve().parents[1] / 'pf-node'), 'nodes']
+        def run(*args):
+            result = subprocess.run([*cli, *args], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+        self.assertEqual(run()['local'], local)
+        changed = run('update', 'local', '--revision', str(local['revision']),
+                      '--tag', 'zone:深圳公网', '--note', '中心机房')
+        self.assertEqual((changed['tags'], changed['note'], changed['revision']),
+                         (['zone:深圳公网'], '中心机房', local['revision'] + 1))
+        observed = run('show', 'local')
+        self.assertEqual(run()['local'], observed)
+        self.assertEqual(self.get_json('/dash/api/nodes', headers=view)['local'], observed)
+        self.assertEqual(self.get_json('/dash/api/nodes/local', headers=view), observed)
+        self.assertEqual(observed['tags'], changed['tags'])
+        self.assertEqual(self.get_json('/nodes')['items'], [])
+        sampled = {**self.board.monitor.snapshot(), 'devices': [], 'stale': False}
+        with patch.object(self.jobs.directory.link, 'call', side_effect=AssertionError('center routed to itself')), \
+                patch.object(self.board.monitor, 'request', return_value=sampled) as sample:
+            refreshed = self.get_json('/nodes/local?devices=1')
+        self.assertEqual(refreshed['tags'], changed['tags'])
+        self.assertEqual(refreshed['snapshot']['fleet'], sampled)
+        sample.assert_called_once_with(5)
+        self.assertIsNone(self.board.monitor._thread)
+        self.assertFalse(self.board.wake.is_set())
+
     def test_fleet_page_joins_a_computer_with_a_code_and_shows_it_connected(self):
         """/dash/fleet hands out a one-time join code with the command to run on the other computer, lists unused codes
         and revokes them, shows a joined computer as connected, and edits its note and tags against its revision. There

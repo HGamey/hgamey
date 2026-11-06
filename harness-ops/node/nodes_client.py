@@ -9,7 +9,7 @@ from target_client import TargetError
 
 
 def main(args, target=None):
-    parser = argparse.ArgumentParser(prog='pf-node nodes', description='执行节点的加入邀请、最近快照和备注。')
+    parser = argparse.ArgumentParser(prog='pf-node nodes', description='中心 local 和执行节点的目录、标签与备注；update local 可修改中心元数据。')
     commands = parser.add_subparsers(dest='command')
     commands.add_parser('list')
     show = commands.add_parser('show')
@@ -24,7 +24,7 @@ def main(args, target=None):
     update = commands.add_parser('update')
     update.add_argument('name')
     update.add_argument('--revision', type=int, required=True)
-    update.add_argument('--rename', help='管理员修改电脑名称，保留原身份、连接和任务')
+    update.add_argument('--rename', help='管理员修改子节点名称，保留原身份、连接和任务')
     update.add_argument('--note')
     update.add_argument('--tag', action='append')
     update.add_argument('--clear-tags', action='store_true')

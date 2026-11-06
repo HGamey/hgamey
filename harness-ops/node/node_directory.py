@@ -95,8 +95,10 @@ class NodeDirectory:
             except (OSError, ValueError, KeyError, TypeError):
                 raise DirectoryError(500, 'node directory storage is unavailable') from None
 
-    @staticmethod
-    def _find(state, name):
+    def _find(self, state, name):
+        if name == 'local':
+            return state.setdefault('local', {'name': 'local', 'node_id': self.local_node_id,
+                                              'tags': [], 'note': '', 'revision': 1})
         entry = next((entry for entry in state['nodes'] if entry['name'] == name), None)
         if entry is None:
             raise DirectoryError(404, 'registered node was not found')
@@ -105,10 +107,11 @@ class NodeDirectory:
     def _public(self, entry):
         value = copy.deepcopy({key: val for key, val in entry.items() if key != 'credential'})
         last_seen = entry.get('last_seen_at')
-        connected = last_seen is not None and time.time() - last_seen <= 2 * REFRESH_S
+        local = entry['node_id'] == self.local_node_id
+        connected = local or last_seen is not None and time.time() - last_seen <= 2 * REFRESH_S
         value['connection'] = {'status': 'ready' if connected else 'disconnected',
                                'last_seen_at': last_seen}
-        value['stale'] = not connected or value.get('snapshot') is None
+        value['stale'] = not connected or not local and value.get('snapshot') is None
         return value
 
     def list(self):
@@ -205,7 +208,7 @@ class NodeDirectory:
 
     def update(self, name, body):
         fields = _metadata(body)
-        if 'name' in body:
+        if 'name' in body and name != 'local':
             fields['name'] = _name(body['name'])
         with self._locked() as state:
             entry = self._find(state, name)

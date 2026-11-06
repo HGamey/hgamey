@@ -25,6 +25,27 @@ class NodeDirectoryTests(unittest.TestCase):
         invitation = self.directory.invite()
         return self.directory.join({'invite': invitation['code'], 'name': 'remote', 'node_id': REMOTE})
 
+    def test_local_metadata_uses_the_existing_directory_and_survives_reopening(self):
+        local = self.directory.get('local')
+        self.assertEqual((local['name'], local['node_id'], local['tags'], local['note'], local['revision']),
+                         ('local', LOCAL, [], '', 1))
+        self.assertEqual(local['connection']['status'], 'ready')
+        files = set(Path(self.temp.name).rglob('*'))
+        changed = self.directory.update('local', {'revision': local['revision'],
+            'tags': ['zone:深圳公网'], 'note': '中心机房'})
+        self.assertEqual((changed['tags'], changed['note'], changed['revision']),
+                         (['zone:深圳公网'], '中心机房', 2))
+        self.assertEqual(set(Path(self.temp.name).rglob('*')), files)
+        self.directory.close()
+        self.directory = NodeDirectory(self.temp.name, LOCAL)
+        self.assertEqual(self.directory.get('local'), changed)
+        with self.assertRaises(DirectoryError) as conflict:
+            self.directory.update('local', {'revision': 1, 'tags': []})
+        self.assertEqual(conflict.exception.status, 409)
+        self.assertEqual(self.directory.get('local'), changed)
+        # Center metadata must not enroll the center as an outbound executor.
+        self.assertEqual(self.directory.list(), [])
+
     def test_configuration_is_durable_private_and_never_probes_on_read(self):
         joined = self.join()
         token = joined['token']
