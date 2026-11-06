@@ -1,0 +1,103 @@
+/* 结构: network zones are softly tinted regions, computers, phones and agents are cards, links are thin curves. Colour
+   marks a zone or a state; the accent glow and the travelling dots are only for what is running. */
+.structure-page { padding-bottom: var(--sp-7); }
+.structure-page .page-heading { align-items: flex-end; margin-bottom: var(--sp-4); }
+.st-facts { margin: var(--sp-1) 0 0; font-size: var(--fs-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.st-facts span { white-space: nowrap; }
+.structure-page > #message { margin: 0 0 var(--sp-3); }
+
+.st-stage {
+  --z0: #1F5FBF; --z1: #159A74; --z2: #B5771E; --z3: #8A5530;
+  --link: color-mix(in srgb, var(--ink) 24%, transparent); --link-off: color-mix(in srgb, var(--ink) 14%, transparent);
+  --lift: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -14px rgba(16, 24, 40, .28);
+  position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--ink) 11%, transparent) 1px, transparent 1.6px) 0 0 / 22px 22px, var(--card);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .st-stage { --z0: #6B9BEF; --z1: #3CC29A; --z2: #E0A54E; --z3: #DDA77E; --lift: 0 10px 24px -14px rgba(0, 0, 0, .7); }
+}
+:root[data-theme="dark"] .st-stage { --z0: #6B9BEF; --z1: #3CC29A; --z2: #E0A54E; --z3: #DDA77E; --lift: 0 10px 24px -14px rgba(0, 0, 0, .7); }
+.st-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.st-layer { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+
+/* Zones */
+.st-tone-0 { --zc: var(--z0); } .st-tone-1 { --zc: var(--z1); } .st-tone-2 { --zc: var(--z2); } .st-tone-3 { --zc: var(--z3); }
+.st-zone { fill: color-mix(in srgb, var(--zc) 6%, transparent); stroke: color-mix(in srgb, var(--zc) 36%, transparent); stroke-width: 1; }
+.st-zone.is-none, .st-zone-label.is-none { --zc: var(--faint); }
+.st-zone.is-none { fill: color-mix(in srgb, var(--zc) 5%, transparent); stroke-dasharray: 5 5; }
+.st-zone-label.is-none { background: color-mix(in srgb, var(--zc) 5%, var(--card)); }
+.st-zone-label {
+  position: absolute; left: 0; top: 0; z-index: 1; display: flex; align-items: baseline; gap: var(--sp-2);
+  padding: 2px 6px; border-radius: var(--radius-sm); white-space: nowrap; cursor: grab;
+  background: color-mix(in srgb, var(--zc) 6%, var(--card));   /* the zone's own fill: links pass under the label */
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.st-zone-label strong { font-size: var(--fs-base); font-weight: 650; color: var(--ink); }
+.st-zone-label span { font-size: var(--fs-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.st-swatch { align-self: center; width: 9px; height: 9px; border-radius: 3px; background: var(--zc); }
+.st-zone-label.is-none .st-swatch { background: none; border: 1.5px dashed var(--zc); }
+.st-zone-label.is-dragging { cursor: grabbing; }
+
+/* Links */
+.st-link { fill: none; stroke: var(--link); stroke-width: 1.4; stroke-linecap: round; }
+.st-link.is-trunk { stroke-width: 2.2; }
+.st-link.is-off { stroke: var(--link-off); stroke-dasharray: 3 5; }
+.st-link.is-running { stroke: var(--acc); stroke-width: 2; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--acc) 70%, transparent)); }
+.st-link.is-trunk.is-running { stroke-width: 2.6; }
+.st-packet { fill: var(--acc); filter: drop-shadow(0 0 4px var(--acc)); }
+
+/* Cards */
+.st-card {
+  position: absolute; left: 0; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--lift);
+  cursor: grab; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transition: box-shadow var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out);
+}
+.st-card:hover { border-color: color-mix(in srgb, var(--ink) 24%, var(--line)); }
+.st-card.is-dragging { z-index: 4; cursor: grabbing; box-shadow: var(--shadow-pop); }
+.st-text { display: flex; flex: 1; flex-direction: column; min-width: 0; line-height: 1.4; }
+.st-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); font-weight: 650; }
+.st-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--muted); }
+.st-icon { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; color: var(--ink2); }
+.st-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.st-card.is-off { background: color-mix(in srgb, var(--card) 55%, var(--wash)); box-shadow: none; border-style: dashed; }
+.st-card.is-off > * { opacity: .62; }
+.st-card.is-off .st-dot { background: var(--faint); }
+
+.st-node { flex-direction: column; align-items: stretch; justify-content: center; gap: 6px; padding: 12px 14px; }
+.st-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.st-head .st-title { flex: 1; font-size: var(--fs-md); }
+.st-role { flex: none; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .02em; background: var(--wash); color: var(--ink2); }
+.st-node .st-line { font-family: var(--mono); font-size: 11.5px; }
+.st-state { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-xs); color: var(--ink2); }
+.st-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-revision { flex: none; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+/* The center reads as the hub: the one inverted card. */
+.st-center { background: var(--ink); color: var(--page); border-color: transparent; box-shadow: 0 14px 34px -16px rgba(16, 24, 40, .6); }
+.st-center:hover { border-color: transparent; }
+.st-center .st-icon, .st-center .st-state { color: color-mix(in srgb, var(--page) 82%, transparent); }
+.st-center .st-line, .st-center .st-revision { color: color-mix(in srgb, var(--page) 62%, transparent); }
+.st-center .st-role { background: color-mix(in srgb, var(--page) 16%, transparent); color: var(--page); }
+
+.st-phone .st-icon { width: 20px; height: 20px; }
+.st-avatar {
+  flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--wash); color: var(--ink2); font-size: var(--fs-xs); font-weight: 700;
+}
+
+/* Running: the only glow on the page. */
+.st-card.is-running {
+  border-color: color-mix(in srgb, var(--acc) 60%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 14%, transparent), 0 0 28px -2px color-mix(in srgb, var(--acc) 45%, transparent);
+}
+.st-center.is-running { box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 32%, transparent), 0 0 38px 0 color-mix(in srgb, var(--acc) 55%, transparent); }
+.st-card.is-running::after { content: ""; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none; animation: st-pulse 2.4s var(--ease-out) infinite; }
+@keyframes st-pulse {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--acc) 45%, transparent); }
+  to { box-shadow: 0 0 0 12px color-mix(in srgb, var(--acc) 0%, transparent); }
+}
+.st-card.is-running .st-dot { background: var(--acc); }
+.st-busy { flex: none; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--acc); color: var(--on-acc); }
+.st-agent.is-running .st-avatar { border-color: transparent; background: var(--acc); color: var(--on-acc); }
+@media (prefers-reduced-motion: reduce) { .st-packet, .st-card.is-running::after { display: none; } }

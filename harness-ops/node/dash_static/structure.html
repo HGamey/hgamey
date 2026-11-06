@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark">
+<title>结构 · HGamey</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/dash/static/app.css"><link rel="stylesheet" href="/dash/static/jobs.css"><link rel="stylesheet" href="/dash/static/structure.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+</head>
+<body class="jobs-view structure-view">
+<a class="skip-link" href="#structure-heading">跳到结构图</a>
+<header class="top"><div class="top-right"><button id="refresh" class="ghost" type="button">刷新</button></div></header><script src="/dash/static/shell.js"></script>
+<main class="jobs-page structure-page">
+  <div class="page-heading">
+    <div><h1 id="structure-heading" tabindex="-1">结构</h1><p id="facts" class="st-facts"></p></div>
+    <button id="relayout" class="ghost" type="button" disabled>重排</button>
+  </div>
+  <p id="message" class="note" role="status" hidden></p>
+  <div id="stage" class="st-stage" hidden>
+    <div id="world" class="st-world" role="group" aria-label="结构图">
+      <svg id="zones" class="st-layer" aria-hidden="true"></svg>
+      <svg id="links" class="st-layer" aria-hidden="true"><g id="links-quiet"></g><g id="links-busy"></g></svg>
+    </div>
+  </div>
+</main>
+<script src="/dash/static/target.js"></script><script src="/dash/static/job-state.js"></script><script src="/dash/static/structure.js"></script>
+</body>
+</html>
