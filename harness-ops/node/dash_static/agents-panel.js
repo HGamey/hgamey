@@ -25,7 +25,7 @@
     const stamp = at => at ? new Date(at * 1000).toLocaleString("zh-CN", { hour12: false }) : "从未";
     document.getElementById("agents-count").textContent = items.length ? items.length + " 个" : "";
     list.innerHTML = items.length
-      ? `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中任务</th><th>上次签到</th><th>待办</th><th>当前状态</th></tr></thead><tbody>${
+      ? `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中作业</th><th>上次签到</th><th>待办</th><th>当前状态</th></tr></thead><tbody>${
           items.map(a => `<tr>
             <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button></td>
             <td>${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(" ") || "–"}</td>
@@ -55,7 +55,7 @@
     document.getElementById("agent-detail-status").textContent = agent && agent.status ? agent.status.text : "–";
     document.getElementById("agent-detail-tasks").innerHTML = running.length
       ? running.map(j => `<div class="row"><span class="mono">${esc(j.id)}</span> ${esc(j.label || j.bin)}</div>`).join("")
-      : '<div class="empty">没有运行中的任务</div>';
+      : '<div class="empty">没有运行中的作业</div>';
     document.getElementById("agent-detail-history").innerHTML = history.length
       ? history.slice(-10).reverse().map(h => `<div class="row"><span class="muted">${new Date(h.at * 1000).toLocaleString("zh-CN", { hour12: false })}</span> ${esc(h.text)}</div>`).join("")
       : '<div class="empty">暂无状态历史</div>';

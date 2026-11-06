@@ -96,7 +96,7 @@
   // Only this node's own pages link out: a joined computer's dashboard is not reachable through the center.
   const nodePageURL = (page, job = '') => selected === 'local' ? HGTarget.url(`/dash/${page}${job ? `#job=${encodeURIComponent(job)}` : ''}`) : null;
   function jobLink(id) {
-    const url = nodePageURL('jobs', id), link = el(url ? 'a' : 'span', `任务 ${id}`);
+    const url = nodePageURL('jobs', id), link = el(url ? 'a' : 'span', `作业 ${id}`);
     if (url) link.href = url;
     return link;
   }

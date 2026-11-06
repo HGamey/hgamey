@@ -9,7 +9,7 @@
     ["/dash/research", "task", "任务"],
     ["/dash/research#agents-directory", "agent", "Agent"],
     ["/dash/fleet", "device", "设备"],
-    ["/dash/jobs", "runs", "运行"],
+    ["/dash/jobs", "runs", "作业"],
     ["/dash/datasets", "data", "数据集"],
   ];
   const MORE = [
@@ -25,7 +25,7 @@
   function current(p) {
     if (p === "/dash") return path === "/dash" || path === "/dash/";
     if (p === "/dash/research#agents-directory") return path === "/dash/research" && location.hash === "#agents-directory";
-    if (p === "/dash/research") return path === p && location.hash !== "#agents-directory";
+    if (p === "/dash/research") return (path === p || path.startsWith(p + "/")) && location.hash !== "#agents-directory";
     return path === p || path.startsWith(p + "/");
   }
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };

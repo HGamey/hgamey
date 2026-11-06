@@ -338,26 +338,23 @@
 .research-view .compare-answer > .compare-status { margin: 0; color: var(--warn); font-size: var(--fs-sm); font-weight: 600; }
 .research-view .compare-answer > .compare-status::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
 .research-view .compare-answer > .compare-status.task-error { color: var(--bad); }
-.research-view .task-report-missed .task-error { color: var(--bad); }
 .research-view .compare-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--sp-2); margin: var(--sp-2) 0 0; padding: 8px 12px; border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); }
 .research-view .compare-who { color: var(--muted); }
 .research-view .compare-comment { color: var(--ink2); overflow-wrap: anywhere; }
 .research-view .compare-verdict time { font-size: var(--fs-xs); }
 
-/* 接续任务：顶部链条，合并后的每条带一个任务标签 */
-/* A chain's tasks as a tree under its root in the task list: 全部, then each task under the one it follows. */
+/* A chain's tasks as a tree under its root in the task list, each under the one it follows: links to their pages. */
 .research-view .chain-strip { display: grid; gap: 1px; margin: 0 0 var(--sp-2) var(--sp-2); }
 .research-view .chain-seg { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 0 6px; width: 100%; box-sizing: border-box;
   margin-left: calc(var(--depth, 0) * 14px); max-width: calc(100% - var(--depth, 0) * 14px);
-  padding: 5px 10px; border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--ink2); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+  padding: 5px 10px; border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--ink2); font-size: var(--fs-sm); text-decoration: none; }
 .research-view .chain-seg.nested::before { content: ""; position: absolute; left: -9px; top: -2px; width: 7px; height: 15px;
   border-left: 1px solid var(--axis, var(--line)); border-bottom: 1px solid var(--axis, var(--line)); border-bottom-left-radius: 5px; }
-.research-view .chain-seg:first-child { display: block; width: auto; justify-self: start; color: var(--acc-ink); }
 .research-view .chain-seg b { font-weight: 650; color: var(--ink); }
 .research-view .chain-seg .chain-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
 .research-view .chain-seg small { grid-column: 2; font-size: var(--fs-xs); color: var(--muted); }
 .research-view .chain-seg:hover { background: var(--panel); }
-.research-view .chain-seg[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); }
+.research-view .chain-seg[aria-current="page"] { border-color: var(--acc); background: var(--acc-soft); }
 /* 探索过程 as it grew: each direction under the one it is based on; the line to the current direction is gold. */
 .research-view { --lineage: #C8902E; --lineage-soft: #FFF8EB; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .research-view { --lineage: #E2B562; --lineage-soft: #241D10; } }
@@ -373,12 +370,15 @@
 .research-view .direction-fold:hover { color: var(--ink2); border-color: var(--ink2); }
 .research-view .run-row.picked a { color: color-mix(in srgb, var(--lineage) 70%, var(--ink)); font-weight: 600; }
 .research-view .run-row.picked::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--lineage); flex: none; margin-left: -12px; margin-right: -3px; }
-.research-view .chain-tag { display: inline-block; max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: baseline;
-  padding: 0 7px; border-radius: 999px; background: var(--wash); color: var(--ink2); font-size: var(--fs-xs); font-weight: 500; line-height: 1.7; }
 .research-view .direction-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.research-view .seg-out { display: none !important; }
-.research-view .report-older > summary { font-size: var(--fs-sm); color: var(--ink2); cursor: pointer; }
-.research-view .report-older > .research-section { border-top: 0; margin-top: var(--sp-3); padding-top: 0; }
+/* 探索过程 and 作业 fold to their heading line: title, count, how they went. */
+.research-view .task-fold > summary { display: flex; align-items: baseline; gap: var(--sp-2); cursor: pointer; list-style: none; }
+.research-view .task-fold > summary::-webkit-details-marker { display: none; }
+.research-view .task-fold > summary::before { content: "▸"; width: 12px; color: var(--muted); }
+.research-view .task-fold[open] > summary::before { content: "▾"; }
+.research-view .task-fold > summary h3 { margin: 0; }
+.research-view .fold-brief { font-size: var(--fs-sm); color: var(--muted); }
+.research-view .task-fold[open] > summary { margin-bottom: var(--sp-3); }
 
 /* 关闭 / 重新打开 */
 .research-view .task-state { display: flex; align-items: center; gap: 6px; margin-left: auto; }
@@ -410,3 +410,29 @@
 .research-view .compare-load span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .research-view .compare-load progress { width: min(320px, 50%); height: 8px; }
 .research-view .compare-media.waiting, .research-view .compare-media.waiting video { background: var(--wash); }
+
+/* The top of a task: the conclusion of its delivery, the key comparison and the tasks that follow it. */
+.research-view .task-summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); }
+.research-view .task-summary:not(:has(.summary-block, .summary-parent)) { display: none; }
+.research-view .summary-parent { margin: 0; font-size: var(--fs-sm); color: var(--muted); }
+.research-view .summary-block { padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
+.research-view .summary-block .section-head { display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: var(--sp-2); }
+.research-view .summary-block h2 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
+.research-view .summary-link { margin-left: auto; font-size: var(--fs-sm); white-space: nowrap; }
+.research-view .summary-link::after { content: " →"; }
+.research-view .summary-conclusion .research-report { font-size: var(--fs-base); line-height: 1.7; }
+/* A long conclusion shows its first lines; 展开 shows the rest in place. */
+.research-view .summary-conclusion.clamped .research-report { max-height: 12em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 70%, transparent); }
+.research-view .summary-more { margin-top: var(--sp-2); }
+.research-view .summary-title { margin: 0 0 var(--sp-2); font-size: var(--fs-sm); color: var(--ink2); }
+.research-view .summary-rank { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: 0; }
+.research-view .summary-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--wash); font-size: var(--fs-sm); }
+.research-view .summary-chip b { font-weight: 700; }
+.research-view .summary-chip.best { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); background: var(--good-soft); }
+.research-view .summary-gap { font-size: var(--fs-sm); color: var(--muted); }
+.research-view .summary-tasks { list-style: none; margin: 0; padding: 0; }
+.research-view .summary-tasks li + li { border-top: 1px solid var(--grid); }
+.research-view .summary-task { display: flex; align-items: baseline; gap: var(--sp-3); padding: 8px 0 8px calc(var(--depth, 0) * 20px); color: var(--ink); text-decoration: none; }
+.research-view .summary-task:hover .summary-task-title { color: var(--acc-ink); text-decoration: underline; }
+.research-view .summary-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.research-view .summary-task .muted { font-size: var(--fs-sm); }

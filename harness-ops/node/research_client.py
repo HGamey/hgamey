@@ -47,7 +47,7 @@ HELP = """用法:
   pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
   pf-node research thread ID                      # 按时间读研究里的留言
   pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|url:URL ...
-      [--game-version V] [--device D ...]          # 交付：总结、产物、适用范围；状态变为 delivered
+      [--game-version V] [--device D ...] [--reason TEXT]   # 交付：总结、产物、适用范围；状态变为 delivered；--reason 写这一版改了什么
 
 recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
 plan-template 离线输出 next_experiment JSON 草稿（title、plan、research_revision），可带路线，不提交任务。
@@ -226,6 +226,7 @@ def parser():
     deliver.add_argument("--artifact", action="append", required=True)
     deliver.add_argument("--game-version")
     deliver.add_argument("--device", action="append", default=[])
+    deliver.add_argument("--reason", default="交付")
     media = commands.add_parser("media")
     media.add_argument("id", type=identifier)
     media.add_argument("slot", choices=tuple("ABCDEFGH"))
@@ -823,7 +824,7 @@ def _task(client, args):
     data["deliverable"] = {"summary": summary, "artifacts": [_artifact(item, node_id) for item in args.artifact],
                            "applies_to": {"game_version": args.game_version, "devices": args.device}}
     data["state"] = "delivered"
-    return _post(client, "research", args.id, data, current["revision"], "交付")
+    return _post(client, "research", args.id, data, current["revision"], args.reason)
 
 
 def main(argv, *, target):
