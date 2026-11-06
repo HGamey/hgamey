@@ -144,6 +144,15 @@ class NodeRead:
                 "devices": {"status": "not_probed", "reason": "node identity does not probe phones"}}
         value['role'] = 'executor' if self.jobs.connection else 'center'
         if self.jobs.connection:
+            try:
+                with open(os.path.join(self.data_root, '_node', 'update.json')) as source:
+                    value['updates'] = json.load(source)
+            except FileNotFoundError:
+                value['updates'] = {'enabled': False, 'status': 'not_installed'}
+            value['updates']['current_revision'] = self.service['revision']
+        else:
+            value['updates'] = {'recommended_revision': self.service['revision']}
+        if self.jobs.connection:
             value['center'] = {key: self.jobs.connection[key] for key in ('url', 'center_id')}
             value['capabilities'] = [cap for cap in value['capabilities']
                 if not cap.startswith(('research.', 'results.')) and cap not in {

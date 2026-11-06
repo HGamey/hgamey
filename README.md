@@ -267,9 +267,23 @@ pf-node nodes show lab-b
 pf-node nodes show lab-b --devices        # 明确请求重新采样这台电脑上的手机
 ```
 
-join 必须用 `--root` 明确指定不存在或为空的新安装目录；已有安装和任何非空目录都会在兑换邀请前拒绝，邀请不消耗。join 需要 Git、Python 3、Rust/Cargo，以及手机所需的 adb/hdc；Linux 使用当前用户的 systemd，macOS 使用登录用户的 launchd。它生成本机身份、私有 token、`node-launch.json` 和 `deploy-node.json`，构建发布并启动服务。默认本机端口 8765，可用 `--port` 改；不需要先做上面的独立中心部署。已有执行节点的业务数据只读保留，不删除。
+join 必须用 `--root` 明确指定不存在或为空的新安装目录；已有安装和任何非空目录都会在兑换邀请前拒绝，邀请不消耗。join 需要 Git、Python 3、Rust/Cargo，以及手机所需的 adb/hdc；Linux 使用当前用户的 systemd，macOS 使用以当前用户运行的系统 LaunchDaemon。它生成本机身份、私有 token、`node-launch.json` 和 `deploy-node.json`，构建发布并启动服务。默认本机端口 8765，可用 `--port` 改；不需要先做上面的独立中心部署。已有执行节点的业务数据只读保留，不删除。
 
 后续在这台电脑的仓库根运行 `python3 deploy.py --config "$HOME/node/deploy-node.json"` 升级；加 `--ref <提交>` 可回退，加 `--status` 查实际版本。join 已保存配置但构建失败时，也用这条部署命令继续，不再次消费邀请码。运行中的任务独立于服务，升级保留身份、连接凭据和设备锁路径。若同机已有 PF，加入前将 `DEVLOCK_DIR` 设为它正在使用的目录；否则默认 `<安装根>/locks`。灰档层构建仍按上面的 `gray_layer`、`build_env` 配置启用，默认不构建。
+
+join 完成后，执行电脑每分钟检查中心推荐版本（中心正在运行的提交）。没有作业运行时自动拉取、构建、切换；构建期间来了作业就等下一次空闲。构建失败保留原服务，切换后版本核查失败则还原备份并重启原版本。更新使用加入时的本地 Git 仓库和原部署配置，保留这个仓库及其 Git 访问能力。更新者独立于节点服务：Linux 用 user timer，macOS 用 system LaunchDaemon，日志分别在 journal 和安装根的 `auto-update.log`。
+
+已加入的旧电脑，可在当前仓库运行第一条命令，只安装更新入口，原服务会自行升级。节点主人可暂停、恢复；暂停时当前构建可以收尾，但不会切换版本。
+
+```sh
+python3 deploy.py auto --config "$HOME/node/deploy-node.json" --install
+python3 "$HOME/node/deploy.py" auto --config "$HOME/node/deploy-node.json" --pause
+python3 "$HOME/node/deploy.py" auto --config "$HOME/node/deploy-node.json" --resume
+```
+
+要保留手动部署或回退的版本，先暂停自动更新，否则下一轮空闲时仍会跟随中心推荐。
+
+`pf-node nodes` 的 `local.updates.recommended_revision` 是推荐版本；子节点 `snapshot.identity.updates` 显示实际版本、落后提交数、暂停与最后结果。未计算的落后数为 null，断线数据保留上报时间。
 
 节点通过出站 HTTPS 长轮询接收命令，每 30 秒上报最近的手机、队列和服务快照。新电脑可以在 NAT 后，不需要入站端口、SSH 或公网隧道；连接凭据只保存在本机私有数据目录，中心只存哈希。列表读取不会启动采样，离线保留上次快照和时间。原有本机手机采样规则保持。
 
