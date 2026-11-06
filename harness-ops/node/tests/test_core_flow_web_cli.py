@@ -1951,7 +1951,10 @@ class CoreFlowTests(unittest.TestCase):
                 labels = page.eval_on_selector_all("#task-runs .mosaic-tile .dup", "e => e.map(x => x.textContent)")
                 self.assertEqual(labels, ["2 张完全相同"], f"identical screenshots collapse with a count: {labels}")
                 paths = page.eval_on_selector_all("#task-runs .mosaic-tile img", "e => e.map(x => x.alt)")
-                self.assertEqual(sorted(paths), ["shot-a.png", "shot-c.png"])
+                # Either of the byte-identical pair may represent the group; shot-c must be its own tile.
+                self.assertEqual(len(paths), 2)
+                self.assertIn("shot-c.png", paths)
+                self.assertIn(paths[0] if paths[0] != "shot-c.png" else paths[1], ("shot-a.png", "shot-b.png"))
                 self.assertEqual(len(asked), 1, f"one inventory read for the job: {asked}")
             finally:
                 browser.close()
