@@ -175,6 +175,13 @@
 .research-view .run-row a { flex: 1; min-width: 0; color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .research-view .run-row a:hover { text-decoration: underline; }
 .research-view .run-facts { display: flex; flex: none; gap: var(--sp-3); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 缩略图拼图：出图的作业不用点开就能看到画面，逐字节相同的截图并成一张并标数量 */
+.research-view .job-mosaic { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; }
+.research-view .mosaic-tile { position: relative; margin: 0; }
+.research-view .mosaic-tile img { display: block; width: 96px; height: 64px; object-fit: cover; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.research-view .mosaic-tile .dup { position: absolute; left: 4px; bottom: 4px; padding: 1px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--warn, #B8860B) 82%, transparent); color: #fff; font-size: 11px; line-height: 1.4; }
+.research-view .job-mosaic .more { align-self: center; color: var(--muted); font-size: var(--fs-xs); }
 .research-view .runs-more { margin-top: var(--sp-2); }
 .research-view .notes-more { display: block; margin: 0 0 var(--sp-2); }
 

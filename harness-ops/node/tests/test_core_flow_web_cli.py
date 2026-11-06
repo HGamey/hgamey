@@ -1895,6 +1895,67 @@ class CoreFlowTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_the_task_page_shows_a_mosaic_of_job_screenshots_and_labels_identical_ones(self):
+        """K3: a job's images appear as a mosaic on the task page without opening the job; byte-identical screenshots
+        collapse into one tile labelled with their count. The folded section asks for nothing."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        rid = "sr-mosaic"
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+            "create-mosaic", {"title": "Doom D 轨截图", "objective": "出图的作业直接看到画面"}))[0], 201)
+        submitted = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                               "resources": [], "actor_id": "agent-a", "research_id": rid}, b"", "mosaic-job")
+        jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+        out = Path(self.jobs.path(jid, "out"))
+        out.mkdir(parents=True, exist_ok=True)
+        import struct, zlib
+
+        def png(payload):
+            def chunk(kind, data):
+                return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+            fill = bytes([(payload[0] % 250) + 1]) * 3
+            return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 32, 8, 2, 0, 0, 0))
+                    + chunk(b"IDAT", zlib.compress((b"\x00" + fill * 64) * 32)) + chunk(b"IEND", b""))
+        frame = png(b"same")
+        (out / "shot-a.png").write_bytes(frame)
+        (out / "shot-b.png").write_bytes(frame)   # same tier, byte for byte
+        (out / "shot-c.png").write_bytes(png(b"changed"))
+        (out / "metrics.json").write_text('{"fps": 60}')
+        base = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": cookie.split("=", 1)[0], "value": cookie.split("=", 1)[1], "url": base}
+                                     for cookie in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                asked = []
+                page.on("request", lambda request: asked.append(request.url) if "/jobs/" in request.url and "/images" in request.url else None)
+                page.goto(f"{base}/dash/research?kind=research&id={rid}")
+                page.wait_for_function("() => document.querySelectorAll('#task-runs .run-row').length === 1")
+                page.wait_for_timeout(400)
+                self.assertEqual(asked, [], "the folded 作业 section reads no image inventories")
+                page.click("#task-runs .task-fold > summary")
+                page.wait_for_function("() => document.querySelectorAll('#task-runs .mosaic-tile img').length === 2")
+                page.wait_for_function("() => [...document.querySelectorAll('#task-runs .mosaic-tile img')]"
+                                       ".every(img => img.complete && img.naturalWidth > 0)")
+                labels = page.eval_on_selector_all("#task-runs .mosaic-tile .dup", "e => e.map(x => x.textContent)")
+                self.assertEqual(labels, ["2 张完全相同"], f"identical screenshots collapse with a count: {labels}")
+                paths = page.eval_on_selector_all("#task-runs .mosaic-tile img", "e => e.map(x => x.alt)")
+                self.assertEqual(sorted(paths), ["shot-a.png", "shot-c.png"])
+                self.assertEqual(len(asked), 1, f"one inventory read for the job: {asked}")
+            finally:
+                browser.close()
+
     def test_a_chain_grows_along_what_each_direction_is_based_on(self):
         """Directions hang under the direction (and run) they are based on, on the task page and in the command view.
         The chain's tasks are a tree of links in the task list under the root; a task's 探索过程 is indented by based_on
