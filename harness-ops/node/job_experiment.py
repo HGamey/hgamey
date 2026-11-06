@@ -95,6 +95,39 @@ def materialize(mirror, url, commit, dest, timeout=300):
                              f"{(problem or untar.stderr).decode(errors='replace').strip()[-300:]}")
 
 
+REV = re.compile(r"[0-9a-f]{7,40}")
+FILES_SHOWN = 200
+
+
+def commits(mirror, url, revs):
+    """What the local mirror knows about each of `revs` (commit ids of 7 to 40 hex digits): the full id, author, time,
+    subject and the files it changed, with its page when the repository is on GitHub. Nothing is fetched; an id the
+    mirror cannot resolve to exactly one commit is left out."""
+    if not os.path.isdir(mirror):
+        return []
+    web = url[:-len(".git")] if url.startswith("https://github.com/") and url.endswith(".git") else None
+    found = []
+    for rev in dict.fromkeys(revs):
+        resolved = _git("-C", mirror, "rev-parse", "--verify", "--quiet", rev + "^{commit}", check=False)
+        if resolved.returncode:
+            continue
+        sha = resolved.stdout.strip()
+        head = _git("-C", mirror, "log", "-1", "--format=%an%x00%at%x00%s", sha, check=False)
+        diff = _git("-C", mirror, "diff-tree", "--root", "--no-commit-id", "-r", "-M", "-z", "--name-status", sha, check=False)
+        if head.returncode or diff.returncode:
+            continue
+        author, at, subject = head.stdout.rstrip("\n").split("\0", 2)
+        fields, files = diff.stdout.split("\0"), []
+        while fields and fields[0]:
+            status = fields.pop(0)
+            paths = [fields.pop(0) for _ in range(2 if status[:1] in "RC" else 1)]
+            files.append({"status": status[:1], "path": paths[-1], **({"from": paths[0]} if len(paths) == 2 else {})})
+        found.append({"rev": rev, "commit": sha, "author": author, "at": int(at), "subject": subject,
+                      "files": files[:FILES_SHOWN], "files_total": len(files),
+                      "url": f"{web}/commit/{sha}" if web else None})
+    return found
+
+
 def _git(*args, check=True, timeout=60):
     try:
         done = subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout)

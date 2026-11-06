@@ -50,7 +50,9 @@ class ReportPageTests(unittest.TestCase):
             self.assertIn("终版结论", report)
             self.assertNotIn("第一版结论", report)
             self.assertEqual(page.eval_on_selector_all("#report .research-report td", "cells => cells.map(c => c.textContent)"), ["开", "67"])
-            self.assertIn("成果文件 · 1", report)
+            # The newest version lists what it produced (成果, read after the report); the job it cites wrote nothing here.
+            page.wait_for_function("() => !document.getElementById('outputs').textContent.includes('正在读取')")
+            self.assertEqual(page.text_content("#outputs h2"), "成果")
             # One earlier delivery, folded, and drawn only when opened.
             self.assertEqual(page.text_content("#report-history > summary"), "历史版本 · 1")
             self.assertIsNone(page.get_attribute("#report-history", "open"))

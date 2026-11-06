@@ -291,7 +291,7 @@
   }
   // What a person opens a task for, before its working sections: the task it follows, the conclusion of its delivery,
   // the key comparison (filled in once the comparisons are read, in `slot`) and the tasks that follow it.
-  function summarySection(record, chain, slot) {
+  function summarySection(record, chain, slot, outputs) {
     const section = el('section', null, 'research-section task-summary');
     section.id = 'task-summary';
     const parent = chain.find(task => task.id === record.data.follows);
@@ -314,7 +314,7 @@
       requestAnimationFrame(() => { if (text.scrollHeight <= text.clientHeight + 2) { box.classList.remove('clamped'); more.remove(); } });
       section.append(box);
     }
-    section.append(slot);
+    section.append(outputs, slot);
     const depth = new Map([[record.id, 0]]), children = [];
     for (const task of chain) if (depth.has(task.follows) && task.id !== record.id) { depth.set(task.id, depth.get(task.follows) + 1); children.push(task); }
     if (children.length) {
@@ -623,13 +623,24 @@
     const jobs = () => read || (read = api(`/jobs?research=${encodeURIComponent(record.id)}&limit=50`));
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
-    const judged = el('div'), keySlot = el('div'), summary = summarySection(record, chain, keySlot);
+    const judged = el('div'), keySlot = el('div'), outputSlot = el('div'), summary = summarySection(record, chain, keySlot, outputSlot);
     container.append(...[ownerSection(record, ctx), waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
     if (chain.length > 1) chainTree(chain, record, container);
     // Comparisons are what a person comes here to answer, so they go first and the rest starts once they are in place.
     await comparisons(record, ctx, container, waiting, judged, target, () => shown === paint, keySlot);
     if (shown !== paint) return;
     await Promise.all([directionsSection(record, directions, jobs), runsSection(runs, jobs), threadSection(record, ctx, thread)]);
+    await outputsBrief(record, outputSlot, jobs, () => shown === paint);
+  }
+  // 成果 at the top: what the delivery produced, read once the working sections are in.
+  async function outputsBrief(record, slot, jobs, current) {
+    if (!record.data.deliverable || !window.HGTaskOutputs) { slot.remove(); return; }
+    try {
+      const outputs = await HGTaskOutputs.read(record, (await jobs()).items);
+      if (!current()) return;
+      const any = outputs.files.length || outputs.commits.length || outputs.results.length || outputs.links.length;
+      slot.replaceWith(any ? HGTaskOutputs.brief(outputs, reportUrl(record)) : '');
+    } catch (_) { if (current()) slot.remove(); }
   }
   function compareNote(text, retry) {
     const box = el('section', null, 'research-section compare-section'), head = el('div', null, 'section-head');

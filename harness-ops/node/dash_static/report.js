@@ -11,12 +11,21 @@
   const by = revision => revision.audit?.auth_channel === 'dashboard_steer' ? '人工' : revision.audit?.actor_label || '管理员';
   const task = encodeURIComponent(id);
 
-  function body(deliverable) {
+  // The newest version lists what it produced by kind (成果); an earlier one keeps the references it was delivered with.
+  function body(deliverable, outputs) {
     const parts = [], applies = deliverable.applies_to;
     const scope = [applies.game_version && `游戏版本 ${applies.game_version}`, ...applies.devices].filter(Boolean).join(' · ');
     if (scope) parts.push(el('p', '适用：' + scope, 'report-scope'));
-    parts.push(U.markdownReport(deliverable.summary), el('h2', `成果文件 · ${deliverable.artifacts.length}`, 'report-files'), U.evidenceList(deliverable.artifacts));
+    parts.push(U.markdownReport(deliverable.summary));
+    parts.push(...(outputs ? [outputs] : [el('h2', `成果文件 · ${deliverable.artifacts.length}`, 'report-files'), U.evidenceList(deliverable.artifacts)]));
     return parts;
+  }
+  async function outputs(record, slot) {
+    try {
+      const jobs = await U.api(`/jobs?research=${task}&limit=50`);
+      slot.replaceWith(HGTaskOutputs.full(await HGTaskOutputs.read(record, jobs.items)));
+      if (location.hash === '#outputs') document.getElementById('outputs')?.scrollIntoView({block: 'start'});
+    } catch (error) { slot.replaceChildren(el('h2', '成果', 'report-files'), el('p', `没读到成果：${error.message}`, 'note task-error')); }
   }
   // Every revision, newest first, reduced to those that changed the deliverable.
   async function versions() {
@@ -48,9 +57,13 @@
     }
     const [newest, ...older] = delivered;
     $('report-kicker').replaceChildren(el('span', '交付报告 · ' + label(newest, delivered.length)), U.tag(stateText, tone));
-    $('report').replaceChildren(...body(newest.data.deliverable));
+    const slot = el('section', null, 'report-outputs');
+    slot.id = 'outputs';
+    slot.append(el('h2', '成果', 'report-files'), el('p', '正在读取成果…', 'note'));
+    $('report').replaceChildren(...body(newest.data.deliverable, slot));
     $('report').hidden = false;
     $('message').hidden = true;
+    outputs({...record, data: {...record.data, deliverable: newest.data.deliverable}}, slot);
     if (!older.length) return;
     $('report-history').querySelector('summary').textContent = `历史版本 · ${older.length}`;
     $('report-versions').replaceChildren(...older.map((revision, i) => {

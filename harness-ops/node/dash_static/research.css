@@ -436,3 +436,32 @@
 .research-view .summary-task:hover .summary-task-title { color: var(--acc-ink); text-decoration: underline; }
 .research-view .summary-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .research-view .summary-task .muted { font-size: var(--fs-sm); }
+
+/* 成果: what a delivery produced, by kind (task-outputs.js) */
+.research-view .output-tally { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 var(--sp-2); }
+.research-view .output-count { font-size: var(--fs-sm); padding: 2px 8px; border-radius: 999px; background: var(--wash); color: var(--ink2); }
+.research-view :is(.output-count, .output-kind).k-weights { background: var(--teal-soft); color: var(--teal-ink); }
+.research-view :is(.output-count, .output-kind).k-engine { background: var(--blue-soft); color: var(--blue-ink); }
+.research-view .output-count.k-commit { background: var(--amber-soft); color: var(--amber-ink); }
+.research-view :is(.output-files, .output-commits) { list-style: none; margin: 0; padding: 0; }
+.research-view .output-file { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; padding: 5px 0; border-top: 1px solid var(--grid); font-size: var(--fs-sm); min-width: 0; }
+.research-view .output-file > a:not(.output-job) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.research-view .report-outputs :is(li, a) { min-width: 0; overflow-wrap: anywhere; }
+.research-view :is(.output-dir, .output-size, .output-job, .output-meta) { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.research-view .output-kind { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.research-view .output-commit { padding: 6px 0; border-top: 1px solid var(--grid); font-size: var(--fs-sm); }
+.research-view .output-commit summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
+.research-view .output-commit code { font-weight: 600; }
+.research-view .output-subject { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.research-view .output-changes { list-style: none; margin: 6px 0 4px 18px; padding: 0; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.research-view .output-status { display: inline-block; min-width: 4.5em; color: var(--muted); font-family: inherit; }
+.research-view .output-status.s-A { color: var(--good-ink); }
+.research-view .output-status.s-D { color: var(--bad-ink); }
+.research-view .output-status.s-M, .research-view .output-status.s-R { color: var(--blue-ink); }
+.research-view .output-github { display: inline-block; margin: 2px 0 0 18px; font-size: 12px; }
+.research-view .output-open { font-size: 12px; color: var(--blue-ink); }
+.research-view .output-open::after { content: " ▸"; }
+.research-view .output-commit details[open] .output-open::after { content: " ▾"; }
+.research-view .output-github::after { content: " ↗"; }
+.research-view .report-outputs h3 { margin: var(--sp-4) 0 var(--sp-1); font-size: var(--fs-base); }
+.research-view .output-more { margin-top: var(--sp-1); }
