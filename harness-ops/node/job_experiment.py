@@ -6,7 +6,10 @@ names the exact code that produced it. Experiments find the node's programs thro
 GAME_OPT_LOOP_BIN and PF_ROOT, and prefix their own device-lock labels with DEVLOCK_LABEL so the
 dashboard can tie a held phone back to the job.
 """
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows clients check reachability but never take the node's materialize lock
+    fcntl = None
 import os
 import re
 import shutil
