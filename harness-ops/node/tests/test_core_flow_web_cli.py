@@ -1879,7 +1879,10 @@ class CoreFlowTests(unittest.TestCase):
                 page.wait_for_function("() => document.querySelectorAll('#task-thread .discuss-entry').length === 1")
                 self.assertEqual(page.text_content("#task-thread .discuss-text"), "进展 sr-c")
                 which = lambda part, key: sorted(url.split(key + "=")[1].split("&")[0] for url in reads(part))
-                self.assertEqual(which("/jobs?research=", "research"), ["sr-c"], "one read of this task's jobs for both sections")
+                # 作业 sections share one read; the top banner adds its own bounded outcome=failed read (limit=1).
+                self.assertEqual(sorted(url.split("/dash/api", 1)[-1] for url in reads("/jobs?research=")),
+                                 ["/jobs?research=sr-c&limit=50", "/jobs?research=sr-c&outcome=failed&limit=1"],
+                                 "one jobs read for both sections plus the banner's bounded failed read")
                 self.assertEqual(which("/research-state/note?", "research_id"), ["sr-c"])
                 self.assertEqual(which("/research-state/direction?", "research_id"), ["sr-c"])
                 self.assertEqual(which("/research-state/request?", "research_id"), ["sr-c"])
@@ -1959,6 +1962,45 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual(len(asked), 1, f"one inventory read for the job: {asked}")
             finally:
                 browser.close()
+
+    def test_a_revision_that_just_touches_the_task_is_not_an_assignment(self):
+        """第 29 批复查 A：assigned_task 只在 owner 从别人变成本人时报；人改目标、关任务、重新打开都不算指派，
+        重新打开也不和 research_reopened 重复报。"""
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
+        token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
+        rid = "sr-editnotassign"
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+            "create-ena", {"title": "改字段不是改派", "objective": "原目标"}))[0], 201)
+        self.assertEqual(self.pf(token, "research", "claim", rid)[0], 0)
+        kinds = [d["kind"] for d in self.duties(token)["duties"]]
+        self.assertNotIn("assigned_task", kinds, f"claim 后最新修订是本人，首签到不应报指派: {kinds}")
+        current = self.cli("GET", f"/research-state/research/{rid}")[1]
+        edit = dict(self.write("edit-ena", {**current["data"], "objective": "补充后的目标"}),
+                    base_revision=current["revision"], reason="补充说明")
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", edit)[0], 201)
+        self.assertNotIn("assigned_task", [d["kind"] for d in self.duties(token)["duties"]],
+                         "人只改了 objective，owner 没动，却报了 assigned_task")
+        current = self.cli("GET", f"/research-state/research/{rid}")[1]
+        close = dict(self.write("close-ena", {**current["data"], "state": "closed", "state_reason": "并入别的任务"}),
+                     base_revision=current["revision"], reason="关掉")
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", close)[0], 201)
+        kinds = [d["kind"] for d in self.duties(token)["duties"]]
+        self.assertNotIn("assigned_task", kinds, f"任务被人关掉，agent 却被告知「指派给你…再写计划」: {kinds}")
+        current = self.cli("GET", f"/research-state/research/{rid}")[1]
+        reopen = dict(self.write("reopen-ena", {**current["data"], "state": "active", "state_reason": "接着做完"}),
+                      base_revision=current["revision"], reason="重新打开")
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", reopen)[0], 201)
+        kinds = [d["kind"] for d in self.duties(token)["duties"]]
+        self.assertNotIn("assigned_task", kinds, f"重新打开被当成了改派，和 research_reopened 重复: {kinds}")
+        self.assertIn("research_reopened", kinds)
+        # 真改派仍然报。
+        current = self.cli("GET", f"/research-state/research/{rid}")[1]
+        self.assertEqual(self.cli("POST", "/agents", {"name": "agent-b"})[0], 201)
+        reassign = dict(self.write("reassign-ena", {**current["data"], "owner": "agent-b"}),
+                        base_revision=current["revision"], reason="改派给 agent-b")
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", reassign)[0], 201)
+        token_b = self.cli("POST", "/agents/agent-b/token", {})[1]["token"]
+        self.assertIn("assigned_task", [d["kind"] for d in self.duties(token_b)["duties"]])
 
     def test_urgent_notes_and_new_assignments_lead_the_next_checkin(self):
         """K3-2: a note marked 紧急 lands at the top of the addressee's next check-in duties (or the task owner's,
@@ -2070,6 +2112,58 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual([(n["text"], n["urgent"]) for n in notes],
                                  [("这个失败挡住了 D 轨，请优先看", True)])
                 self.assertEqual(page.is_checked("#task-note-urgent"), False, "the checkbox does not stick")
+            finally:
+                browser.close()
+
+    def test_a_failure_outside_the_latest_fifty_jobs_still_leads_the_task_page(self):
+        """第 29 批复查 B：「最近失败」按 outcome=failed 单独读最新一条，不落在「作业」区最新 50 条窗口内也显示。"""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        rid = "sr-window"
+        self.assertEqual(self.web("POST", f"/research-state/research/{rid}", self.write(
+            "create-window", {"title": "五十条以外", "objective": "窗口外的失败"}))[0], 201)
+        base = time.time() - 5000
+        for i in range(55):
+            submitted = self.jobs.dispatch.submit({"bin": "fixture", "argv": ["-c", "pass"], "device_access": "none",
+                                                   "resources": [], "actor_id": "agent-a", "research_id": rid,
+                                                   "label": f"run-{i}"}, b"", f"key-window-{i}")
+            jid = submitted["job"]["id"] if "job" in submitted else submitted["id"]
+            self.jobs.dispatch.queue.set_state(jid, "done")
+            (Path(self.jobs.path(jid)) / "meta.json").write_text(json.dumps(
+                {"id": jid, "bin": "fixture", "argv": ["-c", "pass"], "label": f"run-{i}", "actor_id": "agent-a",
+                 "research_id": rid, "started": base + i, "ended": base + i + 10, "state": "finished",
+                 "phase": "finished", "outcome": "failed" if i == 0 else "succeeded",
+                 "exit": 2 if i == 0 else 0, "error": "minicap 不在这个镜像里: not found" if i == 0 else None,
+                 "execution": {"kind": "supervised-v1"}}))
+        page50 = self.web("GET", f"/jobs?research={rid}&limit=50")[1]
+        self.assertEqual(len(page50["items"]), 50)
+        self.assertNotIn("failed", [job["outcome"] for job in page50["items"]], "窗口内看不见失败")
+        latest = self.web("GET", f"/jobs?research={rid}&outcome=failed&limit=1")[1]["items"]
+        self.assertEqual([job["label"] for job in latest], ["run-0"], "outcome=failed 直接取到那次失败")
+        bad_code, bad = self.web("GET", f"/jobs?research={rid}&outcome=victory&limit=1")
+        self.assertEqual(bad_code, 400)
+        url = "http://%s:%d" % self.address
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                context.add_cookies([{"name": c.split("=", 1)[0], "value": c.split("=", 1)[1], "url": url}
+                                     for c in (self.view_cookie, self.steer_cookie)])
+                page = context.new_page()
+                page.goto(f"{url}/dash/research?kind=research&id={rid}")
+                page.wait_for_selector("#task-thread")
+                page.wait_for_selector("#task-failed .failed-line")
+                self.assertIn("run-0", page.text_content("#task-failed"),
+                              "任务有失败作业（在最新 50 条之外），页面的「最近失败」却整块消失")
             finally:
                 browser.close()
 

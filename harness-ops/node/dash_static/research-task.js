@@ -640,16 +640,16 @@
     section.append(status);
   }
 
-  // 最近失败的作业放在任务页顶部：作业号、一行失败原因和时间；任务没有失败过的作业就不显示。
-  async function failedSection(section, jobs) {
+  // 最近失败的作业放在任务页顶部：作业号、一行失败原因和时间。单独按 outcome=failed 读最新一条，
+  // 不受「作业」区最新 50 条窗口影响——更早的失败也不会让任务看起来从没失败过。
+  async function failedSection(section, record) {
     try {
-      const items = (await jobs()).items;
-      const bad = items.filter(job => job.outcome === 'failed')
-        .sort((a, b) => (b.ended || b.started || 0) - (a.ended || a.started || 0))[0];
+      const page = await api(`/jobs?research=${encodeURIComponent(record.id)}&outcome=failed&limit=1`);
+      const bad = page.items[0];
       if (!bad) { section.remove(); return; }
       const why = typeof bad.error === 'string' ? bad.error : bad.error?.message || bad.note
         || (Number.isInteger(bad.exit) ? `exit ${bad.exit}` : '原因未记录');
-      const link = el('a', `作业 ${bad.id}`);
+      const link = el('a', bad.label ? `${bad.label} · 作业 ${bad.id}` : `作业 ${bad.id}`);
       link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(bad.id)}`);
       const line = el('p', null, 'failed-line');
       line.append(tag('最近失败', 'bad'), link, el('span', clip(why, 120), 'failed-why'), timeEl(bad.ended || bad.started));
@@ -680,7 +680,7 @@
     const judged = el('div'), keySlot = el('div'), outputSlot = el('div'), summary = summarySection(record, chain, keySlot, outputSlot);
     const failed = el('section', null, 'research-section failed-job'); failed.id = 'task-failed';
     container.append(...[ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
-    failedSection(failed, jobs);
+    failedSection(failed, record);
     if (chain.length > 1) chainTree(chain, record, container);
     // Comparisons are what a person comes here to answer, so they go first and the rest starts once they are in place.
     await comparisons(record, ctx, container, waiting, judged, target, () => shown === paint, keySlot);

@@ -228,7 +228,10 @@ class NodeRead:
         research = query.get("research", [""])[0]
         if research and not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", research):
             raise ValueError("research must be a research id")
-        scope = [search, state] + ([research] if research else [])
+        outcome = query.get("outcome", [""])[0]
+        if outcome and outcome not in ("succeeded", "failed", "cancelled", "interrupted", "unknown"):
+            raise ValueError("outcome must be succeeded, failed, cancelled, interrupted or unknown")
+        scope = [search, state, outcome] + ([research] if research else [])
         after = None
         if query.get("cursor"):
             cursor = decode_cursor(query["cursor"][0])
@@ -270,6 +273,8 @@ class NodeRead:
                 if state == "blocked" and meta.get("queue", {}).get("state") != "blocked":
                     continue
                 if research and meta.get("research_id") != research:
+                    continue
+                if outcome and meta.get("outcome") != outcome:
                     continue
                 haystack = json.dumps({k: meta.get(k) for k in ("id", "bin", "label", "argv")}, ensure_ascii=False).casefold()
                 if search and search not in haystack:
