@@ -1449,8 +1449,15 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                             raise ValueError("select a registered node before refreshing devices")
                         items = directory.refresh() if refresh == "1" else directory.list()
                         return self._send(200, {"schema_version": 1, "now": time.time(),
-                                                "local": node.identity(), "items": items})
+                                                "local": {**node.identity(), **directory.get('local')}, "items": items})
                     name = unquote(parts[1])
+                    if name == 'local':
+                        entry = {**node.identity(), **directory.get(name)}
+                        if refresh == "1" or devices == "1":
+                            entry['snapshot'] = {'schema_version': 1, 'at': time.time(), 'identity': node.identity(),
+                                'fleet': fleet.request(5) if devices == "1" else fleet.snapshot(),
+                                'queue': jobs.dispatch.snapshot()}
+                        return self._send(200, entry)
                     entry = (directory.refresh(name, devices=devices == "1")
                              if refresh == "1" or devices == "1" else directory.get(name))
                     return self._send(200, entry)
