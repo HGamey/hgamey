@@ -43,15 +43,7 @@
     return node;
   };
   const when = at => new Date(at * 1000).toLocaleString('zh-CN', {month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false});
-  function age(at) {
-    const s = Math.max(0, Date.now() / 1000 - at);
-    if (s < 60) return '刚刚';
-    if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
-    if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
-    return `${Math.floor(s / 86400)} 天前`;
-  }
-  const ago = at => at ? age(at) + '签到' : '未签到';
-  const os = text => text && text.replace(/\s*\(SDK \d+\)$/, '').replace(/^OpenHarmony-(\d+\.\d+).*$/, 'OpenHarmony $1');
+  const ago = at => at ? HGPhoneState.age(at) + '签到' : '未签到';
   const zoneOf = tags => (tags.find(tag => tag.startsWith(ZONE_TAG)) || ZONE_TAG + NO_ZONE).slice(ZONE_TAG.length);
 
   async function json(path) {
@@ -63,19 +55,14 @@
   }
 
   // ── What is where ──
-  // A phone's state as the center sees it: its computer's link down (off); up with a current reading that shows the
-  // phone (on) or does not (gone); up with an old or no reading (old: shown as usual, with the reading's age).
-  const PHONE_STATE = {off: '离线', gone: '未接入'};
   function model(nodes, phones, agents, jobs, registry) {
     const active = jobs.items.filter(HGJobState.active), local = nodes.local;
     const disabled = new Set(registry.devices.filter(device => !device.enabled).map(device => device.device_id));
     const on = (nodeId, also = () => true) => active.filter(job => job.execution_node_id === nodeId && also(job)).length;
     const phone = item => {
-      const seen = item.observation || {}, read = seen.online != null;
-      const state = !item.connected ? 'off' : item.stale ? 'old' : seen.online === true ? 'on' : 'gone';
-      return {id: 'p:' + item.ref, kind: 'phone', title: seen.brand && seen.model ? `${seen.brand} ${seen.model}` : item.model || item.device_id,
-              facts: read ? [os(seen.os), seen.root ? 'root' : '无 root', seen.transport].filter(Boolean) : ['暂无读数'],
-              state, read: read && item.sampled_at, online: state === 'on' || state === 'old', serial: item.serial,
+      const seen = HGPhoneState.of(item);
+      return {...seen, id: 'p:' + item.ref, kind: 'phone', serial: item.serial,
+              facts: seen.seen ? [seen.os, seen.root ? 'root' : '无 root', seen.transport].filter(Boolean) : ['暂无读数'],
               jobs: on(item.node_id, job => job.device_binding?.device_id === item.device_id)};
     };
     const phonesOf = nodeId => phones.items.filter(item => item.node_id === nodeId && !(nodeId === local.node_id && disabled.has(item.device_id))).map(phone);
@@ -121,7 +108,7 @@
     card.className = `st-card st-phone${phone.online ? '' : ' is-off'}${phone.jobs ? ' is-running' : ''}`;
     const text = el('div', 'st-text'), head = el('div', 'st-phone-head'), busy = phone.jobs ? `运行 ${phone.jobs} 个作业` : null;
     // Beside the name: why it is not shown as online, or how old a reading is that is not current.
-    const note = PHONE_STATE[phone.state] || (phone.state === 'old' && phone.read ? `读数 ${age(phone.read)}` : '');
+    const note = HGPhoneState.note(phone);
     head.append(el('strong', 'st-title', phone.title));
     if (note) { const tip = el('span', 'st-note', note); tip.title = note; head.append(tip); }
     text.append(head, el('span', 'st-line', phone.facts.join(' · ')));

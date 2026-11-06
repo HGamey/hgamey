@@ -5,15 +5,21 @@
   const $ = (id) => document.getElementById(id);
   const PHASE = { ready: "可操作", starting: "正在建立会话", closing: "正在交回，等待当前动作收尾", closed: "会话已关闭", recovery_required: "需要恢复核查", unknown: "会话状态未知" };
   const STATUS = { accepted: "已接受，尚未完成", started: "已开始，尚未完成", completed: "已完成", failed: "失败", unknown: "结果未知", not_executed: "未执行" };
-  const ACTION = { acquire: "接管", release: "交回", renew: "续期", screenshot: "截图", logcat: "读取日志", diagnostics: "读取诊断", tap: "点击", swipe: "滑动", text: "输入文本", key: "按键", app_start: "启动应用", app_stop: "强停应用" };
+  const ACTION = { acquire: "接管", release: "交回", renew: "续期", screenshot: "截图", logcat: "读取日志", diagnostics: "读取诊断", tap: "点击", swipe: "滑动", text: "输入文本", key: "按键", app_start: "启动应用", app_stop: "强停应用", shell: "执行命令", install: "安装应用", push: "推送文件" };
   const FRAME_ERROR = { input_contract_unavailable: "此会话未提供截图绑定输入", frame_unavailable: "来源截图已不可输入，请显式采集新图", frame_stale: "来源截图已过期，请显式采集新图", frame_orientation_unknown: "截图方向未确认，不能输入", coordinate_out_of_bounds: "坐标超出原图范围", frame_geometry_changed: "设备尺寸或方向已变化，请显式采集新图" };
   const TERMINAL = new Set(["completed", "failed", "not_executed"]);
+  // Actions an owner started by an older PF does not offer, even when the device and node declare them.
+  const OWNER_DECLARED = new Set(["logcat", "diagnostics", "shell", "install", "push"]);
+  const COMMAND = new Set(["shell", "install", "push"]);
   const state = { op: undefined, devices: [], capabilities: null, devicesFresh: false, devicesError: "尚未读取状态",
     serial: null, binding: null, session: null, sessionFresh: false, sessionError: "", live: null, frame: null, url: null,
     requests: [], selectedRequest: null, posting: false, querying: false, authBusy: false, refreshing: false,
     revision: 0, imageRevision: 0, refreshCtl: null, timer: 0,
     acquireScope: "global", acquireBinding: null, bindingBusy: false, bindingError: "", bindingRevision: 0, computers: null };
 
+  // A link from the phone list names one phone (?device=<ref>); it is chosen once the device list is read.
+  let wanted = new URLSearchParams(location.search).get("device");
+  if (wanted) { const url = new URL(location.href); url.searchParams.delete("device"); history.replaceState(null, "", url.pathname + url.search + url.hash); }
   function message(value) { return typeof value === "string" ? value : value?.message || value?.error || "请求失败"; }
   function msg(text, err) { $("msg").textContent = text || ""; $("msg").classList.toggle("err", !!err); }
   const dev = (serial, action) => "/devices/" + encodeURIComponent(serial) + "/" + action;
@@ -23,7 +29,7 @@
   const query = (values) => "?" + new URLSearchParams(values).toString();
   function save() {
     try { sessionStorage.setItem(STORAGE, JSON.stringify({ serial: state.serial, binding: state.binding,
-      requests: state.requests.map(({ id, serial, session_id, action, status, at, target, input, binding_recorded, device_binding }) => ({ id, serial, session_id, action, status, at, target, ...(input ? {input} : {}), ...(binding_recorded ? {binding_recorded:true} : {}), ...(device_binding!==undefined ? {device_binding} : {}) })), selectedRequest: state.selectedRequest })); }
+      requests: state.requests.map(({ id, serial, session_id, action, status, at, target, input, sent, binding_recorded, device_binding }) => ({ id, serial, session_id, action, status, at, target, ...(input ? {input} : {}), ...(sent ? {sent} : {}), ...(binding_recorded ? {binding_recorded:true} : {}), ...(device_binding!==undefined ? {device_binding} : {}) })), selectedRequest: state.selectedRequest })); }
     catch (_) { /* 页面仍保留原 ID，回执区可手工记录。 */ }
   }
   try {
@@ -39,10 +45,10 @@
     const abort = () => ctl.abort();
     if (options.signal?.aborted) ctl.abort();
     options.signal?.addEventListener("abort", abort, { once: true });
-    const headers = { "X-HG": "1" };
-    if (method !== "GET") headers["Content-Type"] = "application/json";
+    const headers = { "X-HG": "1" }, file = body instanceof Blob;
+    if (method !== "GET") headers["Content-Type"] = file ? "application/octet-stream" : "application/json";
     try {
-      const r = await HGTarget.fetch(API + path, { method, headers, body: method === "GET" ? undefined : JSON.stringify(body || {}), signal: ctl.signal, credentials: "same-origin", cache: "no-store" }, Object.hasOwn(options,"target") ? {target:options.target} : {});
+      const r = await HGTarget.fetch(API + path, { method, headers, body: method === "GET" ? undefined : file ? body : JSON.stringify(body || {}), signal: ctl.signal, credentials: "same-origin", cache: "no-store" }, Object.hasOwn(options,"target") ? {target:options.target} : {});
       if ((r.headers.get("Content-Type") || "").includes("application/json")) {
         const value = await r.json();
         if (!r.ok) {
@@ -122,7 +128,7 @@
     return "";
   }
   const coordinateAction = action => action === "tap" || action === "swipe";
-  function canAction(action) { return !sessionReason(action) && !state.posting && !state.authBusy && actionSupported(action) && (!["logcat", "diagnostics"].includes(action) || state.session?.capabilities?.includes(action)) && (action === "release" ? !unresolved("release") : !unresolved()) && (!coordinateAction(action) || !frameReason()); }
+  function canAction(action) { return !sessionReason(action) && !state.posting && !state.authBusy && actionSupported(action) && (!OWNER_DECLARED.has(action) || state.session?.capabilities?.includes(action)) && (action === "release" ? !unresolved("release") : !unresolved()) && (!coordinateAction(action) || !frameReason()); }
   function holderText(d) {
     const h = d.holder;
     if (!state.devicesFresh) return "上次观测；当前状态未知";
@@ -201,13 +207,21 @@
     const diagnostics = r?.action === "diagnostics" ? r.receipt?.result : null;
     $("diagnostics-result").hidden = typeof diagnostics?.stdout !== "string";
     $("diagnostics-output").textContent = typeof diagnostics?.stdout === "string" ? diagnostics.stdout : "";
+    const command = COMMAND.has(r?.action) ? r.receipt?.result : null, shown = command && typeof command.stdout === "string";
+    $("command-result").hidden = !shown;
+    $("command-result-title").textContent = shown ? `${ACTION[r.action]} · ${r.sent ? sentText(r) + " · " : ""}退出码 ${command.exit ?? "未知"}` : "";
+    $("command-output").textContent = shown ? [command.stdout, command.stderr].filter(Boolean).join("\n") : "";
+    $("command-result-info").textContent = !shown ? "" : [r.action !== "shell" && Number.isInteger(command.bytes) ? `${size(command.bytes)} · sha256 ${String(command.sha256 || "").slice(0, 12)}` : "",
+      command.stdout_truncated === true ? "输出已截断。" : ""].filter(Boolean).join(" · ");
     $("diagnostics-result-info").textContent = !diagnostics ? "" : `${diagnostics.stdout_truncated === true ? "输出已截断。" : diagnostics.stdout_truncated === false ? "本次返回未截断。" : "截断状态未知。"}仅本次只读命令观察；未提供的能力保持未知，不证明物理连接、root 能力或安装资格。`;
   }
+  const size = n => n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} 字节`;
+  const sentText = r => r.sent.cmd ?? [r.sent.file, r.sent.path].filter(Boolean).join(" → ");
   function render() {
     $("devices").replaceChildren(...state.devices.map(d => {
       const li = document.createElement("li"), b = document.createElement("button"), serial = document.createElement("span"), sub = document.createElement("span");
       b.type = "button"; b.setAttribute("aria-pressed", String(d.serial === state.serial)); serial.className = "dev-serial"; serial.textContent = d.raw_serial ?? d.serial;
-      sub.className = "dev-sub" + (d.holder ? " dev-held" : ""); sub.textContent = `${where(d)}${d.model || d.transport || "设备"} · ${holderText(d)}`;
+      sub.className = "dev-sub" + (d.holder ? " dev-held" : ""); sub.textContent = `${where(d)}${[d.model || d.transport || "设备", d.os && String(d.os).replace(/\s*\(.*\)$/, ""), d.root === true && "root"].filter(Boolean).join(" · ")} · ${holderText(d)}`;
       b.append(serial, sub); b.addEventListener("click", () => select(d.serial)); li.append(b); return li;
     }));
     if (!state.devices.length) { const p = document.createElement("li"); p.className = "note"; p.textContent = state.devicesFresh ? "当前目录没有设备" : "设备目录尚未确认"; $("devices").append(p); }
@@ -230,7 +244,7 @@
     $("check-session").disabled = !!(state.binding && HGTarget.problem(state.binding.target || null)) || !state.op || !state.serial || state.refreshing || state.authBusy || state.posting || !(state.binding || reconnect);
     $("check-session").textContent = state.refreshing ? "查询中…" : "查询会话";
     $("ops").disabled = !!reason || state.posting || state.authBusy || unresolved();
-    document.querySelectorAll("[data-action], [data-key]").forEach(b => { const action = b.dataset.action || "key"; b.disabled = !canAction(action); b.title = ["logcat", "diagnostics"].includes(action) && !state.session?.capabilities?.includes(action) ? `当前 owner 未声明支持${ACTION[action]}；新程序不会自动升级已有会话。` : actionSupported(action) ? reason || (unresolved() ? "先查询未决动作" : "") : "当前设备未声明支持此动作"; });
+    document.querySelectorAll("[data-action], [data-key]").forEach(b => { const action = b.dataset.action || "key"; b.disabled = !canAction(action); b.title = OWNER_DECLARED.has(action) && !state.session?.capabilities?.includes(action) ? `当前 owner 未声明支持${ACTION[action]}；新程序不会自动升级已有会话。` : actionSupported(action) ? reason || (unresolved() ? "先查询未决动作" : "") : "当前设备未声明支持此动作"; });
     $("lease-info").textContent = state.session ? `${sessionText(state.session)} · ${state.session.session_id || "身份未知"}${state.sessionFresh ? "" : "（上次观测，当前未确认）"}${state.session.deadline ? " · 最晚 " + state.session.deadline : ""}` : state.binding?.acquisition_id ? "接管请求待确认 · " + state.binding.acquisition_id : d ? holderText(d) : "先选择设备";
     $("session-scope").textContent = state.session ? `会话报告的 lease 范围：${scopeText(state.session)}${state.sessionFresh ? "" : "（历史记录）"}。` : "尚无当前会话范围回执。";
     $("operation-info").textContent = reason || (unresolved() ? "存在未决动作；先查询原请求，或显式请求交回等待收尾。" : "会话已确认；每次操作只提交一次。交回和恢复完成是不同事实。");
@@ -292,7 +306,8 @@
       if (revision !== state.revision || ctl.signal.aborted) return;
       if (!Array.isArray(r.devices)) throw new Error("设备目录格式不正确");
       if (!state.computers && r.devices.some(d => d.execution_node_id && d.execution_node_id !== HGTarget.binding()?.node_id)) await loadComputers();
-      state.devices = r.devices; state.capabilities = r.capabilities; state.devicesFresh = !r.lock_storage_error; state.devicesError = r.lock_storage_error || "";
+      state.devices = r.devices; state.capabilities = r.capabilities;
+      if (wanted) { const d = r.devices.find(d => d.ref === wanted || d.serial === wanted); wanted = null; if (d && !state.binding && !state.posting) select(d.serial); } state.devicesFresh = !r.lock_storage_error; state.devicesError = r.lock_storage_error || "";
       if (r.lock_storage_error) invalidateFrame();
       const binding = state.binding && { ...state.binding };
       if (binding) {
@@ -363,17 +378,19 @@
   function supersedeRead() {
     state.revision++; state.refreshCtl?.abort();
   }
-  async function act(action, body = {}) {
+  async function act(action, body = {}, file = null, sent = null) {
     if (!canAction(action)) { msg((coordinateAction(action) ? frameReason() : sessionReason()) || "当前动作不可用，先查询未决请求或确认能力。", true); return; }
     if (coordinateAction(action) && body.frame_id !== state.frame.frame_id) { msg("截图已变化，本次输入未提交；请依据当前图重新操作。", true); return; }
     supersedeRead();
     const r = addRequest(action, state.binding.session_id, coordinateAction(action) ? body : null), revision = state.revision;
+    if (sent) { r.sent = sent; save(); }
     state.posting = true;
     if (!["renew", "logcat", "diagnostics"].includes(action)) { invalidateFrame(); state.sessionFresh = false; state.sessionError = "动作提交后须重新读取 owner 的截图资格。"; }
     render();
     try {
       const path = dev(r.serial, action === "release" ? "session" : action);
-      const response = await call(action === "release" ? "DELETE" : "POST", path, { ...body, request_id: r.id, session_id: r.session_id }, {target:r.target || null});
+      const response = file ? await call("PUT", path + query({ ...body, request_id: r.id, session_id: r.session_id }), file, {target:r.target || null, timeout: 600000})
+        : await call(action === "release" ? "DELETE" : "POST", path, { ...body, request_id: r.id, session_id: r.session_id }, {target:r.target || null});
       if (response.blob) { receipt(r, response.meta); if (action === "screenshot") await displayImage(r, response); }
       else {
         receipt(r, response);
@@ -505,7 +522,21 @@
     if (!Number.isInteger(lines) || lines < 1 || lines > 2000 || rawPID && (!Number.isInteger(pid) || pid < 1 || pid > 2147483647)) { msg("日志行数须为 1–2000 的整数，PID 留空或填写 1–2147483647 的整数。", true); return; }
     act("logcat", {lines, ...(rawPID ? {pid} : {})});
   });
-  $("shell-form").addEventListener("submit", ev => ev.preventDefault());
+  $("shell-form").addEventListener("submit", ev => {
+    ev.preventDefault(); const cmd = $("shell").value, timeout_s = Number($("shell-timeout").value);
+    if (!cmd.trim() || !Number.isInteger(timeout_s) || timeout_s < 1 || timeout_s > 120) { msg("命令不能为空，超时须为 1–120 的整数秒。", true); return; }
+    act("shell", {cmd, timeout_s}, null, {cmd});
+  });
+  $("install-form").addEventListener("submit", ev => {
+    ev.preventDefault(); const file = $("apk").files[0];
+    if (file) act("install", {}, file, {file: file.name});
+  });
+  $("push-file").addEventListener("change", () => { const file = $("push-file").files[0]; if (file && !$("push-path").value) $("push-path").value = "/data/local/tmp/" + file.name; });
+  $("push-form").addEventListener("submit", ev => {
+    ev.preventDefault(); const file = $("push-file").files[0], path = $("push-path").value.trim();
+    if (file?.size > 16 << 20) { msg(`推送文件上限 16 MB，这个文件 ${size(file.size)}。`, true); return; }
+    if (file && path) act("push", {path}, file, {file: file.name, path});
+  });
   function pause() {
     state.refreshCtl?.abort(); state.sessionFresh = false; state.devicesFresh = false; state.devicesError = "页面已暂停，需重新读取"; invalidateFrame(); render();
   }

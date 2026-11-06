@@ -465,6 +465,85 @@ class RemoteHttpTests(Base):
             finally:
                 browser.close()
 
+    def test_control_page_runs_a_command_installs_and_pushes_on_the_phone_it_was_sent_to(self):
+        """A link names one phone (?device=<ref>) and the page opens on it. Once taken over, a command, an APK and a file
+        each go to the owner once, as JSON or as the file's own bytes, and the receipt shows what was sent and what came
+        back. An owner that does not offer these actions keeps them off."""
+        from playwright.sync_api import sync_playwright
+        self.board.wake = threading.Event()
+        self.board.live = mock.Mock()
+        self.board.live.known.return_value = False
+        self.board.live.status.return_value = {"devices": [], "policy": {}}
+        submit = self.backend.submit
+
+        def answering(ref, request):   # PF's results for these actions (the fake leaves them empty)
+            receipt = submit(ref, request)
+            params = request["params"]
+            receipt["result"] = {"shell": {"exit": 0, "stdout": "fixture-model\n", "stdout_truncated": False},
+                                 "install": {"exit": 0, "stdout": "Success", "stderr": "", "sha256": params.get("sha256"), "bytes": 4},
+                                 "push": {"exit": 0, "stdout": "1 file pushed", "stderr": "", "sha256": params.get("sha256"), "bytes": 3},
+                                 }.get(request["action"], receipt["result"])
+            self.backend.data["receipts"][ref["id"] + ":" + request["request_id"]] = receipt
+            return copy.deepcopy(receipt)
+
+        view = f"{dash.COOKIE}={self.board._cookie_val(self.pw)}"
+        steer = f"{dash.STEER_COOKIE}={self.board._cookie_val(self.board._steer_pass(), b'hgamey-steer-v1')}"
+        base = "http://%s:%d" % self.server.server_address
+        with sync_playwright() as playwright, mock.patch.object(self.backend, "submit", side_effect=answering):
+            browser = playwright.chromium.launch()
+            try:
+                context = browser.new_context()
+                context.add_cookies([{"name": c.split("=", 1)[0], "value": c.split("=", 1)[1], "url": base}
+                                     for c in (view, steer)])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(f"{base}/dash/control?device={self.jobs.node_id}/{SERIAL}")
+                page.wait_for_selector('#devices button[aria-pressed="true"]')
+                self.assertEqual(page.text_content('#devices button[aria-pressed="true"] .dev-serial'), SERIAL)
+                self.assertNotIn("device=", page.url, "the link chooses the phone once; the page keeps its own choice after that")
+                page.locator("#take").click()
+                page.wait_for_function("() => document.querySelector('#lease-info').textContent.startsWith('可操作')")
+                sent = lambda action: [r for r in self.backend.data["requests"].values() if r["action"] == action]
+
+                page.fill("#shell", "getprop ro.product.model")
+                page.click('[data-action="shell"]')
+                page.wait_for_function("() => !document.getElementById('command-result').hidden")
+                self.assertEqual(page.text_content("#command-result-title"), "执行命令 · getprop ro.product.model · 退出码 0")
+                self.assertEqual(page.text_content("#command-output"), "fixture-model\n")
+                self.assertEqual([r["params"] for r in sent("shell")], [{"cmd": "getprop ro.product.model", "timeout_s": 20}])
+
+                page.wait_for_function("() => !document.querySelector('[data-action=\"install\"]').disabled")
+                page.set_input_files("#apk", files=[{"name": "game.apk", "mimeType": "application/vnd.android.package-archive", "buffer": b"APK!"}])
+                page.click('[data-action="install"]')
+                page.wait_for_function("() => document.getElementById('command-result-title').textContent.startsWith('安装应用')")
+                apk = hashlib.sha256(b"APK!").hexdigest()
+                self.assertEqual(page.text_content("#command-result-title"), "安装应用 · game.apk · 退出码 0")
+                self.assertEqual(page.text_content("#command-result-info"), f"4 字节 · sha256 {apk[:12]}")
+                self.assertEqual([r["params"] for r in sent("install")], [{"sha256": apk}])
+
+                page.wait_for_function("() => !document.querySelector('[data-action=\"push\"]').disabled")
+                page.set_input_files("#push-file", files=[{"name": "level.cfg", "mimeType": "text/plain", "buffer": b"cfg"}])
+                self.assertEqual(page.input_value("#push-path"), "/data/local/tmp/level.cfg")
+                page.click('[data-action="push"]')
+                page.wait_for_function("() => document.getElementById('command-result-title').textContent.startsWith('推送文件')")
+                self.assertEqual(page.text_content("#command-result-title"), "推送文件 · level.cfg → /data/local/tmp/level.cfg · 退出码 0")
+                cfg = hashlib.sha256(b"cfg").hexdigest()
+                self.assertEqual([r["params"] for r in sent("push")], [{"path": "/data/local/tmp/level.cfg", "sha256": cfg}])
+                self.assertEqual(sorted(key.split(":")[1] for key in self.backend.data["uploads"]), sorted([apk, cfg]))
+                self.assertEqual(len(sent("shell") + sent("install") + sent("push")), 3, "each sent once")
+
+                # An owner started by an older PF does not offer them.
+                descriptor = self.backend.data["descriptors"]["ref-1"]
+                descriptor["capabilities"] = [a for a in descriptor["capabilities"] if a not in ("shell", "install", "push")]
+                page.click("#check-session")
+                page.wait_for_function("() => document.querySelector('[data-action=\"shell\"]').disabled")
+                self.assertIn("当前 owner 未声明支持执行命令", page.get_attribute('[data-action="shell"]', "title"))
+                self.assertTrue(page.is_disabled('[data-action="install"]') and page.is_disabled('[data-action="push"]'))
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
+
     def test_logcat_mapping_preserves_receipt_and_owner_capability(self):
         self.backend.actions = [*self.backend.actions, "logcat"]
         sid = self.acquire()["session_id"]
