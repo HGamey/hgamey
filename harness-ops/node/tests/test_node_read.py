@@ -130,7 +130,10 @@ class NodeReadTests(unittest.TestCase):
             self.assertEqual(ready["connection"]["status"], "ready", ready)
             self.assertEqual(ready["node_id"], remote_node.node_id)
             self.assertIsNone(ready["snapshot"]["fleet"]["devices"])
-            self.assertIsNone(remote_fleet._thread, "directory polling must not activate device sampler")
+            # The peer's own outbound reports activate its sampler; a center directory read must not.
+            with patch.object(remote_fleet, "request", side_effect=remote_fleet.request) as guarded:
+                self.assertEqual(self.get_json("/nodes/peer")["snapshot"]["fleet"]["devices"], None)
+                guarded.assert_not_called()
             self.assertEqual(ready, self.get_json("/dash/api/nodes/peer", headers=view))
             self.assertEqual(self.get_json("/nodes")["local"]["node_id"], self.node.node_id)
             self.assertEqual(ready["snapshot"]["identity"]["storage"]["data_root"], remote_jobs.data_root)
