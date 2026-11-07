@@ -872,20 +872,15 @@
     return button;
   }
   function recoverySupported() { return !!nodeInfo?.capabilities?.includes('jobs.recovery-v1'); }
-  function leaseStorageBlocked(lease) { return !!lease?.storage && lease.storage.readiness !== 'ready'; }
+  // phonefarm reports where its lock and lease records live, and an error when they cannot be used.
+  function leaseStorageBlocked(lease) { return !!lease?.storage?.error; }
   function renderLeaseStorage(storage) {
-    const states = {ready: ['存储已就绪', 'finished'], migration_required: ['需要协调迁移', 'unknown'], unavailable: ['存储不可用', 'unknown']};
-    const state = states[storage?.readiness] || ['未报告存储状态', 'unknown'];
+    const state = !storage ? ['未报告存储状态', 'unknown'] : storage.error ? ['存储不可用', 'unknown'] : ['存储正常', 'finished'];
     $('lease-storage-state').textContent = state[0];
     $('lease-storage-state').className = `task-state ${state[1]}`;
-    $('lease-storage-mode').textContent = storage ? `模式：${({default: '默认（default）', custom: '自定义（custom）'})[storage.mode] || text(storage.mode)}` : '';
-    const description = !storage ? '节点未提供存储位置与准备状态，持久根尚未确认。' : storage.readiness === 'migration_required' ? '设备写入暂不可调度。迁移需先协调停止旧 worker；此页面不会初始化或迁移目录。' : storage.readiness === 'unavailable' ? '设备写入暂不可调度。请先处理存储错误，再刷新状态。' : '存储就绪只表示记录目录可用；设备占用与恢复仍以实际 lease 状态为准。';
-    message('lease-storage-message', `${description}${storage ? ' DEVLOCK_DIR 对应锁域根，与队列目录分别记录；布局版本不等于并发资格，实际范围以冻结绑定和 lease 记录为准。队列目录不能作为新的执行锁域。' : ''}${storage?.error ? ` 错误：${storage.error}` : ''}`, !!storage?.error || (!!storage && storage.readiness !== 'ready'));
+    message('lease-storage-message', storage?.error ? `错误：${storage.error}` : '', !!storage?.error);
     $('lease-storage-details').hidden = !storage;
-    const layout = storage?.layout_version === 1 ? '1 · 旧全域布局' : storage?.layout_version === 2 ? '2 · 版本化单根布局' : '未报告或未知；不从目录名称推断';
-    facts('lease-storage-paths', storage ? [['状态根', storage.state_dir], ['锁域根', storage.devlock_dir],
-      ['当前全局队列目录', storage.queue_dir || '未报告；不从锁域根推导路径'], ['布局版本', layout],
-      ['锁域 ID（domain_id）', storage.domain_id || (storage.layout_version === 1 ? '未登记（旧布局）' : '未报告')], ['设备 lease 根', storage.device_lease_dir]] : []);
+    facts('lease-storage-paths', storage ? [['状态根', storage.state_dir], ['锁域根', storage.devlock_dir], ['设备 lease 根', storage.device_lease_dir]] : []);
   }
   function hostProcessFacts(entry) {
     if (entry.role !== 'device_lease') return [];
@@ -897,10 +892,10 @@
   function renderLease(lease, error = '') {
     leaseSnapshot = lease || null;
     const storageBlocked = leaseStorageBlocked(lease);
-    const state = storageBlocked ? [lease.storage.readiness === 'migration_required' ? '等待存储迁移' : '存储不可用', 'unknown'] : ({clear: ['屏障已清除', 'finished'], held: ['设备占用', 'unknown'], blocked: ['需要恢复', 'unknown'], unknown: ['状态未知', 'unknown']})[lease?.status] || ['尚未取得状态', 'unknown'];
+    const state = storageBlocked ? ['存储不可用', 'unknown'] : ({clear: ['屏障已清除', 'finished'], held: ['设备占用', 'unknown'], blocked: ['需要恢复', 'unknown'], unknown: ['状态未知', 'unknown']})[lease?.status] || ['尚未取得状态', 'unknown'];
     $('lease-state').textContent = state[0];
     $('lease-state').className = `task-state ${state[1]}`;
-    message('lease-message', error || (storageBlocked ? '存储尚未就绪，不能据此判断设备空闲或放行设备任务。' : !lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。${lease.device_scopes ? ' 此为聚合状态；单设备等待与释放资格以节点针对任务的判断为准。' : ''}`), !!error || !!lease?.error || storageBlocked);
+    message('lease-message', error || (storageBlocked ? `存储不可用：${lease.storage.error}` : !lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。${lease.device_scopes ? ' 此为聚合状态；单设备等待与释放资格以节点针对任务的判断为准。' : ''}`), !!error || !!lease?.error || storageBlocked);
     renderLeaseStorage(lease?.storage);
     $('lease-sampled').textContent = lease ? `采样于 ${time(lease.sampled_at)}` : '';
     $('lease-list').replaceChildren(...(lease?.entries || []).map(entry => {

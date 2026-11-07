@@ -833,6 +833,8 @@
     if (saved && KINDS[saved.kind] && validID(saved.id) && validID(saved.operation_id) && (saved.base_revision == null || Number.isInteger(saved.base_revision) && saved.base_revision > 0)) pending = {...saved, target: saved.target || null};
   } catch (_) { /* Corrupt browser state establishes no operation identity. */ }
   const query = new URLSearchParams(location.search);
+  // A pasted task link may carry only its id: a task is research.
+  if (query.has('id') && !query.has('kind')) query.set('kind', 'research');
   // The Agent tab is this page's agent directory on its own.
   const syncMode = () => { const on = location.hash === '#agents-directory'; document.body.classList.toggle('agents-mode', on); if (on) $('agents-directory').open = true; };
   window.addEventListener('hashchange', syncMode); syncMode();

@@ -10,6 +10,8 @@
 .dev .m { font-weight: 650; display: block; }
 .dev .s { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .dev[disabled] { opacity: .55; cursor: not-allowed; }
+a.dev { text-decoration: none; }
+.devs-other-title { font-size: 14px; margin: 16px 0 8px; }
 .view-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; min-height: 28px; }
 .badge { font-size: 14px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--wash); white-space: nowrap; }
 .badge.live { border-color: color-mix(in srgb, var(--good) 50%, transparent); color: var(--good-ink); }

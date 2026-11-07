@@ -11,7 +11,7 @@
   const ACCESS = {write: '写', read: '读', none: '不用手机', recovery: '恢复'};
   const name = path => String(path).split('/').pop();
   const short = sha => sha ? sha.slice(0, 8) : '';
-  const totals = {commands: 0, commits: new Set(), inputs: 0, installs: 0, pushes: 0, shells: 0, unrecorded: 0, files: 0, images: 0, logs: 0};
+  const totals = {jobs: 0, read: 0, outputs: 0, commands: 0, commits: new Set(), inputs: 0, installs: 0, pushes: 0, shells: 0, unrecorded: 0, files: 0, images: 0, logs: 0};
 
   // The job's device record: one line per adb call it made (out/.device-io.jsonl); null when it has none.
   async function deviceRecord(job) {
@@ -80,7 +80,7 @@
     if (!phone && !record?.length) { cell.append(el('p', '没有用手机', 'note')); return cell; }
     if (phone) cell.append(el('p', `${phone}${ACCESS[job.device_access] ? ' · ' + ACCESS[job.device_access] : ''}`, 'flow-phone-name'));
     if (!record) {
-      cell.append(el('p', '没有逐条记录：这个作业早于设备记录，或没有经过 adb。', 'note'));
+      cell.append(el('p', '没有逐条记录', 'note'));
       totals.unrecorded += 1;
       return cell;
     }
@@ -100,27 +100,28 @@
     return cell;
   }
   // 返回给 agent: how it ended, what it wrote (by kind, screenshots by name), what it pulled from the phone, its log.
-  function returned(job, outputs, record) {
+  // The files it wrote are read after every row is up: a job's output tree can take many reads.
+  function returned(job, record) {
     const cell = el('div', null, 'flow-cell flow-out'), head = el('p', null, 'flow-outcome');
     head.append(tag(HGJobState.label(job), HGJobState.tone(job)), ...(job.exit != null ? [el('span', `退出码 ${job.exit}`, 'flow-meta')] : []));
-    cell.append(head);
-    if (outputs?.files.length) {
-      const counts = {};
-      for (const file of outputs.files) counts[file.kind] = (counts[file.kind] || 0) + 1;
-      const tally = el('p', null, 'output-tally');
-      tally.append(...Object.entries(counts).map(([kind, n]) => el('span', `${O.LABEL[kind]} ${n}`, `output-count k-${kind}`)));
-      const images = outputs.files.filter(file => file.kind === 'image'), key = outputs.files.filter(file => ['weights', 'engine', 'report', 'video'].includes(file.kind));
-      cell.append(block(`输出 · ${outputs.files.length}${outputs.more ? '+' : ''}`, tally, ...(key.length ? [list(key.map(outputLine), 6)] : [])));
-      if (images.length) cell.append(block(`截图 · ${images.length}`, list(images.map(outputLine), 4)));
-      totals.files += outputs.files.length; totals.images += images.length;
-    } else if (outputs?.error) cell.append(block('输出', el('p', `没读到：${outputs.error}`, 'note')));
-    else cell.append(block('输出', el('p', '没有输出文件', 'note')));
+    cell.append(head, el('p', '读取中…', 'note flow-outputs-reading'));
     const pulled = (record || []).filter(line => line.command === 'pull');
     if (pulled.length) cell.append(block(`从手机取回 · ${pulled.length}`, list(pulled.map(line => el('code', `${line.source} → ${line.to || '.'}`)), COMMANDS_SHOWN)));
     const log = el('a', '作业日志', 'flow-log'); log.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.id)}`);
     cell.append(log);
     totals.logs += 1;
     return cell;
+  }
+  function outputBlocks(outputs) {
+    if (!outputs.files.length) return [block('输出', el('p', outputs.error ? `没读到：${outputs.error}` : '没有输出文件', 'note'))];
+    const counts = {};
+    for (const file of outputs.files) counts[file.kind] = (counts[file.kind] || 0) + 1;
+    const tally = el('p', null, 'output-tally');
+    tally.append(...Object.entries(counts).map(([kind, n]) => el('span', `${O.LABEL[kind]} ${n}`, `output-count k-${kind}`)));
+    const images = outputs.files.filter(file => file.kind === 'image'), key = outputs.files.filter(file => ['weights', 'engine', 'report', 'video'].includes(file.kind));
+    totals.files += outputs.files.length; totals.images += images.length;
+    return [block(`输出 · ${outputs.files.length}${outputs.more ? '+' : ''}`, tally, ...(key.length ? [list(key.map(outputLine), 6)] : [])),
+      ...(images.length ? [block(`截图 · ${images.length}`, list(images.map(outputLine), 4))] : [])];
   }
 
   function jobRow(job, parts) {
@@ -129,7 +130,7 @@
     link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(job.id)}`);
     head.append(link, el('span', job.label || '', 'flow-label'), el('span', when(job.started), 'flow-meta'));
     const columns = el('div', null, 'flow-columns');
-    columns.append(received(job, parts.commit, parts.inputs), sent(job, parts.record), returned(job, parts.outputs, parts.record));
+    columns.append(received(job, parts.commit, parts.inputs), sent(job, parts.record), returned(job, parts.record));
     row.append(head, columns);
     return row;
   }
@@ -137,6 +138,10 @@
     $('total-in').textContent = [`${totals.commands} 条命令`, `${totals.commits.size} 个代码提交`, `${totals.inputs} 个输入文件`].join(' · ');
     $('total-phone').textContent = [`装包 ${totals.installs}`, `推文件 ${totals.pushes}`, `命令 ${totals.shells}`, ...(totals.unrecorded ? [`${totals.unrecorded} 个作业没有逐条记录`] : [])].join(' · ');
     $('total-out').textContent = [`${totals.files} 个输出文件`, `截图 ${totals.images}`, `日志 ${totals.logs}`].join(' · ');
+    // Until every job and then every job's outputs are read the sums are partial.
+    $('flow-progress').textContent = totals.read < totals.jobs ? `读取中 ${totals.read}/${totals.jobs}`
+      : totals.outputs < totals.jobs ? `输出读取中 ${totals.outputs}/${totals.jobs}` : '';
+    $('flow-progress').hidden = totals.outputs >= totals.jobs;
   }
 
   async function load() {
@@ -159,16 +164,21 @@
     const commitOf = job => job.experiment?.commit && {...(known.get(job.experiment.commit) || O.unknownCommit(job.experiment.commit, '', found?.repository)), source: '运行的代码'};
     const slots = jobs.map(job => { const slot = el('li', '读取中…', 'flow-job note'); slot.dataset.job = job.id; return slot; });
     $('flow-jobs').replaceChildren(...slots);
+    totals.jobs = jobs.length;
     showTotals();
-    await O.pool(jobs.map((job, i) => [job, slots[i]]), 6, async ([job, slot]) => {
+    const rows = await O.pool(jobs.map((job, i) => [job, slots[i]]), 6, async ([job, slot]) => {
       const given = job.input_preparation?.entries > 0 || job.input_preparation?.declared_bytes > 0;
-      const [outputs, record, inputs] = await Promise.all([
-        O.tree(job.id).catch(error => ({files: [], error: error.message})),
+      const [record, inputs] = await Promise.all([
         job.bin === 'adb' ? Promise.resolve(adbArgs(job.argv || [])) : deviceRecord(job).catch(() => null),
         given ? O.tree(job.id, 'input-files', entry => entry === 'experiment').catch(error => ({files: [], error: error.code === 'inputs_elsewhere' ? '输入在执行它的电脑上' : error.message})) : null]);
-      slot.replaceWith(jobRow(job, {commit: commitOf(job), outputs, record, inputs}));
-      showTotals();
-    });
+      const row = jobRow(job, {commit: commitOf(job), record, inputs});
+      slot.replaceWith(row);
+      return row;
+    }, () => { totals.read += 1; showTotals(); });
+    await O.pool(jobs.map((job, i) => [job, rows[i]]), 6, async ([job, row]) => {
+      const outputs = await O.tree(job.id).catch(error => ({files: [], error: error.message}));
+      if (row instanceof Element) row.querySelector('.flow-outputs-reading')?.replaceWith(...outputBlocks(outputs));
+    }, () => { totals.outputs += 1; showTotals(); });
   }
   load().catch(error => {
     $('message').hidden = false;
