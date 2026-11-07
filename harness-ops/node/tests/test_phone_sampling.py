@@ -2,6 +2,7 @@
 import json
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -54,12 +55,15 @@ print(json.dumps({'schema':'phonefarm/fleet@1','devices':[{
         self.assertIsNotNone(phone['sampled_at'])
         self.assert_metadata_only(node)
 
-    def test_the_post_join_report_refreshes_phone_readings_without_local_readers(self):
-        center, worker = self.node(), self.node()
+    def joined_connector(self, center, worker, **backend_args):
         joined = center.jobs.directory.join({'invite': center.jobs.directory.invite()['code'],
             'name': 'worker', 'node_id': worker.jobs.node_id})
-        connector = NodeConnector({'url': center.url, 'center_id': joined['center_id'], 'token': joined['token']},
-                                  LocalHTTP(worker.url, worker.admin, worker.jobs.node_id, sample=True))
+        return NodeConnector({'url': center.url, 'center_id': joined['center_id'], 'token': joined['token']},
+                             LocalHTTP(worker.url, worker.admin, worker.jobs.node_id, **backend_args))
+
+    def test_the_post_join_report_refreshes_phone_readings_without_local_readers(self):
+        center, worker = self.node(), self.node()
+        connector = self.joined_connector(center, worker, sample=True)
         sampled = threading.Event()
         seen = []
         report = connector._json
@@ -84,6 +88,33 @@ print(json.dumps({'schema':'phonefarm/fleet@1','devices':[{
             finally:
                 connector.close()
         self.assert_metadata_only(worker)
+
+    def test_a_plain_periodic_report_refreshes_phone_readings_with_nobody_watching(self):
+        # A node that joined long ago (no join-time sample) and that nobody reads locally must still send fresh phone
+        # readings with its routine reports.
+        center, worker = self.node(), self.node()
+        connector = self.joined_connector(center, worker)
+        reports = []
+        report = connector._json
+        def observed(path, value):
+            result = report(path, value)
+            if path == '/node-connect/report':
+                reports.append(value['fleet']['sampled_at'])
+            return result
+        connector._json = observed
+        with patch('node_connector.REFRESH_S', .05), patch('node_fleet.FLEET_EVERY_FREE_S', .05):
+            try:
+                connector.start()
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    if len(reports) >= 2 and reports[1] is not None:
+                        break
+                    time.sleep(.05)
+            finally:
+                connector.close()
+        self.assertGreaterEqual(len(reports), 2, 'the worker never sent a second periodic report')
+        self.assertIsNotNone(reports[1],
+            'a routine report from an ordinary joined node kept reusing absent phone readings')
 
 
 if __name__ == '__main__':

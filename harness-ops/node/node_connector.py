@@ -112,11 +112,12 @@ class LocalHTTP:
             timeout=None, max_bytes=max_bytes, connections=self._connections, guard=self._guard, stop=self._stop)
 
     def snapshot(self):
-        # Just joined: the first report goes out at once and the one right after it samples the phones. A computer that
-        # cannot sample them reports without them.
-        sample, self._reports = self.sample and self._reports == 1, self._reports + 1
-        response = self.request('GET', '/node/snapshot?devices=1', b'', {}) if sample else None
-        if response is None or response['status'] != 200:
+        # Every outbound report asks the local sampler for fresh phone readings first, so they keep refreshing even when
+        # nobody is reading them locally; a computer that cannot sample them falls back to a plain snapshot and reports
+        # without them. The report right after joining samples the phones this way too.
+        self._reports += 1
+        response = self.request('GET', '/node/snapshot?devices=1', b'', {})
+        if response['status'] != 200:
             response = self.request('GET', '/node/snapshot', b'', {})
         if response['status'] != 200:
             raise OSError('local snapshot returned HTTP ' + str(response['status']))
