@@ -31,9 +31,10 @@
     state.append(el('i', null, 'phone-dot'), el('span', STATE[phone.state]));
     if (phone.state === 'old') state.append(el('span', note || '暂无读数', 'phone-note'));
     const actions = ACTIONS.filter(([action]) => (item.remote_actions || []).includes(action)).map(([, label]) => label);
+    // Only a phone that is there can be controlled or sent a job.
     const go = el('span', null, 'phone-links');
-    if (item.remote_actions?.length) go.append(link('远程控制', `/dash/control?device=${encodeURIComponent(item.ref)}`));
-    go.append(link('派作业', `/dash/jobs?phone=${encodeURIComponent(item.ref)}`));
+    if (phone.online && item.remote_actions?.length) go.append(link('远程控制', `/dash/control?device=${encodeURIComponent(item.ref)}`));
+    if (phone.online) go.append(link('派作业', `/dash/jobs?phone=${encodeURIComponent(item.ref)}`));
     li.append(name, el('span', node, 'phone-node'), state, el('span', phone.os || '—', 'phone-os'),
       el('span', phone.root == null ? '—' : phone.root ? 'root' : '无 root', 'phone-root'),
       el('span', actions.length ? actions.join(' · ') : '不可远程', 'phone-actions'), go);

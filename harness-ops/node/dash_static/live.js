@@ -202,6 +202,21 @@
       refresh(); renderView();
     }, 2000);
   }
+  // Phones on the other computers that joined: this page streams only this computer's phones; theirs open in 远程控制.
+  let othersShown = null;
+  async function others() {
+    if (document.visibilityState !== "visible") return;
+    try {
+      const r = await HGTarget.fetch("/dash/api/phones", { credentials: "same-origin", cache: "no-store" });
+      if (!r.ok) return;
+      const here = HGTarget.binding()?.node_id;
+      const items = (await r.json()).items.filter((p) => p.node_id !== here && HGPhoneState.of(p).online);
+      const html = items.map((p) => `<a class="dev" href="${esc(HGTarget.url(`/dash/control?device=${encodeURIComponent(p.ref)}`))}">
+        <span class="m">${esc(HGPhoneState.of(p).title)}</span><span class="s">${esc(p.node_name)} · ${esc(p.serial)} · 在远程控制里看</span></a>`).join("");
+      if (html !== othersShown) { $("devs-other").innerHTML = html; othersShown = html; }
+      $("devs-other-box").hidden = !items.length;
+    } catch (_) { /* The other computers' phones are an addition; this computer's list stands on its own. */ }
+  }
   $("policy").textContent = "每次设备采样须取得实际 lease。占用、屏障或状态未知时保留旧图并说明原因；旧帧保活不计作新采样。页面展示的是采样与传输状态，不是游戏 FPS。";
   $("live-serial").value = S.serial || ""; $("live-scope").value = S.scope;
   $("live-serial").addEventListener("change", () => select($("live-serial").value.trim(), false));
@@ -217,6 +232,6 @@
   addEventListener("pagehide", () => { disconnect(); clearInterval(S.timer); S.timer = 0; });
   addEventListener("pageshow", () => { startTimer(); refresh(); if (S.serial && !S.ctl) play(); });
   document.addEventListener("hgamey-target-change", () => { if(!HGTarget.canWrite())stop(); renderView(); });
-  refresh(); startTimer();
+  refresh(); startTimer(); others(); setInterval(others, 30000);
   if (S.serial) play();
 })();

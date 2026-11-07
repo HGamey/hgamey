@@ -23,33 +23,43 @@ window.HGTaskOutputs = (() => {
   const repoPage = url => /^https:\/\/github\.com\/.+\.git$/.test(url || '') ? url.slice(0, -4) : null;
 
   // A job's output tree, breadth first, without the platform's records; bounded so a job of thousands of frames
-  // stays a short read.
+  // stays a short read. The directories of one level are read together, so a tree costs its depth in round trips.
   async function tree(job, listing = 'artifacts', skip = () => false) {
-    const files = [], queue = [''];
-    let reads = 0, more = false;
-    while (queue.length) {
+    const files = [];
+    let level = [''], reads = 0, more = false;
+    while (level.length) {
       if (reads >= DIRECTORIES_PER_JOB || files.length >= FILES_PER_JOB) { more = true; break; }
-      const path = queue.shift();
-      let cursor = null;
-      do {
-        ++reads;
-        const page = await U().api(`/jobs/${encodeURIComponent(job)}/${listing}?${new URLSearchParams({path, limit: '200', ...(cursor ? {cursor} : {})})}`);
-        for (const item of page.items) {
-          if (path === '' && (listing === 'artifacts' ? platform(item.name) : skip(item.name))) continue;
-          if (item.kind === 'directory') queue.push(item.path);
-          else if (item.kind === 'file') files.push({job, path: item.path, size: item.size, kind: kindOf(item.path)});
-        }
-        cursor = page.next_cursor;
-      } while (cursor && files.length < FILES_PER_JOB);
-      if (cursor) more = true;
+      if (reads + level.length > DIRECTORIES_PER_JOB) { level = level.slice(0, DIRECTORIES_PER_JOB - reads); more = true; }
+      reads += level.length;
+      const listed = await pool(level, 4, async path => {
+        const found = [], directories = [];
+        let cursor = null;
+        do {
+          const page = await U().api(`/jobs/${encodeURIComponent(job)}/${listing}?${new URLSearchParams({path, limit: '200', ...(cursor ? {cursor} : {})})}`);
+          for (const item of page.items) {
+            if (path === '' && (listing === 'artifacts' ? platform(item.name) : skip(item.name))) continue;
+            if (item.kind === 'directory') directories.push(item.path);
+            else if (item.kind === 'file') found.push({job, path: item.path, size: item.size, kind: kindOf(item.path)});
+          }
+          cursor = page.next_cursor;
+        } while (cursor && found.length < FILES_PER_JOB);
+        return {found, directories, cut: !!cursor};
+      });
+      level = [];
+      for (const value of listed) {
+        if (value.error) throw value.error;
+        files.push(...value.found); level.push(...value.directories);
+        if (value.cut) more = true;
+      }
     }
     return {files: files.slice(0, FILES_PER_JOB), more: more || files.length > FILES_PER_JOB};
   }
-  async function pool(items, limit, work) {
+  // At most `limit` items worked at once; a failed item is {error}. `settled` runs after each item, however it went.
+  async function pool(items, limit, work, settled = () => {}) {
     const out = new Array(items.length);
     let next = 0;
     await Promise.all(Array.from({length: Math.min(limit, items.length)}, async () => {
-      while (next < items.length) { const i = next++; out[i] = await work(items[i]).catch(error => ({error})); }
+      while (next < items.length) { const i = next++; out[i] = await work(items[i]).catch(error => ({error})); settled(); }
     }));
     return out;
   }

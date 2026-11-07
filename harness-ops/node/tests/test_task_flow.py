@@ -18,6 +18,12 @@ def git(*args, cwd=None):
                           cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def read(page, rows):
+    """Wait until the page shows `rows` jobs and has read their outputs."""
+    page.wait_for_function("n => document.querySelectorAll('#flow-jobs > li.flow-job:not(.note)').length === n"
+                           " && document.getElementById('flow-progress').hidden", arg=rows)
+
+
 class TaskFlowTests(unittest.TestCase):
     setUp = core.CoreFlowTests.setUp
     _browser_page = core.CoreFlowTests._browser_page
@@ -80,7 +86,7 @@ class TaskFlowTests(unittest.TestCase):
             page.wait_for_selector(".task-owner .owner-jump")
             self.assertIn("/dash/research/flow?id=sr-flow", page.get_attribute('.task-owner a.owner-jump:has-text("数据流向")', "href"))
             page.click('.task-owner a.owner-jump:has-text("数据流向")')
-            page.wait_for_function("() => document.querySelectorAll('#flow-jobs > li.flow-job:not(.note)').length === 3")
+            read(page, 3)
             self.assertEqual(page.text_content("#flow-title"), "装回手机")
             self.assertEqual(page.eval_on_selector_all("#flow-jobs > li", "e => e.map(x => x.dataset.job)"), [UNRECORDED, SENT, HOSTONLY], "oldest first")
             row = f'#flow-jobs > li[data-job="{SENT}"]'
@@ -110,7 +116,7 @@ class TaskFlowTests(unittest.TestCase):
             self.assertEqual(errors, [])
             page.set_viewport_size({"width": 390, "height": 844})
             page.reload()
-            page.wait_for_function("() => document.querySelectorAll('#flow-jobs > li.flow-job:not(.note)').length === 3")
+            read(page, 3)
             self.assertEqual(page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth"), 0)
             self.assertEqual(page.eval_on_selector_all(f"{row} .flow-columns > .flow-cell", "e => new Set(e.map(x => x.getBoundingClientRect().left)).size"), 1,
                              "on a phone the three columns stack")
@@ -131,13 +137,56 @@ class TaskFlowTests(unittest.TestCase):
             "create-sr-flow", {"title": "装回手机", "objective": "数据流向"}))[0], 201)
         with self._browser_page() as page:
             page.goto("http://%s:%d/dash/research/flow?id=sr-flow" % self.address)
-            page.wait_for_function("() => document.querySelectorAll('#flow-jobs > li.flow-job:not(.note)').length === 2")
+            read(page, 2)
             pull, checked = (f'#flow-jobs > li[data-job="{jid}"]' for jid in (SENT, UNRECORDED))
             self.assertIn("从手机取回 · 1/sdcard/fps.txt → fps.txt", page.text_content(f"{pull} .flow-out"))
             self.assertEqual(page.text_content(f"{pull} .flow-phone .note"), "作业本身没有发给手机的内容")
             self.assertEqual(page.eval_on_selector_all(f"{checked} .flow-phone .flow-block li", "e => e.map(x => x.textContent)"), ["input tap 1 2"])
             self.assertEqual(page.text_content(f"{checked} .flow-check"), "开工前平台查看了手机上的应用（3 条命令）")
             self.assertEqual(page.text_content("#total-phone"), "装包 0 · 推文件 0 · 命令 1")
+
+    def test_rows_come_first_the_outputs_after_and_until_then_the_page_says_so(self):
+        """Every job's row is up before any job's output tree is read: what went to the phone does not wait for the
+        files that came back. Until the last job's outputs are read the page says how many it has. One job's output
+        directories of a level are listed at once, not one round trip after another."""
+        self.fixture()
+        out = Path(self.jobs.path(HOSTONLY, "out"))
+        for name in ("a", "b", "c"):
+            (out / name).mkdir()
+            (out / name / "frame.png").write_bytes(b"\x89PNG")
+        with self._browser_page() as page:
+            # The old run's output listing waits for the test; each of the host-only job's three directories takes a while.
+            page.add_init_script("""(() => {
+              const raw = window.fetch.bind(window);
+              const hold = new Promise(resolve => { window.__release = resolve; });
+              window.__inflight = 0; window.__most = 0;
+              window.fetch = async (input, init) => {
+                const url = String(input);
+                if (url.includes('/jobs/%s/artifacts')) await hold;
+                const level = /\\/jobs\\/%s\\/artifacts\\?path=[abc]&/.test(url);
+                if (!level) return raw(input, init);
+                window.__most = Math.max(window.__most, ++window.__inflight);
+                try { await new Promise(resolve => setTimeout(resolve, 300)); return await raw(input, init); } finally { window.__inflight--; }
+              };
+            })()""" % (UNRECORDED, HOSTONLY))
+            page.goto("http://%s:%d/dash/research/flow?id=sr-flow" % self.address)
+            page.wait_for_function("() => document.getElementById('flow-progress').textContent === '输出读取中 2/3'")
+            self.assertTrue(page.is_visible("#flow-progress"))
+            self.assertEqual(page.text_content("#total-phone"), "装包 1 · 推文件 2 · 命令 2 · 1 个作业没有逐条记录")
+            self.assertEqual(page.text_content(f'#flow-jobs > li[data-job="{UNRECORDED}"] .flow-phone .note'), "没有逐条记录")
+            self.assertEqual(page.text_content(f'#flow-jobs > li[data-job="{UNRECORDED}"] .flow-out .flow-outputs-reading'), "读取中…")
+            page.evaluate("window.__release()")
+            read(page, 3)
+            self.assertEqual(page.evaluate("window.__most"), 3)
+            self.assertEqual(page.eval_on_selector_all(f'#flow-jobs > li[data-job="{HOSTONLY}"] .flow-out .output-count', "e => e.map(x => x.textContent)"), ["图片 3"])
+            self.assertEqual(page.text_content(f'#flow-jobs > li[data-job="{UNRECORDED}"] .flow-out'), "失败退出码 3输出没有输出文件作业日志")
+
+    def test_a_task_link_with_only_its_id_opens_the_task(self):
+        self.fixture()
+        with self._browser_page() as page:
+            page.goto("http://%s:%d/dash/research?id=sr-flow" % self.address)
+            page.wait_for_selector(".task-owner .owner-jump")
+            self.assertIn("装回手机", page.text_content("main"))
 
     def test_the_files_a_job_was_given_are_listed_from_its_input_directory(self):
         self.fixture()
