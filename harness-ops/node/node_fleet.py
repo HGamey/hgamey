@@ -144,37 +144,14 @@ class FleetState:
                     command += ["--lock-dir", self.lock_dir]
                 if screenshots:
                     command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
-                # The PF supervisor bounds and cleans up its own observation group.
-                result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, start_new_session=True,
-                                        timeout=40, stdin=subprocess.DEVNULL, check=False)
-                value = json.loads(result.stdout)
-                if not isinstance(value, dict) or value.get("schema") != "phonefarm/fleet@1":
-                    raise ValueError("incompatible fleet schema")
-                observation = value.get("observation", "sampled")
-                if result.returncode == 3 and observation in ("deferred", "error"):
-                    reason = value.get("reason")
-                    if value.get("devices", "missing") is not None or not isinstance(reason, str) or not reason.strip():
-                        raise ValueError("deferred/error fleet response requires a reason and null devices")
-                    if observation == "deferred":
-                        deferred = reason
-                    else:
-                        error = f"fleet 采样失败: {reason}"
-                else:
-                    if result.returncode not in (0, 1) or observation != "sampled":
-                        raise ValueError(f"unexpected fleet observation/exit: {observation}/{result.returncode}")
-                    if not isinstance(value.get("devices"), list):
-                        raise ValueError("fleet response must contain a devices array")
-                    if (result.returncode == 1) != (not value["devices"]):
-                        raise ValueError("fleet exit code does not match its device count")
-                    for device in value["devices"]:
-                        if not isinstance(device, dict):
-                            raise ValueError("fleet devices must be objects")
-                        for field in ("battery", "thermal"):
-                            if device.get(field) is not None and not isinstance(device[field], dict):
-                                raise ValueError(f"fleet device {field} must be an object or null")
-                    if value.get("lock") is not None and not isinstance(value["lock"], dict):
-                        raise ValueError("fleet lock must be an object or null")
-                    fleet = value
+                fleet, error, deferred = self._sample(command, cwd, env)
+                if error is not None:
+                    # One phone whose transport stalls (e.g. a wedged hdc server) makes PF abandon the
+                    # whole observation. Retry each registered phone on its own so the healthy ones stay
+                    # fresh; the stalled one is simply absent and reads as offline, never as sampled.
+                    fleet = self._sample_each(command, cwd, env, lock)
+                    if fleet is not None:
+                        error = fleet.pop("partial")
             except (KeyError, subprocess.SubprocessError, OSError, ValueError) as e:
                 # 缺 phonefarm 可执行文件这类配置问题不许杀死采样线程：线程一死，
                 # ?devices=1 的处理线程会把整份快照答成 503，节点从此传不上观测。
@@ -188,6 +165,74 @@ class FleetState:
                 self._next_at = time.monotonic() + (5 if deferred else interval)
                 self._attempt += 1
                 self._condition.notify_all()
+
+    @staticmethod
+    def _sample(command, cwd, env):
+        """Run one PF fleet observation. Returns (fleet, error, deferred); exactly one is set."""
+        try:
+            # The PF supervisor bounds and cleans up its own observation group.
+            result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, start_new_session=True,
+                                    timeout=40, stdin=subprocess.DEVNULL, check=False)
+            value = json.loads(result.stdout)
+            if not isinstance(value, dict) or value.get("schema") != "phonefarm/fleet@1":
+                raise ValueError("incompatible fleet schema")
+            observation = value.get("observation", "sampled")
+            if result.returncode == 3 and observation in ("deferred", "error"):
+                reason = value.get("reason")
+                if value.get("devices", "missing") is not None or not isinstance(reason, str) or not reason.strip():
+                    raise ValueError("deferred/error fleet response requires a reason and null devices")
+                if observation == "deferred":
+                    return None, None, reason
+                return None, f"fleet 采样失败: {reason}", None
+            if result.returncode not in (0, 1) or observation != "sampled":
+                raise ValueError(f"unexpected fleet observation/exit: {observation}/{result.returncode}")
+            if not isinstance(value.get("devices"), list):
+                raise ValueError("fleet response must contain a devices array")
+            if (result.returncode == 1) != (not value["devices"]):
+                raise ValueError("fleet exit code does not match its device count")
+            for device in value["devices"]:
+                if not isinstance(device, dict):
+                    raise ValueError("fleet devices must be objects")
+                for field in ("battery", "thermal"):
+                    if device.get(field) is not None and not isinstance(device[field], dict):
+                        raise ValueError(f"fleet device {field} must be an object or null")
+            if value.get("lock") is not None and not isinstance(value["lock"], dict):
+                raise ValueError("fleet lock must be an object or null")
+            return value, None, None
+        except (subprocess.SubprocessError, OSError, ValueError) as e:
+            return None, f"fleet 采样失败: {type(e).__name__} {str(e)[:200]}", None
+
+    def _sample_each(self, command, cwd, env, lock):
+        """Per-phone fallback after a whole-fleet failure; None when no phone could be sampled alone."""
+        scopes = ((lock.get("lease") or {}).get("device_scopes") or {}).get("devices") or []
+        serials = [d["aliases"][0] for d in scopes if d.get("aliases")]
+        if len(serials) < 2:
+            return None  # Nothing to isolate: a lone phone's failure is the whole failure.
+        results = {}
+
+        def one(serial):
+            results[serial] = self._sample(command + ["--serial", serial], cwd, env)
+
+        threads = [threading.Thread(target=one, args=(serial,), daemon=True) for serial in serials]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(45)
+        devices, failed, merged = [], [], None
+        for serial in serials:
+            fleet, error, deferred = results.get(serial, (None, "fleet 采样失败: no result", None))
+            if fleet is None:
+                failed.append(f"{serial}: {(error or deferred or '').removeprefix('fleet 采样失败: ')[:160]}")
+                continue
+            merged = merged or fleet
+            devices.extend(fleet["devices"])
+        if merged is None:
+            return None
+        notes = list(merged.get("notes", []))
+        if failed:
+            notes.append("整轮采样失败后逐台重采；未采到: " + "; ".join(failed))
+        return {**merged, "devices": devices, "notes": notes,
+                "partial": ("部分手机采样失败: " + "; ".join(failed)) if failed else None}
 
     def _record(self, fleet):
         device = next((d for d in fleet["devices"] if d.get("online")), None)

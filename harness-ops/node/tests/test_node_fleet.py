@@ -176,6 +176,44 @@ class FleetStateTests(unittest.TestCase):
             finally:
                 state.close()
 
+    def test_one_stalled_phone_does_not_stale_the_others(self):
+        def response(code, **fields):
+            return subprocess.CompletedProcess([], code, json.dumps({"schema": "phonefarm/fleet@1", **fields}), "")
+
+        stalled = response(3, observation="error", devices=None,
+                           reason="observation worker/group incomplete. hdc deadline exceeded")
+        honor = {"serial": "A1", "online": True}
+        lock = {"status": "free", "lease": {"device_scopes": {"devices": [
+            {"device_id": "HONOR", "aliases": ["A1"]}, {"device_id": "HUAWEI", "aliases": ["hdc:H1"]}]}}}
+
+        def run(command, **kwargs):
+            if "--serial" not in command:
+                return stalled
+            return response(0, devices=[honor]) if command[-1] == "A1" else stalled
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = FleetState(directory, directory, str(Path(directory) / "shots"))
+            try:
+                with patch.object(state, "_read_lock", return_value=lock), \
+                        patch("node_fleet.subprocess.run", side_effect=run) as called:
+                    result = state.request(wait=2)
+                    self.assertEqual(result["devices"], [honor])
+                    self.assertFalse(result["stale"])
+                    self.assertIn("hdc:H1", result["error"])
+                    self.assertNotIn("A1:", result["error"])
+                    self.assertTrue(any("hdc:H1" in note for note in result["notes"]))
+                    self.assertEqual(called.call_count, 3)
+                    sampled_at = result["sampled_at"]
+                    # Every phone failing alone keeps the last good sample and its age.
+                    with state._condition:
+                        state._next_at = 0
+                    with patch("node_fleet.subprocess.run", return_value=stalled):
+                        failed = state.request(wait=2)
+                    self.assertEqual(failed["sampled_at"], sampled_at)
+                    self.assertEqual(failed["devices"], [honor])
+                    self.assertIn("hdc deadline exceeded", failed["error"])
+            finally:
+                state.close()
 
 
 if __name__ == "__main__":
