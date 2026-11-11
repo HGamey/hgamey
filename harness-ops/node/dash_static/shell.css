@@ -65,7 +65,12 @@ html { scrollbar-color: var(--line) transparent; }
 .shell-mark { width: 28px; height: 28px; border-radius: 7px; background: var(--ink); color: var(--page);
   display: grid; place-items: center; font: 700 12px/1 var(--mono); letter-spacing: .02em; flex: none; }
 .shell-name { font-weight: 650; font-size: var(--fs-md); }
-.shell-node { grid-area: node; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+.shell-nodewrap { grid-area: node; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.shell-center { height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+  color: var(--muted); font: var(--fs-xs)/1 var(--mono); cursor: pointer; max-width: 190px; }
+.shell-center:hover { background: var(--wash); color: var(--ink2); }
+@media (max-width: 480px) { .shell-center { max-width: 120px; } }
+.shell-node { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
   border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--muted);
   font: var(--fs-xs)/1 var(--mono); cursor: pointer; max-width: 180px;
   transition: background-color var(--dur-fast) ease, border-color var(--dur-fast) ease; }

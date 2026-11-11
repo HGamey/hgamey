@@ -121,7 +121,24 @@
     const nameEl = nodeBtn.querySelector(".shell-node-name");
     try { nameEl.textContent = localStorage.getItem(NAME_KEY) || "节点"; } catch (_) { nameEl.textContent = "节点"; }
 
-    top.append(brand, nodeBtn, nav, actBox);
+    // 中心节点：同一中心的各个对外入口，选中后在那个入口打开当前这页
+    const CENTERS = [
+      {label: "gameharness · Cloudflare", origin: "https://gameharness.liyao.space"},
+      {label: "office · frp", origin: "http://office.liyao.space:40765"},
+    ];
+    const centerSel = el("select", "shell-center");
+    centerSel.setAttribute("aria-label", "中心节点");
+    centerSel.title = "中心节点";
+    const centerAt = CENTERS.findIndex(c => c.origin === location.origin);
+    if (centerAt < 0) centerSel.append(new Option(location.host, "", true, true));
+    CENTERS.forEach((c, i) => centerSel.append(new Option(c.label, c.origin, i === centerAt, i === centerAt)));
+    centerSel.addEventListener("change", () => {
+      if (centerSel.value) location.href = centerSel.value + location.pathname + location.search + location.hash;
+    });
+    const nodeWrap = el("div", "shell-nodewrap");
+    nodeWrap.append(nodeBtn, centerSel);
+
+    top.append(brand, nodeWrap, nav, actBox);
     if (old) old.replaceWith(top); else document.body.prepend(top);
     document.body.classList.add("has-shell");
     // 动作放不进品牌和节点旁边时（例如手机上的 GOL 页）单独占一行；动作本身变宽（状态文字）或窗口变化时重新量
