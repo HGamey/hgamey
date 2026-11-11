@@ -141,12 +141,13 @@
     const centers = el("div", "shell-centers");
     const centerList = el("ul");
     centerList.setAttribute("aria-label", "中心节点");
+    // 和下拉一样点了才跳：页面上不出现指向别处的链接
     CENTERS.forEach((c, i) => {
-      const li = el("li"), a = el("a", null, c.label);
-      a.href = c.origin + location.pathname + location.search + location.hash;
-      if (i === centerAt) a.setAttribute("aria-current", "page");
-      a.addEventListener("click", () => { a.href = c.origin + location.pathname + location.search + location.hash; });
-      li.append(a);
+      const li = el("li"), b = el("button", null, c.label);
+      b.type = "button";
+      if (i === centerAt) b.setAttribute("aria-current", "page");
+      b.addEventListener("click", () => { location.href = c.origin + location.pathname + location.search + location.hash; });
+      li.append(b);
       centerList.append(li);
     });
     centers.append(el("p", "shell-menu-label", "中心节点"), centerList);

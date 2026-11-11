@@ -26,13 +26,15 @@ class ShellCentersTests(unittest.TestCase):
             page.set_viewport_size({"width": 390, "height": 844})
             self.assertTrue(page.is_hidden(".shell-center"))
             page.click(".shell-more-btn")
-            self.assertEqual(page.eval_on_selector_all(".shell-centers a", "e => e.map(a => a.textContent)"),
+            self.assertEqual(page.eval_on_selector_all(".shell-centers button", "e => e.map(b => b.textContent)"),
                              ["gameharness · Cloudflare", "office · frp"])
-            self.assertEqual(page.eval_on_selector_all(".shell-centers a[aria-current]", "e => e.length"), 0,
+            self.assertEqual(page.eval_on_selector_all(".shell-centers [aria-current]", "e => e.length"), 0,
                              "this page is on neither entry")
+            self.assertEqual(page.eval_on_selector_all(".shell-top a[href^='http']:not([href^='http://%s'])" % ("%s:%d" % self.address), "e => e.length"), 0,
+                             "the entries are not links off this center")
             # The page as it is when the entry is chosen, the place in it included.
             page.evaluate("history.replaceState(null, '', location.pathname + location.search + '#job=abc')")
-            page.click('.shell-centers a:has-text("gameharness")')
+            page.click('.shell-centers button:has-text("gameharness")')
             page.wait_for_url(ENTRY + "/**")
             self.assertEqual(page.url, ENTRY + "/dash/jobs?view=1#job=abc")
 
