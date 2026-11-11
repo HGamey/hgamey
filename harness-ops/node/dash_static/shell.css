@@ -102,6 +102,8 @@ html { scrollbar-color: var(--line) transparent; }
 .shell-menu a:hover, .shell-menu button:hover { background: var(--wash); color: var(--ink); }
 .shell-menu a[aria-current="page"] { color: var(--ink); font-weight: 600; background: var(--wash); }
 .shell-menu .shell-logout { margin: 6px 0 0; padding-top: 6px; border-top: 1px solid var(--grid); }
+.shell-centers { display: none; margin: 6px 0 0; padding-top: 6px; border-top: 1px solid var(--grid); }
+.shell-menu-label { margin: 0; padding: 2px 10px 4px; color: var(--muted); font-size: var(--fs-xs); }
 .shell-menu .shell-logout button { color: var(--muted); }
 @keyframes shell-pop { from { opacity: 0; transform: scale(.97) translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .shell-menu { animation: none; } }
@@ -131,6 +133,10 @@ html { scrollbar-color: var(--line) transparent; }
   .shell-top.shell-crowded { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "brand node" "actions actions" "nav nav"; }
   .shell-top.shell-crowded .shell-node { justify-self: start; }
   .shell-top.shell-crowded .shell-actions { justify-content: flex-start; }
+  /* The center switcher lives in 更多 here: beside the node button it pushes the actions to a row of their own and
+     runs off a narrow phone. */
+  .shell-center { display: none; }
+  .shell-centers { display: block; }
 }
 @media (max-width: 480px) {
   .shell-name { display: none; }

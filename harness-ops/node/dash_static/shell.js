@@ -137,6 +137,20 @@
     });
     const nodeWrap = el("div", "shell-nodewrap");
     nodeWrap.append(nodeBtn, centerSel);
+    // 窄屏上顶栏放不下这个下拉：中心入口改列在「更多」菜单里，同样在选中的入口打开当前这页
+    const centers = el("div", "shell-centers");
+    const centerList = el("ul");
+    centerList.setAttribute("aria-label", "中心节点");
+    CENTERS.forEach((c, i) => {
+      const li = el("li"), a = el("a", null, c.label);
+      a.href = c.origin + location.pathname + location.search + location.hash;
+      if (i === centerAt) a.setAttribute("aria-current", "page");
+      a.addEventListener("click", () => { a.href = c.origin + location.pathname + location.search + location.hash; });
+      li.append(a);
+      centerList.append(li);
+    });
+    centers.append(el("p", "shell-menu-label", "中心节点"), centerList);
+    menu.insertBefore(centers, logout);
 
     top.append(brand, nodeWrap, nav, actBox);
     if (old) old.replaceWith(top); else document.body.prepend(top);
@@ -152,6 +166,11 @@
     fit();
     addEventListener("resize", fit);
     if (window.ResizeObserver) { const ro = new ResizeObserver(fit); for (const n of actBox.children) ro.observe(n); }
+    // 顶栏的实际高度（窄屏两三行时会变），页内锚点按它留出位置
+    const height = () => document.documentElement.style.setProperty("--shell-h", top.offsetHeight + "px");
+    height();
+    addEventListener("resize", height);
+    if (window.ResizeObserver) new ResizeObserver(height).observe(top);
     const tab = tabs.querySelector('[aria-current="page"]');
     if (tab && tabs.scrollWidth > tabs.clientWidth) tab.scrollIntoView({block: "nearest", inline: "center"});
     fetch("/dash/api/node").then(r => r.ok ? r.json() : null).then(d => {
