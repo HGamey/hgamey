@@ -404,8 +404,8 @@
 .research-view .task-closed time { font-size: var(--fs-xs); }
 /* A comparison opened from 去评 lands below the sticky top bar, briefly outlined. */
 /* 锚点（#cmp- #note- #task-report）落在吸顶外壳下面；窄屏外壳两行更高 */
-.research-view :is(.compare, .discuss-entry, #task-report) { scroll-margin-top: 72px; }
-@media (max-width: 960px) { .research-view :is(.compare, .discuss-entry, #task-report) { scroll-margin-top: 112px; } }
+/* Below the sticky top bar, however tall it is on this screen (shell.js sets --shell-h). */
+.research-view :is(.compare, .discuss-entry, #task-report) { scroll-margin-top: calc(var(--shell-h, 56px) + 16px); }
 /* A closed comparison nobody answered: one line until it is opened. */
 .research-view .compare-section > .compare-closed + .compare-closed { margin-top: var(--sp-1); padding-top: 0; border-top: 0; }
 .research-view .compare-closed > summary { align-items: center; flex-wrap: nowrap; padding: 2px 0; list-style: none; }
