@@ -120,6 +120,42 @@ def rpc_error(id_, code, message):
 
 # ═════════════ /mcp ═════════════
 
+class RequestBody:
+    """The connection's reader while one request is handled, counting what was read of its body. A response sent
+    without reading the whole body would leave the rest on the connection, read as the start of the next request
+    (Cloudflare carries many people's requests over a few connections): such a response closes the connection."""
+
+    def __init__(self, stream, headers):
+        self.stream, self.consumed = stream, 0
+        lengths = headers.get_all("Content-Length", [])
+        self.length = int(lengths[0]) if len(lengths) == 1 and lengths[0].strip().isdigit() else None
+        self.unknown = bool(headers.get("Transfer-Encoding")) or (bool(lengths) and self.length is None)
+
+    def unread(self):
+        return self.unknown or self.length is not None and self.consumed < self.length
+
+    def _count(self, data):
+        self.consumed += len(data)
+        return data
+
+    def read(self, *args):
+        return self._count(self.stream.read(*args))
+
+    def read1(self, *args):
+        return self._count(self.stream.read1(*args))
+
+    def readline(self, *args):
+        return self._count(self.stream.readline(*args))
+
+    def readinto(self, buffer):
+        n = self.stream.readinto(buffer)
+        self.consumed += n or 0
+        return n
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 class McpChild:
     """一个 `phonefarm serve` 子进程；JSON-RPC id 在桥内改写，多客户端互不串号；挂了自动重启。"""
 
@@ -1083,10 +1119,29 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def handle_one_request(self):
+            try:
+                super().handle_one_request()
+            finally:
+                if isinstance(self.rfile, RequestBody):
+                    body, self.rfile = self.rfile, self.rfile.stream
+                    if body.unread():
+                        self.close_connection = True
+
+        def end_headers(self):
+            # A connection that ends after this response says so, or the client sends its next request into it. It
+            # ends when the request body was not read to its end, or when the route chose to end it.
+            unread = isinstance(self.rfile, RequestBody) and self.rfile.unread()
+            if ((unread or self.close_connection)
+                    and not any(line.lower().startswith(b"connection:") for line in getattr(self, "_headers_buffer", []))):
+                self.send_header("Connection", "close")
+            super().end_headers()
+
         def parse_request(self):
             self._target_continue = False
             if not super().parse_request():
                 return False
+            self.rfile = RequestBody(self.rfile, self.headers)
             if not self._target_guard():
                 return False
             if jobs.connection:
