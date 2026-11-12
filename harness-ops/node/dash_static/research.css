@@ -245,6 +245,8 @@
 .research-view .research-report h1 { font-size: var(--fs-xl); } .research-view .research-report h2 { font-size: var(--fs-lg); } .research-view .research-report :is(h3, h4) { font-size: var(--fs-md); }
 .research-view .research-report > :first-child { margin-top: 0; }
 .research-view .research-report p, .research-view .research-report :is(ul, ol) { margin: .6em 0; }
+/* The conclusion's first sentence, for anyone: a size up from the text after it. */
+.research-view .research-report .report-lead { font-size: var(--fs-lg); font-weight: 600; line-height: 1.6; margin-bottom: .3em; }
 .research-view .research-report table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: var(--sp-3) 0; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .research-view .research-report th { background: var(--wash); font-weight: 600; }
 .research-view .research-report :is(th, td) { padding: 6px 12px; border: 1px solid var(--line); }
