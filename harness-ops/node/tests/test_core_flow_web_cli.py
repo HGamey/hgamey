@@ -1814,9 +1814,10 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual(page.eval_on_selector_all(".research-choice strong", "e => e.map(x => x.textContent)"), ["任务 sr-root"])
                 self.assertIn("含 1 个接续任务", page.text_content(".research-choice .research-meta"))
                 page.goto(f"{base}/dash/research?kind=research&id=sr-root")
-                page.wait_for_selector(".chain-strip")
-                self.assertEqual(page.eval_on_selector_all(".chain-seg", "e => e.map(x => [x.dataset.seg, x.getAttribute('aria-current')])"),
-                                 [["sr-root", "page"], ["sr-next", None]])
+                # Read in the same step that finds the chain: a repaint drops the strip before drawing it again.
+                segments = page.wait_for_function("""() => { const s = [...document.querySelectorAll('.chain-seg')];
+                    return s.length && s.map(x => [x.dataset.seg, x.getAttribute('aria-current')]); }""").json_value()
+                self.assertEqual(segments, [["sr-root", "page"], ["sr-next", None]])
                 page.wait_for_function("() => document.querySelectorAll('#task-thread .discuss-entry').length === 1")
                 self.assertEqual(page.eval_on_selector_all("#task-thread .discuss-text", "e => e.map(x => x.textContent)"), ["进展 sr-root"],
                                  "a task's page holds only its own notes")

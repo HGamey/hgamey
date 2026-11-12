@@ -5,6 +5,8 @@ nothing is written; 修改区域 above the map asks for it."""
 import collections
 import unittest
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
 import test_core_flow_web_cli as core   # puts the node directory on sys.path
 import test_structure_page as structure
 from test_structure_page import CHENGDU, BLUE
@@ -35,10 +37,21 @@ class StructureZoneTests(unittest.TestCase):
         else:
             page.check(f'#zone-choices input[value="{zone}"]')
 
+    INSIDE = """([card, zone]) => {
+        const c = document.querySelector(`.st-card[data-id="${card}"]`), z = document.querySelector(`#zones rect[data-zone="${zone}"]`);
+        if (!c || !z) return false;
+        const a = c.getBoundingClientRect(), b = z.getBoundingClientRect();
+        return b.left <= a.left && a.right <= b.right && b.top <= a.top && a.bottom <= b.bottom;
+    }"""
+
     def inside(self, page, card, zone):
-        cards, bands = self.boxes(page, ".st-card"), self.boxes(page, "#zones rect")
-        (x1, y1, x2, y2), (z1, w1, z2, w2) = cards[card], bands[zone]
-        return z1 <= x1 and x2 <= z2 and w1 <= y1 and y2 <= w2
+        """Whether the card comes to sit in the zone's band. After a change the map is laid out again and the card
+        moves, so this waits for it: the band can already be there (other cards in it) before the card is."""
+        try:
+            page.wait_for_function(self.INSIDE, arg=[card, zone], timeout=10000)
+            return True
+        except PlaywrightTimeout:
+            return False
 
     def test_a_computers_zone_changes_from_its_card_keeping_its_other_tags_and_leaves_its_old_band(self):
         self.fixture()
