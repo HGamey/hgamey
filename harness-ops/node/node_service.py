@@ -2691,7 +2691,8 @@ def main():
                 host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root,
                 require_device_binding=a.require_device_binding,
                 experiment_url=a.experiments_url)
-    fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases)
+    fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases,
+                       cleanup_log=os.path.join(jobs.data_root, "_fleet", "cleanups.jsonl"))
     board = None
     if dash and not jobs.connection:
         try:

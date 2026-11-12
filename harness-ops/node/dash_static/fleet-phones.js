@@ -43,6 +43,8 @@
     state.append(el('i', null, 'phone-dot'), el('span', STATE[phone.state]));
     if (phone.state === 'old') state.append(el('span', note || '暂无读数', 'phone-note'));
     if (phone.online) state.append(...HGPhoneState.warnings(item.observation).map(text => el('span', text, 'task-state warn')));
+    const cleanup = HGPhoneState.cleaned(item.observation);
+    if (cleanup) { const tag = el('span', cleanup.text, 'task-state warn phone-cleaned'); tag.title = cleanup.title; state.append(tag); }
     const actions = ACTIONS.filter(([action]) => (item.remote_actions || []).includes(action)).map(([, label]) => label);
     // Only a phone that is there can be controlled or sent a job.
     const go = el('span', null, 'phone-links');
