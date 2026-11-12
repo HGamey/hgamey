@@ -38,7 +38,7 @@
     const parts = [], applies = deliverable.applies_to;
     const scope = [applies.game_version && `游戏版本 ${applies.game_version}`, ...applies.devices].filter(Boolean).join(' · ');
     if (scope) parts.push(el('p', '适用：' + scope, 'report-scope'));
-    parts.push(pictureRefs(U.markdownReport(deliverable.summary)));
+    parts.push(pictureRefs(U.markdownReport(deliverable.summary, {lead: true})));
     parts.push(...(outputs ? [outputs] : [el('h2', `成果文件 · ${deliverable.artifacts.length}`, 'report-files'), U.evidenceList(deliverable.artifacts)]));
     return parts;
   }

@@ -227,16 +227,27 @@
   const tableCells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
   const tableDivider = line => line.includes('|') && tableCells(line).every(cell => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')));
   const listLine = line => /^\s*([-*+]|\d+\.)\s+(.*)$/.exec(line);
+  // A conclusion's first sentence, cut where it ends (。！？, or . ! ? before a space) unless that splits ** or `.
+  function firstSentence(line) {
+    const found = /^(.+?(?:[。！？]|[.!?](?=\s)))\s*(\S[\s\S]*)$/.exec(line);
+    const whole = text => (text.split('**').length - 1) % 2 === 0 && (text.split('`').length - 1) % 2 === 0;
+    return found && whole(found[1]) ? [found[1], found[2]] : [line, ''];
+  }
   // `preview` (a summary of the report) names pictures instead of showing them.
-  function markdownReport(source, {preview = false} = {}) {
+  // With `lead`, the conclusion's first sentence, written for anyone, stands out (p.report-lead): the first paragraph
+  // under a 结论 heading, or the first paragraph when there is no such heading. The rest reads as written.
+  function markdownReport(source, {preview = false, lead = false} = {}) {
     const article = el('article', null, 'research-report'), lines = String(source).replace(/\r\n?/g, '\n').split('\n');
-    let index = 0;
+    const CONCLUSION = /^#{1,6}\s*结论/, headed = lines.some(line => CONCLUSION.test(line));
+    let index = 0, leading = lead && !headed;
     while (index < lines.length) {
       const line = lines[index];
       if (!line.trim()) { ++index; continue; }
       const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+      const waiting = leading; leading = false;   // only the block right after the heading (or a title) can be the lead
       if (heading) {
-        const element = el('h' + heading[1].length); appendInline(element, heading[2], preview); article.append(element); ++index; continue;
+        const element = el('h' + heading[1].length); appendInline(element, heading[2], preview); article.append(element); ++index;
+        leading = lead && (headed ? CONCLUSION.test(line) : waiting) && !article.querySelector('.report-lead'); continue;
       }
       if (line.trim().startsWith('```')) {
         const code = []; ++index;
@@ -266,6 +277,12 @@
       }
       const alone = !preview && MEDIA_LINE.exec(line), ref = alone && mediaRef(alone[2]);
       if (ref) { article.append(reportFigure(ref, alone[1])); ++index; continue; }   // a line of its own: the figure stands in the text
+      if (waiting) {
+        const [first, rest] = firstSentence(line), head = el('p', null, 'report-lead');
+        appendInline(head, first, preview); article.append(head);
+        if (rest) { const paragraph = el('p'); appendInline(paragraph, rest, preview); article.append(paragraph); }
+        ++index; continue;
+      }
       const paragraph = el('p'); appendInline(paragraph, line, preview); article.append(paragraph); ++index;
     }
     return article;
@@ -396,7 +413,7 @@
       const box = el('div', null, 'summary-block summary-conclusion'), head = el('div', null, 'section-head'), link = el('a', '完整交付报告', 'summary-link');
       link.href = reportUrl(record);
       head.append(el('h2', '结论'), link);
-      const text = markdownReport(report, {preview: true}), more = el('button', '展开', 'ghost summary-more');
+      const text = markdownReport(report, {preview: true, lead: true}), more = el('button', '展开', 'ghost summary-more');
       more.type = 'button';
       more.onclick = () => { box.classList.remove('clamped'); more.remove(); };
       box.classList.add('clamped');
