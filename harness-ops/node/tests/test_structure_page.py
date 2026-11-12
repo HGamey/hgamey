@@ -79,7 +79,8 @@ class StructurePageTests(unittest.TestCase):
             page.on("pageerror", lambda error: errors.append(str(error)))
             self.open(page, 1280)
             self.assertEqual(page.get_attribute('.shell-tab[data-tab="structure"]', "aria-current"), "page")
-            self.assertEqual(page.text_content("#facts"), "3 个节点 · 4 台手机 · 2 个 Agent · 3 个网络区域 · 1 个作业在运行")
+            # The Chengdu computer is offline, and so are its phone and the center's HUAWEI (not in its reading).
+            self.assertEqual(page.text_content("#facts"), "3 个节点（1 个离线） · 4 台手机（2 台离线） · 2 个 Agent · 3 个网络区域 · 1 个作业在运行")
             # The center's zone comes first (here the one without a tag); 公网 is a zone of its own, not a city's.
             labels = page.eval_on_selector_all(".st-zone-label", "items => items.map(item => item.textContent)")
             self.assertEqual(labels, ["未标区域1 个节点 · 2 台手机", "成都公网1 个节点 · 1 台手机", "公网1 个 Agent",
