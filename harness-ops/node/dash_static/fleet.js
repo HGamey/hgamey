@@ -286,10 +286,17 @@
     else { $('device-registry-edit-revision').textContent = `当前 revision：${value.revision}。未找到此 ID；新建草稿保留，请核对后再保存。`; renderManagement(); }
     message('device-registry-edit-message', saved ? '已读取当前登记并替换此设备草稿。请核对内容后显式保存；没有重新发送写入。' : '当前未找到此设备 ID，保留新建输入并更新编辑 revision。请核对后显式保存；没有重新发送写入。');
   }
+  // A computer's node ID is for whoever maintains it: technical details. Its zone (a zone:<name> tag) reads by name;
+  // other tags are technical details too.
+  const ZONE = 'zone:';
+  function tagLines(tags) {
+    const zones = tags.filter(tag => tag.startsWith(ZONE)).map(tag => tag.slice(ZONE.length)), other = tags.filter(tag => !tag.startsWith(ZONE));
+    return [...(zones.length ? [el('span', zones.join(' / '), 'node-choice-meta')] : []), ...(other.length ? [el('span', other.join(' / '), 'node-choice-meta tech')] : [])];
+  }
   function renderDirectory() {
     const local = el('li'), button = el('button', null, 'node-choice');
     button.type = 'button'; button.setAttribute('aria-current', String(selected === 'local'));
-    button.append(el('strong', '本节点'), el('span', text(localIdentity?.node_id), 'node-choice-meta'),
+    button.append(el('strong', '本节点'), el('span', text(localIdentity?.node_id), 'node-choice-meta tech'),
       el('span', `版本 ${short(localIdentity?.service?.revision)}${localIdentity?.updates?.recommended_revision ? ' · 推荐版本' : ''}`, 'node-choice-meta node-version'));
     button.addEventListener('click', () => selectNode('local')); local.append(button);
     const rows = [local];
@@ -299,7 +306,7 @@
       const state = el('span'); badge(state, CONNECTION[entry.connection?.status] || '连接状态未知', entry.connection?.status === 'ready' && !entryStale(entry) ? '' : 'unknown');
       head.append(el('strong', entry.name), state);
       const fleet = entry.snapshot?.fleet, devices = fleet?.devices;
-      choice.append(head, el('span', `${text(entry.node_id)}${entry.tags?.length ? ` · ${entry.tags.join(' / ')}` : ''}`, 'node-choice-meta'),
+      choice.append(head, el('span', text(entry.node_id), 'node-choice-meta tech'), ...tagLines(entry.tags || []),
         el('span', Array.isArray(devices) ? `${devices.length} 台手机 · 采样于 ${time(fleet.sampled_at)}${fleet.stale || entryStale(entry) ? ' · 已过期' : ''}` : '还没有手机读数', 'node-choice-meta'),
         el('span', `最近联系：${time(entry.connection?.last_seen_at)}`, 'node-choice-meta'), versionLine(entry));
       choice.addEventListener('click', () => selectNode(entry.name)); row.append(choice); rows.push(row);
@@ -454,7 +461,7 @@
     return ['cpu', 'gpu', 'io'].map(key => `${key.toUpperCase()} ${Number.isSafeInteger(slots?.[key]) && slots[key] >= 0 ? slots[key] : '未知'}`).join(' / ');
   }
   function renderNode(node, entry = null) {
-    $('node-summary').textContent = `${entry ? `${entry.name} · ` : '本节点 · '}${text(node?.node_id || entry?.node_id)}${node?.host?.hostname ? ` · ${node.host.hostname}` : ''}`;
+    $('node-summary').replaceChildren(entry ? entry.name : '本节点', el('span', ` · ${text(node?.node_id || entry?.node_id)}`, 'tech'), node?.host?.hostname ? ` · ${node.host.hostname}` : '');
     $('node-updated').textContent = entry ? `最近快照：${time(entry.snapshot?.at)}` : `读取于 ${new Date().toLocaleTimeString()}`;
     message('node-message', entry ? `${CONNECTION[entry.connection?.status] || '连接状态未知'}。最近联系：${time(entry.connection?.last_seen_at)}。${entry.connection?.error ? ` 这次请求没成功：${typeof entry.connection.error === 'string' ? entry.connection.error : JSON.stringify(entry.connection.error)}。` : ''}${entryStale(entry) ? ' 以下是最后一次收到的信息。' : ''}` : '', !!entry?.connection?.error);
     $('node-details').hidden = false;
