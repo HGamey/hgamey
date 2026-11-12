@@ -3062,7 +3062,7 @@ class CoreFlowTests(unittest.TestCase):
             page.click("#refresh")
             page.wait_for_selector(".ds-version")
             rows = page.eval_on_selector_all(".ds-table tbody tr:not(.ds-detail)", "e => e.map(r => [...r.children].map(c => c.textContent))")
-            self.assertEqual([row[0] for row in rows if len(row) == 1], ["genshin-sr2 个版本", "ui-crops1 个版本"], "newest registration first; no plain result")
+            self.assertEqual([row[0] for row in rows if len(row) == 1], ["genshin-sr2 个版本真实配对", "ui-crops1 个版本无配对"], "newest registration first; no plain result")
             versions = [row for row in rows if len(row) > 1]
             self.assertEqual([row[:2] for row in versions], [["v10", "真实配对"], ["v20（已替代）", "模拟低清"], ["未写版本", "无配对"]], "current versions first, then superseded versions")
             self.assertEqual(versions[1], ["v20（已替代）", "模拟低清", "genshin 5.1", "HONOR", "framedump", "12,000", "16", "9,600 / 1,200 / 1,200", "41.0 GB"])
