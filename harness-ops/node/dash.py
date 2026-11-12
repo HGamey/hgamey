@@ -35,6 +35,7 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from device_scope import scope as device_scope
 from device_registry import DeviceRegistry, RegistryError
 import agent_duties
+import node_agents
 import job_selection
 from node_directory import DirectoryError
 from node_games import GameError, MAX_MANIFEST
@@ -909,20 +910,21 @@ class Dash:
             return []
 
     def _agents(self):
-        """Every enabled agent as a human sees it: last check-in, what it says it is doing, what it still owes
-        (unanswered guidance comes first) and the research it owns. Same duties as its own check-in, read only."""
+        """Every agent as a human sees it: last check-in, what it says it is doing, what it still owes (unanswered
+        guidance comes first) and the research it owns, read only, the same duties as its own check-in. Whether it is
+        folded away (archived: idle three days, archived by hand, disabled) and when it was last active."""
         registry = getattr(self.job_service, "agents", None) if self.job_service else None
         if registry is None:
             return []
         try:
-            out = []
+            out, latest = [], node_agents.activity(self.job_service)
             for entry in registry.list():
-                if not entry.get("enabled", True):
-                    continue
-                owed = agent_duties.duties(self.job_service, entry["name"])
+                shown = node_agents.annotate(entry, latest)
+                owed = agent_duties.duties(self.job_service, entry["name"]) if entry.get("enabled", True) else None
                 out.append({"name": entry["name"], "checkin_at": (entry.get("checkin") or {}).get("at"),
-                            "status": entry.get("status"), "owes": [duty["kind"] for duty in owed["duties"]],
-                            "research": [item["research_id"] for item in owed["research"]["mine"]]})
+                            "status": entry.get("status"), "owes": [duty["kind"] for duty in owed["duties"]] if owed else [],
+                            "research": [item["research_id"] for item in owed["research"]["mine"]] if owed else [],
+                            "archived": shown["archived"], "activity_at": shown["activity"]["at"]})
             return out
         except (OSError, ValueError, sqlite3.Error):
             return []

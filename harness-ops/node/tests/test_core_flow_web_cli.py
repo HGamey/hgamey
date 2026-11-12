@@ -4335,8 +4335,10 @@ class CoreFlowTests(unittest.TestCase):
         board.job_service = self.jobs
         self.assertEqual(self.cli("POST", "/agents", {"name": "agent-a"})[0], 201)
         token = self.cli("POST", "/agents/agent-a/token", {})[1]["token"]
-        self.assertEqual(board._agents(), [{"name": "agent-a", "checkin_at": None, "status": None,
-                                            "owes": ["post_status"], "research": []}])
+        [shown] = board._agents()
+        self.assertAlmostEqual(shown.pop("activity_at"), time.time(), delta=5)   # registered just now
+        self.assertEqual(shown, {"name": "agent-a", "checkin_at": None, "status": None,
+                                 "owes": ["post_status"], "research": [], "archived": None})
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", self.write(
             "web-task", {"title": "优化原神超分方向", "objective": "画质不明显下降时提高帧率"}))[0], 201)
         self.assertEqual(self.pf(token, "research", "claim", "sr-genshin")[0], 0)

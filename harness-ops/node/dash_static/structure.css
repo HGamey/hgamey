@@ -125,3 +125,4 @@
 .st-zone-unlock-row { display: flex; gap: 8px; margin-top: 4px; }
 .st-zone-unlock-row input { flex: 1; min-width: 0; }
 .st-zone-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: var(--sp-3); }
+.st-heading-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }

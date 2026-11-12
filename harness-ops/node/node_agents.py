@@ -15,6 +15,10 @@ from artifact_io import SafeRoot
 from job_dispatch import file_lock
 
 SCHEMA = "phonefarm/agent-registry@1"
+# An agent with no activity for this long is folded away (archived) on the pages; any activity brings it back.
+ARCHIVE_AFTER_S = 3 * 86400
+# Activity this recent makes an agent count as running: replacing its token would cut it off.
+ACTIVE_WITHIN_S = 30 * 60
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 TOKEN = re.compile(r"hgag_([0-9a-f]{8})_[A-Za-z0-9_-]{43}\Z")
 
@@ -49,6 +53,45 @@ def _fields(body):
     return out
 
 
+def activity(jobs):
+    """When each agent last submitted a job (here or to another computer) and last wrote research (a note, a
+    direction, a request, a delivery): {name: (at, source)}. Reads only; nothing is stored."""
+    latest = {}
+
+    def seen(name, at, source):
+        if isinstance(name, str) and isinstance(at, (int, float)) and at > latest.get(name, (0, None))[0]:
+            latest[name] = (at, source)
+
+    with jobs.dispatch.queue._transaction() as db:
+        for row in db.execute("SELECT json_extract(spec,'$.actor_id') AS actor, MAX(submitted_at) AS at FROM jobs GROUP BY actor"):
+            seen(row["actor"], row["at"], "job")
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_targets'").fetchone():
+            for row in db.execute("SELECT json_extract(value,'$.request.spec.actor_id') AS actor, MAX(json_extract(value,'$.submitted_at')) AS at"
+                                  " FROM job_targets GROUP BY actor"):
+                seen(row["actor"], row["at"], "job")
+    if getattr(jobs, "research", None) is not None:
+        with jobs.research._db() as db:
+            for row in db.execute("SELECT json_extract(audit,'$.actor_label') AS actor, MAX(at) AS at FROM revisions"
+                                  " WHERE json_extract(audit,'$.auth_channel')='agent_token' GROUP BY actor"):
+                seen(row["actor"], row["at"], "research")
+    return latest
+
+
+def annotate(entry, latest, now=None):
+    """An agent as the pages show it: when it was last active and from what, and whether it is folded away.
+    Registration counts as activity, so a new agent is not folded before it has had time to check in. An agent
+    archived by hand comes back once it is active after that; a disabled one stays archived."""
+    now = time.time() if now is None else now
+    candidates = [(entry.get("created_at"), "registered"), ((entry.get("checkin") or {}).get("at"), "checkin"),
+                  ((entry.get("status") or {}).get("at"), "status"), latest.get(entry["name"], (None, None))]
+    at, source = max(((t, s) for t, s in candidates if isinstance(t, (int, float))), default=(None, None))
+    archived_at = entry.get("archived_at")
+    reason = ("disabled" if not entry.get("enabled", True)
+              else "manual" if archived_at is not None and (at is None or at <= archived_at)
+              else "idle" if at is None or now - at > ARCHIVE_AFTER_S else None)
+    return {**entry, "activity": {"at": at, "source": source}, "archived": reason}
+
+
 class NodeAgents:
     """Persistent agent registry. An agent that holds its own token is identified by it;
     only the token's sha256 is stored."""
@@ -71,6 +114,7 @@ class NodeAgents:
         directory = os.path.join(os.path.realpath(data_root), "_node", "agents")
         self._store = SafeRoot(directory)
         self._lock_path = os.path.join(directory, "registry.lock")
+        self._audit_path = os.path.join(directory, "agents.audit.jsonl")
         with file_lock(self._lock_path):
             self._store.publish_json_once("registry.json", {"schema": SCHEMA, "agents": []})
             self._read()
@@ -246,6 +290,48 @@ class NodeAgents:
             entry["updated_at"] = time.time()
             self._store.write_json("registry.json", state)
             return self._public(entry)
+
+    def audit(self, action, name, ip):
+        """Who changed an agent from the dashboard (archive, disable, enable, a new token): time, address, agent."""
+        line = json.dumps({"at": time.time(), "action": action, "agent": name, "ip": ip}, ensure_ascii=False)
+        fd = os.open(self._audit_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, (line + "\n").encode())
+        finally:
+            os.close(fd)
+
+    def _change(self, name, revision, change):
+        _name(name)
+        with self._locked() as state:
+            entry = self._entry(state, name)
+            if revision != entry["revision"]:
+                raise AgentError(409, "agent revision changed; read it again")
+            change(entry)
+            entry["revision"] += 1
+            entry["updated_at"] = time.time()
+            self._store.write_json("registry.json", state)
+            return self._public(entry)
+
+    def set_archived(self, name, revision, archived):
+        """Fold an agent away by hand (or bring it back). Display only: its token keeps working."""
+        if type(archived) is not bool:
+            raise AgentError(400, "archived must be a boolean")
+        return self._change(name, revision, lambda entry: entry.update(archived_at=time.time()) if archived
+                            else entry.pop("archived_at", None))
+
+    def disable(self, name, revision):
+        """Stop an agent and archive it. Its token stops working and is dropped, so enabling it again needs a new
+        token; the registration stays, so its jobs, notes and links keep its name."""
+        def change(entry):
+            entry.update(enabled=False, archived_at=time.time())
+            entry.pop("credential", None)
+        return self._change(name, revision, change)
+
+    def enable(self, name, revision):
+        def change(entry):
+            entry["enabled"] = True
+            entry.pop("archived_at", None)
+        return self._change(name, revision, change)
 
     def post_status(self, name, body):
         """Agent 定期上传目的/方向/在做什么——声明式，不认证。"""
