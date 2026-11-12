@@ -64,13 +64,18 @@
     return url;
   }
   // A small picture, read when it comes near the screen; clicked, it opens in `open`. One that cannot be read says so.
+  // Until the picture is in, a plain box says it is on its way: an image without its picture yet would draw as broken.
   function thumbnail(sourcePath, path, open) {
-    const button = el('button', null, 'image-thumb'), image = el('img'), name = path.split('/').pop();
-    button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + name); image.alt = name;
-    button.append(image);
+    const button = el('button', null, 'image-thumb'), wait = el('span', '读取中…', 'image-wait'), name = path.split('/').pop();
+    button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + name);
+    button.append(wait);
     const unread = () => button.replaceWith(el('span', '无法预览', 'note image-unread'));
-    image.onerror = unread;
-    near(button, () => readPicture(sourcePath, path).then(url => { image.src = url; button.onclick = () => open(url, name); }, unread));
+    near(button, () => readPicture(sourcePath, path).then(url => {
+      const image = el('img');
+      image.alt = name; image.onerror = unread; image.onload = () => wait.remove();
+      image.src = url; button.prepend(image);
+      button.onclick = () => open(url, name);
+    }, unread));
     return button;
   }
   // A file's name under it; the job it came from is a technical detail.

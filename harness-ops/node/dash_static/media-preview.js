@@ -35,17 +35,19 @@ window.HGMedia = (() => {
       return box;
     }
     if (type !== 'picture') return null;
-    const button = el('button', null, 'media-preview'), image = el('img');
-    button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + name); image.alt = name;
-    button.append(image);
+    // Until the picture is in, a plain box says it is on its way: an image without its picture yet would draw as broken.
+    const button = el('button', null, 'media-preview'), wait = el('span', '读取中…', 'media-wait');
+    button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + name);
+    button.append(wait);
     const unread = () => button.replaceWith(el('span', '无法预览', 'note media-unread'));
-    image.onerror = unread;
     near(button, async () => {
       try {
         const response = await HGTarget.fetch(source, {credentials: 'same-origin', cache: 'no-store'});
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const blob = await response.blob(), url = URL.createObjectURL(blob.slice(0, blob.size, PICTURES[extension(path)]));
-        image.src = url;
+        const image = el('img');
+        image.alt = name; image.onerror = unread; image.onload = () => wait.remove();
+        image.src = url; button.prepend(image);
         button.onclick = () => open(url, name, false);
       } catch (_) { unread(); }
     });
