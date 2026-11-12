@@ -11,12 +11,12 @@
 <link rel="stylesheet" href="/dash/static/shell.css">
 </head>
 <body class="jobs-view">
-<a class="skip-link" href="#tasks-heading">跳到任务列表</a>
+<a class="skip-link" href="#tasks-heading">跳到作业列表</a>
 <header class="top">
   <div class="brand-row">
     <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a>
     <span class="brand-name">HGamey</span>
-    <nav class="nav" aria-label="主导航" style="flex-wrap:wrap"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs" aria-current="page">任务与结果</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/maint">维护</a></nav>
+    <nav class="nav" aria-label="主导航" style="flex-wrap:wrap"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs" aria-current="page">作业与结果</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/maint">维护</a></nav>
   </div>
   <div class="top-right">
     <button id="refresh-all" class="ghost" type="button">刷新页面数据</button>
@@ -40,7 +40,7 @@
       <div class="section-heading"><h3>配置程序观察</h3><button id="refresh-runtime" class="ghost" type="button" disabled>重新观察配置程序</button></div>
       <p id="runtime-refresh-help" class="note" role="status"></p>
       <div id="node-programs"></div>
-      <p class="note">配置入口的缓存观察与作业实际自报分开；刷新不会重启服务、创建任务或改写历史身份。构建声明不证明所有已加载字节，也不授予设备操作资格。</p>
+      <p class="note">配置入口的缓存观察与作业实际自报分开；刷新不会重启服务、创建作业或改写历史身份。构建声明不证明所有已加载字节，也不授予设备操作资格。</p>
     </details>
     <details id="node-input-limits" class="node-details">
       <summary>输入准备写入限值</summary>
@@ -50,7 +50,7 @@
     </details>
   </section>
   <section class="access-panel" aria-labelledby="access-heading">
-    <div class="access-row"><div><h2 id="access-heading">任务操作权限</h2><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁任务操作</button></div>
+    <div class="access-row"><div><h2 id="access-heading">作业操作权限</h2><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁作业操作</button></div>
     <form id="unlock-form" class="unlock-form" autocomplete="off" hidden>
       <label for="steer-password">操作口令</label>
       <div class="unlock-input"><input id="steer-password" type="password" placeholder="向管理员要" autocomplete="off" required><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-dismiss" class="ghost" type="button">收起</button></div>
@@ -62,10 +62,10 @@
     <div class="section-heading"><h2 id="queue-heading">本节点队列</h2><button id="refresh-queue" class="ghost" type="button">刷新队列</button></div>
     <p id="queue-message" class="note" role="status">正在读取队列…</p>
     <section id="lease-panel" class="lease-panel" aria-labelledby="lease-heading">
-      <div class="section-heading"><h3 id="lease-heading">实际设备 lease</h3><span id="lease-state" class="task-state unknown">尚未读取</span></div>
+      <div class="section-heading"><h3 id="lease-heading">手机占用</h3><span id="lease-state" class="task-state unknown">尚未读取</span></div>
       <p id="lease-message" class="note" role="status">正在读取设备屏障记录…</p>
       <p id="lease-sampled" class="read-time"></p>
-      <section class="lease-storage" aria-labelledby="lease-storage-heading">
+      <section class="lease-storage tech" aria-labelledby="lease-storage-heading">
         <div class="section-heading"><h4 id="lease-storage-heading">lease 存储</h4><span id="lease-storage-state" class="task-state unknown">尚未读取</span></div>
         <p id="lease-storage-message" class="note" role="status"></p>
         <details id="lease-storage-details" hidden><summary>存储路径</summary><dl id="lease-storage-paths" class="facts"></dl></details>
@@ -73,13 +73,13 @@
       <ul id="lease-list" class="lease-list" aria-label="设备 lease 记录"></ul>
     </section>
     <div id="queue-summary" class="queue-summary" hidden></div>
-    <details id="host-capacity-panel" class="node-details">
+    <details id="host-capacity-panel" class="node-details tech">
       <summary>宿主调度 slots</summary>
       <p id="host-capacity-message" class="note" role="status">尚未读取容量。</p>
       <dl id="host-capacity-info" class="facts"></dl>
       <p class="note">这是声明调度容量，不是硬件数量、资源利用率或 OS 硬限制。宿主结束未确认时可继续保留 slots；设备恢复屏障另行核查。</p>
     </details>
-    <ul id="queue-list" class="queue-list" aria-label="尚未结束调度的任务"></ul>
+    <ul id="queue-list" class="queue-list" aria-label="尚未结束调度的作业"></ul>
     <div id="execution-queues" class="execution-queues"></div>
     <p id="queue-updated" class="read-time"></p>
   </section>
@@ -93,7 +93,7 @@
         <label class="wide-field">范围<select id="submit-device-scope"><option value="global">兼容全域 · 不声明设备绑定</option><option value="device">已登记设备 · 显式绑定</option><option value="platform">平台手机 · 指定一台或任意同型号</option></select></label>
         <div id="platform-phone-picker" class="wide-field" hidden>
           <label>手机<select id="submit-phone" disabled><option value="">正在读取平台手机…</option></select></label>
-          <p class="note">参数里单独一项写 <code>@serial</code>，会换成选中手机的串号。任务会在那台手机所在的电脑上排队；「空闲」只是最近看到空闲，锁由那台电脑来拿。</p>
+          <p class="note">参数里单独一项写 <code>@serial</code>，会换成选中手机的串号。作业会在那台手机所在的电脑上排队；「空闲」只是最近看到空闲，锁由那台电脑来拿。</p>
         </div>
         <div id="device-binding-picker" class="wide-field" hidden>
           <div class="submission-actions"><button id="read-device-registry" class="ghost" type="button">读取设备登记</button><a id="device-registry-link" href="/dash/fleet">管理本节点登记</a></div>
@@ -106,11 +106,11 @@
       </div>
       <p id="device-binding-message" class="note" role="status"></p>
       <dl id="device-binding-info" class="facts" hidden></dl>
-      <p class="note">登记是维护者声明，不等于物理同机核验、在线或已取得 lease。首批仅支持配置的 phonefarm gray-layer session；恢复任务沿原记录继承，不在此更换设备。</p>
+      <p class="note">登记是维护者声明，不等于物理同机核验、在线或已取得 lease。首批仅支持配置的 phonefarm gray-layer session；恢复作业沿原记录继承，不在此更换设备。</p>
     </section>
     <details class="session-template">
       <summary>新建灰层会话模板</summary>
-      <p class="note">只填入下方任务参数，不立即启动。模板不修改已有会话；功能支持以 producer 的任务返回为准，旧版本可能拒绝新参数。</p>
+      <p class="note">只填入下方作业参数，不立即启动。模板不修改已有会话；功能支持以 producer 的作业返回为准，旧版本可能拒绝新参数。</p>
       <form id="session-template-form">
         <div class="submit-fields">
           <label>设备 serial<input id="template-serial" required autocomplete="off" spellcheck="false" placeholder="明确指定设备"></label>
@@ -122,7 +122,7 @@
         </div>
         <p id="template-power-help" class="note"></p>
         <p class="note">策略创建后固定。选择 battery 不代表已停充、正在放电或功耗数据合格；会话停止与恢复各有记录。</p>
-        <button id="template-apply" class="ghost" type="submit" disabled>填入任务参数</button>
+        <button id="template-apply" class="ghost" type="submit" disabled>填入作业参数</button>
         <p id="template-status" class="note" role="status"></p>
       </form>
     </details>
@@ -137,8 +137,8 @@
           <label>单臂超时（秒）<input id="refbench-timeout" type="number" min="1" max="600" step="1" value="150" required></label>
           <label class="wide-field">节点已有 SO 路径 <span class="field-optional">可选</span><input id="refbench-so" autocomplete="off" spellcheck="false" placeholder="留空使用 producer 默认层"></label>
         </div>
-        <p class="note">固定目标 io.github.hgamey.refbench。模板只填参数；提交后沿任务记录查看结果与失败原件，功能支持以 producer 返回为准。</p>
-        <button id="refbench-apply" class="ghost" type="submit" disabled>填入任务参数</button>
+        <p class="note">固定目标 io.github.hgamey.refbench。模板只填参数；提交后沿作业记录查看结果与失败原件，功能支持以 producer 返回为准。</p>
+        <button id="refbench-apply" class="ghost" type="submit" disabled>填入作业参数</button>
         <p id="refbench-status" class="note" role="status"></p>
       </form>
     </details>
@@ -164,7 +164,7 @@
             <label>到期动作<select id="submit-timeout-action" disabled><option value="graceful">柔性停止 · 只请求 SIGINT</option><option value="escalate">升级停止 · SIGINT → TERM → KILL</option></select></label>
           </div>
           <p id="time-budget-help" class="note" role="status"></p>
-          <p class="note">仅从命令实际启动后计时，上传、排队和输入准备不计入。升级停止在 SIGINT 后 15 秒可发 TERM，再 15 秒可发 KILL，可能打断恢复。到期是停止请求期限，不保证任务已经结束或设备已经恢复。</p>
+          <p class="note">仅从命令实际启动后计时，上传、排队和输入准备不计入。升级停止在 SIGINT 后 15 秒可发 TERM，再 15 秒可发 KILL，可能打断恢复。到期是停止请求期限，不保证作业已经结束或设备已经恢复。</p>
         </details>
         <details class="input-manifest wide-field" id="disk-guard-fields">
           <summary>日志与磁盘软阈值 <span class="field-optional">可选</span></summary>
@@ -177,11 +177,11 @@
           <p id="disk-guard-help" class="note" role="status"></p>
           <p class="note">启动前核查一次；运行中最多每秒观察一次，达到阈值后请求停止，期间仍可能写入。日志长度是同一日志文件的逻辑长度，空间是相关文件系统的共享可用量。这不是硬配额，不截断或删除原件，也不保证设备已恢复。</p>
         </details>
-        <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主任务 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复任务</option></select></label>
-        <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留任务的 12 位 ID" autocomplete="off" spellcheck="false"></label>
+        <label>设备访问<select id="submit-device-access" disabled aria-describedby="device-access-help"><option value="">节点默认</option><option value="none">宿主作业 · 无设备访问</option><option value="write">设备写入</option><option value="recovery">恢复作业</option></select></label>
+        <label id="recovery-target-field" hidden>恢复目标 ID<input id="submit-recovery-for" type="text" pattern="[0-9a-f]{12}" placeholder="原资源保留作业的 12 位 ID" autocomplete="off" spellcheck="false"></label>
         <p id="device-access-help" class="field-help wide-field"></p>
         <label class="wide-field">调度优先级 <span class="field-optional">可选，-10 至 10</span><input id="submit-priority" type="number" min="-10" max="10" step="1" placeholder="留空不声明；显式 0 会发送" aria-describedby="priority-help" disabled><span id="priority-help" class="field-help" role="status"></span></label>
-        <p class="note wide-field">数值越高，在满足资源、设备 lease 与原全域排队约束的候选中越先执行；同级保持提交顺序。不会抢占运行中的任务，恢复任务也可声明优先级。</p>
+        <p class="note wide-field">数值越高，在满足资源、设备 lease 与原全域排队约束的候选中越先执行；同级保持提交顺序。不会抢占运行中的作业，恢复作业也可声明优先级。</p>
         <details class="input-manifest wide-field" id="host-slots-fields">
           <summary>宿主调度声明 <span class="field-optional">可选</span></summary>
           <label class="host-slots-choice"><input id="submit-host-slots" type="checkbox" disabled> 显式声明 CPU / GPU / I/O slots</label>
@@ -193,14 +193,14 @@
           <p id="host-slots-help" class="note" role="status"></p>
           <p class="note">未显式声明时省略字段，新调度器按 CPU 1 / GPU 0 / I/O 0 兼容记账。0 表示未预留，不表示程序不使用该资源。与作业执行名额、独占资源键、设备 lease 分开。</p>
         </details>
-        <label class="wide-field">独占资源 <span class="field-optional">可选，每行一个键</span><textarea id="submit-resources" rows="2" spellcheck="false" placeholder="留空使用节点默认资源" aria-describedby="resources-help"></textarea><span id="resources-help" class="field-help">相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。</span></label>
+        <label class="wide-field">独占资源 <span class="field-optional">可选，每行一个键</span><textarea id="submit-resources" rows="2" spellcheck="false" placeholder="留空使用节点默认资源" aria-describedby="resources-help"></textarea><span id="resources-help" class="field-help">相同资源的作业依次执行。资源声明只用于排队，不授予设备操作权限。</span></label>
       </div>
       <p id="gray-gateway-help" class="note" role="status" hidden></p>
-      <div class="submission-actions"><button id="submit-job" class="ghost primary" type="submit" disabled>提交任务</button><span id="submit-help" class="note"></span></div>
+      <div class="submission-actions"><button id="submit-job" class="ghost primary" type="submit" disabled>提交作业</button><span id="submit-help" class="note"></span></div>
     </form>
     <div id="submission-receipt" class="submission-receipt" hidden>
       <p id="submit-message" role="status"></p><p id="submit-request-id" class="request-id"></p>
-      <div class="submission-actions"><button id="submit-refill" class="ghost" type="button" hidden>重新填写此请求</button><button id="submit-retry" class="ghost" type="button" hidden>使用原请求 ID 重试</button><button id="submit-open-job" class="ghost" type="button" hidden>查看对应任务</button></div>
+      <div class="submission-actions"><button id="submit-refill" class="ghost" type="button" hidden>重新填写此请求</button><button id="submit-retry" class="ghost" type="button" hidden>使用原请求 ID 重试</button><button id="submit-open-job" class="ghost" type="button" hidden>查看对应作业</button></div>
     </div>
     <form id="request-lookup-form" class="request-lookup-form">
       <label for="request-id">按请求 ID 找回</label>
@@ -210,7 +210,7 @@
   </details>
   <div class="jobs-layout">
     <section id="task-browser" class="task-browser" aria-labelledby="tasks-heading">
-      <div class="section-heading"><h2 id="tasks-heading" tabindex="-1">任务列表</h2><span id="task-count" class="count-label" hidden></span></div>
+      <div class="section-heading"><h2 id="tasks-heading" tabindex="-1">作业列表</h2><span id="task-count" class="count-label" hidden></span></div>
       <div class="job-source-picker">
         <label for="job-source">记录来源</label>
         <select id="job-source"><option value="">当前作业</option></select>
@@ -219,25 +219,25 @@
         <p id="job-source-root" class="read-time"></p>
       </div>
       <form id="filters" class="task-filters">
-        <label for="query">搜索任务</label>
+        <label for="query">搜索作业</label>
         <div class="filter-query"><input id="query" type="search" maxlength="200" placeholder="ID、标签或命令"><button id="search-jobs" class="ghost primary" type="submit">搜索</button></div>
         <div class="state-filter"><label for="state">执行状态</label><select id="state"><option value="">全部状态</option><option value="running">未结束（含排队）</option><option value="finished">已结束（含失败）</option></select></div>
       </form>
-      <p id="list-message" class="note" role="status">正在读取任务…</p>
+      <p id="list-message" class="note" role="status">正在读取作业…</p>
       <p id="list-warnings" class="task-warning" hidden></p>
-      <ul id="task-list" class="task-list" aria-label="任务记录"></ul>
-      <button id="more-jobs" class="ghost more" type="button" hidden>加载更多任务</button>
+      <ul id="task-list" class="task-list" aria-label="作业记录"></ul>
+      <button id="more-jobs" class="ghost more" type="button" hidden>加载更多作业</button>
     </section>
     <section id="task-detail" class="task-detail" aria-labelledby="detail-heading">
-      <div class="section-heading"><h2 id="detail-heading" tabindex="-1">任务详情</h2><button id="refresh-detail" class="ghost" type="button" hidden>刷新任务</button></div>
-      <div id="detail-placeholder" class="detail-placeholder"><p id="detail-message" role="status">选择一个任务，查看执行记录和文件。</p></div>
+      <div class="section-heading"><h2 id="detail-heading" tabindex="-1">作业详情</h2><button id="refresh-detail" class="ghost" type="button" hidden>刷新作业</button></div>
+      <div id="detail-placeholder" class="detail-placeholder"><p id="detail-message" role="status">选择一个作业，查看执行记录和文件。</p></div>
       <div id="detail-content" hidden>
         <div class="job-heading"><h3 id="job-title"></h3><span id="job-state" class="task-state"></span></div>
         <p id="detail-updated" class="read-time"></p>
         <dl id="job-info" class="facts job-facts"></dl>
         <section id="historical-detail" hidden>
           <p class="evidence-note">只读历史记录。原状态与退出码不证明当前仍在运行、实验成功或设备已恢复；文件仍可能由外部程序修改。</p>
-          <details class="command-details"><summary>原始任务元信息</summary><pre id="historical-record" class="command-box"></pre></details>
+          <details class="command-details"><summary>原始作业元信息</summary><pre id="historical-record" class="command-box"></pre></details>
         </section>
         <div id="live-job-detail">
         <details class="command-details committed-record">
@@ -246,9 +246,9 @@
           <p class="note">版本只覆盖下方已提交状态。当前 worker、lease、等待原因、控制资格与日志可能继续变化；相同版本也需要读取当前状态。事件不代表无损执行历史。</p>
           <pre id="committed-record" class="command-box" aria-label="Node 已提交状态原记录"></pre>
         </details>
-        <p class="note"><a id="job-results-link">查看此任务已登记结果</a> · <a id="job-register-result">登记此任务结果</a>。原件仍在下方输出目录；登记不代表实验有效或恢复完成。</p>
+        <p class="note"><a id="job-results-link">查看此作业已登记结果</a> · <a id="job-register-result">登记此作业结果</a>。原件仍在下方输出目录；登记不代表实验有效或恢复完成。</p>
         <details class="command-details"><summary>完整执行参数</summary><pre id="job-command" class="command-box"></pre></details>
-        <details class="command-details"><summary id="job-runtime-summary">本次运行入口身份</summary><p class="note">仅展示此任务保留的服务启动快照、worker 身份和主程序自报；不使用当前配置补齐历史。身份记录不改变命令结果，也不证明设备恢复。</p><h4>启动任务的服务</h4><dl id="job-service-identity" class="facts"></dl><h4>实际 worker</h4><dl id="job-worker-identity" class="facts"></dl><h4>主程序入口自报</h4><dl id="job-program-identity" class="facts"></dl></details>
+        <details class="command-details"><summary id="job-runtime-summary">本次运行入口身份</summary><p class="note">仅展示此作业保留的服务启动快照、worker 身份和主程序自报；不使用当前配置补齐历史。身份记录不改变命令结果，也不证明设备恢复。</p><h4>启动作业的服务</h4><dl id="job-service-identity" class="facts"></dl><h4>实际 worker</h4><dl id="job-worker-identity" class="facts"></dl><h4>主程序入口自报</h4><dl id="job-program-identity" class="facts"></dl></details>
         <section id="job-inputs" class="job-inputs" aria-labelledby="job-inputs-heading">
           <div class="section-heading"><h3 id="job-inputs-heading">输入工件与准备记录</h3><button id="load-job-inputs" class="ghost" type="button" disabled>读取输入记录</button></div>
           <p id="input-write-message" class="note" role="status"></p>
@@ -319,7 +319,7 @@
               </form>
               <p id="reference-message" class="note" role="status">只有三份回执都明确不存在时才发送新动作；结果未知不换 ID 重试。</p>
               <div id="reference-result" hidden><dl id="reference-info" class="facts"></dl><div id="reference-stages" class="session-quality-stages"></div></div>
-              <p class="note">采集固定本次 actor / epoch。隐藏页面、切换任务或停止编排后不再提交后续动作，已发动作留给 owner 收尾。本流程不请求 stop；结束会话仍需明确使用“停止并恢复”。GPU submit proxy、场景一致性和游戏每帧能耗不能据此确认。</p>
+              <p class="note">采集固定本次 actor / epoch。隐藏页面、切换作业或停止编排后不再提交后续动作，已发动作留给 owner 收尾。本流程不请求 stop；结束会话仍需明确使用“停止并恢复”。GPU submit proxy、场景一致性和游戏每帧能耗不能据此确认。</p>
             </details>
             <section class="session-quality" aria-labelledby="session-quality-heading">
               <h4 id="session-quality-heading">画质检查点</h4>
@@ -345,7 +345,7 @@
               <div class="session-actions"><button class="ghost" data-session-action="marker" type="button">读取 marker</button><button class="ghost" data-session-action="audit" type="button">读取 audit</button><button class="ghost" data-session-action="trigger" type="button">触发 Frame Audit</button><button class="ghost" data-session-action="narrow" type="button">收窄后续加载</button></div>
               <p class="note">动作仅在当前模式支持时开放。narrow 清理全局加载属性，不能卸掉目标进程已加载的层；停止并恢复另有证据。</p>
             </details>
-            <details class="session-tools"><summary>会话恢复记录</summary><dl id="session-recovery" class="facts"></dl><p class="note">会话关闭与整个任务的资源释放分别记录。关闭后刷新任务，核查现有 lease 证据，再从“解除资源保留”填写说明放行。</p></details>
+            <details class="session-tools"><summary>会话恢复记录</summary><dl id="session-recovery" class="facts"></dl><p class="note">会话关闭与整个作业的资源释放分别记录。关闭后刷新作业，核查现有 lease 证据，再从“解除资源保留”填写说明放行。</p></details>
           </div>
           <section id="session-recover-panel" class="session-tools" aria-labelledby="session-recover-heading" hidden>
             <div class="section-heading"><h4 id="session-recover-heading">异步会话恢复</h4><button id="session-recovery-plan-refresh" class="ghost" type="button" hidden>读取恢复计划</button></div>
@@ -353,10 +353,10 @@
               <p id="session-recovery-plan-message" class="note" role="status"></p><p id="session-recovery-plan-time" class="read-time"></p>
               <dl id="session-recovery-plan-info" class="facts"></dl>
               <ul id="session-recovery-attempts" class="lease-receipt-list" aria-label="服务端恢复尝试"></ul>
-              <p class="note">会话仍保存在原任务输出中；恢复任务接续当前阻断叶子。限定恢复成功也不自动释放资源，请按最新恢复任务 → 较早恢复任务 → 原任务核查收据并显式解除保留。</p>
+              <p class="note">会话仍保存在原作业输出中；恢复作业接续当前阻断叶子。限定恢复成功也不自动释放资源，请按最新恢复作业 → 较早恢复作业 → 原作业核查收据并显式解除保留。</p>
             </div>
             <p id="session-recover-help" class="note"></p>
-            <div class="session-actions"><button id="session-recover-submit" class="ghost" type="button" disabled>提交恢复任务</button><button id="session-recover-query" class="ghost" type="button" hidden>查询恢复请求</button><a id="session-recover-job" class="ghost" hidden>查看恢复任务</a><button id="session-recover-new" class="ghost" type="button" hidden>新建恢复尝试</button><a id="session-recover-previous" class="ghost" hidden>查看上次恢复任务</a></div>
+            <div class="session-actions"><button id="session-recover-submit" class="ghost" type="button" disabled>提交恢复作业</button><button id="session-recover-query" class="ghost" type="button" hidden>查询恢复请求</button><a id="session-recover-job" class="ghost" hidden>查看恢复作业</a><button id="session-recover-new" class="ghost" type="button" hidden>新建恢复尝试</button><a id="session-recover-previous" class="ghost" hidden>查看上次恢复作业</a></div>
             <p id="session-recover-request" class="request-id"></p><p id="session-recover-result" class="note" role="status"></p>
             <details id="session-recovery-previous-requests" hidden><summary>本页此前的恢复请求</summary><ul id="session-recovery-request-history" class="lease-receipt-list"></ul></details>
           </section>
@@ -378,23 +378,23 @@
           <div class="section-heading"><h3 id="execution-heading">执行与停止</h3><div class="execution-actions"><button id="cancel-job" class="ghost" type="button" aria-describedby="cancel-help" disabled>请求停止</button><button id="pause-job" class="ghost" type="button" aria-describedby="cancel-help" disabled>暂停排队</button><button id="resume-job" class="ghost" type="button" aria-describedby="cancel-help" disabled>恢复排队</button><button id="force-open" class="ghost danger" type="button" aria-describedby="cancel-help" disabled>升级终止…</button></div></div>
           <p id="time-budget-summary" class="note" role="status" hidden></p><p id="disk-guard-summary" class="note" role="status" hidden></p><p id="stop-intent-summary" class="note" role="status" hidden></p><p id="cancel-help" class="note"></p><p id="cancel-result" class="cancel-result" role="status" hidden></p><p id="pause-result" class="cancel-result" role="status" hidden></p>
           <form id="force-form" class="force-form" hidden>
-            <p>升级终止可能打断任务的还原流程。先核查任务仍未停止，再提交；提交后仍需核对设备恢复证据。</p>
-            <label><input id="force-confirm" type="checkbox" required> 我已核查任务仍未停止，并理解可能打断还原。</label>
+            <p>升级终止可能打断作业的还原流程。先核查作业仍未停止，再提交；提交后仍需核对设备恢复证据。</p>
+            <label><input id="force-confirm" type="checkbox" required> 我已核查作业仍未停止，并理解可能打断还原。</label>
             <div class="execution-actions"><button id="force-submit" class="ghost danger" type="submit" disabled>确认升级终止</button><button id="force-dismiss" class="ghost" type="button">返回</button></div>
           </form>
           <details id="execution-details" class="execution-details"><summary>停止请求、信号与恢复记录</summary><dl id="execution-info" class="facts"></dl><ul id="cancel-signals" class="cancel-signals"></ul></details>
         </section>
         <section id="execution-reconcile-panel" class="execution-panel" aria-labelledby="execution-reconcile-heading" hidden>
-          <div class="section-heading"><h3 id="execution-reconcile-heading">宿主执行域核查</h3><button id="execution-reconcile-refresh" class="ghost" type="button">读取原任务状态</button></div>
+          <div class="section-heading"><h3 id="execution-reconcile-heading">宿主执行域核查</h3><button id="execution-reconcile-refresh" class="ghost" type="button">读取原作业状态</button></div>
           <p id="execution-reconcile-help" class="note"></p>
           <div class="execution-actions"><button id="execution-reconcile-check" class="ghost" type="button" disabled>核查执行域</button><button id="execution-reconcile-force-open" class="ghost danger" type="button" disabled>强制结束并交还…</button></div>
           <form id="execution-reconcile-force-form" class="force-form" hidden>
-            <p>强制操作会结束原任务绑定域内的残留进程，再核查域空并交还输出；可能中断未完成的设备还原。普通核查不会杀进程。</p>
+            <p>强制操作会结束原作业绑定域内的残留进程，再核查域空并交还输出；可能中断未完成的设备还原。普通核查不会杀进程。</p>
             <label><input id="execution-reconcile-force-confirm" type="checkbox" required> 我已核查，并确认结束绑定域内的残留进程。</label>
             <div class="execution-actions"><button id="execution-reconcile-force-submit" class="ghost danger" type="submit" disabled>强制结束并交还</button><button id="execution-reconcile-force-dismiss" class="ghost" type="button">返回</button></div>
           </form>
           <dl id="execution-reconcile-info" class="facts"></dl>
-          <p class="note">只核查宿主绑定域和输出交还，不重放原命令。complete 不代表设备已恢复或队列资源已释放，原任务的失联、失败与退出记录继续保留。</p>
+          <p class="note">只核查宿主绑定域和输出交还，不重放原命令。complete 不代表设备已恢复或队列资源已释放，原作业的失联、失败与退出记录继续保留。</p>
           <p id="execution-reconcile-result" class="cancel-result" role="status" hidden></p>
         </section>
         <section id="finalize-panel" class="execution-panel" aria-labelledby="finalize-heading" hidden>
@@ -404,11 +404,11 @@
           <p id="finalize-result" class="cancel-result" role="status" hidden></p>
         </section>
         <section id="recovery-prepare-panel" class="recovery-prepare-panel" hidden>
-          <div class="section-heading"><h3>恢复任务</h3><button id="prepare-recovery" class="ghost" type="button" disabled>准备恢复任务</button></div>
+          <div class="section-heading"><h3>恢复作业</h3><button id="prepare-recovery" class="ghost" type="button" disabled>准备恢复作业</button></div>
           <p id="recovery-prepare-help" class="note"></p>
         </section>
         <details id="reset-panel" class="queue-release-panel" hidden>
-          <summary>重置任务…</summary>
+          <summary>重置作业…</summary>
           <form id="reset-form">
             <label for="reset-note">说明 <span class="field-optional">必填</span></label>
             <textarea id="reset-note" rows="3" maxlength="2000" required placeholder="为什么重置、看到了什么"></textarea>
@@ -419,11 +419,11 @@
         <p id="reset-result" class="cancel-result" role="status" hidden></p>
         <p class="evidence-note"><strong>结果需核对证据</strong>退出码只说明命令执行情况。实验是否有效、是否有收益、设备是否已恢复，请核对报告和原始证据。</p>
         <section id="job-leases" class="job-leases" aria-labelledby="job-leases-heading">
-          <div class="section-heading"><h3 id="job-leases-heading">本任务的 lease 证据</h3><button id="load-job-leases" class="ghost" type="button" disabled>读取 lease 证据</button></div>
-          <p class="note">记录只覆盖对应 lease 的范围。局部完成报告、锁已释放或模拟证据，均不能单独证明整个任务或设备已恢复。</p>
+          <div class="section-heading"><h3 id="job-leases-heading">本作业的 lease 证据</h3><button id="load-job-leases" class="ghost" type="button" disabled>读取 lease 证据</button></div>
+          <p class="note">记录只覆盖对应 lease 的范围。局部完成报告、锁已释放或模拟证据，均不能单独证明整个作业或设备已恢复。</p>
           <p id="job-leases-message" class="note" role="status"></p><p id="job-leases-updated" class="read-time"></p>
           <ul id="job-leases-errors" class="lease-receipt-errors" hidden></ul>
-          <ul id="job-leases-list" class="lease-receipt-list" aria-label="任务关联的 lease 收据"></ul>
+          <ul id="job-leases-list" class="lease-receipt-list" aria-label="作业关联的 lease 收据"></ul>
         </section>
         </div>
         <section id="artifacts" class="artifacts" aria-labelledby="artifacts-heading">
@@ -437,8 +437,8 @@
           <dl id="directory-export-info" class="facts" hidden></dl>
           <pre id="directory-export-error" class="command-box" hidden></pre>
           <details class="command-details">
-            <summary>本任务的目录导出缓存</summary>
-            <p class="note">仅清理当前任务可重新生成的目录下载压缩包及其元数据。原 out、in 和结果记录不删除；不清理历史来源或其他缓存位置。</p>
+            <summary>本作业的目录导出缓存</summary>
+            <p class="note">仅清理当前作业可重新生成的目录下载压缩包及其元数据。原 out、in 和结果记录不删除；不清理历史来源或其他缓存位置。</p>
             <div class="submission-actions"><button id="read-export-cache" class="ghost" type="button" disabled>读取导出缓存</button><button id="clean-export-cache" class="ghost danger" type="button" disabled>清理导出缓存</button></div>
             <p id="export-cache-access" class="note"></p>
             <p id="export-cache-message" class="note" role="status">尚未读取；不会自动清理。</p>
@@ -457,7 +457,7 @@
             <label for="artifact-input-manifest">可粘贴到提交表单的最小输入清单</label>
             <textarea id="artifact-input-manifest" rows="8" readonly spellcheck="false"></textarea>
             <button id="copy-input-manifest" class="ghost" type="button" disabled>复制清单</button>
-            <p class="note">name 与 target 使用文件名生成安全默认值，可按任务需要修改。准备任务仍会核对源内容；此引用不表示设备已恢复。</p>
+            <p class="note">name 与 target 使用文件名生成安全默认值，可按作业需要修改。准备作业仍会核对源内容；此引用不表示设备已恢复。</p>
           </div>
         </section>
         <details id="job-events" class="job-events command-details">
@@ -470,14 +470,14 @@
           <p id="job-events-newer" class="note"></p>
           <p id="job-events-storage" class="note"></p>
           <p id="job-events-trimmed" class="note"></p>
-          <ol id="job-events-list" class="job-events-list" aria-label="本任务已提交事件"></ol>
+          <ol id="job-events-list" class="job-events-list" aria-label="本作业已提交事件"></ol>
           <details id="job-events-location" class="command-details" hidden><summary>可携带的浏览位置</summary><textarea id="job-events-location-json" rows="6" readonly aria-label="事件浏览位置 JSON"></textarea></details>
-          <p class="note">每次只读一页，本页最多保留 200 条；浏览位置不是 Agent 已处理确认。事件游标、任务列表游标与日志字节位置分别保存。</p>
+          <p class="note">每次只读一页，本页最多保留 200 条；浏览位置不是 Agent 已处理确认。事件游标、作业列表游标与日志字节位置分别保存。</p>
         </details>
         <section id="task-log" class="task-log" aria-labelledby="log-heading">
           <div class="section-heading"><h3 id="log-heading">执行日志</h3><div class="log-actions"><button id="log-reset" class="ghost" type="button">从头读取</button><button id="log-next" class="ghost" type="button">读取下一段</button></div></div>
           <p id="log-message" class="note" role="status">每次读取最多 64 KiB，页面保留最近 262,144 个字符；按需读取。</p>
-          <pre id="job-log" class="logbox" aria-label="任务日志" tabindex="0"></pre>
+          <pre id="job-log" class="logbox" aria-label="作业日志" tabindex="0"></pre>
         </section>
       </div>
     </section>

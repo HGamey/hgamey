@@ -14,7 +14,7 @@ class JobsSubmitLockedTests(unittest.TestCase):
         base = "http://%s:%d" % self.address
         with self._browser_page() as page:
             page.goto(base + "/dash/jobs")
-            page.wait_for_function("() => document.getElementById('access-toggle').textContent === '解锁任务操作'")
+            page.wait_for_function("() => document.getElementById('access-toggle').textContent === '解锁作业操作'")
             self.assertTrue(page.is_hidden("#submit-panel"))
             name, value = self.steer_cookie.split("=", 1)
             page.context.add_cookies([{"name": name, "value": value, "url": base}])

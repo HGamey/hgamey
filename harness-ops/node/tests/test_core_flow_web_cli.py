@@ -4516,7 +4516,7 @@ class CoreFlowTests(unittest.TestCase):
             page.wait_for_function(f"() => !document.getElementById('detail-content').hidden && ({facts})().includes('{self.jid}')", timeout=20000)
             self.assertTrue(page.url.endswith(f"/dash/jobs#job={self.jid}"), page.url)
             page.goto("http://%s:%d/dash/jobs?job=nope" % self.address)
-            page.wait_for_function("() => document.getElementById('detail-message').textContent.includes('任务 ID 格式不正确')", timeout=20000)
+            page.wait_for_function("() => document.getElementById('detail-message').textContent.includes('作业 ID 格式不正确')", timeout=20000)
 
     def test_a_job_link_opened_in_the_jobs_tab_shows_that_job(self):
         """Pasting /dash/jobs#job=B into a tab that shows job A changes only the hash; the page follows it."""
