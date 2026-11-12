@@ -44,7 +44,7 @@ HELP = """用法:
   pf-node research reopen ID --reason TEXT        # 重新打开，之后可再交付一个版本
   pf-node research note ID TEXT [--reply-to NOTE --decision adopt|defer|reject] [--ask] [--to AGENT] [--urgent]
       [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
-  pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
+  pf-node research compare ID --item JOB_OR_FILE [--item ...] [--label NAME ...] [--pick K] --title TEXT --question TEXT [--direction ID]
   pf-node research thread ID                      # 按时间读研究里的留言
   pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|attachment:ID|url:URL ...
       [--game-version V] [--device D ...] [--reason TEXT]   # 交付：总结、产物、适用范围；状态变为 delivered；--reason 写这一版改了什么
@@ -220,6 +220,7 @@ def parser():
     comparison = commands.add_parser("compare")
     comparison.add_argument("id", type=identifier)
     comparison.add_argument("--item", action="append", required=True)
+    comparison.add_argument("--label", action="append", default=[])
     comparison.add_argument("--pick", type=integer, default=None)
     comparison.add_argument("--title", required=True)
     comparison.add_argument("--question", required=True)
@@ -719,6 +720,10 @@ def _comparison_source(client, item, index):
 def _compare(client, args):
     if not 2 <= len(args.item) <= 8:
         raise ValueError("research compare 需要 2 到 8 个 --item")
+    if args.label and len(args.label) != len(args.item):
+        raise ValueError("--label 要和 --item 一样多，按顺序一一对应")
+    if any(not label.strip() or len(label) > 80 for label in args.label):
+        raise ValueError("--label 不能为空，至多 80 字")
     pick = len(args.item) if args.pick is None else args.pick
     if not 1 <= pick <= len(args.item):
         raise ValueError("--pick 必须在 1 到素材数之间")
@@ -732,6 +737,8 @@ def _compare(client, args):
         directions = [{"id": args.direction, "revision": direction["revision"]}]
     prepared = [_comparison_source(client, item, index) for index, item in enumerate(args.item)]
     sources, kinds = [item[0] for item in prepared], [item[1] for item in prepared]
+    for source, label in zip(sources, args.label):
+        source["label"] = label
     result_id, request_id = "r-" + uuid.uuid4().hex[:16], "ev-" + uuid.uuid4().hex[:12]
     job_ids = {source.get("job_id") for source in sources}
     manifest = {"schema": "phonefarm/result@1", "result_id": result_id, "title": args.title,

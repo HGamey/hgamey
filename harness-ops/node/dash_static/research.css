@@ -355,6 +355,7 @@
 .research-view .compare-together[hidden] { display: none; }
 .research-view .compare-item :is(img, video) { display: block; width: 100%; height: 100%; object-fit: contain; background: #0b0d0e; border-radius: var(--radius); }
 .research-view .compare-source { flex-basis: 100%; font-size: var(--fs-sm); color: var(--ink2); overflow-wrap: anywhere; }
+.research-view .compare-source-name { margin-right: 6px; color: var(--ink); }
 .research-view .compare-together { margin-top: var(--sp-2); min-height: 30px; padding: 0 12px; font-size: var(--fs-sm); }
 .research-view .compare-answer { display: grid; gap: 10px; margin-top: var(--sp-3); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--card); }
 .research-view .compare-picks, .research-view .compare-diff { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }

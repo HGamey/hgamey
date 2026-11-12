@@ -42,6 +42,7 @@ from job_export_cache import ExportCache, validate_root as validate_export_cache
 from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_REGISTRY
 from device_scope import (DeviceScope, validate_job as validate_device_job,
                           serial_from_argv, binding_argument, same_binding, canonical_resources)
+from center_export import CenterExports, CenterExportError
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
@@ -1109,6 +1110,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
     if not hasattr(jobs, "uploads"):
         jobs.uploads = None if jobs.connection else NodeUploads(jobs, games)
     uploads = jobs.uploads
+    exports = CenterExports(jobs) if board and research else None
     if not hasattr(jobs, "deployments"):
         jobs.deployments = NodeDeployments(jobs, games)
     fleet = fleet or getattr(board, "monitor", None) or FleetState(
@@ -1310,6 +1312,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             parts = [p for p in u.path.split("/") if p]
             if parts == ["health"]:
                 return self._send(200, b"ok", "text/plain")
+            if board and parts[:3] == ["dash", "api", "center-export"]:
+                return self._center_export("GET", [unquote(p) for p in parts[3:]])
             if board and parts == ["dash", "api", "access"]:
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
@@ -2137,8 +2141,79 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             parts = [p for p in urlparse(self.path).path.split("/") if p]
             if self._history_read_only(parts):
                 return
+            if board and parts[:3] == ["dash", "api", "center-export"]:
+                return self._center_export("DELETE", [unquote(p) for p in parts[3:]])
             if self._authed():
                 self._send(404, {"code": "not_found", "error": "route not found"})
+
+        # Exporting the center's data by task (更多 → 数据导出). Everything here needs the steer password: it is all
+        # the center's data. Downloads are plain GETs (a link), so reads check the cookies only.
+        def _center_export(self, method, rest):
+            if method == "GET":
+                if not board.authed(self):
+                    return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
+                if not board.steered(self):
+                    return self._send(403, {"code": "steer_required", "error": "需要掌舵密码", "need_steer": True})
+            else:
+                self.close_connection = True
+                if not self._upload_write_auth(True):
+                    return
+            if exports is None:
+                return self._send(404, {"code": "not_found", "error": "只有中心能导出数据"})
+            try:
+                if method == "GET" and rest == ["tasks"]:
+                    return self._send(200, exports.tasks())
+                if method == "GET" and not rest:
+                    return self._send(200, exports.list())
+                if method == "GET" and len(rest) == 1:
+                    return self._send(200, exports.get(rest[0]))
+                if method == "GET" and len(rest) == 2 and rest[1] == "download":
+                    return self._center_export_download(rest[0])
+                if method == "POST" and not rest:
+                    body = json.loads(self.rfile.read(self._upload_length(64 << 10)) or b"null")
+                    return self._send(202, exports.start(body))
+                if method == "DELETE" and len(rest) == 1:
+                    return self._send(200, exports.delete(rest[0]))
+                return self._send(404, {"code": "not_found", "error": "route not found"})
+            except CenterExportError as error:
+                return self._send(error.status, error.payload())
+            except AssetUploadError as error:
+                return self._send(error.status, {"code": error.code, "error": str(error)})
+            except ValueError as error:
+                return self._send(400, {"code": "invalid_request", "error": f"请求不是合法的 JSON：{error}"})
+
+        def _center_export_download(self, eid):
+            stream, status = exports.open(eid)
+            with stream:
+                size, etag = os.fstat(stream.fileno()).st_size, status["sha256"]
+                start, end, code = 0, size, 200
+                m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+                if m and m.group(0) != "bytes=-" and self.headers.get("If-Range", etag).strip('" ') == etag:
+                    a, b = m.groups()
+                    start, end = (int(a), min(size, int(b) + 1) if b else size) if a else (max(0, size - int(b)), size)
+                    if start >= size or end <= start:
+                        return self._send(416, b"", extra={"Content-Range": f"bytes */{size}"})
+                    code = 206
+                self.send_response(code)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(end - start))
+                self.send_header("Content-Disposition", f'attachment; filename="hgamey-center-{eid}.zip"')
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("ETag", f'"{etag}"')
+                self.send_header("X-Content-SHA256", etag)
+                if code == 206:
+                    self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
+                self.end_headers()
+                stream.seek(start)
+                left = end - start
+                while left > 0:
+                    block = stream.read(min(left, 1 << 20))
+                    if not block:
+                        self.close_connection = True
+                        break
+                    self.wfile.write(block)
+                    left -= len(block)
 
         def _history_read_only(self, parts):
             parts = [unquote(p) for p in parts]
@@ -2283,6 +2358,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._device_registry_post(False)
             if board and parts == ["dash", "api", "node", "devices"]:
                 return self._device_registry_post(True)
+            if board and parts[:3] == ["dash", "api", "center-export"]:
+                return self._center_export("POST", [unquote(p) for p in parts[3:]])
             if parts == ["node", "runtime", "refresh"]:
                 return self._runtime_refresh(False)
             if board and parts == ["dash", "api", "node", "runtime", "refresh"]:

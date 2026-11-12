@@ -960,7 +960,7 @@ class Dash:
             return []
 
     def _agents(self):
-        """Every agent as a human sees it: last check-in, what it says it is doing, what it still owes (unanswered
+        """Every agent as a human sees it: who it is (its registration note), last check-in, what it says it is doing, what it still owes (unanswered
         guidance comes first) and the research it owns, read only, the same duties as its own check-in. Whether it is
         folded away (archived: idle three days, archived by hand, disabled) and when it was last active."""
         registry = getattr(self.job_service, "agents", None) if self.job_service else None
@@ -971,7 +971,7 @@ class Dash:
             for entry in registry.list():
                 shown = node_agents.annotate(entry, latest)
                 owed = agent_duties.duties(self.job_service, entry["name"]) if entry.get("enabled", True) else None
-                out.append({"name": entry["name"], "checkin_at": (entry.get("checkin") or {}).get("at"),
+                out.append({"name": entry["name"], "note": entry.get("note") or None, "checkin_at": (entry.get("checkin") or {}).get("at"),
                             "status": entry.get("status"), "owes": [duty["kind"] for duty in owed["duties"]] if owed else [],
                             "research": [item["research_id"] for item in owed["research"]["mine"]] if owed else [],
                             "archived": shown["archived"], "activity_at": shown["activity"]["at"]})
