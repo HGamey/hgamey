@@ -75,14 +75,14 @@
     const holder = document.createElement('div'), size = document.createElement('span');
     holder.className = 'compare-media waiting'; state[item.slot] = 'not_loaded';
     const file = fileFor(`${record.id}@${record.revision}/${item.slot}`, path);
-    const entry = clips.add({slot: item.slot, file, size, kind: item.kind});
+    const entry = clips.add({slot: item.slot, file, size, kind: item.kind, holder});
     // A slot whose kind the record does not state takes it from the file's first read.
     const kind = item.kind ? Promise.resolve(item.kind) : new Promise(resolve => near(holder, () => {
       const seen = () => { if (!file.total && !file.error) return; file.watch.delete(seen); resolve(/^video\//.test(file.type) ? 'video' : 'image'); };
       file.watch.add(seen); ask(file, false); seen();
     }));
     const ready = kind.then(async k => {
-      entry.kind = k;
+      entry.kind = k; file.video = k === 'video';
       const node = element(k, item, state, size);
       holder.append(node); done();
       const copy = await entry.copy;
@@ -120,7 +120,12 @@
   // everything asked for before the long reads begin. A file is kept while its request is shown.
   const QUIET = 30000;   // a read with no bytes for this long has been cut off, whatever the browser thinks
   const files = new Map(), queue = new Set();   // `${request}@${revision}/${slot}` → what is held of that file
-  let reading = null;
+  let reading = null, seen = 0;
+  // Which file is read next: first reads (one byte, for sizes) first, then pictures before videos, then the comparison
+  // most recently come on screen. A long read gives way to a better file and goes on from where it was later.
+  const video = file => file.video ?? /^video\//.test(file.type);
+  const rank = file => [file.total ? 1 : 0, video(file) ? 1 : 0, -(file.seen || 0)];
+  const before = (a, b) => { const x = rank(a), y = rank(b); for (let i = 0; i < x.length; ++i) if (x[i] !== y[i]) return x[i] < y[i]; return false; };
   const mb = n => (n / 1048576).toFixed(1);
   const tell = file => file.watch.forEach(see => see());
   const needed = file => !file.url && !file.gone && !file.error && (file.whole || !file.total);
@@ -141,11 +146,12 @@
   function ask(file, whole) {
     file.whole ||= whole; file.error = null;
     if (needed(file)) queue.add(file);
+    if (reading && reading !== file && reading.total && needed(file) && before(file, reading)) { reading.yielded = true; reading.stop?.(); }
     pump(); tell(file);
   }
   async function pump() {
     if (reading) return;
-    const asked = [...queue], file = reading = asked.find(f => !f.total) || asked[0] || null;
+    const file = reading = [...queue].reduce((best, f) => !best || before(f, best) ? f : best, null);
     if (!file) return;
     await carryOn(file);
     if (!needed(file)) queue.delete(file);
@@ -159,6 +165,7 @@
       let failed = null;
       try { await read(file); } catch (error) { failed = error; }
       if (file.gone) return;
+      if (file.yielded) { file.yielded = false; file.down = false; return tell(file); }   // back in the queue, bytes kept
       if (failed && !cutOff(failed)) { file.error = failed; file.down = false; return tell(file); }
       if (file.total && file.bytes >= file.total) {
         file.url = URL.createObjectURL(new Blob(file.parts, {type: file.type})); file.parts = [];
@@ -169,6 +176,7 @@
       file.down = true; tell(file);
       await rest(file, pause); pause = Math.min(15, pause * 2);
       if (file.gone) return;
+      if (file.yielded) { file.yielded = false; file.down = false; return tell(file); }
     }
   }
   async function read(file) {
@@ -215,14 +223,20 @@
         : reading && !list.some(c => c.file === reading) ? `排队等前面的下完 · ${what(left)}`
         : `正在下载 ${what(wanted)} · ${amount}`;
       for (const {file, size} of list) if (!file.url) size.textContent = file.bytes > 1 ? `${mb(file.bytes)} / ${mb(file.total)} MB` : file.total ? `${mb(file.total)} MB` : '';
+      for (const {file, holder} of list) if (holder) holder.dataset.wait = file.url || file.error || !file.whole ? ''
+        : reading === file ? (file.total && file.bytes > 1 ? `下载中 ${Math.floor(100 * file.bytes / file.total)}%` : '下载中') : '排队中';
       if (!list.every(c => c.kind)) return;
       for (const c of list) if (c.give && c.file.url && (!isVideo(c) || list.filter(isVideo).every(v => v.file.url))) { c.give(c.file); c.give = null; }
       if (!finished && list.every(c => c.file.url)) { finished = true; onDone(); }
     };
-    const start = all => list.forEach(c => { if (all || !isVideo(c)) ask(c.file, true); });
+    const start = all => { const now = ++seen; list.forEach(c => { c.file.seen = now; if (all || !isVideo(c)) ask(c.file, true); }); };
     go.onclick = () => start(true); again.onclick = () => list.filter(c => c.file.error).forEach(c => ask(c.file, true));
     return {line, start, paint,
-      add(c) { c.copy = new Promise(give => { c.give = give; }); c.file.watch.add(paint); list.push(c); return c; }};
+      add(c) {
+        c.copy = new Promise(give => { c.give = give; }); c.file.watch.add(paint); list.push(c);
+        if (c.kind) c.file.video = c.kind === 'video';
+        return c;
+      }};
   }
 
   // The in-page viewer: every slot stacked in one box at the same size, so switching (arrow keys, A–D or the letter

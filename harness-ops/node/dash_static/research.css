@@ -454,6 +454,9 @@
 .research-view .compare-load span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .research-view .compare-load progress { width: min(320px, 50%); height: 8px; }
 .research-view .compare-media.waiting, .research-view .compare-media.waiting video { background: var(--wash); }
+/* A slot still waiting says whether its file is queued or coming in. */
+.research-view .compare-media.waiting { position: relative; }
+.research-view .compare-media.waiting[data-wait]:not([data-wait=""])::after { content: attr(data-wait); position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: var(--fs-sm); pointer-events: none; }
 
 /* The top of a task: the conclusion of its delivery, the key comparison and the tasks that follow it. */
 .research-view .task-summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); }
