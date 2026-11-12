@@ -144,7 +144,7 @@
   }
   // Phones on other joined computers, from their last report: no live view, and 空闲 only means last seen idle.
   function remotePhone(computer, p) {
-    const stat = (v, unit, label, hot) => `<div class="pstat${hot ? " hot" : ""}"><b>${v == null ? "—" : v + unit}</b><span>${label}</span></div>`;
+    const stat = (v, unit, label, hot) => v == null ? "" : `<div class="pstat${hot ? " hot" : ""}"><b>${v + unit}</b><span>${label}</span></div>`;   // an unknown reading is left out
     const status = !computer.connected ? `<span class="tag bad">已断开</span>` : computer.stale ? `<span class="tag warn">读数过期</span>`
       : p.idle ? `<span class="tag ok" title="最近看到空闲，用时由那台电脑加锁">空闲</span>` : `<span class="tag warn">不空闲</span>`;
     return `<div class="phone-card" data-ref="${esc(p.ref)}"><span class="thumb"><span class="ph">无画面</span></span><div class="meta">
@@ -166,7 +166,7 @@
           : !job && s.goal ? `<div class="doing"><span class="doing-k">目标</span><span class="doing-what">${esc(s.goal.summary)}</span></div>`
           : !job && s.waiting_goal ? `<div class="doing"><span class="doing-k">目标记录</span><span class="doing-what">${esc(s.waiting_goal.summary)} · 设备归属未确认</span></div>`
           : !job && !global && s.busy ? `<div class="doing muted">已占用，未记录占用者</div>` : "");
-      const stat = (v, unit, label, hot) => `<div class="pstat${hot ? " hot" : ""}"><b>${v == null ? "—" : v + unit}</b><span>${label}</span></div>`;
+      const stat = (v, unit, label, hot) => v == null ? "" : `<div class="pstat${hot ? " hot" : ""}"><b>${v + unit}</b><span>${label}</span></div>`;   // an unknown reading is left out
       return `<div class="phone-card"><a class="thumb" href="${esc(HGTarget.url(`/dash/live?serial=${encodeURIComponent(s.serial)}`))}" aria-label="看 ${esc(model(s))} 的实时画面">${thumb}</a><div class="meta">
         <div class="phone-head"><span class="name" title="${esc(s.serial)}">${esc(model(s) || "未知型号")}</span>${phoneStatus(s, job, global)}</div>
         <div class="stats">${stat(s.soc_c == null ? null : num(s.soc_c, 0), "°", "芯片", s.soc_c >= 45)}${stat(s.battery_c == null ? null : num(s.battery_c, 0), "°", "电池", s.battery_c >= 40)}${stat(s.battery_pct, "%", "电量", false)}</div>
@@ -198,7 +198,9 @@
       <div class="q-meta"><span class="who">${avatar(r.actor_label || "agent")}${esc(r.actor_label || "agent")}</span><span class="q-task" title="${esc(r.research_title || r.research_id)}">${esc(r.research_title || r.research_id)}</span>${when(h.now, r.updated_at)}<a class="btn sm" href="${esc(HGTarget.url(r.url))}">去评 · ${r.items} 个</a></div>
     </li>`).join("");
   }
-  const DUTY = {answer_note: "回应留言", process_feedback: "处理反馈", unblock_job: "放行任务", post_status: "报状态", plan_directions: "写方向", deliver: "交付"};
+  const DUTY = {answer_note: "回应留言", urgent_note: "看紧急留言", assigned_task: "接手新任务", research_reopened: "任务重开了", process_feedback: "处理反馈",
+    unblock_job: "放行任务", reset_job: "收拾中断的运行", restore_device: "还原手机", post_status: "报状态", plan_directions: "写方向",
+    conclude_direction: "给方向下结论", deliver: "交付"};
   function freshness(now, at) {
     if (!at) return {cls: "off", text: "从未签到"};
     const m = (now - at) / 60;
@@ -211,7 +213,7 @@
     $("agents-count").textContent = shown.length ? String(shown.length) : "";
     const row = a => {
       const f = freshness(h.now, a.checkin_at);
-      const owes = [...new Set(a.owes)].map(k => `<span class="tag warn">${esc(DUTY[k] || k)}</span>`).join("");
+      const owes = [...new Set(a.owes.map(k => DUTY[k] || "待办"))].map(t => `<span class="tag warn">${esc(t)}</span>`).join("");
       const mine = a.research.length ? `<span class="agent-tasks">负责 ${a.research.length} 个任务</span>` : "";
       return `<li data-agent="${esc(a.name)}" class="agent-row">${avatar(a.name)}<div class="agent-body">
         <div class="agent-head"><b class="agent-name" title="${esc(a.name)}">${esc(a.name)}</b><span class="fresh ${f.cls}" title="${esc(a.checkin_at ? full(a.checkin_at) : "")}"><i aria-hidden="true"></i>${esc(f.text)}</span></div>

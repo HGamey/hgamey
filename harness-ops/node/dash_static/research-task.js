@@ -73,11 +73,13 @@
     near(button, () => readPicture(sourcePath, path).then(url => { image.src = url; button.onclick = () => open(url, name); }, unread));
     return button;
   }
+  // A file's name under it; the job it came from is a technical detail.
+  const caption = (ref, named) => { const under = el('figcaption'); under.append(named); if (ref.kind === 'job') under.append(el('span', ` · 作业 ${ref.job_id}`, 'tech')); return under; };
   function imageFigure(ref, alt, sourcePath = artifactPath(ref)) {
     const link = el('a'), figure = el('figure', null, 'research-artifact'), image = el('img');
     const filename = ref.filename || ref.path.split('/').pop();
     link.href = HGTarget.url(sourcePath); link.download = filename;
-    image.alt = alt || filename; link.append(image); figure.append(link, el('figcaption', ref.kind === 'attachment' ? filename : `作业 ${ref.job_id} · ${ref.path}`));
+    image.alt = alt || filename; link.append(image); figure.append(link, caption(ref, el('span', ref.kind === 'attachment' ? filename : ref.path)));
     const mime = ref.content_type || IMAGE_TYPES[ref.path.split('.').pop().toLowerCase()] || 'application/octet-stream';
     const epoch = imageEpoch; near(figure, () => loadImage(image, ref, mime, epoch, sourcePath));
     return figure;
@@ -89,10 +91,9 @@
     Object.assign(video, {controls: true, preload: 'metadata', playsInline: true});
     near(video, () => { video.src = HGTarget.url(sourcePath) + '#t=0.1'; });   // paints the first frame without playing
     video.onerror = () => video.replaceWith(el('span', '视频读取失败', 'note'));
-    link.textContent = ref.kind === 'attachment' ? filename : `作业 ${ref.job_id} · ${ref.path}`;
+    link.textContent = ref.kind === 'attachment' ? filename : ref.path;
     link.href = HGTarget.url(sourcePath); link.download = filename;
-    const caption = el('figcaption'); caption.append(link);
-    figure.append(video, caption);
+    figure.append(video, caption(ref, link));
     return figure;
   }
   function evidenceList(refs) {
@@ -105,8 +106,8 @@
           if (mime) item.append(imageFigure(ref, ref.path));
           else if (VIDEO_TYPES[extension(ref.path)]) item.append(videoFigure(ref));
           else {
-            const link = el('a', `作业 ${ref.job_id} · ${ref.path}`);
-            link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop(); item.append(link);
+            const link = el('a', ref.path);
+            link.href = HGTarget.url(artifactPath(ref)); link.download = ref.path.split('/').pop(); item.append(link, el('span', ` · 作业 ${ref.job_id}`, 'tech'));
           }
         } else {
           const link = el('a', `作业 ${ref.job_id}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(ref.job_id)}`); item.append(link);
@@ -738,10 +739,11 @@
       if (!bad) { section.remove(); return; }
       const why = typeof bad.error === 'string' ? bad.error : bad.error?.message || bad.note
         || (Number.isInteger(bad.exit) ? `exit ${bad.exit}` : '原因未记录');
-      const link = el('a', bad.label ? `${bad.label} · 作业 ${bad.id}` : `作业 ${bad.id}`);
+      const link = el('a', bad.label || '一次运行');
       link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(bad.id)}`);
       const line = el('p', null, 'failed-line');
-      line.append(tag('最近失败', 'bad'), link, el('span', clip(why, 120), 'failed-why'), timeEl(bad.ended || bad.started));
+      // The raw reason and the job's ID are for whoever fixes it: technical details.
+      line.append(tag('最近失败', 'bad'), link, el('span', `作业 ${bad.id}`, 'tech'), el('span', clip(why, 120), 'failed-why tech'), timeEl(bad.ended || bad.started));
       section.append(line);
     } catch (error) { section.remove(); }
   }
