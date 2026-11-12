@@ -219,6 +219,7 @@
   font-size: .86em; line-height: 1.5; text-decoration: none; vertical-align: baseline; }
 .research-view a.code-chip:hover { color: var(--acc-ink); }
 .research-view .code-chip .code-raw { display: none; font-family: var(--mono); }
+.research-view .code-chip.code-direction { color: var(--ink2); }
 html.show-tech .research-view .code-chip .code-raw { display: inline; }
 html.show-tech .research-view .code-chip .code-word { display: none; }
 .research-view .discuss-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-base); line-height: 1.75; color: var(--ink2); max-width: 80ch; }

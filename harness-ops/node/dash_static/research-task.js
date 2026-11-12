@@ -507,13 +507,13 @@
   const tally = (items, key, names) => Object.entries(items.reduce((n, item) => { const k = key(item); if (names[k]) n[k] = (n[k] || 0) + 1; return n; }, {}))
     .map(([k, n]) => `${names[k]} ${n}`).join(' · ');
 
-  async function directionsSection(record, section, jobs) {
+  async function directionsSection(record, section, jobs, steps) {
     const list = el('div', null, 'research-directions'), {box, count, brief} = folded(section, '探索过程');
     section.id = 'task-directions'; box.append(list);
     list.append(el('p', '读取中…', 'empty'));
     try {
       const [directions, runs, results] = await Promise.all([
-        api(`/research-state/direction?research_id=${encodeURIComponent(record.id)}&limit=100`), jobs(),
+        steps(), jobs(),
         api(`/results?research_id=${encodeURIComponent(record.id)}&limit=100`)]);
       const entries = directions.items.slice().reverse();   // oldest first
       count.textContent = entries.length ? String(entries.length) : '';
@@ -641,11 +641,23 @@
   // linking to it; 显示技术细节 shows the code itself. Right after the word for it the tag is just "…".
   const CODES = /\b(?:(?:n|ev|fb|rq)-[0-9a-f]{6,32}|(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{8,20})\b/g;
   const CODE_WORD = {n: '留言', ev: '盲评', fb: '反馈', rq: '请求'};
-  function codedText(text, className) {
+  // A direction of this task named by its ID reads as its title, 方向「…」, the ID a technical detail like the codes.
+  const escaped = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function codedText(text, className, directions = new Map()) {
     const box = el('p', null, className), value = String(text ?? '');
+    const named = [...directions.keys()].filter(id => value.includes(id)).sort((a, b) => b.length - a.length);
+    const pattern = named.length ? new RegExp(`(?<![\\w-])(?:${named.map(escaped).join('|')})(?![\\w-])|${CODES.source}`, 'g') : CODES;
     let at = 0;
-    for (const match of value.matchAll(CODES)) {
+    for (const match of value.matchAll(pattern)) {
       const code = match[0], before = value.slice(at, match.index), prefix = /^([a-z]+)-/.exec(code)?.[1];
+      if (directions.has(code)) {
+        const chip = el('span', null, 'code-chip code-direction'), title = directions.get(code);
+        chip.title = code;
+        chip.append(el('span', `${before.trimEnd().endsWith('方向') ? '' : '方向'}「${title}」`, 'code-word'), el('span', code, 'code-raw'));
+        box.append(before, chip);
+        at = match.index + code.length;
+        continue;
+      }
       const job = !prefix && /^[0-9a-f]{12}$/.test(code), word = prefix ? CODE_WORD[prefix] : job ? '作业' : /^[0-9a-f]+$/.test(code) ? '提交' : '手机';
       box.append(before);
       const chip = el(job ? 'a' : 'span', null, 'code-chip');
@@ -658,7 +670,7 @@
     box.append(value.slice(at));
     return box;
   }
-  async function threadSection(record, ctx, section) {
+  async function threadSection(record, ctx, section, steps) {
     const list = el('div', null, 'discuss-list'), status = el('p', null, 'note'), head = el('div', null, 'section-head'), count = el('span', null, 'count');
     let replyTo = null, byId = new Map();
     status.setAttribute('role', 'status');
@@ -667,7 +679,9 @@
     section.append(head, list);
     list.append(el('div', '读取中…', 'empty'));
     async function load() {
-      const page = await api(`/research-state/note?research_id=${encodeURIComponent(record.id)}&limit=100`);
+      const [page, named] = await Promise.all([api(`/research-state/note?research_id=${encodeURIComponent(record.id)}&limit=100`),
+        steps().catch(() => ({items: []}))]);
+      const directions = new Map(named.items.map(direction => [direction.id, direction.title || direction.id]));
       const notes = page.items.slice().sort((a, b) => a.updated_at - b.updated_at), ids = new Set(notes.map(note => note.id)), children = new Map(), roots = [];
       byId = new Map(notes.map(note => [note.id, note]));
       count.textContent = notes.length ? String(notes.length) : '';
@@ -692,7 +706,7 @@
         top.append(timeEl(note.updated_at));
         const reply = el('button', '回复', note.question_unanswered === true ? 'ghost primary reply-btn' : 'link-btn reply-btn');
         reply.type = 'button'; reply.dataset.replyTo = note.id; top.append(reply);
-        main.append(top, codedText(note.text, 'discuss-text'));
+        main.append(top, codedText(note.text, 'discuss-text', directions));
         if (note.evidence_refs?.length) main.append(evidenceList(note.evidence_refs));
         entry.dataset.note = note.id; entry.id = 'note-' + note.id;
         const replies = children.get(note.id) || [];
@@ -872,6 +886,8 @@
     if (shown !== paint) return;
     let read = null;   // this task's jobs, read once for both 探索过程 and 作业
     const jobs = () => read || (read = api(`/jobs?research=${encodeURIComponent(record.id)}&limit=50`));
+    let stepsRead = null;   // its directions, read once for 探索过程 and for the names in 留言
+    const steps = () => stepsRead || (stepsRead = api(`/research-state/direction?research_id=${encodeURIComponent(record.id)}&limit=100`));
     const directions = el('section', null, 'research-section'), runs = el('section', null, 'research-section'), thread = el('section', null, 'research-section');
     runs.id = 'task-runs'; thread.id = 'task-thread';
     const judged = el('div'), keySlot = el('div'), outputSlot = el('div'), summary = summarySection(record, chain, keySlot, outputSlot);
@@ -884,7 +900,7 @@
     // Comparisons are what a person comes here to answer, so they go first and the rest starts once they are in place.
     await comparisons(record, ctx, container, waiting, judged, target, () => shown === paint, keySlot);
     if (shown !== paint) return;
-    await Promise.all([directionsSection(record, directions, jobs), runsSection(runs, jobs), threadSection(record, ctx, thread)]);
+    await Promise.all([directionsSection(record, directions, jobs, steps), runsSection(runs, jobs), threadSection(record, ctx, thread, steps)]);
     await outputsBrief(record, outputSlot, jobs, () => shown === paint);
   }
   // 成果 at the top: what the delivery produced, read once the working sections are in.
