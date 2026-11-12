@@ -220,6 +220,11 @@
     $('device-registry-refresh').setAttribute('aria-busy', String(registryBusy));
     $('device-registry-refresh').textContent = registryBusy ? '正在读取登记…' : '读取设备登记';
     $('device-registry-create').disabled = !writable || !!deviceEditor;
+    // What a registration is and how it was read are for whoever maintains it: technical details. Each phone shows by
+    // its name and whether it is enabled; its device ID and aliases are technical details too. Errors stay in view.
+    $('device-registry-scope').classList.toggle('tech', local);
+    $('device-registry-meta').classList.add('tech');
+    $('device-registry-message').classList.toggle('tech', !registryError);
     $('device-registry-scope').textContent = local ? '设备登记是维护者声明，不等于物理同机核验、设备在线或并发执行资格。登记原件的 execution_scope 是当时记录；当前执行范围以任务绑定与 lease 协议事实为准。' : '这台电脑的设备登记不经中心读取，只能在它本机查看和编辑。';
     const permission = !access?.steer ? '当前只读；创建和编辑需解锁目录操作。' : '';
     message('device-registry-message', registryBusy ? '正在读取宿主登记；旧记录保留，不查询设备。' : registryError ? `登记状态未确认：${registryError}。${deviceRegistry ? '下方保留上次读取的记录；' : ''}请显式重读，不会自动重试。` : !localIdentity ? '等待本节点身份…' : !supported ? '此节点未声明 devices.registry-v1，设备登记接口不可用。' : registryNotice || (!deviceRegistry ? '尚未读取设备登记。' : permission || '仅保存维护者声明；未执行设备探测。'), !!registryError);
@@ -231,8 +236,8 @@
       title.append(el('h3', device.label), state);
       const edit = el('button', '编辑登记', 'ghost'); edit.type = 'button'; edit.disabled = !writable || !!deviceEditor;
       edit.setAttribute('aria-label', `编辑设备登记 ${device.device_id}`); edit.addEventListener('click', () => openDeviceEditor(device));
-      head.append(title, edit); row.append(head, el('p', `device_id · ${device.device_id}`, 'device-registry-identity'));
-      const aliases = el('ul', null, 'device-registry-aliases'); aliases.append(...device.aliases.map(alias => el('li', alias))); row.append(aliases); return row;
+      head.append(title, edit); row.append(head, el('p', `device_id · ${device.device_id}`, 'device-registry-identity tech'));
+      const aliases = el('ul', null, 'device-registry-aliases tech'); aliases.append(...device.aliases.map(alias => el('li', alias))); row.append(aliases); return row;
     }));
     $('device-registry-form').hidden = !local || !deviceEditor;
     const fieldsDisabled = !writable || !!deviceEditor?.needsRead;
