@@ -155,7 +155,12 @@
     return `<div class="phone-card" data-ref="${esc(p.ref)}"><span class="thumb remote" aria-hidden="true">${PHONE_OUTLINE}</span><div class="meta">
       <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(p.model || p.serial || "未知型号")}</span>${status}</div>
       <div class="stats">${stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)}${stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40)}${stat(p.battery_pct, "%", "电量", false)}</div>
-      ${job ? holderLine("任务", job) : ""}</div></div>`;
+      ${job ? holderLine("任务", job) : ""}${cleanedLine(p)}</div></div>`;
+  }
+  // Leftover processes the phone's computer stopped on it in the last day.
+  function cleanedLine(phone, now) {
+    const cleanup = HGPhoneState.cleaned({cleanups: phone.cleanups}, now);
+    return cleanup ? `<div class="cleaned" title="${esc(cleanup.title)}">${esc(cleanup.text)}</div>` : "";
   }
   function renderPhones(h) {
     const on = h.slots.filter(Boolean), elsewhere = h.elsewhere || [], usable = elsewhere.filter(c => c.connected);
@@ -176,7 +181,7 @@
       return `<div class="phone-card"><a class="thumb" href="${esc(HGTarget.url(`/dash/live?serial=${encodeURIComponent(s.serial)}`))}" aria-label="看 ${esc(model(s))} 的实时画面">${thumb}</a><div class="meta">
         <div class="phone-head"><span class="name" title="${esc(s.serial)}">${esc(model(s) || "未知型号")}</span>${phoneStatus(s, job, global)}</div>
         <div class="stats">${stat(s.soc_c == null ? null : num(s.soc_c, 0), "°", "芯片", s.soc_c >= 45)}${stat(s.battery_c == null ? null : num(s.battery_c, 0), "°", "电池", s.battery_c >= 40)}${stat(s.battery_pct, "%", "电量", false)}</div>
-        ${doing}</div></div>`;
+        ${doing}${cleanedLine(s, h.now)}</div></div>`;
     }).join("");
     const empty = `<p class="empty-row">${h.fleet_age_s == null ? (h.fleet_err ? "读不到手机：" + esc(h.fleet_err) : "正在读手机状态…") : "现在没有手机接入"}</p>`;
     // One computer reads as before; with phones elsewhere, each computer gets its own heading.

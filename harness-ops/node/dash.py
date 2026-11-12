@@ -1083,7 +1083,7 @@ class Dash:
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
                           "busy": self._device_busy(serial, lock, registry), "light": d.get("probe_depth") == "light",
-                          "holder": holder, "global_holder": global_holder,
+                          "holder": holder, "global_holder": global_holder, "cleanups": d.get("cleanups") or [],
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
                                             "demo": goal["demo"]},
@@ -1128,7 +1128,7 @@ class Dash:
                             "model": " ".join(x for x in (seen.get("brand"), seen.get("model")) if x) or None,
                             "battery_pct": b.get("level_pct"), "soc_c": t.get("soc_max_c"),
                             "battery_c": b.get("temp_c") or t.get("battery_c"), "holder": held.get(phone["ref"]),
-                            "registered": phone["device_binding"] is not None})
+                            "registered": phone["device_binding"] is not None, "cleanups": seen.get("cleanups") or []})
             out.append({"name": entry["name"], "node_id": entry["node_id"], "connected": connected,
                         "sampled_at": fleet.get("sampled_at"), "stale": bool(entry.get("stale") or fleet.get("stale", True)),
                         "phones": row})

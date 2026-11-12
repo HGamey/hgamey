@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 from node_lease import LeaseState, storage_root
+from phone_cleanup import Cleaner
 
 VIEW_IDLE_S = 90
 FLEET_EVERY_FREE_S = 30
@@ -36,12 +37,26 @@ def read_lock(directory):
     return out
 
 
+def idle(lock, serial):
+    """Nothing holds this phone: no job, no remote control session, no global lease. Unknown reads as held."""
+    lease = lock.get("lease") or {}
+    scopes = lease.get("device_scopes")
+    if not scopes:
+        return lease.get("status") == "clear"
+    device = next((entry for entry in scopes.get("devices", []) if serial in (entry.get("device_id"), *entry.get("aliases", []))), None)
+    return (scopes.get("global") or {}).get("status") == "clear" and (device is None and lease.get("status") == "clear"
+                                                                      or device is not None and device.get("status") == "clear")
+
+
 class FleetState:
-    def __init__(self, phonefarm_root, lock_dir, shot_dir, *, lease_state=None):
+    def __init__(self, phonefarm_root, lock_dir, shot_dir, *, lease_state=None, cleanup_log=None):
         self.root, self.lock_dir, self.shot_dir = phonefarm_root, lock_dir, shot_dir
         self.leases = lease_state
         if lock_dir is None and self.leases is None:
             self.leases = LeaseState({"phonefarm": (os.path.join(phonefarm_root, "phonefarm"), phonefarm_root)})
+        # Leftover processes on idle phones are stopped as the phones are sampled (phone_cleanup).
+        adb = (self.leases.bins.get("adb") or (None,))[0] if cleanup_log and self.leases is not None else None
+        self.cleaner = Cleaner(adb, cleanup_log, self.leases.env) if adb else None
         self._condition = threading.Condition()
         self._thread = None
         self._closed = False
@@ -80,8 +95,12 @@ class FleetState:
     def _snapshot(self):
         now = time.time()
         age = max(0, now - self._sampled_at) if self._sampled_at is not None else None
+        devices = self._fleet["devices"] if self._fleet is not None else None
+        if devices is not None and self.cleaner is not None:
+            devices = [{**device, "cleanups": cleanups} if (cleanups := self.cleaner.recent(device.get("serial"))) else device
+                       for device in devices]
         return dict(schema_version=1, now=now, lock=self._read_lock(),
-                    devices=self._fleet["devices"] if self._fleet is not None else None,
+                    devices=devices,
                     notes=self._fleet.get("notes", []) if self._fleet is not None else [],
                     sampled_at=self._sampled_at, attempted_at=self._attempted_at, age_s=age,
                     stale=age is None or age > STALE_AFTER_S, refreshing=self._refreshing,
@@ -145,6 +164,9 @@ class FleetState:
                 if screenshots:
                     command += ["--screenshot-dir", self.shot_dir, "--screenshot-every", str(SHOT_EVERY_S)]
                 fleet, error, deferred = self._sample(command, cwd, env)
+                if fleet is not None and self.cleaner is not None and any(d.get("online") for d in fleet["devices"]):
+                    current = self._read_lock()   # who holds what now, not before the sample
+                    self.cleaner.run(fleet["devices"], lambda serial: idle(current, serial))
                 if error is not None:
                     # One phone whose transport stalls (e.g. a wedged hdc server) makes PF abandon the
                     # whole observation. Retry each registered phone on its own so the healthy ones stay

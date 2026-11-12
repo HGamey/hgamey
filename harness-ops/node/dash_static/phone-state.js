@@ -30,5 +30,13 @@ window.HGPhoneState = (() => {
     if (typeof heat === 'number' && heat >= HOT_C) out.push(`过热 ${heat} °C`);
     return out;
   }
-  return {of, note, age, os, warnings};
+  // Leftover processes the node stopped on this phone in the last day (phone_cleanup): one line, each process on hover.
+  const ran = s => { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m} 分` : `${Math.max(1, m)} 分`; };
+  function cleaned(seen, now = Date.now() / 1000) {
+    const processes = (seen?.cleanups || []).filter(c => c.at >= now - 86400).flatMap(c => c.processes || []);
+    return processes.length ? {text: `清理了 ${processes.length} 个残留进程`,
+      title: processes.map(p => `${p.name}（PID ${p.pid}，跑了 ${ran(p.elapsed_s)}）`).join('\n')} : null;
+  }
+  return {of, note, age, os, warnings, cleaned};
 })();

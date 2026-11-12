@@ -590,6 +590,8 @@
     badge(state, device.online === true ? '在线 · 快照' : device.online === false ? '离线 · 快照' : '状态未知', device.online == null ? 'unknown' : '');
     const flags = el('span', null, 'device-flags');
     flags.append(...(window.HGPhoneState?.warnings(device) || []).map(warning => el('span', warning, 'task-state warn')), state);
+    const cleanup = window.HGPhoneState?.cleaned(device);
+    if (cleanup) { const tag = el('span', cleanup.text, 'task-state warn phone-cleaned'); tag.title = cleanup.title; flags.prepend(tag); }
     header.append(el('h3', device.model || device.serial || '未命名设备'), flags);
     card.append(header, el('p', `${text(device.serial)} · ${text(device.transport)}`, 'device-serial'));
     const metrics = el('dl', null, 'device-summary');

@@ -29,6 +29,7 @@
 .phone-card .nums span { font-size: 14px; color: var(--ink2); }
 .phone-card .doing { margin-top: 6px; font-size: 15px; color: var(--ink); background: var(--wash); border-radius: 8px; padding: 5px 10px; overflow-wrap: anywhere; }
 .phone-card .doing.on { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+.phone-card .cleaned { margin-top: 4px; font-size: var(--fs-sm); font-weight: 600; color: var(--warn); }
 .phones-more { margin: 8px 2px 0; font-size: 15px; color: var(--ink2); }
 .phones-more:empty { display: none; }
 .tasks { list-style: none; margin: 0 0 16px; padding: 0; font-size: 15px; color: var(--ink2); }
