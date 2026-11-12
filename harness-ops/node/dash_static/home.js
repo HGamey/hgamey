@@ -206,8 +206,10 @@
   function freshness(now, at) {
     if (!at) return {cls: "off", text: "从未签到"};
     const m = (now - at) / 60;
-    return {cls: m < 30 ? "ok" : m < 240 ? "warn" : "off", text: `${ago(now, at)}签到`};
+    return {cls: m < 30 ? "ok" : m < 240 ? "warn" : "off", text: m >= 1440 ? `${Math.floor(m / 1440)} 天没签到` : `${ago(now, at)}签到`};
   }
+  // Who an agent is, from the note written when it was registered: its first clause, the rest on hover.
+  const role = note => note ? `<p class="agent-role" title="${esc(note)}">${esc(note.split(/[；;。\n]/)[0])}</p>` : "";
   // Why an agent is folded away under 已归档.
   const ARCHIVED = {idle: "3 天没有活动", manual: "手动归档", disabled: "已停用"};
   function renderAgents(h) {
@@ -219,7 +221,7 @@
       const mine = a.research.length ? `<span class="agent-tasks">负责 ${a.research.length} 个任务</span>` : "";
       return `<li data-agent="${esc(a.name)}" class="agent-row">${avatar(a.name)}<div class="agent-body">
         <div class="agent-head"><b class="agent-name" title="${esc(a.name)}">${esc(a.name)}</b><span class="fresh ${f.cls}" title="${esc(a.checkin_at ? full(a.checkin_at) : "")}"><i aria-hidden="true"></i>${esc(f.text)}</span></div>
-        ${a.status ? `<p class="agent-status" title="${esc(a.status.text)}">${esc(a.status.text)}</p>` : `<p class="agent-status muted">没报过状态</p>`}
+        ${role(a.note)}${a.status ? `<p class="agent-status" title="${esc(a.status.text)}">${esc(a.status.text)}</p>` : `<p class="agent-status muted">没报过状态</p>`}
         ${owes || mine || a.archived ? `<div class="agent-foot">${a.archived ? `<span class="tag">${esc(ARCHIVED[a.archived] || a.archived)}</span>` : ""}${owes}${mine}</div>` : ""}</div></li>`;
     };
     // Agents with nothing going on for three days, archived by hand or disabled fold into one line; any activity brings
