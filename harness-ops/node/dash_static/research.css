@@ -408,6 +408,12 @@ html.show-tech .research-view .research-report .report-code-toggle { display: no
 .research-view .compare-foot button.ghost.primary { min-height: 34px; padding: 0 18px; font-weight: 600; }
 .research-view .compare-answer > .note.task-error { margin: 0; color: var(--bad); }
 .research-view .compare-foot input[type="password"] { width: 11em; min-height: 34px; padding: 0 10px; font: inherit; font-size: var(--fs-sm); }
+/* On a phone the sentence gets its own row; the password and 提交 go under it. */
+@media (max-width: 600px) {
+  .research-view .compare-foot { flex-wrap: wrap; }
+  .research-view .compare-foot textarea { flex-basis: 100%; }
+  .research-view .compare-foot input[type="password"] { flex: 1; width: auto; }
+}
 .research-view .compare-answer > .compare-status { margin: 0; color: var(--warn); font-size: var(--fs-sm); font-weight: 600; }
 .research-view .compare-answer > .compare-status::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
 .research-view .compare-answer > .compare-status.task-error { color: var(--bad); }
