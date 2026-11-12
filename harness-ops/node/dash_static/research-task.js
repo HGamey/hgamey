@@ -624,6 +624,27 @@
 
   const DECISION = {adopt: ['采纳', 'ok'], defer: ['暂缓', 'off'], reject: ['拒绝', 'bad']};
   const NOTES_SHOWN = 5;
+  // Codes in a note's text (job and note IDs, commits, phone serials) are grey tags saying what they are, a job's
+  // linking to it; 显示技术细节 shows the code itself. Right after the word for it the tag is just "…".
+  const CODES = /\b(?:(?:n|ev|fb|rq)-[0-9a-f]{6,32}|(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{8,20})\b/g;
+  const CODE_WORD = {n: '留言', ev: '盲评', fb: '反馈', rq: '请求'};
+  function codedText(text, className) {
+    const box = el('p', null, className), value = String(text ?? '');
+    let at = 0;
+    for (const match of value.matchAll(CODES)) {
+      const code = match[0], before = value.slice(at, match.index), prefix = /^([a-z]+)-/.exec(code)?.[1];
+      const job = !prefix && /^[0-9a-f]{12}$/.test(code), word = prefix ? CODE_WORD[prefix] : job ? '作业' : /^[0-9a-f]+$/.test(code) ? '提交' : '手机';
+      box.append(before);
+      const chip = el(job ? 'a' : 'span', null, 'code-chip');
+      chip.title = code;
+      if (job) chip.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(code)}`);
+      chip.append(el('span', before.trimEnd().endsWith(word) ? '…' : word, 'code-word'), el('span', code, 'code-raw'));
+      box.append(chip);
+      at = match.index + code.length;
+    }
+    box.append(value.slice(at));
+    return box;
+  }
   async function threadSection(record, ctx, section) {
     const list = el('div', null, 'discuss-list'), status = el('p', null, 'note'), head = el('div', null, 'section-head'), count = el('span', null, 'count');
     let replyTo = null, byId = new Map();
@@ -654,11 +675,11 @@
         if (note.unanswered === true) top.append(tag('agent 未回应', 'warn'));
         if (note.ask) top.append(tag(note.question_unanswered === true ? '问人 · 待回复' : '问人', note.question_unanswered === true ? 'warn' : 'plain'));
         if (note.decision && DECISION[note.decision]) top.append(tag(...DECISION[note.decision]));
-        if (note.reply_to && !ids.has(note.reply_to)) top.append(el('span', `回复 ${note.reply_to}`, 'discuss-via'));
+        if (note.reply_to && !ids.has(note.reply_to)) top.append(el('span', `回复 ${note.reply_to}`, 'discuss-via tech'));
         top.append(timeEl(note.updated_at));
         const reply = el('button', '回复', note.question_unanswered === true ? 'ghost primary reply-btn' : 'link-btn reply-btn');
         reply.type = 'button'; reply.dataset.replyTo = note.id; top.append(reply);
-        main.append(top, el('p', note.text, 'discuss-text'));
+        main.append(top, codedText(note.text, 'discuss-text'));
         if (note.evidence_refs?.length) main.append(evidenceList(note.evidence_refs));
         entry.dataset.note = note.id; entry.id = 'note-' + note.id;
         const replies = children.get(note.id) || [];

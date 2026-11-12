@@ -212,6 +212,12 @@
 .research-view .discuss-head .reply-btn { margin-left: auto; }
 .research-view .discuss-head button.reply-btn.ghost { min-height: 28px; padding: 0 10px; }
 .research-view .discuss-via { font-size: var(--fs-xs); color: var(--muted); border: 0; padding: 0; margin: 0; }
+.research-view .code-chip { display: inline-block; margin: 0 1px; padding: 0 5px; border-radius: 4px; background: var(--wash); color: var(--muted);
+  font-size: .86em; line-height: 1.5; text-decoration: none; vertical-align: baseline; }
+.research-view a.code-chip:hover { color: var(--acc-ink); }
+.research-view .code-chip .code-raw { display: none; font-family: var(--mono); }
+html.show-tech .research-view .code-chip .code-raw { display: inline; }
+html.show-tech .research-view .code-chip .code-word { display: none; }
 .research-view .discuss-text { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-base); line-height: 1.75; color: var(--ink2); max-width: 80ch; }
 .research-view .discuss-entry.human > .discuss-main > .discuss-text { background: var(--acc-soft); color: var(--ink); padding: 8px 12px; border-radius: var(--radius); }
 .research-view .discuss-entry.asking > .discuss-main > .discuss-text { background: var(--warn-soft); color: var(--ink); padding: 8px 12px; border-radius: var(--radius); }
