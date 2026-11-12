@@ -3823,12 +3823,15 @@ class CoreFlowTests(unittest.TestCase):
                 if held:
                     break
                 page.wait_for_timeout(50)
-            first = [(slot, "bytes=0-0") for slot in "ABCD"]
-            self.assertEqual(reads, [*first, ("A", "bytes=1-"), ("A", f"bytes={cut + 1}-")], "with one file out, no other is asked for")
+            # Pictures come before videos: by the time video A is cut, both pictures are in and video B waits.
+            first = reads[:4]
+            self.assertCountEqual(first, [(slot, "bytes=0-0") for slot in "ABCD"])
+            pictures = [("C", "bytes=1-"), ("C", "bytes=1-"), ("D", "bytes=1-"), ("D", "bytes=1-")]
+            self.assertEqual(reads, [*first, *pictures, ("A", "bytes=1-"), ("A", f"bytes={cut + 1}-")], "with one file out, no other is asked for")
             page.wait_for_timeout(300)
-            self.assertEqual(len(reads), 6, "with one file out, no other is asked for")
+            self.assertEqual(len(reads), 10, "with one file out, no other is asked for")
             self.assertTrue(versions[0], "a resume says which version of the file it continues")
-            self.assertEqual(page.text_content(line), f"连接断了，几秒后接着下 · 1.0 / {total} MB")
+            self.assertEqual(page.text_content(line), f"连接断了，几秒后接着下 · {(len(files['C']) + len(files['D']) + cut) / 1048576:.1f} / {total} MB")
             self.assertEqual(page.text_content(f'{block} .compare-item[data-slot="A"] figcaption span'), "1.0 / 3.0 MB")
             self.assertTrue(page.is_visible(f"{block} .compare-load progress"))
             self.assertTrue(page.is_hidden(f"{block} .compare-load button:has-text('重试')"))
@@ -3836,8 +3839,7 @@ class CoreFlowTests(unittest.TestCase):
             held[0].continue_()
             page.wait_for_function(f"() => [...document.querySelectorAll('{block} video')].every(v => v.src.startsWith('blob:') && v.readyState >= 2)"
                                    f" && [...document.querySelectorAll('{block} img')].every(i => i.complete && i.naturalWidth === 64)", timeout=30000)
-            self.assertEqual(reads, [*first, ("A", "bytes=1-"), ("A", f"bytes={cut + 1}-"), ("B", "bytes=1-"), ("B", "bytes=1-"),
-                                     ("C", "bytes=1-"), ("C", "bytes=1-"), ("D", "bytes=1-"), ("D", "bytes=1-")])
+            self.assertEqual(reads, [*first, *pictures, ("A", "bytes=1-"), ("A", f"bytes={cut + 1}-"), ("B", "bytes=1-"), ("B", "bytes=1-")])
             copies = page.evaluate(f"""async () => Object.fromEntries(await Promise.all([...document.querySelectorAll('{block} .compare-item')].map(async item => {{
                 const blob = window.blobs[item.querySelector('video, img').src], hash = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
                 return [item.dataset.slot, [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('')];
