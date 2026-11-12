@@ -82,7 +82,7 @@ class MediaPreviewTests(unittest.TestCase):
 
             # A result's registered original.
             page.goto(base + "/dash/results#result=r-media")
-            page.wait_for_selector("#source-list .media-preview img")
+            page.wait_for_selector("#source-list .media-preview")
             self.loaded(page, "#source-list", 1)
             self.assertEqual(errors, [])
 
