@@ -9,9 +9,8 @@
   const dt = (t) => { const d = toDate(t); return isNaN(d) ? "" : d.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }); };
   const minsAgo = (t) => { const d = toDate(t); return isNaN(d) ? null : Math.max(0, Math.round((Date.now() - d) / 60000)); };
 
-  // 包名 → 大家叫的名字（标题里不出现包名）
-  const GAMES = { "com.miHoYo.Yuanshen": "原神", "com.miHoYo.GenshinImpact": "原神", "com.unity.megacity.metro": "Megacity", "com.miHoYo.hkrpg": "星穹铁道",
-    "com.miHoYo.Nap": "绝区零", "com.tencent.tmgp.sgame": "王者荣耀", "com.tencent.tmgp.pubgmhd": "和平精英" };
+  // 包名 → 大家叫的名字（标题里不出现包名），表在 game-names.js
+  const GAMES = window.HGGameNames || {};
   const gameName = (pkg) => GAMES[pkg] || (pkg ? pkg.split(".").pop() : "游戏");
   // 指标：名字、越低越好还是越高越好、变化时的说法
   const M = {

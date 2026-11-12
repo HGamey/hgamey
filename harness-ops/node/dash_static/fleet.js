@@ -34,8 +34,8 @@
       const cell = el('dd'); cell.append(value); return [el('dt', label), cell];
     }));
   }
-  // The app in front, by name: a game registered under 游戏与资源 by its title, else a common system app from this
-  // table, else its package name. A name keeps the package as a technical detail.
+  // The app in front, by name: a game registered under 游戏与资源 by its title, else a common game (game-names.js) or
+  // system app from this table, else its package name. A name keeps the package as a technical detail.
   const SYSTEM_APPS = {
     'com.android.launcher3': '桌面', 'com.android.launcher': '桌面', 'com.google.android.apps.nexuslauncher': '桌面',
     'com.hihonor.android.launcher': '桌面', 'com.huawei.android.launcher': '桌面', 'net.oneplus.launcher': '桌面',
@@ -57,7 +57,7 @@
   }
   function appName(foreground) {
     if (!foreground) return foreground;
-    const app = String(foreground).split('/')[0], name = gameNames.get(app) || SYSTEM_APPS[app];
+    const app = String(foreground).split('/')[0], name = gameNames.get(app) || window.HGGameNames?.[app] || SYSTEM_APPS[app];
     if (!name) return foreground;
     const shown = document.createDocumentFragment();
     shown.append(name, el('span', ` · ${foreground}`, 'tech'));
