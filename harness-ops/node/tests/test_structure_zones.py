@@ -1,4 +1,4 @@
-"""Changing a zone on the 结构 page: a computer's or an agent's card opens a choice of the zones there are, 未标区域 or a
+"""Changing a zone on the 结构 page: a computer's or an agent's card opens a choice of the zones there are, 未分区 or a
 new one. Only the zone: tag changes, at the revision the card was read at; the card moves to its new band at once,
 whatever place it was dragged to before. Without the steer password the cards have no way to change a zone and
 nothing is written; 修改区域 above the map asks for it."""
@@ -66,13 +66,13 @@ class StructureZoneTests(unittest.TestCase):
             self.assertTrue(self.inside(page, phone, "华为蓝区"), "its phone goes with it")
             self.assertNotIn(chengdu, stored(), "the place remembered in the old band is dropped")
 
-            # An agent to 未标区域: its zone tag goes, its other tags stay. The center to a new zone.
-            self.choose(page, "a:agent-a", "未标区域")
+            # An agent to 未分区: its zone tag goes, its other tags stay. The center to a new zone.
+            self.choose(page, "a:agent-a", "未分区")
             page.click("#zone-save")
             page.wait_for_selector("#zone-dialog", state="hidden")
             self.assertEqual(self.cli("GET", "/agents/agent-a")[1]["tags"], ["glm"])
-            page.wait_for_function("() => document.querySelector('#zones rect[data-zone=\"未标区域\"]')")
-            self.assertTrue(self.inside(page, "a:agent-a", "未标区域"))
+            page.wait_for_function("() => document.querySelector('#zones rect[data-zone=\"未分区\"]')")
+            self.assertTrue(self.inside(page, "a:agent-a", "未分区"))
             self.choose(page, "n:" + self.node_id, new="深圳办公室")
             page.click("#zone-save")
             page.wait_for_selector("#zone-dialog", state="hidden")
