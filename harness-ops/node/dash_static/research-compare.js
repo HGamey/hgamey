@@ -309,9 +309,17 @@
       if (!ref) return null;
       const result = ref.result_id ? await results.get(ref.result_id) : null;
       const source = result?.manifest?.sources?.find(s => s.name === ref.source_name);
-      return source?.job_id ? {job: source.job_id, path: source.path, name: ref.source_name} : {name: ref.source_name || ref.result_id};
+      return source?.job_id ? {job: source.job_id, path: source.path, name: ref.source_name, label: source.label}
+        : {name: source?.filename || ref.source_name || ref.result_id, label: source?.label};
     }));
   }
+  // What a person reads for each revealed source: the name the agent gave it, else the short file name.
+  const readable = sources => {
+    const short = names(sources.map(source => source?.path || source?.name || ''));
+    return sources.map((source, i) => source?.label || short[i]);
+  };
+  // Only a judgement a person gave on this page counts as one; an answer sent with a token (admin or agent) names nobody.
+  const byPerson = answer => answer?.audit?.auth_channel === 'dashboard_steer';
 
   function block(record, answer, ctx, U, fold) {
     const folded = fold && !answer && record.data.state !== 'open';
@@ -373,19 +381,25 @@
       });
       else for (const letter of v?.picked || []) cards.get(letter)?.classList.add('picked');
       const line = U.el('p', null, 'compare-verdict');
-      line.append(U.el('span', U.speaker(answer.audit || {}), 'compare-who'), U.el('strong', verdictText(v, s.pick) || '已答复'));
+      line.append(U.el('span', U.speaker(answer.audit || {}), 'compare-who'));
+      if (!byPerson(answer)) line.append(U.tag('评判人不明', 'warn'));
+      line.append(U.el('strong', verdictText(v, s.pick) || '已答复'));
       if (answer.data.text && answer.data.text !== verdictText(v, s.pick)) line.append(U.el('span', answer.data.text, 'compare-comment'));
       line.append(U.timeEl(answer.created_at));
       grid.before(line);
-      reveal(s.slots, U).then(sources => sources.forEach((source, i) => {
-        if (!source) return;
-        const where = U.el('span', null, 'compare-source'), card = cards.get(s.slots[i].slot);
-        if (source.job) {
-          const link = U.el('a', `${source.path}`); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(source.job)}`);
-          where.append(link, U.el('span', ` · 作业 ${source.job}`, 'muted'));
-        } else where.append(source.name);
-        card.querySelector('figcaption').append(where);
-      }));
+      reveal(s.slots, U).then(sources => {
+        const shown = readable(sources);
+        sources.forEach((source, i) => {
+          if (!source) return;
+          const where = U.el('span', null, 'compare-source'), card = cards.get(s.slots[i].slot);
+          where.append(U.el('b', shown[i], 'compare-source-name'));
+          if (source.job) {   // the file and its run, for whoever checks
+            const link = U.el('a', `${source.path}`, 'tech'); link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(source.job)}`);
+            where.append(link, U.el('span', ` · 作业 ${source.job}`, 'muted tech'));
+          }
+          card.querySelector('figcaption').append(where);
+        });
+      });
     } else if (record.data.state === 'open') article.append(form(record, s, state, ctx, U));
   }
 
@@ -508,8 +522,9 @@
       const item = block(r, answers[i], ctx, U, true);
       (answers[i] ? done : r.data.state !== 'open' ? closed : open).push(item);
     });
-    // The comparison a task's top shows: the newest answered ranking, else the newest answered comparison.
-    const answered = requests.map((r, i) => [r, answers[i], verdict(answers[i]?.data.evaluation)]).filter(([, , v]) => v?.picked?.length)
+    // The comparison a task's top shows: the newest ranking a person gave on the page, else their newest answered comparison.
+    const answered = requests.map((r, i) => [r, answers[i], verdict(answers[i]?.data.evaluation)])
+      .filter(([, a, v]) => v?.picked?.length && byPerson(a))
       .sort(([, a], [, b]) => b.created_at - a.created_at);
     const [kr, ka, kv] = answered.find(([, , v]) => v.gaps) || answered[0] || [];
     const section = (items, title, id) => {
@@ -537,12 +552,12 @@
     if (!v.gaps) order.append(U.el('span', s.pick === 1 ? '更好' : '入选', 'summary-gap'));
     box.append(head, U.el('p', record.data.title, 'summary-title'), order);
     reveal(s.slots, U).then(sources => {
-      const named = names(sources.map(source => source?.path || source?.name || ''));
+      const named = readable(sources);
       sources.forEach((source, i) => {
         const chip = chips.get(s.slots[i].slot);
         if (!chip || !named[i]) return;
         chip.append(U.el('span', named[i]));
-        chip.title = source.path || source.name;
+        chip.title = source?.path || source?.name || '';
       });
     });
     return box;
