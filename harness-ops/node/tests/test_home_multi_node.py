@@ -21,6 +21,7 @@ class HomeMultiNodeTests(unittest.TestCase):
                 raise
             self.skipTest("playwright is not installed")
         self.phone(self.worker, 'USB-B', 'clear')   # also keeps the worker's queue from starting jobs
+        self.worker.jobs.fleet._fleet["devices"].append({"serial": "emulator-5554", "model": "sdk_gphone", "online": True})   # not registered there
         self.start_worker()
         code, _ = self.center.call('POST', '/research-state/research/sr-far', {
             "schema": "phonefarm/research-write@1", "operation_id": "create-sr-far", "base_revision": None,
@@ -57,7 +58,10 @@ class HomeMultiNodeTests(unittest.TestCase):
                 group = '#phones .phone-group[data-computer="worker"]'
                 page.wait_for_selector(group)
                 self.assertIn("NX809J", page.text_content(group))
-                self.assertIn("空闲", page.text_content(group + " .tag"))
+                self.assertIn("空闲", page.text_content(group + ' .phone-card:has-text("NX809J") .tag'))
+                # A phone its computer has not registered says so, not just 不空闲; no 无画面 box for a picture never taken here.
+                self.assertEqual(page.text_content(group + ' .phone-card:has-text("sdk_gphone") .tag'), "未登记")
+                self.assertNotIn("无画面", page.text_content(group))
                 self.assertEqual(page.eval_on_selector_all("#phones .phone-computer", "e => e.map(x => x.firstChild.textContent)"), ["本机", "worker"])
                 row = '#tasks li[data-task="sr-far"]'
                 page.wait_for_selector(row + " .run")

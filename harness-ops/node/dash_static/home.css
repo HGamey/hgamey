@@ -198,6 +198,7 @@ details.gm pre { font-size: 14px; }
   display: grid; place-items: center; text-decoration: none; }
 .home-view .phone-card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .home-view .phone-card .ph { font-size: var(--fs-xs); color: var(--muted); padding: 0; }
+.home-view .phone-card .thumb.remote { color: var(--faint); }
 .home-view .phone-card .meta { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .home-view .phone-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); min-width: 0; }
 .home-view .phone-card .name { font-size: var(--fs-base); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

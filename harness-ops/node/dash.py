@@ -1057,7 +1057,8 @@ class Dash:
 
     def _elsewhere(self):
         """Phones on the other joined computers, grouped by computer, from their last report (nothing is sampled).
-        `idle` only says a phone was last seen idle; its computer takes the lock when a job runs there."""
+        `idle` only says a phone was last seen idle; its computer takes the lock when a job runs there. `registered`:
+        the phone is in that computer's device registry, so jobs can be sent to it."""
         directory = getattr(self.job_service, "directory", None) if self.job_service else None
         if directory is None:
             return []
@@ -1079,7 +1080,8 @@ class Dash:
                 row.append({"ref": phone["ref"], "serial": phone["serial"], "idle": phone["idle"],
                             "model": " ".join(x for x in (seen.get("brand"), seen.get("model")) if x) or None,
                             "battery_pct": b.get("level_pct"), "soc_c": t.get("soc_max_c"),
-                            "battery_c": b.get("temp_c") or t.get("battery_c"), "holder": held.get(phone["ref"])})
+                            "battery_c": b.get("temp_c") or t.get("battery_c"), "holder": held.get(phone["ref"]),
+                            "registered": phone["device_binding"] is not None})
             out.append({"name": entry["name"], "node_id": entry["node_id"], "connected": connected,
                         "sampled_at": fleet.get("sampled_at"), "stale": bool(entry.get("stale") or fleet.get("stale", True)),
                         "phones": row})
