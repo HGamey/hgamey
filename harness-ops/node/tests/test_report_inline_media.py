@@ -45,14 +45,14 @@ class ReportInlineMediaTests(unittest.TestCase):
     def fixture(self):
         out = Path(self.jobs.path(JOB, "out"))
         out.mkdir(parents=True)
-        for name, raw in (("fig.png", png(b"\x30\x60\x90")), ("anim.gif", GIF), ("chart.svg", SVG), ("clip.webm", CLIP), ("far.png", png(b"\x10\x10\x10"))):
+        for name, raw in (("fig.png", png(b"\x30\x60\x90")), ("anim.gif", GIF), ("chart.svg", SVG), ("clip.webm", CLIP), ("native.mp4", CLIP), ("far.png", png(b"\x10\x10\x10"))):
             (out / name).write_bytes(raw)
         self.jobs._write_meta(JOB, {"id": JOB, "bin": "custom", "argv": ["plot"], "research_id": "sr-fig", "started": 1, "exit": 0})
         self.task("sr-fig")
         [drawn] = self.attach("sr-fig", ("drawn.png", png(b"\x90\x30\x30")))
         summary = "\n".join(["## 结论", "第一段。", f"![帧率曲线](job:{JOB}:fig.png)", "中间一段。", f"![动图](job:{JOB}:anim.gif)",
                              f"![示意](job:{JOB}:chart.svg)", f"![自己画的图](attachment:{drawn})", f"![录像](job:{JOB}:clip.webm)",
-                             f"![离线](job:{JOB}:far.png)", "最后一段。"])
+                             f"![原生录屏（20 秒）](job:{JOB}:native.mp4)", f"![离线](job:{JOB}:far.png)", "最后一段。"])
         code, _, err = self.pf(core.ADMIN, "research", "deliver", "sr-fig", "--summary", summary, "--artifact", f"job:{JOB}",
                                "--artifact", f"attachment:{drawn}")
         self.assertEqual(code, 0, err)
@@ -92,10 +92,10 @@ class ReportInlineMediaTests(unittest.TestCase):
             report = "#report .research-report"
             page.wait_for_selector(report + " figure.report-figure")
             # In the order of the text, each where it is named.
-            self.assertEqual(page.eval_on_selector_all(report + " > *", "e => e.map(x => x.tagName === 'FIGURE' ? 'figure:' + x.querySelector('figcaption').textContent : x.tagName + ':' + x.textContent)"),
+            self.assertEqual(page.eval_on_selector_all(report + " > *", "e => e.map(x => x.tagName === 'FIGURE' ? 'figure:' + x.querySelector('figcaption span').textContent : x.tagName + ':' + x.textContent)"),
                              ["H2:结论", "P:第一段。", "figure:帧率曲线", "P:中间一段。", "figure:动图", "figure:示意", "figure:自己画的图",
-                              "figure:录像", "figure:离线", "P:最后一段。"])
-            figure = lambda caption: f"{report} > figure.report-figure:nth-of-type({['帧率曲线', '动图', '示意', '自己画的图', '录像', '离线'].index(caption) + 1})"   # noqa: E731
+                              "figure:录像", "figure:原生录屏（20 秒）", "figure:离线", "P:最后一段。"])
+            figure = lambda caption: f"{report} > figure.report-figure:nth-of-type({['帧率曲线', '动图', '示意', '自己画的图', '录像', '原生录屏（20 秒）', '离线'].index(caption) + 1})"   # noqa: E731
             loaded = "s => [...document.querySelectorAll(s)].filter(i => i.complete && i.naturalWidth > 0).length"
             page.wait_for_function(f"() => ({loaded})('{report} figure.report-figure img') === 4")
             width = page.eval_on_selector(report, "e => e.getBoundingClientRect().width")
@@ -104,6 +104,13 @@ class ReportInlineMediaTests(unittest.TestCase):
             video = figure("录像") + " video"
             self.assertTrue(page.eval_on_selector(video, "v => v.controls"))
             page.wait_for_function("s => document.querySelector(s)?.readyState >= 1", arg=video)
+            self.assertTrue(page.eval_on_selector(figure("原生录屏（20 秒）") + " video", "v => v.controls"), "an mp4 plays in place too")
+            # 放大 opens the video in the viewer.
+            page.click(figure("录像") + " .report-zoom")
+            page.wait_for_selector("dialog.compare-viewer[open] video.viewer-media")
+            self.assertIn("path=clip.webm", page.get_attribute("dialog.compare-viewer video.viewer-media", "src"))
+            page.keyboard.press("Escape")
+            page.wait_for_selector("dialog.compare-viewer", state="detached")
             unread = figure("离线") + " .report-unread"
             page.wait_for_selector(unread)
             self.assertIn("无法预览", page.text_content(unread))
@@ -119,7 +126,7 @@ class ReportInlineMediaTests(unittest.TestCase):
             page.goto(base + "/dash/research?kind=research&id=sr-fig")
             page.wait_for_selector(".summary-conclusion .research-report")
             conclusion = page.text_content(".summary-conclusion .research-report")
-            for label in ("[图] 帧率曲线", "[图] 自己画的图", "[视频] 录像"):
+            for label in ("[图] 帧率曲线", "[图] 自己画的图", "[视频] 录像", "[视频] 原生录屏（20 秒）"):
                 self.assertIn(label, conclusion)
             self.assertEqual(page.locator(".summary-conclusion :is(img, video, figure)").count(), 0)
             self.assertEqual(errors, [])

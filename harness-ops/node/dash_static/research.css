@@ -45,7 +45,8 @@
 .research-report .report-figure { margin:1em 0; }
 .research-report .report-media { display:block; width:100%; padding:0; border:0; background:none; cursor:zoom-in; }
 .research-report .report-figure :is(img, video) { display:block; width:100%; height:auto; border-radius:6px; border:1px solid var(--line); background:var(--panel); }
-.research-report .report-figure figcaption { margin-top:6px; font-size:13px; line-height:1.5; color:var(--muted); text-align:center; }
+.research-report .report-figure figcaption { display:flex; justify-content:center; align-items:baseline; gap:8px; margin-top:6px; font-size:13px; line-height:1.5; color:var(--muted); }
+.research-report .report-zoom { padding:0 6px; border:1px solid var(--line); border-radius:6px; background:none; color:var(--ink2); font:inherit; cursor:zoom-in; }
 .research-report .report-unread { display:flex; flex-wrap:wrap; gap:8px; align-items:baseline; margin:0; padding:12px; border:1px dashed var(--line); border-radius:6px; }
 .research-report .report-media-label { color:var(--ink2); }
 .research-history button { margin-bottom:6px; }

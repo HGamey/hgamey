@@ -165,18 +165,28 @@
       link.href = HGTarget.url(source); link.download = ref.kind === 'attachment' ? ref.attachment_id : ref.path.split('/').pop();
       box.append(el('span', '无法预览', 'note'), link); node.replaceWith(box);
     };
+    const under = el('figcaption');
+    under.append(el('span', label));
+    // A video plays where it stands; 放大 opens it in the viewer.
     const video = () => {
-      const player = el('video');
+      const player = el('video'), zoom = el('button', '放大', 'report-zoom');
       Object.assign(player, {controls: true, preload: 'metadata', playsInline: true});
       player.setAttribute('aria-label', label);
-      player.onerror = () => unread(player);
+      player.onerror = () => { zoom.remove(); unread(player); };
       near(player, () => { player.src = HGTarget.url(source) + '#t=0.1'; });   // paints the first frame without playing
+      zoom.type = 'button'; zoom.setAttribute('aria-label', '放大播放 ' + label);
+      zoom.onclick = () => {
+        player.pause();
+        if (window.HGResearchCompare) HGResearchCompare.viewer(document.body, [{slot: label, url: HGTarget.url(source), kind: 'video'}], label, util, {label: '放大查看'});
+        else window.open(HGTarget.url(source), '_blank', 'noopener');
+      };
+      under.append(zoom);
       return player;
     };
-    if (isVideo(ref)) { figure.append(video(), el('figcaption', label)); return figure; }
+    if (isVideo(ref)) { figure.append(video(), under); return figure; }
     const button = el('button', null, 'report-media'), image = el('img');
     button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + label); image.alt = label;
-    button.append(image); figure.append(button, el('figcaption', label));
+    button.append(image); figure.append(button, under);
     const epoch = imageEpoch;
     near(figure, async () => {
       try {
