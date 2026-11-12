@@ -11,8 +11,9 @@
 <main class="jobs-page structure-page">
   <div class="page-heading">
     <div><h1 id="structure-heading" tabindex="-1">结构</h1><p id="facts" class="st-facts"></p></div>
-    <div class="st-heading-actions"><button id="archived-agents" class="ghost" type="button" hidden></button><button id="relayout" class="ghost" type="button" disabled>重排</button></div>
+    <div class="st-heading-actions"><button id="archived-agents" class="ghost" type="button" hidden></button><button id="zone-edit" class="ghost" type="button" hidden>修改区域</button><button id="relayout" class="ghost" type="button" disabled>重排</button></div>
   </div>
+  <form id="edit-unlock" class="st-edit-unlock" hidden><input id="edit-steer" type="password" autocomplete="current-password" placeholder="掌舵密码" aria-label="掌舵密码"><button class="ghost" type="submit">解锁</button><span id="edit-message" class="note" role="status"></span></form>
   <p id="message" class="note" role="status" hidden></p>
   <div id="stage" class="st-stage" hidden>
     <div id="world" class="st-world" role="group" aria-label="结构图">

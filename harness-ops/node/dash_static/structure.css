@@ -126,3 +126,7 @@
 .st-zone-unlock-row input { flex: 1; min-width: 0; }
 .st-zone-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: var(--sp-3); }
 .st-heading-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.st-stage:not(.st-editable) .st-zone-btn { display: none; }
+.st-edit-unlock { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin: -4px 0 12px; }
+.st-edit-unlock .note { flex-basis: 100%; text-align: right; margin: 0; }
+.st-edit-unlock .note:empty { display: none; }

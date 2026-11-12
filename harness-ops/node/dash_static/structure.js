@@ -504,9 +504,14 @@
     $('zone-message').textContent = note;
     $('zone-message').classList.toggle('task-error', error);
   }
+  // The cards' zone buttons are there only once the steer password is unlocked; a viewer sees none, and 修改区域 above
+  // the map asks for the password.
   async function readAccess() {
     try { access = await (await HGTarget.fetch(API + '/access', {credentials: 'same-origin', cache: 'no-store'})).json(); }
     catch (_) { access = null; }
+    $('stage').classList.toggle('st-editable', !!access?.steer);
+    $('zone-edit').hidden = !!access?.steer || !access?.steer_configured;
+    if (access?.steer) $('edit-unlock').hidden = true;
     if (editing) renderZone();
   }
   function openZone(id) {
@@ -575,10 +580,20 @@
   $('zone-dialog').addEventListener('cancel', event => { event.preventDefault(); closeZone(); });
   $('zone-unlock-submit').addEventListener('click', unlockZone);
   $('zone-steer').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); unlockZone(); } });
+  $('zone-edit').addEventListener('click', () => { $('edit-unlock').hidden = false; $('edit-message').textContent = ''; $('edit-steer').focus(); });
+  $('edit-unlock').addEventListener('submit', async event => {
+    event.preventDefault();
+    const pw = $('edit-steer').value;
+    $('edit-steer').value = '';
+    if (!pw) return;
+    try { await post(API + '/steer/unlock', {pw}); await readAccess(); }
+    catch (error) { $('edit-message').textContent = `解锁失败：${error.message}`; }
+  });
   let showArchived = false;
   $('archived-agents').addEventListener('click', () => { showArchived = !showArchived; refresh(); });
   $('refresh').addEventListener('click', refresh);
   document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(timer); else refresh(); });
   addEventListener('resize', () => { if (data) place(); });
   refresh();
+  readAccess();
 })();
