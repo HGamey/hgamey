@@ -28,7 +28,41 @@
     if (className) node.className = className;
     return node;
   }
-  function facts(node, rows) { node.replaceChildren(...rows.flatMap(([label, value]) => [el('dt', label), el('dd', text(value))])); }
+  function facts(node, rows) {
+    node.replaceChildren(...rows.flatMap(([label, value]) => {
+      if (!(value instanceof Node)) return [el('dt', label), el('dd', text(value))];
+      const cell = el('dd'); cell.append(value); return [el('dt', label), cell];
+    }));
+  }
+  // The app in front, by name: a game registered under 游戏与资源 by its title, else a common system app from this
+  // table, else its package name. A name keeps the package as a technical detail.
+  const SYSTEM_APPS = {
+    'com.android.launcher3': '桌面', 'com.android.launcher': '桌面', 'com.google.android.apps.nexuslauncher': '桌面',
+    'com.hihonor.android.launcher': '桌面', 'com.huawei.android.launcher': '桌面', 'net.oneplus.launcher': '桌面',
+    'com.oppo.launcher': '桌面', 'cn.nubia.launcher': '桌面', 'com.miui.home': '桌面', 'com.bbk.launcher2': '桌面',
+    'com.android.systemui': '系统界面', 'com.android.settings': '设置', 'com.android.chrome': 'Chrome 浏览器',
+    'com.heytap.browser': 'OPPO 浏览器', 'cn.nubia.browser': '努比亚浏览器', 'com.quark.browser': '夸克浏览器',
+    'com.huawei.browser': '华为浏览器', 'com.hihonor.baidu.browser': '荣耀浏览器', 'com.android.browser': '浏览器',
+  };
+  const gameNames = new Map();
+  let gamesRead = null;
+  function readGames() {
+    gamesRead = gamesRead || json('/dash/api/games').then(value => {
+      for (const game of value.items || []) {
+        const app = game.manifest?.application?.package, title = (game.title || game.manifest?.title || '').split(/ \/ | · /)[0].trim();
+        if (app && title && !gameNames.has(app)) gameNames.set(app, title);
+      }
+      if (latest) renderSelected();
+    }, () => { gamesRead = null; });
+  }
+  function appName(foreground) {
+    if (!foreground) return foreground;
+    const app = String(foreground).split('/')[0], name = gameNames.get(app) || SYSTEM_APPS[app];
+    if (!name) return foreground;
+    const shown = document.createDocumentFragment();
+    shown.append(name, el('span', ` · ${foreground}`, 'tech'));
+    return shown;
+  }
   const sourceDirty = value => value === true ? '有本地修改' : value === false ? '声明无本地修改' : '未知';
   // Automatic updates: each computer's running version against the center's, which is the recommended one. A computer
   // reports its own; a snapshot that is no longer current says when it was reported. A computer that reports nothing
@@ -557,7 +591,7 @@
     facts(detail, [['系统', device.os || device.platform], ['连接状态', device.state],
       ['Root', device.root === true ? '已探测到' : device.root === false ? '未探测到' : '未知'],
       ['采样方式', ({full: '完整采样', light: '轻量采样', none: '未探测'})[device.probe_depth] || text(device.probe_depth)],
-      ['前台应用', device.foreground], ['供电状态', device.battery?.on_battery === true ? '电池供电' : device.battery?.on_battery === false ? '非电池供电' : '未知']]);
+      ['前台应用', appName(device.foreground)], ['供电状态', device.battery?.on_battery === true ? '电池供电' : device.battery?.on_battery === false ? '非电池供电' : '未知']]);
     card.append(metrics, detail);
     const extra = el('details', null, 'device-details');
     extra.dataset.device = JSON.stringify([selected, device.transport, device.serial]);
@@ -765,5 +799,5 @@
   });
   window.addEventListener('pagehide', () => { disposed = true; registryController?.abort(); closeUnlock(); closeInvite(); suspend(); });
   window.addEventListener('pageshow', event => { if (event.persisted) { disposed = false; schedule(); } });
-  renderDirectory(); loadAccess(); refresh(true);
+  renderDirectory(); loadAccess(); refresh(true); readGames();
 })();
