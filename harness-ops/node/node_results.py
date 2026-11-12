@@ -198,15 +198,18 @@ def manifest(value, internal=False):
             raise ValueError("source names must be unique")
         names.add(name)
         kind = source.get("kind")
+        # A comparison's sources may carry the name a person reads once the comparison is answered (原生, 双线性 …).
+        if kind in ("job_output", "attachment") and "label" in source:
+            source["label"] = text(source["label"], 80, True)
         if kind == "job_output":
-            object_fields(source, {"name", "kind", "job_id", "path"})
+            object_fields(source, {"name", "kind", "job_id", "path", "label"})
             if job_id(source.get("job_id")) is None:
                 raise ValueError("job output requires a job_id")
             path = text(source.get("path"), 2048, True)
             if path.startswith("/") or any(part in ("", ".", "..") for part in path.split("/")):
                 raise ValueError("source path must be relative to job/out")
         elif kind == "attachment":
-            object_fields(source, {"name", "kind", "attachment_id", "filename", "local_path"})
+            object_fields(source, {"name", "kind", "attachment_id", "filename", "local_path", "label"})
             if not re.fullmatch(r"[0-9a-f]{32}", source.get("attachment_id", "")):
                 raise ValueError("attachment source requires a 32-character attachment_id")
             source["filename"] = text(source.get("filename"), 128, True)

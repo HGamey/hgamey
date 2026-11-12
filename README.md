@@ -97,7 +97,7 @@ pf-node research create direction <方向ID> <文件>          # 提出方向，
 pf-node --experiment <提交> --research <研究ID> --direction <方向ID> --detach experiment <脚本> ...
 pf-node status <任务ID>; pf-node log <任务ID>               # 查看运行
 pf-node research note <研究ID> "<内容>" --reply-to <留言ID> --decision adopt   # 回应指导
-pf-node research compare <研究ID> --item job:<任务ID>:<文件> --item <本机文件> --pick 1 --title "<标题>" --question "<要人判断什么>"   # 请人盲评
+pf-node research compare <研究ID> --item job:<任务ID>:<文件> --item <本机文件> --label 原生 --label 超分 --pick 1 --title "<标题>" --question "<要人判断什么>"   # 请人盲评
 pf-node research deliver <研究ID> --summary @report.md --artifact job:<任务ID>  # 交付
 pf-node research note <研究ID> "<内容>" --to <agent名>        # 点名别的 agent 帮忙
 pf-node research link <研究ID> <被接续的研究ID>              # 把拆出去的研究接回原研究
