@@ -36,6 +36,14 @@ class CenterJoinTests(unittest.TestCase):
             "schema": "phonefarm/device-scopes@1", "registry_revision": 1, "unknown": False, "queue_waiting": False,
             "global": {"status": "clear", "error": None}, "devices": []}}
 
+    def restarted(self, times=1, within=10):
+        """How many restarts the service asked for, once it has asked for `times` of them or `within` seconds passed: it
+        answers the join before it asks for the restart."""
+        until = time.monotonic() + within
+        while self.restarts.call_count < times and time.monotonic() < until:
+            time.sleep(0.02)
+        return self.restarts.call_count
+
     def url(self, side, path):
         return "http://%s:%d%s" % (*side.address, path)
 
@@ -74,7 +82,7 @@ class CenterJoinTests(unittest.TestCase):
                              f"已接入 {self.url(self.center, '')}，节点名 lab-c。这台电脑正在作为从节点重启。 到中心查看 →")
             self.assertEqual(page.get_attribute("#join-message a", "href"), self.url(self.center, "/dash/fleet"))
             self.assertTrue(page.is_disabled("#join-submit"))
-            self.assertEqual(self.restarts.call_count, 1)
+            self.assertEqual(self.restarted(), 1)
             joined = json.loads(Path(self.node.jobs.data_root, "_node", "center.json").read_text())
             self.assertEqual((joined["url"], joined["center_id"]), (self.url(self.center, ""), self.center.node_id))
 
@@ -117,7 +125,7 @@ class CenterJoinTests(unittest.TestCase):
         self.assertEqual(self.restarts.call_count, 0)
         self.assertFalse(Path(self.node.jobs.data_root, "_node", "center.json").exists())
         self.assertEqual(self.node.web("POST", "/center-join", {"code": good})[0], 201)
-        self.assertEqual(self.restarts.call_count, 1)
+        self.assertEqual(self.restarted(), 1)
         code, reply = self.node.web("POST", "/center-join", {"code": good})
         self.assertEqual((code, reply["error"]), (400, "这个接入码已经用过了，到中心重新生成一个"))
 
