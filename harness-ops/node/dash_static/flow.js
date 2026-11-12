@@ -58,7 +58,8 @@
     const link = el('a', name(file.path), 'flow-file');
     link.href = HGTarget.url(`/dash/api/jobs/${encodeURIComponent(file.job)}/out?${new URLSearchParams({path: file.path})}`);
     link.download = name(file.path); link.title = file.path;
-    return [link, ...(file.size != null ? [el('span', O.size(file.size), 'flow-meta')] : [])];
+    const shown = window.HGMedia?.preview(`/dash/api/jobs/${encodeURIComponent(file.job)}/out?${new URLSearchParams({path: file.path})}`, file.path);
+    return [link, ...(file.size != null ? [el('span', O.size(file.size), 'flow-meta')] : []), ...(shown ? [shown] : [])];
   }
   const fileLine = file => [el('span', name(file.path), 'flow-file'), ...(file.size != null ? [el('span', O.size(file.size), 'flow-meta')] : []),
     ...(file.sha256 ? [el('span', 'sha ' + short(file.sha256), 'flow-meta')] : [])];

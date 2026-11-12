@@ -166,7 +166,11 @@
     if (observation?.size != null) rows.push(['登记时大小', `${observation.size} bytes`]);
     if (observation?.sha256) rows.push(['登记时 SHA256', observation.sha256]);
     facts(values, rows); item.append(values);
-    if (current?.status === 'available' && current.url && source.kind !== 'external_reference') item.append(link(current.url, '打开登记原件', target));
+    if (current?.status === 'available' && current.url && source.kind !== 'external_reference') {
+      item.append(link(current.url, '打开登记原件', target));
+      const named = source.path || source.filename || '', shown = /^\/(results|result-imports)\//.test(current.url) && window.HGMedia?.preview('/dash/api' + current.url, named);
+      if (shown) item.append(shown);
+    }
     return item;
   }
   function renderDetail(value) {

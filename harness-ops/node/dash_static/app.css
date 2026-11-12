@@ -208,6 +208,13 @@ button.ghost { font: inherit; font-size: 14px; background: none; border: 1px sol
 .btn.primary:hover { filter: brightness(1.06); }
 .btn.danger { color: var(--bad-ink); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
+/* A picture's or a video's preview under a file link (media-preview.js) */
+.media-preview { display: inline-block; vertical-align: top; margin: 4px 0; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); cursor: zoom-in; line-height: 0; }
+.media-preview img { display: block; max-width: min(240px, 100%); max-height: 160px; object-fit: contain; }
+.media-preview.video { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 4px; cursor: auto; line-height: normal; }
+.media-preview video { display: block; max-width: min(280px, 100%); max-height: 160px; }
+.media-zoom { font: inherit; font-size: 12px; padding: 0 6px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--ink2); cursor: zoom-in; }
+.media-unread { font-size: 12px; }
 .btn.sm { font-size: 14px; padding: 4px 10px; }
 
 /* ═════════ 首页 ═════════ */
