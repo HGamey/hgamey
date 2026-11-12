@@ -315,6 +315,8 @@ html.show-tech .research-view .research-report .report-code-toggle { display: no
 .research-view .agents-archived { margin-top: var(--sp-3); }
 .research-view .agents-archived > summary { padding: var(--sp-2) 0; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; }
 .research-view .agents-archived tbody tr { opacity: .75; }
+.research-view #agents-card:not(.can-manage) .agent-actions { display: none; }
+.research-view #agents-manage { margin-left: var(--sp-3); }
 /* Archive, disable, enable and a new token: one dialog; a new token is shown in it once */
 .agent-dialog { width: min(560px, calc(100vw - 32px)); padding: var(--sp-5); border: 1px solid var(--line); border-radius: var(--radius-lg);
   background: var(--card); color: var(--ink); box-shadow: var(--shadow-pop); }

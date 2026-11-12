@@ -147,11 +147,12 @@ class AgentArchiveTests(unittest.TestCase):
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto("http://%s:%d/dash/research#agents-directory" % self.address)
-            # Without the steer password it asks to unlock first.
-            page.click('#agents-list tr[data-agent-row="quiet"] [data-act="token"]')
+            # Without the steer password the changes are not offered: 管理 unlocks them first.
+            page.click("#agents-manage")
             page.wait_for_selector("#agent-dialog #agent-steer")
             page.fill("#agent-steer", core.STEER)
             page.click("#agent-unlock")
+            page.click('#agents-list tr[data-agent-row="quiet"] [data-act="token"]')
             page.wait_for_selector("#agent-dialog .agent-warning")
             self.assertNotIn("is-running", page.get_attribute("#agent-dialog .agent-warning", "class"))
             self.assertIn("它现在用的标识立即失效", page.text_content("#agent-dialog .agent-warning"))

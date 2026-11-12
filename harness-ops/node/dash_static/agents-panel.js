@@ -37,7 +37,7 @@
             act("disable", "停用", " danger"), act("token", "重新获取标识")].join(" ");
   }
   function table(items, runningByAgent, owed) {
-    return `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中作业</th><th>上次签到</th><th>最近活动</th><th>待办</th><th>当前状态</th><th>操作</th></tr></thead><tbody>${
+    return `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中作业</th><th>上次签到</th><th>最近活动</th><th>待办</th><th>当前状态</th><th class="agent-actions">操作</th></tr></thead><tbody>${
       items.map(a => `<tr data-agent-row="${esc(a.name)}">
         <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button>${role(a.note)}${a.archived ? `<div class="muted" style="font-size:12px">${esc(ARCHIVED[a.archived] || a.archived)}</div>` : ""}</td>
         <td>${tags(a.tags || [])}</td>
@@ -49,13 +49,30 @@
         <td class="agent-actions">${actions(a)}</td>
       </tr>`).join("")}</tbody></table>`;
   }
+  // Archiving, disabling and new tokens are for whoever holds the steer password: until it is unlocked their column is
+  // not shown, and 管理 unlocks it.
+  function manage(access) {
+    const card = document.getElementById("agents-card"), head = card?.querySelector(".card-h");
+    if (!head) return;
+    let button = document.getElementById("agents-manage");
+    if (!button) {
+      button = document.createElement("button");
+      button.id = "agents-manage"; button.type = "button"; button.className = "btn sm"; button.textContent = "管理";
+      button.addEventListener("click", async () => { if (await steer()) { if (dialog?.open) dialog.close(); await load(); } });
+      head.append(button);
+    }
+    card.classList.toggle("can-manage", !!access?.steer);
+    button.hidden = !!access?.steer || !access?.steer_configured;
+  }
   async function load() {
     const list = document.getElementById("agents-list");
     if (!list) return;
-    const [registry, jobs] = await Promise.all([
+    const [registry, jobs, access] = await Promise.all([
       api("/dash/api/agents").catch(() => ({ agents: [] })),
       api("/dash/api/jobs?limit=50").catch(() => ({ items: [] })),
+      api("/dash/api/access").catch(() => null),
     ]);
+    manage(access);
     const runningByAgent = {};
     for (const j of jobs.items || []) {
       if (active(j) && j.actor_id) runningByAgent[j.actor_id] = (runningByAgent[j.actor_id] || 0) + 1;
