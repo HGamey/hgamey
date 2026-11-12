@@ -24,10 +24,19 @@ const KNOWN = {'kimi-researcher': ['#7cc4ff', 'K', 'kimi'], 'glm-researcher': ['
   'codex-researcher': ['#9be38a', 'X', 'codex']};
 const SPARE = ['#7fd6e8', '#f2a6a0', '#c8d67a', '#e0b3ff', '#ffc98a'];
 const spare = new Map();
+const shortName = name => KNOWN[name]?.[2] ?? String(name || '?').replace(/-(researcher|agent)$/, '');
+// Short names two of the agents on the page share (claude-lead and claude-researcher are both claude): those agents
+// read in full.
+let shared = new Set();
+export function knowAgents(names) {
+  const by = new Map();
+  for (const name of new Set(names.filter(Boolean))) by.set(shortName(name), (by.get(shortName(name)) || 0) + 1);
+  shared = new Set([...by].filter(([, count]) => count > 1).map(([n]) => n));
+}
 export function agentMeta(name) {
-  if (KNOWN[name]) { const [c, s, n] = KNOWN[name]; return {c, s, n}; }
+  const n = shared.has(shortName(name)) ? String(name) : shortName(name);
+  if (KNOWN[name]) { const [c, s] = KNOWN[name]; return {c, s, n}; }
   if (!spare.has(name)) spare.set(name, SPARE[spare.size % SPARE.length]);
-  const n = String(name || '?').replace(/-(researcher|agent)$/, '');
   return {c: spare.get(name), s: n.slice(0, 1).toUpperCase(), n};
 }
 export const agentName = a => a === 'human' ? '人' : a ? agentMeta(a).n : '平台';
