@@ -528,7 +528,11 @@
     const held = lease?.status === 'held' || lock?.status === 'held';
     const state = blocked ? '需要恢复' : unknown ? '身份或状态未知' : held ? (entries.some(e => e.role === 'device_lease') ? '设备租约占用' : entries.some(e => e.role === 'outer_queue') ? '外层队列占用' : '占用中 · 身份未确认') : '锁记录空闲';
     badge($('lock-state'), historical ? `旧记录 · ${state}（当前未知）` : state, historical || blocked || unknown || held ? 'unknown' : '');
-    $('lock-owner').textContent = lock?.held_by ? `标签：${lock.held_by}` : held || blocked || unknown ? '未记录展示标签' : '没有占用标签';
+    // Nothing held, nothing to recover: one line says so, and how the lock reads (its records, heartbeat, events) is a
+    // technical detail. Anything held, blocked or unknown shows in full.
+    const idle = known && !held && !historical && !entries.length && !lease?.error && !lock?.error;
+    document.querySelector('.lock-panel').classList.toggle('lock-idle', idle);
+    $('lock-owner').textContent = idle ? '没有手机被占用' : lock?.held_by ? `标签：${lock.held_by}` : held || blocked || unknown ? '未记录展示标签' : '没有占用标签';
     const reason = lease?.error || lock?.error;
     $('lock-message').textContent = (historical ? `上次目录观测：${time(snapshotAt)}；保留旧记录供核查，当前锁与设备可用性未确认。 ` : '') + (blocked ? `恢复屏障保留；持有者退出或心跳过期不代表恢复完成。${reason ? ` ${reason}` : ''}` :
       unknown ? `身份或状态尚未确认，保持阻断。${reason ? ` ${reason}` : ''}` : reason ? `锁记录读取失败：${reason}` : held && lock.stale ?
