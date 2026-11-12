@@ -605,7 +605,11 @@
     try {
       const items = (await jobs()).items.slice().sort((a, b) => (b.started || 0) - (a.started || 0));
       count.textContent = items.length ? String(items.length) : '';
-      brief.textContent = tally(items, job => HGJobState.tone(job), {acc: '运行中', ok: '成功', bad: '失败'});
+      // What is going on now; how many went well or badly is a technical detail (a failure retried later still counts).
+      const running = items.filter(HGJobState.active).length, queued = items.filter(job => job.state === 'queued').length;
+      brief.replaceChildren([running ? `在跑 ${running}` : '', queued ? `排队 ${queued}` : ''].filter(Boolean).join(' / '),
+        el('span', ' ' + [['ok', '成功'], ['bad', '失败']].map(([tone, name]) => [name, items.filter(job => HGJobState.tone(job) === tone).length])
+          .filter(([, n]) => n).map(([name, n]) => `${name} ${n}`).join(' · '), 'tech'));
       const rows = items.map(runRow);
       rows.forEach((row, index) => mosaic(row, items[index]));
       rows.slice(RUNS_SHOWN).forEach(row => { row.hidden = true; });
