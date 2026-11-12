@@ -1,5 +1,5 @@
-"""The home page says in one line how the system runs (a person asks, an agent experiments on real phones, a report
-comes back, a person judges it) and leads from there to 我来当一次 Agent, on a computer and on a phone."""
+"""The home page says in one line how the system runs (a person asks, an agent experiments on real phones while the
+person may step in at any time, a report comes back, a person judges it) and leads from there to 我来当一次 Agent, on a computer and on a phone."""
 import time
 import unittest
 
@@ -21,7 +21,7 @@ class HomeIntroTests(unittest.TestCase):
                 page.goto("http://%s:%d/dash" % self.address)
                 page.wait_for_selector(".home-intro")
                 self.assertEqual(page.locator("main.home .home-intro").count(), 1)
-                self.assertEqual(page.text_content(".home-intro"), "人提任务 → Agent 在真手机上做实验 → 交付报告 → 人来评判我来当一次 Agent →")
+                self.assertEqual(page.text_content(".home-intro"), "人提任务 → Agent 在真手机上做实验，人随时插话 → 交付报告 → 人来评判我来当一次 Agent →")
                 self.assertTrue(page.is_visible(".home-intro a"), width)
                 self.assertEqual(page.get_attribute(".home-intro a", "href").split("?")[0], "/dash/tour")
             page.click(".home-intro a")

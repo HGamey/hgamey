@@ -199,6 +199,9 @@
 .research-view .task-now { margin: var(--sp-3) 0 0; min-height: 1.6em; line-height: 1.6; }
 .research-view .task-now > b { display: inline-block; margin-right: var(--sp-2); padding: 0 6px; border-radius: 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--muted); border: 1px solid var(--line); }
 .research-view .task-now a { font-weight: 600; }
+.research-view .task-now-row { display: flex; align-items: baseline; gap: var(--sp-3); margin: var(--sp-3) 0 0; }
+.research-view .task-now-row .task-now { flex: 1; min-width: 0; margin: 0; }
+.research-view .now-talk { flex: none; font-weight: 600; }
 .research-view .failed-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); margin: 0; }
 .research-view .failed-line a { font-weight: 600; }
 .research-view .failed-why { color: var(--muted); overflow-wrap: anywhere; }

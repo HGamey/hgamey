@@ -895,6 +895,19 @@
     } catch (_) { if (current()) line.remove(); }
   }
 
+  // 插话: a person can write to the agent at any time while a task runs, not only judge at the end. It takes them to the
+  // box in 留言, scrolling in place as the 现在 links do.
+  function talkLink() {
+    const link = el('a', '插话', 'now-talk'); link.href = '#task-thread';
+    link.onclick = event => {
+      event.preventDefault();
+      const input = document.getElementById('task-note-text');
+      if (input) { input.focus(); input.scrollIntoView({block: 'center'}); }
+      else document.getElementById('task-thread')?.scrollIntoView({block: 'start'});
+    };
+    return link;
+  }
+
   async function renderDetail(container, record, ctx) {
     // Unlock and selection can both repaint the same record; only the latest paint may fill the container.
     const paint = shown = {record};
@@ -919,8 +932,9 @@
     runs.id = 'task-runs'; thread.id = 'task-thread';
     const judged = el('div'), keySlot = el('div'), outputSlot = el('div'), summary = summarySection(record, chain, keySlot, outputSlot);
     const failed = el('section', null, 'research-section failed-job'); failed.id = 'task-failed';
-    const now = record.data.state === 'closed' ? null : el('p', null, 'task-now');
-    container.append(...[now, ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
+    const now = record.data.state === 'closed' ? null : el('p', null, 'task-now'), nowRow = now && el('div', null, 'task-now-row');
+    if (nowRow) nowRow.append(now, talkLink());
+    container.append(...[nowRow, ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
     if (now) nowLine(now, record, jobs, () => shown === paint);
     failedSection(failed, record);
     if (chain.length > 1) chainTree(chain, record, container);
