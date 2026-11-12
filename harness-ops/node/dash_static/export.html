@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark">
+<title>数据导出 · HGamey</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/dash/static/app.css"><link rel="stylesheet" href="/dash/static/jobs.css"><link rel="stylesheet" href="/dash/static/export.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+</head>
+<body class="jobs-view export-view">
+<a class="skip-link" href="#export-heading">跳到数据导出</a>
+<header class="top"><div class="top-right"><button id="refresh" class="ghost" type="button">刷新</button></div></header><script src="/dash/static/shell.js"></script>
+<main class="jobs-page export-page">
+  <div class="page-heading"><div><h1 id="export-heading" tabindex="-1">数据导出</h1></div></div>
+  <p id="message" class="note" role="status">正在读取…</p>
+  <form id="unlock" class="ex-unlock" hidden>
+    <label for="unlock-pw">掌舵密码</label>
+    <input id="unlock-pw" type="password" autocomplete="current-password">
+    <button class="btn primary" type="submit">解锁</button>
+    <p id="unlock-msg" class="note" role="status"></p>
+  </form>
+  <div id="content" hidden>
+    <section class="ex-section" aria-labelledby="pick-heading">
+      <h2 id="pick-heading">选择任务</h2>
+      <div class="ex-filters">
+        <input id="f-text" type="search" placeholder="标题或 ID" aria-label="按标题或 ID 筛选">
+        <select id="f-state" aria-label="状态"><option value="">全部状态</option></select>
+        <select id="f-owner" aria-label="负责人"><option value="">全部负责人</option></select>
+        <select id="f-time" aria-label="更新时间"><option value="">不限时间</option><option value="7">7 天内更新</option><option value="30">30 天内更新</option><option value="90">90 天内更新</option></select>
+        <button id="pick-shown" class="ghost" type="button">全选筛出的</button>
+        <button id="pick-none" class="ghost" type="button">全不选</button>
+      </div>
+      <div id="tasks" class="ex-tasks"></div>
+    </section>
+    <section id="summary" class="ex-summary" aria-label="已选">
+      <p id="summary-text" aria-live="polite"></p>
+      <ul id="summary-warn" class="ex-warn"></ul>
+      <div class="ex-actions"><button id="start" class="btn primary" type="button" disabled>生成导出文件</button><span id="start-msg" class="note" role="status"></span></div>
+    </section>
+    <section class="ex-section" aria-labelledby="files-heading">
+      <h2 id="files-heading">导出文件</h2>
+      <p id="files-note" class="note"></p>
+      <ol id="exports" class="ex-files"></ol>
+    </section>
+    <details class="ex-excluded"><summary>不在导出范围内的数据</summary><ul id="excluded"></ul></details>
+  </div>
+</main>
+<script src="/dash/static/target.js"></script><script src="/dash/static/export.js"></script>
+</body>
+</html>

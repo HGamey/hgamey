@@ -286,7 +286,7 @@ class Dash:
             return self._login_redirect(h)
         if dash_live.handle(self, h, sub, query):  # /dash/live 与 /dash/api/live/*
             return
-        if sub in (["gol"], ["jobs"], ["fleet"], ["games"], ["results"], ["datasets"], ["research"], ["doctor"], ["structure"]):
+        if sub in (["gol"], ["jobs"], ["fleet"], ["games"], ["results"], ["datasets"], ["research"], ["doctor"], ["structure"], ["export"]):
             return self._static(h, sub[0] + ".html")
         if sub == ["research", "report"]:
             return self._static(h, "report.html")
