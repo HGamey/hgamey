@@ -24,6 +24,10 @@
   }
   // Who it is, the same line as its card on the home page: the first clause of its note, the whole note on hover.
   const role = note => note ? `<div class="agent-role" title="${esc(note)}">${esc(note.split(/[；;。\n]/)[0])}</div>` : "";
+  // Its zone (a `zone:<name>` tag) by name alone; other tags (the model's maker, how it runs) are technical details.
+  const ZONE = "zone:";
+  const tags = list => (list.filter(t => t.startsWith(ZONE)).map(t => `<span class="tag">${esc(t.slice(ZONE.length))}</span>`).join(" ") || "–")
+    + list.filter(t => !t.startsWith(ZONE)).map(t => ` <span class="tag tech">${esc(t)}</span>`).join("");
   let agents = [], foldOpen = false;
 
   function actions(a) {
@@ -36,7 +40,7 @@
     return `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中作业</th><th>上次签到</th><th>最近活动</th><th>待办</th><th>当前状态</th><th>操作</th></tr></thead><tbody>${
       items.map(a => `<tr data-agent-row="${esc(a.name)}">
         <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button>${role(a.note)}${a.archived ? `<div class="muted" style="font-size:12px">${esc(ARCHIVED[a.archived] || a.archived)}</div>` : ""}</td>
-        <td>${(a.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(" ") || "–"}</td>
+        <td>${tags(a.tags || [])}</td>
         <td class="num">${runningByAgent[a.name] || 0}</td>
         <td>${stamp(a.checkin && a.checkin.at)}</td>
         <td title="${esc(a.activity?.at ? stamp(a.activity.at) : "")}">${esc(ago(a.activity?.at))}${a.activity?.source ? `<div class="muted" style="font-size:12px">${esc(SOURCE[a.activity.source] || a.activity.source)}</div>` : ""}</td>
