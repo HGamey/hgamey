@@ -1,7 +1,8 @@
 // Agent 页的已注册 Agent 区（FRONT-05）：注册表 + 各 agent 当前运行任务。
 // 3 天没有活动、手动归档或已停用的收进「已归档 N 个」；有新活动自动回来。归档、停用、启用和重新获取标识要掌舵权限。
+// Every part is built element by element, never parsed from a string: text stays text, and each piece of the page
+// (a row, a cell, a dialog) is its own small function.
 (function () {
-  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   async function api(path, body) {
     const init = { credentials: "same-origin", cache: "no-store" };
     if (body !== undefined) Object.assign(init, { method: "POST", headers: { "Content-Type": "application/json", "X-HG": "1" }, body: JSON.stringify(body) });
@@ -13,6 +14,22 @@
     }
     return r.json();
   }
+  // An element with its attributes and children. `class` and `data` (its data-* attributes) are set as such; hidden,
+  // open, disabled, readOnly and value as properties; the rest as attributes. Empty children are left out.
+  const PROPERTIES = new Set(["hidden", "open", "disabled", "readOnly", "value"]);
+  function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs || {})) {
+      if (value == null || value === false) continue;
+      if (key === "class") node.className = value;
+      else if (key === "data") Object.assign(node.dataset, value);
+      else if (PROPERTIES.has(key)) node[key] = value;
+      else node.setAttribute(key, value);
+    }
+    node.append(...children.flat(Infinity).filter(child => child != null && child !== false && child !== ""));
+    return node;
+  }
+  const spaced = items => items.flatMap((item, i) => i ? [" ", item] : [item]);
   const active = HGJobState.active;
   const ARCHIVED = { idle: "3 天没有活动", manual: "手动归档", disabled: "已停用", tour: "体验身份" };
   const SOURCE = { registered: "注册", checkin: "签到", status: "报状态", job: "提交作业", research: "写研究记录" };
@@ -23,31 +40,41 @@
     return s < 3600 ? `${Math.max(1, Math.round(s / 60))} 分钟前` : s < 86400 ? `${Math.round(s / 3600)} 小时前` : `${Math.round(s / 86400)} 天前`;
   }
   // Who it is, the same line as its card on the home page: the first clause of its note, the whole note on hover.
-  const role = note => note ? `<div class="agent-role" title="${esc(note)}">${esc(note.split(/[；;。\n]/)[0])}</div>` : "";
+  const role = note => note ? el("div", { class: "agent-role", title: note }, note.split(/[；;。\n]/)[0]) : null;
   // Its zone (a `zone:<name>` tag) by name alone; other tags (the model's maker, how it runs) are technical details.
   const ZONE = "zone:";
-  const tags = list => (list.filter(t => t.startsWith(ZONE)).map(t => `<span class="tag">${esc(t.slice(ZONE.length))}</span>`).join(" ") || "–")
-    + list.filter(t => !t.startsWith(ZONE)).map(t => ` <span class="tag tech">${esc(t)}</span>`).join("");
+  function tags(list) {
+    const zones = list.filter(t => t.startsWith(ZONE)).map(t => el("span", { class: "tag" }, t.slice(ZONE.length)));
+    return [...(zones.length ? spaced(zones) : ["–"]), ...list.filter(t => !t.startsWith(ZONE)).flatMap(t => [" ", el("span", { class: "tag tech" }, t)])];
+  }
+  const sub = (text, title) => el("div", { class: "agent-sub muted", title }, text);
   let agents = [], foldOpen = false;
 
+  // ── The table: one row per agent ──
   function actions(a) {
-    const act = (kind, label, cls = "") => `<button class="btn sm${cls}" type="button" data-act="${kind}" data-agent="${esc(a.name)}">${label}</button>`;
-    if (a.enabled === false) return act("enable", "重新启用");
-    return [a.archived === "manual" ? act("unarchive", "取消归档") : !a.archived ? act("archive", "归档") : "",
-            act("disable", "停用", " danger"), act("token", "重新获取标识")].join(" ");
+    const act = (kind, label, danger) => el("button", { class: danger ? "btn sm danger" : "btn sm", type: "button", data: { act: kind, agent: a.name } }, label);
+    if (a.enabled === false) return [act("enable", "重新启用")];
+    return spaced([a.archived === "manual" ? act("unarchive", "取消归档") : !a.archived ? act("archive", "归档") : null,
+                   act("disable", "停用", true), act("token", "重新获取标识")].filter(Boolean));
+  }
+  function row(a, runningByAgent, owed) {
+    const checkin = a.checkin?.at, activity = a.activity?.at;
+    return el("tr", { data: { agentRow: a.name } },
+      el("td", { class: "mono" }, el("button", { class: "agent-name", type: "button", data: { agent: a.name } }, a.name), role(a.note),
+        a.archived ? sub(ARCHIVED[a.archived] || a.archived) : null),
+      el("td", null, tags(a.tags || [])),
+      el("td", { class: "num" }, String(runningByAgent[a.name] || 0)),
+      el("td", { title: checkin ? stamp(checkin) : "" }, checkin ? ago(checkin) : "从未"),
+      el("td", { title: activity ? stamp(activity) : "" }, ago(activity), a.activity?.source ? sub(SOURCE[a.activity.source] || a.activity.source) : null),
+      el("td", { class: "num" }, String(owed[a.name] ?? "–")),
+      el("td", null, a.status ? a.status.text : "–", a.status ? sub(ago(a.status.at), stamp(a.status.at)) : null),
+      el("td", { class: "agent-actions" }, actions(a)));
   }
   function table(items, runningByAgent, owed) {
-    return `<table class="tbl" style="width:100%"><thead><tr><th>名称</th><th>标签</th><th>运行中作业</th><th>上次签到</th><th>最近活动</th><th>待办</th><th>当前状态</th><th class="agent-actions">操作</th></tr></thead><tbody>${
-      items.map(a => `<tr data-agent-row="${esc(a.name)}">
-        <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button>${role(a.note)}${a.archived ? `<div class="muted" style="font-size:12px">${esc(ARCHIVED[a.archived] || a.archived)}</div>` : ""}</td>
-        <td>${tags(a.tags || [])}</td>
-        <td class="num">${runningByAgent[a.name] || 0}</td>
-        <td title="${esc(a.checkin?.at ? stamp(a.checkin.at) : "")}">${a.checkin?.at ? esc(ago(a.checkin.at)) : "从未"}</td>
-        <td title="${esc(a.activity?.at ? stamp(a.activity.at) : "")}">${esc(ago(a.activity?.at))}${a.activity?.source ? `<div class="muted" style="font-size:12px">${esc(SOURCE[a.activity.source] || a.activity.source)}</div>` : ""}</td>
-        <td class="num">${owed[a.name] ?? "–"}</td>
-        <td>${a.status ? esc(a.status.text) : "–"}${a.status ? `<div class="muted" style="font-size:12px" title="${esc(stamp(a.status.at))}">${esc(ago(a.status.at))}</div>` : ""}</td>
-        <td class="agent-actions">${actions(a)}</td>
-      </tr>`).join("")}</tbody></table>`;
+    const heads = ["名称", "标签", "运行中作业", "上次签到", "最近活动", "待办", "当前状态"].map(text => el("th", null, text));
+    return el("table", { class: "tbl agents-table" },
+      el("thead", null, el("tr", null, heads, el("th", { class: "agent-actions" }, "操作"))),
+      el("tbody", null, items.map(a => row(a, runningByAgent, owed))));
   }
   // Archiving, disabling and new tokens are for whoever holds the steer password: until it is unlocked their column is
   // not shown, and 管理 unlocks it.
@@ -56,8 +83,7 @@
     if (!head) return;
     let button = document.getElementById("agents-manage");
     if (!button) {
-      button = document.createElement("button");
-      button.id = "agents-manage"; button.type = "button"; button.className = "btn sm"; button.textContent = "管理";
+      button = el("button", { id: "agents-manage", type: "button", class: "btn sm" }, "管理");
       button.addEventListener("click", async () => { if (await steer()) { if (dialog?.open) dialog.close(); await load(); } });
       head.append(button);
     }
@@ -83,46 +109,53 @@
     const shown = agents.filter(a => !a.archived), folded = agents.filter(a => a.archived);
     foldOpen = document.getElementById("agents-archived")?.open ?? foldOpen;
     document.getElementById("agents-count").textContent = shown.length ? shown.length + " 个" : "";
-    list.innerHTML = (shown.length ? table(shown, runningByAgent, owed) : agents.length ? "" : `<div class="empty">还没有注册 Agent</div>`)
-      + (folded.length ? `<details id="agents-archived" class="agents-archived"${foldOpen ? " open" : ""}><summary>已归档 ${folded.length} 个</summary>${table(folded, runningByAgent, owed)}</details>` : "");
+    list.replaceChildren(...[
+      shown.length ? table(shown, runningByAgent, owed) : agents.length ? null : el("div", { class: "empty" }, "还没有注册 Agent"),
+      folded.length ? el("details", { id: "agents-archived", class: "agents-archived", open: foldOpen },
+        el("summary", null, `已归档 ${folded.length} 个`), table(folded, runningByAgent, owed)) : null,
+    ].filter(Boolean));
   }
 
   // ── One dialog for the changes: unlock first when needed, confirm, then the outcome ──
   let dialog = null;
   function box() {
     if (dialog) return dialog;
-    dialog = document.createElement("dialog");
-    dialog.id = "agent-dialog"; dialog.className = "agent-dialog";
+    dialog = el("dialog", { id: "agent-dialog", class: "agent-dialog" });
     dialog.addEventListener("close", () => { dialog.replaceChildren(); });   // a token shown here goes with it
     document.body.append(dialog);
     return dialog;
   }
-  function show(html) { const d = box(); d.innerHTML = html; if (!d.open) d.showModal(); return d; }
-  function done(text) { show(`<p class="agent-dialog-text">${esc(text)}</p><div class="agent-dialog-actions"><button class="btn" type="button" data-close>关闭</button></div>`); }
+  function show(...parts) { const d = box(); d.replaceChildren(...parts.flat(Infinity).filter(Boolean)); if (!d.open) d.showModal(); return d; }
+  const said = text => el("p", { class: "agent-dialog-text" }, text);
+  const buttons = (...items) => el("div", { class: "agent-dialog-actions" }, items);
+  const closer = label => el("button", { class: "btn", type: "button", data: { close: "" } }, label);
+  function done(text) { show(said(text), buttons(closer("关闭"))); }
   async function steer() {
     const access = await api("/dash/api/access").catch(() => null);
     if (access?.steer) return true;
     if (!access?.steer_configured) { done("本节点未配置掌舵密码，Agent 只能查看。"); return false; }
     return new Promise(resolve => {
-      const d = show(`<h2>需要掌舵权限</h2><p class="agent-dialog-text">归档、停用、启用和重新获取标识需要先解锁。</p>
-        <label for="agent-steer">掌舵密码</label><input id="agent-steer" type="password" autocomplete="current-password">
-        <p id="agent-steer-msg" class="agent-dialog-msg" role="status"></p>
-        <div class="agent-dialog-actions"><button class="btn" type="button" data-close>取消</button><button class="btn primary" type="button" id="agent-unlock">解锁</button></div>`);
+      const input = el("input", { id: "agent-steer", type: "password", autocomplete: "current-password" });
+      const msg = el("p", { id: "agent-steer-msg", class: "agent-dialog-msg", role: "status" });
+      const go = el("button", { class: "btn primary", type: "button", id: "agent-unlock" }, "解锁");
+      const d = show(el("h2", null, "需要掌舵权限"), said("归档、停用、启用和重新获取标识需要先解锁。"),
+        el("label", { for: "agent-steer" }, "掌舵密码"), input, msg, buttons(closer("取消"), go));
       d.addEventListener("close", () => resolve(false), { once: true });
       const unlock = async () => {
-        const pw = d.querySelector("#agent-steer").value; d.querySelector("#agent-steer").value = "";
+        const pw = input.value; input.value = "";
         try { await api("/dash/api/steer/unlock", { pw }); resolve(true); }
-        catch (e) { d.querySelector("#agent-steer-msg").textContent = "解锁失败：" + e.message; }
+        catch (e) { msg.textContent = "解锁失败：" + e.message; }
       };
-      d.querySelector("#agent-unlock").onclick = unlock;
-      d.querySelector("#agent-steer").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); unlock(); } });
-      d.querySelector("#agent-steer").focus();
+      go.onclick = unlock;
+      input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); unlock(); } });
+      input.focus();
     });
   }
-  function confirmWith(html, label, danger, check) {
+  function confirmWith(parts, label, danger, check) {
     return new Promise(resolve => {
-      const d = show(`${html}<div class="agent-dialog-actions"><button class="btn" type="button" data-close>取消</button><button class="btn ${danger ? "danger" : "primary"}" type="button" id="agent-go">${label}</button></div>`);
-      const go = d.querySelector("#agent-go"), settle = value => { d.removeEventListener("close", closed); resolve(value); }, closed = () => resolve(false);
+      const go = el("button", { class: `btn ${danger ? "danger" : "primary"}`, type: "button", id: "agent-go" }, label);
+      const d = show(parts, buttons(closer("取消"), go));
+      const settle = value => { d.removeEventListener("close", closed); resolve(value); }, closed = () => resolve(false);
       d.addEventListener("close", closed);
       if (check) { const sync = () => { go.disabled = !check(d); }; d.addEventListener("input", sync); sync(); }
       go.onclick = () => { if (!go.disabled) settle(true); };
@@ -137,11 +170,11 @@
         await api(path + "archive", { revision: agent.revision, archived: act === "archive" });
         if (dialog?.open) dialog.close();
       } else if (act === "disable") {
-        if (!(await confirmWith(`<h2>停用 ${esc(name)}？</h2><p class="agent-dialog-text">停用后它不能再连中心，现在用的标识立即作废；历史保留，它的作业、留言里的名字和链接都不变。之后可以重新启用，但要重新获取标识。</p>`, "停用", true))) return;
+        if (!(await confirmWith([el("h2", null, `停用 ${name}？`), said("停用后它不能再连中心，现在用的标识立即作废；历史保留，它的作业、留言里的名字和链接都不变。之后可以重新启用，但要重新获取标识。")], "停用", true))) return;
         await api(path + "disable", { revision: agent.revision });
         done(`${name} 已停用并归档。`);
       } else if (act === "enable") {
-        if (!(await confirmWith(`<h2>重新启用 ${esc(name)}？</h2><p class="agent-dialog-text">启用后它仍然没有可用的标识：要用「重新获取标识」给它一个新的，或者重新发邀请，它才能再连中心。</p>`, "重新启用", false))) return;
+        if (!(await confirmWith([el("h2", null, `重新启用 ${name}？`), said("启用后它仍然没有可用的标识：要用「重新获取标识」给它一个新的，或者重新发邀请，它才能再连中心。")], "重新启用", false))) return;
         await api(path + "enable", { revision: agent.revision });
         done(`${name} 已重新启用。它原来的标识已作废，用「重新获取标识」给它一个新的，它才能再连中心。`);
       } else if (act === "token") await token(name, path);
@@ -160,24 +193,29 @@
     const running = recent || jobs.length || sessions.length;
     const facts = [`最近活动：${at ? `${stamp(at)}（${ago(at)}，${SOURCE[detail.activity.source] || detail.activity.source}）` : "没有活动记录"}`,
       `未结束的作业：${jobs.length ? jobs.join("、") : "没有"}`, `远程会话 / 设备占用：${sessions.length ? sessions.join("、") : "没有"}`];
-    const html = `<h2>重新获取 ${esc(name)} 的标识</h2>
-      <div class="agent-warning${running ? " is-running" : ""}">${running ? "<p><b>它看起来还在运行。</b></p>" : ""}
-        <ul>${facts.map(f => `<li>${esc(f)}</li>`).join("")}</ul>
-        <p>重新获取后，它现在用的标识立即失效；如果它其实还在运行，会马上断开。</p></div>
-      ${running ? `<label for="agent-confirm-name">输入 agent 名 <b>${esc(name)}</b> 确认</label><input id="agent-confirm-name" autocomplete="off">` : ""}`;
-    if (!(await confirmWith(html, "重新获取标识", true, running ? d => d.querySelector("#agent-confirm-name").value.trim() === name : null))) return;
+    const warning = el("div", { class: running ? "agent-warning is-running" : "agent-warning" },
+      running ? el("p", null, el("b", null, "它看起来还在运行。")) : null,
+      el("ul", null, facts.map(fact => el("li", null, fact))),
+      el("p", null, "重新获取后，它现在用的标识立即失效；如果它其实还在运行，会马上断开。"));
+    const typed = running ? [el("label", { for: "agent-confirm-name" }, "输入 agent 名 ", el("b", null, name), " 确认"),
+      el("input", { id: "agent-confirm-name", autocomplete: "off" })] : [];
+    if (!(await confirmWith([el("h2", null, `重新获取 ${name} 的标识`), warning, typed], "重新获取标识", true,
+      running ? d => d.querySelector("#agent-confirm-name").value.trim() === name : null))) return;
     const issued = await api(path + "token", {});
     const url = location.origin, file = "$HOME/.config/hgamey/agent.token", quote = v => `'${String(v).replace(/'/g, `'\\''`)}'`;
     const info = [`中心地址：${url}`, `节点 ID：${issued.node_id}`, `Agent：${name}`, `标识（token）：${issued.token}`, "",
       "写进 token 文件（pf-node 的做法）：", `umask 077; mkdir -p "$HOME/.config/hgamey"; printf '%s\\n' ${quote(issued.token)} > "${file}"`,
       `export PF_NODE_URL=${quote(url)}`, `export PF_NODE_ID=${quote(issued.node_id)}`, `export PF_NODE_TOKEN_FILE="${file}"`, "",
       `或者不用文件：export PF_NODE_TOKEN=${quote(issued.token)}（不要和 PF_NODE_TOKEN_FILE 同时设置）`].join("\n");
-    const d = show(`<h2>${esc(name)} 的新标识</h2><p class="agent-dialog-text">只显示这一次，关掉或刷新页面就看不到了。旧标识已经失效。</p>
-      <label for="agent-token">标识</label><div class="agent-copy"><input id="agent-token" class="mono" readonly value="${esc(issued.token)}"><button class="btn sm" type="button" data-copy="agent-token">复制</button></div>
-      <label for="agent-connect">接回中心需要的全部信息</label><textarea id="agent-connect" class="mono" readonly rows="11">${esc(info)}</textarea>
-      <div class="agent-dialog-actions"><button class="btn sm" type="button" data-copy="agent-connect">复制全部</button><button class="btn" type="button" data-close>关闭</button></div>
-      <p id="agent-copy-msg" class="agent-dialog-msg" role="status"></p>`);
-    d.querySelector("#agent-token").select();
+    const copier = (id, label) => el("button", { class: "btn sm", type: "button", data: { copy: id } }, label);
+    const field = el("input", { id: "agent-token", class: "mono", readOnly: true, value: issued.token });
+    show(el("h2", null, `${name} 的新标识`), said("只显示这一次，关掉或刷新页面就看不到了。旧标识已经失效。"),
+      el("label", { for: "agent-token" }, "标识"), el("div", { class: "agent-copy" }, field, copier("agent-token", "复制")),
+      el("label", { for: "agent-connect" }, "接回中心需要的全部信息"),
+      el("textarea", { id: "agent-connect", class: "mono", readOnly: true, rows: "11", value: info }),
+      buttons(copier("agent-connect", "复制全部"), closer("关闭")),
+      el("p", { id: "agent-copy-msg", class: "agent-dialog-msg", role: "status" }));
+    field.select();
   }
   // Copying works over plain HTTP too, where the browser has no clipboard API.
   async function copy(id) {
@@ -196,19 +234,14 @@
 
   // 点击 agent 名展开详情：滚到详情卡，写明它是谁、在负责哪些任务、最近交付了什么，再是运行中作业和状态历史。
   const TASK_STATE = { active: "推进中", idle: "暂空闲", paused: "已暂停" };
-  const taskLink = (href, title, extra) => `<div class="row"><a href="${esc(window.HGTarget ? HGTarget.url(href) : href)}">${esc(title)}</a>${extra}</div>`;
+  const taskLink = (href, title, ...extra) => el("div", { class: "row" }, el("a", { href: window.HGTarget ? HGTarget.url(href) : href }, title), extra);
+  const fill = (id, rows, empty) => document.getElementById(id).replaceChildren(...(rows.length ? rows : [el("div", { class: "empty" }, empty)]));
   function detailParts() {
-    let parts = document.getElementById("agent-detail-work");
-    if (parts) return parts;
+    if (document.getElementById("agent-detail-work")) return;
     const body = document.querySelector("#agent-detail .card-body");
-    const who = document.createElement("p");
-    who.id = "agent-detail-who"; who.className = "agent-detail-who";
-    parts = document.createElement("div");
-    parts.id = "agent-detail-work";
-    parts.innerHTML = `<h3>负责的任务</h3><div id="agent-detail-owned"></div><h3>最近交付</h3><div id="agent-detail-delivered"></div>`;
-    body.prepend(who);
-    body.querySelector("h3").before(parts);
-    return parts;
+    body.prepend(el("p", { id: "agent-detail-who", class: "agent-detail-who" }));
+    body.querySelector("h3").before(el("div", { id: "agent-detail-work" }, el("h3", null, "负责的任务"), el("div", { id: "agent-detail-owned" }),
+      el("h3", null, "最近交付"), el("div", { id: "agent-detail-delivered" })));
   }
   let opened = null;
   document.addEventListener("click", async (ev) => {
@@ -224,7 +257,7 @@
     const note = agents.find(a => a.name === name)?.note || "";
     document.getElementById("agent-detail-who").textContent = note;
     document.getElementById("agent-detail-who").hidden = !note;
-    for (const id of ["agent-detail-owned", "agent-detail-delivered", "agent-detail-tasks", "agent-detail-history"]) document.getElementById(id).innerHTML = '<div class="empty">读取中…</div>';
+    for (const id of ["agent-detail-owned", "agent-detail-delivered", "agent-detail-tasks", "agent-detail-history"]) fill(id, [], "读取中…");
     card.scrollIntoView({ block: "start" });
     // 加载详情：它负责的任务 + 状态历史 + 当前作业
     const [agent, jobs, tasks] = await Promise.all([
@@ -236,21 +269,16 @@
     const owned = (tasks.items || []).filter(t => t.owner === name), recent = t => -(t.active_at || t.updated_at || 0);
     const open = owned.filter(t => TASK_STATE[t.state]).sort((a, b) => recent(a) - recent(b));
     const delivered = owned.filter(t => t.state === "delivered").sort((a, b) => recent(a) - recent(b)).slice(0, 5);
-    document.getElementById("agent-detail-owned").innerHTML = open.length
-      ? open.map(t => taskLink(`/dash/research?kind=research&id=${encodeURIComponent(t.id)}`, t.title || t.id, ` <span class="muted">${TASK_STATE[t.state]}</span>`)).join("")
-      : '<div class="empty">没有在负责的任务</div>';
-    document.getElementById("agent-detail-delivered").innerHTML = delivered.length
-      ? delivered.map(t => taskLink(`/dash/research/report?id=${encodeURIComponent(t.id)}`, t.title || t.id, ` <span class="muted" title="${esc(stamp(t.updated_at))}">${esc(ago(t.updated_at))}</span>`)).join("")
-      : '<div class="empty">还没有交付</div>';
+    fill("agent-detail-owned", open.map(t => taskLink(`/dash/research?kind=research&id=${encodeURIComponent(t.id)}`, t.title || t.id,
+      " ", el("span", { class: "muted" }, TASK_STATE[t.state]))), "没有在负责的任务");
+    fill("agent-detail-delivered", delivered.map(t => taskLink(`/dash/research/report?id=${encodeURIComponent(t.id)}`, t.title || t.id,
+      " ", el("span", { class: "muted", title: stamp(t.updated_at) }, ago(t.updated_at)))), "还没有交付");
     const running = (jobs.items || []).filter(j => active(j) && j.actor_id === name);
     const history = (agent && agent.status_history) || [];
     document.getElementById("agent-detail-status").textContent = agent && agent.status ? agent.status.text : "–";
-    document.getElementById("agent-detail-tasks").innerHTML = running.length
-      ? running.map(j => `<div class="row"><span class="mono">${esc(j.id)}</span> ${esc(j.label || j.bin)}</div>`).join("")
-      : '<div class="empty">没有运行中的作业</div>';
-    document.getElementById("agent-detail-history").innerHTML = history.length
-      ? history.slice(-10).reverse().map(h => `<div class="row"><span class="muted">${new Date(h.at * 1000).toLocaleString("zh-CN", { hour12: false })}</span> ${esc(h.text)}</div>`).join("")
-      : '<div class="empty">暂无状态历史</div>';
+    fill("agent-detail-tasks", running.map(j => el("div", { class: "row" }, el("span", { class: "mono" }, j.id), " ", j.label || j.bin)), "没有运行中的作业");
+    fill("agent-detail-history", history.slice(-10).reverse().map(h => el("div", { class: "row" },
+      el("span", { class: "muted" }, new Date(h.at * 1000).toLocaleString("zh-CN", { hour12: false })), " ", h.text)), "暂无状态历史");
   });
 
   // On a task page the directory is folded: read it once it is opened (the Agent tab opens it).
