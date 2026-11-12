@@ -1,5 +1,6 @@
 """The home page lists other computers' phones under their computer and a task's runs on them."""
 import os
+import time
 import unittest
 
 import test_multi_node_jobs as multi_node
@@ -66,6 +67,67 @@ class HomeMultiNodeTests(unittest.TestCase):
             finally:
                 browser.close()
 
+    def test_a_phone_on_another_computer_says_which_task_it_works_for(self):
+        """A phone of another computer that the center sent a job to says 使用中 and for which task, from the center's
+        own record of that job; when the job ends the phone is back to what its computer last reported."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            if os.environ.get("CI"):
+                raise
+            self.skipTest("playwright is not installed")
+        self.phone(self.worker, 'USB-B', 'clear')
+        self.start_worker()
+        code, _ = self.center.call('POST', '/research-state/research/sr-far', {
+            "schema": "phonefarm/research-write@1", "operation_id": "create-sr-far", "base_revision": None,
+            "data": {"title": "另一台电脑上的任务", "objective": "看手机在做什么"}, "actor_label": None, "reason": None},
+            headers={'X-Expected-Node-ID': self.center.jobs.node_id})
+        self.assertEqual(code, 201)
+        node, jid = self.worker.jobs.node_id, 'f0f0f0f0f0f0'
+        targets = self.center.jobs.center.targets
+        targets.reserve({'id': jid, 'request_id': 'far-phone', 'fingerprint': 'far-phone', 'execution_node_id': node,
+            'request': {'spec': {'bin': 'fixture', 'argv': ['-c', 'pass'], 'research_id': 'sr-far', 'actor_id': 'agent-far', 'label': 'far run'}},
+            'submitted_at': time.time(), 'sent_at': time.time(), 'stop': None,
+            'device_selection': {'ref': node + '/phone', 'node_id': node, 'device_id': 'phone', 'serial': 'USB-B', 'model': 'NX809J'},
+            'observation': {'id': jid, 'state': 'running', 'label': 'far run', 'queue': {'state': 'claimed'}}})
+
+        class Goals:
+            def list(self):
+                return []
+
+            def harness_support(self):
+                return {"ok": False}
+        board, base = self.center.board, self.center.url
+        board.goals = Goals()
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch()
+            except Exception as error:
+                if os.environ.get("CI"):
+                    raise
+                self.skipTest(f"no browser for playwright: {error}")
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 1000})
+                context.add_cookies([{"name": "hg_dash", "value": board._cookie_val("test-view"), "url": base}])
+                page = context.new_page()
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                page.goto(base + "/dash")
+                card = f'#phones .phone-card[data-ref="{node}/phone"]'
+                page.wait_for_selector(card + ' .doing')
+                self.assertEqual(page.text_content(card + " .tag"), "使用中")
+                self.assertEqual(page.text_content(card + " .doing .who"), "Aagent-far")
+                self.assertEqual(page.text_content(card + " .doing-what a"), "另一台电脑上的任务")
+
+                targets.update(jid, observation={'id': jid, 'state': 'finished', 'label': 'far run', 'queue': {'state': 'done'}},
+                               observed_at=time.time())
+                with page.expect_response(lambda r: r.url.endswith("/dash/api/home")):
+                    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+                page.wait_for_selector(card + ' .doing', state="detached")
+                self.assertEqual(page.text_content(card + " .tag"), "空闲")
+                self.assertEqual(errors, [])
+            finally:
+                browser.close()
 
     def test_a_refresh_that_changes_nothing_keeps_the_focused_task(self):
         """The overview polls every 8 s; an unchanged list is not rewritten, so a focused (or hovered, or selected)

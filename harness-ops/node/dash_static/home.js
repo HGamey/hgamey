@@ -145,11 +145,13 @@
   // Phones on other joined computers, from their last report: no live view, and 空闲 only means last seen idle.
   function remotePhone(computer, p) {
     const stat = (v, unit, label, hot) => v == null ? "" : `<div class="pstat${hot ? " hot" : ""}"><b>${v + unit}</b><span>${label}</span></div>`;   // an unknown reading is left out
-    const status = !computer.connected ? `<span class="tag bad">已断开</span>` : computer.stale ? `<span class="tag warn">读数过期</span>`
+    const job = p.holder;
+    const status = !computer.connected ? `<span class="tag bad">已断开</span>` : job ? `<span class="tag acc">使用中</span>` : computer.stale ? `<span class="tag warn">读数过期</span>`
       : p.idle ? `<span class="tag ok" title="最近看到空闲，用时由那台电脑加锁">空闲</span>` : `<span class="tag warn">不空闲</span>`;
     return `<div class="phone-card" data-ref="${esc(p.ref)}"><span class="thumb"><span class="ph">无画面</span></span><div class="meta">
       <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(p.model || p.serial || "未知型号")}</span>${status}</div>
-      <div class="stats">${stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)}${stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40)}${stat(p.battery_pct, "%", "电量", false)}</div></div></div>`;
+      <div class="stats">${stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)}${stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40)}${stat(p.battery_pct, "%", "电量", false)}</div>
+      ${job ? holderLine("任务", job) : ""}</div></div>`;
   }
   function renderPhones(h) {
     const on = h.slots.filter(Boolean), elsewhere = h.elsewhere || [], usable = elsewhere.filter(c => c.connected);

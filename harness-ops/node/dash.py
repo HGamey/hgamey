@@ -719,19 +719,22 @@ class Dash:
         bound = (meta.get("device_binding") or {}).get("serial")
         if everywhere and bound and bound != serial:
             return None
-        title, rid = None, meta.get("research_id")
-        if rid and getattr(self.job_service, "research", None) is not None:
-            try:
-                title = self.job_service.research.get("research", rid)["data"].get("title")
-            except (KeyError, OSError, ValueError):
-                title = None
+        rid = meta.get("research_id")
         argv = meta.get("argv") or []
         targets = {aimed} if aimed else {
             argv[i + 1] for i, a in enumerate(argv[:-1]) if a in ("--device", "--extra-device", "--serial", "-s")
         } | {a for a in argv if a in known}
         kind = "global" if everywhere and not bound and targets and serial not in targets else "job"
         return {"kind": kind, "job_id": jid, "label": meta.get("label"), "actor_id": meta.get("actor_id"),
-                "research_id": rid, "research_title": title, "state": meta.get("state")}
+                "research_id": rid, "research_title": self._research_title(rid), "state": meta.get("state")}
+
+    def _research_title(self, rid):
+        if not rid or getattr(self.job_service, "research", None) is None:
+            return None
+        try:
+            return self.job_service.research.get("research", rid)["data"].get("title")
+        except (KeyError, OSError, ValueError):
+            return None
 
     def _holder(self, serial, lock, known=()):
         """Who holds this phone: a node job (with its research and agent) or an outside lock label."""
@@ -1015,7 +1018,7 @@ class Dash:
             entries = directory.list()
         except (OSError, ValueError, DirectoryError):
             return []
-        out = []
+        out, held = [], self._remote_holders()
         for entry in entries:
             snapshot, connected = entry.get("snapshot") or {}, entry["connection"]["status"] == "ready"
             phones = job_selection.phones(entry["node_id"], entry["name"], snapshot, connected)
@@ -1029,11 +1032,30 @@ class Dash:
                 row.append({"ref": phone["ref"], "serial": phone["serial"], "idle": phone["idle"],
                             "model": " ".join(x for x in (seen.get("brand"), seen.get("model")) if x) or None,
                             "battery_pct": b.get("level_pct"), "soc_c": t.get("soc_max_c"),
-                            "battery_c": b.get("temp_c") or t.get("battery_c")})
+                            "battery_c": b.get("temp_c") or t.get("battery_c"), "holder": held.get(phone["ref"])})
             out.append({"name": entry["name"], "node_id": entry["node_id"], "connected": connected,
                         "sampled_at": fleet.get("sampled_at"), "stale": bool(entry.get("stale") or fleet.get("stale", True)),
                         "phones": row})
         return out
+
+    def _remote_holders(self):
+        """The job working on each phone of another computer, by the phone's ref: the center's own record of the jobs
+        it sent there (the phone it chose, the state last reported), so nothing is asked of those computers."""
+        center = getattr(self.job_service, "center", None) if self.job_service else None
+        try:
+            records = center.targets.rows() if center is not None else []
+        except (OSError, ValueError, sqlite3.Error):
+            return {}
+        held = {}
+        for record in records:
+            phone, seen = record.get("device_selection") or {}, record.get("observation") or {}
+            if not phone.get("ref") or (seen.get("queue") or {}).get("state") not in ("claimed", "blocked"):
+                continue
+            spec = record["request"]["spec"]
+            held[phone["ref"]] = {"kind": "job", "job_id": record["id"], "label": seen.get("label") or spec.get("label"),
+                                  "actor_id": seen.get("actor_id") or spec.get("actor_id"), "research_id": spec.get("research_id"),
+                                  "research_title": self._research_title(spec.get("research_id")), "state": seen.get("state")}
+        return held
 
     def state(self):
         snapshot = self.monitor.snapshot()
