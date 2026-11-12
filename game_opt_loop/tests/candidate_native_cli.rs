@@ -3,6 +3,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
+#[path = "support/script.rs"]
+mod script;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,8 +49,7 @@ impl Fixture {
         ));
         fs::create_dir(&root).unwrap();
         let actual_pf = root.join("caller-pf");
-        fs::copy(pf, &actual_pf).unwrap();
-        fs::set_permissions(&actual_pf, fs::Permissions::from_mode(0o700)).unwrap();
+        script::copy_executable(Path::new(&pf), &actual_pf, 0o700);
         let f = Self {
             root,
             pf: actual_pf,
@@ -82,8 +83,7 @@ impl Fixture {
                 json!(kind),
                 DRIVER
             );
-            fs::write(&tool, code).unwrap();
-            fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
+            script::write_script(&tool, &code, 0o700);
         }
         f
     }

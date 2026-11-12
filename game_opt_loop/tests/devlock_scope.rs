@@ -1,5 +1,6 @@
 #![cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+#[path = "support/script.rs"]
+mod script;
 use std::process::Command;
 
 #[test]
@@ -8,8 +9,7 @@ fn optimize_resolves_one_device_before_outer_lock_but_keeps_multi_device_global(
     std::fs::create_dir_all(&root).unwrap();
     let pf = root.join("phonefarm");
     let seen = root.join("binding");
-    std::fs::write(&pf, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SCOPE_SEEN\"\nexit 2\n").unwrap();
-    std::fs::set_permissions(&pf, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script::write_script(&pf, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SCOPE_SEEN\"\nexit 2\n", 0o755);
     for multi in [false, true] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_game_opt_loop"));
         command.current_dir(&root).env("SCOPE_SEEN", &seen)

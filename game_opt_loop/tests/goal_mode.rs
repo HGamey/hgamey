@@ -6,6 +6,8 @@
 
 #[path = "support/schema.rs"]
 mod schema;
+#[path = "support/script.rs"]
+mod script;
 
 use game_opt_loop::goal;
 use serde_json::Value;
@@ -102,12 +104,7 @@ fn scaffold(tag: &str, win: bool) -> PathBuf {
     std::fs::write(root.join("probe.txt"), PROBE).unwrap();
     std::fs::write(pf.join("fd_phonefarm.py"), include_str!("fd_phonefarm.py")).unwrap();
     let bin = pf.join("phonefarm");
-    std::fs::write(&bin, fake_phonefarm(&root.join("probe_out.txt"), win)).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    script::write_script(&bin, &fake_phonefarm(&root.join("probe_out.txt"), win), 0o755);
     root
 }
 
@@ -115,7 +112,7 @@ fn scaffold(tag: &str, win: bool) -> PathBuf {
 fn scaffold_worse(tag: &str) -> PathBuf {
     let root = scaffold(tag, false);
     let bin = root.join("phonefarm/phonefarm");
-    std::fs::write(&bin, fake_phonefarm_worse(&root.join("probe_out.txt"))).unwrap();
+    script::write_script(&bin, &fake_phonefarm_worse(&root.join("probe_out.txt")), 0o755);
     root
 }
 
@@ -394,7 +391,7 @@ fn sigint_case(tag: &str, to_group: bool) {
             ready.display()
         ),
     );
-    std::fs::write(&bin, script).unwrap();
+    script::write_script(&bin, &script, 0o755);
     let dir = root.join("goals/run4");
     goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
     confirm_with(&dir, |s| {
@@ -583,7 +580,6 @@ fn a_frozen_but_unstarted_run_can_be_resumed_and_a_stuck_one_cancelled() {
 #[cfg(unix)]
 #[test]
 fn sigint_while_queuing_for_the_lock_stops_without_touching_the_device() {
-    use std::os::unix::fs::PermissionsExt;
     let root = scaffold("queue_sigint", false);
     let dir = root.join("goals/run_q");
     goal::draft("省电", "com.miHoYo.Yuanshen", &dir, goal::Drafter::Template).unwrap();
@@ -591,8 +587,7 @@ fn sigint_while_queuing_for_the_lock_stops_without_touching_the_device() {
     // The selected PF helper records its call, then waits without sending a lock fd.
     let lock = root.join("phonefarm/phonefarm");
     let called = root.join("lock_called");
-    std::fs::write(&lock, format!("#!/usr/bin/env python3\nimport pathlib,time\npathlib.Path({:?}).write_text('called')\nwhile True: time.sleep(.02)\n", called.to_str().unwrap())).unwrap();
-    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script::write_script(&lock, &format!("#!/usr/bin/env python3\nimport pathlib,time\npathlib.Path({:?}).write_text('called')\nwhile True: time.sleep(.02)\n", called.to_str().unwrap()), 0o755);
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_game_opt_loop"))
         .args(["goal", "run"])
         .arg(&dir)

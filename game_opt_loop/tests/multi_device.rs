@@ -3,6 +3,8 @@
 //! 钉住: 每个候选只在一台设备上量、请求里的 serial 就是量它的那台; 两个 serial
 //! 同时停在 started 回执才放行; 档案逐条记下设备, 单机档案不变。不连设备、不调大模型。
 
+#[path = "support/script.rs"]
+mod script;
 use game_opt_loop::optimize::{self, plan::Budget};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -102,18 +104,11 @@ fn scaffold(tag: &str, rendezvous: bool) -> PathBuf {
     std::fs::write(root.join("probe_out.txt"), ROOTED_NX809J).unwrap();
     std::fs::write(root.join("probe.txt"), PROBE).unwrap();
     let bin = pf.join("phonefarm");
-    std::fs::write(
+    script::write_script(
         &bin,
-        fake_phonefarm(
-            &root.join("probe_out.txt"),
-            rendezvous.then_some(root.as_path()),
-        ),
-    ).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+        &fake_phonefarm(&root.join("probe_out.txt"), rendezvous.then_some(root.as_path())),
+        0o755,
+    );
     root
 }
 

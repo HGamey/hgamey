@@ -199,21 +199,6 @@ impl Drop for Guard {
 mod tests {
     use super::*;
 
-    /// A script these tests then run is written by a child `sh`, never through a descriptor of
-    /// this process: another test thread that forks while such a descriptor is open hands it to
-    /// its child, and running the script before that child execs fails with ETXTBSY ("Text file
-    /// busy"). Writing to a temporary file and renaming it does not help; the inode is the same.
-    #[cfg(unix)]
-    fn write_script(path: &Path, body: &str) {
-        let status = Command::new("sh")
-            .args(["-c", "printf '%s' \"$1\" > \"$0\" && chmod 755 \"$0\""])
-            .arg(path)
-            .arg(body)
-            .status()
-            .unwrap();
-        assert!(status.success(), "writing {} failed", path.display());
-    }
-
     #[test]
     fn wait_parses_units_and_bare_minutes() {
         assert_eq!(parse_wait("45m").unwrap(), Duration::from_secs(2700));
@@ -235,7 +220,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let phonefarm = dir.join("phonefarm");
         let response = dir.join("response.json");
-        write_script(&phonefarm, "#!/bin/sh\n[ \"$*\" = 'lease status --json' ] || exit 2\ncat \"$(dirname \"$0\")/response.json\"\n");
+        crate::test_script::write_script(&phonefarm, "#!/bin/sh\n[ \"$*\" = 'lease status --json' ] || exit 2\ncat \"$(dirname \"$0\")/response.json\"\n", 0o755);
         let root = dir.join("durable-locks");
         let mut value = serde_json::json!({"storage": {"schema_version":1,"devlock_dir":root,"error":null}});
         std::fs::write(&response, value.to_string()).unwrap();
@@ -259,7 +244,7 @@ mod tests {
         assert!(resolve_lock_dir(&phonefarm, None).is_err());
         std::fs::write(&response, "{\"status\":\"clear\"}").unwrap();
         assert!(resolve_lock_dir(&phonefarm, None).is_err());
-        write_script(&phonefarm, "#!/bin/sh\nexit 7\n");
+        crate::test_script::write_script(&phonefarm, "#!/bin/sh\nexit 7\n", 0o755);
         assert!(resolve_lock_dir(&phonefarm, None).unwrap_err().to_string().contains("失败"));
         assert_eq!(resolve_lock_dir(&dir.join("missing-phonefarm"), Some(&root)).unwrap(), root);
         std::fs::remove_dir_all(dir).unwrap();
@@ -284,7 +269,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gol_fd_lock_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let phonefarm = dir.join("selected-phonefarm");
-        write_script(&phonefarm, include_str!("../tests/fd_phonefarm.py"));
+        crate::test_script::write_script(&phonefarm, include_str!("../tests/fd_phonefarm.py"), 0o755);
         let guard = Guard::acquire(phonefarm.clone(), Some("A"), "outer".into(), None).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&std::env::var("PF_LOCK_SCOPE").unwrap())

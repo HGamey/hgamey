@@ -55,4 +55,9 @@ impl TrackMode {
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// 单元测试写假程序用的, 和 tests/support/script.rs 是同一份。
+#[cfg(all(test, unix))]
+#[path = "../tests/support/script.rs"]
+pub(crate) mod test_script;
+
 pub mod system_case_blackbox;

@@ -7,6 +7,8 @@
 //!
 //! 夹具里的数字都能在原始报告里找到对应, 断言里注明了出处。
 
+#[path = "support/script.rs"]
+mod script;
 use game_opt_loop::viz::model::RoundVerdict;
 use game_opt_loop::viz::{self, VizPaths};
 use std::path::PathBuf;
@@ -683,12 +685,10 @@ fn ab_view_retains_raw_negative_and_unknown_fields_and_checks_qualification() {
 #[test]
 #[cfg(unix)]
 fn current_occupancy_comes_from_the_selected_phonefarm_status() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("gol-viz-fd-status-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let pf = dir.join("selected-phonefarm");
-    std::fs::write(&pf, "#!/bin/sh\n[ \"$*\" = 'lease status --json' ] || exit 9\ncat \"$(dirname \"$0\")/status.json\"\n").unwrap();
-    std::fs::set_permissions(&pf, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script::write_script(&pf, "#!/bin/sh\n[ \"$*\" = 'lease status --json' ] || exit 9\ncat \"$(dirname \"$0\")/status.json\"\n", 0o755);
     let paths = fixture_paths();
     let load = || viz::device::load(&paths.lock_root, &paths.phonefarm_root, Some(&pf), 5);
     std::fs::write(dir.join("status.json"), r#"{"status":"held","entries":[{"label":"live-A","since":"now"},{"label":"live-B"}]}"#).unwrap();
@@ -698,7 +698,7 @@ fn current_occupancy_comes_from_the_selected_phonefarm_status() {
     assert!(view.problems.is_empty());
     std::fs::write(dir.join("status.json"), r#"{"status":"clear","entries":[]}"#).unwrap();
     assert!(load().holder.is_none());
-    std::fs::write(&pf, "#!/bin/sh\necho 'cannot read kernel lock' >&2\nexit 7\n").unwrap();
+    script::write_script(&pf, "#!/bin/sh\necho 'cannot read kernel lock' >&2\nexit 7\n", 0o755);
     let view = load();
     assert!(view.holder.is_none());
     assert!(view.problems.iter().any(|p| p.contains("cannot read kernel lock")));
