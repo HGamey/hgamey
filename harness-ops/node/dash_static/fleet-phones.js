@@ -21,7 +21,19 @@
     throw new Error(body?.error || `HTTP ${response.status}`);
   }
 
-  function row(item, node) {
+  // 在做: the task a phone is working for and how long its job has run, else 空闲. A phone that is not there: —.
+  const ran = s => s < 3600 ? `${Math.max(1, Math.round(s / 60))} 分钟` : s < 172800 ? `${Math.round(s / 3600)} 小时` : `${Math.round(s / 86400)} 天`;
+  function doing(holder, phone) {
+    const cell = el('span', null, 'phone-work');
+    if (!phone.online) { cell.textContent = '—'; return cell; }
+    if (!holder) { cell.textContent = '空闲'; cell.classList.add('is-idle'); return cell; }
+    const what = holder.research_title || holder.label || (holder.kind === 'external' ? '别的程序' : '一个作业');
+    cell.append(holder.research_id ? link(what, `/dash/research?kind=research&id=${encodeURIComponent(holder.research_id)}`) : el('span', what));
+    if (holder.started) cell.append(el('span', `已跑 ${ran(Math.max(0, Date.now() / 1000 - holder.started))}`, 'phone-note'));
+    return cell;
+  }
+
+  function row(item, node, holder) {
     const phone = HGPhoneState.of(item), note = HGPhoneState.note(phone);
     const li = el('li', null, `phone-row is-${phone.state}`);
     li.dataset.ref = item.ref;
@@ -36,7 +48,7 @@
     const go = el('span', null, 'phone-links');
     if (phone.online && item.remote_actions?.length) go.append(link('远程控制', `/dash/control?device=${encodeURIComponent(item.ref)}`));
     if (phone.online) go.append(link('派作业', `/dash/jobs?phone=${encodeURIComponent(item.ref)}`));
-    li.append(name, el('span', node, 'phone-node'), state, el('span', phone.os || '—', 'phone-os'),
+    li.append(name, el('span', node, 'phone-node'), state, doing(holder, phone), el('span', phone.os || '—', 'phone-os'),
       el('span', phone.root == null ? '—' : phone.root ? 'root' : '无 root', 'phone-root'),
       el('span', actions.length ? actions.join(' · ') : '不可远程', 'phone-actions'), go);
     return li;
@@ -46,8 +58,8 @@
     if (busy || document.hidden) return;
     busy = true;
     try {
-      const [nodes, phones, registry] = await Promise.all([json('/nodes'), json('/phones'),
-        json('/node/devices').catch(() => ({devices: []}))]);
+      const [nodes, phones, registry, work] = await Promise.all([json('/nodes'), json('/phones'),
+        json('/node/devices').catch(() => ({devices: []})), json('/phone-work').catch(() => ({local: {}, remote: {}}))]);
       // Retired registrations on the center are not phones.
       const retired = new Set(registry.devices.filter(device => !device.enabled).map(device => device.device_id));
       const local = nodes.local;
@@ -55,7 +67,8 @@
       const items = phones.items.filter(item => !(item.node_id === local.node_id && retired.has(item.device_id)));
       const online = items.filter(item => HGPhoneState.of(item).online).length;
       $('all-phones-count').textContent = `${items.length} 台 · ${online} 台在线`;
-      $('all-phones-list').replaceChildren(...items.map(item => row(item, names.get(item.node_id) || item.node_name)));
+      const holder = item => item.node_id === local.node_id ? work.local[item.serial] : work.remote[item.ref];
+      $('all-phones-list').replaceChildren(...items.map(item => row(item, names.get(item.node_id) || item.node_name, holder(item))));
       $('all-phones-message').textContent = items.length ? '' : '还没有手机。';
     } catch (error) {
       $('all-phones-message').textContent = `读取失败：${error.message}`;

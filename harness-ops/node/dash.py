@@ -309,6 +309,8 @@ class Dash:
             return self._task_list(h, parse_qs(query))
         if sub == ["api", "datasets", "samples"]:
             return self._dataset_samples(h)
+        if sub == ["api", "phone-work"]:
+            return self._send(h, 200, self._phone_work())
         if sub == ["api", "tasks", "now"]:
             return self._task_now(h, parse_qs(query))
         if sub == ["api", "showcase"] or sub[:3] == ["api", "showcase", "screen"] and len(sub) == 4:
@@ -1131,6 +1133,29 @@ class Dash:
                         "sampled_at": fleet.get("sampled_at"), "stale": bool(entry.get("stale") or fleet.get("stale", True)),
                         "phones": row})
         return out
+
+    def _phone_work(self):
+        """What each phone is working on, for 全部手机 on the 设备 page, read the way the home page reads it: this computer's
+        phones by serial (its lock and queue), other computers' phones by ref (the center's record of the jobs it sent
+        there). A phone in neither is idle. Each job's start time is added when it is known."""
+        snapshot = self.monitor.snapshot()
+        lock = snapshot["lock"]
+        known = {d.get("serial") for d in snapshot.get("devices") or [] if d.get("serial")}
+        owners = self._reservations() if self.job_service else []
+        local = {}
+        for serial in sorted(known):
+            holder = self._holder(serial, lock, known) or self._reserved(serial, owners, known) or self._global_holder(serial, lock, known)
+            if holder:
+                local[serial] = {**holder, "started": (self._job_meta(holder["job_id"]) or {}).get("started") if holder.get("job_id") else None}
+        center = getattr(self.job_service, "center", None) if self.job_service else None
+        remote = {}
+        for ref, holder in self._remote_holders().items():
+            try:
+                started = center.status(holder["job_id"]).get("started") if center.remote(holder["job_id"]) else None
+            except (OSError, ValueError, KeyError, DirectoryError):
+                started = None
+            remote[ref] = {**holder, "started": started}
+        return {"now": _now(), "local": local, "remote": remote}
 
     def _remote_holders(self):
         """The job working on each phone of another computer, by the phone's ref: the center's own record of the jobs

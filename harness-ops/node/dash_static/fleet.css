@@ -140,12 +140,15 @@
 .invite-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--ink2); }
 
 .all-phones .phone-list { list-style: none; margin: 0; padding: 0; }
-.phone-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, .9fr) 64px minmax(0, 1.3fr) 112px;
+.phone-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, .9fr) 64px minmax(0, 1.3fr) 112px;
   gap: 6px 16px; align-items: baseline; padding: 10px 0; border-top: 1px solid var(--grid); font-size: 13px; }
 .phone-head { margin-top: 12px; padding: 0 0 6px; border: 0; font-size: 12px; color: var(--muted); }
 .phone-name { min-width: 0; }
 .phone-name strong { display: block; overflow-wrap: anywhere; }
 .phone-serial { display: block; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow-wrap: anywhere; }
+.phone-work { min-width: 0; overflow-wrap: anywhere; }
+.phone-work .phone-note { display: block; }
+.phone-work.is-idle { color: var(--muted); }
 .phone-state { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
 .phone-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
 .phone-row:is(.is-off, .is-gone) .phone-dot { background: var(--muted); }
