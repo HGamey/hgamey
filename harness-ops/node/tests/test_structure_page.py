@@ -83,11 +83,11 @@ class StructurePageTests(unittest.TestCase):
             self.assertEqual(page.text_content("#facts"), "3 个节点（1 个离线） · 4 台手机（2 台离线） · 2 个 Agent · 3 个网络区域 · 1 个作业在运行")
             # The center's zone comes first (here the one without a tag); 公网 is a zone of its own, not a city's.
             labels = page.eval_on_selector_all(".st-zone-label", "items => items.map(item => item.textContent)")
-            self.assertEqual(labels, ["未标区域1 个节点 · 2 台手机", "成都公网1 个节点 · 1 台手机", "公网1 个 Agent",
+            self.assertEqual(labels, ["未分区1 个节点 · 2 台手机", "成都公网1 个节点 · 1 台手机", "公网1 个 Agent",
                                       "华为蓝区1 个节点 · 1 台手机 · 1 个 Agent"])
             center = "n:" + self.node_id
             # The disabled registration is not drawn.
-            members = {"未标区域": [center, f"p:{self.node_id}/HONOR", f"p:{self.node_id}/HUAWEI"], "成都公网": ["n:" + CHENGDU, f"p:{CHENGDU}/OP1"],
+            members = {"未分区": [center, f"p:{self.node_id}/HONOR", f"p:{self.node_id}/HUAWEI"], "成都公网": ["n:" + CHENGDU, f"p:{CHENGDU}/OP1"],
                        "公网": ["a:agent-b"], "华为蓝区": ["n:" + BLUE, f"p:{BLUE}/RM1", "a:agent-a"]}
             cards, zones = self.boxes(page, ".st-card"), self.boxes(page, ".st-zone")
             self.assertEqual(sorted(cards), sorted(sum(members.values(), [])))
@@ -99,7 +99,7 @@ class StructurePageTests(unittest.TestCase):
             self.assertFalse(any(self.overlap(a, b) for a in cards.values() for b in cards.values() if a is not b))
             # Zones never overlap; a zone of agents alone takes the free agent column beside the center's zone.
             self.assertFalse(any(self.overlap(a, b) for a in zones.values() for b in zones.values() if a is not b))
-            self.assertEqual(zones["公网"][1], zones["未标区域"][1])
+            self.assertEqual(zones["公网"][1], zones["未分区"][1])
 
             classes = dict(page.eval_on_selector_all(".st-card", "cs => cs.map(c => [c.dataset.id, c.className])"))
             running = {card for card, name in classes.items() if "is-running" in name}

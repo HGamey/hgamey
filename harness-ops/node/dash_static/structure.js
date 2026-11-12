@@ -9,7 +9,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id), API = '/dash/api', SVG = 'http://www.w3.org/2000/svg';
-  const ZONE_TAG = 'zone:', NO_ZONE = '未标区域', NARROW = 720, AUTO_MS = 15000, STORE = 'hgamey-structure:';
+  const ZONE_TAG = 'zone:', NO_ZONE = '未分区', NARROW = 720, AUTO_MS = 15000, STORE = 'hgamey-structure:';
   const PLATFORMS = {Darwin: 'macOS', Linux: 'Linux', Windows: 'Windows'};
   // Wide screens: agents | 主节点 | 从节点 | phones, one band per zone. Narrow: zones stacked, one card per row.
   const WIDE = {margin: 16, pad: 20, head: 48, gap: 12, column: 76, group: 22, lane: 28,
