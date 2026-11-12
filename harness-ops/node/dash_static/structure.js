@@ -441,9 +441,13 @@
     clearTimeout(timer);
     $('refresh').disabled = true;
     try {
-      const [nodes, phones, agents, jobs, registry] = await Promise.all([json('/nodes'), json('/phones'), json('/agents'),
+      const [nodes, phones, listed, jobs, registry] = await Promise.all([json('/nodes'), json('/phones'), json('/agents'),
         json('/jobs?state=running&limit=200'), json('/node/devices')]);
-      data = model(nodes, phones, agents, jobs, registry);
+      // Archived agents (nothing for three days, archived by hand, disabled) are drawn only when asked for.
+      const folded = listed.agents.filter(agent => agent.archived).length;
+      $('archived-agents').hidden = !folded;
+      $('archived-agents').textContent = `${showArchived ? '收起' : '显示'}已归档的 ${folded} 个 Agent`;
+      data = model(nodes, phones, {...listed, agents: listed.agents.filter(agent => showArchived || !agent.archived)}, jobs, registry);
       render();
       message('');
     } catch (error) {
@@ -569,6 +573,8 @@
   $('zone-dialog').addEventListener('cancel', event => { event.preventDefault(); closeZone(); });
   $('zone-unlock-submit').addEventListener('click', unlockZone);
   $('zone-steer').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); unlockZone(); } });
+  let showArchived = false;
+  $('archived-agents').addEventListener('click', () => { showArchived = !showArchived; refresh(); });
   $('refresh').addEventListener('click', refresh);
   document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(timer); else refresh(); });
   addEventListener('resize', () => { if (data) place(); });

@@ -280,6 +280,26 @@
 .agents-mode #agents-card .card-h { justify-content: flex-end; }
 .research-view #agents-list th { white-space: nowrap; }
 .research-view #agents-list .agent-name { text-align: left; }
+.research-view #agents-list .agent-actions { white-space: nowrap; }
+.research-view .agents-archived { margin-top: var(--sp-3); }
+.research-view .agents-archived > summary { padding: var(--sp-2) 0; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; }
+.research-view .agents-archived tbody tr { opacity: .75; }
+/* Archive, disable, enable and a new token: one dialog; a new token is shown in it once */
+.agent-dialog { width: min(560px, calc(100vw - 32px)); padding: var(--sp-5); border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: var(--card); color: var(--ink); box-shadow: var(--shadow-pop); }
+.agent-dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.agent-dialog h2 { margin: 0 0 var(--sp-3); font-size: var(--fs-md); }
+.agent-dialog label { display: block; margin: var(--sp-3) 0 4px; font-size: var(--fs-sm); color: var(--ink2); }
+.agent-dialog input, .agent-dialog textarea { width: 100%; box-sizing: border-box; font-size: var(--fs-sm); }
+.agent-dialog textarea { resize: vertical; white-space: pre; }
+.agent-dialog-text { margin: 0; font-size: var(--fs-sm); line-height: 1.6; }
+.agent-dialog-msg { min-height: 1.4em; margin: 6px 0 0; font-size: var(--fs-sm); color: var(--muted); }
+.agent-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: var(--sp-4); }
+.agent-copy { display: flex; gap: 8px; }
+.agent-warning { padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); }
+.agent-warning ul { margin: 0 0 var(--sp-2); padding-left: 1.2em; }
+.agent-warning p { margin: 0; }
+.agent-warning.is-running { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: var(--bad-soft); color: var(--bad-ink); }
 @media (max-width: 600px) {
   .research-view .page-heading { flex-direction: row; align-items: center; }
   .research-view #detail-actions { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-right: calc(-1 * var(--sp-4)); padding-right: var(--sp-4); }

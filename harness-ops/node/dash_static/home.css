@@ -213,6 +213,9 @@ details.gm pre { font-size: 14px; }
 /* Agent */
 .home-view .agent-row { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; padding: var(--sp-3) 14px; }
 .home-view .agent-row > .av { width: 28px; height: 28px; font-size: 12px; }
+.home-view .agent-archived > summary { padding: var(--sp-2) 14px; font-size: var(--fs-sm); color: var(--muted); cursor: pointer; }
+.home-view .agent-archived > .agent-list { border: 0; border-top: 1px solid var(--grid); border-radius: 0; }
+.home-view .agent-archived .agent-row { opacity: .72; }
 .home-view .agent-body { min-width: 0; }
 .home-view .agent-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); min-width: 0; }
 .home-view .agent-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -204,18 +204,26 @@
     const m = (now - at) / 60;
     return {cls: m < 30 ? "ok" : m < 240 ? "warn" : "off", text: `${ago(now, at)}签到`};
   }
+  // Why an agent is folded away under 已归档.
+  const ARCHIVED = {idle: "3 天没有活动", manual: "手动归档", disabled: "已停用"};
   function renderAgents(h) {
-    const agents = h.agents || [];
-    $("agents-count").textContent = agents.length ? String(agents.length) : "";
-    polled("agents").innerHTML = agents.map(a => {
+    const agents = h.agents || [], shown = agents.filter(a => !a.archived), folded = agents.filter(a => a.archived);
+    $("agents-count").textContent = shown.length ? String(shown.length) : "";
+    const row = a => {
       const f = freshness(h.now, a.checkin_at);
       const owes = [...new Set(a.owes)].map(k => `<span class="tag warn">${esc(DUTY[k] || k)}</span>`).join("");
       const mine = a.research.length ? `<span class="agent-tasks">负责 ${a.research.length} 个任务</span>` : "";
       return `<li data-agent="${esc(a.name)}" class="agent-row">${avatar(a.name)}<div class="agent-body">
         <div class="agent-head"><b class="agent-name" title="${esc(a.name)}">${esc(a.name)}</b><span class="fresh ${f.cls}" title="${esc(a.checkin_at ? full(a.checkin_at) : "")}"><i aria-hidden="true"></i>${esc(f.text)}</span></div>
         ${a.status ? `<p class="agent-status" title="${esc(a.status.text)}">${esc(a.status.text)}</p>` : `<p class="agent-status muted">没报过状态</p>`}
-        ${owes || mine ? `<div class="agent-foot">${owes}${mine}</div>` : ""}</div></li>`;
-    }).join("") || `<li class="empty-row">还没有注册 agent</li>`;
+        ${owes || mine || a.archived ? `<div class="agent-foot">${a.archived ? `<span class="tag">${esc(ARCHIVED[a.archived] || a.archived)}</span>` : ""}${owes}${mine}</div>` : ""}</div></li>`;
+    };
+    // Agents with nothing going on for three days, archived by hand or disabled fold into one line; any activity brings
+    // one back. The fold stays open or closed across the page's refreshes.
+    const open = document.querySelector("#agents .agent-archived")?.open || false;
+    polled("agents").innerHTML = (shown.map(row).join("") || (folded.length ? "" : `<li class="empty-row">还没有注册 agent</li>`))
+      + (folded.length ? `<li class="agent-archived-row"><details class="agent-archived"${open ? " open" : ""}><summary>已归档 ${folded.length} 个</summary>
+        <ul class="agent-list">${folded.map(row).join("")}</ul></details></li>` : "");
   }
 
   // 接入新 agent: one click makes a one-use invitation and shows the whole first prompt to paste into the agent;

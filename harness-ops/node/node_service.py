@@ -49,7 +49,7 @@ from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH
 import job_experiment
 from node_media import MediaError
 from node_fleet import FleetState
-from node_agents import AgentError, NodeAgents
+from node_agents import AgentError, NodeAgents, ACTIVE_WITHIN_S, activity as agent_activity, annotate as agent_annotate
 from agent_onboarding import invitation_prompt
 from node_directory import NodeDirectory, DirectoryError, _ProbeError, DEADLINE_S
 import node_connection_http
@@ -1294,10 +1294,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(503, {"code": "live_unavailable", "error": "live observation is not configured on this node"})
                     return dash.dash_live.handle(board, self, ["api", *parts], urlparse(self.path).query)
                 if parts == ["agents"]:
-                    return self._send(200, {"node_id": node.node_id, "agents": jobs.agents.list()})
+                    latest = self._agent_latest()
+                    return self._send(200, {"node_id": node.node_id, "agents": [agent_annotate(entry, latest) for entry in jobs.agents.list()]})
                 if len(parts) == 2 and parts[0] == "agents":
                     try:
-                        return self._send(200, jobs.agents.get(parts[1]))
+                        entry = agent_annotate(jobs.agents.get(parts[1]), self._agent_latest())
+                        return self._send(200, {**entry, "work": self._agent_work(entry["name"]), "active_within_s": ACTIVE_WITHIN_S})
                     except AgentError as error:
                         return self._send(error.status, {"code": "agent_error", "error": str(error)})
                 if len(parts) == 3 and parts[0] == "agents" and parts[2] == "duties":
@@ -1792,6 +1794,62 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except ValueError as error:
                 return self._send(400, {"code": "invalid_request", "error": str(error)})
 
+        def _agent_latest(self):
+            try:
+                return agent_activity(jobs)
+            except sqlite3.Error as error:
+                log(f"agent activity unreadable: {error}")
+                return {}
+
+        def _agent_work(self, name):
+            """What an agent is in the middle of: its unfinished jobs (here or on another computer) and the remote
+            sessions it holds on this computer's phones."""
+            open_jobs = [row["job_id"] for row in jobs.dispatch.queue.rows(("preparing", "queued", "claimed", "blocked"))
+                         if row["spec"].get("actor_id") == name]
+            for record in jobs.center.targets.rows():
+                if (record["execution_node_id"] != jobs.node_id and ((record.get("request") or {}).get("spec") or {}).get("actor_id") == name
+                        and record["id"] not in open_jobs):
+                    try:
+                        if jobs.status(record["id"]).get("state") != "finished":
+                            open_jobs.append(record["id"])
+                    except Exception:   # an unreadable remote job is reported as possibly running
+                        open_jobs.append(record["id"])
+            remote = getattr(getattr(jobs, "remote_center", None), "local", None)
+            try:
+                devices = remote.devices()["devices"] if remote else []
+            except Exception:
+                devices = []
+            sessions = [device["serial"] for device in devices
+                        if (device.get("holder") or {}).get("kind") == "remote" and device["holder"].get("operator") == name]
+            return {"jobs": open_jobs, "sessions": sessions}
+
+        def _agent_action(self, name, action):
+            """Dashboard changes to an agent, with the steer password: archive or bring back, disable (and archive),
+            enable, and a new token. Each is recorded with its time and address."""
+            self.close_connection = True
+            if not self._upload_write_auth(True):
+                return
+            try:
+                data = json.loads(self.rfile.read(self._upload_length(MAX_REQUEST)) or b"{}")
+                if not isinstance(data, dict):
+                    raise ValueError("agent action requires a JSON object")
+                if action == "token":
+                    value = jobs.agents.issue_token(name)
+                    value.update(node_id=node.node_id)
+                elif action == "archive":
+                    value = jobs.agents.set_archived(name, data.get("revision"), data.get("archived"))
+                elif action == "disable":
+                    value = jobs.agents.disable(name, data.get("revision"))
+                else:
+                    value = jobs.agents.enable(name, data.get("revision"))
+                jobs.agents.audit(action if action != "archive" else ("archive" if data.get("archived") else "unarchive"),
+                                  name, self.headers.get("CF-Connecting-IP", self.client_address[0]))
+                return self._send(201 if action == "token" else 200, value)
+            except (AgentError, AssetUploadError) as error:
+                return self._send(error.status, {"code": "agent_error", "error": str(error)})
+            except ValueError as error:
+                return self._send(400, {"code": "invalid_request", "error": str(error)})
+
         def _agents_put(self, name, dashboard, body):
             self.close_connection = True
             # The dashboard edits an agent's registration (its tags, a zone) with the steer password.
@@ -2196,6 +2254,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._upload_post(parts, False)
             if board and parts[:3] == ["dash", "api", "uploads"]:
                 return self._upload_post(parts[2:], True)
+            if (board and len(parts) == 5 and parts[:3] == ["dash", "api", "agents"]
+                    and parts[4] in ("archive", "disable", "enable", "token")):
+                return self._agent_action(unquote(parts[3]), parts[4])
             if parts[:1] == ["nodes"]:
                 return self._nodes_post(parts, False)
             if board and parts[:3] == ["dash", "api", "nodes"]:
