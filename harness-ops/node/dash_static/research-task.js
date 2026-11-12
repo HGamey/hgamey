@@ -63,18 +63,22 @@
     imageURLs.add(url);
     return url;
   }
-  // A small picture, read when it comes near the screen; clicked, it opens in `open`. One that cannot be read says so.
+  // A small picture, read when it comes near the screen as the center's small copy (about 480 px); clicked, the
+  // original opens in `open`. One that cannot be read says so.
   // Until the picture is in, a plain box says it is on its way: an image without its picture yet would draw as broken.
+  const SMALL = new Set(['png', 'jpg', 'jpeg', 'webp']);
+  const small = (sourcePath, path) => SMALL.has(extension(path)) ? sourcePath + (sourcePath.includes('?') ? '&' : '?') + 'thumb=1' : sourcePath;
   function thumbnail(sourcePath, path, open) {
     const button = el('button', null, 'image-thumb'), wait = el('span', '读取中…', 'image-wait'), name = path.split('/').pop();
     button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + name);
     button.append(wait);
     const unread = () => button.replaceWith(el('span', '无法预览', 'note image-unread'));
-    near(button, () => readPicture(sourcePath, path).then(url => {
+    let large = null;
+    near(button, () => readPicture(small(sourcePath, path), path).then(url => {
       const image = el('img');
       image.alt = name; image.onerror = unread; image.onload = () => wait.remove();
       image.src = url; button.prepend(image);
-      button.onclick = () => open(url, name);
+      button.onclick = () => (large ||= readPicture(sourcePath, path)).then(url => open(url, name), () => { large = null; });
     }, unread));
     return button;
   }

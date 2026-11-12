@@ -45,6 +45,9 @@ jobs:
       - name: Install Playwright
         if: matrix.playwright
         run: python3 -m pip install playwright==${{ matrix.playwright }}
+      - name: Install Pillow
+        if: matrix.name == 'harness-ops node tests'
+        run: python3 -m pip install pillow==11.3.0
       - name: Cache Playwright browsers
         if: matrix.playwright
         uses: actions/cache@v4

@@ -20,6 +20,15 @@ window.HGMedia = (() => {
       HGResearchCompare.viewer(document.body, [{slot: name, url, kind: video ? 'video' : 'image'}], name, HGResearchTask.util, {label: '放大查看'});
     } else window.open(url, '_blank', 'noopener');
   }
+  // The preview is the center's small copy of a picture (about 480 px); opening it reads the original.
+  const SMALL = new Set(['png', 'jpg', 'jpeg', 'webp']);
+  const small = (source, path) => SMALL.has(extension(path)) ? source + (source.includes('?') ? '&' : '?') + 'thumb=1' : source;
+  async function read(source, path) {
+    const response = await HGTarget.fetch(source, {credentials: 'same-origin', cache: 'no-store'});
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const blob = await response.blob();
+    return URL.createObjectURL(blob.slice(0, blob.size, PICTURES[extension(path)]));
+  }
   // `source` is the file's API path (it is fetched with the page's target binding); `path` names it.
   function preview(source, path) {
     const name = String(path).split('/').pop(), type = kind(path);
@@ -40,15 +49,13 @@ window.HGMedia = (() => {
     button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + name);
     button.append(wait);
     const unread = () => button.replaceWith(el('span', '无法预览', 'note media-unread'));
+    let large = null;
     near(button, async () => {
       try {
-        const response = await HGTarget.fetch(source, {credentials: 'same-origin', cache: 'no-store'});
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        const blob = await response.blob(), url = URL.createObjectURL(blob.slice(0, blob.size, PICTURES[extension(path)]));
         const image = el('img');
         image.alt = name; image.onerror = unread; image.onload = () => wait.remove();
-        image.src = url; button.prepend(image);
-        button.onclick = () => open(url, name, false);
+        image.src = await read(small(source, path), path); button.prepend(image);
+        button.onclick = () => (large ||= read(source, path)).then(url => open(url, name, false), () => { large = null; });
       } catch (_) { unread(); }
     });
     return button;
