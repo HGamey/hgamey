@@ -92,6 +92,8 @@ def duties(jobs, name, now=None):
         owned = {row["id"]: data for row, data in studies if data.get("owner") == name}
         mine = {rid: data for rid, data in owned.items() if data["state"] in OPEN_RESEARCH}
         all_notes = [(row, json.loads(row["data"]), json.loads(row["audit"])) for row in _latest(db, "note")]
+        # Who answers for each task it owns: itself and the task's earlier owners (a handover keeps their replies).
+        lineage = {rid: jobs.research._owners(db, rid) | {name} for rid in owned}
         addressed = {row["id"] for row, data, audit in all_notes if data.get("to") == name}
         notes = [(row, data, audit) for row, data, audit in all_notes
                  if row["research_id"] in owned or data.get("to") == name or data.get("reply_to") in addressed]
@@ -121,11 +123,14 @@ def duties(jobs, name, now=None):
                                               (row["id"], row["revision"] - 1)).fetchone()] if prev is not None}
 
     owed, waiting = [], []
-    answered = {data["reply_to"] for _, data, audit in notes if audit.get("actor_label") == name and data["reply_to"]}
+    ours = lambda row, audit: audit.get("actor_label") in lineage.get(row["research_id"], {name})
+    answered = {data["reply_to"] for row, data, audit in notes if ours(row, audit) and data["reply_to"]}
+    # Its own notes, and an earlier owner's unless that one is addressed to it, are not for it to answer.
+    mine_to_skip = lambda row, data, audit: audit.get("actor_label") == name or ours(row, audit) and data.get("to") != name
     # 紧急留言排在待办最前：点名给这个 agent 的，或它负责的任务上被人标了紧急的，还没回应就先处理。
     urgent_ids = set()
     for row, data, audit in notes:
-        if (data.get("urgent") is not True or audit.get("actor_label") == name or row["id"] in answered
+        if (data.get("urgent") is not True or mine_to_skip(row, data, audit) or row["id"] in answered
                 or data.get("to") not in (None, name) and row["research_id"] not in owned):
             continue
         speaker = "human" if audit.get("auth_channel") == "dashboard_steer" else audit.get("actor_label") or "admin token"
@@ -164,7 +169,7 @@ def duties(jobs, name, now=None):
             continue
         if data.get("to") is not None and data["to"] != name:
             continue
-        if audit.get("actor_label") == name or row["id"] in answered:
+        if mine_to_skip(row, data, audit) or row["id"] in answered:
             continue
         speaker = "human" if audit.get("auth_channel") == "dashboard_steer" else audit.get("actor_label") or "admin token"
         owed.append({"kind": "answer_note", "research_id": row["research_id"], "target": row["id"],

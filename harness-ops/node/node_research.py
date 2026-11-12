@@ -439,15 +439,24 @@ class NodeResearch:
         return db.execute("SELECT r.* FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id AND r.revision=o.revision WHERE o.kind=? AND o.id=?", (kind, oid)).fetchone()
 
     @staticmethod
+    def _owners(db, research_id):
+        """Every agent that has owned `research_id`. A task handed to another agent keeps what its earlier owners
+        answered: the new owner does not answer the same human notes again."""
+        return {owner for (owner,) in db.execute("SELECT DISTINCT json_extract(data,'$.owner') FROM revisions "
+                                                 "WHERE kind='research' AND id=?", (research_id,)) if owner}
+
+    @staticmethod
     def _unanswered_guidance(db, research_id, agent):
-        """Human notes (written on the page) in `research_id` that `agent` has not replied to, oldest first."""
+        """Human notes (written on the page) in `research_id` that neither `agent` nor an earlier owner of it has
+        replied to, oldest first."""
         rows = db.execute("SELECT r.id, r.data, r.audit FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id "
                           "AND r.revision=o.revision WHERE o.kind='note' AND r.research_id=? ORDER BY r.sequence",
                           (research_id,)).fetchall()
+        owners = NodeResearch._owners(db, research_id) | ({agent} if agent is not None else set())
         human, answered = [], set()
         for row in rows:
             data, audit = json.loads(row["data"]), json.loads(row["audit"])
-            if agent is not None and audit.get("actor_label") == agent and data.get("reply_to"):
+            if audit.get("actor_label") in owners and data.get("reply_to"):
                 answered.add(data["reply_to"])
             elif audit.get("auth_channel") == "dashboard_steer" and data.get("to") in (None, agent):
                 human.append(row["id"])

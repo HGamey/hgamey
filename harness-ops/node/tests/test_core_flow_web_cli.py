@@ -1373,15 +1373,17 @@ class CoreFlowTests(unittest.TestCase):
         self.assertEqual(self.web("POST", "/research-state/research/sr-genshin", reassign)[0], 201)
         self.assertEqual(self.duties(token_a)["research"]["mine"], [])
 
-        # The new owner inherits the human's guidance: its check-in lists the note, and it cannot deliver until it
-        # answers it itself, so a handover does not drop what the human asked for.
-        self.assertIn("n-guide", [duty["target"] for duty in self.duties(token_b)["duties"] if duty["kind"] == "answer_note"])
+        # The new owner keeps what the earlier owner answered: n-guide is not its to answer again. A human note
+        # written after the handover is, and holds back its delivery until it answers.
+        self.assertEqual(self.web("POST", "/research-state/note/n-after", self.write(
+            "web-after", {"research_id": "sr-genshin", "text": "接手后照旧先做 1080p", "reply_to": None, "decision": None}))[0], 201)
+        self.assertEqual([duty["target"] for duty in self.duties(token_b)["duties"] if duty["kind"] == "answer_note"], ["n-after"])
         code, _, err = self.pf(token_b, "research", "deliver", "sr-genshin", "--summary", "1080p 自训练超分，帧率 +18%",
                                "--artifact", f"job:{self.jid}")
         self.assertNotEqual(code, 0)
         self.assertIn("code=research_guidance_unanswered", err)
         self.assertEqual(self.pf(token_b, "research", "note", "sr-genshin", "接手：照旧先做 1080p，不动 HUD",
-                                 "--reply-to", "n-guide", "--decision", "adopt")[0], 0)
+                                 "--reply-to", "n-after", "--decision", "adopt")[0], 0)
 
         # Delivery needs a deliverable; the CLI writes summary, artifact and scope together.
         current = self.cli("GET", "/research-state/research/sr-genshin")[1]
