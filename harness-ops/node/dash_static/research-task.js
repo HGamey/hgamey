@@ -146,22 +146,88 @@
     }
     parent.append(document.createTextNode(value.slice(at)));
   }
-  function appendInline(parent, value) {
-    const pattern = /!\[([^\]]*)\]\((job:[0-9a-f]{12}:[^)]+)\)/g;
+  // ![说明](job:<job>:<path>) and ![说明](attachment:<id>) place a picture or a video in a report's text.
+  const MEDIA = /!\[([^\]]*)\]\((job:[0-9a-f]{12}:[^)]+|attachment:[0-9a-f]{32})\)/g, MEDIA_LINE = new RegExp(`^\\s*${MEDIA.source}\\s*$`);
+  function mediaRef(value) {
+    if (!value.startsWith('attachment:')) return jobImage(value);
+    return {kind: 'attachment', attachment_id: value.slice('attachment:'.length), node_id: HGTarget.binding()?.node_id};
+  }
+  const isVideo = ref => ref.kind === 'job' && !!VIDEO_TYPES[extension(ref.path)];
+  const REPORT_PICTURES = {...PICTURES, svg: 'image/svg+xml'};
+  // As wide as the text, its caption under it; a picture opens large in the viewer comparisons use. One that cannot
+  // be read says so where it stands, with its link, and the rest of the report reads on.
+  function reportFigure(ref, caption) {
+    const figure = el('figure', null, 'report-figure'), source = ref.kind === 'attachment' ? attachmentPath(ref) : artifactPath(ref);
+    const name = ref.kind === 'attachment' ? `附件 ${ref.attachment_id}` : `作业 ${ref.job_id} · ${ref.path}`, label = caption.trim() || name;
+    const unread = node => {
+      if (!node.isConnected && !figure.contains(node)) return;
+      const box = el('p', null, 'report-unread'), link = el('a', name);
+      link.href = HGTarget.url(source); link.download = ref.kind === 'attachment' ? ref.attachment_id : ref.path.split('/').pop();
+      box.append(el('span', '无法预览', 'note'), link); node.replaceWith(box);
+    };
+    const under = el('figcaption');
+    under.append(el('span', label));
+    // A video plays where it stands; 放大 opens it in the viewer.
+    const video = () => {
+      const player = el('video'), zoom = el('button', '放大', 'report-zoom');
+      Object.assign(player, {controls: true, preload: 'metadata', playsInline: true});
+      player.setAttribute('aria-label', label);
+      player.onerror = () => { zoom.remove(); unread(player); };
+      near(player, () => { player.src = HGTarget.url(source) + '#t=0.1'; });   // paints the first frame without playing
+      zoom.type = 'button'; zoom.setAttribute('aria-label', '放大播放 ' + label);
+      zoom.onclick = () => {
+        player.pause();
+        if (window.HGResearchCompare) HGResearchCompare.viewer(document.body, [{slot: label, url: HGTarget.url(source), kind: 'video'}], label, util, {label: '放大查看'});
+        else window.open(HGTarget.url(source), '_blank', 'noopener');
+      };
+      under.append(zoom);
+      return player;
+    };
+    if (isVideo(ref)) { figure.append(video(), under); return figure; }
+    const button = el('button', null, 'report-media'), image = el('img');
+    button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + label); image.alt = label;
+    button.append(image); figure.append(button, under);
+    const epoch = imageEpoch;
+    near(figure, async () => {
+      try {
+        const response = await HGTarget.fetch(source, {credentials: 'same-origin', cache: 'no-store'});
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const type = (response.headers.get('Content-Type') || '').split(';')[0].trim();
+        if (ref.kind === 'attachment' && type.startsWith('video/')) { response.body?.cancel(); if (epoch === imageEpoch) button.replaceWith(video()); return; }
+        const mime = ref.kind === 'attachment' ? type : REPORT_PICTURES[extension(ref.path)];
+        if (!mime?.startsWith('image/')) throw new Error('not a picture');
+        const blob = await response.blob();
+        if (epoch !== imageEpoch) return;
+        const url = URL.createObjectURL(blob.slice(0, blob.size, mime));
+        imageURLs.add(url);
+        image.onerror = () => unread(button);
+        image.src = url;
+        button.onclick = () => window.HGResearchCompare ? HGResearchCompare.viewer(document.body, [{slot: label, url, kind: 'image'}], label, util, {label: '放大查看'})
+          : window.open(url, '_blank', 'noopener');
+      } catch (_) { if (epoch === imageEpoch) unread(button); }
+    });
+    return figure;
+  }
+  // In a summary a picture is only named.
+  const mediaLabel = (ref, caption) => `[${isVideo(ref) ? '视频' : '图'}] ${caption.trim() || (ref.kind === 'attachment' ? '附件' : ref.path.split('/').pop())}`;
+  function appendInline(parent, value, preview = false) {
     let at = 0, match;
-    while ((match = pattern.exec(value))) {
+    MEDIA.lastIndex = 0;
+    while ((match = MEDIA.exec(value))) {
       appendText(parent, value.slice(at, match.index));
-      const ref = jobImage(match[2]);
-      if (ref) parent.append(VIDEO_TYPES[extension(ref.path)] ? videoFigure(ref) : imageFigure(ref, match[1]));
-      else parent.append(document.createTextNode(match[0]));
-      at = pattern.lastIndex;
+      const ref = mediaRef(match[2]);
+      if (!ref) parent.append(document.createTextNode(match[0]));
+      else if (preview) parent.append(el('span', mediaLabel(ref, match[1]), 'report-media-label'));
+      else parent.append(reportFigure(ref, match[1]));
+      at = MEDIA.lastIndex;
     }
     appendText(parent, value.slice(at));
   }
   const tableCells = line => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
   const tableDivider = line => line.includes('|') && tableCells(line).every(cell => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')));
   const listLine = line => /^\s*([-*+]|\d+\.)\s+(.*)$/.exec(line);
-  function markdownReport(source) {
+  // `preview` (a summary of the report) names pictures instead of showing them.
+  function markdownReport(source, {preview = false} = {}) {
     const article = el('article', null, 'research-report'), lines = String(source).replace(/\r\n?/g, '\n').split('\n');
     let index = 0;
     while (index < lines.length) {
@@ -169,7 +235,7 @@
       if (!line.trim()) { ++index; continue; }
       const heading = /^(#{1,6})\s+(.*)$/.exec(line);
       if (heading) {
-        const element = el('h' + heading[1].length); appendInline(element, heading[2]); article.append(element); ++index; continue;
+        const element = el('h' + heading[1].length); appendInline(element, heading[2], preview); article.append(element); ++index; continue;
       }
       if (line.trim().startsWith('```')) {
         const code = []; ++index;
@@ -178,11 +244,11 @@
       }
       if (index + 1 < lines.length && line.includes('|') && tableDivider(lines[index + 1])) {
         const table = el('table'), head = el('thead'), body = el('tbody'), header = el('tr');
-        for (const cell of tableCells(line)) { const th = el('th'); appendInline(th, cell); header.append(th); }
+        for (const cell of tableCells(line)) { const th = el('th'); appendInline(th, cell, preview); header.append(th); }
         head.append(header); index += 2;
         while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
           const row = el('tr');
-          for (const cell of tableCells(lines[index])) { const td = el('td'); appendInline(td, cell); row.append(td); }
+          for (const cell of tableCells(lines[index])) { const td = el('td'); appendInline(td, cell, preview); row.append(td); }
           body.append(row); ++index;
         }
         table.append(head, body); article.append(table); continue;
@@ -193,11 +259,13 @@
         while (index < lines.length) {
           const current = listLine(lines[index]);
           if (!current || /^\d/.test(current[1]) !== ordered) break;
-          const li = el('li'); appendInline(li, current[2]); list.append(li); ++index;
+          const li = el('li'); appendInline(li, current[2], preview); list.append(li); ++index;
         }
         article.append(list); continue;
       }
-      const paragraph = el('p'); appendInline(paragraph, line); article.append(paragraph); ++index;
+      const alone = !preview && MEDIA_LINE.exec(line), ref = alone && mediaRef(alone[2]);
+      if (ref) { article.append(reportFigure(ref, alone[1])); ++index; continue; }   // a line of its own: the figure stands in the text
+      const paragraph = el('p'); appendInline(paragraph, line, preview); article.append(paragraph); ++index;
     }
     return article;
   }
@@ -327,7 +395,7 @@
       const box = el('div', null, 'summary-block summary-conclusion'), head = el('div', null, 'section-head'), link = el('a', '完整交付报告', 'summary-link');
       link.href = reportUrl(record);
       head.append(el('h2', '结论'), link);
-      const text = markdownReport(report), more = el('button', '展开', 'ghost summary-more');
+      const text = markdownReport(report, {preview: true}), more = el('button', '展开', 'ghost summary-more');
       more.type = 'button';
       more.onclick = () => { box.classList.remove('clamped'); more.remove(); };
       box.classList.add('clamped');
