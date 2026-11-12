@@ -40,6 +40,7 @@
 .lock-owner { margin: 20px 0 6px; font-size: 18px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
 .lock-message { font-size: 12px; color: var(--muted); margin: 0 0 16px; overflow-wrap: anywhere; }
 .lock-message.warning { color: var(--amber-ink); }
+html:not(.show-tech) .lock-idle :is(#lock-state, #lock-message, #lock-info, .lock-identities, .lock-details:not(#node-queue-details), .lock-scope) { display: none; }
 .lock-message.error { color: var(--bad-ink); }
 .lock-facts { grid-template-columns: 64px minmax(0,1fr); font-size: 12px; }
 .lock-identities { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 12px; }
