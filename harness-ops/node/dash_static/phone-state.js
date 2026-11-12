@@ -21,5 +21,14 @@ window.HGPhoneState = (() => {
             os: os(seen.os), root: read ? !!seen.root : null, transport: seen.transport};
   }
   const note = phone => NOTE[phone.state] || (phone.state === 'old' && phone.read ? `读数 ${age(phone.read)}` : '');
-  return {of, note, age, os};
+  // A phone a person should look at, from its reading: battery under 10%, or a SoC at 45 °C or more. Shown only; jobs
+  // are still sent to it.
+  const LOW_PCT = 10, HOT_C = 45;
+  function warnings(seen) {
+    const level = seen?.battery?.level_pct, heat = seen?.thermal?.soc_max_c, out = [];
+    if (typeof level === 'number' && level < LOW_PCT) out.push(`电量低 ${level}%`);
+    if (typeof heat === 'number' && heat >= HOT_C) out.push(`过热 ${heat} °C`);
+    return out;
+  }
+  return {of, note, age, os, warnings};
 })();
