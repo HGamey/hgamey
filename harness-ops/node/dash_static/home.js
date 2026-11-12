@@ -97,6 +97,9 @@
 
   const taskURL = t => HGTarget.url(t.report_url || `/dash/research?kind=research&id=${encodeURIComponent(t.id)}`);
   const chainOf = t => t.follow_ons ? `含 ${t.follow_ons} 个接续任务` : "";
+  // A chain whose first task is done and a follow-on moves: which one.
+  const FIRST = {delivered: "已交付", closed: "已关闭"};
+  const chainNow = t => `${FIRST[t.now.first] || ""} · 接续「<a class="chain-now" href="${esc(taskURL({id: t.now.id}))}">${esc(t.now.title || t.now.id)}</a>」进行中`;
   const ownerLine = t => t.owner ? `<span class="who">${avatar(t.owner)}${esc(t.owner)}</span>` : `<span class="tag warn">无人负责</span>`;
   function phoneOf(h, jobId) {
     return h.slots.find(s => s && (s.holder?.job_id === jobId || s.global_holder?.job_id === jobId));
@@ -112,7 +115,7 @@
       const note = t.latest_note;
       return `<li data-task="${esc(t.id)}" class="task-row">
         <a class="task-title" href="${esc(taskURL(t))}" title="${esc(t.title || t.id)}">${esc(t.title || t.id)}</a>
-        <div class="task-meta">${ownerLine(t)}${t.follow_ons ? `<span>${chainOf(t)}</span>` : ""}${t.jobs.map(j => jobChip(h, j)).join("")}<span class="task-time">${when(h.now, note?.updated_at || t.updated_at)}</span></div>
+        <div class="task-meta">${ownerLine(t)}${t.now ? `<span>${chainNow(t)}</span>` : t.follow_ons ? `<span>${chainOf(t)}</span>` : ""}${t.jobs.map(j => jobChip(h, j)).join("")}<span class="task-time">${when(h.now, note?.updated_at || t.updated_at)}</span></div>
         ${note ? `<p class="task-note"><span><b>${esc(speaker(note))}</b>${esc(note.text)}</span></p>` : ""}
       </li>`;
     }).join("") || `<li class="empty-row">没有进行中的任务。<button class="link-btn" type="button" data-new>新建任务</button></li>`;

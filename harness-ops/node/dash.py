@@ -952,6 +952,9 @@ class Dash:
             else:
                 notes = [n for n in (self._latest_note(research, t["id"]) for t in members) if n]
                 task["latest_note"] = max(notes, key=lambda n: n["updated_at"]) if notes else None
+                # A first task already delivered or closed: the follow-on that moves, so the row can say which.
+                if tasks[root]["state"] != "active":
+                    task["now"] = {"id": latest["id"], "title": latest["title"], "first": tasks[root]["state"]}
             out.append(task)
         return out
 
