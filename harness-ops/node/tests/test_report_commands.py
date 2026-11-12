@@ -48,6 +48,7 @@ class ReportCommandTests(unittest.TestCase):
             self.assertEqual(page.locator(blocks).count(), 3)
             self.assertEqual(page.locator(f"{blocks} > pre:visible").count(), 0)
             self.assertEqual(page.eval_on_selector_all(f"{blocks} .report-code-toggle", "e => e.map(b => b.textContent)"), ["复现命令"] * 3)
+            self.assertEqual(page.eval_on_selector_all(f"{blocks} .report-code-toggle", "e => e.map(b => b.title)"), ["给要复现的工程师看"] * 3)
             # The table of numbers in a code block is not a command: shown as written.
             self.assertTrue(page.is_visible("#report .research-report > pre:has-text('开    67')"))
             page.locator(f"{blocks} .report-code-toggle").nth(2).click()

@@ -249,7 +249,7 @@
   const commands = (fence, code) => SHELLS.test(fence) || (code.some(line => line.trim()) && code.filter(line => line.trim()).every(line => COMMAND.test(line) || /^\s*(#|\\|--)/.test(line)));
   function commandBlock(pre) {
     const box = el('div', null, 'report-code'), toggle = el('button', '复现命令', 'report-code-toggle');
-    toggle.type = 'button'; toggle.setAttribute('aria-expanded', 'false');
+    toggle.type = 'button'; toggle.title = '给要复现的工程师看'; toggle.setAttribute('aria-expanded', 'false');
     toggle.onclick = () => toggle.setAttribute('aria-expanded', String(box.classList.toggle('open')));
     box.append(toggle, pre);
     return box;
