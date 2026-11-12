@@ -1,6 +1,6 @@
 // Command view: this node's tasks as trees on a map, its phones and agents in the rail, and a time bar that replays the
 // record or follows it live. Data: /dash/api/command (this node, live) or /dash/api/showcase (a read-only snapshot).
-import {$, BRAND, DIR_STATE, OUTCOME, WAIT_KIND, agentMeta, agentName, ago, begun, brandOf, clamp, day, dirAt, el, esc, hm, jobAt, md, mins, phoneKey, short, stamp, taskAt, TASK_STATE, waitEnd} from './command-util.js';
+import {$, BRAND, DIR_STATE, OUTCOME, WAIT_KIND, agentMeta, agentName, knowAgents, ago, begun, brandOf, clamp, day, dirAt, el, esc, hm, jobAt, md, mins, phoneKey, short, stamp, taskAt, TASK_STATE, waitEnd} from './command-util.js';
 import {layout, treeBounds, union} from './command-layout.js';
 import {Camera} from './command-camera.js';
 import {Timeline} from './command-timeline.js';
@@ -79,6 +79,7 @@ const upper = (arr, t) => { let lo = 0, hi = arr.length; while (lo < hi) { const
 function adopt(raw, src, keepCols) {
   const M = normalize(raw, src), first = S.M === null || S.src !== src, prevAt = first ? null : S.M.at;
   S.M = M; S.src = src;
+  knowAgents([...M.agents, ...M.jobs.map(j => j.agent), ...M.notes.map(n => n.who)]);
   S.lay = layout(M, Math.max(.6, cam.w / Math.max(1, cam.h)), first || !keepCols ? 0 : S.lay.cols);
   world.build(S.lay);
   S.events = buildEvents(M); S.times = S.events.map(e => e.at);
