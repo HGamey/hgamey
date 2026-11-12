@@ -169,7 +169,7 @@ class JobsPageMultiNodeTests(unittest.TestCase):
                 page.select_option("#submit-device-access", "write")
                 page.fill("#submit-label", "any NX809J")
                 page.click("#submit-job")
-                page.wait_for_function("() => document.getElementById('submit-message').textContent.includes('任务已记录')")
+                page.wait_for_function("() => document.getElementById('submit-message').textContent.includes('作业已记录')")
                 [record] = [row for row in self.center.jobs.center.targets.rows() if row['request']['spec'].get('label') == 'any NX809J']
                 self.assertEqual((record['device_selection']['model'], record['device_selection']['serial']), ('NX809J', 'USB-B'))
                 self.assertEqual(record['execution_node_id'], self.worker.jobs.node_id, "the idle phone of the model, not the held one")
