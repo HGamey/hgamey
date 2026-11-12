@@ -1078,7 +1078,9 @@ class Dash:
             global_holder = self._global_holder(serial, lock, known)
             if holder and holder.get("kind") == "global":
                 global_holder, holder = holder, None
-            slots.append({"serial": serial, "online": d.get("online"), "state": d.get("state"),
+            # A phone with no model reading (offline) is named by its registration, as on the structure page.
+            registered = next((device.get("device_id") for device in registry.get("devices", []) if serial in (device.get("aliases") or [])), None)
+            slots.append({"serial": serial, "device_id": registered, "online": d.get("online"), "state": d.get("state"),
                           "model": " ".join(x for x in (d.get("brand"), d.get("model")) if x) or None, "os": d.get("os"),
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
@@ -1128,7 +1130,8 @@ class Dash:
                             "model": " ".join(x for x in (seen.get("brand"), seen.get("model")) if x) or None,
                             "battery_pct": b.get("level_pct"), "soc_c": t.get("soc_max_c"),
                             "battery_c": b.get("temp_c") or t.get("battery_c"), "holder": held.get(phone["ref"]),
-                            "registered": phone["device_binding"] is not None, "cleanups": seen.get("cleanups") or []})
+                            "registered": phone["device_binding"] is not None, "cleanups": seen.get("cleanups") or [],
+                            "device_id": phone["device_id"] if phone["device_binding"] else None})
             out.append({"name": entry["name"], "node_id": entry["node_id"], "connected": connected,
                         "sampled_at": fleet.get("sampled_at"), "stale": bool(entry.get("stale") or fleet.get("stale", True)),
                         "phones": row})

@@ -25,7 +25,7 @@
   const initial = name => esc((Array.from(String(name || "?").replace(/^[^\p{L}\p{N}]+/u, ""))[0] || "?").toUpperCase());
   const avatar = (name, human = false) => `<span class="av${human ? " human" : ""}" aria-hidden="true">${human ? "人" : initial(name)}</span>`;
   const speaker = note => note.auth_channel === "dashboard_steer" ? "人工" : note.auth_channel === "admin_token" ? "管理员" : note.actor_label || "agent";
-  const model = s => s ? (s.model || s.serial) : "";
+  const model = s => s ? (s.model || s.device_id || s.serial) : "";   // an offline phone has no model reading: its registered name
   // A polled list is touched only where what it shows changed: rows are matched by their data-* key (data-task,
   // data-report, ...), inside a row nodes by position, and only the attributes and text that differ are written. A relative time ticking
   // from 3 to 4 分钟前 therefore changes one text node, and a focused link, hover or text selection elsewhere survives.
@@ -153,7 +153,7 @@
       : p.registered === false ? `<span class="tag" title="不在那台电脑的设备登记里，作业不会排到它">未登记</span>` : `<span class="tag warn">不空闲</span>`;
     // Another computer's phones are not screenshotted here: a phone's outline stands in for the picture.
     return `<div class="phone-card" data-ref="${esc(p.ref)}"><span class="thumb remote" aria-hidden="true">${PHONE_OUTLINE}</span><div class="meta">
-      <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(p.model || p.serial || "未知型号")}</span>${status}</div>
+      <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(model(p) || "未知型号")}</span>${status}</div>
       <div class="stats">${stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)}${stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40)}${stat(p.battery_pct, "%", "电量", false)}</div>
       ${job ? holderLine("任务", job) : ""}${cleanedLine(p)}</div></div>`;
   }
