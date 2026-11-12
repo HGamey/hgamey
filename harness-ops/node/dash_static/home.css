@@ -224,6 +224,7 @@ details.gm pre { font-size: 14px; }
 .fresh.ok i { background: var(--good); } .fresh.warn i { background: var(--warn); }
 .home-view .agent-status { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--ink2); line-height: 1.55;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.home-view .agent-role { margin: 1px 0 0; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .home-view .agent-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .home-view .agent-tasks { font-size: var(--fs-xs); color: var(--muted); }
 

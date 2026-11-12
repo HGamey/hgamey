@@ -1,7 +1,7 @@
 """Technical details (job IDs, hashes, commands) are folded away by default: 更多 → 显示技术细节 shows them, on every
 page of this browser until it is switched off again. 更多 lists the pages for reading results apart from the
 engineers' tools. Cards on the home page say nothing they cannot fill in: no dash for an unknown reading, no internal
-code for what an agent owes."""
+code for what an agent owes; each agent says who it is (its registration note) and how long it has been silent."""
 import time
 import unittest
 
@@ -50,7 +50,9 @@ class TechDetailsTests(unittest.TestCase):
                                "phones": [{"ref": "mini3/emu", "serial": "emu", "model": "sdk_gphone", "idle": True,
                                            "soc_c": None, "battery_c": 25, "battery_pct": 100}]}],
                 "agents": [{"name": "agent-a", "checkin_at": now, "status": None, "owes": ["assigned_task", "post_status", "something_new"],
-                            "research": [], "archived": None}]}
+                            "research": [], "archived": None, "note": "GLM 5.3（DSH 会话），外部研究员；试用平台做研究"},
+                           {"name": "agent-b", "checkin_at": now - 9 * 86400 - 60, "status": None, "owes": [], "research": [],
+                            "archived": None, "note": None}]}
         with self._browser_page() as page:
             page.route("**/dash/api/home", lambda route: route.fulfill(json=home))
             page.goto("http://%s:%d/dash" % self.address)
@@ -59,6 +61,10 @@ class TechDetailsTests(unittest.TestCase):
                              ["接手新任务", "报状态", "待办"])
             self.assertEqual(page.eval_on_selector_all('.phone-card[data-ref="mini3/emu"] .pstat', "e => e.map(x => x.textContent)"),
                              ["25°电池", "100%电量"])
+            # Who each agent is (its registration note, first clause), and how long one has been silent.
+            self.assertEqual(page.text_content('#agents li[data-agent="agent-a"] .agent-role'), "GLM 5.3（DSH 会话），外部研究员")
+            self.assertEqual(page.locator('#agents li[data-agent="agent-b"] .agent-role').count(), 0)
+            self.assertEqual(page.text_content('#agents li[data-agent="agent-b"] .fresh'), "9 天没签到")
 
 
 if __name__ == "__main__":
