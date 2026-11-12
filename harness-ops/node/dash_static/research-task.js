@@ -233,6 +233,18 @@
     const whole = text => (text.split('**').length - 1) % 2 === 0 && (text.split('`').length - 1) % 2 === 0;
     return found && whole(found[1]) ? [found[1], found[2]] : [line, ''];
   }
+  // Commands in a report (a fence marked as a shell, or lines that start with one) are technical details: folded under
+  // 复现命令 until opened or until 显示技术细节 is on. Other code blocks, a table of numbers say, read as written.
+  const SHELLS = /^(sh|bash|zsh|shell|console|terminal|cmd|powershell|ps1)$/i;
+  const COMMAND = /^\s*(\$\s|pf-node\b|phonefarm\b|\.?\.\/|python3?\b|pip3?\b|sh\b|bash\b|git\b|adb\b|cd\b|export\b|make\b|cmake\b|ssh\b|scp\b|rsync\b|curl\b|npm\b|cargo\b)/;
+  const commands = (fence, code) => SHELLS.test(fence) || (code.some(line => line.trim()) && code.filter(line => line.trim()).every(line => COMMAND.test(line) || /^\s*(#|\\|--)/.test(line)));
+  function commandBlock(pre) {
+    const box = el('div', null, 'report-code'), toggle = el('button', '复现命令', 'report-code-toggle');
+    toggle.type = 'button'; toggle.setAttribute('aria-expanded', 'false');
+    toggle.onclick = () => toggle.setAttribute('aria-expanded', String(box.classList.toggle('open')));
+    box.append(toggle, pre);
+    return box;
+  }
   // `preview` (a summary of the report) names pictures instead of showing them.
   // With `lead`, the conclusion's first sentence, written for anyone, stands out (p.report-lead): the first paragraph
   // under a 结论 heading, or the first paragraph when there is no such heading. The rest reads as written.
@@ -250,9 +262,10 @@
         leading = lead && (headed ? CONCLUSION.test(line) : waiting) && !article.querySelector('.report-lead'); continue;
       }
       if (line.trim().startsWith('```')) {
-        const code = []; ++index;
+        const code = [], fence = line.trim().slice(3).trim(); ++index;
         while (index < lines.length && !lines[index].trim().startsWith('```')) code.push(lines[index++]);
-        article.append(el('pre', code.join('\n'))); if (index < lines.length) ++index; continue;
+        const pre = el('pre', code.join('\n'));
+        article.append(commands(fence, code) ? commandBlock(pre) : pre); if (index < lines.length) ++index; continue;
       }
       if (index + 1 < lines.length && line.includes('|') && tableDivider(lines[index + 1])) {
         const table = el('table'), head = el('thead'), body = el('tbody'), header = el('tr');
