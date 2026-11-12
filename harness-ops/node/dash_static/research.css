@@ -251,6 +251,15 @@
 .research-view .research-report th { background: var(--wash); font-weight: 600; }
 .research-view .research-report :is(th, td) { padding: 6px 12px; border: 1px solid var(--line); }
 .research-view .research-report pre { padding: var(--sp-3); background: var(--panel); border-radius: var(--radius); font: 12px/1.6 var(--mono); }
+/* Commands fold under 复现命令; 显示技术细节 opens them all. */
+.research-view .research-report .report-code { margin: .6em 0; }
+.research-view .research-report .report-code > pre { display: none; margin-top: var(--sp-2); }
+.research-view .research-report .report-code.open > pre, html.show-tech .research-view .research-report .report-code > pre { display: block; }
+html.show-tech .research-view .research-report .report-code-toggle { display: none; }
+.research-view .research-report .report-code-toggle { padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--card);
+  color: var(--ink2); font-size: var(--fs-sm); cursor: pointer; }
+.research-view .research-report .report-code-toggle::after { content: " ▸"; }
+.research-view .research-report .report-code-toggle[aria-expanded="true"]::after { content: " ▾"; }
 .research-view .research-artifact { margin: var(--sp-2) 0; }
 .research-view .research-artifact img { max-height: 480px; background: var(--panel); border-radius: var(--radius); border: 1px solid var(--line); }
 
