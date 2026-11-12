@@ -141,11 +141,29 @@
     const pattern = /`([^`]+)`|\*\*([^*]+)\*\*/g;
     let at = 0, match;
     while ((match = pattern.exec(value))) {
-      parent.append(document.createTextNode(value.slice(at, match.index)));
-      parent.append(match[1] != null ? el('code', match[1]) : el('strong', match[2]));
+      appendJobs(parent, value.slice(at, match.index));
+      if (match[1] == null) parent.append(el('strong', match[2]));
+      else parent.append(ONE_JOB.test(match[1]) ? jobLink(match[1], el('code', match[1])) : el('code', match[1]));
       at = pattern.lastIndex;
     }
-    parent.append(document.createTextNode(value.slice(at)));
+    appendJobs(parent, value.slice(at));
+  }
+  // A job a report names by its ID stays as written and links to the job; its name shows on hover, read once the link
+  // comes near the screen.
+  const JOB_ID = /(?<![\w-])(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{12}(?![\w-])/g, ONE_JOB = new RegExp(`^${JOB_ID.source}$`), jobNames = new Map();
+  function jobLink(id, shown = id) {
+    const link = el('a', null, 'report-job');
+    link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(id)}`); link.append(shown);
+    near(link, () => {
+      if (!jobNames.has(id)) jobNames.set(id, api(`/jobs/${encodeURIComponent(id)}`).then(job => job.label || [job.bin, (job.argv || [])[0]].filter(Boolean).join(' '), () => ''));
+      jobNames.get(id).then(name => { if (name) link.title = name; });
+    });
+    return link;
+  }
+  function appendJobs(parent, text) {
+    let at = 0;
+    for (const match of text.matchAll(JOB_ID)) { parent.append(text.slice(at, match.index), jobLink(match[0])); at = match.index + match[0].length; }
+    parent.append(text.slice(at));
   }
   // ![说明](job:<job>:<path>) and ![说明](attachment:<id>) place a picture or a video in a report's text.
   const MEDIA = /!\[([^\]]*)\]\((job:[0-9a-f]{12}:[^)]+|attachment:[0-9a-f]{32})\)/g, MEDIA_LINE = new RegExp(`^\\s*${MEDIA.source}\\s*$`);
