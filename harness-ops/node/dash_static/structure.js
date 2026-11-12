@@ -95,6 +95,8 @@
   const members = zone => [...zone.agents.map(agent => agent.id), ...zone.nodes.flatMap(node => [node.id, ...node.phones.map(phone => phone.id)])];
 
   // ── Cards ──
+  // A card's name is cut to fit; the whole name is on hover.
+  const title = item => { const name = el('strong', 'st-title', item.title); name.title = item.title; return name; };
   // A computer's or an agent's way to its zone; pressing it never starts a drag.
   function zoneButton(item) {
     const button = el('button', 'st-zone-btn');
@@ -107,7 +109,7 @@
     const center = node.role === 'center', role = center ? '主节点' : '从节点';
     card.className = `st-card st-node${center ? ' st-center' : ''}${node.online ? '' : ' is-off'}${node.jobs ? ' is-running' : ''}`;
     const head = el('div', 'st-head'), line = el('div', 'st-line', [node.platform, node.host].filter(Boolean).join(' · ') || '未上报');
-    head.append(icon(center ? 'center' : 'node'), el('strong', 'st-title', node.title), el('span', 'st-role', role), zoneButton(node));
+    head.append(icon(center ? 'center' : 'node'), title(node), el('span', 'st-role', role), zoneButton(node));
     line.title = line.textContent;
     const status = node.online ? (node.jobs ? `运行 ${node.jobs} 个作业` : '在线') : `离线${node.seen ? ' · 最后在线 ' + when(node.seen) : ''}`;
     const state = el('div', 'st-state'), revision = el('span', 'st-revision tech', node.revision ? node.revision.slice(0, 7) : '');
@@ -121,7 +123,7 @@
     const text = el('div', 'st-text'), head = el('div', 'st-phone-head'), busy = phone.jobs ? `运行 ${phone.jobs} 个作业` : null;
     // Beside the name: why it is not shown as online, or how old a reading is that is not current.
     const note = HGPhoneState.note(phone);
-    head.append(el('strong', 'st-title', phone.title));
+    head.append(title(phone));
     if (note) { const tip = el('span', 'st-note', note); tip.title = note; head.append(tip); }
     text.append(head, el('span', 'st-line', phone.facts.join(' · ')));
     card.title = phone.serial;
@@ -132,7 +134,7 @@
     card.className = `st-card st-agent${agent.enabled ? '' : ' is-off'}${agent.jobs ? ' is-running' : ''}`;
     const text = el('div', 'st-text');
     const facts = [...agent.tags, agent.enabled ? (agent.jobs ? `运行 ${agent.jobs} 个作业` : ago(agent.checkin)) : '已停用'];
-    text.append(el('strong', 'st-title', agent.title), el('span', 'st-line', facts.join(' · ')));
+    text.append(title(agent), el('span', 'st-line', facts.join(' · ')));
     card.replaceChildren(el('span', 'st-avatar', agent.title.slice(0, 1).toUpperCase()), text, zoneButton(agent));
     card.setAttribute('aria-label', ['Agent ' + agent.title, ...facts].join('，'));
   }
