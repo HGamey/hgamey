@@ -53,6 +53,26 @@
       if (epoch === imageEpoch) image.replaceWith(el('span', '图片读取失败', 'note'));
     }
   }
+  // A picture read with its own type (the node serves some picture types as plain bytes), as an object URL.
+  const PICTURES = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif'};
+  const picture = path => PICTURES[extension(path)];
+  async function readPicture(sourcePath, path) {
+    const response = await HGTarget.fetch(sourcePath, {credentials: 'same-origin', cache: 'no-store'});
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const blob = await response.blob(), url = URL.createObjectURL(blob.slice(0, blob.size, picture(path)));
+    imageURLs.add(url);
+    return url;
+  }
+  // A small picture, read when it comes near the screen; clicked, it opens in `open`. One that cannot be read says so.
+  function thumbnail(sourcePath, path, open) {
+    const button = el('button', null, 'image-thumb'), image = el('img'), name = path.split('/').pop();
+    button.type = 'button'; button.setAttribute('aria-label', '放大查看 ' + name); image.alt = name;
+    button.append(image);
+    const unread = () => button.replaceWith(el('span', '无法预览', 'note image-unread'));
+    image.onerror = unread;
+    near(button, () => readPicture(sourcePath, path).then(url => { image.src = url; button.onclick = () => open(url, name); }, unread));
+    return button;
+  }
   function imageFigure(ref, alt, sourcePath = artifactPath(ref)) {
     const link = el('a'), figure = el('figure', null, 'research-artifact'), image = el('img');
     const filename = ref.filename || ref.path.split('/').pop();
@@ -756,7 +776,7 @@
     else if (!row && chainNav.node.parentNode !== chainNav.container) chainNav.container.prepend(chainNav.node);
   }
   function dropChain() { chainNav?.node.remove(); chainNav = null; }
-  const util = {api, write, el, tag, timeEl, speaker, failure, near, markdownReport, evidenceList};
+  const util = {api, write, el, tag, timeEl, speaker, failure, near, markdownReport, evidenceList, picture, readPicture, thumbnail};
 
   window.HGResearchTask = {renderDetail, util, placeChain, clearDetail: container => { shown = null; clearImages(); dropChain(); container.replaceChildren(); }};
 })();

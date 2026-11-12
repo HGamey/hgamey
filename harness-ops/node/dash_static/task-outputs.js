@@ -180,8 +180,9 @@ window.HGTaskOutputs = (() => {
     return box;
   }
 
-  // The report page: every kind with every item.
-  function full(outputs) {
+  // The report page: every kind with every item. `preview(file)` may add something under a file's row (a picture's
+  // thumbnail).
+  function full(outputs, preview = () => null) {
     const {el} = U(), section = el('section', null, 'report-outputs');
     section.id = 'outputs';
     section.append(el('h2', '成果', 'report-files'));
@@ -199,7 +200,7 @@ window.HGTaskOutputs = (() => {
         const files = outputs.files.filter(file => file.kind === kind);
         if (files.length) {
           list = el('ul', null, 'output-files');
-          const rows = files.map(file => fileRow(file));
+          const rows = files.map(file => { const row = fileRow(file), shown = preview(file); if (shown) row.append(shown); return row; });
           rows.slice(20).forEach(row => { row.hidden = true; });
           list.append(...rows);
           if (rows.length > 20) {

@@ -228,10 +228,13 @@
   // The in-page viewer: every slot stacked in one box at the same size, so switching (arrow keys, A–D or the letter
   // buttons) only changes which one shows — nothing reloads, moves or flashes. Videos keep one clock: playing,
   // pausing and seeking the shown one moves them all, so a switch shows the same moment. Only letters are shown.
-  function viewer(article, slots, start, U) {
+  // One picture (a report's image) has nothing to switch to, and a click beside it closes the viewer too.
+  function viewer(article, slots, start, U, {label = '放大对比'} = {}) {
     const box = U.el('dialog', null, 'compare-viewer'), stage = U.el('div', null, 'viewer-stage'), rail = U.el('div', null, 'viewer-rail');
-    const close = U.el('button', '×', 'viewer-close'), hint = U.el('p', '← →\nA–D\n切换\n\nEsc\n关闭', 'viewer-hint');
-    close.type = 'button'; close.setAttribute('aria-label', '关闭'); box.setAttribute('aria-label', '放大对比');
+    const single = slots.length === 1;
+    const close = U.el('button', '×', 'viewer-close'), hint = U.el('p', single ? 'Esc\n关闭' : '← →\nA–D\n切换\n\nEsc\n关闭', 'viewer-hint');
+    close.type = 'button'; close.setAttribute('aria-label', '关闭'); box.setAttribute('aria-label', label);
+    rail.hidden = single;
     let index = 0;
     const items = slots.map(({slot, url, kind}) => {
       const node = document.createElement(kind === 'video' ? 'video' : 'img'), button = U.el('button', slot, 'viewer-slot');
@@ -283,6 +286,13 @@
       event.preventDefault(); event.stopPropagation();
     }, true);   // before a focused video's own seek keys
     close.onclick = () => box.close();
+    if (single) box.addEventListener('click', event => {
+      // The picture fills the stage at its own shape (object-fit: contain); only a click on the picture itself keeps it open.
+      const node = items[0].node, r = node.getBoundingClientRect(), w = node.naturalWidth, h = node.naturalHeight;
+      if (event.target === close) return;
+      const scale = w && h ? Math.min(r.width / w, r.height / h) : 0, x = r.left + (r.width - w * scale) / 2, y = r.top + (r.height - h * scale) / 2;
+      if (event.target !== node || event.clientX < x || event.clientX > x + w * scale || event.clientY < y || event.clientY > y + h * scale) box.close();
+    });
     box.addEventListener('close', () => { items.forEach(item => item.video && item.node.pause()); box.remove(); });
     box.append(stage, rail, close, hint); article.append(box);
     index = Math.max(0, items.findIndex(item => item.slot === start)); paint();
@@ -555,5 +565,5 @@
     box.append(block(record, answer, ctx, U)); container.append(box);
   }
 
-  window.HGResearchCompare = {sections, renderRequest, isComparison};
+  window.HGResearchCompare = {sections, renderRequest, isComparison, viewer};
 })();
