@@ -13,7 +13,7 @@
     <div><h1 id="structure-heading" tabindex="-1">结构</h1><p id="facts" class="st-facts"></p></div>
     <div class="st-heading-actions"><button id="archived-agents" class="ghost" type="button" hidden></button><button id="zone-edit" class="ghost" type="button" hidden>修改区域</button><button id="relayout" class="ghost" type="button" disabled>重排</button></div>
   </div>
-  <form id="edit-unlock" class="st-edit-unlock" hidden><input id="edit-steer" type="password" autocomplete="current-password" placeholder="掌舵密码" aria-label="掌舵密码"><button class="ghost" type="submit">解锁</button><span id="edit-message" class="note" role="status"></span></form>
+  <form id="edit-unlock" class="st-edit-unlock" hidden><input id="edit-steer" type="password" autocomplete="current-password" placeholder="向管理员要操作口令" aria-label="操作口令"><button class="ghost" type="submit">解锁</button><span id="edit-message" class="note" role="status"></span></form>
   <p id="message" class="note" role="status" hidden></p>
   <div id="stage" class="st-stage" hidden>
     <div id="world" class="st-world" role="group" aria-label="结构图">
@@ -26,8 +26,8 @@
       <h2 id="zone-heading">修改区域</h2>
       <fieldset id="zone-choices" class="st-zone-choices"><legend>区域</legend></fieldset>
       <div id="zone-unlock" class="st-zone-unlock" hidden>
-        <label for="zone-steer">掌舵密码</label>
-        <div class="st-zone-unlock-row"><input id="zone-steer" type="password" autocomplete="current-password"><button id="zone-unlock-submit" class="ghost" type="button">解锁</button></div>
+        <label for="zone-steer">操作口令</label>
+        <div class="st-zone-unlock-row"><input id="zone-steer" type="password" placeholder="向管理员要" autocomplete="current-password"><button id="zone-unlock-submit" class="ghost" type="button">解锁</button></div>
       </div>
       <p id="zone-message" class="note" role="status"></p>
       <div class="st-zone-actions"><button id="zone-cancel" class="ghost" type="button">取消</button><button id="zone-save" class="ghost primary" type="submit">保存</button></div>

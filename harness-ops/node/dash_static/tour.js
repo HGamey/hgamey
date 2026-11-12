@@ -33,7 +33,7 @@
     busy = label; message(''); render();
     try { show(await call(path, {})); }
     catch (error) {
-      if (error.data?.need_steer) { pending = () => act(path, label); $('tour-unlock').hidden = false; $('tour-pw').focus(); message('先解锁掌舵', true); }
+      if (error.data?.need_steer) { pending = () => act(path, label); $('tour-unlock').hidden = false; $('tour-pw').focus(); message('先用操作口令解锁', true); }
       else { if (error.data?.tour) show(error.data.tour); message(error.message, true); }
     } finally { busy = ''; render(); }
   }

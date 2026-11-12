@@ -422,7 +422,7 @@
     const comment = U.el('textarea'), send = U.el('button', '提交', 'ghost primary'), status = U.el('p', null, 'compare-status');
     // Locked, the steer password is asked for right here, beside 提交, so nothing chosen is lost and no one is sent away.
     const password = U.el('input'), locked = () => !ctx.writable();
-    Object.assign(password, {type: 'password', autocomplete: 'off', placeholder: '掌舵口令'}); password.setAttribute('aria-label', '掌舵口令');
+    Object.assign(password, {type: 'password', autocomplete: 'off', placeholder: '向管理员要操作口令'}); password.setAttribute('aria-label', '操作口令');
     // Ranking, letters are clicked best to worst; each neighbouring pair then gets how far apart they are (gaps).
     const ranking = ranks(s), order = U.el('div', null, 'compare-order');
     let picked = [], gaps = [], other = null, degree = null;
@@ -489,7 +489,7 @@
       const next = ranking && other === null && picked.length < s.slots.length
           ? (picked.length ? `再点第 ${picked.length + 1} 名（还剩 ${s.slots.length - picked.length} 个）` : `从好到差依次点 ${s.slots.length} 个`)
         : ranking && other === null && open >= 0 ? `再选 ${picked[open]} 和 ${picked[open + 1]} 差多少`
-        : other === null && picked.length < s.pick ? `先选 ${s.pick} 个` : !ready() ? '再选差别大小' : locked() && !password.value ? '填掌舵口令后提交' : '可以提交';
+        : other === null && picked.length < s.pick ? `先选 ${s.pick} 个` : !ready() ? '再选差别大小' : locked() && !password.value ? '填操作口令后提交' : '可以提交';
       status.textContent = send.dataset.busy ? '提交中…' : failed ? `没有提交：${failed}` : `还没提交 · ${next}`;
       status.classList.toggle('task-error', !!failed && !send.dataset.busy);
     }

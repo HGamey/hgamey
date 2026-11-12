@@ -414,10 +414,10 @@ class RemoteHttpTests(Base):
                 self.assertIn("bob", rows["fixture-phone"])
                 self.assertNotIn("alice", rows["fixture-phone"])
                 self.assertNotIn("全域占用", " ".join(rows.values()))
-                self.assertEqual(page.text_content("#op-login label"), "掌舵密码")
+                self.assertEqual(page.text_content("#op-login label"), "操作口令")
                 self.assertTrue(page.is_visible("#op-login"))
                 page.locator("#devices button").filter(has_text=SERIAL).click()
-                self.assertIn("先用掌舵密码解锁", page.text_content("#operation-info"))
+                self.assertIn("先用操作口令解锁", page.text_content("#operation-info"))
                 self.assertFalse([url for url in requests if "/remote/login" in url])
                 self.assertEqual(errors, [])
             finally:

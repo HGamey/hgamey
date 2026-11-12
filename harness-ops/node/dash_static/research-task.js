@@ -24,7 +24,7 @@
   }
   const write = (kind, id, data, base, reason) => api(`/research-state/${kind}/${encodeURIComponent(id)}`,
     {schema: 'phonefarm/research-write@1', operation_id: crypto.randomUUID(), base_revision: base, data, actor_label: null, reason});
-  const failure = error => error.needSteer ? '需要先解锁研究操作（掌舵密码）' : error.message;
+  const failure = error => error.needSteer ? '需要先解锁研究操作（操作口令）' : error.message;
   const artifactPath = ref => `${API}/jobs/${encodeURIComponent(ref.job_id)}/out?${new URLSearchParams({path: ref.path})}`;
   const attachmentPath = ref => `${API}/research-attachments/${encodeURIComponent(ref.attachment_id)}`;
   // Media are read once they come near the screen: a long chain's notes, judged comparisons and folded reports cost

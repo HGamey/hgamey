@@ -638,7 +638,7 @@ def handle(remote, h, method, parts, query, board=None, node=None):
             if not readonly and h.headers.get('X-HG') != '1':
                 raise RemoteError(400, '请求格式不对（缺 X-HG 头）')
             if not readonly and not steered:
-                raise RemoteError(403, '需要掌舵权限', need_steer=True)
+                raise RemoteError(403, '需要操作口令', need_steer=True)
             op = {'id': 'human', 'name': 'human'}
             if method in ('POST', 'DELETE') and 'application/json' not in h.headers.get('Content-Type', ''):
                 h.close_connection = True

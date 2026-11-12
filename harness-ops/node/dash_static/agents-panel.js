@@ -133,13 +133,13 @@
   async function steer() {
     const access = await api("/dash/api/access").catch(() => null);
     if (access?.steer) return true;
-    if (!access?.steer_configured) { done("本节点未配置掌舵密码，Agent 只能查看。"); return false; }
+    if (!access?.steer_configured) { done("本节点未配置操作口令，Agent 只能查看。"); return false; }
     return new Promise(resolve => {
-      const input = el("input", { id: "agent-steer", type: "password", autocomplete: "current-password" });
+      const input = el("input", { id: "agent-steer", type: "password", autocomplete: "current-password", placeholder: "向管理员要" });
       const msg = el("p", { id: "agent-steer-msg", class: "agent-dialog-msg", role: "status" });
       const go = el("button", { class: "btn primary", type: "button", id: "agent-unlock" }, "解锁");
-      const d = show(el("h2", null, "需要掌舵权限"), said("归档、停用、启用和重新获取标识需要先解锁。"),
-        el("label", { for: "agent-steer" }, "掌舵密码"), input, msg, buttons(closer("取消"), go));
+      const d = show(el("h2", null, "需要操作口令"), said("归档、停用、启用和重新获取标识需要先解锁。"),
+        el("label", { for: "agent-steer" }, "操作口令"), input, msg, buttons(closer("取消"), go));
       d.addEventListener("close", () => resolve(false), { once: true });
       const unlock = async () => {
         const pw = input.value; input.value = "";

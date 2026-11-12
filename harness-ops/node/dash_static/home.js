@@ -90,7 +90,7 @@
     b.querySelector(".steer-label").textContent = h.steer ? "可操作" : "只读";
     b.setAttribute("aria-pressed", String(!!h.steer));
     b.classList.toggle("on", !!h.steer);
-    b.title = h.steer ? "已解锁，点一下重新上锁" : "只读；点一下输入掌舵密码解锁";
+    b.title = h.steer ? "已解锁，点一下重新上锁" : "只读；点一下输入操作口令解锁";
     b.setAttribute("aria-label", h.steer ? "操作已解锁，点一下上锁" : "只读，点一下解锁操作");
     $("invite-open").hidden = !h.steer;   // 接入新 agent is for whoever has unlocked steer, as on the Agent page
   }

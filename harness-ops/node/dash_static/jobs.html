@@ -52,8 +52,8 @@
   <section class="access-panel" aria-labelledby="access-heading">
     <div class="access-row"><div><h2 id="access-heading">任务操作权限</h2><p id="access-message" class="note" role="status">正在读取权限…</p></div><button id="access-toggle" class="ghost" type="button" disabled>解锁任务操作</button></div>
     <form id="unlock-form" class="unlock-form" autocomplete="off" hidden>
-      <label for="steer-password">掌舵密码</label>
-      <div class="unlock-input"><input id="steer-password" type="password" autocomplete="off" required><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-dismiss" class="ghost" type="button">收起</button></div>
+      <label for="steer-password">操作口令</label>
+      <div class="unlock-input"><input id="steer-password" type="password" placeholder="向管理员要" autocomplete="off" required><button id="unlock-submit" class="ghost primary" type="submit">解锁</button><button id="unlock-dismiss" class="ghost" type="button">收起</button></div>
       <p id="unlock-message" class="note" role="status"></p>
     </form>
     <a id="access-login" class="access-login" href="/dash/login" hidden>重新登录查看页面</a>
@@ -205,7 +205,7 @@
     <form id="request-lookup-form" class="request-lookup-form">
       <label for="request-id">按请求 ID 找回</label>
       <div class="lookup-input"><input id="request-id" type="text" autocomplete="off" spellcheck="false" required placeholder="请求 ID"><button id="request-lookup" class="ghost" type="submit">查询请求</button></div>
-      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页保存原 ID、节点、设备绑定、预算、宿主 slots 与优先级声明，不保存完整参数或掌舵密码；刷新后可继续查询。</p>
+      <p class="note">提交结果不确定时，保留原请求 ID 并先查询。本页保存原 ID、节点、设备绑定、预算、宿主 slots 与优先级声明，不保存完整参数或操作口令；刷新后可继续查询。</p>
     </form>
   </details>
   <div class="jobs-layout">
@@ -483,7 +483,7 @@
     </section>
   </div>
 </main>
-<footer class="foot">文件保存在当前节点。读取记录不启动设备采样；显式会话采集与输入由原 owner 执行，需掌舵权限。提交、停止和资源释放也需掌舵权限；运行中的日志和输出可能仍在更新。</footer>
+<footer class="foot">文件保存在当前节点。读取记录不启动设备采样；显式会话采集与输入由原 owner 执行，需操作口令。提交、停止和资源释放也需操作口令；运行中的日志和输出可能仍在更新。</footer>
 <script src="/dash/static/target.js"></script><script src="/dash/static/media-preview.js"></script>
 <script src="/dash/static/jobs.js"></script>
 </body>

@@ -36,7 +36,7 @@ class CenterExportPageTests(unittest.TestCase):
             self.open(page, steer=False)
             page.wait_for_selector("#unlock:not([hidden])")
             self.assertTrue(page.is_hidden("#content"))
-            self.assertIn("先解锁掌舵权限", page.text_content("#message"))
+            self.assertIn("先用操作口令解锁", page.text_content("#message"))
             page.fill("#unlock-pw", "wrong")
             page.click("#unlock button[type=submit]")
             page.wait_for_function("() => /解锁失败/.test(document.getElementById('unlock-msg').textContent)")

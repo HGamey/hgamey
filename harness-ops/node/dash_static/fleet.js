@@ -368,7 +368,7 @@
     $('access-toggle').disabled = accessBusy || writing || registryWriting || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '读取权限…' : access?.steer ? '锁定目录操作' : '解锁目录操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
-    message('access-message', accessError || (accessBusy ? '正在核对目录操作权限…' : !access ? '权限尚未取得，仅查看目录。' : !access.steer_configured ? '本节点未配置掌舵密码，目录保持只读。' : access.steer ? '已解锁：可生成加入码、改备注和标签。' : '当前只读；生成加入码、改备注和标签需解锁。'), !!accessError);
+    message('access-message', accessError || (accessBusy ? '正在核对目录操作权限…' : !access ? '权限尚未取得，仅查看目录。' : !access.steer_configured ? '本节点未配置操作口令，目录保持只读。' : access.steer ? '已解锁：可生成加入码、改备注和标签。' : '当前只读；生成加入码、改备注和标签需解锁。'), !!accessError);
     for (const id of ['meta-tags', 'meta-note']) $(id).disabled = !writable;
     $('meta-save').disabled = !writable || !editor;
     $('meta-save').setAttribute('aria-busy', String(writing));

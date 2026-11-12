@@ -112,7 +112,7 @@
   function sessionReason(action) {
     if (!HGTarget.canWrite()) return HGTarget.problem() || "节点未提供目标约束协议，设备观察与操作禁用。";
     if (state.binding && HGTarget.problem(state.binding.target || null)) return HGTarget.problem(state.binding.target || null);
-    if (!state.op) return "先用掌舵密码解锁。";
+    if (!state.op) return "先用操作口令解锁。";
     if (document.hidden) return "页面已暂停，返回后须重新确认状态。";
     if (!state.devicesFresh) return "设备状态未确认：" + state.devicesError;
     if (state.capabilities?.available !== true) return state.capabilities?.reason || "节点未提供可用的远程会话能力。";

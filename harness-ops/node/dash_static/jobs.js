@@ -495,7 +495,7 @@
     $('access-toggle').disabled = accessBusy || !access?.steer_configured;
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
     message('access-message', accessError || (accessBusy ? '正在核对操作权限…' : !access ? '权限尚未取得，任务操作保持只读。' :
-      !access.steer_configured ? '本节点尚未配置掌舵密码，任务操作保持只读。' : access.steer ? '已解锁，可提交任务、停止请求和资源释放确认。' : '当前为只读模式，解锁后可提交任务操作。'), !!accessError);
+      !access.steer_configured ? '本节点尚未配置操作口令，任务操作保持只读。' : access.steer ? '已解锁，可提交任务、停止请求和资源释放确认。' : '当前为只读模式，解锁后可提交任务操作。'), !!accessError);
     renderControls();
     renderSubmission();
     renderSessionControls();

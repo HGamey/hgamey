@@ -393,18 +393,18 @@ class Dash:
                 return self._send(h, 429, {"error": "失败次数太多，10 分钟后再试"})
             real = self._steer_pass()
             if not real:
-                return self._send(h, 503, {"error": "节点上还没设置掌舵密码"})
+                return self._send(h, 503, {"error": "节点上还没设置操作口令"})
             if hmac.compare_digest(str(data.get("pw", "")).strip().encode(), real.encode()):
                 ck = (f"{STEER_COOKIE}={self._cookie_val(real, b'hgamey-steer-v1')}" + self._cookie_attrs(h, STEER_MAX_AGE))
                 log_err(f"dash 掌舵解锁 来自 {ip}")
                 return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": ck})
             self.fails[ip].append(_now())
             time.sleep(1)
-            return self._send(h, 403, {"error": "掌舵密码不对"})
+            return self._send(h, 403, {"error": "操作口令不对"})
         if sub == ["api", "steer", "lock"]:
             return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": f"{STEER_COOKIE}={self._cookie_attrs(h, 0)}"})
         if not self.steered(h):
-            return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
+            return self._send(h, 403, {"error": "需要操作口令", "need_steer": True})
         if sub[:2] == ["api", "tour"] and len(sub) in (2, 4):
             return self._tour_write(h, sub[2:], ip)
         try:

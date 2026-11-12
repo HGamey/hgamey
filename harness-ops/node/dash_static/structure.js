@@ -501,8 +501,8 @@
     $('zone-unlock').hidden = !locked || !access?.steer_configured;
     $('zone-save').disabled = writing || locked || !!zoneProblem();
     $('zone-save').textContent = writing ? '保存中…' : '保存';
-    const note = text || (!access ? '正在读取操作权限…' : !access.steer_configured ? '本节点未配置掌舵密码，区域只能查看。'
-      : locked ? '修改区域需要先解锁掌舵权限。' : zoneProblem());
+    const note = text || (!access ? '正在读取操作权限…' : !access.steer_configured ? '本节点未配置操作口令，区域只能查看。'
+      : locked ? '修改区域需要先用操作口令解锁。' : zoneProblem());
     $('zone-message').textContent = note;
     $('zone-message').classList.toggle('task-error', error);
   }
