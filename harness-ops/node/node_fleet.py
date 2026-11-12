@@ -55,8 +55,8 @@ class FleetState:
         if lock_dir is None and self.leases is None:
             self.leases = LeaseState({"phonefarm": (os.path.join(phonefarm_root, "phonefarm"), phonefarm_root)})
         # Leftover processes on idle phones are stopped as the phones are sampled (phone_cleanup).
-        adb = (self.leases.bins.get("adb") or (None,))[0] if self.leases is not None else None
-        self.cleaner = Cleaner(adb, cleanup_log, self.leases.env) if cleanup_log and adb else None
+        adb = (self.leases.bins.get("adb") or (None,))[0] if cleanup_log and self.leases is not None else None
+        self.cleaner = Cleaner(adb, cleanup_log, self.leases.env) if adb else None
         self._condition = threading.Condition()
         self._thread = None
         self._closed = False
