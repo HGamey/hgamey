@@ -3041,7 +3041,8 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(page.goto(base + "/dash/datasets").status, 200)
             page.wait_for_function("() => document.getElementById('message').textContent === '还没有登记过数据集。'", timeout=20000)
             self.assertTrue(page.is_hidden("#datasets"))
-            self.assertEqual(page.get_attribute('.shell-tab[data-tab="data"]', "aria-current"), "page")
+            self.assertEqual(page.get_attribute(".shell-more-btn", "aria-current"), "page")
+            self.assertEqual(page.text_content(".shell-more-btn"), "数据集")
             self.assertEqual(self.web("POST", "/research-state/research/sr-data", self.write("create-sr-data", {"title": "采数据", "objective": "试点"}))[0], 201)
 
             def register(rid, dataset=None, names=(), supersedes=None):
@@ -4300,7 +4301,7 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('requireWrite', script)
         engineering = page.split('<summary>工程详情</summary>', 1)[1]
         self.assertIn('id="criteria-detail"', engineering)
-        self.assertIn('["/dash/jobs", "runs", "作业"]', shell)
+        self.assertIn('["/dash/jobs", "作业", "工程师用"]', shell)
         self.assertIn('["/dash/research", "task", "任务"]', shell)
         self.assertIn('["/dash/research#agents-directory", "agent", "Agent"]', shell)
         self.assertIn('id="objects-heading" tabindex="-1">任务</h2>', page)
