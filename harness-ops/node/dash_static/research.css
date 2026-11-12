@@ -118,6 +118,8 @@
 .research-view .research-browser .research-filter-grid { grid-template-columns: minmax(0, 1fr); gap: var(--sp-2); margin-bottom: var(--sp-3); }
 .research-view .research-list { margin: var(--sp-2) 0; }
 .research-view .research-list > li + li { border-top: 0; }
+.research-list > .research-group { display: flex; gap: 6px; align-items: baseline; margin: var(--sp-3) 0 2px; padding: 0 10px; color: var(--muted); font-size: var(--fs-xs); font-weight: 600; }
+.research-list > .research-group:first-child { margin-top: 0; }
 .research-view .research-choice { padding: 10px var(--sp-2); margin: 1px 0; border-radius: var(--radius); }
 .research-view .research-choice strong { font-size: var(--fs-base); font-weight: 600; line-height: 1.5;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
