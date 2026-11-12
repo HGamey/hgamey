@@ -231,6 +231,7 @@
 .queue-panel .read-time { margin: 12px 0 0; }
 .queue-summary { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 12px 0; font-size: 13px; color: var(--ink2); }
 .queue-summary strong { font-size: 18px; font-weight: 650; color: var(--ink); margin-right: 5px; font-variant-numeric: tabular-nums; }
+.queue-summary .warn, .queue-summary .warn strong { color: var(--warn); }
 .queue-list { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; }
 .queue-item { display: grid; grid-template-columns: minmax(130px, .65fr) minmax(0, 1.7fr) auto; align-items: start; gap: 10px 20px; padding: 14px 0; border-top: 1px solid var(--grid); font-size: 13px; }
 .queue-item > div { min-width: 0; overflow-wrap: anywhere; }

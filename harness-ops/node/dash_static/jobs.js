@@ -928,6 +928,12 @@
       computers = new Map((value.items || []).map(item => [item.node_id, item.name]));
     } catch (_) { computers = new Map(); }   // older nodes have no directory; ids still show
   }
+  // A computer's queue in numbers; 执行范围待核查 shows only when a job waits on it, in amber.
+  function queueCounts(q) {
+    return [[q.active_count, `已分配作业 / ${text(q.max_running)} 个名额`], [q.queued_count, '排队'], ...(q.blocked_count ? [[q.blocked_count, '执行范围待核查', 'warn']] : [])].map(([value, label, tone]) => {
+      const part = el('span', null, tone); part.append(el('strong', text(value)), el('span', label)); return part;
+    });
+  }
   async function loadQueue() {
     const revision = ++queueRevision;
     regionBusy('queue-panel', true);
@@ -947,16 +953,11 @@
       renderHostCapacity(queue.host_capacity);
       // The top-level counts are this computer's own; each joined computer reports its queue separately.
       const others = (Array.isArray(queue.execution_queues) ? queue.execution_queues : []).filter(other => other.node_id !== queue.node_id);
-      $('queue-summary').replaceChildren(...(others.length ? [el('span', '本机', 'queue-computer')] : []), ...[[queue.active_count, `已分配作业 / ${queue.max_running} 个名额`], [queue.queued_count, '排队'], [queue.blocked_count, '执行范围待核查']].map(([value, label]) => {
-        const part = el('span'); part.append(el('strong', text(value)), el('span', label)); return part;
-      }));
+      $('queue-summary').replaceChildren(...(others.length ? [el('span', '本机', 'queue-computer')] : []), ...queueCounts(queue));
       $('queue-summary').hidden = false;
       $('execution-queues').replaceChildren(...others.map(other => {
         const box = el('div', null, 'execution-queue'), q = other.queue || {}, summary = el('div', null, 'queue-summary');
-        summary.append(el('span', other.name || computerName(other.node_id), 'queue-computer'),
-          ...[[q.active_count, `已分配作业 / ${text(q.max_running)} 个名额`], [q.queued_count, '排队'], [q.blocked_count, '执行范围待核查']].map(([value, label]) => {
-            const part = el('span'); part.append(el('strong', text(value)), el('span', label)); return part;
-          }));
+        summary.append(el('span', other.name || computerName(other.node_id), 'queue-computer'), ...queueCounts(q));
         box.append(summary, el('p', `${other.connection?.status === 'ready' ? '已连接' : '已断开'} · 观察于 ${time(other.observed_at)}`, 'note'));
         const list = el('ul', null, 'queue-list');
         for (const job of q.items || []) {
