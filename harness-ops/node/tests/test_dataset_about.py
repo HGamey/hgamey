@@ -29,7 +29,7 @@ class DatasetAboutTests(unittest.TestCase):
             page.goto("http://%s:%d/dash/datasets" % self.address)
             page.wait_for_selector('tr[data-result="told"]')
             about = page.eval_on_selector_all(".ds-name th", "e => Object.fromEntries(e.map(th => [th.firstChild.textContent, th.querySelector('.ds-purpose')?.textContent]))")
-            self.assertEqual(about, {"gi-sim": "原神画面，模拟低清配对，1.2 万帧", "mc-sim": "真实配对，773 帧",
+            self.assertEqual(about, {"gi-sim": "原神画面，模拟低清配对，1.2 万帧", "mc-sim": "Megacity画面，真实配对，773 帧",
                                      "doom": "混合配对（含模拟）", "told": "红魔上录的原神画面，用来训练超分"})
 
 

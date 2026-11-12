@@ -29,10 +29,11 @@
     return box;
   }
 
-  // The game a person reads: its name where this center has the game registered; the package and version are
-  // technical details.
+  // The game a person reads: its name where this center has the game registered, else a common game's name
+  // (game-names.js); the package and version are technical details.
+  const gameName = id => games.get(id) || window.HGGameNames?.[id];
   function game(labels) {
-    const id = labels?.game_id, version = labels?.game_version, name = games.get(id);
+    const id = labels?.game_id, version = labels?.game_version, name = gameName(id);
     if (!id && !version) return DASH;
     const box = el('span', name || id || version);
     if (name) box.append(el('span', ` ${[id, version].filter(Boolean).join(' ')}`, 'tech'));
@@ -45,7 +46,7 @@
   const PAIRED = {simulated: '模拟低清配对', real: '真实配对', unpaired: '无配对', mixed: '混合配对（含模拟）'};
   const frames = n => n >= 10000 ? `${(n / 10000).toFixed(1).replace(/\.0$/, '')} 万帧` : `${n} 帧`;
   function about(item) {
-    const d = item.dataset, name = games.get(item.labels?.game_id);
+    const d = item.dataset, name = gameName(item.labels?.game_id);
     return [name && `${name}画面`, PAIRED[d.pairing], d.frames != null && frames(d.frames)].filter(Boolean).join('，');
   }
 
