@@ -1550,18 +1550,49 @@
       else button.removeAttribute('aria-current');
     }
   }
+  // Phones by serial, device ID or alias → brand and model, for jobs that name a phone only by its serial.
+  let phoneNames = null;
+  function readPhoneNames() {
+    phoneNames = phoneNames || json(`${API}/phones`).then(value => {
+      const names = new Map();
+      for (const phone of value.items || []) {
+        const seen = phone.observation || {}, name = [seen.brand, seen.model || phone.model].filter(Boolean).join(' ');
+        if (name) for (const key of [phone.serial, phone.device_id, ...(phone.aliases || [])]) if (key) names.set(key, name);
+      }
+      return names;
+    }, () => new Map());
+    return phoneNames;
+  }
+  // A job without a label reads as what it is where its command says so plainly: an adb command, on a phone by its
+  // name. The command itself is then a technical detail.
+  const plainAdb = job => !job.label && job.bin === 'adb';
+  function adbSerial(job) {
+    const argv = Array.isArray(job.argv) ? job.argv : [], at = argv.indexOf('-s');
+    return at >= 0 && argv[at + 1] ? String(argv[at + 1]) : null;
+  }
+  function jobTitle(job, names = new Map()) {
+    if (!plainAdb(job)) return job.label || job.bin || '未命名任务';
+    const serial = adbSerial(job), name = serial && names.get(serial);
+    return name ? `在 ${name} 上执行 adb 命令` : serial ? '在手机上执行 adb 命令' : '执行 adb 命令';
+  }
+  function nameTitle(node, job, still = () => true) {
+    node.textContent = jobTitle(job);
+    if (plainAdb(job) && adbSerial(job)) readPhoneNames().then(names => { if (still()) node.textContent = jobTitle(job, names); });
+  }
   function addJob(job) {
     const item = el('li');
     const button = el('button', null, 'task-item');
     button.type = 'button';
     button.dataset.job = job.id;
-    button.append(el('div', job.label || job.bin || '未命名任务', 'task-item-title'));
+    const title = el('div', null, 'task-item-title');
+    nameTitle(title, job);
+    button.append(title);
     const row = el('div', null, 'task-item-line');
     const [label, kind] = status(currentJob?.id === job.id ? currentJob : job);
     row.append(el('span', job.id, 'task-item-id'), el('span', label, `task-state ${kind}`));
     if (remoteJob(job)) row.append(el('span', `在 ${computerName(job.execution_node_id)}`, 'task-item-node'));
     const command = [job.bin, ...(Array.isArray(job.argv) ? job.argv : [])].map(text).join(' ');
-    button.append(row, el('span', time(job.started), 'task-item-time'), el('span', command.length > 220 ? command.slice(0, 220) + '…' : command, 'task-item-command'));
+    button.append(row, el('span', time(job.started), 'task-item-time'), el('span', command.length > 220 ? command.slice(0, 220) + '…' : command, plainAdb(job) ? 'task-item-command tech' : 'task-item-command'));
     button.addEventListener('click', () => {
       if (job.id !== selected) selectJob(job.id);
       if (window.matchMedia('(max-width: 780px)').matches) $('detail-heading').focus();
@@ -1675,7 +1706,7 @@
       updateJobInputAccess();
       renderSessionControls();
       const [label, kind] = status(job);
-      $('job-title').textContent = job.label || job.bin || '未命名任务';
+      nameTitle($('job-title'), job, () => currentJob === job);
       $('job-state').textContent = label;
       $('job-state').className = `task-state ${kind}`;
       for (const button of $('task-list').querySelectorAll('button')) {
