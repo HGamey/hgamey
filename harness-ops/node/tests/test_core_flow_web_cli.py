@@ -4301,7 +4301,7 @@ class CoreFlowTests(unittest.TestCase):
         self.assertIn('requireWrite', script)
         engineering = page.split('<summary>工程详情</summary>', 1)[1]
         self.assertIn('id="criteria-detail"', engineering)
-        self.assertIn('["/dash/jobs", "runs", "作业"]', shell)
+        self.assertIn('["/dash/jobs", "作业", "工程师用"]', shell)
         self.assertIn('["/dash/research", "task", "任务"]', shell)
         self.assertIn('["/dash/research#agents-directory", "agent", "Agent"]', shell)
         self.assertIn('id="objects-heading" tabindex="-1">任务</h2>', page)
