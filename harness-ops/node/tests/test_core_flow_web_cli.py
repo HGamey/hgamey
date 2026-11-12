@@ -4328,7 +4328,7 @@ class CoreFlowTests(unittest.TestCase):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
         self.assertRegex(page, r'id="new-btn" class="btn primary"[^>]*>＋ 新任务</button>')
-        self.assertIn('id="goal-btn"', page)
+        self.assertNotIn('id="goal-btn"', page)
         self.assertIn('id="research-form"', page)
         self.assertIn('id="research-objective"', page)
         self.assertIn('id="research-game"', page)
