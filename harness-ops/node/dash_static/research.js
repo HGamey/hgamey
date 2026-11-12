@@ -300,6 +300,8 @@
       if (record.kind === 'research' && key === 'objective' && String(value).trim() === String(record.data.title || '').trim()) continue;
       const shown = record.kind === 'research' ? SHOWN[key] || label : label;
       if (type === 'json') body.append(jsonDetails(shown, value));
+      // Codes in the state's reason (a note's ID, a job's) read as grey tags, as in the notes; the code itself is a technical detail.
+      else if (key === 'state_reason') body.append(el('h4', shown), HGResearchTask.util.codedText(value));
       else body.append(el('h4', shown), el('p', type === 'lines' ? value.join('\n') : key === 'type' ? TYPES[value] || value : value));
     }
     const ab = !!record.data.evaluation;
