@@ -5,11 +5,11 @@
   'use strict';
   const $ = id => document.getElementById(id), API = '/dash/api', DASH = '—';
   const PAIRING = {simulated: ['模拟低清', 'warn'], real: ['真实配对', 'ok'], unpaired: ['无配对', 'off'], mixed: ['混合（含模拟）', 'warn']};
-  const COLUMNS = [['版本'], ['配对'], ['游戏'], ['设备'], ['采集方法'], ['帧数', 'num'], ['场景', 'num'], ['训练 / 验证 / 测试', 'num'], ['大小', 'num']];
+  const COLUMNS = [['版本'], ['配对'], ['游戏'], ['设备'], ['采集方法', 'tech ds-method'], ['帧数', 'num'], ['场景', 'num'], ['训练 / 验证 / 测试', 'num'], ['大小', 'num']];
   const PREVIEW = /\.(png|jpe?g|webp|gif|avif)$/i, MIME = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif'};
   const REPORTS = ['qa_report.json', 'manifest.json', 'split.json'], FIRST_PREVIEWS = 8, TEXT_LIMIT = 1 << 20;
   const opened = new Set();   // result IDs open across a refresh
-  let computers = new Map(), models = new Map();   // node ID → name; phone serial or alias → model
+  let computers = new Map(), models = new Map(), games = new Map();   // node ID → name; phone serial or alias → model; package → game
 
   // The device a person reads: phone serials and commits are technical details, folded with the separator before them;
   // a serial the phones on this center know becomes its model when the label does not name it already.
@@ -26,6 +26,17 @@
         box.append(el('span', (named ? ' ' : before) + word, 'tech'));
       } else box.append(before, word);
     }
+    return box;
+  }
+
+  // The game a person reads: its name where this center has the game registered; the package and version are
+  // technical details.
+  function game(labels) {
+    const id = labels?.game_id, version = labels?.game_version, name = games.get(id);
+    if (!id && !version) return DASH;
+    const box = el('span', name || id || version);
+    if (name) box.append(el('span', ` ${[id, version].filter(Boolean).join(' ')}`, 'tech'));
+    else if (id && version) box.append(el('span', ` ${version}`, 'tech'));
     return box;
   }
 
@@ -72,7 +83,7 @@
     const panel = el('tr', null, 'ds-detail'), cell = el('td'); cell.colSpan = COLUMNS.length; panel.append(cell); panel.hidden = true;
     open.type = 'button'; open.setAttribute('aria-expanded', 'false');
     tr.dataset.result = item.result_id; tr.dataset.pairing = d.pairing;
-    const cells = [open, el('span', word, `tag ${tone} ds-pairing`), [item.labels?.game_id, item.labels?.game_version].filter(Boolean).join(' ') || DASH, device(item.labels?.device),
+    const cells = [open, el('span', word, `tag ${tone} ds-pairing`), game(item.labels), device(item.labels?.device),
       d.capture_method || DASH, count(d.frames), count(d.scenes), splits(d.splits), size(d.size_bytes)];
     cells.forEach((value, i) => { const td = el('td', value instanceof Node ? null : value, COLUMNS[i][1]); if (value instanceof Node) td.append(value); tr.append(td); });
     let built = false;
@@ -140,6 +151,13 @@
           for (const phone of value.items || []) {
             const seen = phone.observation || {}, model = [seen.brand, seen.model || phone.model].filter(Boolean).join(' ');
             if (model) for (const name of [phone.serial, phone.device_id, ...(phone.aliases || [])]) if (name) models.set(name, model);
+          }
+        }, () => {}),
+        json('/games').then(value => {
+          games = new Map();
+          for (const entry of value.items || []) {
+            const app = entry.manifest?.application?.package, title = (entry.title || entry.manifest?.title || '').split(/ \/ | · /)[0].trim();
+            if (app && title && !games.has(app)) games.set(app, title);
           }
         }, () => {})]);
       render(items);
