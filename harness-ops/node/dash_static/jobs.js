@@ -889,13 +889,26 @@
     return [['宿主 owner 实例', status], ...(host ? [['宿主 PID', host.pid], ['宿主进程启动身份', host.start], ['宿主 boot ID', host.host_boot_id], ['宿主身份原因', host.reason]] : []),
       ['身份核查范围', '仅宿主 owner 实例；不证明原进程组已结束或设备已恢复。']];
   }
+  function leaseHeld(lease) {
+    if (lease.status === 'clear') return '没有手机被占用';
+    if (lease.status === 'blocked') return '有手机需要恢复';
+    if (lease.status !== 'held') return '手机占用情况未知';
+    const phones = new Set((lease.entries || []).filter(entry => entry.role === 'device_lease' && entry.serial).map(entry => entry.serial));
+    return phones.size ? `${phones.size} 台手机被占用` : '有手机被占用';
+  }
   function renderLease(lease, error = '') {
     leaseSnapshot = lease || null;
     const storageBlocked = leaseStorageBlocked(lease);
     const state = storageBlocked ? ['存储不可用', 'unknown'] : ({clear: ['屏障已清除', 'finished'], held: ['设备占用', 'unknown'], blocked: ['需要恢复', 'unknown'], unknown: ['状态未知', 'unknown']})[lease?.status] || ['尚未取得状态', 'unknown'];
     $('lease-state').textContent = state[0];
     $('lease-state').className = `task-state ${state[1]}`;
-    message('lease-message', error || (storageBlocked ? `存储不可用：${lease.storage.error}` : !lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : lease.error ? `读取异常：${lease.error}` : `兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。${lease.device_scopes ? ' 此为聚合状态；单设备等待与释放资格以节点针对任务的判断为准。' : ''}`), !!error || !!lease?.error || storageBlocked);
+    if (error || storageBlocked || !lease || lease.error) {
+      message('lease-message', error || (storageBlocked ? `存储不可用：${lease.storage.error}` : !lease ? '此节点尚未返回实际 lease 记录，不能据此判断设备空闲。' : `读取异常：${lease.error}`), !!error || !!lease?.error || storageBlocked);
+    } else {
+      // Whether phones are held reads first; how the barrier was judged is a technical detail.
+      message('lease-message', leaseHeld(lease));
+      $('lease-message').append(el('span', ` 兼容锁：${lease.bridge_held === true ? '占用' : lease.bridge_held === false ? '空闲' : '未知'}。实际 lease 与队列资源分别核查；资源保留不占用执行名额。${lease.device_scopes ? ' 此为聚合状态；单设备等待与释放资格以节点针对任务的判断为准。' : ''}`, 'tech'));
+    }
     renderLeaseStorage(lease?.storage);
     $('lease-sampled').textContent = lease ? `采样于 ${time(lease.sampled_at)}` : '';
     $('lease-list').replaceChildren(...(lease?.entries || []).map(entry => {
