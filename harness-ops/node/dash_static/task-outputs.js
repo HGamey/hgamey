@@ -14,11 +14,13 @@ window.HGTaskOutputs = (() => {
   const STATUS = {A: '新增', M: '修改', D: '删除', R: '重命名', C: '复制', T: '类型变化'};
   // The platform's records in a job's output (lease receipts, its device record and runtime report), not the agent's work.
   const platform = name => name === 'lease-receipts' || name.startsWith('.');
+  // A remote control session's own records, at any depth: each command it ran and that command's output.
+  const SESSION = /^gray-session-\d+-\d+$/;
   const FILES_PER_JOB = 300, DIRECTORIES_PER_JOB = 30;
   const GITHUB = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:commit|tree|blob)\/([0-9a-f]{7,40})(?:[/?#]|$)/;
   const HEX = /\b[0-9a-f]{7,40}\b/g;
 
-  const size = n => !Number.isFinite(n) ? '' : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} 字节`;
+  const size = n => !Number.isFinite(n) ? '' : n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} 字节`;
   const filePath = file => `${API}/jobs/${encodeURIComponent(file.job)}/out?${new URLSearchParams({path: file.path})}`;
   const fileUrl = file => HGTarget.url(filePath(file));
   // A picture or a video among the outputs previews under its row.
@@ -27,7 +29,8 @@ window.HGTaskOutputs = (() => {
 
   // A job's output tree, breadth first, without the platform's records; bounded so a job of thousands of frames
   // stays a short read. The directories of one level are read together, so a tree costs its depth in round trips.
-  async function tree(job, listing = 'artifacts', skip = () => false) {
+  // `skip` leaves out entries at the top, `drop` directories at any depth.
+  async function tree(job, listing = 'artifacts', skip = () => false, drop = () => false) {
     const files = [];
     let level = [''], reads = 0, more = false;
     while (level.length) {
@@ -41,7 +44,7 @@ window.HGTaskOutputs = (() => {
           const page = await U().api(`/jobs/${encodeURIComponent(job)}/${listing}?${new URLSearchParams({path, limit: '200', ...(cursor ? {cursor} : {})})}`);
           for (const item of page.items) {
             if (path === '' && (listing === 'artifacts' ? platform(item.name) : skip(item.name))) continue;
-            if (item.kind === 'directory') directories.push(item.path);
+            if (item.kind === 'directory') { if (!drop(item.name)) directories.push(item.path); }
             else if (item.kind === 'file') found.push({job, path: item.path, size: item.size, kind: kindOf(item.path)});
           }
           cursor = page.next_cursor;
@@ -100,8 +103,9 @@ window.HGTaskOutputs = (() => {
     const jobIds = new Set([...(jobs || []).map(job => job.id), ...delivered]);
     for (const [hex] of String(deliverable.summary || '').matchAll(HEX)) if (!jobIds.has(hex) && wanted.size < 50) want(hex, '报告里提到');
     const [trees, found] = await Promise.all([
-      pool(whole, 4, job => tree(job)), wanted.size ? lookup([...wanted.keys()]) : null]);
-    trees.forEach((value, i) => { if (value.error) unread.push(whole[i]); else { files.push(...value.files); if (value.more) unread.push(whole[i] + '（只列出一部分）'); } });
+      pool(whole, 4, job => tree(job, 'artifacts', undefined, name => SESSION.test(name))), wanted.size ? lookup([...wanted.keys()]) : null]);
+    const partial = new Set();   // jobs with more files than are read: their counts are lower bounds
+    trees.forEach((value, i) => { if (value.error) unread.push(whole[i]); else { files.push(...value.files); if (value.more) { unread.push(whole[i] + '（只列出一部分）'); partial.add(whole[i]); } } });
     // Every commit a job ran is shown, known to the mirror or not; a hex string from the report only when it is a commit.
     // What the delivery itself names (a link, the report) comes before the code its jobs ran.
     const known = new Map((found?.items || []).map(item => [item.rev, item]));
@@ -112,13 +116,15 @@ window.HGTaskOutputs = (() => {
       return source === '报告里提到' ? [] : [unknownCommit(rev, source, found?.repository)];
     });
     const unique = [...new Map(commits.map(commit => [commit.commit, commit])).values()];
-    return {files, commits: unique, results, links, unread, lookup: found?.error ? found.error.message : ''};
+    return {files, commits: unique, results, links, unread, partial, lookup: found?.error ? found.error.message : ''};
   }
 
+  // A kind with files from a job not read in full is counted 至少.
+  const atLeast = (outputs, files) => files.some(file => outputs.partial?.has(file.job)) ? '至少 ' : '';
   function counts(outputs) {
     const n = {commit: outputs.commits.length, result: outputs.results.length, link: outputs.links.length};
     for (const file of outputs.files) n[file.kind] = (n[file.kind] || 0) + 1;
-    return KINDS.filter(([kind]) => n[kind]).map(([kind, label]) => [kind, label, n[kind]]);
+    return KINDS.filter(([kind]) => n[kind]).map(([kind, label]) => [kind, label, atLeast(outputs, outputs.files.filter(file => file.kind === kind)) + n[kind]]);
   }
   function fileRow(file, withJob = true) {
     const {el} = U(), row = el('li', null, 'output-file'), link = el('a', file.path.split('/').pop());
@@ -182,6 +188,19 @@ window.HGTaskOutputs = (() => {
       list.append(...key.slice(0, 20).map(file => fileRow(file, names.get(file.path) > 1)));
       if (key.length > 20) list.append(el('li', `还有 ${key.length - 20} 个`, 'note'));
       group.append(el('summary', `${title} · ${key.length} 个文件`), list);
+      box.append(group);
+    }
+    // The rest is one folded line too: how many and how big, and opened, by kind of file (.raw 213 个 · 1.3 GB).
+    const rest = outputs.files.filter(file => file.kind === 'other');
+    if (rest.length) {
+      const by = new Map(), more = atLeast(outputs, rest);
+      for (const file of rest) {
+        const ext = /\.[^./]+$/.exec(file.path)?.[0].toLowerCase() || '无扩展名', at = by.get(ext) || {n: 0, bytes: 0};
+        by.set(ext, {n: at.n + 1, bytes: at.bytes + (file.size || 0)});
+      }
+      const total = rest.reduce((sum, file) => sum + (file.size || 0), 0), group = el('details', null, 'output-group k-other'), list = el('ul', null, 'output-kinds');
+      list.append(...[...by].sort((a, b) => b[1].bytes - a[1].bytes || b[1].n - a[1].n).map(([ext, at]) => el('li', `${ext} · ${at.n} 个 · ${size(at.bytes)}`)));
+      group.append(el('summary', `其他文件 · ${more}${rest.length} 个 · ${more}${size(total)}`), list);
       box.append(group);
     }
     if (outputs.commits.length) {

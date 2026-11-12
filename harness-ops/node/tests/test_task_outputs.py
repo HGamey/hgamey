@@ -64,9 +64,10 @@ class TaskOutputsTests(unittest.TestCase):
             brief = "#task-summary .summary-outputs"
             self.assertEqual(page.eval_on_selector_all(f"{brief} .output-count", "e => e.map(x => x.textContent)"),
                              ["模型 1", "引擎库 1", "代码提交 2", "图片 1", "报告 1", "其他文件 1", "外部链接 1"])
-            # Models and engine libraries: one folded line each, the files inside, each a download of the job's file.
+            # Models and engine libraries: one folded line each, the files inside, each a download of the job's file;
+            # the other files one line by kind.
             self.assertEqual(page.eval_on_selector_all(f"{brief} .output-group > summary", "e => e.map(x => x.textContent)"),
-                             ["训练出的模型 · 1 个文件", "引擎库 · 1 个文件"])
+                             ["训练出的模型 · 1 个文件", "引擎库 · 1 个文件", "其他文件 · 1 个 · 2 字节"])
             self.assertTrue(page.locator(f"{brief} .output-file").first.is_hidden())
             for kind in ("weights", "engine"):
                 page.click(f"{brief} .output-group.k-{kind} > summary")
