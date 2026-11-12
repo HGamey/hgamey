@@ -48,6 +48,7 @@ from job_capacity import CapacityExceeded
 from job_events import public_fields
 import dash_command
 import dash_tour
+import dataset_samples
 from node_session import SessionError, MAX_REQUEST
 from node_deployments import DeploymentError
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
@@ -306,6 +307,8 @@ class Dash:
             return self._command(h)
         if sub == ["api", "tasks"]:
             return self._task_list(h, parse_qs(query))
+        if sub == ["api", "datasets", "samples"]:
+            return self._dataset_samples(h)
         if sub == ["api", "showcase"] or sub[:3] == ["api", "showcase", "screen"] and len(sub) == 4:
             return self._showcase(h, sub[3] if len(sub) == 4 else None)
         if len(sub) == 2 and sub[0] == "static" and sub[1] in SHOWCASE_STATIC:
@@ -552,6 +555,23 @@ class Dash:
             if error.status != 404 and tid:   # the page keeps showing the tour, with what the failed step printed
                 failed["tour"] = self._tours().view(tid)
             return self._send(h, error.status, failed)
+
+    def _dataset_samples(self, h):
+        """Sample pictures of every dataset, by result ID, from files this center holds (dataset_samples)."""
+        results = getattr(self.job_service, "results", None) if self.job_service else None
+        if results is None:
+            return self._send(h, 503, {"error": "结果服务不可用"})
+        out, query = {}, {"datasets": ["1"], "limit": ["100"]}
+        while True:
+            page = results.list(query)
+            for item in page["items"]:
+                try:
+                    out[item["result_id"]] = dataset_samples.samples(self.job_service, item["result_id"])
+                except (OSError, ValueError, KeyError):
+                    out[item["result_id"]] = []
+            if not page.get("next_cursor"):
+                return self._send(h, 200, {"items": out})
+            query = {**query, "cursor": [page["next_cursor"]]}
 
     def _task_list(self, h, q):
         """The task list, most recently active first. A task is as recent as the latest change to it, its directions or

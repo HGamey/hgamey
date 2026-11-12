@@ -11,6 +11,11 @@
 .ds-group:first-of-type .ds-name th { padding-top: var(--sp-3); }
 .ds-name small { margin-left: var(--sp-2); font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
 .ds-name .ds-purpose { display: block; margin-top: 2px; font-size: var(--fs-sm); font-weight: 400; color: var(--ink2); }
+.ds-name .ds-samples { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-2); }
+.ds-name .ds-samples[hidden] { display: none; }
+.ds-sample { margin: 0; display: grid; gap: 2px; }
+.ds-sample img { display: block; height: 96px; max-width: 220px; object-fit: contain; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--wash); cursor: zoom-in; }
+.ds-sample figcaption { font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
 .ds-version { cursor: pointer; border-top: 1px solid var(--grid); }
 .ds-version:hover { background: var(--wash); }
 .ds-open { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; }

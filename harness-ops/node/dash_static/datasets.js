@@ -97,11 +97,33 @@
       th.append(el('span', name), el('small', `${list.length} 个版本`));
       const purpose = list.find(item => item.dataset.purpose)?.dataset.purpose;   // the newest version that says it
       if (purpose) th.append(el('span', purpose, 'ds-purpose'));
+      const samples = el('span', null, 'ds-samples'); samples.hidden = true; samples.dataset.results = list.map(item => item.result_id).join(' ');
+      th.append(samples);
       title.append(th); body.append(title);
       for (const item of list) body.append(...row(item));
       table.append(body);
     }
     box.replaceChildren(table);
+    showSamples(table);
+  }
+  // Under each name, a sample from its newest version that has one: a low-res / high-res pair, or one picture, from
+  // files the center holds. A picture that does not load is left out.
+  async function showSamples(table) {
+    let found;
+    try { found = (await json('/datasets/samples')).items || {}; } catch (_) { return; }
+    for (const box of table.querySelectorAll('.ds-samples')) {
+      const chosen = box.dataset.results.split(' ').map(rid => found[rid]).find(list => list?.length);
+      if (!chosen) continue;
+      for (const sample of chosen) {
+        const figure = el('figure', null, 'ds-sample'), image = el('img');
+        Object.assign(image, {alt: sample.label, loading: 'lazy', src: HGTarget.url(sample.url)});
+        image.onerror = () => { figure.remove(); box.hidden = !box.children.length; };
+        image.onclick = () => { $('zoom').querySelector('img').src = image.src; $('zoom').querySelector('img').alt = sample.label; $('zoom').showModal(); };
+        figure.append(image, el('figcaption', sample.label));
+        box.append(figure);
+      }
+      box.hidden = false;
+    }
   }
   function showMessage(text, retry) {
     const box = $('message'); box.hidden = !text; box.textContent = text || ''; box.classList.toggle('task-error', !!retry);

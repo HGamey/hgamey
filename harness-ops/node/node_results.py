@@ -419,6 +419,10 @@ class NodeResults:
             raise ResultError(404, "result_not_found", "no registered result with this ID")
         return row
 
+    def manifest(self, rid):
+        """A result's registered manifest alone: unlike get(), no source is opened or fetched from another computer."""
+        return json.loads(self._row(rid)["manifest"])
+
     def list(self, query):
         filters, limit, page_cursor = result_query(query)
         after = None
