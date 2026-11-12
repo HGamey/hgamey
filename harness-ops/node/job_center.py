@@ -95,6 +95,14 @@ class JobCenter:
             raise ValueError('execution node is not registered: ' + str(node_id))
         return entry
 
+    def connection(self, node_id, entries=None):
+        """The link to the computer a job was sent to. One no longer in the directory (removed, or the job came
+        with a center export) is not reached; the job is shown as last recorded."""
+        try:
+            return self.node(node_id, entries)['connection']
+        except ValueError:
+            return {'status': 'unregistered', 'last_seen_at': None}
+
     def remote(self, jid):
         record = self.targets.get(jid)
         return record if record and record['execution_node_id'] != self.local.node_id else None
@@ -131,7 +139,7 @@ class JobCenter:
             self.observe(record, self.local.status(record['id']))
             return True
         if ((record.get('observation') or {}).get('queue', {}).get('state') == 'done'
-                or self.node(record['execution_node_id'])['connection']['status'] == 'disconnected'):
+                or self.connection(record['execution_node_id'])['status'] in ('disconnected', 'unregistered')):
             return record.get('observation') is not None
         try:
             response = self.rpc(record, 'GET', '/jobs/' + record['id'])
@@ -189,7 +197,7 @@ class JobCenter:
                      stop_requested=record['stop'],
                      device_selection=record['device_selection'],
                      artifacts_sync=record.get('artifacts_sync', {'status': 'pending'}),
-                     connection=self.node(record['execution_node_id'], nodes)['connection'])
+                     connection=self.connection(record['execution_node_id'], nodes))
         return value
 
     def operation(self, jid, method, suffix, body=None, request_id=None):
@@ -243,7 +251,7 @@ class JobCenter:
     def stop(self, jid, action, body):
         record = self.targets.update(jid, stop={'at': time.time(), 'action': action, **body})
         if (record['observation'] is not None
-                and self.node(record['execution_node_id'])['connection']['status'] != 'disconnected'):
+                and self.connection(record['execution_node_id'])['status'] not in ('disconnected', 'unregistered')):
             thread = self._send_stop_in_background(record, explicit=True)
             if thread is not None:
                 thread.join()
