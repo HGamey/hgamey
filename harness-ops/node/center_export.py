@@ -387,8 +387,34 @@ class Writer:
             self.exports._write(self.status)
             self.last_saved = time.time()
 
+    def far_bytes(self, jid):
+        """What a job on another computer wrote, as that computer lists it now."""
+        total, levels, artifacts = 0, [""], self.jobs.center.artifacts
+        while levels:
+            path, cursor = levels.pop(), None
+            while True:
+                page = artifacts.list(jid, {"path": [path], "limit": ["100"], **({"cursor": [cursor]} if cursor else {})})
+                for item in page["items"]:
+                    if item["kind"] == "directory":
+                        levels.append(item["path"])
+                    elif item["kind"] == "file":
+                        total += item.get("size") or 0
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+        return total
+
+    def room_for(self, jid, size):
+        """Originals land on the center's data disk: one job's are fetched only if they fit there with the margin."""
+        free = shutil.disk_usage(self.jobs.dir).free
+        if free < size + MARGIN:
+            raise CenterExportError(507, "collect_space", f"作业 {jid} 在从节点上的原件有 {human(size)}，收回要放在中心数据盘"
+                                    f"（{self.jobs.dir}），那里只剩 {human(free)}，另要留 {human(MARGIN)} 余量；"
+                                    f"先腾出至少 {human(size + MARGIN - free)} 再导出", needed_bytes=size + MARGIN, free_bytes=free)
+
     def collect(self, jobs, inventory):
-        """Bring home what jobs run on other computers wrote; what cannot be brought is listed, not dropped."""
+        """Bring home what jobs run on other computers wrote; what cannot be brought is listed, not dropped. Each job's
+        originals are measured on their computer first and fetched only if the center's data disk has room."""
         missing = []
         for jid in jobs:
             target = inventory.remote.get(jid)
@@ -400,9 +426,15 @@ class Writer:
             if (target.get("artifacts_sync") or {}).get("status") != "complete":
                 if (target.get("observation") or {}).get("state") == "finished":
                     try:
-                        self.jobs.center.artifacts.collect(jid)
+                        size = self.far_bytes(jid)
                     except Exception as error:  # noqa: BLE001 - one computer out of reach must not stop the export
                         failure = str(error)
+                    else:
+                        self.room_for(jid, size)
+                        try:
+                            self.jobs.center.artifacts.collect(jid)
+                        except Exception as error:  # noqa: BLE001
+                            failure = str(error)
                 target = self.jobs.center.targets.get(jid) or target
             sync = target.get("artifacts_sync") or {}
             if sync.get("status") != "complete":
@@ -487,17 +519,19 @@ class Writer:
         asked = jobs_of(self.inventory)
         missing = self.collect(asked, self.inventory)
         # ... then one cut: which jobs, results and attachments each task has, and the task's rows, from the same
-        # moment, so a revision written meanwhile comes with what it refers to or not at all.
+        # moment, so a revision written meanwhile comes with what it refers to or not at all. The research database is
+        # not WAL: while that read transaction is open the center cannot commit a research write, so it only reads.
         self.inventory = inventory = self.exports.inventory(hold=True)
         try:
             groups = {key: inventory.members(key) for key in keys}
             jobs = jobs_of(inventory)
             results = {r for members in groups.values() for r in members[1]}
             attachments = sorted({a for members in groups.values() for a in members[2]})
-            missing = [m for m in missing if m["job_id"] in jobs] + self.collect([j for j in jobs if j not in asked], inventory)
             tables = self.snapshot([k for k in keys if k is not None], jobs, results)
         finally:
             inventory.close()
+        # Jobs that first appear at the cut come home after it, the center's research writes going on meanwhile.
+        missing = [m for m in missing if m["job_id"] in jobs] + self.collect([j for j in jobs if j not in asked], inventory)
         self.status.update(phase="write", missing_originals=missing, unfinished_jobs=[j for j in jobs if j in inventory.unfinished])
         # The job directories as they are on disk now, collected originals and files written since included.
         sources, folders = [], {}

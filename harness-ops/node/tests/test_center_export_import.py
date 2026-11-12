@@ -419,15 +419,27 @@ class CenterExportImportTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
 
+    @contextlib.contextmanager
     def collecting(self, files, then=None):
-        """artifacts.collect as on a center: the originals land in the job's directory, the record says complete."""
+        """artifacts.collect as on a center: the originals land in the job's directory, the record says complete.
+        artifacts.list answers as the job's computer would, listing the out/ files it is about to send."""
         def collect(jid):
             for rel, raw in files.get(jid, {}).items():
                 self.put(jid, rel, raw)
             self.jobs.center.targets.update(jid, artifacts_sync={"status": "complete", "at": time.time(), "error": None})
             if then:
-                then()
-        return mock.patch.object(self.jobs.center.artifacts, "collect", collect)
+                then(jid)
+
+        def listing(jid, query):
+            prefix, items = query["path"][0] + "/" if query["path"][0] else "", {}
+            for rel, raw in files.get(jid, {}).items():
+                if rel.startswith("out/" + prefix):
+                    head, below, _ = rel[len("out/" + prefix):].partition("/")
+                    items[head] = {"name": head, "path": prefix + head, **({"kind": "directory"} if below else {"kind": "file", "size": len(raw)})}
+            return {"items": [items[name] for name in sorted(items)], "next_cursor": None}
+        with mock.patch.object(self.jobs.center.artifacts, "collect", collect), \
+                mock.patch.object(self.jobs.center.artifacts, "list", listing):
+            yield
 
     def far_meta(self, jid):
         return json.dumps({"id": jid, "bin": "fixture", "argv": [], "research_id": "sr-c", "label": "far " + jid,
@@ -521,7 +533,7 @@ class CenterExportImportTests(unittest.TestCase):
         far, late = "eeeeeeeeeeee", "abababababab"
         self.far_job(far, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
 
-        def meanwhile():   # while originals come home, an agent runs a job and writes about it
+        def meanwhile(_):   # while originals come home, an agent runs a job and writes about it
             self.job(late, "sr-c", {"new.txt": b"written meanwhile\n"})
             self.assertEqual(self.web("POST", "/research-state/note/n-late", self.write("create-n-late", {
                 "research_id": "sr-c", "text": "新跑了一个", "reply_to": None, "decision": None,
@@ -573,7 +585,7 @@ class CenterExportImportTests(unittest.TestCase):
         home = []
         free = lambda path: mock.Mock(free=(1 << 20) if home else (64 << 30))   # noqa: E731
         with mock.patch.object(center_export.shutil, "disk_usage", side_effect=free), \
-                self.collecting({far: {"out/big.bin": b"x" * 4096, "meta.json": self.far_meta(far)}}, lambda: home.append(True)):
+                self.collecting({far: {"out/big.bin": b"x" * 4096, "meta.json": self.far_meta(far)}}, lambda _: home.append(True)):
             code, status = self.web("POST", "/center-export", {"tasks": ["sr-c"]})
             self.assertEqual(code, 202, status)
             deadline = time.time() + 30
@@ -600,6 +612,46 @@ class CenterExportImportTests(unittest.TestCase):
         self.assertIn("PID 4343", refused["refused"])
         self.assertIn("ps -o user=,command= -p", refused["refused"])
         self.assertEqual(snapshot(root), before)
+
+    def finish(self, body):
+        code, status = self.web("POST", "/center-export", body)
+        self.assertEqual(code, 202, status)
+        deadline = time.time() + 60
+        while status["state"] == "running" and time.time() < deadline:
+            time.sleep(0.05)
+            status = self.web("GET", "/center-export/" + status["id"])[1]
+        return status
+
+    def test_review_9_originals_are_fetched_only_if_the_data_disk_has_room_for_them(self):
+        self.fixture()
+        far = "eeeeeeeeeeee"
+        self.far_job(far, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
+        # The export cache has room; the data disk, where originals land, has less than they and the margin need.
+        free = lambda path: mock.Mock(free=center_export.MARGIN + 1000 if path == self.jobs.dir else 64 << 30)   # noqa: E731
+        with mock.patch.object(center_export.shutil, "disk_usage", side_effect=free), \
+                self.collecting({far: {"out/frames/big.bin": b"x" * 4096, "meta.json": self.far_meta(far)}}):
+            status = self.finish({"tasks": ["sr-c"]})
+        self.assertEqual(status["state"], "failed", status)
+        self.assertIn(f"作业 {far} 在从节点上的原件有 4.0 KiB", status["error"])
+        self.assertFalse(os.path.exists(self.jobs.path(far, "out", "frames", "big.bin")), "not fetched")
+
+    def test_review_10_research_writes_go_on_while_originals_of_jobs_new_at_the_cut_come_home(self):
+        self.fixture()
+        first, late = "eeeeeeeeeeee", "efefefefefef"
+        self.far_job(first, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
+        written = []
+
+        def meanwhile(jid):
+            if jid == first:   # a job sent elsewhere finishes while the export collects: it is new at the cut
+                self.far_job(late, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
+            else:              # its originals come home while a person writes on the task page
+                written.append(self.web("POST", "/research-state/note/n-during", self.write("create-n-during", {
+                    "research_id": "sr-a", "text": "导出时写的", "reply_to": None, "decision": None}))[0])
+        files = {jid: {"out/a.txt": b"far\n", "meta.json": self.far_meta(jid)} for jid in (first, late)}
+        with self.collecting(files, meanwhile):
+            path, status = self.export({"tasks": ["sr-c"]})
+        self.assertEqual(written, [201])
+        self.assertIn(f"jobs/{late}/out/a.txt", self.names(path))
 
 
 if __name__ == "__main__":
