@@ -10,7 +10,6 @@
 | `../deploy.py`、`node/deploy_overlay.py` | 在节点上按一个提交构建、发布、重启并核对版本 |
 | `node/dash.py`、`node/dash_goals.py`、`node/dash_static/` | 网页任务、游戏、研究协助、节点目录与控制；查看和操作分别授权 |
 | `node/node_remote.py`、`skills/hgamey-remote/` | 远程调试：个人操作员令牌接管设备（HTTP `/remote`、MCP `/remote/mcp`、网页 `/dash/control`），用法见 skill |
-| `node/center_export.py`、`node/center_import.py` | 按任务导出中心数据（网页，需掌舵权限）、在另一台中心上导入（命令行），格式见 `node/center_archive.py` |
 | `node/run_node.sh` | 在节点上前台运行节点服务和 cloudflared 隧道 |
 | `cloudflare/offline/` | Cloudflare Worker：节点连不上时返回离线提示页 |
 
@@ -35,17 +34,6 @@ python3 ../deploy.py rhodes1                           # 运维操作，在节�
 新客户端拒绝向缺少 `node.target-v1` 的旧节点写入；原 ID 续查保留 URL/node_id，网页旧未绑定请求不会自动转投。
 只读 token 可查询 `/node`、`/jobs`、日志和输出；查看密码可打开 `/dash/jobs`，该页不触发手机采样。网页另有 `/dash/fleet`、`/dash/games`、`/dash/results`、`/dash/research`；`/dash/control` 另需操作员授权。
 服务可用 `--data-dir` 指定独立数据根（`jobs/`）；不指定时继续读写原 `phonefarm/_jobs`，不自动迁移。
-
-## 迁移中心数据
-
-在原中心的网页上按任务导出（接口 `/dash/api/center-export`，掌舵权限），下载 zip，到新中心上导入：
-
-```bash
-python3 node/center_import.py <zip> --data-root <中心数据根>           # 只检查：校验 SHA-256，打印新增、已有、冲突、悬空引用
-python3 node/center_import.py <zip> --data-root <中心数据根> --apply   # 写入；要先停中心服务，失败整体还原
-```
-
-数据根是中心 `node_service.py` 的 `--phonefarm` 目录（或 `--data-dir`）。新中心要先启动过一次（有 `_node/id` 和三个库）再停掉。同一个 zip 导两次结果不变；同 ID 不同内容整体中止。导入的序号接在本机之后，往在用的中心部分导入时，agent 会把导入的事件当新事件看到，先暂停 agent。游戏资源、节点目录、agent 账号、设备登记、密码和平台配置不在导出范围内。
 
 ## 文档
 
