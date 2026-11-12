@@ -65,7 +65,7 @@ const timeline = new Timeline({onSeek: (t, final) => { setLive(false); seek(t); 
 function buildEvents(M) {
   const ev = [], add = (at, type, x) => { if (at) ev.push({at, type, ...x}); };
   for (const t of M.tasks) { add(t.created_at, 'task', {tree: t.id, t}); for (const s of t.steps || [t]) if (s.state === 'delivered') add(s.updated_at, 'deliver', {tree: t.id, t}); }
-  for (const d of M.dirs) { add(d.created_at, 'dir', {tree: d.research_id, d}); if (['verified', 'rejected'].includes(d.state) && d.updated_at > d.created_at + 1) add(d.updated_at, 'dirstate', {tree: d.research_id, d}); }
+  for (const d of M.dirs) { add(d.created_at, 'dir', {tree: d.research_id, d}); if (['verified', 'rejected', 'no_gain'].includes(d.state) && d.updated_at > d.created_at + 1) add(d.updated_at, 'dirstate', {tree: d.research_id, d}); }
   for (const j of M.jobs) {
     if (j.phone && j.queued && waitEnd(j) - j.queued > 30) add(j.queued, 'wait', {tree: j.research_id, j, who: j.agent});
     add(begun(j), 'start', {tree: j.research_id, j, who: j.agent});

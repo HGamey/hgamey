@@ -33,7 +33,10 @@ export function agentMeta(name) {
 export const agentName = a => a === 'human' ? '人' : a ? agentMeta(a).n : '平台';
 
 export const OUTCOME = {succeeded: '成功', failed: '失败', cancelled: '取消', interrupted: '中断'};
-export const DIR_STATE = {verified: '验证有效', rejected: '试过放弃', proposed: '待做', deferred: '暂缓', running: '进行中', active: '进行中'};
+// The map's own words; the states it had none for read as on the task page.
+export const DIR_STATE = {verified: '验证有效', rejected: '试过放弃', proposed: '待做', deferred: '暂缓', running: '进行中', active: '进行中',
+  no_gain: '无收益', preparing: '准备中', ready: '可开展', waiting_device: '等待设备', waiting_human: '等待协助', waiting_material: '等待素材',
+  awaiting_evaluation: '等待评价'};
 export const WAIT_KIND = {resource: '等手机', device_lease: '等手机', capacity: '等空位', preparing: '准备中', recovery: '等恢复', durability: '等存储'};
 
 // A title's first clause, unless that clause is too short to tell tasks apart ("照 X 的交付，在 Y 上…" keeps the second).
