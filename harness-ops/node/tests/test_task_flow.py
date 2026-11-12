@@ -104,7 +104,7 @@ class TaskFlowTests(unittest.TestCase):
                                       ["执行的命令 · 2", ["am force-stop com.karin.idTech4Amm", "input tap 100 200"]]])
             # Back to the agent: how it ended, the files it wrote (not the platform's record), the pull, the log.
             self.assertIn("成功", text(".flow-out .flow-outcome"))
-            self.assertEqual(page.eval_on_selector_all(f"{row} .flow-out .output-count", "e => e.map(x => x.textContent)"), ["权重 1", "报告 1", "图片 1"])
+            self.assertEqual(page.eval_on_selector_all(f"{row} .flow-out .output-count", "e => e.map(x => x.textContent)"), ["模型 1", "报告 1", "图片 1"])
             self.assertIn("/sdcard/fps.txt → out/fps.txt", text(".flow-out"))
             self.assertIn(f"job={SENT}", page.get_attribute(f"{row} .flow-log", "href"))
             # A run with no device record says so; a host-only job used no phone.
