@@ -1,6 +1,17 @@
 // HGamey 工作台外壳：主导航 8 项 + 「更多」菜单；节点身份收进节点名按钮；窄屏两行，标签可横向滚动。
 // 每页引入：紧跟旧 header.top 之后放 <script src="/dash/static/shell.js"></script>，外壳随首屏一起画出、替换旧顶栏；
 // 执行目标框由页尾的 target.js 生成，生成时再接上。
+// crypto.randomUUID 只在安全上下文（HTTPS、localhost）里有；明文入口（frp、局域网地址）上用 getRandomValues 补一个
+// 标准 v4 UUID。shell.js 在每页的页面脚本之前加载，页面里照常调用 crypto.randomUUID()。
+if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
+  crypto.randomUUID = function randomUUID() {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  };
+}
 (function () {
   const TABS = [
     ["/dash", "main", "总览"],

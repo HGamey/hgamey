@@ -279,7 +279,7 @@
     const attempt = pending.get(selected), targetIssue = attempt ? HGTarget.problem(attempt.target || null) : HGTarget.problem(), receipt = receipts.get(selected), busy = preparing.has(selected), jobs = current?.preparations || [];
     const active = jobs.some(job => job.state !== 'finished'), blocked = jobs.some(job => job.queue?.state === 'blocked');
     const allowed = directoryReady && access?.steer && HGTarget.canWrite() && !accessBusy;
-    $('prepare-submit').disabled = !current || !detailFresh || !allowed || busy || !!attempt || active || blocked || current.resource_state === 'verified' || !globalThis.crypto?.randomUUID;
+    $('prepare-submit').disabled = !current || !detailFresh || !allowed || busy || !!attempt || active || blocked || current.resource_state === 'verified';
     $('prepare-submit').textContent = busy ? '正在提交…' : jobs.length ? '新建准备尝试' : '提交准备任务';
     $('prepare-submit').setAttribute('aria-busy', String(busy));
     $('prepare-retry').hidden = !attempt || attempt.conflict;
@@ -288,7 +288,7 @@
     $('prepare-request').textContent = attempt ? `未确认请求 ID：${attempt.request_id} · ${attempt.game_id}/${attempt.version}` : receipt?.job?.request_id ? `准备请求 ID：${receipt.job.request_id}` : '';
     $('prepare-job').hidden = !receipt?.job; if (receipt?.job) $('prepare-job').href = jobLink(receipt.job);
     message('prepare-message', receipt?.message || '', !!receipt?.error);
-    message('prepare-help', targetIssue || (attempt ? '保留原请求 ID 与版本。先查询；重试只发送同一 ID 的空请求体，不创建新 ID。' : !current || !detailFresh ? '先成功读取当前版本与资源状态。' : !directoryReady ? '目录接口尚未确认可用。' : !access?.steer || accessBusy ? '请先解锁操作权限。' : active ? '已有未结束的准备任务，请刷新或打开同一任务查看进度。' : blocked ? '旧准备任务仍保留资源，请先打开该任务核查。' : current.resource_state === 'verified' ? '本节点资源已有校验记录。设备状态仍未知；刷新版本可核对缓存身份是否改变。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '创建持久宿主任务，执行下载、导入与校验；不安装、不操作设备。失败或取消后新尝试使用新请求 ID，沿用内容缓存。'));
+    message('prepare-help', targetIssue || (attempt ? '保留原请求 ID 与版本。先查询；重试只发送同一 ID 的空请求体，不创建新 ID。' : !current || !detailFresh ? '先成功读取当前版本与资源状态。' : !directoryReady ? '目录接口尚未确认可用。' : !access?.steer || accessBusy ? '请先解锁操作权限。' : active ? '已有未结束的准备任务，请刷新或打开同一任务查看进度。' : blocked ? '旧准备任务仍保留资源，请先打开该任务核查。' : current.resource_state === 'verified' ? '本节点资源已有校验记录。设备状态仍未知；刷新版本可核对缓存身份是否改变。' : '创建持久宿主任务，执行下载、导入与校验；不安装、不操作设备。失败或取消后新尝试使用新请求 ID，沿用内容缓存。'));
   }
   async function prepare(retry = false) {
     if ($(retry ? 'prepare-retry' : 'prepare-submit').disabled) return;

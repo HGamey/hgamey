@@ -136,7 +136,7 @@
       r.hint.textContent = (v.id && HGTarget.problem(v.target || null)) || (!supported() ? '此节点未声明 games.upload-v1，不能上传。' : !canWrite(v) ? '请成功读取当前版本并解锁操作；上传仅写此节点宿主缓存。' : '每次最多一个上传，默认 1 MiB 块。重选同大小文件不证明内容相同，最终由节点校验 SHA-256。');
       r.file.disabled = busy || !canWrite(v); r.id.disabled = busy;
       r.fileInfo.textContent = v.file ? `${v.file.name} · ${bytes(v.file.size)}${validFile(v) ? ' · 大小匹配清单' : ` · 与清单 ${bytes(v.asset.size)} 不符，不能上传`}` : '未选择文件；刷新后需重新选择原文件，浏览器不保存文件或路径。';
-      r.begin.disabled = busy || !canWrite(v) || !validFile(v) || !boundID || v.requiresQuery || (v.fresh && (terminal || ['sealed','verifying'].includes(record?.phase))) || !globalThis.crypto?.randomUUID;
+      r.begin.disabled = busy || !canWrite(v) || !validFile(v) || !boundID || v.requiresQuery || (v.fresh && (terminal || ['sealed','verifying'].includes(record?.phase)));
       r.begin.textContent = mine && active.kind === 'transfer' ? '正在上传…' : v.requiresQuery ? '先查询原上传偏移' : v.id ? '按原 ID 上传并校验' : '开始上传并校验';
       r.pause.hidden = !(mine && active.kind === 'transfer'); r.pause.disabled = !!active?.stopped;
       r.query.disabled = busy || !supported() || !!(v.id && HGTarget.problem(v.target || null));

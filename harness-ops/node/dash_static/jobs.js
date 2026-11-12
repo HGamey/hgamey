@@ -1283,10 +1283,10 @@
     $('recovery-target-field').hidden = !recovery;
     message('device-access-help', !nodeInfo ? '正在核对设备访问能力…' : !recoverySupported() ? '此节点尚未提供设备访问分类与恢复任务能力；可继续按节点默认提交。' : recovery ? '恢复任务继承目标的独占资源。请填写实际恢复命令；运行结束不会自动解除原任务屏障。' : '按实际操作选择访问模式。默认由节点按命令保守判断；无设备访问只适用于宿主任务。');
     $('resources-help').textContent = recovery ? '恢复任务由节点继承目标资源，此处不另行声明。' : submissionBinding() ? '节点自动保存绑定设备的必要资源；自由资源不能删除设备范围冲突，也不授予设备权限。' : '相同资源的任务依次执行。资源声明只用于排队，不授予设备操作权限。';
-    $('submit-job').disabled = !allowed || !!targetIssue || (!pendingRequest && !!gatewayProblem) || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!guardProblem || !!slotsProblem || !!orderProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported()) || (!pendingRequest?.id && !globalThis.crypto?.randomUUID);
+    $('submit-job').disabled = !allowed || !!targetIssue || (!pendingRequest && !!gatewayProblem) || locked || deviceBindingBusy || !!bindingProblem || !!budgetProblem || !!guardProblem || !!slotsProblem || !!orderProblem || !!policyProblem || inputsProblem || (!!mode && !recoverySupported());
     $('submit-job').setAttribute('aria-busy', String(submissionBusy));
     $('submit-job').textContent = submissionBusy ? '正在核对请求…' : refilling ? '使用原请求 ID 提交' : '提交任务';
-    message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : !globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址访问后提交。' : '提交后以节点返回的实际阶段为准。'));
+    message('submit-help', targetIssue || (refilling ? '将复用原请求 ID。请尽量填写原内容；内容不同可能返回 409 冲突，应优先查询。' : pendingRequest ? '本次请求尚未确认，先按原 ID 查询，暂不创建新请求。' : !nodeInfo ? '等待取得节点命令。' : !supported ? '此节点尚不支持可靠提交，已有任务仍可查看。' : !access?.steer || !HGTarget.canWrite() || accessBusy ? '先在上方解锁任务操作权限。' : '提交后以节点返回的实际阶段为准。'));
     $('request-id').readOnly = !!pendingRequest;
     $('request-id').disabled = submissionBusy;
     if (pendingRequest) $('request-id').value = pendingRequest.id;
@@ -1859,7 +1859,7 @@
     renderSessionRecoveryPlan();
     $('session-recover-submit').hidden = !supported || !!record?.job_id || !!record?.rejection;
     $('session-recover-submit').disabled = !!targetIssue || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || !!record?.job_id || !!record?.rejection ||
-      (!record && (!!sessionRecoveryProblem() || !globalThis.crypto?.randomUUID));
+      (!record && !!sessionRecoveryProblem());
     $('session-recover-submit').textContent = pending ? '正在核对恢复请求…' : record?.prepared ? '提交新恢复尝试' : record ? '使用原请求 ID 重试' : '提交恢复任务';
     $('session-recover-submit').setAttribute('aria-busy', String(pending));
     $('session-recover-query').hidden = !record;
@@ -1869,7 +1869,7 @@
     if (record?.job_id) $('session-recover-job').href = HGTarget.url(`${record.target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(record.job_id)}`, record.target || null);
     $('session-recover-new').hidden = !supported || !(record?.job_id || chain && record?.rejection);
     $('session-recover-new').disabled = !!targetIssue || !supported || !access?.steer || !HGTarget.canWrite() || accessBusy || pending || sessionPlanBusy ||
-      (chain && sessionPlanFresh && sessionRecoveryPlan?.eligible === false) || (!chain && !!sessionRecoveryProblem()) || !globalThis.crypto?.randomUUID;
+      (chain && sessionPlanFresh && sessionRecoveryPlan?.eligible === false) || (!chain && !!sessionRecoveryProblem());
     $('session-recover-new').setAttribute('aria-busy', String(pending));
     $('session-recover-previous').hidden = !record?.previous_job_id || !record?.target;
     if (record?.previous_job_id) $('session-recover-previous').href = HGTarget.url(`${record.target?.entry || location.origin}/dash/jobs#job=${encodeURIComponent(record.previous_job_id)}`, record.target || null);
@@ -1882,7 +1882,7 @@
     else if (!help && record?.prepared) help = '新请求 ID 与提交入口已固定，尚未提交。刷新计划不会改投；提交时节点会再次核对当前叶子。';
     else if (!help && record) help = '结果不确定时先查询原请求；明确重试仍使用同一 ID、节点和入口，不随新计划改投。';
     else if (!help && (!access?.steer || !HGTarget.canWrite() || accessBusy)) help = '请先解锁任务操作权限。';
-    else if (!help) help = sessionRecoveryProblem() || (!globalThis.crypto?.randomUUID ? '请通过 HTTPS 或本机地址提交。' : '按上方恢复目标提交异步任务，原会话和失败记录保留。');
+    else if (!help) help = sessionRecoveryProblem() || '按上方恢复目标提交异步任务，原会话和失败记录保留。';
     message('session-recover-help', help);
     message('session-recover-result', record?.message || (record?.rejection ? record.rejection.message : record ? '可按原请求 ID 查询节点中的最新任务记录。' : ''), !!record?.error || !!record?.rejection);
     const previous = record?.previous_requests || [];
@@ -1963,7 +1963,7 @@
       pending.every(p => !HGTarget.problem(p.target || null)) && (!referenceRun || action === 'stop') && sessionState?.live_owner && sessionState.accepting && sessionState.allowed_actions?.includes(action) &&
       (sessionState.phase !== 'measuring' || action === 'stop') &&
       (['take_control', 'stop'].includes(action) || controller?.actor_id === actor) &&
-      (!pending.length || action === 'stop' && !pending.some(p => p.action === 'stop')) && /^[A-Za-z0-9_-]{1,64}$/.test(actor) && globalThis.crypto?.randomUUID);
+      (!pending.length || action === 'stop' && !pending.some(p => p.action === 'stop')) && /^[A-Za-z0-9_-]{1,64}$/.test(actor));
   }
   function sampleFrameFresh(frame) {
     if (!frame || frame.rotation == null) return false;
@@ -2948,7 +2948,7 @@
 
   let webActor;
   try { webActor = sessionStorage.getItem('hgamey.session-actor'); } catch (_) { /* Optional preference. */ }
-  webActor ||= `web-${globalThis.crypto?.randomUUID?.() || 'unavailable'}`;
+  webActor ||= `web-${crypto.randomUUID()}`;
   $('session-actor').value = webActor;
   try { sessionStorage.setItem('hgamey.session-actor', webActor); } catch (_) { /* Manual actor entry remains available after reload. */ }
   $('session-actor').addEventListener('change', () => {
