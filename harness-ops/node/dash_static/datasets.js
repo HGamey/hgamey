@@ -5,7 +5,7 @@
   'use strict';
   const $ = id => document.getElementById(id), API = '/dash/api', DASH = '—';
   const PAIRING = {simulated: ['模拟低清', 'warn'], real: ['真实配对', 'ok'], unpaired: ['无配对', 'off'], mixed: ['混合（含模拟）', 'warn']};
-  const COLUMNS = [['版本'], ['配对'], ['游戏'], ['设备'], ['采集方法', 'tech ds-method'], ['帧数', 'num'], ['场景', 'num'], ['训练 / 验证 / 测试', 'num'], ['大小', 'num']];
+  const COLUMNS = [['版本'], ['配对'], ['游戏'], ['设备', 'ds-dev'], ['采集方法', 'tech ds-method'], ['帧数', 'num'], ['场景', 'num'], ['训练 / 验证 / 测试', 'num'], ['大小', 'num']];
   const PREVIEW = /\.(png|jpe?g|webp|gif|avif)$/i, MIME = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif'};
   const REPORTS = ['qa_report.json', 'manifest.json', 'split.json'], FIRST_PREVIEWS = 8, TEXT_LIMIT = 1 << 20;
   const opened = new Set();   // result IDs open across a refresh
