@@ -211,7 +211,7 @@
   // Who an agent is, from the note written when it was registered: its first clause, the rest on hover.
   const role = note => note ? `<p class="agent-role" title="${esc(note)}">${esc(note.split(/[；;。\n]/)[0])}</p>` : "";
   // Why an agent is folded away under 已归档.
-  const ARCHIVED = {idle: "3 天没有活动", manual: "手动归档", disabled: "已停用"};
+  const ARCHIVED = {idle: "3 天没有活动", manual: "手动归档", disabled: "已停用", tour: "体验身份"};
   function renderAgents(h) {
     const agents = h.agents || [], shown = agents.filter(a => !a.archived), folded = agents.filter(a => a.archived);
     $("agents-count").textContent = shown.length ? String(shown.length) : "";

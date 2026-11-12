@@ -6,6 +6,9 @@ import socket
 import threading
 import time
 
+import dash_tour
+import node_agents
+
 # What a run did, read from the script it ran (argv[0] for experiment jobs); plain names for the view.
 KINDS = (("refresh_ab", "刷新率 A/B"), ("policy_snapshot", "策略快照"), ("soak30", "30 分钟长测"), ("hold120", "120Hz 保持"),
          ("repro", "复现"), ("measure_default", "默认设置测帧"), ("prepare_genshin", "准备原神"), ("inventory", "设备盘点"),
@@ -96,6 +99,9 @@ class CommandModel:
     def _build(self):
         now = time.time()
         tasks, dirs, notes = self._every("research"), self._every("direction"), self._every("note")
+        # 我来当一次 Agent tours stay off the command view: their tasks, notes, runs and identities.
+        tasks = [t for t in tasks if not dash_tour.is_tour(t["id"])]
+        dirs, notes = ([x for x in rows if not dash_tour.is_tour(x["research_id"])] for rows in (dirs, notes))
         self._fold_events()
         ids = {jid for jid in os.listdir(self.jobs.dir) if JOB_ID.fullmatch(jid)}
         ids |= {row["job_id"] for row in self.jobs.dispatch.queue.rows()}
@@ -104,6 +110,8 @@ class CommandModel:
             try:
                 job = dict(self._job(jid))
             except (OSError, ValueError, KeyError):
+                continue
+            if dash_tour.is_tour(job["research_id"]):
                 continue
             facts = self._queue.get(jid, {})
             job.update(queued=facts.get("queued"), claimed=facts.get("claimed"), waits=facts.get("waits", []))
@@ -114,7 +122,7 @@ class CommandModel:
                    "state": d.get("state")} for d in (snapshot.get("devices") or [])]
         return {
             "at": now, "live": True, "source": socket.gethostname(),
-            "agents": [a["name"] for a in self.jobs.agents.list()],
+            "agents": [a["name"] for a in self.jobs.agents.list() if node_agents.TOUR_TAG not in (a.get("tags") or [])],
             "phones": phones, "phones_sampled_at": snapshot.get("sampled_at"),
             "research": [{"id": t["id"], "title": t["title"], "state": t["state"], "owner": t.get("owner"), "follows": t.get("follows"),
                           "updated_at": t["updated_at"], "created_at": self._created_at("research", t["id"])} for t in tasks],
