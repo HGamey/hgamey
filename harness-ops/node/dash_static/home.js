@@ -153,10 +153,14 @@
       : p.registered === false ? `<span class="tag" title="不在那台电脑的设备登记里，作业不会排到它">未登记</span>` : `<span class="tag warn">不空闲</span>`;
     // Another computer's phones are not screenshotted here: a phone's outline stands in for the picture.
     return `<div class="phone-card" data-ref="${esc(p.ref)}"><span class="thumb remote" aria-hidden="true">${PHONE_OUTLINE}</span><div class="meta">
-      <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(model(p) || "未知型号")}</span>${status}</div>
+      <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(model(p) || "未知型号")}</span>${status}${warned(p, computer.connected)}</div>
       <div class="stats">${stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)}${stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40)}${stat(p.battery_pct, "%", "电量", false)}</div>
       ${job ? holderLine("任务", job) : ""}${cleanedLine(p)}</div></div>`;
   }
+  // A phone a person should look at (battery under 10%, a SoC at 45 °C or more), as on the 设备 page: amber tags beside
+  // its state. Shown only; jobs are still sent to it.
+  const warned = (p, online) => online === false ? "" : HGPhoneState.warnings({battery: {level_pct: p.battery_pct}, thermal: {soc_max_c: p.soc_c}})
+    .map(text => `<span class="tag warn">${esc(text)}</span>`).join("");
   // Leftover processes the phone's computer stopped on it in the last day.
   function cleanedLine(phone, now) {
     const cleanup = HGPhoneState.cleaned({cleanups: phone.cleanups}, now);
@@ -179,7 +183,7 @@
           : !job && !global && s.busy ? `<div class="doing muted">已占用，未记录占用者</div>` : "");
       const stat = (v, unit, label, hot) => v == null ? "" : `<div class="pstat${hot ? " hot" : ""}"><b>${v + unit}</b><span>${label}</span></div>`;   // an unknown reading is left out
       return `<div class="phone-card"><a class="thumb" href="${esc(HGTarget.url(`/dash/live?serial=${encodeURIComponent(s.serial)}`))}" aria-label="看 ${esc(model(s))} 的实时画面">${thumb}</a><div class="meta">
-        <div class="phone-head"><span class="name" title="${esc(s.serial)}">${esc(model(s) || "未知型号")}</span>${phoneStatus(s, job, global)}</div>
+        <div class="phone-head"><span class="name" title="${esc(s.serial)}">${esc(model(s) || "未知型号")}</span>${phoneStatus(s, job, global)}${warned(s, s.online)}</div>
         <div class="stats">${stat(s.soc_c == null ? null : num(s.soc_c, 0), "°", "芯片", s.soc_c >= 45)}${stat(s.battery_c == null ? null : num(s.battery_c, 0), "°", "电池", s.battery_c >= 40)}${stat(s.battery_pct, "%", "电量", false)}</div>
         ${doing}${cleanedLine(s, h.now)}</div></div>`;
     }).join("");
