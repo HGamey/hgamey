@@ -215,8 +215,10 @@
     }
     for (const [name, drawn] of paths) if (!kept.has(name)) { drawn.path.remove(); drawn.packet?.remove(); paths.delete(name); }
 
-    const phones = data.nodes.reduce((sum, node) => sum + node.phones.length, 0), named = data.zones.filter(zone => zone.tone != null).length;
-    const facts = [`${data.nodes.length} 个节点`, `${phones} 台手机`, `${data.agents.length} 个 Agent`,
+    // How many are offline, right after the totals: a mostly offline map reads as one computer down, not the platform.
+    const phones = data.nodes.flatMap(node => node.phones), named = data.zones.filter(zone => zone.tone != null).length;
+    const nodesOff = data.nodes.filter(node => !node.online).length, phonesOff = phones.filter(phone => !phone.online).length;
+    const facts = [`${data.nodes.length} 个节点${nodesOff ? `（${nodesOff} 个离线）` : ''}`, `${phones.length} 台手机${phonesOff ? `（${phonesOff} 台离线）` : ''}`, `${data.agents.length} 个 Agent`,
       named && `${named} 个网络区域`, data.jobs && `${data.jobs} 个作业在运行`].filter(Boolean);
     $('facts').replaceChildren(...facts.flatMap((fact, i) => [i ? ' · ' : '', el('span', null, fact)]));
     $('stage').hidden = false;
