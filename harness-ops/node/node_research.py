@@ -1047,9 +1047,9 @@ class NodeResearch:
                 raise ResearchError(404, "research_not_found", "research object or version was not found")
             return self._show(db, row, blind)
 
-    def open_questions(self):
+    def open_questions(self, research_id=None):
         with self._db() as db:
-            pending = set(self._unanswered_questions(db))
+            pending = set(self._unanswered_questions(db, research_id))
             if not pending:
                 return []
             rows = db.execute("SELECT r.* FROM objects o JOIN revisions r ON r.kind=o.kind AND r.id=o.id "
@@ -1066,6 +1066,19 @@ class NodeResearch:
                 if len(output) == 50:
                     break
             return output
+
+    def last_written(self, research_id, actor):
+        """The newest thing `actor` wrote in task `research_id` (the task itself, a note, a direction, a request, an
+        answer): {kind, id, revision, title, state, text, at}, or None."""
+        with self._db() as db:
+            kinds = ",".join("?" for _ in STATES)
+            row = db.execute(f"SELECT kind, id, revision, title, state, data, at FROM revisions WHERE kind IN ({kinds}) AND research_id=? "
+                             "AND json_extract(audit,'$.actor_label')=? ORDER BY sequence DESC LIMIT 1", (*STATES, research_id, actor)).fetchone()
+        if row is None:
+            return None
+        data = json.loads(row["data"])
+        return {"kind": row["kind"], "id": row["id"], "revision": row["revision"], "title": row["title"], "state": row["state"],
+                "text": data.get("text") if row["kind"] == "note" else None, "at": row["at"]}
 
     def assessment(self, oid, revision):
         record = self.get("research", oid, positive(revision))

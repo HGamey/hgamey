@@ -2575,9 +2575,10 @@ class CoreFlowTests(unittest.TestCase):
         script = (NODE / "dash_static/research-task.js").read_text(encoding="utf-8")
         self.assertLess(page.index('id="object-body"'), page.index('id="task-detail"'))
         self.assertIn('directionsSection', script)
-        # Comparisons waiting for a person sit right under the owner, then the summary; answered ones follow the thread.
-        # A chain's task tree sits in the task list under its root's row; the task's own delivery report is last.
-        self.assertIn('container.append(...[ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)]', script)
+        # The 现在 line comes first, then the owner. Comparisons waiting for a person sit right under the owner, then
+        # the summary; answered ones follow the thread. A chain's task tree sits in the task list under its root's row;
+        # the task's own delivery report is last.
+        self.assertIn('container.append(...[now, ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)]', script)
         self.assertIn("waiting.replaceWith(found.open || ''); judged.replaceWith(found.done || '');", script)
 
     def test_owner_agents_refresh_with_detail_and_access(self):

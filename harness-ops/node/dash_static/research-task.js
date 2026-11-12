@@ -807,6 +807,53 @@
     } catch (error) { section.remove(); }
   }
 
+  // ── 现在: one line at the top of a task that is not closed. What it waits on a person for comes first, then the jobs
+  // running or queued for it (read from the same list as 作业); with neither, when its owner last did something in it.
+  const lasted = s => { const m = Math.max(1, Math.round(s / 60)); return m < 60 ? `${m} 分钟` : m < 2880 ? `${Math.round(m / 60)} 小时` : `${Math.round(m / 1440)} 天`; };
+  const before = at => Date.now() / 1000 - at < 60 ? '刚刚' : lasted(Date.now() / 1000 - at) + '前';
+  function deed(last, job) {
+    if (job && (!last || job.started > last.at)) return [job.started, `启动作业「${clip(job.label || [job.bin, ...(job.argv || [])].join(' '), 30)}」`];
+    if (!last) return null;
+    const what = last.kind === 'note' ? `留言「${clip(firstSentence(last.text || '')[0], 40)}」`
+      : last.kind === 'direction' ? `${last.revision > 1 ? '更新' : '提出'}方向「${clip(last.title, 30)}」`
+      : last.kind === 'request' ? `发起「${clip(last.title, 30)}」`
+      : last.kind === 'feedback' ? '回复了评价'
+      : last.state === 'delivered' ? '交付了报告' : last.revision > 1 ? '更新了任务' : '建了这个任务';
+    return [last.at, what];
+  }
+  async function nowLine(line, record, jobs, current) {
+    const text = el('span');
+    line.append(el('b', '现在'), text);
+    try {
+      const [now, page] = await Promise.all([api(`/tasks/now?id=${encodeURIComponent(record.id)}`), jobs()]);
+      if (!current()) return;
+      // In-page jumps scroll without touching the address, which would repaint the task.
+      const jump = (words, id) => {
+        const link = el('a', words); link.href = '#' + id;
+        link.onclick = event => { const to = document.getElementById(id); if (to) { event.preventDefault(); to.scrollIntoView({block: 'center'}); } };
+        return link;
+      };
+      const parts = [], items = page.items, running = items.filter(HGJobState.active), queued = items.filter(job => job.state === 'queued');
+      const waits = [now.questions.length && jump(`回答 ${now.questions.length} 个问题`, 'note-' + now.questions[0].id),
+        now.comparisons.length && jump(`评 ${now.comparisons.length} 组对比`, 'cmp-' + now.comparisons[0].id)].filter(Boolean);
+      if (waits.length) {
+        const oldest = Math.min(...[...now.questions, ...now.comparisons].map(item => item.at));
+        parts.push(['在等你：', ...waits.flatMap((link, i) => i ? ['、', link] : [link]), `，最早的已等 ${lasted(Date.now() / 1000 - oldest)}`]);
+      }
+      if (running.length || queued.length) {
+        const first = Math.min(...running.map(job => job.started).filter(Boolean));
+        const run = running.length ? `在跑 ${running.length} 个作业` + (isFinite(first) ? `（最早的${before(first).replace(/^\d/, ' $&')}开始）` : '') : '';
+        parts.push([[run, queued.length ? `排队 ${queued.length} 个` + (run ? '' : '作业') : ''].filter(Boolean).join('，')]);
+      }
+      if (!parts.length) {
+        const mine = items.filter(job => now.owner && job.actor_id === now.owner && job.started).sort((a, b) => b.started - a.started)[0];
+        const done = now.owner && deed(now.last, mine);
+        parts.push([!now.owner ? '还没人负责' : done ? `负责人 ${now.owner}，${before(done[0])}最后一次动作：${done[1]}` : `负责人 ${now.owner}，还没有动作`]);
+      }
+      text.append(...parts.flatMap((part, i) => i ? ['；', ...part] : part));
+    } catch (_) { if (current()) line.remove(); }
+  }
+
   async function renderDetail(container, record, ctx) {
     // Unlock and selection can both repaint the same record; only the latest paint may fill the container.
     const paint = shown = {record};
@@ -829,7 +876,9 @@
     runs.id = 'task-runs'; thread.id = 'task-thread';
     const judged = el('div'), keySlot = el('div'), outputSlot = el('div'), summary = summarySection(record, chain, keySlot, outputSlot);
     const failed = el('section', null, 'research-section failed-job'); failed.id = 'task-failed';
-    container.append(...[ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
+    const now = record.data.state === 'closed' ? null : el('p', null, 'task-now');
+    container.append(...[now, ownerSection(record, ctx), failed, waiting, summary, directions, runs, thread, judged, deliverableSection(record)].filter(Boolean));
+    if (now) nowLine(now, record, jobs, () => shown === paint);
     failedSection(failed, record);
     if (chain.length > 1) chainTree(chain, record, container);
     // Comparisons are what a person comes here to answer, so they go first and the rest starts once they are in place.
