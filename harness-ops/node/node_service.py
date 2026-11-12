@@ -1794,8 +1794,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
 
         def _agents_put(self, name, dashboard, body):
             self.close_connection = True
-            if not self._authed():
+            # The dashboard edits an agent's registration (its tags, a zone) with the steer password.
+            if not (self._upload_write_auth(True) if dashboard else self._authed()):
                 return
+            if dashboard:
+                try:
+                    body = self.rfile.read(self._upload_length(MAX_REQUEST))
+                except AssetUploadError as error:
+                    return self._send(error.status, {"code": error.code, "error": str(error)})
             if self.agent and self.agent != name:
                 return self._send(403, {"code": "agent_mismatch", "error": "an agent token can only change its own registration"})
             try:
@@ -2194,6 +2200,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._nodes_post(parts, False)
             if board and parts[:3] == ["dash", "api", "nodes"]:
                 return self._nodes_post(parts[2:], True)
+            if board and len(parts) == 4 and parts[:3] == ["dash", "api", "agents"]:
+                return self._agents_put(unquote(parts[3]), True, None)
             if (board and len(parts) == 5 and parts[:3] == ["dash", "api", "jobs"]
                     and parts[4] == "reset" and jobs.center.remote(parts[3])):
                 if not self._upload_write_auth(True):

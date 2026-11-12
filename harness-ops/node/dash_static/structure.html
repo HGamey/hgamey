@@ -20,6 +20,18 @@
       <svg id="links" class="st-layer" aria-hidden="true"><g id="links-quiet"></g><g id="links-busy"></g></svg>
     </div>
   </div>
+  <dialog id="zone-dialog" class="st-zone-dialog" aria-labelledby="zone-heading">
+    <form id="zone-form" method="dialog">
+      <h2 id="zone-heading">修改区域</h2>
+      <fieldset id="zone-choices" class="st-zone-choices"><legend>区域</legend></fieldset>
+      <div id="zone-unlock" class="st-zone-unlock" hidden>
+        <label for="zone-steer">掌舵密码</label>
+        <div class="st-zone-unlock-row"><input id="zone-steer" type="password" autocomplete="current-password"><button id="zone-unlock-submit" class="ghost" type="button">解锁</button></div>
+      </div>
+      <p id="zone-message" class="note" role="status"></p>
+      <div class="st-zone-actions"><button id="zone-cancel" class="ghost" type="button">取消</button><button id="zone-save" class="ghost primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
 </main>
 <script src="/dash/static/target.js"></script><script src="/dash/static/job-state.js"></script><script src="/dash/static/phone-state.js"></script><script src="/dash/static/structure.js"></script>
 </body>
