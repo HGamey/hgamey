@@ -751,20 +751,24 @@
     section.append(status);
   }
 
-  // 最近失败的作业放在任务页顶部：作业号、一行失败原因和时间。单独按 outcome=failed 读最新一条，
+  // 最近一次失败的作业放在任务页顶部（琥珀色，不是事故）：作业号、一行失败原因和时间。单独按 outcome=failed 读最新一条，
   // 不受「作业」区最新 50 条窗口影响——更早的失败也不会让任务看起来从没失败过。
   async function failedSection(section, record) {
     try {
       const page = await api(`/jobs?research=${encodeURIComponent(record.id)}&outcome=failed&limit=1`);
       const bad = page.items[0];
       if (!bad) { section.remove(); return; }
+      // A failure the same kind of job (same label, else the same command) got past later is history, not news.
+      const kind = job => job.label || `${job.bin} ${(job.argv || [])[0] || ''}`;
+      const since = await api(`/jobs?research=${encodeURIComponent(record.id)}&outcome=succeeded&limit=50`);
+      if (since.items.some(job => kind(job) === kind(bad) && (job.started || 0) > (bad.started || 0))) { section.remove(); return; }
       const why = typeof bad.error === 'string' ? bad.error : bad.error?.message || bad.note
         || (Number.isInteger(bad.exit) ? `exit ${bad.exit}` : '原因未记录');
       const link = el('a', bad.label || '一次运行');
       link.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(bad.id)}`);
       const line = el('p', null, 'failed-line');
       // The raw reason and the job's ID are for whoever fixes it: technical details.
-      line.append(tag('最近失败', 'bad'), link, el('span', `作业 ${bad.id}`, 'tech'), el('span', clip(why, 120), 'failed-why tech'), timeEl(bad.ended || bad.started));
+      line.append(tag('最近一次失败的作业', 'warn'), link, el('span', `作业 ${bad.id}`, 'tech'), el('span', clip(why, 120), 'failed-why tech'), timeEl(bad.ended || bad.started));
       section.append(line);
     } catch (error) { section.remove(); }
   }
