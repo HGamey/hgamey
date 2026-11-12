@@ -538,7 +538,9 @@
     const header = el('div', null, 'device-head');
     const state = el('span');
     badge(state, device.online === true ? '在线 · 快照' : device.online === false ? '离线 · 快照' : '状态未知', device.online == null ? 'unknown' : '');
-    header.append(el('h3', device.model || device.serial || '未命名设备'), state);
+    const flags = el('span', null, 'device-flags');
+    flags.append(...(window.HGPhoneState?.warnings(device) || []).map(warning => el('span', warning, 'task-state warn')), state);
+    header.append(el('h3', device.model || device.serial || '未命名设备'), flags);
     card.append(header, el('p', `${text(device.serial)} · ${text(device.transport)}`, 'device-serial'));
     const metrics = el('dl', null, 'device-summary');
     for (const [name, value] of [['电量', numeric(device.battery?.level_pct, '%')], ['SoC 温度', numeric(device.thermal?.soc_max_c, ' °C')]]) {
