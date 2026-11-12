@@ -70,7 +70,7 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
                     handler._send(401, {'code': 'unauthorized', 'error': '需要查看密码'})
                     return True
                 if not board.steered(handler) or method != 'GET' and handler.headers.get('X-HG') != '1':
-                    handler._send(403, {'code': 'forbidden', 'error': '需要掌舵权限'})
+                    handler._send(403, {'code': 'forbidden', 'error': '需要操作口令'})
                     return True
             else:
                 if not handler._authed():

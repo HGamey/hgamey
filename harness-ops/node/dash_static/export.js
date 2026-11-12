@@ -165,7 +165,7 @@
       const access = await call('/access');
       if (!access.steer) {
         $('content').hidden = true;
-        $('message').textContent = access.steer_configured ? '导出的是中心的全部数据，先解锁掌舵权限。' : '本节点未配置掌舵密码，不能导出。';
+        $('message').textContent = access.steer_configured ? '导出的是中心的全部数据，先用操作口令解锁。' : '本节点未配置操作口令，不能导出。';
         $('unlock').hidden = !access.steer_configured;
         return;
       }
@@ -204,7 +204,7 @@
       $('start-msg').textContent = '';
       await readExports();
     } catch (error) {
-      $('start-msg').textContent = error.steer ? '掌舵权限已失效，刷新后重新解锁' : `没有开始：${error.message}`;
+      $('start-msg').textContent = error.steer ? '操作口令已失效，刷新后重新解锁' : `没有开始：${error.message}`;
       renderSummary();
     }
   });

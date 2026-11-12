@@ -48,7 +48,7 @@
     } catch (error) { if (error.code === 'response_too_large') throw error; /* A malformed success has an unknown write outcome. */ }
     if (!response.ok) {
       const reason = typeof value?.error === 'string' ? value.error : value?.error?.message;
-      const error = new Error(reason || (response.status === 401 ? '登录已失效，请重新登录。' : response.status === 403 ? '没有掌舵权限。' : `请求失败（HTTP ${response.status}）`));
+      const error = new Error(reason || (response.status === 401 ? '登录已失效，请重新登录。' : response.status === 403 ? '需要操作口令。' : `请求失败（HTTP ${response.status}）`));
       error.status = response.status; error.code = value?.code || value?.error?.code; throw error;
     }
     if (!value || typeof value !== 'object') throw new Error('节点没有返回可核对的 JSON，保存结果未知。');
@@ -72,7 +72,7 @@
     $('access-toggle').disabled = accessBusy || !access?.steer_configured;
     $('access-toggle').textContent = accessBusy ? '核对权限…' : access?.steer ? '锁定操作' : '解锁操作';
     $('access-toggle').setAttribute('aria-busy', String(accessBusy));
-    message('access-message', accessError || (accessBusy ? '正在读取操作权限…' : !access ? '权限未知，保持只读。' : access.steer ? '可登记结果和导入报告；不会启动执行任务。' : access.steer_configured ? '可查看结果和原件；登记与导入需要掌舵权限。' : '此节点未配置掌舵密码，保持只读。'), !!accessError);
+    message('access-message', accessError || (accessBusy ? '正在读取操作权限…' : !access ? '权限未知，保持只读。' : access.steer ? '可登记结果和导入报告；不会启动执行任务。' : access.steer_configured ? '可查看结果和原件；登记与导入需要操作口令。' : '此节点未配置操作口令，保持只读。'), !!accessError);
     for (const id of ['manifest-input', 'import-adapter', 'import-file', 'import-labels']) $(id).disabled = locked;
     $('import-id').disabled = locked || !!pending;
     for (const id of ['register-id', 'import-generate']) $(id).disabled = writeBusy || !!pending;

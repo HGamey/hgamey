@@ -123,7 +123,7 @@ window.HGGameOpen = (() => {
         $('open-shots').querySelector(`figure[data-mode="${figure.dataset.mode}"]`)?.remove();
         $('open-shots').append(figure);
       } catch (error) {
-        $('open-message').textContent = error.needSteer ? '需要先解锁操作（掌舵密码）。' : error.message;
+        $('open-message').textContent = error.needSteer ? '需要先解锁操作（操作口令）。' : error.message;
         $('open-message').classList.add('task-error');
       } finally { busy = false; render(); }
     }

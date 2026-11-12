@@ -40,7 +40,7 @@
           options.body = method === 'PUT' ? body : JSON.stringify(body);
         }
         const response = await HGTarget.fetch(path, options, {target:op.view.target || null});
-        if (response.status === 401 || response.status === 403) { const error = new Error('上传权限已失效，请重新核对登录与掌舵权限。'); error.status = response.status; throw error; }
+        if (response.status === 401 || response.status === 403) { const error = new Error('上传权限已失效，请重新核对登录与操作口令。'); error.status = response.status; throw error; }
         if (!(response.headers.get('content-type') || '').includes('application/json')) throw new Error(`节点未返回可核对的 JSON（HTTP ${response.status}）。`);
         const value = await response.json();
         if (!response.ok) { const error = new Error(typeof value.error === 'string' ? value.error : value.error?.message || `HTTP ${response.status}`); error.status = response.status; error.code = value.code || value.error?.code; if (WRITE_ERRORS.has(error.code)) error.writeError = {code:error.code,error:value.error,scope:value.scope,details:value.details}; throw error; }

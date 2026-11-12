@@ -4136,7 +4136,7 @@ class CoreFlowTests(unittest.TestCase):
                 self.assertEqual(status(), "还没提交 · 再选差别大小")
                 self.assertTrue(page.is_disabled(send))
                 page.click(f'{form} [data-diff="moderate"]')
-                self.assertEqual(status(), "还没提交 · 填掌舵口令后提交")
+                self.assertEqual(status(), "还没提交 · 填操作口令后提交")
                 self.assertTrue(page.is_visible(password), "the password is asked for beside 提交")
                 self.assertEqual(page.text_content(send), "解锁并提交")
                 page.locator("#cmp-ev-ask").scroll_into_view_if_needed()
@@ -4289,7 +4289,7 @@ class CoreFlowTests(unittest.TestCase):
         script = (NODE / "dash_static/research.js").read_text(encoding="utf-8")
         criteria = (NODE / "dash_static/research-criteria.js").read_text(encoding="utf-8")
         shell = (NODE / "dash_static/shell.js").read_text(encoding="utf-8")
-        for text in ("研究工作台", "研究与协助", "当前后台保存独立研究状态", "可查看研究；保存与答复需要掌舵权限",
+        for text in ("研究工作台", "研究与协助", "当前后台保存独立研究状态", "可查看研究；保存与答复需要操作口令",
                      "状态是作者声明；选择记录查看具体版本与依赖", "已读取当前版本。读取不会覆盖打开的草稿",
                      "此版本未声明数值判据；不会从目标文字补阈值"):
             self.assertNotIn(text, page + script + criteria)

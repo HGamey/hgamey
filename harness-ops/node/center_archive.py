@@ -21,7 +21,7 @@ TABLES = {"research": ("objects", "revisions", "events", "operations", "dependen
           "results": ("results", "imports"),
           "queue": ("jobs", "job_events", "job_targets")}
 EXCLUDED = ["游戏资源缓存（可以在新中心重新准备）", "节点目录（从节点的加入记录）", "agent 账号和 token", "设备登记",
-            "掌舵密码和查看密码", "平台配置", "历史作业目录（--history-roots 指向的旧作业）", "作业目录的导出缓存"]
+            "操作口令和查看密码", "平台配置", "历史作业目录（--history-roots 指向的旧作业）", "作业目录的导出缓存"]
 JOB = re.compile(r"[0-9a-f]{12}\Z")
 ATTACHMENT = re.compile(r"[0-9a-f]{32}\Z")
 CHUNK = 1 << 20

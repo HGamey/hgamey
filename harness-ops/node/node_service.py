@@ -1810,7 +1810,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                         return True
                     if not board.steered(self):
-                        self._send(403, {"code": "steer_required", "error": "需要掌舵密码", "need_steer": True})
+                        self._send(403, {"code": "steer_required", "error": "需要操作口令", "need_steer": True})
                         return True
                 elif not self._upload_write_auth(dashboard):
                     return True
@@ -2165,7 +2165,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 if not board.steered(self):
-                    return self._send(403, {"code": "steer_required", "error": "需要掌舵密码", "need_steer": True})
+                    return self._send(403, {"code": "steer_required", "error": "需要操作口令", "need_steer": True})
             else:
                 self.close_connection = True
                 if not self._upload_write_auth(True):
@@ -2260,7 +2260,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             elif self.headers.get("X-HG") != "1":
                 self._send(400, {"code": "invalid_request", "error": "请求格式不对"})
             elif not board.steered(self):
-                self._send(403, {"code": "steer_required", "error": "需要掌舵密码", "need_steer": True})
+                self._send(403, {"code": "steer_required", "error": "需要操作口令", "need_steer": True})
             else:
                 return True
             return False

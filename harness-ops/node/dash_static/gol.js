@@ -134,7 +134,7 @@
   function renderSteerBtn(h) {
     const b = $("steer-btn");
     b.textContent = h.steer ? "人工干预：已解锁" : "人工干预：未解锁";
-    b.title = h.steer ? "点一下重新上锁" : "输入操作密码";
+    b.title = h.steer ? "点一下重新上锁" : "输入操作口令";
     $("steer-lock").hidden = !!h.steer;
   }
 
