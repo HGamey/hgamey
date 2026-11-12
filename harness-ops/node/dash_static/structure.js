@@ -110,7 +110,7 @@
     head.append(icon(center ? 'center' : 'node'), el('strong', 'st-title', node.title), el('span', 'st-role', role), zoneButton(node));
     line.title = line.textContent;
     const status = node.online ? (node.jobs ? `运行 ${node.jobs} 个作业` : '在线') : `离线${node.seen ? ' · 最后在线 ' + when(node.seen) : ''}`;
-    const state = el('div', 'st-state'), revision = el('span', 'st-revision', node.revision ? node.revision.slice(0, 7) : '');
+    const state = el('div', 'st-state'), revision = el('span', 'st-revision tech', node.revision ? node.revision.slice(0, 7) : '');
     if (node.revision) revision.title = node.revision;
     state.append(el('i', 'st-dot'), el('span', 'st-status', status), revision);
     card.replaceChildren(head, line, state);

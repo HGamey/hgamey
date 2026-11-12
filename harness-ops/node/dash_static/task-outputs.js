@@ -127,7 +127,7 @@ window.HGTaskOutputs = (() => {
     if (file.path.includes('/')) row.append(el('span', file.path.slice(0, file.path.lastIndexOf('/') + 1), 'output-dir'));
     if (file.size != null) row.append(el('span', size(file.size), 'output-size'));
     if (withJob) {
-      const job = el('a', `作业 ${file.job}`, 'output-job'); job.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(file.job)}`);
+      const job = el('a', `作业 ${file.job}`, 'output-job tech'); job.href = HGTarget.url(`/dash/jobs#job=${encodeURIComponent(file.job)}`);
       row.append(job);
     }
     return row;
@@ -137,7 +137,7 @@ window.HGTaskOutputs = (() => {
   // A commit: its id, subject and where it comes from; opened, the files it changed. Its page shows the diff.
   function commitRow(commit, open = false) {
     const {el, tag} = U(), row = el('li', null, 'output-commit'), box = el('details'), head = el('summary');
-    head.append(el('code', short(commit.commit)), el('span', commit.subject || '本节点的实验仓库镜像里没有这个提交', 'output-subject'));
+    head.append(el('code', short(commit.commit), 'tech'), el('span', commit.subject || '本节点的实验仓库镜像里没有这个提交', 'output-subject'));
     if (commit.author) head.append(el('span', `${commit.author} · ${day(commit.at)}`, 'output-meta'));
     head.append(tag(commit.source, 'plain'));
     if (commit.files) head.append(el('span', `改了 ${commit.files_total} 个文件`, 'output-open'));

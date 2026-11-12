@@ -35,6 +35,9 @@
   }
   function render(){
     const box=document.getElementById('connection-target');if(!box)return;
+    // What a person reads; the exact reason and the identities stay with the technical details.
+    box.querySelector('[data-target-plain]').textContent=flight?'正在检查和中心的连接…':!verified?'页面和中心的连接没有核对上，现在只能看、不能操作。点「重新检查」再试一次，还不行就刷新页面。'
+      :canWrite()?'已连上中心，页面上的操作都发到这台中心。':'这台中心的版本较旧，页面只能查看。';
     const status=box.querySelector('[data-target-status]');status.textContent=error||(!verified?'正在核对执行目标…':canWrite()?'已绑定此后台；本站导航与操作均属于下方节点。':'此节点未提供 node.target-v1，仅可查看缓存；写入与设备观察已禁用。');status.classList.toggle('target-error',!!error);
     const values={entry:origin,expected:pin?.node_id||'尚未绑定',actual:identity?.node_id||'未取得',host:identity?.host?.hostname||'未取得',data:identity?.storage?.data_root||'未取得',jobs:identity?.storage?.jobs_root||'未取得'};
     for(const [key,value] of Object.entries(values))box.querySelector(`[data-target-${key}]`).textContent=value;
@@ -85,7 +88,7 @@
   function assert(target){const issue=problem(target);if(issue)throw localError(issue);}
   function mount(){
     const main=document.querySelector('main')||document.body,box=document.createElement('section');box.id='connection-target';box.className='connection-target';box.setAttribute('aria-label','当前连接与执行目标');
-    box.innerHTML='<div class="target-heading"><strong>此后台的执行目标</strong><button type="button" class="ghost">刷新目标身份</button></div><p data-target-status role="status"></p><dl class="target-facts"><dt>访问入口</dt><dd data-target-entry></dd><dt>绑定节点</dt><dd data-target-expected></dd><dt>执行宿主</dt><dd data-target-host></dd><dt>数据目录</dt><dd data-target-data></dd></dl><details><summary>实际身份与任务目录</summary><dl class="target-facts"><dt>实际节点</dt><dd data-target-actual></dd><dt>任务目录</dt><dd data-target-jobs></dd></dl></details>';
+    box.innerHTML='<div class="target-heading"><strong>连接的中心</strong><button type="button" class="ghost">重新检查</button></div><p data-target-plain role="status"></p><p class="tech" data-target-status></p><dl class="target-facts tech"><dt>访问入口</dt><dd data-target-entry></dd><dt>绑定节点</dt><dd data-target-expected></dd><dt>执行宿主</dt><dd data-target-host></dd><dt>数据目录</dt><dd data-target-data></dd></dl><details class="tech"><summary>实际身份与任务目录</summary><dl class="target-facts"><dt>实际节点</dt><dd data-target-actual></dd><dt>任务目录</dt><dd data-target-jobs></dd></dl></details>';
     box.classList.add('collapsed');
     main.prepend(box);box.querySelector('button').addEventListener('click',()=>refresh().catch(()=>{}));
     box.addEventListener('click',(e)=>{if(e.target.closest('button'))return;box.classList.toggle('collapsed');});

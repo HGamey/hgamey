@@ -102,6 +102,9 @@ html { scrollbar-color: var(--line) transparent; }
 .shell-menu a:hover, .shell-menu button:hover { background: var(--wash); color: var(--ink); }
 .shell-menu :is(a, button)[aria-current="page"] { color: var(--ink); font-weight: 600; background: var(--wash); }
 .shell-menu .shell-logout { margin: 6px 0 0; padding-top: 6px; border-top: 1px solid var(--grid); }
+.shell-menu .shell-tech { display: block; width: 100%; margin: 6px 0 0; padding-top: 8px; border-top: 1px solid var(--grid); border-radius: 0; color: var(--ink2); }
+/* 技术细节：只在「显示技术细节」打开时出现 */
+html:not(.show-tech) .tech { display: none !important; }
 .shell-centers { display: none; margin: 6px 0 0; padding-top: 6px; border-top: 1px solid var(--grid); }
 .shell-menu-label { margin: 0; padding: 2px 10px 4px; color: var(--muted); font-size: var(--fs-xs); }
 .shell-menu .shell-logout button { color: var(--muted); }

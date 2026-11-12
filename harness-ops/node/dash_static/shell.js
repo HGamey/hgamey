@@ -23,14 +23,15 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     ["/dash/jobs", "runs", "作业"],
     ["/dash/datasets", "data", "数据集"],
   ];
+  // 「更多」按谁用分两组：看结果的在前，工程师的工具在后。
   const MORE = [
-    ["/dash/results", "研究结果"],
-    ["/dash/games", "游戏与资源"],
-    ["/dash/gol", "GOL 目标"],
-    ["/dash/live", "实时画面"],
-    ["/dash/control", "远程调试"],
-    ["/dash/doctor", "环境诊断"],
-    ["/dash/maint", "曲线与日志"],
+    ["/dash/results", "研究结果", "看结果"],
+    ["/dash/live", "实时画面", "看结果"],
+    ["/dash/games", "游戏与资源", "看结果"],
+    ["/dash/gol", "GOL 目标", "工程师用"],
+    ["/dash/control", "远程调试", "工程师用"],
+    ["/dash/doctor", "环境诊断", "工程师用"],
+    ["/dash/maint", "曲线与日志", "工程师用"],
   ];
   const path = location.pathname.replace(/\/+$/, "") || "/dash";
   function current(p) {
@@ -39,6 +40,11 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     if (p === "/dash/research") return (path === p || path.startsWith(p + "/")) && location.hash !== "#agents-directory";
     return path === p || path.startsWith(p + "/");
   }
+  // 技术细节（各种 ID、hash、命令、原始记录）默认收起：页面上标了 .tech 的地方只在「更多 → 显示技术细节」打开时出现。
+  // 记在这个浏览器上；先于页面内容设好，不闪。
+  const TECH = "hgamey-tech";
+  const techShown = () => { try { return localStorage.getItem(TECH) === "1"; } catch (_) { return false; } };
+  document.documentElement.classList.toggle("show-tech", techShown());
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 
   // A disclosure that closes on Esc, outside click and focus leaving it; Esc returns focus to its trigger.
@@ -100,18 +106,32 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     menu.id = "shell-more-menu";
     menu.hidden = true;
     const list = el("ul");
-    for (const [href, label] of MORE) {
+    let group = null;
+    for (const [href, label, kind] of MORE) {
+      if (kind !== group) { group = kind; const head = el("li", "shell-menu-label", kind); head.setAttribute("role", "presentation"); list.append(head); }
       const li = el("li"), a = el("a", null, label);
       a.href = href;
       if (current(href)) a.setAttribute("aria-current", "page");
       li.append(a);
       list.append(li);
     }
+    const tech = el("button", "shell-tech");
+    tech.type = "button"; tech.id = "shell-tech";
+    const label = () => {
+      const on = document.documentElement.classList.contains("show-tech");
+      tech.textContent = on ? "隐藏技术细节" : "显示技术细节"; tech.setAttribute("aria-pressed", String(on));
+    };
+    tech.addEventListener("click", () => {
+      const on = document.documentElement.classList.toggle("show-tech");
+      try { localStorage.setItem(TECH, on ? "1" : "0"); } catch (_) { /* 存不下就只对这一页生效 */ }
+      label();
+    });
+    label();
     const logout = el("form", "shell-logout");
     logout.method = "post";
     logout.action = "/dash/logout";
     logout.innerHTML = '<button type="submit" id="shell-logout">退出登录</button>';
-    menu.append(list, logout);
+    menu.append(list, tech, logout);
     moreWrap.append(moreBtn, menu);
     nav.append(tabs, moreWrap);
     disclosure(moreBtn, menu);
