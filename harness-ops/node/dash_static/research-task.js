@@ -997,7 +997,7 @@
     else if (!row && chainNav.node.parentNode !== chainNav.container) chainNav.container.prepend(chainNav.node);
   }
   function dropChain() { chainNav?.node.remove(); chainNav = null; }
-  const util = {api, write, el, tag, timeEl, speaker, failure, near, markdownReport, evidenceList, picture, readPicture, thumbnail};
+  const util = {api, write, el, tag, timeEl, speaker, failure, near, markdownReport, evidenceList, picture, readPicture, thumbnail, codedText};
 
   window.HGResearchTask = {renderDetail, util, placeChain, clearDetail: container => { shown = null; clearImages(); dropChain(); container.replaceChildren(); }};
 })();
