@@ -1543,19 +1543,17 @@ bus.DDR.avail_freqs=547000 1555000 5333000
     #[cfg(unix)]
     #[test]
     fn an_external_process_round_trips() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("gol_ext_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("p.sh");
-        std::fs::write(
+        crate::test_script::write_script(
             &script,
             "#!/bin/sh\ncat > \"$(dirname \"$0\")/seen.json\"\necho 日志写 stderr >&2\n\
              echo '{\"protocol\":\"game_opt_loop/proposer@1\",\"version\":1,\"candidates\":[\
              {\"kind\":\"sysparam\",\"why\":\"固定给一个\",\"payload\":{\"params\":{\"gpu.min_pwrlevel\":\"2\"}}}],\
              \"usage\":{\"model_calls\":2,\"input_tokens\":1200,\"output_tokens\":300,\"cache_read_tokens\":512}}'\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            0o755,
+        );
 
         let ext = External::parse(&script.display().to_string(), Duration::from_secs(10)).unwrap();
         let inp = input(Kind::Sysparam, 1, 0, vec![]);
@@ -1581,13 +1579,13 @@ bus.DDR.avail_freqs=547000 1555000 5333000
         assert!(seen.constraints.whitelist.unwrap().contains_key("bus.DDR.boost_freq"));
 
         // 退出码非 0 → error, 不退回本地。
-        std::fs::write(&script, "#!/bin/sh\necho 坏了 >&2\nexit 3\n").unwrap();
+        crate::test_script::write_script(&script, "#!/bin/sh\necho 坏了 >&2\nexit 3\n", 0o755);
         let p = ext.propose(&inp);
         assert!(p.candidates.is_empty());
         assert!(p.error.unwrap().contains("坏了"));
 
         // 超时 → 杀掉。
-        std::fs::write(&script, "#!/bin/sh\nsleep 5\n").unwrap();
+        crate::test_script::write_script(&script, "#!/bin/sh\nsleep 5\n", 0o755);
         let slow = External::parse(&script.display().to_string(), Duration::from_millis(300)).unwrap();
         assert!(slow.propose(&inp).error.unwrap().contains("超过"));
         std::fs::remove_dir_all(&dir).ok();

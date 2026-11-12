@@ -10,6 +10,8 @@
 //!
 //! 不连设备、不调大模型、不需要真的 phonefarm。
 
+#[path = "support/script.rs"]
+mod script;
 use game_opt_loop::optimize::{self, plan::Budget};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -105,12 +107,7 @@ fn scaffold(tag: &str) -> PathBuf {
     std::fs::write(root.join("probe_out.txt"), ROOTED_NX809J).unwrap();
     std::fs::write(root.join("probe.txt"), PROBE).unwrap();
     let bin = pf.join("phonefarm");
-    std::fs::write(&bin, fake_phonefarm(&root.join("probe_out.txt"))).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    script::write_script(&bin, &fake_phonefarm(&root.join("probe_out.txt")), 0o755);
     root
 }
 

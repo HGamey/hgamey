@@ -1,7 +1,8 @@
 //! Actual CLI wiring with synthetic host receivers only; no ADB/API/SDK calls.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::os::unix::fs::PermissionsExt;
+#[path = "support/script.rs"]
+mod script;
 use std::{
     path::PathBuf,
     process::{Command, Output},
@@ -59,12 +60,7 @@ impl F {
             root: root.canonicalize().unwrap(),
         };
         f.write("probe.txt",b"bus.DDR.boost_freq.writable=yes\nbus.DDR.boost_freq.effect=live\nbus.DDR.boost_freq.cur=100\nbus.DDR.avail_freqs=100 300\n");
-        f.write("receiver", RECEIVER.as_bytes());
-        std::fs::set_permissions(
-            f.root.join("receiver"),
-            std::fs::Permissions::from_mode(0o700),
-        )
-        .unwrap();
+        script::write_script(&f.root.join("receiver"), RECEIVER, 0o700);
         f.json("workload.json",&json!({"schema":"phonefarm/deterministic_touch_workload@1","actions":[{"type":"sleep","seconds":6}]}));
         f.json("profile.json",&json!({"schema":"game_opt_loop/system_case_profile@1","case_id":"fixture","transport":{"kind":"adb","program":f.root.join("receiver"),"target":"controlled-host-fixture"},"package":"io.github.hgamey.refbench","render_comm":"RefbenchDrv","carrier":{"scene":"bw_pingpong","intensity":8,"frames":100000,"apk_sha256":"a".repeat(64),"source_commit":"b".repeat(40)},"probe":f.root.join("probe.txt"),"workload":f.root.join("workload.json"),"control_id":"bus.DDR.boost_freq","candidate_value":"300","capture_seconds":2,"lead_seconds":1,"pairs":5,"paired_t_assumptions_acknowledged":true,"budgets":{"prepare_seconds":30,"collect_seconds":30,"local_seconds":30,"whole_seconds":180,"stream_bytes":65536}}));
         f

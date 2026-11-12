@@ -627,13 +627,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn deferred_and_error_preserve_success_age_and_empty_success_clears_devices() {
-        use std::os::unix::fs::PermissionsExt;
         let dir =
             std::env::temp_dir().join(format!("gol_fleet_observation_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("phonefarm");
-        std::fs::write(&bin, "#!/bin/sh\ncd \"$(dirname \"$0\")\"\necho call >> calls\ncat response.json\nexit \"$(cat exitcode)\"\n").unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_script::write_script(&bin, "#!/bin/sh\ncd \"$(dirname \"$0\")\"\necho call >> calls\ncat response.json\nexit \"$(cat exitcode)\"\n", 0o755);
         let mut cfg = FleetConfig {
             bin,
             cwd: dir.clone(),
