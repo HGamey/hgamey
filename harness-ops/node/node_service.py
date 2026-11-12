@@ -54,6 +54,7 @@ from node_agents import AgentError, NodeAgents, ACTIVE_WITHIN_S, activity as age
 from agent_onboarding import invitation_prompt
 from node_directory import NodeDirectory, DirectoryError, _ProbeError, DEADLINE_S
 import node_connection_http
+import media_thumbs
 from node_games import NodeGames, GameError, MAX_MANIFEST
 from node_uploads import NodeUploads
 from node_deployments import NodeDeployments, DeploymentError
@@ -1439,13 +1440,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(200, {"node_id": node.node_id,
                                             "binding": jobs.device_scopes.resolve(q["serial"][0])})
                 if parts[:1] == ["research-attachments"]:
-                    if len(parts) != 2 or set(q) - {"expected_node_id"}:
+                    if len(parts) != 2 or set(q) - {"expected_node_id", "thumb"}:
                         raise ValueError("attachment reads require only an explicit node identity")
                     if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
                         raise ValueError("attachment reads require an explicit node identity")
                     blob, info = research.attachment(unquote(parts[1]))
                     with blob:
-                        return self._stream_out(blob, info, q, media_type=info["media"]["mime"])
+                        return self._file_out(blob, info, q, info["media"]["mime"])
                 if parts[:1] == ["research-state"]:
                     if len(parts) == 4 and parts[1] == "research" and parts[3] == "assessment":
                         if not (self.headers.get("X-Expected-Node-ID") or q.get("expected_node_id")):
@@ -1671,7 +1672,18 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             media_type = {".mp4": "video/mp4", ".webm": "video/webm", ".png": "image/png",
                           ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(os.path.splitext(rel or "")[1].lower())
             with blob:
-                return self._stream_out(blob, info, q, media_type=media_type if info["kind"] == "file" else None)
+                if info["kind"] != "file":
+                    return self._stream_out(blob, info, q)
+                return self._file_out(blob, info, q, media_type)
+
+        def _file_out(self, blob, info, q, media_type):
+            """With thumb=1 a picture comes as its small copy (media_thumbs); the original is sent otherwise."""
+            small = media_thumbs.small(jobs.data_root, blob, info) if "thumb" in q else None
+            if small is None:
+                return self._stream_out(blob, info, q, media_type=media_type)
+            stream, small_info, mime = small
+            with stream:
+                return self._stream_out(stream, small_info, q, media_type=mime)
 
         def _result_source(self, source, q):
             blob, info = source
