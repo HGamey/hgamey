@@ -336,7 +336,7 @@ class Client:
 
     def http_error(self, error):
         status, code, revision, retry_after = error.code, None, None, None
-        validation = owner = reference_error = None
+        validation = owner = reference_error = blocking = None
         try:
             raw = error.read(MAX_DATA + 1)
             value = _json(raw) if len(raw) <= MAX_DATA else None
@@ -350,6 +350,10 @@ class Client:
             candidate = value.get("retry_after_seconds") if isinstance(value, dict) else None
             if status == 429 and type(candidate) is int and 0 <= candidate <= 86400:
                 retry_after = candidate
+            candidate = value.get("notes") if isinstance(value, dict) else None
+            if (status == 409 and code == "research_guidance_unanswered" and isinstance(candidate, list)
+                    and all(isinstance(item, str) and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", item) for item in candidate)):
+                blocking = candidate
             candidate = value.get("owner") if isinstance(value, dict) else None
             if (status == 409 and code == "research_owned" and isinstance(candidate, str)
                     and re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", candidate)):
@@ -369,6 +373,8 @@ class Client:
             message = CODE_MESSAGES[code]
             if owner is not None:
                 message += f"（负责人 {owner}；可用 research note 留言）"
+            if blocking:
+                message += "。挡住的留言：" + "、".join(blocking[:20]) + (f" 等 {len(blocking)} 条" if len(blocking) > 20 else "")
         elif validation is not None:
             message = "研究数据校验失败：" + validation
         elif reference_error is not None:
