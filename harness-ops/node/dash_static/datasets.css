@@ -2,10 +2,16 @@
 .datasets-page { padding-bottom: var(--sp-7); }
 .datasets-page .page-heading { margin-bottom: var(--sp-4); }
 .datasets-page > #message { font-size: var(--fs-base); color: var(--muted); }
-.ds-scroll { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
+/* Where the table is wider than the screen, a shade at the edge that has more columns. */
+.ds-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius);
+  background: linear-gradient(to right, var(--card) 40%, transparent) left / 32px 100% no-repeat local,
+    linear-gradient(to left, var(--card) 40%, transparent) right / 32px 100% no-repeat local,
+    linear-gradient(to right, rgba(0, 0, 0, .14), transparent) left / 14px 100% no-repeat scroll,
+    linear-gradient(to left, rgba(0, 0, 0, .14), transparent) right / 14px 100% no-repeat scroll, var(--card); }
 .ds-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 .ds-table th, .ds-table td { padding: 8px 12px; text-align: left; white-space: nowrap; }
 .ds-table .num { text-align: right; }
+.ds-table td.ds-method { min-width: 16em; max-width: 28em; white-space: normal; }
 .ds-table thead th { font-size: var(--fs-xs); font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); }
 .ds-name th { padding-top: var(--sp-5); font-size: var(--fs-md); font-weight: 650; color: var(--ink); }
 .ds-group:first-of-type .ds-name th { padding-top: var(--sp-3); }
