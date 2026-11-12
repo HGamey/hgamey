@@ -1712,7 +1712,7 @@ class CoreFlowTests(unittest.TestCase):
         gol_script = (NODE / "dash_static/gol.js").read_text(encoding="utf-8")
         for element in ('id="now-text"', 'id="human"', 'id="goalmd"', 'id="dlg-new"'):
             self.assertNotIn(element, page, "GOL panels belong on the GOL page, not the home page")
-        self.assertIn('href="/dash/gol"', page)
+        self.assertNotIn('href="/dash/gol"', page, "GOL 目标 is reached from 更多 → 工程师用")
         self.assertIn('id="reports"', page)
         for text in ("占用或待核查", "占用或状态待核查"):
             self.assertNotIn(text, script, "phone copy must follow the post-release state machine")
@@ -4328,7 +4328,7 @@ class CoreFlowTests(unittest.TestCase):
         page = (NODE / "dash_static/home.html").read_text(encoding="utf-8")
         script = (NODE / "dash_static/home.js").read_text(encoding="utf-8")
         self.assertRegex(page, r'id="new-btn" class="btn primary"[^>]*>＋ 新任务</button>')
-        self.assertIn('id="goal-btn"', page)
+        self.assertNotIn('id="goal-btn"', page)
         self.assertIn('id="research-form"', page)
         self.assertIn('id="research-objective"', page)
         self.assertIn('id="research-game"', page)
