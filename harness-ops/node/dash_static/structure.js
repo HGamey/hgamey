@@ -4,7 +4,8 @@
    a computer reported long ago says nothing about now). Registrations the center has disabled are not phones. Cards and zone labels drag
    (a focused one moves with the arrow keys; on a touch screen, after a long press); the positions stay in this
    browser, one set for wide screens and one for narrow. Only what is running glows: a computer with active jobs, a
-   phone an active job is bound to, an agent that started one. */
+   phone an active job is bound to, an agent that started one. A computer's or an agent's zone is changed from its card
+   (with the steer password): only its zone: tag changes, at the revision it was read at. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id), API = '/dash/api', SVG = 'http://www.w3.org/2000/svg';
@@ -68,17 +69,20 @@
     const phonesOf = nodeId => phones.items.filter(item => item.node_id === nodeId && !(nodeId === local.node_id && disabled.has(item.device_id))).map(phone);
     const center = {id: 'n:' + local.node_id, kind: 'node', role: 'center', title: local.host.hostname, host: null,
                     platform: PLATFORMS[local.host.platform] || local.host.platform, revision: local.service.revision,
-                    online: true, seen: null, zone: zoneOf(local.tags || []), jobs: on(local.node_id), phones: phonesOf(local.node_id)};
+                    online: true, seen: null, zone: zoneOf(local.tags || []), jobs: on(local.node_id), phones: phonesOf(local.node_id),
+                    edit: {path: '/nodes/local', revision: local.revision, tags: local.tags || []}};
     const joined = nodes.items.map(entry => {
       const identity = entry.snapshot?.identity;
       return {id: 'n:' + entry.node_id, kind: 'node', role: 'node', title: entry.name, host: identity?.host.hostname,
               platform: identity ? PLATFORMS[identity.host.platform] || identity.host.platform : null,
               revision: identity?.service.revision, online: entry.connection.status === 'ready',
-              seen: entry.connection.last_seen_at, zone: zoneOf(entry.tags), jobs: on(entry.node_id), phones: phonesOf(entry.node_id)};
+              seen: entry.connection.last_seen_at, zone: zoneOf(entry.tags), jobs: on(entry.node_id), phones: phonesOf(entry.node_id),
+              edit: {path: '/nodes/' + encodeURIComponent(entry.name), revision: entry.revision, tags: entry.tags}};
     });
     const people = agents.agents.map(agent => ({id: 'a:' + agent.name, kind: 'agent', title: agent.name,
       tags: agent.tags.filter(tag => !tag.startsWith(ZONE_TAG)), checkin: agent.checkin?.at, enabled: agent.enabled,
-      zone: zoneOf(agent.tags), jobs: active.filter(job => job.actor_id === agent.name).length}));
+      zone: zoneOf(agent.tags), jobs: active.filter(job => job.actor_id === agent.name).length,
+      edit: {path: '/agents/' + encodeURIComponent(agent.name), revision: agent.revision, tags: agent.tags}}));
     const all = [center, ...joined];
     const rank = name => name === center.zone ? 0 : name === NO_ZONE ? 2 : 1;
     const names = [...new Set([center.zone, ...joined.map(node => node.zone), ...people.map(agent => agent.zone)])]
@@ -91,11 +95,19 @@
   const members = zone => [...zone.agents.map(agent => agent.id), ...zone.nodes.flatMap(node => [node.id, ...node.phones.map(phone => phone.id)])];
 
   // ── Cards ──
+  // A computer's or an agent's way to its zone; pressing it never starts a drag.
+  function zoneButton(item) {
+    const button = el('button', 'st-zone-btn');
+    button.type = 'button'; button.dataset.edit = item.id; button.title = `修改区域（现在：${item.zone}）`;
+    button.setAttribute('aria-label', `修改 ${item.title} 的区域，现在是${item.zone}`);
+    button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg>';
+    return button;
+  }
   function nodeCard(node, card) {
     const center = node.role === 'center', role = center ? '主节点' : '从节点';
     card.className = `st-card st-node${center ? ' st-center' : ''}${node.online ? '' : ' is-off'}${node.jobs ? ' is-running' : ''}`;
     const head = el('div', 'st-head'), line = el('div', 'st-line', [node.platform, node.host].filter(Boolean).join(' · ') || '未上报');
-    head.append(icon(center ? 'center' : 'node'), el('strong', 'st-title', node.title), el('span', 'st-role', role));
+    head.append(icon(center ? 'center' : 'node'), el('strong', 'st-title', node.title), el('span', 'st-role', role), zoneButton(node));
     line.title = line.textContent;
     const status = node.online ? (node.jobs ? `运行 ${node.jobs} 个作业` : '在线') : `离线${node.seen ? ' · 最后在线 ' + when(node.seen) : ''}`;
     const state = el('div', 'st-state'), revision = el('span', 'st-revision', node.revision ? node.revision.slice(0, 7) : '');
@@ -121,7 +133,7 @@
     const text = el('div', 'st-text');
     const facts = [...agent.tags, agent.enabled ? (agent.jobs ? `运行 ${agent.jobs} 个作业` : ago(agent.checkin)) : '已停用'];
     text.append(el('strong', 'st-title', agent.title), el('span', 'st-line', facts.join(' · ')));
-    card.replaceChildren(el('span', 'st-avatar', agent.title.slice(0, 1).toUpperCase()), text);
+    card.replaceChildren(el('span', 'st-avatar', agent.title.slice(0, 1).toUpperCase()), text, zoneButton(agent));
     card.setAttribute('aria-label', ['Agent ' + agent.title, ...facts].join('，'));
   }
   function zoneLabel(zone, label) {
@@ -367,7 +379,7 @@
   let held = null;   // a touch drag after a long press: page scrolling stops while it lasts
   $('world').addEventListener('pointerdown', event => {
     const handle = event.target.closest('.st-card, .st-zone-label');
-    if (!handle || event.button !== 0) return;
+    if (!handle || event.button !== 0 || event.target.closest('.st-zone-btn')) return;
     const ids = handleIds(handle), start = snapshot(ids), sx = event.clientX, sy = event.clientY, touch = event.pointerType === 'touch';
     let dragging = false, press = 0;
     const begin = () => { dragging = true; dragged = handle; handle.classList.add('is-dragging'); if (touch) held = handle; };
@@ -421,8 +433,10 @@
     }
     box.hidden = !text;
   }
+  let again = false;
   async function refresh() {
-    if (busy) return;
+    if (busy) { again = true; return; }
+    again = false;
     busy = true;
     clearTimeout(timer);
     $('refresh').disabled = true;
@@ -437,9 +451,124 @@
     } finally {
       busy = false;
       $('refresh').disabled = false;
-      if (!document.hidden) timer = setTimeout(refresh, AUTO_MS);
+      if (again) refresh();
+      else if (!document.hidden) timer = setTimeout(refresh, AUTO_MS);
     }
   }
+
+  // ── Changing a zone ──
+  // Only the zone: tag changes (kept where it was among the tags); other tags stay as they are. The write carries the
+  // revision the card was read at, so a change made elsewhere since is not overwritten.
+  let editing = null, access = null, writing = false;
+  const item = id => [...data.nodes, ...data.agents].find(entry => entry.id === id);
+  async function post(path, body) {
+    const response = await HGTarget.fetch(path, {method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify(body)});
+    const value = await response.json().catch(() => null);
+    if (response.ok) return value;
+    const error = new Error(value?.error || `HTTP ${response.status}`);
+    error.status = response.status; error.steer = !!value?.need_steer;
+    throw error;
+  }
+  function withZone(tags, zone) {
+    const tag = zone === NO_ZONE ? null : ZONE_TAG + zone, at = tags.findIndex(t => t.startsWith(ZONE_TAG));
+    const rest = tags.filter(t => !t.startsWith(ZONE_TAG));
+    if (!tag) return rest;
+    if (at < 0) return [...tags, tag];
+    return [...tags.slice(0, at).filter(t => !t.startsWith(ZONE_TAG)), tag, ...tags.slice(at + 1).filter(t => !t.startsWith(ZONE_TAG))];
+  }
+  function chosen() {
+    const value = $('zone-form').elements.zone?.value;
+    return value === '\u0000new' ? $('zone-new').value.trim() : value;
+  }
+  function zoneProblem() {
+    const zone = chosen();
+    if (!zone) return '先选一个区域，或者写下新区域的名字。';
+    if (zone !== NO_ZONE && (/[\u0000-\u001f]/.test(zone) || (ZONE_TAG + zone).length > 64)) return '区域名太长或含控制字符。';
+    if (zone === editing.zone) return '这就是现在的区域。';
+    return '';
+  }
+  function renderZone(text = '', error = false) {
+    const locked = !access?.steer;
+    $('zone-unlock').hidden = !locked || !access?.steer_configured;
+    $('zone-save').disabled = writing || locked || !!zoneProblem();
+    $('zone-save').textContent = writing ? '保存中…' : '保存';
+    const note = text || (!access ? '正在读取操作权限…' : !access.steer_configured ? '本节点未配置掌舵密码，区域只能查看。'
+      : locked ? '修改区域需要先解锁掌舵权限。' : zoneProblem());
+    $('zone-message').textContent = note;
+    $('zone-message').classList.toggle('task-error', error);
+  }
+  async function readAccess() {
+    try { access = await (await HGTarget.fetch(API + '/access', {credentials: 'same-origin', cache: 'no-store'})).json(); }
+    catch (_) { access = null; }
+    if (editing) renderZone();
+  }
+  function openZone(id) {
+    const current = item(id);
+    if (!current || writing) return;
+    editing = {id, kind: current.kind, title: current.title, zone: current.zone, edit: current.edit};
+    $('zone-heading').textContent = `修改区域 · ${current.title}`;
+    const names = data.zones.map(zone => zone.name).filter(name => name !== NO_ZONE);
+    const choice = (value, label, checked) => {
+      const row = el('label', 'st-zone-choice'), input = el('input');
+      Object.assign(input, {type: 'radio', name: 'zone', value, checked});
+      row.append(input, el('span', null, label));
+      return row;
+    };
+    const fresh = choice('\u0000new', '新区域：', false), name = el('input');
+    Object.assign(name, {id: 'zone-new', type: 'text', maxLength: 59, placeholder: '区域名'});
+    name.setAttribute('aria-label', '新区域名');
+    name.addEventListener('focus', () => { fresh.querySelector('input').checked = true; renderZone(); });
+    fresh.append(name);
+    $('zone-choices').replaceChildren(el('legend', null, `现在：${current.zone}`),
+      ...names.map(zone => choice(zone, zone, zone === current.zone)), choice(NO_ZONE, NO_ZONE + '（去掉区域标签）', current.zone === NO_ZONE), fresh);
+    renderZone();
+    $('zone-dialog').showModal();
+    readAccess();
+  }
+  function closeZone() { if (writing) return; editing = null; $('zone-steer').value = ''; $('zone-dialog').close(); }
+  async function saveZone(event) {
+    event.preventDefault();
+    if ($('zone-save').disabled) return;
+    const attempt = editing, zone = chosen();
+    writing = true; renderZone('正在保存…');
+    try {
+      await post(API + attempt.edit.path, {revision: attempt.edit.revision, tags: withZone(attempt.edit.tags, zone)});
+      // The card leaves its old band: the place remembered for it (and its phones) belonged there.
+      const before = data.nodes.find(node => node.id === attempt.id);
+      for (const id of [attempt.id, ...(before?.phones || []).map(phone => phone.id)]) delete moved[id];
+      save();
+      writing = false; editing = null; $('zone-dialog').close();
+      await refresh();
+    } catch (error) {
+      writing = false;
+      if (error.status === 409) {
+        // Changed elsewhere: read it again and keep the dialog, so nothing is overwritten unseen.
+        await refresh();
+        const now = item(attempt.id);
+        if (editing === attempt && now) { attempt.edit = now.edit; attempt.zone = now.zone; }
+        renderZone(`刚被别处改过（现在的区域：${now?.zone || '未知'}），已重新读取。确认后再保存。`, true);
+      } else {
+        if (error.steer) await readAccess();
+        renderZone(`没有保存：${error.message}`, true);
+      }
+    }
+  }
+  async function unlockZone() {
+    const pw = $('zone-steer').value;
+    $('zone-steer').value = '';
+    if (!pw) return;
+    try { await post(API + '/steer/unlock', {pw}); await readAccess(); }
+    catch (error) { renderZone(`解锁失败：${error.message}`, true); }
+  }
+  $('world').addEventListener('click', event => { const button = event.target.closest('.st-zone-btn'); if (button) openZone(button.dataset.edit); });
+  $('zone-form').addEventListener('change', () => renderZone());
+  $('zone-form').addEventListener('input', () => renderZone());
+  $('zone-form').addEventListener('submit', saveZone);
+  $('zone-cancel').addEventListener('click', closeZone);
+  $('zone-dialog').addEventListener('cancel', event => { event.preventDefault(); closeZone(); });
+  $('zone-unlock-submit').addEventListener('click', unlockZone);
+  $('zone-steer').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); unlockZone(); } });
   $('refresh').addEventListener('click', refresh);
   document.addEventListener('visibilitychange', () => { if (document.hidden) clearTimeout(timer); else refresh(); });
   addEventListener('resize', () => { if (data) place(); });
