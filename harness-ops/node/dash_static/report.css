@@ -17,3 +17,9 @@
 .report-version[open] > summary { margin-bottom: var(--sp-3); }
 /* The task's title is the page's h1; a report's own top heading sits a step below it. */
 .report-page .research-report h1 { font-size: var(--fs-lg); }
+/* A picture's thumbnail on a line of its own under its file; it and a picture named in the text open large on the page. */
+.report-page .image-thumb { flex: 0 0 100%; display: block; margin: 4px 0 2px; padding: 0; border: 0; background: none; text-align: left; line-height: 0; cursor: zoom-in; }
+.report-page .image-thumb img { max-width: 100%; max-height: 160px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--wash); }
+.report-page .image-thumb img:not([src]) { width: 160px; height: 90px; }
+.report-page .report-picture { cursor: zoom-in; }
+.report-page .image-unread { margin-left: 6px; }

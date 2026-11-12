@@ -11,19 +11,41 @@
   const by = revision => revision.audit?.auth_channel === 'dashboard_steer' ? '人工' : revision.audit?.actor_label || '管理员';
   const task = encodeURIComponent(id);
 
+  // A picture opens large on this page, in the viewer comparisons use.
+  const show = (url, name) => HGResearchCompare.viewer(document.body, [{slot: name, url, kind: 'image'}], name, U, {label: '放大查看'});
+  const outPath = (job, path) => `/dash/api/jobs/${encodeURIComponent(job)}/out?${new URLSearchParams({path})}`;
+  const preview = file => U.picture(file.path) ? U.thumbnail(outPath(file.job, file.path), file.path, show) : null;
+  // A picture the report names as job:<job>:<path> opens in the viewer where it is named; it stays a download link.
+  const REF = /^job:([0-9a-f]{12}):(.+)$/;
+  function pictureRefs(article) {
+    for (const code of article.querySelectorAll('code')) {
+      const [, job, path] = REF.exec(code.textContent.trim()) || [];
+      if (!job || !U.picture(path)) continue;
+      const link = el('a', null, 'report-picture'), source = outPath(job, path);
+      link.href = HGTarget.url(source); link.download = path.split('/').pop(); link.title = '放大查看';
+      code.replaceWith(link); link.append(code);
+      link.addEventListener('click', async event => {
+        event.preventDefault();
+        try { show(await U.readPicture(source, path), path.split('/').pop()); }
+        catch (_) { if (!link.nextElementSibling?.matches('.image-unread')) link.after(el('span', '无法预览', 'note image-unread')); }
+      });
+    }
+    return article;
+  }
+
   // The newest version lists what it produced by kind (成果); an earlier one keeps the references it was delivered with.
   function body(deliverable, outputs) {
     const parts = [], applies = deliverable.applies_to;
     const scope = [applies.game_version && `游戏版本 ${applies.game_version}`, ...applies.devices].filter(Boolean).join(' · ');
     if (scope) parts.push(el('p', '适用：' + scope, 'report-scope'));
-    parts.push(U.markdownReport(deliverable.summary));
+    parts.push(pictureRefs(U.markdownReport(deliverable.summary)));
     parts.push(...(outputs ? [outputs] : [el('h2', `成果文件 · ${deliverable.artifacts.length}`, 'report-files'), U.evidenceList(deliverable.artifacts)]));
     return parts;
   }
   async function outputs(record, slot) {
     try {
       const jobs = await U.api(`/jobs?research=${task}&limit=50`);
-      slot.replaceWith(HGTaskOutputs.full(await HGTaskOutputs.read(record, jobs.items)));
+      slot.replaceWith(HGTaskOutputs.full(await HGTaskOutputs.read(record, jobs.items), preview));
       if (location.hash === '#outputs') document.getElementById('outputs')?.scrollIntoView({block: 'start'});
     } catch (error) { slot.replaceChildren(el('h2', '成果', 'report-files'), el('p', `没读到成果：${error.message}`, 'note task-error')); }
   }

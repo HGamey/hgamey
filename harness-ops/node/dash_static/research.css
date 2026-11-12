@@ -320,7 +320,7 @@
 .research-view .viewer-slot { width: 44px; height: 44px; border: 1px solid #3a3f45; border-radius: var(--radius); background: #15181b; color: #e8eaed; font-size: 18px; font-weight: 650; cursor: pointer; }
 .research-view .viewer-slot[aria-pressed="true"] { border-color: var(--acc); background: var(--acc); color: #fff; }
 .research-view .viewer-close { position: absolute; top: 8px; right: 12px; width: 40px; height: 40px; border: 0; background: none; color: #e8eaed; font-size: 28px; cursor: pointer; }
-.research-view .viewer-hint { grid-column: 2; margin: 0 4px 12px; font-size: 11px; line-height: 1.4; color: #8a9096; text-align: center; white-space: pre-line; }
+.research-view .viewer-hint { grid-column: 2; grid-row: 2; margin: 0 4px 12px; font-size: 11px; line-height: 1.4; color: #8a9096; text-align: center; white-space: pre-line; }
 .research-view .compare-viewer:focus { outline: none; }
 .research-view .compare-together[hidden] { display: none; }
 .research-view .compare-item :is(img, video) { display: block; width: 100%; height: 100%; object-fit: contain; background: #0b0d0e; border-radius: var(--radius); }
