@@ -2245,7 +2245,10 @@
       seen.add(path);
       const item = el('li'), link = el('a', artifact.name || path);
       link.href = jobURL('/out', {path}); link.download = '';
-      item.append(link); $('session-sample-artifacts').append(item);
+      item.append(link);
+      const shown = window.HGMedia?.preview(jobURL('/out', {path}), path);
+      if (shown) item.append(shown);
+      $('session-sample-artifacts').append(item);
     }
     if (!seen.size) $('session-sample-artifacts').append(el('li', '尚无可读取的原件引用。'));
   }
@@ -2444,7 +2447,11 @@
         const path = artifact?.path;
         if (typeof path !== 'string' || !path || path.startsWith('/') || /[\u0000-\u001f\u007f]/.test(path) || path.split('/').some(p => !p || p === '.' || p === '..') || seen.has(path)) continue;
         seen.add(path);
-        const item = el('li'), link = el('a', artifact.name || path); link.href = `${API}/jobs/${run.job}/out?${new URLSearchParams({path})}`; link.download = ''; item.append(link); links.append(item);
+        const item = el('li'), link = el('a', artifact.name || path), source = `${API}/jobs/${run.job}/out?${new URLSearchParams({path})}`;
+        link.href = source; link.download = ''; item.append(link);
+        const shown = window.HGMedia?.preview(source, path);
+        if (shown) item.append(shown);
+        links.append(item);
       }
       card.append(links); stages.append(card);
     }
@@ -2762,6 +2769,8 @@
     } else {
       main.append(el('span', file.name));
       main.append(el('span', file.kind === 'file' ? `${bytes(file.size)} · ${time(file.modified)}` : `不可读取：${file.reason || '类型不支持'}`, 'artifact-sub'));
+      const shown = file.kind === 'file' && window.HGMedia?.preview(jobURL('/out', {path: file.path}), file.path);
+      if (shown) main.append(shown);
     }
     item.append(main);
     if (file.kind === 'file') {

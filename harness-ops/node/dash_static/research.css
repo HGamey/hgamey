@@ -480,6 +480,8 @@
 
 /* 成果: what a delivery produced, by kind (task-outputs.js) */
 .research-view .output-tally { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 var(--sp-2); }
+.research-view .output-media { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin: 0 0 var(--sp-2); }
+.research-view .output-file .media-preview { display: block; width: fit-content; }
 .research-view .output-count { font-size: var(--fs-sm); padding: 2px 8px; border-radius: 999px; background: var(--wash); color: var(--ink2); }
 .research-view :is(.output-count, .output-kind).k-weights { background: var(--teal-soft); color: var(--teal-ink); }
 .research-view :is(.output-count, .output-kind).k-engine { background: var(--blue-soft); color: var(--blue-ink); }

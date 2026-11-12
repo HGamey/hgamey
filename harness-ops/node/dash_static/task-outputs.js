@@ -19,7 +19,10 @@ window.HGTaskOutputs = (() => {
   const HEX = /\b[0-9a-f]{7,40}\b/g;
 
   const size = n => !Number.isFinite(n) ? '' : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} 字节`;
-  const fileUrl = file => HGTarget.url(`${API}/jobs/${encodeURIComponent(file.job)}/out?${new URLSearchParams({path: file.path})}`);
+  const filePath = file => `${API}/jobs/${encodeURIComponent(file.job)}/out?${new URLSearchParams({path: file.path})}`;
+  const fileUrl = file => HGTarget.url(filePath(file));
+  // A picture or a video among the outputs previews under its row.
+  const media = file => window.HGMedia?.preview(filePath(file), file.path) || null;
   const repoPage = url => /^https:\/\/github\.com\/.+\.git$/.test(url || '') ? url.slice(0, -4) : null;
 
   // A job's output tree, breadth first, without the platform's records; bounded so a job of thousands of frames
@@ -162,6 +165,13 @@ window.HGTaskOutputs = (() => {
     const tally = el('p', null, 'output-tally');
     tally.append(...counts(outputs).map(([kind, label, n]) => el('span', `${label} ${n}`, `output-count k-${kind}`)));
     box.append(head, tally);
+    const shown = outputs.files.filter(file => window.HGMedia?.kind(file.path));
+    if (shown.length) {
+      const strip = el('div', null, 'output-media');
+      strip.append(...shown.slice(0, 6).map(media));
+      if (shown.length > 6) { const all = el('a', `还有 ${shown.length - 6} 个`, 'note'); all.href = reportUrl + '#outputs'; strip.append(all); }
+      box.append(strip);
+    }
     const key = outputs.files.filter(file => file.kind === 'weights' || file.kind === 'engine');
     if (key.length) {
       // A name that comes from more than one job says which job each is from.
@@ -182,7 +192,7 @@ window.HGTaskOutputs = (() => {
 
   // The report page: every kind with every item. `preview(file)` may add something under a file's row (a picture's
   // thumbnail).
-  function full(outputs, preview = () => null) {
+  function full(outputs, preview = media) {
     const {el} = U(), section = el('section', null, 'report-outputs');
     section.id = 'outputs';
     section.append(el('h2', '成果', 'report-files'));

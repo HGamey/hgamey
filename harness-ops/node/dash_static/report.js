@@ -14,7 +14,7 @@
   // A picture opens large on this page, in the viewer comparisons use.
   const show = (url, name) => HGResearchCompare.viewer(document.body, [{slot: name, url, kind: 'image'}], name, U, {label: '放大查看'});
   const outPath = (job, path) => `/dash/api/jobs/${encodeURIComponent(job)}/out?${new URLSearchParams({path})}`;
-  const preview = file => U.picture(file.path) ? U.thumbnail(outPath(file.job, file.path), file.path, show) : null;
+  const preview = file => U.picture(file.path) ? U.thumbnail(outPath(file.job, file.path), file.path, show) : window.HGMedia?.preview(outPath(file.job, file.path), file.path) || null;
   // A picture the report names as job:<job>:<path> opens in the viewer where it is named; it stays a download link.
   const REF = /^job:([0-9a-f]{12}):(.+)$/;
   function pictureRefs(article) {
