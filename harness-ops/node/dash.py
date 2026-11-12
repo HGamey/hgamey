@@ -309,6 +309,8 @@ class Dash:
             return self._task_list(h, parse_qs(query))
         if sub == ["api", "datasets", "samples"]:
             return self._dataset_samples(h)
+        if sub == ["api", "tasks", "now"]:
+            return self._task_now(h, parse_qs(query))
         if sub == ["api", "showcase"] or sub[:3] == ["api", "showcase", "screen"] and len(sub) == 4:
             return self._showcase(h, sub[3] if len(sub) == 4 else None)
         if len(sub) == 2 and sub[0] == "static" and sub[1] in SHOWCASE_STATIC:
@@ -616,6 +618,29 @@ class Dash:
                             "active_at": max(tasks[rid]["active_at"] for rid in chain)})
             out.sort(key=lambda t: t["active_at"], reverse=True)
         return self._send(h, 200, {"schema_version": 1, "node_id": node_id, "items": out, "next_cursor": None})
+
+    def _task_now(self, h, q):
+        """What one task is doing now, for the line at the top of its page: what it waits on a person for (agent
+        questions with no reply, comparisons nobody has judged; oldest first) and the newest thing its owner wrote in
+        it. Its jobs are read by the page itself, from the same list as its 作业 section."""
+        research = getattr(self.job_service, "research", None) if self.job_service else None
+        if research is None:
+            return self._send(h, 503, {"error": "研究服务不可用"})
+        if set(q) - {"id", "expected_node_id"} or len(q.get("id", [])) != 1 or any(len(v) != 1 for v in q.values()):
+            return self._send(h, 400, {"error": "tasks/now takes one id"})
+        rid = q["id"][0]
+        try:
+            owner = research.get("research", rid)["data"].get("owner")
+            last = research.last_written(rid, owner) if owner else None
+        except ValueError:
+            return self._send(h, 404, {"error": "没有这个任务"})
+        except (OSError, sqlite3.Error) as error:
+            return self._send(h, 503, {"error": f"任务暂不可用：{type(error).__name__}"})
+        if last and last["text"]:
+            last["text"] = last["text"][:280]
+        oldest = lambda items: sorted(({"id": item["id"], "at": item["updated_at"]} for item in items), key=lambda item: item["at"])   # noqa: E731
+        return self._send(h, 200, {"id": rid, "owner": owner, "questions": oldest(self._questions(rid)),
+                                   "comparisons": oldest(self._reviews(rid)), "last": last})
 
     @staticmethod
     def _every_task(research, tours=False):
@@ -941,25 +966,25 @@ class Dash:
         return {"id": note["id"], "text": note["text"][:280], "actor_label": note.get("actor_label"),
                 "auth_channel": note.get("auth_channel"), "updated_at": note["updated_at"]}
 
-    def _questions(self):
+    def _questions(self, research_id=None):
         research = getattr(self.job_service, "research", None) if self.job_service else None
         if research is None:
             return []
         try:
-            items = research.open_questions()
+            items = research.open_questions(research_id)
         except (OSError, ValueError, sqlite3.Error):
             return []
         return [{**item, "url": "/dash/research?" + urlencode({"kind": "research", "id": item["research_id"]}) + "#note-" + item["id"]}
                 for item in items]
 
-    def _reviews(self):
+    def _reviews(self, research_id=None):
         """Comparisons waiting for a person: open evaluation requests with no answer yet, newest first."""
         research = getattr(self.job_service, "research", None) if self.job_service else None
         if research is None:
             return []
         try:
-            out = []
-            for item in research.list("request", {"state": ["open"], "limit": ["100"]})["items"]:
+            out, scope = [], {"research_id": [research_id]} if research_id else {}
+            for item in research.list("request", {"state": ["open"], "limit": ["100"], **scope})["items"]:
                 if item.get("feedback_count"):
                     continue
                 record = research.get("request", item["id"])
