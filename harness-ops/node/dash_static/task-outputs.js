@@ -5,7 +5,7 @@ window.HGTaskOutputs = (() => {
   'use strict';
   const U = () => HGResearchTask.util;
   const API = '/dash/api';
-  const KINDS = [['weights', '权重'], ['engine', '引擎库'], ['commit', '代码提交'], ['image', '图片'], ['video', '视频'],
+  const KINDS = [['weights', '模型'], ['engine', '引擎库'], ['commit', '代码提交'], ['image', '图片'], ['video', '视频'],
     ['report', '报告'], ['other', '其他文件'], ['result', '结果记录'], ['link', '外部链接']];
   const LABEL = Object.fromEntries(KINDS);
   const EXT = {weights: /\.(npz|pt|pth|ckpt|safetensors|onnx|tflite|dlc|h5|pb|mnn)$/i, engine: /\.(so|apk|aab|hap|dylib|dll|a)$/i,
@@ -172,14 +172,17 @@ window.HGTaskOutputs = (() => {
       if (shown.length > 6) { const all = el('a', `还有 ${shown.length - 6} 个`, 'note'); all.href = reportUrl + '#outputs'; strip.append(all); }
       box.append(strip);
     }
-    const key = outputs.files.filter(file => file.kind === 'weights' || file.kind === 'engine');
-    if (key.length) {
+    // Models and engine libraries are one folded line each (训练出的模型 · 9 个文件); their file names are inside.
+    for (const [kind, title] of [['weights', '训练出的模型'], ['engine', '引擎库']]) {
+      const key = outputs.files.filter(file => file.kind === kind);
+      if (!key.length) continue;
       // A name that comes from more than one job says which job each is from.
       const names = key.reduce((n, file) => n.set(file.path, (n.get(file.path) || 0) + 1), new Map());
-      const list = el('ul', null, 'output-files');
-      list.append(...key.slice(0, 8).map(file => { const row = fileRow(file, names.get(file.path) > 1); row.prepend(el('span', LABEL[file.kind], `output-kind k-${file.kind}`)); return row; }));
-      if (key.length > 8) list.append(el('li', `还有 ${key.length - 8} 个`, 'note'));
-      box.append(list);
+      const group = el('details', null, `output-group k-${kind}`), list = el('ul', null, 'output-files');
+      list.append(...key.slice(0, 20).map(file => fileRow(file, names.get(file.path) > 1)));
+      if (key.length > 20) list.append(el('li', `还有 ${key.length - 20} 个`, 'note'));
+      group.append(el('summary', `${title} · ${key.length} 个文件`), list);
+      box.append(group);
     }
     if (outputs.commits.length) {
       const list = el('ul', null, 'output-commits');

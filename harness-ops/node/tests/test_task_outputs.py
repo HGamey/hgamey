@@ -63,10 +63,15 @@ class TaskOutputsTests(unittest.TestCase):
             page.wait_for_selector("#task-summary .summary-outputs")
             brief = "#task-summary .summary-outputs"
             self.assertEqual(page.eval_on_selector_all(f"{brief} .output-count", "e => e.map(x => x.textContent)"),
-                             ["权重 1", "引擎库 1", "代码提交 2", "图片 1", "报告 1", "其他文件 1", "外部链接 1"])
-            # Weights and engine libraries by name, each a download of the job's file.
-            files = page.eval_on_selector_all(f"{brief} .output-file", "e => e.map(x => [x.querySelector('.output-kind').textContent, x.querySelector('a').textContent, new URL(x.querySelector('a').href).searchParams.get('path')])")
-            self.assertEqual(files, [["权重", "base.npz", "base.npz"], ["引擎库", "libdoom3.so", "sub/src/libdoom3.so"]])
+                             ["模型 1", "引擎库 1", "代码提交 2", "图片 1", "报告 1", "其他文件 1", "外部链接 1"])
+            # Models and engine libraries: one folded line each, the files inside, each a download of the job's file.
+            self.assertEqual(page.eval_on_selector_all(f"{brief} .output-group > summary", "e => e.map(x => x.textContent)"),
+                             ["训练出的模型 · 1 个文件", "引擎库 · 1 个文件"])
+            self.assertTrue(page.locator(f"{brief} .output-file").first.is_hidden())
+            for kind in ("weights", "engine"):
+                page.click(f"{brief} .output-group.k-{kind} > summary")
+            files = page.eval_on_selector_all(f"{brief} .output-file", "e => e.map(x => [x.querySelector('a').textContent, new URL(x.querySelector('a').href).searchParams.get('path')])")
+            self.assertEqual(files, [["base.npz", "base.npz"], ["libdoom3.so", "sub/src/libdoom3.so"]])
             self.assertIn(f"/dash/api/jobs/{JOB}/out", page.get_attribute(f"{brief} .output-file a", "href"))
             # The commit the report names comes first, then the code the job ran; a hash that is no commit is not one.
             commits = page.eval_on_selector_all(f"{brief} .output-commit", "e => e.map(x => [x.querySelector('code').textContent, x.querySelector('.output-subject').textContent, x.querySelector('.tag').textContent, x.querySelector('.output-github').href])")
@@ -82,7 +87,7 @@ class TaskOutputsTests(unittest.TestCase):
             page.goto(base + "/dash/research/report?id=sr-out#outputs")
             page.wait_for_selector("#outputs .output-tally")
             self.assertEqual(page.eval_on_selector_all("#outputs h3", "e => e.map(x => x.textContent)"),
-                             ["权重 · 1", "引擎库 · 1", "代码提交 · 2", "图片 · 1", "报告 · 1", "其他文件 · 1", "外部链接 · 1"])
+                             ["模型 · 1", "引擎库 · 1", "代码提交 · 2", "图片 · 1", "报告 · 1", "其他文件 · 1", "外部链接 · 1"])
             paths = page.eval_on_selector_all("#outputs .output-file a:not(.output-job)", "e => e.map(x => x.title || x.textContent)")
             self.assertEqual(paths, ["base.npz", "sub/src/libdoom3.so", "shots/frame.png", "notes.md", "data.json"])
             self.assertEqual(page.locator('#outputs a[href="https://example.invalid/dataset"]').count(), 1)

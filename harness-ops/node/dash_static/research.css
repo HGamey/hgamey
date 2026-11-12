@@ -500,6 +500,8 @@
 .research-view .report-outputs :is(li, a) { min-width: 0; overflow-wrap: anywhere; }
 .research-view :is(.output-dir, .output-size, .output-job, .output-meta) { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .research-view .output-kind { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.research-view .output-group > summary { cursor: pointer; font-size: var(--fs-sm); color: var(--ink2); padding: 2px 0; }
+.research-view .output-group[open] > summary { margin-bottom: var(--sp-1); }
 .research-view .output-commit { padding: 6px 0; border-top: 1px solid var(--grid); font-size: var(--fs-sm); }
 .research-view .output-commit summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
 .research-view .output-commit code { font-weight: 600; }
