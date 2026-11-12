@@ -404,5 +404,203 @@ class CenterExportImportTests(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.join(root, "_center_import")), [])
 
 
+    # ── review of #41: each of these failed before its fix ──
+    FAR = "f" * 32
+
+    def far_job(self, jid, observation, research_id="sr-c"):
+        """A job the center sent to another computer (not in any directory here or on the target)."""
+        self.jobs.center.targets.reserve({"id": jid, "request_id": "far-" + jid, "fingerprint": jid, "execution_node_id": self.FAR,
+            "request": {"spec": {"bin": "fixture", "argv": [], "research_id": research_id, "label": "far " + jid}},
+            "submitted_at": time.time(), "device_selection": None, "sent_at": time.time(), "stop": None,
+            "observation": {"id": jid, **observation} if observation else None})
+
+    def put(self, jid, rel, raw):
+        path = Path(self.jobs.path(jid, *rel.split("/")))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+
+    def collecting(self, files, then=None):
+        """artifacts.collect as on a center: the originals land in the job's directory, the record says complete."""
+        def collect(jid):
+            for rel, raw in files.get(jid, {}).items():
+                self.put(jid, rel, raw)
+            self.jobs.center.targets.update(jid, artifacts_sync={"status": "complete", "at": time.time(), "error": None})
+            if then:
+                then()
+        return mock.patch.object(self.jobs.center.artifacts, "collect", collect)
+
+    def far_meta(self, jid):
+        return json.dumps({"id": jid, "bin": "fixture", "argv": [], "research_id": "sr-c", "label": "far " + jid,
+                           "state": "finished", "phase": "finished", "outcome": "succeeded", "exit": 0, "started": 1}).encode()
+
+    def names(self, path):
+        with zipfile.ZipFile(path) as archive:
+            return set(archive.namelist())
+
+    def test_review_1_the_zip_holds_the_job_directories_as_they_are_when_packed(self):
+        self.fixture()
+        far, local = "eeeeeeeeeeee", "aaaaaaaaaaaa"
+        self.far_job(far, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
+        self.put(far, "out/a.txt", b"read once before\n")
+        self.put(local, "out/gone.txt", b"removed before the export\n")
+        self.assertEqual(self.web("GET", "/center-export/tasks")[0], 200)   # the sizes are listed now
+        self.put(local, "out/late.png", self.shot)
+        os.unlink(self.jobs.path(local, "out", "gone.txt"))
+        with self.collecting({far: {"out/b.txt": b"collected\n", "log": b"log\n", "meta.json": self.far_meta(far)}}):
+            path, status = self.export({"tasks": ["sr-a", "sr-c"]})
+        self.assertEqual([m["job_id"] for m in status["missing_originals"]], [])
+        names = self.names(path)
+        for name in (f"jobs/{far}/out/a.txt", f"jobs/{far}/out/b.txt", f"jobs/{far}/log", f"jobs/{far}/meta.json", f"jobs/{local}/out/late.png"):
+            self.assertIn(name, names)
+        self.assertNotIn(f"jobs/{local}/out/gone.txt", names)
+
+    def test_review_2_frozen_result_numbers_follow_results_imported_before_or_after(self):
+        self.fixture()
+
+        def register(center, rid, research_id, timing, quality):
+            self.assertEqual(center.cli("POST", "/results", {"schema": "phonefarm/result@1", "result_id": rid, "title": rid,
+                "outcome": "unknown", "origin": {"producer": "fixture", "evidence_origin": "synthetic"},
+                "labels": {"research_id": research_id} if research_id else {}, "claims": ["fixture"],
+                "metrics": [{"name": "module_time", "condition": rid, "value": timing, "unit": "ms", "scope": "module", "method": "reported"},
+                            {"name": "psnr", "condition": rid, "value": quality, "unit": "dB", "scope": "image", "method": "reported",
+                             "region": "full_frame"}]})[0], 201)
+        register(self, "r-base", "sr-a", 4, 40)   # sr-a's baseline ...
+        register(self, "r-ours", "sr-b", 3, 39)   # ... that sr-b's criteria build on
+        criteria = {"schema": "phonefarm/research-criteria@1", "baseline_role": "original_game",
+            "comparison": {"schema": "phonefarm/result-compare@1", "node_id": self.node_id,
+                "columns": [{"id": "native", "label": "原生", "result_id": "r-base"}, {"id": "ours", "label": "超分", "result_id": "r-ours"}],
+                "rows": [{"id": "timing", "label": "耗时", "metric_indexes": [0, 0]}, {"id": "quality", "label": "画质", "metric_indexes": [1, 1]}],
+                "context": {"scope": "fixture", "assumptions": ["fixture"], "interventions": ["fixture"]}},
+            "axes": [{"id": "time", "row_id": "timing", "label": "耗时", "unit": "ms", "scope": "module", "role": "objective",
+                      "prefer": "minimize", "required": True, "rule": {"kind": "absolute_improvement_min", "threshold": .5}},
+                     {"id": "image", "row_id": "quality", "label": "画质", "unit": "dB", "scope": "image", "role": "constraint",
+                      "prefer": "maximize", "required": True, "rule": {"kind": "degradation_max", "threshold": 3}}],
+            "pareto_axes": ["time", "image"]}
+        current = self.cli("GET", "/research-state/research/sr-b")[1]
+        self.assertEqual(self.web("POST", "/research-state/research/sr-b", {**self.write("criteria-b", {**current["data"], "criteria": criteria}),
+                                                                           "base_revision": current["revision"], "reason": "定判据"})[0], 201)
+        assessment = "/research-state/research/sr-b/assessment?revision=2"
+        self.assertEqual([c["status"] for c in self.web("GET", assessment)[1]["comparison"]["columns"]], ["available", "available"])
+        first, then = self.export({"tasks": ["sr-a"]})[0], self.export({"tasks": ["sr-b"]})[0]
+        for name, order in (("a-then-b", (first, then)), ("b-then-a", (then, first))):
+            busy = Center(self, self.tmp / name)   # a center in use: its own results come first
+            for index in range(3):
+                register(busy, f"r-here-{index}", None, 1, 1)
+            busy.stop()
+            for path in order:
+                code, report = self.run_import(path, busy.root, "--apply")
+                self.assertEqual(code, 0, report)
+            there = Center(self, busy.root)
+            code, value = there.web("GET", assessment)
+            self.assertEqual(code, 200, (name, value))
+            self.assertEqual([(c["result_id"], c["status"], c["error"]) for c in value["comparison"]["columns"]],
+                             [("r-base", "available", None), ("r-ours", "available", None)], name)
+
+    def test_review_3_jobs_from_a_computer_the_target_does_not_know_open_there(self):
+        self.fixture()
+        done, running = "eeeeeeeeeeee", "cccccccccccc"
+        self.far_job(done, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
+        self.far_job(running, {"id": running, "state": "running", "phase": "running", "queue": {"state": "claimed"}})
+        with self.collecting({done: {"out/b.txt": b"collected\n", "log": b"log\n", "meta.json": self.far_meta(done)}}):
+            path, _ = self.export({"tasks": ["sr-c"]})
+        root = self.target("unknown-computer")
+        code, report = self.run_import(path, root, "--apply")
+        self.assertEqual(code, 0, report)
+        self.assertTrue(any(running in note and "丢失" in note for note in report["notes"]), report["notes"])
+        there = Center(self, root)
+        code, job = there.cli("GET", "/jobs/" + done)
+        self.assertEqual((code, job.get("state")), (200, "finished"), job)
+        self.assertEqual([item["name"] for item in there.cli("GET", f"/jobs/{done}/artifacts")[1]["items"]], ["b.txt"])
+        code, job = there.cli("GET", "/jobs/" + running)
+        self.assertEqual((code, job.get("state"), job.get("lost"), job["queue"]["state"]), (200, "unknown", True, "done"), job)
+        listed = {item["id"] for item in there.cli("GET", "/jobs?limit=100")[1]["items"]}
+        self.assertLessEqual({done, running}, listed)
+
+    def test_review_4_rows_and_what_they_refer_to_are_cut_at_one_moment(self):
+        self.fixture()
+        far, late = "eeeeeeeeeeee", "abababababab"
+        self.far_job(far, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
+
+        def meanwhile():   # while originals come home, an agent runs a job and writes about it
+            self.job(late, "sr-c", {"new.txt": b"written meanwhile\n"})
+            self.assertEqual(self.web("POST", "/research-state/note/n-late", self.write("create-n-late", {
+                "research_id": "sr-c", "text": "新跑了一个", "reply_to": None, "decision": None,
+                "evidence_refs": [{"kind": "job", "node_id": self.node_id, "job_id": late}]}))[0], 201)
+        with self.collecting({far: {"meta.json": self.far_meta(far)}}, meanwhile):
+            path, status = self.export({"tasks": ["sr-c"]})
+        self.assertIn(f"jobs/{late}/out/new.txt", self.names(path))
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            notes = [center_archive.line_row(line)["id"] for line in archive.read("research/objects.jsonl").decode().splitlines()]
+        self.assertIn("n-late", notes)
+        self.assertIn(late, manifest["tasks"][0]["jobs"])
+        code, report = self.run_import(path, self.target("cut"), "--apply")
+        self.assertEqual((code, report["dangling"]), (0, []))
+
+    def test_review_5_a_job_that_had_not_finished_says_done_in_its_committed_state(self):
+        self.fixture()
+        path, _ = self.export({"tasks": ["sr-c"]})
+        root = self.target("settled")
+        self.assertEqual(self.run_import(path, root, "--apply")[0], 0)
+        there = Center(self, root)
+        job = there.cli("GET", "/jobs/" + self.queued)[1]
+        self.assertEqual((job["state"], job["outcome"]), ("finished", "cancelled"))
+        self.assertEqual((job["committed_status"]["queue_state"], job["committed_status"]["outcome"]), ("done", "cancelled"))
+        db = sqlite3.connect(os.path.join(root, "jobs", ".queue.sqlite3"))
+        try:
+            last = db.execute("SELECT revision, committed_status FROM job_events WHERE job_id=? ORDER BY revision DESC LIMIT 1",
+                              (self.queued,)).fetchone()
+        finally:
+            db.close()
+        self.assertEqual((last[0], json.loads(last[1])["queue_state"]), (job["status_revision"], "done"))
+
+    def test_review_6_an_empty_output_directory_comes_along(self):
+        self.fixture()
+        empty = "acacacacacac"
+        self.job(empty, "sr-c", {})   # a failed job: nothing in out/
+        self.assertEqual(self.cli("GET", f"/jobs/{empty}/artifacts")[0], 200)
+        path, _ = self.export({"tasks": ["sr-c"]})
+        root = self.target("empty-out")
+        self.assertEqual(self.run_import(path, root, "--apply")[0], 0)
+        there = Center(self, root)
+        code, page = there.cli("GET", f"/jobs/{empty}/artifacts")
+        self.assertEqual((code, page.get("items")), (200, []), page)
+
+    def test_review_7_room_is_checked_again_once_originals_are_home(self):
+        self.fixture()
+        far = "eeeeeeeeeeee"
+        self.far_job(far, {"state": "finished", "phase": "finished", "exit": 0, "queue": {"state": "done"}})
+        home = []
+        free = lambda path: mock.Mock(free=(1 << 20) if home else (64 << 30))   # noqa: E731
+        with mock.patch.object(center_export.shutil, "disk_usage", side_effect=free), \
+                self.collecting({far: {"out/big.bin": b"x" * 4096, "meta.json": self.far_meta(far)}}, lambda: home.append(True)):
+            code, status = self.web("POST", "/center-export", {"tasks": ["sr-c"]})
+            self.assertEqual(code, 202, status)
+            deadline = time.time() + 30
+            while status["state"] == "running" and time.time() < deadline:
+                time.sleep(0.05)
+                status = self.web("GET", "/center-export/" + status["id"])[1]
+        self.assertEqual(status["state"], "failed", status)
+        self.assertIn("收回从节点的原件以后", status["error"])
+        self.assertFalse(os.path.exists(os.path.join(self.jobs.data_root, "_center_export", status["id"] + ".zip")))
+
+    def test_review_8_a_service_whose_data_root_cannot_be_told_stops_the_import(self):
+        self.fixture()
+        path, _ = self.export({"tasks": ["sr-c"]})
+        root = self.target("untold")
+        before = snapshot(root)
+        # A relative --phonefarm without its working directory, or the default under a home that is not known.
+        self.assertIsNone(center_import.service_root(["python3", "node_service.py", "--phonefarm", "phonefarm"], None, "/home/u"))
+        self.assertIsNone(center_import.service_root(["python3", "node_service.py"], "/srv", None))
+        self.assertEqual(center_import.service_root(["python3", "node_service.py"], None, "/home/u"),
+                         os.path.realpath("/home/u/node/phonefarm"), "the default is under the service's own user's home")
+        with mock.patch.object(center_import, "node_service_roots", return_value=[(4343, None)]):
+            code, refused = self.run_import(path, root, "--apply")
+        self.assertEqual(code, 4)
+        self.assertIn("PID 4343", refused["refused"])
+        self.assertIn("ps -o user=,command= -p", refused["refused"])
+        self.assertEqual(snapshot(root), before)
+
+
 if __name__ == "__main__":
     unittest.main()

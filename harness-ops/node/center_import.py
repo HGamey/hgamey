@@ -18,15 +18,23 @@ What changes on the way in:
   agents here have already read, so a running agent sees them as new: when importing part of a center into one in
   use, pause its agents first.
 - References to the source center's node ID become this center's node ID, when the two differ.
+- Result sequence numbers frozen in research rows (criteria) follow the results, also across imports: a task whose
+  result is already here, and a task imported earlier that builds on a result coming in now.
 - Registered result sources whose file was verified at export are bound to the imported file, so results, report
   pictures and blind comparisons open here as they did there. Others are listed and stay unavailable.
 - A job that had not finished at export does not run here: one not yet started is recorded as cancelled before
-  launch, one that had started as lost (its execution there is unknown)."""
+  launch, one that had started as lost (its execution there is unknown), with its committed state and an event as
+  the queue records them. One that ran on another computer is lost too, and this center does not ask that computer
+  about it; finished ones on other computers open from what the center recorded and the originals it collected.
+- The center must be stopped. When the data root of a running center cannot be told (a relative path or ~ whose
+  working or home directory cannot be read), the import is refused too."""
 import argparse
 import hashlib
 import json
 import os
+import pwd
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -37,14 +45,18 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import center_archive as fmt   # noqa: E402
+import job_events   # noqa: E402
 from artifact_io import stamp   # noqa: E402
+from job_queue import JobQueue   # noqa: E402
 from node_results import encoded   # noqa: E402
 
 UNFINISHED = {"preparing", "queued", "claimed", "blocked"}
 NAMES = {"queue/jobs": "作业队列记录", "queue/job_events": "作业事件", "queue/job_targets": "作业路由记录",
          "results/results": "结果", "results/imports": "结果导入记录", "research/objects": "研究对象",
          "research/objects (新版本)": "研究对象（追加新版本）", "research/revisions": "研究对象版本",
-         "research/events": "研究事件", "research/operations": "研究操作", "research/dependencies": "方向依赖"}
+         "research/events": "研究事件", "research/operations": "研究操作", "research/dependencies": "方向依赖",
+         "research/revisions (结果序号)": "这里已有的研究版本（改写里面冻结的结果序号）"}
+LOST = "imported from another center before it finished; its execution there is unknown"
 REPLACED = "\0replaced"   # rides along with a rewritten row until it is planned, then counted
 PAUSE_NOTE = "往在用的中心部分导入时，agent 会把导入的事件当新事件看到；建议先暂停 agent。"
 
@@ -56,9 +68,11 @@ class Refused(Exception):
 
 
 # ── the target center ──
-def service_root(argv, cwd):
-    """The data root of a node_service.py command line: its --data-dir, else its --phonefarm, symbolic links
-    resolved. None when it is not node_service.py, or a relative path whose working directory is unknown."""
+def service_root(argv, cwd, home=None):
+    """The data root of a node_service.py command line: its --data-dir, else its --phonefarm (default
+    ~/node/phonefarm), symbolic links resolved. `cwd` and `home` are the process's own working directory and home
+    directory. None when it is not node_service.py, or when the root cannot be told: a relative path whose working
+    directory is unknown, or ~ whose user's home is unknown."""
     if not any(os.path.basename(a) == "node_service.py" for a in argv):
         return None
     options = {}
@@ -68,7 +82,12 @@ def service_root(argv, cwd):
                 options[name] = argv[i + 1]
             elif arg.startswith(name + "="):
                 options[name] = arg.split("=", 1)[1]
-    value = os.path.expanduser(options.get("--data-dir") or options.get("--phonefarm") or "~/node/phonefarm")
+    value = options.get("--data-dir") or options.get("--phonefarm") or "~/node/phonefarm"
+    if value == "~" or value.startswith("~/"):
+        if not home:
+            return None
+        value = home + value[1:]
+    value = os.path.expanduser(value)   # ~user/... names its user
     if not os.path.isabs(value):
         if not cwd:
             return None
@@ -76,37 +95,54 @@ def service_root(argv, cwd):
     return os.path.realpath(value)
 
 
+def _home(uid):
+    try:
+        return pwd.getpwuid(uid).pw_dir
+    except (KeyError, TypeError):
+        return None
+
+
 def node_service_roots():
-    """(pid, data root) of every node_service.py running on this computer, by --data-dir or --phonefarm."""
-    found = []
+    """(pid, data root or None when it cannot be told) of every node_service.py running on this computer."""
+    listed = []
     if os.path.isdir("/proc"):
-        listed = []
         for pid in os.listdir("/proc"):
             if pid.isdigit():
                 try:
                     with open(f"/proc/{pid}/cmdline", "rb") as stream:
                         argv = [a.decode(errors="replace") for a in stream.read().split(b"\0") if a]
+                    uid = os.stat(f"/proc/{pid}").st_uid
                 except OSError:
                     continue
                 try:
                     cwd = os.readlink(f"/proc/{pid}/cwd")
                 except OSError:
                     cwd = None
-                listed.append((int(pid), argv, cwd))
+                listed.append((int(pid), argv, cwd, _home(uid)))
     else:
-        listed = []
         try:
-            output = subprocess.run(["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True, timeout=10).stdout
+            output = subprocess.run(["ps", "-axww", "-o", "pid=,uid=,command="], capture_output=True, text=True, timeout=10).stdout
         except (OSError, subprocess.SubprocessError):
             output = ""
         for line in output.splitlines():
-            pid, _, command = line.strip().partition(" ")
-            if pid.isdigit():
-                listed.append((int(pid), command.split(), None))
-    for pid, argv, cwd in listed:
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                listed.append((int(parts[0]), parts[2].split(), None, _home(int(parts[1]))))
+    found = []
+    for pid, argv, cwd, home in listed:
         if pid != os.getpid() and any(os.path.basename(a) == "node_service.py" for a in argv):
-            found.append((pid, service_root(argv, cwd)))
+            if cwd is None and not os.path.isdir("/proc"):
+                try:   # macOS: the working directory from lsof
+                    out = subprocess.run(["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"], capture_output=True, text=True, timeout=10).stdout
+                    cwd = next((line[1:] for line in out.splitlines() if line.startswith("n")), None)
+                except (OSError, subprocess.SubprocessError):
+                    cwd = None
+            found.append((pid, service_root(argv, cwd, home)))
     return found
+
+
+STOP_HELP = ("launchd 用 launchctl bootout gui/$(id -u)/<服务名>，systemd 用 systemctl --user stop <服务名>，手动起的直接结束 "
+             "run_center.sh；导入完照原来的方式启动（launchctl bootstrap / systemctl --user start / run_center.sh）")
 
 
 def target(data_root, jobs_dirname=None):
@@ -167,8 +203,9 @@ class Remap:
         return {**{k: v.replace(old, new) if isinstance(v, str) else v for k, v in row.items()},
                 REPLACED: sum(v.count(old) for v in row.values() if isinstance(v, str))}
 
-    def result_sequences(self, text):
-        """Result sequence numbers frozen in research bindings follow the results to their numbers here."""
+    def result_sequences(self, text, only=None):
+        """Result sequence numbers frozen in research bindings follow the results to their numbers here: those in
+        the zip, and those already here (a task imported after the one whose result it builds on)."""
         if not text or "result_sequence" not in text:
             return text
         value, changed = json.loads(text), False
@@ -179,7 +216,8 @@ class Remap:
                 rid = item.get("result_id")
                 if rid is None and isinstance(item.get("reference"), dict):
                     rid = item["reference"].get("result_id")
-                if type(item.get("result_sequence")) is int and rid in self.results and self.results[rid] != item["result_sequence"]:
+                if (type(item.get("result_sequence")) is int and rid in self.results and self.results[rid] != item["result_sequence"]
+                        and (only is None or rid in only)):
                     item["result_sequence"] = self.results[rid]
                     changed = True
                 for child in item.values():
@@ -216,6 +254,7 @@ class Plan:
             raise Refused(2, f"打不开 {zip_path}：{error}") from None
         try:
             self.manifest = fmt.read_manifest(self.archive)
+            self.directories = fmt.directories(self.manifest)
         except ValueError as error:
             raise Refused(2, str(error)) from None
         problems = fmt.verify(self.archive, self.manifest, progress)
@@ -234,6 +273,7 @@ class Plan:
         self.replaced = {"research": 0, "results": 0, "queue": 0}
         self.new, self.same = {}, {}
         self.inserts, self.updates = {}, {}
+        self.settled, self.renumbered = [], []
         self.now = time.time()
         self._queue()
         self._results()
@@ -250,6 +290,31 @@ class Plan:
         self.replaced[table.split("/")[0]] += row.pop(REPLACED, 0)
         self.inserts.setdefault(table, []).append(row)
         self.count("new", table)
+
+    def settle(self, row, lost):
+        """A job that had not finished is done here: its committed state says so, with an event, as the queue itself
+        records a cancellation or a released unknown execution."""
+        extra = {k: row.pop(k) for k in (REPLACED,) if k in row}
+        parsed = JobQueue._row({**row})
+        observation = {"phase": "interrupted", "outcome": "unknown", "lost": True, "exit": None} if lost else None
+        projection = json.dumps(job_events.projection(parsed, observation))
+        revision = (row.get("status_revision") or 0) + 1
+        self.settled.append({"event_id": secrets.token_hex(16), "job_id": row["job_id"], "revision": revision,
+                             "kind": "baseline" if revision == 1 else "queue_transition", "at": self.now,
+                             "committed_status": projection})
+        return {**row, "status_revision": revision, "status_projection": projection, "status_committed_at": self.now, **extra}
+
+    def lost_elsewhere(self, jid, value):
+        """A job that had not finished on another computer is lost here: the center keeps what it last saw of it and
+        no longer asks that computer (which this center may not even know)."""
+        seen = value.get("observation")
+        base = dict(seen) if seen else {**((value.get("request") or {}).get("spec") or {}), "id": jid,
+                                         "started": value.get("submitted_at"), "exit": None}
+        self.notes.append(f"作业 {jid} 在从节点上，导出时还没结束，导入后记为丢失（执行情况未知），不会再去那台电脑读它")
+        return {**value, "observed_at": self.now,
+                "observation": {**base, "id": jid, "state": "unknown", "phase": "interrupted", "outcome": "unknown", "lost": True,
+                                "queue": {"resources": [], **(base.get("queue") or {}), "state": "done"},
+                                "recovery": {"status": "required", "reason": LOST}}}
 
     # Queue: jobs, their events and their routing rows.
     def _queue(self):
@@ -287,13 +352,14 @@ class Plan:
                         except ValueError:
                             pass
                     if started and row["job_id"] in meta:
-                        reason = {"kind": "manual_unknown", "message": "imported from another center before it finished; its execution there is unknown"}
+                        reason = {"kind": "manual_unknown", "message": LOST}
                         release = {"at": self.now, "basis": "center_import"}
                     else:
                         reason, release = {"kind": "cancelled_before_launch", "at": self.now}, {"at": self.now, "basis": "not_started"}
                     self.notes.append(f"作业 {row['job_id']} 导出时还没结束（{row['state']}），导入后记为"
                                       + ("丢失（在原中心的执行情况未知）" if reason["kind"] == "manual_unknown" else "开始前已取消") + "，不会在这里运行")
-                    row = {**row, "state": "done", "state_reason": json.dumps(reason), "host_capacity_release": json.dumps(release)}
+                    row = self.settle({**row, "state": "done", "state_reason": json.dumps(reason), "host_capacity_release": json.dumps(release)},
+                                      lost=reason["kind"] == "manual_unknown")
                 new_jobs.append(row)
             top = db.execute("SELECT COALESCE(MAX(sequence),0) FROM jobs").fetchone()[0]
             shift = offset([r["sequence"] for r in new_jobs], top)
@@ -316,8 +382,13 @@ class Plan:
             shift = offset([r["sequence"] for r in new_events], top)
             for row in new_events:
                 self.add("queue/job_events", {**row, "sequence": row["sequence"] + shift})
+            for event in self.settled:   # numbered after the imported ones
+                self.add("queue/job_events", event)
             for row in self.tables["queue/job_targets"]:
                 row = remap.node(row)
+                value = json.loads(row["value"])
+                if remote.get(row["job_id"]) and (value.get("observation") or {}).get("state") != "finished":
+                    row = {**row, "value": json.dumps(self.lost_elsewhere(row["job_id"], value))}
                 here = db.execute("SELECT * FROM job_targets WHERE job_id=? OR request_id=?", (row["job_id"], row["request_id"])).fetchone()
                 if here:
                     same = (here["job_id"], here["request_id"]) == (row["job_id"], row["request_id"]) and \
@@ -352,6 +423,10 @@ class Plan:
             for row in new:
                 self.remap.results[row["result_id"]] = row["sequence"] + shift
                 self.add("results/results", {**row, "sequence": row["sequence"] + shift})
+            self.fresh_results = {row["result_id"] for row in new}
+            # A task may build on a result that is not in the zip but already here (imported earlier).
+            for rid, sequence in db.execute("SELECT result_id, sequence FROM results"):
+                self.remap.results.setdefault(rid, sequence)
             for row in self.tables["results/imports"]:
                 row = self.remap.node(row)
                 here = db.execute("SELECT request, content FROM imports WHERE import_id=?", (row["import_id"],)).fetchone()
@@ -435,6 +510,16 @@ class Plan:
                 if ("direction", row["direction_id"]) in changed:
                     self.add("research/dependencies", row)
             self.replace_dependencies = sorted(oid for kind, oid in changed if kind == "direction")
+            # A task imported before the one whose result it builds on froze that result's number there.
+            if self.fresh_results:
+                for row in db.execute("SELECT sequence, bindings, observations FROM revisions WHERE "
+                                      "bindings LIKE '%result_sequence%' OR observations LIKE '%result_sequence%'"):
+                    bindings = remap.result_sequences(row["bindings"], self.fresh_results)
+                    observations = remap.result_sequences(row["observations"], self.fresh_results)
+                    if (bindings, observations) != (row["bindings"], row["observations"]):
+                        self.renumbered.append((row["sequence"], bindings, observations))
+                if self.renumbered:
+                    self.count("new", "research/revisions (结果序号)", len(self.renumbered))
             self.known = {"objects": {(r["kind"], r["id"]) for r in db.execute("SELECT kind, id FROM objects")}}
         finally:
             db.close()
@@ -448,6 +533,8 @@ class Plan:
                 jobs.setdefault(parts[1], []).append(entry)
             elif parts[0] == "attachments":
                 attachments[parts[1]] = entry
+        for jid in self.directories:
+            jobs.setdefault(jid, [])
         self.new_jobs, self.new_attachments = [], []
         for jid, entries in sorted(jobs.items()):
             base = os.path.join(self.target["jobs_dir"], jid)
@@ -532,7 +619,8 @@ class Plan:
         sources = self.manifest.get("result_sources") or {}
         unfinished = [j for t in self.manifest["tasks"] + [self.manifest.get("unassigned") or {}] for j in t.get("unfinished_jobs", [])]
         missing = [m for t in self.manifest["tasks"] + [self.manifest.get("unassigned") or {}] for m in t.get("missing_originals", [])]
-        services = [pid for pid, root in node_service_roots() if root == self.target["data_root"]]
+        found = node_service_roots()
+        services = [pid for pid, root in found if root == self.target["data_root"] or root is None]
         return {"zip": self.zip_path, "applied": applied, "backup": backup,
                 "source": self.manifest["source"], "target": {k: self.target[k] for k in ("data_root", "node_id", "jobs_dir")},
                 "node_id_rewritten": None if self.remap.source == self.remap.target else {
@@ -598,16 +686,25 @@ def rebind(plan, row):
 def apply(plan):
     if plan.conflicts:
         raise Refused(3, "有冲突，整体中止，目标中心没有改动", plan.conflicts)
-    running = [pid for pid, root in node_service_roots() if root == plan.target["data_root"]]
+    services = node_service_roots()
+    running = [pid for pid, root in services if root == plan.target["data_root"]]
     if running:
-        raise Refused(4, f"中心服务正在这个数据根上运行（PID {', '.join(map(str, running))}）。先停掉再导入：launchd 用 "
-                         "launchctl bootout gui/$(id -u)/<服务名>，systemd 用 systemctl --user stop <服务名>，手动起的直接结束 "
-                         "run_center.sh；导入完照原来的方式启动（launchctl bootstrap / systemctl --user start / run_center.sh）")
+        raise Refused(4, f"中心服务正在这个数据根上运行（PID {', '.join(map(str, running))}）。先停掉再导入：{STOP_HELP}")
+    unknown = [pid for pid, root in services if root is None]
+    if unknown:
+        pids = ", ".join(map(str, unknown))
+        raise Refused(4, f"这台电脑上有中心服务（PID {pids}），判断不了它用的是不是这个数据根（它的 --phonefarm / --data-dir 是相对路径"
+                         "或 ~ 开头，又读不到它的工作目录或它所属用户的家目录），所以没有导入。确认办法：ps -o user=,command= -p <PID> "
+                         "看它的参数和用户，Linux 上 ls -l /proc/<PID>/cwd、macOS 上 lsof -a -d cwd -p <PID> 看它的工作目录。"
+                         f"不管是不是，导入前都先停掉它：{STOP_HELP}")
     work = os.path.join(plan.target["data_root"], "_center_import", time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
     os.makedirs(os.path.join(work, "backup"), mode=0o700)
     moved = []
     try:
         for jid in plan.new_jobs:
+            os.makedirs(os.path.join(work, "jobs", jid), mode=0o700)
+            for rel in plan.directories.get(jid, []):
+                os.makedirs(os.path.join(work, "jobs", jid, *rel.split("/")), mode=0o700, exist_ok=True)
             for name, entry in plan.files.items():
                 if name.startswith(f"jobs/{jid}/"):
                     extract(plan.archive, entry, os.path.join(work, "jobs", jid, *name.split("/")[2:]))
@@ -648,6 +745,8 @@ def apply(plan):
                                    (row["revision"], row["updated_at"], row["kind"], row["id"]))
                     for oid in plan.replace_dependencies:
                         db.execute("DELETE FROM dependencies WHERE direction_id=?", (oid,))
+                    for sequence, bindings, observations in plan.renumbered:
+                        db.execute("UPDATE revisions SET bindings=?, observations=? WHERE sequence=?", (bindings, observations, sequence))
                 for table in tables:
                     for row in plan.inserts.get(f"{kind}/{table}", []):
                         insert(db, table, rebind(plan, row) if table == "results" else row)

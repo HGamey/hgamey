@@ -1,7 +1,8 @@
 """The center export format, hgamey/center-export@1: one zip64 holding whole tasks of a center.
 
-    manifest.json              the source center, every task (and the unassigned group) with what it holds, and
-                               every other member with its size and SHA-256
+    manifest.json              the source center, every task (and the unassigned group) with what it holds,
+                               every other member with its size and SHA-256, and each job's directories (empty
+                               ones too: a failed job's empty out/ is still its output directory)
     research/<table>.jsonl     objects, revisions, events, operations and dependencies, one row per line
     results/<table>.jsonl      registered results and the result imports they came from
     queue/<table>.jsonl        jobs, job_events and job_targets rows of the exported jobs
@@ -64,6 +65,19 @@ def member(name):
     if parts[0] == "attachments" and len(parts) == 2 and ATTACHMENT.match(parts[1].removesuffix(".json")):
         return name
     raise ValueError(f"不认识的包内路径：{name!r}")
+
+
+def directories(manifest):
+    """{job ID: [directory paths inside it]} to create on import, held to the same rules as file paths."""
+    value = manifest.get("directories") or {}
+    if not isinstance(value, dict):
+        raise ValueError("manifest 的 directories 不是对象")
+    for jid, names in value.items():
+        if not isinstance(jid, str) or not JOB.match(jid) or not isinstance(names, list):
+            raise ValueError(f"manifest 的 directories 里有不认识的作业：{jid!r}")
+        for name in names:
+            member(job_member(jid, name) if isinstance(name, str) else None)
+    return value
 
 
 def read_manifest(archive):

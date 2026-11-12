@@ -81,24 +81,44 @@ def human(size):
 
 class Inventory:
     """Which jobs, results and attachments belong to which task, read from the center's databases and job
-    directories as they are now. Group None is 未归属任务的数据."""
+    directories as they are now. Group None is 未归属任务的数据.
 
-    def __init__(self, jobs, sizes):
+    The research database is read in one transaction, first: whatever its rows refer to was written before them,
+    so it is there when results, the queue and the job directories are read right after. With hold=True that
+    transaction stays open (self.research) for the export to read the selected tasks' rows from the same moment."""
+
+    def __init__(self, jobs, sizes, hold=False):
         self.jobs = jobs
-        research = jobs.research.path
+        self.research = readonly(jobs.research.path)
+        try:
+            self.research.execute("BEGIN")
+            self._read(jobs, sizes)
+        except BaseException:
+            self.close()
+            raise
+        if not hold:
+            self.close()
+
+    def close(self):
+        if self.research is not None:
+            self.research.close()
+            self.research = None
+
+    def _read(self, jobs, sizes):
+        research = lambda sql: [dict(row) for row in self.research.execute(sql)]   # noqa: E731
         self.tasks = {}
-        for row in rows(research, """SELECT o.id, o.created_at, o.updated_at, r.title, r.state, r.data FROM objects o
+        for row in research("""SELECT o.id, o.created_at, o.updated_at, r.title, r.state, r.data FROM objects o
                 JOIN revisions r ON r.kind=o.kind AND r.id=o.id AND r.revision=o.revision WHERE o.kind='research'"""):
             data = json.loads(row["data"])
             self.tasks[row["id"]] = {"id": row["id"], "title": row["title"], "state": row["state"], "owner": data.get("owner"),
                                      "follows": data.get("follows"), "created_at": row["created_at"],
                                      "updated_at": row["updated_at"], "objects": 0}
-        for row in rows(research, "SELECT research_id, COUNT(*) AS n FROM objects GROUP BY research_id"):
+        for row in research("SELECT research_id, COUNT(*) AS n FROM objects GROUP BY research_id"):
             if row["research_id"] in self.tasks:
                 self.tasks[row["research_id"]]["objects"] = row["n"]
         group = lambda rid: rid if rid in self.tasks else None   # noqa: E731
         self.attachments = {}
-        for row in rows(research, "SELECT research_id, data, bindings FROM revisions"):
+        for row in research("SELECT research_id, data, bindings FROM revisions"):
             for column in ("data", "bindings"):
                 for aid in attachment_ids(json.loads(row[column] or "null")):
                     self.attachments.setdefault(aid, set()).add(group(row["research_id"]))
@@ -206,24 +226,34 @@ class CenterExports:
         return shutil.disk_usage(path).free
 
     # ── what can be exported ──
+    def walk(self, jid):
+        """A job directory as it is on disk now: its regular files as (relative path, size) and its directories
+        (relative paths, empty ones included), symbolic links and derived caches left out."""
+        files, folders, base = [], [], os.path.join(self.jobs.dir, jid)
+        for parent, directories, names in os.walk(base):
+            directories[:] = sorted(d for d in directories if not os.path.islink(os.path.join(parent, d)))
+            folders += [os.path.relpath(os.path.join(parent, d), base).replace(os.sep, "/") for d in directories]
+            for name in sorted(names):
+                path = os.path.join(parent, name)
+                try:
+                    info = os.lstat(path)
+                except FileNotFoundError:   # removed while listed
+                    continue
+                if stat.S_ISREG(info.st_mode) and not CACHE_FILE.match(name):
+                    files.append((os.path.relpath(path, base).replace(os.sep, "/"), info.st_size))
+        return files, folders
+
     def _files(self, jid):
-        """Regular files of a job directory as (relative path, size), symbolic links and derived caches left out."""
+        """Sizes for the task list and the estimate, read again after a while; an export lists the disk anew."""
         cached = self._sizes.get(jid)
         if cached and time.time() - cached[0] < SIZE_TTL:
             return cached[1]
-        files, base = [], os.path.join(self.jobs.dir, jid)
-        for parent, directories, names in os.walk(base):
-            directories[:] = sorted(d for d in directories if not os.path.islink(os.path.join(parent, d)))
-            for name in sorted(names):
-                path = os.path.join(parent, name)
-                info = os.lstat(path)
-                if stat.S_ISREG(info.st_mode) and not CACHE_FILE.match(name):
-                    files.append((os.path.relpath(path, base).replace(os.sep, "/"), info.st_size))
+        files = self.walk(jid)[0]
         self._sizes[jid] = (time.time(), files)
         return files
 
-    def inventory(self):
-        return Inventory(self.jobs, self._files)
+    def inventory(self, hold=False):
+        return Inventory(self.jobs, self._files, hold)
 
     def tasks(self):
         return {**self.inventory().listing(), "excluded": fmt.EXCLUDED,
@@ -340,7 +370,8 @@ class CenterExports:
             self._remove(status["id"] + ".zip.partial")
             space = isinstance(error, OSError) and error.errno in (errno.ENOSPC, errno.EDQUOT)
             status.update(state="failed", finished_at=time.time(), expires_at=time.time() + RETAIN_S,
-                          error=("导出缓存所在磁盘写满了" if space else "导出失败") + f"：{error}")
+                          error=str(error) if isinstance(error, CenterExportError)
+                          else ("导出缓存所在磁盘写满了" if space else "导出失败") + f"：{error}")
         self._write(status)
 
 
@@ -356,13 +387,13 @@ class Writer:
             self.exports._write(self.status)
             self.last_saved = time.time()
 
-    def collect(self, jobs):
+    def collect(self, jobs, inventory):
         """Bring home what jobs run on other computers wrote; what cannot be brought is listed, not dropped."""
         missing = []
         for jid in jobs:
-            target = self.inventory.remote.get(jid)
+            target = inventory.remote.get(jid)
             if target is None:
-                if jid not in self.inventory.directories:
+                if jid not in inventory.directories:
                     missing.append({"job_id": jid, "reason": "中心的作业目录里没有它（可能在历史作业目录里，或已删除）"})
                 continue
             failure = None
@@ -378,27 +409,21 @@ class Writer:
                 reason = ("作业还没结束，原件还在从节点上" if (target.get("observation") or {}).get("state") != "finished"
                           else f"从节点上的原件没收回来：{failure or sync.get('error') or sync.get('status') or '还没开始收'}")
                 missing.append({"job_id": jid, "execution_node_id": target.get("execution_node_id"), "reason": reason})
-            if jid not in self.inventory.directories and os.path.isdir(os.path.join(self.jobs.dir, jid)):
-                self.inventory.directories.add(jid)
         return missing
 
     def snapshot(self, tasks, jobs, results):
-        """The rows of the selected tasks, jobs and results, read in one transaction per database."""
-        tables, chosen = {}, set(tasks)
-        db = readonly(self.jobs.research.path)
-        try:
-            db.execute("BEGIN")
-            pick = lambda sql: [dict(r) for r in db.execute(sql) if r["research_id"] in chosen]   # noqa: E731
-            tables["research/objects"] = pick("SELECT * FROM objects ORDER BY kind, id")
-            tables["research/revisions"] = pick("SELECT * FROM revisions ORDER BY sequence")
-            tables["research/events"] = pick("SELECT * FROM events ORDER BY sequence")
-            operations = {e["operation_id"] for e in tables["research/events"]}
-            tables["research/operations"] = [dict(r) for r in db.execute("SELECT * FROM operations ORDER BY id") if r["id"] in operations]
-            directions = {o["id"] for o in tables["research/objects"] if o["kind"] == "direction"}
-            tables["research/dependencies"] = [dict(r) for r in db.execute("SELECT * FROM dependencies ORDER BY direction_id, id")
-                                               if r["direction_id"] in directions]
-        finally:
-            db.close()
+        """The rows of the selected tasks, jobs and results: research from the inventory's own transaction (the cut),
+        results and the queue in one transaction each right after it."""
+        tables, chosen, db = {}, set(tasks), self.inventory.research
+        pick = lambda sql: [dict(r) for r in db.execute(sql) if r["research_id"] in chosen]   # noqa: E731
+        tables["research/objects"] = pick("SELECT * FROM objects ORDER BY kind, id")
+        tables["research/revisions"] = pick("SELECT * FROM revisions ORDER BY sequence")
+        tables["research/events"] = pick("SELECT * FROM events ORDER BY sequence")
+        operations = {e["operation_id"] for e in tables["research/events"]}
+        tables["research/operations"] = [dict(r) for r in db.execute("SELECT * FROM operations ORDER BY id") if r["id"] in operations]
+        directions = {o["id"] for o in tables["research/objects"] if o["kind"] == "direction"}
+        tables["research/dependencies"] = [dict(r) for r in db.execute("SELECT * FROM dependencies ORDER BY direction_id, id")
+                                           if r["direction_id"] in directions]
         db = readonly(self.jobs.results.path)
         try:
             db.execute("BEGIN")
@@ -441,33 +466,59 @@ class Writer:
 
     def add_file(self, archive, name, path):
         """A file as it is now. Its identity before reading and whether it changed while read are kept, to tell
-        later whether a registered result source was still the registered file."""
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        later whether a registered result source was still the registered file. One removed since the listing is
+        left out (False)."""
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return False
         with os.fdopen(fd, "rb") as stream:
             before = stamp(os.fstat(stream.fileno()))
             entry = self.add(archive, name, iter(lambda: stream.read(fmt.CHUNK), b""), False)
             after = stamp(os.fstat(stream.fileno()))
         entry.update(mode=stat.S_IMODE(before[2]), mtime_ns=before[4])
         self.observed[name] = (before, before == after and before[3] == entry["size"], entry["sha256"])
+        return True
 
     def write(self):
-        inventory, keys = self.inventory, self.keys
-        groups = {key: inventory.members(key) for key in keys}
-        jobs = sorted({j for members in groups.values() for j in members[0]})
-        results = {r for members in groups.values() for r in members[1]}
-        attachments = sorted({a for members in groups.values() for a in members[2]})
-        missing = self.collect(jobs)
-        self.status.update(phase="write", missing_originals=missing)
-        tables = self.snapshot([k for k in keys if k is not None], jobs, results)
-        sources = [(fmt.job_member(jid, rel), os.path.join(self.jobs.dir, jid, *rel.split("/")), size)
-                   for jid in jobs if jid in inventory.directories for rel, size in self.exports._files(jid)]
+        keys = self.keys
+        jobs_of = lambda inventory: sorted({j for key in keys for j in inventory.members(key)[0]})   # noqa: E731
+        # Originals of the jobs known when the export was asked for come home first (that can take minutes) ...
+        asked = jobs_of(self.inventory)
+        missing = self.collect(asked, self.inventory)
+        # ... then one cut: which jobs, results and attachments each task has, and the task's rows, from the same
+        # moment, so a revision written meanwhile comes with what it refers to or not at all.
+        self.inventory = inventory = self.exports.inventory(hold=True)
+        try:
+            groups = {key: inventory.members(key) for key in keys}
+            jobs = jobs_of(inventory)
+            results = {r for members in groups.values() for r in members[1]}
+            attachments = sorted({a for members in groups.values() for a in members[2]})
+            missing = [m for m in missing if m["job_id"] in jobs] + self.collect([j for j in jobs if j not in asked], inventory)
+            tables = self.snapshot([k for k in keys if k is not None], jobs, results)
+        finally:
+            inventory.close()
+        self.status.update(phase="write", missing_originals=missing, unfinished_jobs=[j for j in jobs if j in inventory.unfinished])
+        # The job directories as they are on disk now, collected originals and files written since included.
+        sources, folders = [], {}
+        for jid in jobs:
+            if os.path.isdir(os.path.join(self.jobs.dir, jid)):
+                files, folders[jid] = self.exports.walk(jid)
+                sources += [(fmt.job_member(jid, rel), os.path.join(self.jobs.dir, jid, *rel.split("/")), size) for rel, size in files]
         attachment_root = os.path.join(self.jobs.data_root, "_research", "attachments")
         for aid in attachments:
             for metadata in (False, True):
                 path = os.path.join(attachment_root, aid + (".json" if metadata else ""))
                 if os.path.isfile(path) and not os.path.islink(path):
                     sources.append((fmt.attachment_member(aid, metadata), path, os.path.getsize(path)))
-        self.status.update(bytes_total=sum(size for _, _, size in sources), files_total=len(sources) + len(tables))
+        total = sum(size for _, _, size in sources)
+        # Originals collected from other computers were not in the estimate made before: check the room again.
+        free = self.exports._free()
+        if free < total + MARGIN:
+            raise CenterExportError(507, "export_space", f"收回从节点的原件以后，这次导出要写 {human(total)}，导出缓存所在磁盘"
+                                    f"（{self.exports.root}）只剩 {human(free)}，另要留 {human(MARGIN)} 余量；"
+                                    f"先腾出至少 {human(total + MARGIN - free)} 再导出")
+        self.status.update(bytes_total=total, files_total=len(sources) + len(tables))
         self.progress(True)
         with open(os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as raw:
             with zipfile.ZipFile(raw, "w", allowZip64=True) as archive:
@@ -475,9 +526,11 @@ class Writer:
                 for name, items in tables.items():
                     counts[name] = len(items)
                     self.add(archive, name + ".jsonl", (fmt.row_line(row).encode() for row in items), True)
-                for name, path, _ in sources:
-                    self.add_file(archive, name, path)
-                manifest = self.manifest(groups, tables, counts, missing)
+                for name, path, size in sources:
+                    if not self.add_file(archive, name, path):
+                        self.status["files_total"] -= 1
+                        self.status["bytes_total"] -= size
+                manifest = self.manifest(groups, tables, counts, missing, folders)
                 info = zipfile.ZipInfo(fmt.MANIFEST, date_time=time.localtime(time.time())[:6])
                 info.compress_type, info.external_attr = zipfile.ZIP_DEFLATED, 0o600 << 16
                 archive.writestr(info, json.dumps(manifest, ensure_ascii=False, indent=1))
@@ -514,7 +567,7 @@ class Writer:
                     unverified.append({**item, "reason": "登记以后文件变过：身份和 SHA-256 都对不上登记时的"})
         return verified, unverified
 
-    def manifest(self, groups, tables, counts, missing):
+    def manifest(self, groups, tables, counts, missing, folders):
         inventory = self.inventory
         verified, unverified = self.bindings(tables)
         lost = {item["job_id"]: item for item in missing}
@@ -533,4 +586,4 @@ class Writer:
                           for key in groups if key is not None],
                 "unassigned": group(None) if None in groups else None,
                 "rows": counts, "result_sources": {"verified": verified, "unverified": unverified},
-                "files": self.files}
+                "files": self.files, "directories": folders}
