@@ -12,6 +12,8 @@
 .ds-table th, .ds-table td { padding: 8px 12px; text-align: left; white-space: nowrap; }
 .ds-table .num { text-align: right; }
 .ds-table td.ds-method { min-width: 16em; max-width: 28em; white-space: normal; }
+/* A device recorded in words wraps where the screen is short of room, so the sizes stay in view */
+.ds-table td.ds-dev { min-width: 9em; white-space: normal; }
 .ds-table thead th { font-size: var(--fs-xs); font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); }
 .ds-name th { padding-top: var(--sp-5); font-size: var(--fs-md); font-weight: 650; color: var(--ink); }
 .ds-group:first-of-type .ds-name th { padding-top: var(--sp-3); }
