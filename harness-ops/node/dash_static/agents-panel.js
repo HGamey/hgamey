@@ -60,14 +60,14 @@
   function row(a, runningByAgent, owed) {
     const checkin = a.checkin?.at, activity = a.activity?.at;
     return el("tr", { data: { agentRow: a.name } },
-      el("td", { class: "mono" }, el("button", { class: "agent-name", type: "button", data: { agent: a.name } }, a.name), role(a.note),
+      el("td", { class: "mono agent-who" }, el("button", { class: "agent-name", type: "button", data: { agent: a.name } }, a.name), role(a.note),
         a.archived ? sub(ARCHIVED[a.archived] || a.archived) : null),
-      el("td", null, tags(a.tags || [])),
-      el("td", { class: "num" }, String(runningByAgent[a.name] || 0)),
-      el("td", { title: checkin ? stamp(checkin) : "" }, checkin ? ago(checkin) : "从未"),
-      el("td", { title: activity ? stamp(activity) : "" }, ago(activity), a.activity?.source ? sub(SOURCE[a.activity.source] || a.activity.source) : null),
-      el("td", { class: "num" }, String(owed[a.name] ?? "–")),
-      el("td", null, a.status ? a.status.text : "–", a.status ? sub(ago(a.status.at), stamp(a.status.at)) : null),
+      el("td", { class: "agent-zone" }, tags(a.tags || [])),
+      el("td", { class: "num agent-running" }, String(runningByAgent[a.name] || 0)),
+      el("td", { class: "agent-checkin", title: checkin ? stamp(checkin) : "" }, checkin ? ago(checkin) : "从未"),
+      el("td", { class: "agent-activity", title: activity ? stamp(activity) : "" }, ago(activity), a.activity?.source ? sub(SOURCE[a.activity.source] || a.activity.source) : null),
+      el("td", { class: "num agent-owed" }, String(owed[a.name] ?? "–")),
+      el("td", { class: "agent-status" }, a.status ? a.status.text : "–", a.status ? sub(ago(a.status.at), stamp(a.status.at)) : null),
       el("td", { class: "agent-actions" }, actions(a)));
   }
   function table(items, runningByAgent, owed) {
@@ -230,6 +230,8 @@
     if (ev.target.closest("[data-close]")) { dialog?.close(); return; }
     const copier = ev.target.closest("[data-copy]");
     if (copier) copy(copier.dataset.copy);
+    // On a phone an agent's status shows two lines; a tap shows the rest.
+    ev.target.closest("#agents-list .agent-status")?.classList.toggle("open");
   });
 
   // 点击 agent 名展开详情：滚到详情卡，写明它是谁、在负责哪些任务、最近交付了什么，再是运行中作业和状态历史。

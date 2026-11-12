@@ -313,6 +313,21 @@ html.show-tech .research-view .research-report .report-code-toggle { display: no
 .research-view #agents-list .agents-table { width: 100%; }
 .research-view #agents-list .agent-name { padding: 0; border: none; background: none; color: var(--acc); font: inherit; text-align: left; text-decoration: underline; cursor: pointer; }
 .research-view #agents-list .agent-sub { font-size: 12px; }
+/* On a phone each agent is a block: who it is; its zone, running jobs and last activity on one line; its status in two
+   lines (a tap opens the rest). Check-in time and owed duties wait for a wider screen. */
+@media (max-width: 600px) {
+  .research-view #agents-list .agents-table, .research-view #agents-list .agents-table tbody { display: block; }
+  .research-view #agents-list .agents-table thead, .research-view #agents-list .agents-table :is(.agent-checkin, .agent-owed) { display: none; }
+  .research-view #agents-list .agents-table tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; padding: 10px 0; border-bottom: 1px solid var(--grid); }
+  .research-view #agents-list .agents-table td { display: block; padding: 0; border: 0; text-align: left; font-family: inherit; }
+  .research-view #agents-list .agents-table :is(.agent-who, .agent-status, .agent-actions) { flex-basis: 100%; }
+  .research-view #agents-list .agents-table :is(.agent-running, .agent-activity)::before { content: "· "; color: var(--muted); }
+  .research-view #agents-list .agents-table .agent-running::after { content: " 个作业"; }
+  .research-view #agents-list .agents-table .agent-activity .agent-sub { display: inline; margin-left: 4px; }
+  .research-view #agents-list .agents-table .agent-status:not(.open) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; cursor: pointer; }
+  .research-view #agents-list .agents-table .agent-status .agent-sub { display: inline; margin-left: 4px; }
+  .research-view #agents-card:not(.can-manage) #agents-list .agents-table td.agent-actions { display: none; }
+}
 .research-view #agents-list .agent-role { min-width: 10em; max-width: 20em; margin-top: 2px; font-family: var(--font); font-size: var(--fs-sm); color: var(--ink2); line-height: 1.5; }
 .research-view #agents-list .agent-actions { white-space: nowrap; }
 .research-view .agents-archived { margin-top: var(--sp-3); }
