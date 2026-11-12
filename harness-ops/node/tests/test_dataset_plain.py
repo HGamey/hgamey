@@ -48,7 +48,8 @@ class DatasetPlainTests(unittest.TestCase):
                              "REDMAGIC NX809J / 91253241019A / Android 16 / root", "folded, not removed")
             name = page.locator(".ds-name", has_text="gi-sim")
             self.assertEqual(name.locator(".ds-purpose").text_content(), "红魔上录的原神画面，用来训练超分")
-            self.assertEqual(page.locator(".ds-name", has_text="s9-crops").locator(".ds-purpose").count(), 0)
+            self.assertEqual(page.locator(".ds-name", has_text="s9-crops").locator(".ds-purpose").text_content(), "模拟低清配对，10 帧",
+                             "one that does not say is described from its fields")
 
 
 if __name__ == "__main__":

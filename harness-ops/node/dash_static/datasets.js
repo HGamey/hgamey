@@ -40,6 +40,15 @@
     return box;
   }
 
+  // A dataset that does not say what it is for is described from what its newest version records: the game, how its
+  // pairs were made and how many frames, e.g. 原神画面，模拟低清配对，1.2 万帧.
+  const PAIRED = {simulated: '模拟低清配对', real: '真实配对', unpaired: '无配对', mixed: '混合配对（含模拟）'};
+  const frames = n => n >= 10000 ? `${(n / 10000).toFixed(1).replace(/\.0$/, '')} 万帧` : `${n} 帧`;
+  function about(item) {
+    const d = item.dataset, name = games.get(item.labels?.game_id);
+    return [name && `${name}画面`, PAIRED[d.pairing], d.frames != null && frames(d.frames)].filter(Boolean).join('，');
+  }
+
   function el(tag, value, className) { const item = document.createElement(tag); if (value != null) item.textContent = String(value); if (className) item.className = className; return item; }
   const count = n => n == null ? DASH : n.toLocaleString('zh-CN');
   function size(bytes) {
@@ -106,7 +115,7 @@
     for (const [name, list] of grouped(items)) {
       const body = el('tbody', null, 'ds-group'), title = el('tr', null, 'ds-name'), th = el('th'); th.colSpan = COLUMNS.length; th.scope = 'rowgroup';
       th.append(el('span', name), el('small', `${list.length} 个版本`));
-      const purpose = list.find(item => item.dataset.purpose)?.dataset.purpose;   // the newest version that says it
+      const purpose = list.find(item => item.dataset.purpose)?.dataset.purpose || about(list[0]);   // the newest version that says it
       if (purpose) th.append(el('span', purpose, 'ds-purpose'));
       const samples = el('span', null, 'ds-samples'); samples.hidden = true; samples.dataset.results = list.map(item => item.result_id).join(' ');
       th.append(samples);
