@@ -28,6 +28,8 @@ register 使用文件内固定 result_id；import 在读文件前打印指定或
 写入核对显式目标与能力，只提交一次。回执未知时，用 show 或 import-status 查询原 ID，
 不换 ID、不自动重发。登记不表示测量、收益、设备恢复或同状态资格已经验证。
 采到数据集时，在 register 清单写 dataset 对象；pairing 必填 simulated|real|unpaired|mixed，其余字段可 null，用 list --datasets 筛选。
+dataset.purpose（字符串，≤240 字）写一句人能看懂的用途：这是什么数据、拿来做什么，例如「红魔上录的原神画面，用来训练超分」。
+labels.device 只写设备型号（如 REDMAGIC NX809J），不写串号、系统版本和提交号。
 dataset 可选字段：name/version/capture_method/location 为字符串或 null；frames/scenes/size_bytes 为非负整数或 null；
 splits={train,val,test}，各项为非负整数或 null。origin.observed_at 用数字 Unix 时间戳（秒），不要写 ISO 8601 字符串。
 list/show 只读中心结果索引；原件链接也留在中心，执行节点离线不影响已归集内容。
@@ -44,6 +46,8 @@ MAX_REGISTER = 256 << 10
 MAX_COMPARE = 16 << 10
 MAX_RESPONSE = 6 << 20
 OUTCOMES = {"gain", "no_gain", "regression", "failed", "not_run", "unknown"}
+SERIAL = re.compile(r"(?=.*\d)(?=.*[A-Z])[A-Z0-9]{8,20}")      # a phone serial, as adb prints it
+HASH = re.compile(r"(?=.*\d)(?=.*[a-f])[0-9a-f]{7,40}")        # a commit
 DATASET_OPTIONAL = ("name", "version", "capture_method", "frames", "scenes", "splits", "size_bytes", "location")
 
 
@@ -315,6 +319,14 @@ def main(args, *, target):
                 empty = [key for key in DATASET_OPTIONAL if document["dataset"].get(key) is None]
                 if empty:
                     print(f"pf-node: 提醒：dataset 的 {'、'.join(empty)} 为空，数据集页签会显示「—」。",
+                          file=sys.stderr, flush=True)
+                if not document["dataset"].get("purpose"):
+                    print("pf-node: 提醒：dataset.purpose 没写；写一句人能看懂的用途，数据集页签显示在名字下面。",
+                          file=sys.stderr, flush=True)
+                device = (document.get("labels") or {}).get("device")
+                codes = [word for word in re.split(r"[\s/;,()]+", device or "") if SERIAL.fullmatch(word) or HASH.fullmatch(word)]
+                if codes:
+                    print(f"pf-node: 提醒：labels.device 里有 {'、'.join(codes)}，像串号或提交号；设备只写型号。",
                           file=sys.stderr, flush=True)
             return _submit(client, "/results", content.encode("utf-8"), identity, importing=False)
         elif command == "import" and args:

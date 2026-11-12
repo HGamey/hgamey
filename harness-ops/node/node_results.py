@@ -78,7 +78,7 @@ def dataset_values(value):
     if not isinstance(value, dict):
         raise ValueError("dataset must be an object or null")
     try:
-        value = object_fields(value, {"name", "version", "pairing", "capture_method", "frames", "scenes",
+        value = object_fields(value, {"name", "version", "purpose", "pairing", "capture_method", "frames", "scenes",
                                       "splits", "size_bytes", "location"})
     except ValueError as error:
         raise ValueError(f"dataset: {error}") from None
@@ -103,6 +103,9 @@ def dataset_values(value):
     result["splits"] = splits
     result["size_bytes"] = dataset_count(value.get("size_bytes"), "dataset.size_bytes")
     result["location"] = dataset_text(value.get("location"), "dataset.location", 4096)
+    # What it is and what it is for, in a sentence a person reads; kept only when written (older ones have none).
+    if value.get("purpose") is not None:
+        result["purpose"] = dataset_text(value.get("purpose"), "dataset.purpose", 240)
     return result
 
 
