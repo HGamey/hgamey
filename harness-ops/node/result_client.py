@@ -30,6 +30,7 @@ register 使用文件内固定 result_id；import 在读文件前打印指定或
 采到数据集时，在 register 清单写 dataset 对象；pairing 必填 simulated|real|unpaired|mixed，其余字段可 null，用 list --datasets 筛选。
 dataset.purpose（字符串，≤240 字）写一句人能看懂的用途：这是什么数据、拿来做什么，例如「红魔上录的原神画面，用来训练超分」。
 labels.device 只写设备型号（如 REDMAGIC NX809J），不写串号、系统版本和提交号。
+dataset.version 用采集日期作版本名（如 20261112，同一天第二版写 20261112-2），不要写 0、1 这样的序号。
 dataset 可选字段：name/version/capture_method/location 为字符串或 null；frames/scenes/size_bytes 为非负整数或 null；
 splits={train,val,test}，各项为非负整数或 null。origin.observed_at 用数字 Unix 时间戳（秒），不要写 ISO 8601 字符串。
 list/show 只读中心结果索引；原件链接也留在中心，执行节点离线不影响已归集内容。
