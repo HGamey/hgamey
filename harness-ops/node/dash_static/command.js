@@ -179,7 +179,7 @@ function rosterRows() {
   const box = $('roster'); box.innerHTML = '';
   $('agents-n').textContent = `${S.M.agents.length} 个`;
   for (const name of S.M.agents) {
-    const m = agentMeta(name), li = el('li', '', `<span class="av">${esc(m.s)}</span><div class="who"><b>${esc(m.n)}</b><span>待命</span></div><span class="n">0<small>次</small></span><div class="heat">${'<i></i>'.repeat(48)}</div>`);
+    const m = agentMeta(name), li = el('li', '', `<span class="av">${esc(m.s)}</span><div class="who"><b>${esc(m.n)}</b><span>待命</span></div><span class="n">0<small>次实验</small></span><div class="heat">${'<i></i>'.repeat(48)}</div>`);
     li.style.setProperty('--c', m.c); li.dataset.agent = name; box.append(li);
   }
   rosterHeat();
