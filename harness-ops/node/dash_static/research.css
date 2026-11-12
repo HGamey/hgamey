@@ -329,6 +329,9 @@ html.show-tech .research-view .research-report .report-code-toggle { display: no
 .agent-warning { padding: var(--sp-3) var(--sp-4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--wash); font-size: var(--fs-sm); }
 .agent-warning ul { margin: 0 0 var(--sp-2); padding-left: 1.2em; }
 .agent-warning p { margin: 0; }
+#agent-detail { scroll-margin-top: 72px; }   /* below the sticky top bar */
+#agent-detail .agent-detail-who { margin: 0 0 var(--sp-3); color: var(--ink2); line-height: 1.6; }
+#agent-detail h3 { margin: var(--sp-4) 0 var(--sp-2); font-size: var(--fs-sm); color: var(--muted); font-weight: 600; }
 .agent-warning.is-running { border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); background: var(--bad-soft); color: var(--bad-ink); }
 @media (max-width: 600px) {
   .research-view .page-heading { flex-direction: row; align-items: center; }

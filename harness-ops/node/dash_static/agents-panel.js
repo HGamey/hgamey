@@ -171,20 +171,54 @@
     if (copier) copy(copier.dataset.copy);
   });
 
-  // 点击 agent 名展开详情
+  // 点击 agent 名展开详情：滚到详情卡，写明它是谁、在负责哪些任务、最近交付了什么，再是运行中作业和状态历史。
+  const TASK_STATE = { active: "推进中", idle: "暂空闲", paused: "已暂停" };
+  const taskLink = (href, title, extra) => `<div class="row"><a href="${esc(window.HGTarget ? HGTarget.url(href) : href)}">${esc(title)}</a>${extra}</div>`;
+  function detailParts() {
+    let parts = document.getElementById("agent-detail-work");
+    if (parts) return parts;
+    const body = document.querySelector("#agent-detail .card-body");
+    const who = document.createElement("p");
+    who.id = "agent-detail-who"; who.className = "agent-detail-who";
+    parts = document.createElement("div");
+    parts.id = "agent-detail-work";
+    parts.innerHTML = `<h3>负责的任务</h3><div id="agent-detail-owned"></div><h3>最近交付</h3><div id="agent-detail-delivered"></div>`;
+    body.prepend(who);
+    body.querySelector("h3").before(parts);
+    return parts;
+  }
+  let opened = null;
   document.addEventListener("click", async (ev) => {
     const btn = ev.target.closest(".agent-name");
     if (!btn) return;
     const name = btn.dataset.agent;
     const card = document.getElementById("agent-detail");
     if (!card) return;
+    const mine = opened = {};
+    detailParts();
     card.hidden = false;
     document.getElementById("agent-detail-name").textContent = name;
-    // 加载详情：状态历史 + 当前任务
-    const [agent, jobs] = await Promise.all([
-      api(`/dash/api/agents/${name}`).catch(() => null),
+    const note = agents.find(a => a.name === name)?.note || "";
+    document.getElementById("agent-detail-who").textContent = note;
+    document.getElementById("agent-detail-who").hidden = !note;
+    for (const id of ["agent-detail-owned", "agent-detail-delivered", "agent-detail-tasks", "agent-detail-history"]) document.getElementById(id).innerHTML = '<div class="empty">读取中…</div>';
+    card.scrollIntoView({ block: "start" });
+    // 加载详情：它负责的任务 + 状态历史 + 当前作业
+    const [agent, jobs, tasks] = await Promise.all([
+      api(`/dash/api/agents/${encodeURIComponent(name)}`).catch(() => null),
       api("/dash/api/jobs?limit=50").catch(() => ({ items: [] })),
+      api("/dash/api/tasks?all=1").catch(() => ({ items: [] })),
     ]);
+    if (opened !== mine) return;
+    const owned = (tasks.items || []).filter(t => t.owner === name), recent = t => -(t.active_at || t.updated_at || 0);
+    const open = owned.filter(t => TASK_STATE[t.state]).sort((a, b) => recent(a) - recent(b));
+    const delivered = owned.filter(t => t.state === "delivered").sort((a, b) => recent(a) - recent(b)).slice(0, 5);
+    document.getElementById("agent-detail-owned").innerHTML = open.length
+      ? open.map(t => taskLink(`/dash/research?kind=research&id=${encodeURIComponent(t.id)}`, t.title || t.id, ` <span class="muted">${TASK_STATE[t.state]}</span>`)).join("")
+      : '<div class="empty">没有在负责的任务</div>';
+    document.getElementById("agent-detail-delivered").innerHTML = delivered.length
+      ? delivered.map(t => taskLink(`/dash/research/report?id=${encodeURIComponent(t.id)}`, t.title || t.id, ` <span class="muted" title="${esc(stamp(t.updated_at))}">${esc(ago(t.updated_at))}</span>`)).join("")
+      : '<div class="empty">还没有交付</div>';
     const running = (jobs.items || []).filter(j => active(j) && j.actor_id === name);
     const history = (agent && agent.status_history) || [];
     document.getElementById("agent-detail-status").textContent = agent && agent.status ? agent.status.text : "–";
