@@ -146,12 +146,13 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     nodeBtn.setAttribute("aria-controls", "connection-target");
     nodeBtn.setAttribute("aria-expanded", "false");
     nodeBtn.innerHTML = '<i class="shell-node-dot" aria-hidden="true"></i><span class="shell-node-name"></span>';
-    nodeBtn.title = "执行目标";
+    nodeBtn.dataset.note = "执行目标";
     nodeBtn.dataset.state = "wait";
     // 上次读到的主机名先顶上，读回后再更新：切页时节点名和后面的标签不跟着变宽变窄
     const NAME_KEY = "hgamey-shell-node-name";
     const nameEl = nodeBtn.querySelector(".shell-node-name");
     try { nameEl.textContent = localStorage.getItem(NAME_KEY) || "节点"; } catch (_) { nameEl.textContent = "节点"; }
+    nodeTitle(nodeBtn);
 
     // 中心节点：同一中心的各个对外入口，选中后在那个入口打开当前这页
     const CENTERS = [
@@ -216,6 +217,7 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     fetch("/dash/api/node").then(r => r.ok ? r.json() : null).then(d => {
       if (!d || !d.host) return;
       nameEl.textContent = d.host.hostname;
+      nodeTitle(nodeBtn);
       try { localStorage.setItem(NAME_KEY, d.host.hostname); } catch (_) { /* private mode: just no head start next time */ }
     }).catch(() => {});
     // target.js 生成执行目标框时会发 hgamey-target-change；框一出现就接上（同一任务内，不会先露出来）
@@ -223,6 +225,11 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     const attach = () => { if (!wired && document.getElementById("connection-target")) { wired = true; wire(nodeBtn); } };
     document.addEventListener("hgamey-target-change", attach);
     attach();
+  }
+
+  // Hovered, the node button gives the computer's whole name (the button cuts a long one short) and its target state.
+  function nodeTitle(nodeBtn) {
+    nodeBtn.title = `${nodeBtn.querySelector(".shell-node-name").textContent}\n${nodeBtn.dataset.note}`;
   }
 
   function wire(nodeBtn) {
@@ -239,7 +246,8 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
         box.classList.toggle("inline", !!problem && !checking);
         if (box.classList.contains("inline")) box.hidden = false;
         else if (nodeBtn.getAttribute("aria-expanded") !== "true") box.hidden = true;
-        nodeBtn.title = problem || (ok ? "执行目标已核对" : "执行目标：只读");
+        nodeBtn.dataset.note = problem || (ok ? "执行目标已核对" : "执行目标：只读");
+        nodeTitle(nodeBtn);
       };
       document.addEventListener("hgamey-target-change", sync);
       box.hidden = true;
