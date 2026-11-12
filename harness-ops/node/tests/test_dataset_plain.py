@@ -30,9 +30,12 @@ class DatasetPlainTests(unittest.TestCase):
         code, _, err = self.pf(core.ADMIN, "results", "register", str(path))
         self.assertEqual(code, 0, err)
         self.assertIn("labels.device 里有 91253241019A，像串号或提交号；设备只写型号", err)
-        for body in (self.body("ds-doom", "doom-history", "Historical OnePlus PKG110 c531e0a; import on kamico Mac"),
-                     self.body("ds-s9", "s9-crops", "R5CT10ABCDE")):
-            self.assertEqual(self.cli("POST", "/results", body)[0], 201)
+        self.assertNotIn("purpose", err)
+        path.write_text(json.dumps(self.body("ds-s9", "s9-crops", "R5CT10ABCDE")))
+        code, _, err = self.pf(core.ADMIN, "results", "register", str(path))
+        self.assertEqual(code, 0, err)
+        self.assertIn("dataset.purpose 没写；写一句人能看懂的用途", err)
+        self.assertEqual(self.cli("POST", "/results", self.body("ds-doom", "doom-history", "Historical OnePlus PKG110 c531e0a; import on kamico Mac"))[0], 201)
 
         with self._browser_page() as page:
             page.route("**/dash/api/phones", lambda route: route.fulfill(json=PHONES))
