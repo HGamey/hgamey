@@ -9,7 +9,25 @@
   const PREVIEW = /\.(png|jpe?g|webp|gif|avif)$/i, MIME = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif'};
   const REPORTS = ['qa_report.json', 'manifest.json', 'split.json'], FIRST_PREVIEWS = 8, TEXT_LIMIT = 1 << 20;
   const opened = new Set();   // result IDs open across a refresh
-  let computers = new Map();
+  let computers = new Map(), models = new Map();   // node ID → name; phone serial or alias → model
+
+  // The device a person reads: phone serials and commits are technical details, folded with the separator before them;
+  // a serial the phones on this center know becomes its model when the label does not name it already.
+  const SERIAL = /^(?=.*\d)(?=.*[A-Z])[A-Z0-9]{8,20}$/, HASH = /^(?=.*\d)(?=.*[a-f])[0-9a-f]{7,40}$/;
+  function device(label) {
+    if (!label) return DASH;
+    const box = el('span', null, 'ds-device'), parts = String(label).split(/(\s*[\/;,]\s*|\s+)/);
+    for (let i = 0; i < parts.length; i += 2) {
+      const word = parts[i], before = i ? parts[i - 1] : '', model = models.get(word);
+      if (!word) { box.append(before); continue; }
+      if (model || SERIAL.test(word) || HASH.test(word)) {
+        const named = model && !label.includes(model.split(' ').pop());
+        if (named) box.append(before, model);
+        box.append(el('span', (named ? ' ' : before) + word, 'tech'));
+      } else box.append(before, word);
+    }
+    return box;
+  }
 
   function el(tag, value, className) { const item = document.createElement(tag); if (value != null) item.textContent = String(value); if (className) item.className = className; return item; }
   const count = n => n == null ? DASH : n.toLocaleString('zh-CN');
@@ -54,7 +72,7 @@
     const panel = el('tr', null, 'ds-detail'), cell = el('td'); cell.colSpan = COLUMNS.length; panel.append(cell); panel.hidden = true;
     open.type = 'button'; open.setAttribute('aria-expanded', 'false');
     tr.dataset.result = item.result_id; tr.dataset.pairing = d.pairing;
-    const cells = [open, el('span', word, `tag ${tone} ds-pairing`), [item.labels?.game_id, item.labels?.game_version].filter(Boolean).join(' ') || DASH, item.labels?.device || DASH,
+    const cells = [open, el('span', word, `tag ${tone} ds-pairing`), [item.labels?.game_id, item.labels?.game_version].filter(Boolean).join(' ') || DASH, device(item.labels?.device),
       d.capture_method || DASH, count(d.frames), count(d.scenes), splits(d.splits), size(d.size_bytes)];
     cells.forEach((value, i) => { const td = el('td', value instanceof Node ? null : value, COLUMNS[i][1]); if (value instanceof Node) td.append(value); tr.append(td); });
     let built = false;
@@ -76,7 +94,10 @@
     const thead = el('thead'); thead.append(head); table.append(thead);
     for (const [name, list] of grouped(items)) {
       const body = el('tbody', null, 'ds-group'), title = el('tr', null, 'ds-name'), th = el('th'); th.colSpan = COLUMNS.length; th.scope = 'rowgroup';
-      th.append(el('span', name), el('small', `${list.length} 个版本`)); title.append(th); body.append(title);
+      th.append(el('span', name), el('small', `${list.length} 个版本`));
+      const purpose = list.find(item => item.dataset.purpose)?.dataset.purpose;   // the newest version that says it
+      if (purpose) th.append(el('span', purpose, 'ds-purpose'));
+      title.append(th); body.append(title);
       for (const item of list) body.append(...row(item));
       table.append(body);
     }
@@ -91,7 +112,14 @@
     try {
       const node = await HGTarget.ready();
       if (!node.capabilities?.includes('results.index-v1')) return showMessage('这个节点读不了数据集。');
-      const [items] = await Promise.all([all(), json('/nodes').then(value => { computers = new Map((value.items || []).map(item => [item.node_id, item.name])); }, () => {})]);
+      const [items] = await Promise.all([all(), json('/nodes').then(value => { computers = new Map((value.items || []).map(item => [item.node_id, item.name])); }, () => {}),
+        json('/phones').then(value => {
+          models = new Map();
+          for (const phone of value.items || []) {
+            const seen = phone.observation || {}, model = [seen.brand, seen.model || phone.model].filter(Boolean).join(' ');
+            if (model) for (const name of [phone.serial, phone.device_id, ...(phone.aliases || [])]) if (name) models.set(name, model);
+          }
+        }, () => {})]);
       render(items);
     } catch (error) { showMessage(`数据集没读出来：${error.message}`, load); }
     finally { $('refresh').disabled = false; }
