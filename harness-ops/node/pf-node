@@ -11,6 +11,7 @@ Agent 每轮从这里开始（最短完整路径）：
   6. pf-node research note <研究> "<回复>" --reply-to <留言> --decision adopt|defer|reject
      图片/附件引用 job:<任务>:<路径>；需要人定的事用 --ask 提问，然后继续做其他方向。
   7. pf-node research deliver <研究> --summary <文件> --artifact job:<任务ID>
+     正文里单独一行 ![说明](job:<任务>:<路径>) 或 ![说明](attachment:<附件ID>) 把图放在讲到它的地方。
   设备锁序列化实际设备操作；任务预留只在执行中占调度资源，终态自动释放。
   宿主完成未知时由负责人或管理员用 reset 一步停止并释放预留；保存错误修复后也用 reset 重存，不重跑实验。
 

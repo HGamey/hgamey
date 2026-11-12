@@ -41,6 +41,13 @@
 .research-report table { border-collapse:collapse; margin:12px 0; }
 .research-report th,.research-report td { padding:6px 12px; border:1px solid var(--line); text-align:left; }
 .research-report pre { overflow:auto; }
+/* A picture or video the report places in its text: as wide as the text, its caption under it */
+.research-report .report-figure { margin:1em 0; }
+.research-report .report-media { display:block; width:100%; padding:0; border:0; background:none; cursor:zoom-in; }
+.research-report .report-figure :is(img, video) { display:block; width:100%; height:auto; border-radius:6px; border:1px solid var(--line); background:var(--panel); }
+.research-report .report-figure figcaption { margin-top:6px; font-size:13px; line-height:1.5; color:var(--muted); text-align:center; }
+.research-report .report-unread { display:flex; flex-wrap:wrap; gap:8px; align-items:baseline; margin:0; padding:12px; border:1px dashed var(--line); border-radius:6px; }
+.research-report .report-media-label { color:var(--ink2); }
 .research-history button { margin-bottom:6px; }
 .research-page .command-box { max-height:360px; }
 .research-json,#previous-draft { margin-top:18px; font-size:13px; }

@@ -46,7 +46,7 @@ HELP = """用法:
       [--evidence job:ID[:PATH]|result:ID|url:URL ...] [--attach FILE ...]        # 在研究里留言/回应
   pf-node research compare ID --item JOB_OR_FILE [--item ...] [--pick K] --title TEXT --question TEXT [--direction ID]
   pf-node research thread ID                      # 按时间读研究里的留言
-  pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|url:URL ...
+  pf-node research deliver ID --summary TEXT|@FILE --artifact job:ID[:PATH]|result:ID|attachment:ID|url:URL ...
       [--game-version V] [--device D ...] [--reason TEXT]   # 交付：总结、产物、适用范围；状态变为 delivered；--reason 写这一版改了什么
 
 recipes 离线查看优化路线的前提、改动、测量和恢复建议；优先级由外部 Agent 决定。
@@ -60,6 +60,11 @@ KIND 为 research/direction/request/feedback/note。research list 必须带 KIND
 research 列表可用 --follows <研究ID> 只取它的接续任务。
 job:ID:PATH 引用该任务 out 目录内的相对文件；PATH 不能为绝对路径，不能含空段、. 或 ..。
 --attach 直接附本机 PNG、JPEG、SVG、MP4、WebM、JSON 或 TXT，可重复；图片、JSON/TXT 至多 16 MiB，视频至多 128 MiB。实验 Python 只保证有标准库。
+note --attach 打印每个文件的 attachment ID（stderr 一行一个，输出 JSON 的 attachments 里也有）。
+交付正文里的图和表放进讲到它的地方：单独一行写 ![说明](job:<任务ID>:<产物路径>) 或 ![说明](attachment:<附件ID>)，
+页面在这个位置显示和正文一样宽的图（mp4/webm 显示成能播放的视频），下面一行小字是说明。自己画的图先用
+research note <研究> "<说明>" --attach FILE 上传拿到 ID，再写正文；deliver --artifact attachment:<ID> 把它列进成果。
+attachment 只能用同一个研究里留言的附件，正文和 --artifact 里引用别的附件，deliver 会拒绝、不写入。
 attachment 按留言 evidence_refs 里的 attachment_id 下载原件；流式核对长度和 SHA 后写入 --output，不覆盖已有文件。
 --ask 把留言标为问题；首页列出未回复问题，有 reply_to 回复后关闭，agent 继续做其他方向。
 update FILE 只写要改的字段，没写的保持第 N 版值；显式 null 清空可空字段，必填字段不能清空。回执 changed_fields 列出实际变更。
@@ -603,7 +608,7 @@ def _write(client, args):
     return 0
 
 
-def _post(client, kind, oid, data, base, reason):
+def _post(client, kind, oid, data, base, reason, extra=None):
     operation_id = uuid.uuid4().hex
     body = json.dumps({"schema": "phonefarm/research-write@1", "operation_id": operation_id, "base_revision": base,
                        "data": data, "actor_label": None, "reason": reason},
@@ -623,7 +628,7 @@ def _post(client, kind, oid, data, base, reason):
         print(f"pf-node: 写入回执未确认；保留原 operation_id={operation_id}，用 {lookup} 查询。"
               "不换 ID、不重发 POST。", file=sys.stderr)
         return 130
-    print(json.dumps(value, ensure_ascii=False))
+    print(json.dumps({**value, **(extra or {})}, ensure_ascii=False))
     return 0
 
 
@@ -662,6 +667,21 @@ def _attachment(client, path):
         "X-Attachment-ID": attachment_id, "X-Filename": path.name, "Content-Type": mime})
     return {"kind": "attachment", "attachment_id": value["attachment_id"], "node_id": value["node_id"],
             "filename": value["filename"], "content_type": value["content_type"], "sha256": value["sha256"]}
+
+
+def _research_attachments(client, research_id):
+    """Attachments of the notes in one research, by ID, as the notes reference them."""
+    found, cursor = {}, None
+    while True:
+        query = {"research_id": research_id, "limit": 100, **({"cursor": cursor} if cursor else {})}
+        page = client.request("GET", "/research-state/note?" + urllib.parse.urlencode(query))
+        for item in page["items"]:
+            for ref in item.get("evidence_refs") or []:
+                if ref.get("kind") == "attachment":
+                    found.setdefault(ref["attachment_id"], ref)
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return found
 
 
 def _comparison_kind(path):
@@ -777,11 +797,16 @@ def _task(client, args):
         return _compare(client, args)
     if args.command == "note":
         node_id = client.target.identity()["node_id"]
+        attached = [(path, _attachment(client, path)) for path in args.attach or []]
+        for path, ref in attached:   # the ID is what a report names the picture by
+            print(f"pf-node: {path.name} → attachment:{ref['attachment_id']}（交付正文里写 ![说明](attachment:{ref['attachment_id']})）",
+                  file=sys.stderr)
         data = {"research_id": args.id, "text": args.text, "reply_to": args.reply_to, "decision": args.decision,
                 "ask": args.ask, "to": args.to, "urgent": args.urgent,
-                "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence]
-                + [_attachment(client, path) for path in args.attach or []]}
-        return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None)
+                "evidence_refs": [_artifact(item, node_id, "--evidence") for item in args.evidence] + [ref for _, ref in attached]}
+        extra = {"attachments": [{"file": str(path), "attachment_id": ref["attachment_id"], "ref": "attachment:" + ref["attachment_id"]}
+                                 for path, ref in attached]} if attached else None
+        return _post(client, "note", "n-" + uuid.uuid4().hex[:12], data, None, None, extra)
     try:
         current = client.request("GET", f"/research-state/research/{args.id}")
     except RequestError as error:
@@ -823,7 +848,15 @@ def _task(client, args):
         return _post(client, "research", args.id, data, current["revision"], args.reason)
     summary = Path(args.summary[1:]).read_text(encoding="utf-8") if args.summary.startswith("@") else args.summary
     node_id = client.target.identity()["node_id"]
-    data["deliverable"] = {"summary": summary, "artifacts": [_artifact(item, node_id) for item in args.artifact],
+    named = [item.partition(":")[2] for item in args.artifact if item.startswith("attachment:")]
+    named += re.findall(r"!\[[^\]]*\]\(attachment:([^)\s]*)\)", summary)
+    attachments = _research_attachments(client, args.id) if named else {}
+    missing = sorted({aid for aid in named if aid not in attachments})
+    if missing:
+        raise ValueError("这些附件不是研究 " + args.id + " 里留言的附件：" + "、".join(missing)
+                         + f"；先用 pf-node research note {args.id} \"<说明>\" --attach FILE 上传，用它打印的 attachment ID")
+    data["deliverable"] = {"summary": summary, "artifacts": [attachments[item.partition(":")[2]] if item.startswith("attachment:")
+                                                             else _artifact(item, node_id) for item in args.artifact],
                            "applies_to": {"game_version": args.game_version, "devices": args.device}}
     data["state"] = "delivered"
     return _post(client, "research", args.id, data, current["revision"], args.reason)
