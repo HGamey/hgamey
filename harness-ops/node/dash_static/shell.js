@@ -1,4 +1,4 @@
-// HGamey 工作台外壳：主导航 8 项 + 「更多」菜单；节点身份收进节点名按钮；窄屏两行，标签可横向滚动。
+// HGamey 工作台外壳：主导航 6 项 + 「更多」菜单；节点身份收进节点名按钮；窄屏两行，标签可横向滚动。
 // 每页引入：紧跟旧 header.top 之后放 <script src="/dash/static/shell.js"></script>，外壳随首屏一起画出、替换旧顶栏；
 // 执行目标框由页尾的 target.js 生成，生成时再接上。
 // crypto.randomUUID 只在安全上下文（HTTPS、localhost）里有；明文入口（frp、局域网地址）上用 getRandomValues 补一个
@@ -16,18 +16,18 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
   const TABS = [
     ["/dash", "main", "总览"],
     ["/dash/command", "command", "指挥中心"],
-    ["/dash/structure", "structure", "结构"],
     ["/dash/research", "task", "任务"],
     ["/dash/research#agents-directory", "agent", "Agent"],
     ["/dash/fleet", "device", "设备"],
-    ["/dash/jobs", "runs", "作业"],
-    ["/dash/datasets", "data", "数据集"],
+    ["/dash/structure", "structure", "结构"],
   ];
   // 「更多」按谁用分两组：看结果的在前，工程师的工具在后。
   const MORE = [
     ["/dash/results", "研究结果", "看结果"],
+    ["/dash/datasets", "数据集", "看结果"],
     ["/dash/live", "实时画面", "看结果"],
     ["/dash/games", "游戏与资源", "看结果"],
+    ["/dash/jobs", "作业", "工程师用"],
     ["/dash/gol", "GOL 目标", "工程师用"],
     ["/dash/control", "远程调试", "工程师用"],
     ["/dash/doctor", "环境诊断", "工程师用"],

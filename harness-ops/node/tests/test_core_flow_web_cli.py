@@ -3041,7 +3041,8 @@ class CoreFlowTests(unittest.TestCase):
             self.assertEqual(page.goto(base + "/dash/datasets").status, 200)
             page.wait_for_function("() => document.getElementById('message').textContent === '还没有登记过数据集。'", timeout=20000)
             self.assertTrue(page.is_hidden("#datasets"))
-            self.assertEqual(page.get_attribute('.shell-tab[data-tab="data"]', "aria-current"), "page")
+            self.assertEqual(page.get_attribute(".shell-more-btn", "aria-current"), "page")
+            self.assertEqual(page.text_content(".shell-more-btn"), "数据集")
             self.assertEqual(self.web("POST", "/research-state/research/sr-data", self.write("create-sr-data", {"title": "采数据", "objective": "试点"}))[0], 201)
 
             def register(rid, dataset=None, names=(), supersedes=None):
