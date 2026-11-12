@@ -88,16 +88,23 @@ class Cleaner:
                               stdin=subprocess.DEVNULL, env=self.env, check=True).stdout
 
     def _look(self, serial):
-        found = leftovers(self._adb(serial, *PS))
-        if not found:
+        # One kill per process: one that ended by itself since ps fails its kill, and must not cost the others' record.
+        stopped = [process for process in leftovers(self._adb(serial, *PS)) if self._stop(serial, process["pid"])]
+        if not stopped:
             return
-        self._adb(serial, "shell", "kill", "-9", *(str(process["pid"]) for process in found))
-        record = {"at": time.time(), "serial": serial, "processes": found}
+        record = {"at": time.time(), "serial": serial, "processes": stopped}
         os.makedirs(os.path.dirname(self.log), exist_ok=True)
         with open(self.log, "a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
         with self._lock:
             self._records.append(record)
+
+    def _stop(self, serial, pid):
+        try:
+            self._adb(serial, "shell", "kill", "-9", str(pid))
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     def recent(self, serial):
         """This phone's clean-ups in the last day, oldest first."""
