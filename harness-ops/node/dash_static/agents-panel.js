@@ -42,10 +42,10 @@
         <td class="mono"><button class="agent-name" data-agent="${esc(a.name)}" type="button" style="background:none;border:none;color:var(--acc);cursor:pointer;font:inherit;padding:0;text-decoration:underline">${esc(a.name)}</button>${role(a.note)}${a.archived ? `<div class="muted" style="font-size:12px">${esc(ARCHIVED[a.archived] || a.archived)}</div>` : ""}</td>
         <td>${tags(a.tags || [])}</td>
         <td class="num">${runningByAgent[a.name] || 0}</td>
-        <td>${stamp(a.checkin && a.checkin.at)}</td>
+        <td title="${esc(a.checkin?.at ? stamp(a.checkin.at) : "")}">${a.checkin?.at ? esc(ago(a.checkin.at)) : "从未"}</td>
         <td title="${esc(a.activity?.at ? stamp(a.activity.at) : "")}">${esc(ago(a.activity?.at))}${a.activity?.source ? `<div class="muted" style="font-size:12px">${esc(SOURCE[a.activity.source] || a.activity.source)}</div>` : ""}</td>
         <td class="num">${owed[a.name] ?? "–"}</td>
-        <td>${a.status ? esc(a.status.text) : "–"}${a.status ? `<div class="muted" style="font-size:12px">${new Date(a.status.at * 1000).toLocaleString("zh-CN", { hour12: false })}</div>` : ""}</td>
+        <td>${a.status ? esc(a.status.text) : "–"}${a.status ? `<div class="muted" style="font-size:12px" title="${esc(stamp(a.status.at))}">${esc(ago(a.status.at))}</div>` : ""}</td>
         <td class="agent-actions">${actions(a)}</td>
       </tr>`).join("")}</tbody></table>`;
   }
