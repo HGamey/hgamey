@@ -1519,7 +1519,8 @@
         ['服务启动', time(node.started_at)], ...processPolicyFacts(node), ...hostCapacityFacts(node.execution?.host_capacity)
       ]);
       renderPrograms(node);
-      $('node-summary').textContent = `${text(node.node_id)} · ${text(node.host?.hostname)}`;
+      // The node ID is a technical detail; the computer reads by its host name.
+      $('node-summary').replaceChildren(el('span', `${text(node.node_id)} · `, 'tech'), text(node.host?.hostname));
       $('node-summary').hidden = false;
       $('node-details').hidden = false;
       message('node-message', refreshRuntime ? '程序观察请求已完成，请核对各项 observed / stale / unknown；没有改写历史作业。' : '');
