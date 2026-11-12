@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import uuid
 from cli_time import utc
-from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION, TASK_STATE_HELP, REQUEST_CLOSE_HELP, COMPARE_MAPPING_HELP
+from agent_duties import NOTE_STYLE, DELIVERY_STYLE, COMPARE_HELP, COLLABORATION, TASK_STATE_HELP, TASK_TITLE_HELP, REQUEST_CLOSE_HELP, COMPARE_MAPPING_HELP
 
 
 HELP = """用法:
@@ -89,7 +89,7 @@ media 只读下载固定版本的一个槽位，需显式 node-id 与评价能�
 图片至多 16 MiB、视频至多 128 MiB；同一遍流式校验服务器长度/SHA 后发布文件，不覆盖已有文件。
 没有自动重试或续传；失败只清理本次 partial。下载完整不表示已解码、看过或已提交评价。
 """
-HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE + "\n" + COMPARE_HELP + "\n" + COLLABORATION + "\n" + TASK_STATE_HELP
+HELP += "\n" + NOTE_STYLE + "\n" + DELIVERY_STYLE + "\n" + COMPARE_HELP + "\n" + COLLABORATION + "\n" + TASK_TITLE_HELP + "\n" + TASK_STATE_HELP
 
 KINDS = ("research", "direction", "request", "feedback", "note")
 MAX_DATA = 64 << 10

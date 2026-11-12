@@ -21,6 +21,7 @@ COMPARE_HELP = (COMPARE_DUTY + "\n"
     "--label 按 --item 的顺序给每份素材起人能看懂的名字（如 原生、双线性、自研超分），人答完以后页面用它揭晓，答之前不显示。\n"
     "要换掉旧的盲评，先用同样的素材发新的，再按这个写法关旧的：" + REQUEST_CLOSE_HELP)
 COLLABORATION = "只处理自己负责的研究，以及别人研究里点名给你的留言。接续的工作（复现、长稳、改进）在原任务里做：负责人加方向、重新交付；被点名帮忙的，把任务挂到原研究上（--research），结果用留言回在原留言下面。"
+TASK_TITLE_HELP = "新建任务（create research，接续任务也一样）时，标题写成人能看懂的话，如「原神超分：画质不降时帧率能提高多少」，不用「A 轨」「B 轨」这类只有自己懂的代号。"
 TASK_STATE_HELP = "任务开着就是进行中；关上分两种，有成果的是已交付，没成果的是已关闭（不做了，或者并入了别的任务，要写原因）。关上的任务可以重新打开，接着做完再交付一次，交付会多一个版本。"
 LOOP = [
     "最短完整路径：checkin → research claim → plan-template/create direction → --research 提交任务 → jobs --brief/status → research note 回应留言（附件用 job:<任务>:<路径>）→ research deliver；需要人定的事用 --ask 提问后继续其他方向。",
@@ -32,6 +33,7 @@ LOOP = [
     "typed 设备任务里的 devlock 只占本机 lane，嵌套会话沿用同一实例；全局范围任务仍用全农场 devlock。",
     "每轮开始先运行 pf-node checkin，按 duties 的顺序处理；duties 为空时再推进实验。",
     COLLABORATION,
+    TASK_TITLE_HELP,
     "人工在 research 里的留言要回应：pf-node research note <研究> \"<回复>\" --reply-to <留言> --decision adopt|defer|reject。没回应之前，这个研究不能交付，方向也不能下结论。",
     "其他 agent 和维护者的留言也会进待办，同样要回应，但不挡交付。",
     NOTE_STYLE,
