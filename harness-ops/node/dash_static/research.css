@@ -309,7 +309,9 @@ html.show-tech .research-view .research-report .report-code-toggle { display: no
 .agents-mode #agents-card .card-h h2 { display: none; }
 .agents-mode #agents-card .card-h { justify-content: flex-end; }
 .research-view #agents-list th { white-space: nowrap; }
-.research-view #agents-list .agent-name { text-align: left; }
+.research-view #agents-list .agents-table { width: 100%; }
+.research-view #agents-list .agent-name { padding: 0; border: none; background: none; color: var(--acc); font: inherit; text-align: left; text-decoration: underline; cursor: pointer; }
+.research-view #agents-list .agent-sub { font-size: 12px; }
 .research-view #agents-list .agent-role { min-width: 10em; max-width: 20em; margin-top: 2px; font-family: var(--font); font-size: var(--fs-sm); color: var(--ink2); line-height: 1.5; }
 .research-view #agents-list .agent-actions { white-space: nowrap; }
 .research-view .agents-archived { margin-top: var(--sp-3); }
