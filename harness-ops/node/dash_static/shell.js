@@ -32,6 +32,7 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     ["/dash/control", "远程调试", "工程师用"],
     ["/dash/doctor", "环境诊断", "工程师用"],
     ["/dash/maint", "曲线与日志", "工程师用"],
+    ["/dash/export", "数据导出", "工程师用"],
   ];
   const path = location.pathname.replace(/\/+$/, "") || "/dash";
   function current(p) {
