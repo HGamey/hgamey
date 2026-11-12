@@ -175,7 +175,7 @@ button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 20
 .chip .mark svg { width: 16px; height: 16px; }
 .chip.verified { border-color: rgba(240, 195, 110, .6); background: linear-gradient(90deg, rgba(240, 195, 110, .10), rgba(19, 27, 36, .94) 70%); }
 .chip.verified small { color: var(--gold); } .chip.verified .mark { color: #1b1407; background: var(--gold); border-color: var(--gold); }
-.chip.rejected, .chip.deferred, .chip.proposed { border-style: dashed; } .chip.rejected span, .chip.rejected .mark { color: var(--muted); }
+.chip.rejected, .chip.no_gain, .chip.deferred, .chip.proposed { border-style: dashed; } .chip.rejected span, .chip.rejected .mark, .chip.no_gain span, .chip.no_gain .mark { color: var(--muted); }
 .chip.proposed .mark, .chip.proposed small { color: var(--ice); } .chip.proposed { border-color: rgba(141, 180, 245, .4); }
 .chip.fresh { animation: chipin .5s var(--ease) both; } @keyframes chipin { from { opacity: 0; transform: translate(-12px, -50%); } }
 /* A run is a dot under its direction's chip; its name, phone and time are in the tip (and kept for screen readers). */
@@ -194,7 +194,7 @@ button.follow[aria-pressed="true"] { color: var(--teal); background: rgba(92, 20
 .pill span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pill.main { border-color: var(--gold); color: var(--gold); }
 .chip.main { border-color: var(--gold); border-style: solid; }
-.chip.rejected, .chip.deferred { opacity: .55; }
+.chip.rejected, .chip.no_gain, .chip.deferred { opacity: .55; }
 .chip .step { position: absolute; left: 6px; bottom: calc(100% + 4px); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--ice); }
 .stub { position: absolute; height: 26px; max-width: 260px; transform: translateY(-50%); display: flex; align-items: center; padding: 0 10px; box-sizing: border-box;
   border: 1px dashed var(--line2); border-radius: 8px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: default; }

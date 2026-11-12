@@ -8,6 +8,7 @@ export const FAR = .68;    // below this zoom: no speech bubbles, pins shrink to
 export const TINY = .2;    // below this zoom (past fit-all on a 1280×720 window) small text is a smear: chips keep only their mark and run dots grow
 const MARK = {verified: '<svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   rejected: '<svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  no_gain: '<svg viewBox="0 0 16 16"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   deferred: '<svg viewBox="0 0 16 16"><path d="M5 4v8M11 4v8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   proposed: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 2"/></svg>',
   trunk: '<svg viewBox="0 0 16 16"><path d="M4 5h8M4 8h8M4 11h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'};
@@ -148,7 +149,7 @@ export class World {
       }
       // The main line: from the root to the direction being worked on now, else the newest one still standing.
       const visible = [...seen].map(key => tr.parts.get('g:' + key).n).filter(n => n.dir), newest = list => list.sort((a, b) => b.dir.created_at - a.dir.created_at)[0];
-      const target = newest(visible.filter(n => runningOn.has(n.key))) || newest(visible.filter(n => !['rejected', 'deferred'].includes(dirAt(n.dir, t)))) || newest(visible);
+      const target = newest(visible.filter(n => runningOn.has(n.key))) || newest(visible.filter(n => !['rejected', 'no_gain', 'deferred'].includes(dirAt(n.dir, t)))) || newest(visible);
       const line = new Set();
       for (let n = target; n?.dir; n = n.parent) line.add(n.key);
       const mainKey = [...line].join('|');
