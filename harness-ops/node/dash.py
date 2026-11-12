@@ -47,6 +47,7 @@ from job_queue import RequestConflict
 from job_capacity import CapacityExceeded
 from job_events import public_fields
 import dash_command
+import dash_tour
 from node_session import SessionError, MAX_REQUEST
 from node_deployments import DeploymentError
 from node_fleet import (FleetState, read_lock, VIEW_IDLE_S, FLEET_EVERY_FREE_S,
@@ -295,6 +296,10 @@ class Dash:
             return self._static(h, "flow.html")
         if sub == ["showcase"]:
             return self._static(h, "showcase.html")
+        if sub == ["tour"]:
+            return self._static(h, "tour.html")
+        if sub[:2] == ["api", "tour"] and len(sub) <= 3:
+            return self._tour_read(h, sub[2] if len(sub) == 3 else None)
         if sub in (["command"], ["showcase", "command"]):
             return self._static(h, "command.html")
         if sub == ["api", "command"]:
@@ -393,6 +398,8 @@ class Dash:
             return self._send(h, 200, {"ok": True}, extra={"Set-Cookie": f"{STEER_COOKIE}={self._cookie_attrs(h, 0)}"})
         if not self.steered(h):
             return self._send(h, 403, {"error": "需要掌舵密码", "need_steer": True})
+        if sub[:2] == ["api", "tour"] and len(sub) in (2, 4):
+            return self._tour_write(h, sub[2:], ip)
         try:
             if sub[:2] == ["api", "games"]:
                 if len(body) > MAX_MANIFEST:
@@ -506,6 +513,46 @@ class Dash:
         except Exception as error:  # the page shows this and keeps its last good model
             return self._send(h, 503, {"error": f"指挥中心数据暂不可用：{type(error).__name__}: {error}"[:300]})
 
+    def _tours(self):
+        tours = getattr(self, "_tour_store", None)
+        if tours is None:
+            tours = self._tour_store = dash_tour.Tours(self.job_service)
+        return tours
+
+    def _tour_read(self, h, tid):
+        """我来当一次 Agent: the tours still open, or one tour with what a person sees of each step on the web."""
+        if not self.job_service:
+            return self._send(h, 503, {"error": "作业服务不可用"})
+        try:
+            if tid is None:
+                return self._send(h, 200, {"open": [{"id": t["id"], "created_at": t["created_at"]} for t in self._tours().open()]})
+            return self._send(h, 200, self._tours().view(tid))
+        except dash_tour.TourError as error:
+            return self._send(h, error.status, {"error": str(error)})
+
+    def _tour_write(self, h, rest, ip):
+        """Start a tour, run one of its steps as its identity (pf-node against this center), or end it."""
+        if not self.job_service:
+            return self._send(h, 503, {"error": "作业服务不可用"})
+        host, port = h.server.server_address[:2]
+        host = "127.0.0.1" if host in ("", "0.0.0.0") else "::1" if host == "::" else host
+        base = "http://" + (f"[{host}]" if ":" in host else host) + f":{port}"
+        tid, action = rest or (None, "start")
+        try:
+            if tid is None:
+                tid = self._tours().start()["id"]
+            elif action == "end":
+                self._tours().end(tid)
+            else:
+                self._tours().step(tid, action, base)
+            log_err(f"dash 体验 {tid} {action} 来自 {ip}")
+            return self._send(h, 200, self._tours().view(tid))
+        except dash_tour.TourError as error:
+            failed = {"error": str(error)}
+            if error.status != 404 and tid:   # the page keeps showing the tour, with what the failed step printed
+                failed["tour"] = self._tours().view(tid)
+            return self._send(h, error.status, failed)
+
     def _task_list(self, h, q):
         """The task list, most recently active first. A task is as recent as the latest change to it, its directions or
         notes, or a run of it being queued, claimed, started or ended (`active_at`). Tasks that follow another
@@ -514,11 +561,11 @@ class Dash:
         `all=1` lists every task. `state` keeps the chains holding a task in that state, `research_id` the chain holding
         that task. Same items as the research list plus these fields; no paging."""
         research = getattr(self.job_service, "research", None) if self.job_service else None
-        if (research is None or set(q) - {"state", "research_id", "chain", "all", "expected_node_id"}
+        if (research is None or set(q) - {"state", "research_id", "chain", "all", "tour", "expected_node_id"}
                 or any(len(v) != 1 for v in q.values())):
-            return self._send(h, 400, {"error": "tasks take only state, research_id, chain and all"})
+            return self._send(h, 400, {"error": "tasks take only state, research_id, chain, all and tour"})
         try:
-            items, node_id = self._every_task(research)
+            items, node_id = self._every_task(research, tours=q.get("tour", [""])[0] == "1")
             model, at = self._model(), {item["id"]: item["updated_at"] for item in items}
         except ValueError as error:
             return self._send(h, 400, {"error": str(error)})
@@ -551,14 +598,14 @@ class Dash:
         return self._send(h, 200, {"schema_version": 1, "node_id": node_id, "items": out, "next_cursor": None})
 
     @staticmethod
-    def _every_task(research):
-        """Every task of this node, page by page, and the node id."""
+    def _every_task(research, tours=False):
+        """Every task of this node, page by page, and the node id. 我来当一次 Agent tasks only when asked for."""
         query, items, node_id = {"limit": ["100"]}, [], None
         while True:
             page = research.list("research", query)
             items, node_id = items + page["items"], page["node_id"]
             if not page.get("next_cursor"):
-                return items, node_id
+                return [t for t in items if tours or not dash_tour.is_tour(t["id"])], node_id
             query = {**query, "cursor": [page["next_cursor"]]}
 
     @staticmethod

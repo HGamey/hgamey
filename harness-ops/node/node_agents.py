@@ -16,6 +16,7 @@ from job_dispatch import file_lock
 
 SCHEMA = "phonefarm/agent-registry@1"
 # An agent with no activity for this long is folded away (archived) on the pages; any activity brings it back.
+TOUR_TAG = "tour"
 ARCHIVE_AFTER_S = 3 * 86400
 # Activity this recent makes an agent count as running: replacing its token would cut it off.
 ACTIVE_WITHIN_S = 30 * 60
@@ -86,7 +87,8 @@ def annotate(entry, latest, now=None):
                   ((entry.get("status") or {}).get("at"), "status"), latest.get(entry["name"], (None, None))]
     at, source = max(((t, s) for t, s in candidates if isinstance(t, (int, float))), default=(None, None))
     archived_at = entry.get("archived_at")
-    reason = ("disabled" if not entry.get("enabled", True)
+    reason = ("tour" if TOUR_TAG in (entry.get("tags") or [])   # a 我来当一次 Agent identity, folded away from the start
+              else "disabled" if not entry.get("enabled", True)
               else "manual" if archived_at is not None and (at is None or at <= archived_at)
               else "idle" if at is None or now - at > ARCHIVE_AFTER_S else None)
     return {**entry, "activity": {"at": at, "source": source}, "archived": reason}

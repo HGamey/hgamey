@@ -4,6 +4,8 @@ import hashlib
 import json
 import time
 
+TOUR_PREFIX = "tour-"   # 我来当一次 Agent: its task and its identity are both named tour-<6 hex>
+
 SCHEMA = "hgamey/agent-checkin@1"
 STATUS_STALE_SECONDS = 30 * 60
 TERMINAL_DIRECTIONS = {"verified", "no_gain", "rejected", "deferred"}
@@ -263,8 +265,10 @@ def duties(jobs, name, now=None):
                                  "text": f"{rid} 已交付或准备交付，方向 {did} 仍为 {state}；给方向下结论",
                                  "command": f"pf-node research conclude {did} verified|no_gain|rejected|deferred "
                                             "--reason \"<依据>\" [--evidence job:<任务>:<路径>]"})
+    # A 我来当一次 Agent task is there for its own temporary identity only, which has the task's name.
     unclaimed = [{"research_id": row["id"], "title": data["title"]} for row, data in studies
-                 if data.get("owner") is None and data["state"] == "active"]
+                 if data.get("owner") is None and data["state"] == "active"
+                 and (not row["id"].startswith(TOUR_PREFIX) or row["id"] == name)]
     return {"schema": SCHEMA, "node_id": jobs.agents.local_node_id, "agent": name, "at": now,
             "previous_checkin_at": last, "event_head": head, "duties": owed, "waiting_on_human": waiting,
             "question_answers": question_answers,

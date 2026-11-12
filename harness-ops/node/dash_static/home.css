@@ -240,7 +240,7 @@ details.gm pre { font-size: 14px; }
   .home-view main.home { padding: var(--sp-4) var(--sp-4) var(--sp-7); gap: var(--sp-5); }
 }
 @media (max-width: 640px) {
-  .home-view #goal-btn { display: none; }
+  .home-view #goal-btn, .home-view #tour-btn { display: none; }
   .home-view #live-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .home-view .task-time { margin-left: 0; }
   /* 已交付/已关闭：标题占一整行，负责人·接续·时间换到下一行 */

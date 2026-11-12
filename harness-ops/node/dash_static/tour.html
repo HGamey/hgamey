@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark">
+<title>我来当一次 Agent · HGamey</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/dash/static/app.css"><link rel="stylesheet" href="/dash/static/tour.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+</head>
+<body class="tour-view">
+<a class="skip-link" href="#tour-title">跳到体验</a>
+<header class="top"><div class="top-right"></div></header><script src="/dash/static/shell.js"></script>
+<main class="tour-page">
+  <div class="tour-head">
+    <h1 id="tour-title" tabindex="-1">我来当一次 Agent</h1>
+    <p id="tour-who" class="tour-who" hidden></p>
+    <div class="tour-actions">
+      <button id="tour-start" class="btn primary" type="button" hidden>开始</button>
+      <button id="tour-end" class="btn" type="button" hidden>结束体验</button>
+    </div>
+  </div>
+  <form id="tour-unlock" class="tour-unlock card" hidden>
+    <label>掌舵密码 <input id="tour-pw" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary" type="submit">解锁</button>
+  </form>
+  <p id="tour-msg" class="msg" role="status"></p>
+  <ol id="tour-steps" class="tour-steps"></ol>
+</main>
+<script src="/dash/static/target.js"></script><script src="/dash/static/tour.js"></script>
+</body>
+</html>

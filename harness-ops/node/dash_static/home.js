@@ -209,7 +209,7 @@
     return {cls: m < 30 ? "ok" : m < 240 ? "warn" : "off", text: `${ago(now, at)}签到`};
   }
   // Why an agent is folded away under 已归档.
-  const ARCHIVED = {idle: "3 天没有活动", manual: "手动归档", disabled: "已停用"};
+  const ARCHIVED = {idle: "3 天没有活动", manual: "手动归档", disabled: "已停用", tour: "体验身份"};
   function renderAgents(h) {
     const agents = h.agents || [], shown = agents.filter(a => !a.archived), folded = agents.filter(a => a.archived);
     $("agents-count").textContent = shown.length ? String(shown.length) : "";

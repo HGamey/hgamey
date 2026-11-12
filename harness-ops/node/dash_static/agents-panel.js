@@ -14,7 +14,7 @@
     return r.json();
   }
   const active = HGJobState.active;
-  const ARCHIVED = { idle: "3 天没有活动", manual: "手动归档", disabled: "已停用" };
+  const ARCHIVED = { idle: "3 天没有活动", manual: "手动归档", disabled: "已停用", tour: "体验身份" };
   const SOURCE = { registered: "注册", checkin: "签到", status: "报状态", job: "提交作业", research: "写研究记录" };
   const stamp = at => at ? new Date(at * 1000).toLocaleString("zh-CN", { hour12: false }) : "从未";
   function ago(at) {
