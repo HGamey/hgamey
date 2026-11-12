@@ -864,7 +864,7 @@ def _task(client, args):
     data["deliverable"] = {"summary": summary, "artifacts": [attachments[item.partition(":")[2]] if item.startswith("attachment:")
                                                              else _artifact(item, node_id) for item in args.artifact],
                            "applies_to": {"game_version": args.game_version, "devices": args.device}}
-    data["state"] = "delivered"
+    data["state"], data["state_reason"] = "delivered", args.reason   # not the reason it was last reopened for
     return _post(client, "research", args.id, data, current["revision"], args.reason)
 
 
