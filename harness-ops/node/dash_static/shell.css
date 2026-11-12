@@ -145,7 +145,17 @@ html:not(.show-tech) .tech { display: none !important; }
   .shell-name { display: none; }
   .shell-top { column-gap: var(--sp-2); }
   .shell-node { max-width: 128px; }
+  /* Six tabs and 更多 fit a 390 px phone. */
+  .shell-nav, .shell-tabs { gap: 0; }
+  .shell-tab { padding: 0 6px; }
 }
+/* Where the tabs still do not fit, they scroll a whole tab at a time and the side that has more fades out. */
+.shell-tabs { scroll-snap-type: x mandatory; }
+.shell-tabs > .shell-tab { scroll-snap-align: start; }
+.shell-tabs.more-right { -webkit-mask-image: linear-gradient(to left, transparent, #000 28px); mask-image: linear-gradient(to left, transparent, #000 28px); }
+.shell-tabs.more-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px); mask-image: linear-gradient(to right, transparent, #000 28px); }
+.shell-tabs.more-left.more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
 
 /* ══ 页面画布 ══ */
 .canvas { max-width: 1280px; margin: 0 auto; padding: 24px 24px 48px; display: flex; flex-direction: column; gap: 24px; }

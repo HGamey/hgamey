@@ -206,6 +206,13 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
     if (window.ResizeObserver) new ResizeObserver(height).observe(top);
     const tab = tabs.querySelector('[aria-current="page"]');
     if (tab && tabs.scrollWidth > tabs.clientWidth) tab.scrollIntoView({block: "nearest", inline: "center"});
+    const edges = () => {
+      tabs.classList.toggle("more-left", tabs.scrollLeft > 1);
+      tabs.classList.toggle("more-right", tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 1);
+    };
+    edges();
+    tabs.addEventListener("scroll", edges, {passive: true});
+    addEventListener("resize", edges);
     fetch("/dash/api/node").then(r => r.ok ? r.json() : null).then(d => {
       if (!d || !d.host) return;
       nameEl.textContent = d.host.hostname;
