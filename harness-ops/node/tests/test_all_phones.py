@@ -47,7 +47,7 @@ class AllPhonesTests(unittest.TestCase):
     def rows(self, page):
         page.wait_for_selector("#all-phones-list .phone-row")
         return page.eval_on_selector_all("#all-phones-list .phone-row", """rows => Object.fromEntries(rows.map(row => [row.dataset.ref,
-            [...row.children].slice(0, 6).map(cell => cell.textContent)
+            [...row.children].slice(0, 7).map(cell => cell.textContent)
               .concat([[...row.querySelectorAll('.phone-links a')].map(a => a.textContent + ' ' + a.getAttribute('href').replace(/&expected_node_id=[0-9a-f]+$/, ''))])]))""")
 
     def test_every_computers_phones_are_listed_with_what_can_be_done_and_links_to_do_it(self):
@@ -62,18 +62,18 @@ class AllPhonesTests(unittest.TestCase):
             self.assertEqual(page.goto("http://%s:%d/dash/fleet" % self.address).status, 200)
             rows = self.rows(page)
             self.assertEqual(rows, {
-                blue: ["REDMAGIC NX809JRM1", "office", "在线", "Android 16", "root", "装包 · 推文件 · 命令 · 截图",
+                blue: ["REDMAGIC NX809JRM1", "office", "在线", "空闲", "Android 16", "root", "装包 · 推文件 · 命令 · 截图",
                        [f"远程控制 /dash/control?device={BLUE}%2FRM1", f"派作业 /dash/jobs?phone={BLUE}%2FRM1"]],
-                CHENGDU + "/OP1": ["OnePlus PHK110OP1", "chengdu", "离线", "Android 15", "root", "不可远程", []],
-                local + "/HONOR": ["HONOR AAP-AN00HN1", host, "在线读数 5 小时前", "Android 16", "无 root", "不可远程",
+                CHENGDU + "/OP1": ["OnePlus PHK110OP1", "chengdu", "离线", "—", "Android 15", "root", "不可远程", []],
+                local + "/HONOR": ["HONOR AAP-AN00HN1", host, "在线读数 5 小时前", "空闲", "Android 16", "无 root", "不可远程",
                                    [f"派作业 /dash/jobs?phone={local}%2FHONOR"]],
-                local + "/HUAWEI": ["HUAWEIHD1", host, "未接入", "—", "—", "不可远程", []],
+                local + "/HUAWEI": ["HUAWEIHD1", host, "未接入", "—", "—", "—", "不可远程", []],
             })
             self.assertEqual(page.text_content("#all-phones-count"), "4 台 · 2 台在线")
             # A phone that is not there gets neither link: nothing can be sent to it.
             # A table: every column starts at the same place on every row, whatever links a row has.
-            self.assertEqual(page.eval_on_selector_all("#all-phones .phone-row", """rows => [...Array(7).keys()].map(i =>
-                new Set(rows.map(row => Math.round(row.children[i].getBoundingClientRect().left))).size)"""), [1] * 7)
+            self.assertEqual(page.eval_on_selector_all("#all-phones .phone-row", """rows => [...Array(8).keys()].map(i =>
+                new Set(rows.map(row => Math.round(row.children[i].getBoundingClientRect().left))).size)"""), [1] * 8)
             self.assertEqual(sorted(page.eval_on_selector_all(".phone-row:is(.is-off, .is-gone)", "rows => rows.map(row => row.dataset.ref)")),
                              sorted([CHENGDU + "/OP1", local + "/HUAWEI"]))
 
