@@ -1,6 +1,7 @@
 """Changing a zone on the 结构 page: a computer's or an agent's card opens a choice of the zones there are, 未标区域 or a
 new one. Only the zone: tag changes, at the revision the card was read at; the card moves to its new band at once,
-whatever place it was dragged to before. Without the steer password nothing is written."""
+whatever place it was dragged to before. Without the steer password the cards have no way to change a zone and
+nothing is written; 修改区域 above the map asks for it."""
 import collections
 import unittest
 
@@ -103,21 +104,24 @@ class StructureZoneTests(unittest.TestCase):
         before = self.tags("office"), self.cli("GET", "/agents/agent-b")[1]["tags"]
         with self._browser_page() as page:
             self.open(page, 1280)
-            self.choose(page, office, "成都公网")
-            page.wait_for_function("() => /先解锁掌舵权限/.test(document.getElementById('zone-message').textContent)")
-            self.assertTrue(page.is_visible("#zone-unlock"))
-            self.assertTrue(page.is_disabled("#zone-save"))
+            # A viewer sees no way to change anything: no zone buttons on the cards, one 修改区域 that asks to unlock.
+            page.wait_for_selector("#zone-edit:not([hidden])")
+            self.assertGreater(page.locator(".st-zone-btn").count(), 0)
+            self.assertEqual(page.locator(".st-zone-btn:visible").count(), 0)
             # The APIs themselves refuse without it.
             agent = self.cli("GET", "/agents/agent-b")[1]
             self.assertEqual(self.web("POST", "/nodes/office", {"revision": self.jobs.directory.get("office")["revision"], "tags": []}, steer=False)[0], 403)
             self.assertEqual(self.web("POST", "/agents/agent-b", {"revision": agent["revision"], "tags": []}, steer=False)[0], 403)
             self.assertEqual((self.tags("office"), self.cli("GET", "/agents/agent-b")[1]["tags"]), before)
-            # Unlocked in the dialog, it saves. (The unlock route counts wrong passwords and sets its cookie as on plain
-            # LAN HTTP; Dash.__init__ is skipped here.)
+            # Unlocked from 修改区域, the cards get their zone buttons and it saves. (The unlock route counts wrong passwords
+            # and sets its cookie as on plain LAN HTTP; Dash.__init__ is skipped here.)
             self.board.fails, self.board._lan_plain = collections.defaultdict(list), True
-            page.fill("#zone-steer", core.STEER)
-            page.click("#zone-unlock-submit")
-            page.wait_for_function("() => !document.getElementById('zone-save').disabled")
+            page.click("#zone-edit")
+            page.fill("#edit-steer", core.STEER)
+            page.click("#edit-unlock button[type=submit]")
+            page.wait_for_selector(f'.st-card[data-id="{office}"] .st-zone-btn', state="visible")
+            self.assertTrue(page.is_hidden("#zone-edit"))
+            self.choose(page, office, "成都公网")
             self.assertTrue(page.is_hidden("#zone-unlock"))
             page.click("#zone-save")
             page.wait_for_selector("#zone-dialog", state="hidden")
