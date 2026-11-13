@@ -13,6 +13,11 @@
   let deviceRegistry = null, registryBusy = false, registryWriting = false, registryAttempted = false, registryController = null;
   let registryError = '', registryNotice = '', registryReadAt = null, deviceEditor = null;
   const CONNECTION = {ready: '已连接', disconnected: '已断开'};
+  // A computer not connected reads as offline since it was last seen. What its updater last said is then a result of
+  // being offline (it could not reach the center), not why, so it is a technical detail.
+  const offline = entry => entry?.connection?.status === 'disconnected';
+  const since = at => new Date(at * 1000).toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
+  const offlineSince = entry => '离线' + (entry.connection?.last_seen_at ? ` · 从 ${since(entry.connection.last_seen_at)} 起` : '');
   const text = value => value == null || value === '' ? '未知' : String(value);
   const numeric = (value, unit) => typeof value === 'number' && Number.isFinite(value) ? `${value}${unit}` : '未知';
   const time = value => value == null ? '未记录' : new Date(value * 1000).toLocaleString();
@@ -78,8 +83,10 @@
     line.append([`版本 ${short(updates?.current_revision || identity?.service?.revision)}`, behind(updates)].filter(Boolean).join(' · '));
     const state = el('span'); badge(state, updates ? UPDATE[updates.status] || '更新状态未知' : UPDATE.not_installed, UPDATE_TONE[updates?.status] || '');
     if (updates?.error) state.title = updates.error;
-    line.append(' ', state);
-    if (updates?.observed_at && entryStale(entry)) line.append(` · 上报于 ${time(updates.observed_at)}`);
+    const update = offline(entry) ? el('span', null, 'tech') : line;
+    update.append(' ', state);
+    if (updates?.observed_at && entryStale(entry)) update.append(` · 上报于 ${time(updates.observed_at)}`);
+    if (update !== line) line.append(update);
     return line;
   }
   function updateFacts(updates, entry) {
@@ -342,12 +349,12 @@
     for (const entry of entries.values()) {
       const row = el('li'), choice = el('button', null, 'node-choice'), head = el('div', null, 'node-choice-head');
       choice.type = 'button'; choice.setAttribute('aria-current', String(selected === entry.name));
-      const state = el('span'); badge(state, CONNECTION[entry.connection?.status] || '连接状态未知', entry.connection?.status === 'ready' && !entryStale(entry) ? '' : 'unknown');
+      const state = el('span'); badge(state, offline(entry) ? offlineSince(entry) : CONNECTION[entry.connection?.status] || '连接状态未知', entry.connection?.status === 'ready' && !entryStale(entry) ? '' : 'unknown');
       head.append(el('strong', entry.name), state);
       const fleet = entry.snapshot?.fleet, devices = fleet?.devices;
       choice.append(head, el('span', text(entry.node_id), 'node-choice-meta tech'), ...tagLines(entry.tags || []),
         el('span', Array.isArray(devices) ? `${devices.length} 台手机 · 采样于 ${time(fleet.sampled_at)}${fleet.stale || entryStale(entry) ? ' · 已过期' : ''}` : '还没有手机读数', 'node-choice-meta'),
-        el('span', `最近联系：${time(entry.connection?.last_seen_at)}`, 'node-choice-meta'), versionLine(entry));
+        ...(offline(entry) ? [] : [el('span', `最近联系：${time(entry.connection?.last_seen_at)}`, 'node-choice-meta')]), versionLine(entry));
       choice.addEventListener('click', () => selectNode(entry.name)); row.append(choice); rows.push(row);
     }
     $('node-directory').replaceChildren(...rows);
@@ -502,7 +509,7 @@
   function renderNode(node, entry = null) {
     $('node-summary').replaceChildren(entry ? entry.name : '本节点', el('span', ` · ${text(node?.node_id || entry?.node_id)}`, 'tech'), node?.host?.hostname ? ` · ${node.host.hostname}` : '');
     $('node-updated').textContent = entry ? `最近快照：${time(entry.snapshot?.at)}` : `读取于 ${new Date().toLocaleTimeString()}`;
-    message('node-message', entry ? `${CONNECTION[entry.connection?.status] || '连接状态未知'}。最近联系：${time(entry.connection?.last_seen_at)}。${entry.connection?.error ? ` 这次请求没成功：${typeof entry.connection.error === 'string' ? entry.connection.error : JSON.stringify(entry.connection.error)}。` : ''}${entryStale(entry) ? ' 以下是最后一次收到的信息。' : ''}` : '', !!entry?.connection?.error);
+    message('node-message', entry ? `${offline(entry) ? offlineSince(entry) : `${CONNECTION[entry.connection?.status] || '连接状态未知'}。最近联系：${time(entry.connection?.last_seen_at)}`}。${entry.connection?.error ? ` 这次请求没成功：${typeof entry.connection.error === 'string' ? entry.connection.error : JSON.stringify(entry.connection.error)}。` : ''}${entryStale(entry) ? ' 以下是最后一次收到的信息。' : ''}` : '', !!entry?.connection?.error);
     $('node-details').hidden = false;
     facts($('node-info'), [...(entry ? [['节点名', entry.name], ['加入时间', time(entry.created_at)], ['标签', entry.tags?.join('、')], ['备注', entry.note]] : [['访问入口', location.origin]]),
       ['节点 ID', node?.node_id || entry?.node_id], ['宿主系统', node?.host?.platform],
