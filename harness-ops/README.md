@@ -1,6 +1,6 @@
 # harness-ops
 
-外部 Agent 使用远程真机的节点服务、客户端和网页；共享目标、方向、证据与异步协助独立于聊天工具，GOL 可选。参考 [研究 skill](skills/hgamey-research/SKILL.md) 接续研究，网页与 CLI/API 同等优先。
+外部 Agent 使用远程真机的节点服务、客户端和网页；共享目标、方向、证据与异步协助独立于聊天工具，GOL 可选。参考 [研究 skill](skills/hgamey-research/SKILL.md) 接续研究，[game-frame-capture](skills/game-frame-capture/SKILL.md) 采游戏连续序列帧（带/不带 UI、深度、速度图）并登记数据集，网页与 CLI/API 同等优先。
 
 | 路径 | 作用 |
 |---|---|
