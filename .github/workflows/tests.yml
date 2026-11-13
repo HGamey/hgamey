@@ -36,7 +36,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Install phonefarm test tools
         if: matrix.name == 'phonefarm tests'
-        run: sudo apt-get update && sudo apt-get install -y zsh adb
+        run: sudo apt-get update && sudo apt-get install -y zsh adb libvulkan-dev
       - name: Set up Python
         if: matrix.playwright
         uses: actions/setup-python@v5

@@ -141,7 +141,8 @@ impl Session {
 
     fn resume_owned(dir: &Path, serial: &str, owner: &str) -> Result<Self, String> {
         let dir = dir.canonicalize().map_err(|e| e.to_string())?;
-        let state: Value = serde_json::from_slice(&bounded(&dir.join("session.json"), 1024 * 1024)?).map_err(|e| e.to_string())?;
+        let mut state: Value = serde_json::from_slice(&bounded(&dir.join("session.json"), 1024 * 1024)?).map_err(|e| e.to_string())?;
+        with_target_original(&mut state);
         validate(&state, &dir, serial)?;
         if owner == EVAL_OWNER {
             if !matches!(completion_owner(&state)?,EVAL_OWNER|SCRIPT_OWNER) {return Err("this session requires its dedicated recovery entry point".into());}
@@ -441,7 +442,7 @@ impl Session {
         self.install_mode(so, false, None, None, false, Some(properties))
     }
 
-    fn install_mode(&self, so: Option<&str>, ts: bool, extras: Option<&str>, storeop: Option<&str>, frameaudit: bool, control: Option<[&str; 12]>) -> Result<(), String> {
+    fn install_mode(&self, so: Option<&str>, ts: bool, extras: Option<&str>, storeop: Option<&str>, frameaudit: bool, control: Option<[&str; 13]>) -> Result<(), String> {
         self.ready()?;
         if self.state.borrow()["stage"] != "prepared" { return Err("gray capture must be prepared before install".into()); }
         let local = so.map(str::to_owned).unwrap_or_else(graylayer::layer_so_path);
@@ -452,8 +453,9 @@ impl Session {
         let component = self.launch_component()?;
         self.activate_outputs()?;
         self.install_owned_layer(&local)?;
+        let package = self.package();
         for (index, property) in LAYER_PROPERTIES.into_iter().enumerate().filter(|(_, p)| *p != "debug.vulkan.layers") {
-            let value = if let Some(values) = &control { values[index] } else { match property {
+            let value = if property == graylayer::TARGET_PROP { &package } else if let Some(values) = &control { values[index] } else { match property {
                 "debug.knobs.passdump" if completion_owner(&self.state.borrow())? != LOADOP_OWNER => "1",
                 "debug.knobs.frameaudit" if frameaudit => "1",
                 "debug.knobs.frameaudit_ts" if ts => "1",
@@ -612,7 +614,9 @@ impl Session {
             "frames":frames,"intensity":intensity,"knob_loadop":arm.knob(),"extras":extras}))?;
         if let Some(local) = local { self.install_owned_layer(&local)?; }
         if arm.layered() {
+            let package = self.package();
             for (property, value) in LAYER_PROPERTIES.into_iter().zip(control_properties("loadop")?) {
+                let value = if property == graylayer::TARGET_PROP { &package } else { value };
                 if property != "debug.vulkan.layers" { self.set_property(property, value)?; }
             }
             self.set_property("debug.vulkan.layers", LAYER_NAME)?;
@@ -674,11 +678,13 @@ impl Session {
         }
         if let Err(error) = self.save() { return self.stop(format!("round transition persistence failed: {error}")); }
         journal(&self.dir, json!({"event":"eval_round","generation":generation,"label":label,"rule":rule}))?;
+        let package = self.package();
         for property in LAYER_PROPERTIES.into_iter().filter(|p| *p != "debug.vulkan.layers") {
             let value = match property {
                 "debug.knobs.passdump" if rule.is_some() && completion_owner(&self.state.borrow())? != LOADOP_OWNER => "1",
                 "debug.knobs.loadop" if loadop => "1",
                 graylayer::STOREOP_PROP => rule.as_deref().unwrap_or("0"),
+                graylayer::TARGET_PROP => &package,
                 _ => "0",
             };
             self.set_property(property, value)?;
@@ -1056,7 +1062,14 @@ fn valid_session_directory(dir: &Path, owner: &str, token: &str) -> bool {
     })
 }
 
-fn control_properties(mode: &str) -> Result<[&'static str; 12], String> {
+// Sessions saved before debug.knobs.target joined LAYER_PROPERTIES never set it; it had no other writer.
+fn with_target_original(state: &mut Value) {
+    if let Some(properties) = state.get_mut("properties").and_then(Value::as_object_mut).filter(|m| !m.is_empty()) {
+        properties.entry(graylayer::TARGET_PROP).or_insert_with(|| json!(""));
+    }
+}
+
+fn control_properties(mode: &str) -> Result<[&'static str; 13], String> {
     if !matches!(mode, "probe" | "target" | "passdump" | "loadop" | "frameaudit" | "frameaudit-ts") {
         return Err(format!("unsupported gray control mode: {mode}"));
     }
@@ -1280,6 +1293,24 @@ mod tests {
             assert_eq!(actual, enabled, "{mode}");
         }
         for mode in ["copyprobe", "upop", "off", "unknown"] { assert!(control_properties(mode).is_err()); }
+    }
+
+    #[test]
+    fn sessions_saved_before_the_target_property_resume_with_an_empty_original() {
+        let mut saved = json!({"properties": {}});
+        for property in LAYER_PROPERTIES.into_iter().filter(|p| *p != graylayer::TARGET_PROP) { saved["properties"][property] = json!("7"); }
+        saved["properties"]["debug.vulkan.layers"] = json!("");
+        with_target_original(&mut saved);
+        let properties = saved["properties"].as_object().unwrap();
+        assert_eq!(properties.len(), LAYER_PROPERTIES.len());
+        assert_eq!(properties[graylayer::TARGET_PROP], "");
+        let mut current = json!({"properties": {graylayer::TARGET_PROP: "com.example.previous"}});
+        with_target_original(&mut current);
+        assert_eq!(current["properties"][graylayer::TARGET_PROP], "com.example.previous");
+        // An unprepared session must keep its empty baseline.
+        let mut fresh = json!({"stage": "new", "properties": {}});
+        with_target_original(&mut fresh);
+        assert_eq!(fresh["properties"], json!({}));
     }
 
     #[test]

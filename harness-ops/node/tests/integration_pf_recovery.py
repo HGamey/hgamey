@@ -385,7 +385,7 @@ class RecoveryFixture:
         device=self.scratch/'device'; device.mkdir(mode=0o700)
         props={'debug.vulkan.layers':''}
         for n,name in enumerate(('loadop','passdump','copyprobe','upop','frameaudit','frameaudit_ts',
-                                 'frameaudit_go','storeop','storeop_live','storeop_on'),2):
+                                 'frameaudit_go','storeop','storeop_live','storeop_on','target'),2):
             props['debug.knobs.'+name]=str(n)
         props.update({'debug.knobs.storeop':'deadbeef:1','debug.knobs.npuprobe':'3'})
         marker='/storage/emulated/0/Android/data/'+PKG+'/files/knobs_layer_out.json'
@@ -485,6 +485,9 @@ class RecoveryFixture:
         assert all('PF_NODE_TOKEN' not in c['environment_keys'] for c in calls)
         before=json.loads((device/'initial-state.json').read_text()); after=json.loads((device/'state.json').read_text())
         assert after['properties']==before['properties'] and after['files'][CHARGE_NODE]=='0\n'
+        # The layer works only in the process named by debug.knobs.target; it is set before the global layer list.
+        writes=[(c['property'],c['value']) for c in calls if c['kind']=='property-write']
+        assert ('debug.knobs.target',PKG) in writes[:writes.index(('debug.vulkan.layers','VK_LAYER_refknobs_readonly'))]
         assert all(after['files'].get(path)==value for path,value in before['files'].items())
         assert after['processes']==['init','org.example.other']
         assert len(after['sampling_rounds'])==1 and after['sampling_closed']

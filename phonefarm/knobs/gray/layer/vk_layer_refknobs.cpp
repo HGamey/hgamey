@@ -678,14 +678,38 @@ static bool read_bool_prop(const char* name) {
 // 所以两条都留: 任何一条成立即可判定层挂上了。
 #define RK_LOG(...) __android_log_print(ANDROID_LOG_INFO, "refknobs", __VA_ARGS__)
 
-static std::string self_pkg() {
+// 进程名 = /proc/self/cmdline 的 argv[0]; 应用的子进程带 ":后缀"
+static std::string self_process() {
     char cmd[256] = {0};
     FILE* f = fopen("/proc/self/cmdline", "r");
     if (f) { size_t n = fread(cmd, 1, sizeof cmd - 1, f); cmd[n < sizeof cmd ? n : sizeof cmd - 1] = 0; fclose(f); }
-    std::string pkg = cmd[0] ? std::string(cmd) : std::string("unknown");
+    return cmd;
+}
+
+static std::string self_pkg() {
+    std::string pkg = self_process();
+    if (pkg.empty()) pkg = "unknown";
     size_t colon = pkg.find(':');
     if (colon != std::string::npos) pkg = pkg.substr(0, colon);
     return pkg;
+}
+
+// 灰层会话期间 debug.vulkan.layers 是全局的, 这段时间里起 Vulkan 的进程都会按名字找本层
+// (红魔的游戏助手 cn.nubia.gameassist 就跟着游戏一起起)。会话把目标包名写进
+// debug.knobs.target: 进程名和它不完全相同 (别的应用, 也包括目标自己的 :子进程) 时,
+// 本层只推进加载器链、把其余函数原样交给下一层 —— 不读别的 knobs、不挂钩子、不写标记、
+// 不建 framedump 目录。属性为空或 0 (没经过会话挂层) 时照旧在每个进程里干活。
+// 进程内只判断一次: 加载器先问 vkCreateInstance 再建实例, 那时属性已由会话设好。
+static std::atomic<int> g_role{-1};   // -1 未判断, 0 透明转发, 1 目标进程
+static bool passthrough() {
+    int role = g_role.load();
+    if (role < 0) {
+        char v[PROP_VALUE_MAX] = {0};
+        __system_property_get("debug.knobs.target", v);
+        role = (!v[0] || !strcmp(v, "0") || self_process() == v) ? 1 : 0;
+        g_role.store(role);
+    }
+    return role == 0;
 }
 
 static void write_marker() {
@@ -868,9 +892,38 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_EnumerateDeviceExtensionProperties(
     return next(phys, pLayerName, pCount, pProps);
 }
 
+static RkInstCreateInfo* instance_link(const VkInstanceCreateInfo* ci) {
+    auto* link = reinterpret_cast<RkInstCreateInfo*>(const_cast<void*>(ci->pNext));
+    while (link && !(link->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
+                     link->function == RK_LAYER_LINK_INFO))
+        link = reinterpret_cast<RkInstCreateInfo*>(const_cast<void*>(link->pNext));
+    return link;
+}
+
+// 非目标进程 (见 passthrough): 推进链、建实例、记下一层的 gipa 供转发, 别的都不做
+static VkResult passthrough_CreateInstance(const VkInstanceCreateInfo* ci, const VkAllocationCallbacks* a,
+                                           VkInstance* pInst) {
+    RkInstCreateInfo* link = instance_link(ci);
+    if (!link) return VK_ERROR_INITIALIZATION_FAILED;
+    PFN_vkGetInstanceProcAddr gipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
+    auto createFunc = (PFN_vkCreateInstance)gipa(VK_NULL_HANDLE, "vkCreateInstance");
+    if (!createFunc) return VK_ERROR_INITIALIZATION_FAILED;
+    link->u.pLayerInfo = link->u.pLayerInfo->pNext;
+    VkResult r = createFunc(ci, a, pInst);
+    if (r != VK_SUCCESS) return r;
+    InstDisp d;
+    d.gipa = gipa;
+    d.instance = *pInst;
+    { std::lock_guard<std::mutex> lk(g_mtx); g_inst[key(*pInst)] = d; }
+    return r;
+}
+
+void npuprobe_init_from_props();   // npuprobe.cpp
+
 // ── 拦截: instance ──
 static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateInstance(
     const VkInstanceCreateInfo* ci, const VkAllocationCallbacks* a, VkInstance* pInst) {
+    if (passthrough()) return passthrough_CreateInstance(ci, a, pInst);
     g_rewrite_loadop = read_bool_prop("debug.knobs.loadop");
     {
         char v[PROP_VALUE_MAX] = {0};
@@ -894,14 +947,12 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateInstance(
     if (g_fd_att) RK_LOG("framedump_att: 指定 pass 结束时拷附件 (framedump.cpp)");
     if (ip_init_from_props()) RK_LOG("interp=1: 层内多 present, 两帧之间插一张合成帧 (interp.cpp)");
     if (sr_init_from_props()) RK_LOG("selfsr: 送显前超分 (selfsr.cpp)");
+    npuprobe_init_from_props();
     RK_LOG("rk_CreateInstance entered (pkg=%s) rewrite_loadop=%d passdump=%d copyprobe=%d upop=%d frameaudit=%d ts=%d",
            self_pkg().c_str(), (int)g_rewrite_loadop, (int)g_dump_passes, (int)g_copyprobe, (int)g_upop,
            (int)g_frameaudit, (int)g_frameaudit_ts);
     if (g_npuop) RK_LOG("npuop=1 (隐含 upop=1 passdump=1)");
-    auto* link = reinterpret_cast<RkInstCreateInfo*>(const_cast<void*>(ci->pNext));
-    while (link && !(link->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO &&
-                     link->function == RK_LAYER_LINK_INFO))
-        link = reinterpret_cast<RkInstCreateInfo*>(const_cast<void*>(link->pNext));
+    RkInstCreateInfo* link = instance_link(ci);
     if (!link) {
         RK_LOG("no LOADER_INSTANCE_CREATE_INFO in pNext chain; dumping chain:");
         struct Hdr { VkStructureType sType; const void* pNext; };
@@ -979,6 +1030,14 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateDevice(
     // inst 没查到时 gipa(VK_NULL_HANDLE, "vkCreateDevice") 按规范返回 NULL, 不能直接调
     if (!createFunc) { RK_LOG("next vkCreateDevice is null (inst lookup miss?)"); return VK_ERROR_INITIALIZATION_FAILED; }
     link->u.pLayerInfo = link->u.pLayerInfo->pNext;
+    if (passthrough()) {   // 非目标进程: 原参数建设备, 只记下一层的 gdpa 供转发
+        VkResult r = createFunc(phys, ci, a, pDev);
+        if (r != VK_SUCCESS) return r;
+        DevDisp d;
+        d.gdpa = gdpa;
+        { std::lock_guard<std::mutex> lk(g_mtx); g_dev[key(*pDev)] = d; }
+        return r;
+    }
     // interp 的节奏要 VK_GOOGLE_display_timing: 下层支持就替游戏加上 (游戏自己没开的话)。
     // 加载器链节已推进, 复制一份 create info 改扩展列表即可 (pNext 链原样共享)。
     VkDeviceCreateInfo ip_ci;
@@ -4056,8 +4115,21 @@ static bool lower_optional_device(VkDevice dev,const char* name) {
     return d.gdpa && d.gdpa(dev,name);
 }
 
+static PFN_vkVoidFunction next_instance_proc(VkInstance instance, const char* name) {
+    if (instance == VK_NULL_HANDLE) return nullptr;
+    InstDisp d;
+    { std::lock_guard<std::mutex> lk(g_mtx); auto it = g_inst.find(key(instance)); if (it == g_inst.end()) return nullptr; d = it->second; }
+    return d.gipa ? d.gipa(instance, name) : nullptr;
+}
+
 static PFN_vkVoidFunction dispatch_instance(VkInstance instance, const char* name) {
     RK_HOOK("vkGetInstanceProcAddr", dispatch_instance);
+    if (passthrough()) {   // 非目标进程只接推进链要的入口
+        RK_HOOK("vkCreateInstance", rk_CreateInstance);
+        RK_HOOK("vkCreateDevice", rk_CreateDevice);
+        RK_HOOK("vkGetDeviceProcAddr", dispatch_device);
+        return next_instance_proc(instance, name);
+    }
     if (PFN_vkVoidFunction p = sr_hook(name)) return p;   // selfsr 没开时恒为空; 同名钩子由它往下转给 interp
     if (PFN_vkVoidFunction p = ip_hook(name)) return p;   // interp 没开时恒为空; 同名钩子由它往下转给 framedump
     if (PFN_vkVoidFunction p = fd_hook(name)) return p;   // framedump 没开时恒为空
@@ -4177,14 +4249,17 @@ static PFN_vkVoidFunction dispatch_instance(VkInstance instance, const char* nam
     RK_HOOK("vkCreateRenderPass2", rk_CreateRenderPass2);
     RK_HOOK("vkCreateRenderPass2KHR", rk_CreateRenderPass2);
     RK_HOOK("vkQueuePresentKHR", rk_QueuePresentKHR);
-    if (instance == VK_NULL_HANDLE) return nullptr;
-    InstDisp d;
-    { std::lock_guard<std::mutex> lk(g_mtx); auto it = g_inst.find(key(instance)); if (it == g_inst.end()) return nullptr; d = it->second; }
-    return d.gipa ? d.gipa(instance, name) : nullptr;
+    return next_instance_proc(instance, name);
 }
 
 static PFN_vkVoidFunction dispatch_device(VkDevice dev, const char* name) {
     RK_HOOK("vkGetDeviceProcAddr", dispatch_device);
+    if (passthrough()) {
+        if (dev == VK_NULL_HANDLE) return nullptr;
+        DevDisp d;
+        { std::lock_guard<std::mutex> lk(g_mtx); auto it = g_dev.find(key(dev)); if (it == g_dev.end()) return nullptr; d = it->second; }
+        return d.gdpa ? d.gdpa(dev, name) : nullptr;
+    }
     if (PFN_vkVoidFunction p = sr_hook(name)) return p;   // selfsr 没开时恒为空; 同名钩子由它往下转给 interp
     if (PFN_vkVoidFunction p = ip_hook(name)) return p;   // interp 没开时恒为空; 同名钩子由它往下转给 framedump
     if (PFN_vkVoidFunction p = fd_hook(name)) return p;   // framedump 没开时恒为空
