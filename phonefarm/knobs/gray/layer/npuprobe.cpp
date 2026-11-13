@@ -159,14 +159,16 @@ const uint64_t INIT_FRAME = 300, RUN_FRAMES = 60;
 double g_sum = 0, g_max = 0;
 int g_runs = 0;
 
-__attribute__((constructor)) void npuprobe_init() {
+}  // namespace
+
+// vk_layer_refknobs.cpp 的 rk_CreateInstance 在目标进程里调用。原来是 .so 的构造函数,
+// 加载即读属性 —— 非目标进程也会加载本层 (见那边的 passthrough), 不能在加载时读。
+void npuprobe_init_from_props() {
     char v[PROP_VALUE_MAX] = {0};
     if (__system_property_get("debug.knobs.npuprobe", v) <= 0) return;
     g_mode = atoi(v);
     if (g_mode < 1 || g_mode > 3) g_mode = 0;
 }
-
-}  // namespace
 
 void npu_log(const char* fmt, ...) {
     char buf[512];

@@ -34,6 +34,9 @@ pub(crate) const FA_GO_PROP: &str = "debug.knobs.frameaudit_go"; // 改成新编
 pub(crate) const STOREOP_PROP: &str = "debug.knobs.storeop"; // "<sig>:<i>,..." / "ds" / 0 (#91)
 pub(crate) const STOREOP_LIVE_PROP: &str = "debug.knobs.storeop_live"; // 1 = 孪生 pass 现场切换
 pub(crate) const STOREOP_ON_PROP: &str = "debug.knobs.storeop_on"; // 现场切换时的开/关
+/// 会话的目标包名。debug.vulkan.layers 是全局的, 别的应用 (红魔的游戏助手) 也会加载本层;
+/// 层只在进程名与它完全相同的进程里干活, 其余进程只透明转发。空或 0 = 没有会话目标, 层照旧。
+pub(crate) const TARGET_PROP: &str = "debug.knobs.target";
 /// 1 = NPU 超分替换原神自己的放大 (npu/n1-pipeline 的层; 隐含 upop, upop 双线性是它的回退)
 pub(crate) const NPUOP_PROP: &str = "debug.knobs.npuop";
 /// npuop 的调参属性 (层 `read_num_prop` 读; 每一臂都显式写一遍, 不留上一臂的残值)
@@ -50,9 +53,9 @@ pub(crate) const NPUOP_TUNING_PROPS: [&str; 7] = [
 pub(crate) const NPUOP_SO_SIGNATURE: &[u8] = b"debug.knobs.npuop_wait_ms";
 pub(crate) const SO: &str = "libVkLayer_refknobs.so";
 pub(crate) const STATE: &str = "/data/local/tmp/knobs_layer_state"; // "把 .so 推进了哪个包"
-pub(crate) const LAYER_PROPERTIES: [&str; 12] = [
+pub(crate) const LAYER_PROPERTIES: [&str; 13] = [
     "debug.vulkan.layers", LOADOP_PROP, DUMP_PROP, CP_PROP, UPOP_PROP, NPUPROBE_PROP,
-    FA_PROP, FA_TS_PROP, FA_GO_PROP, STOREOP_PROP, STOREOP_LIVE_PROP, STOREOP_ON_PROP,
+    FA_PROP, FA_TS_PROP, FA_GO_PROP, STOREOP_PROP, STOREOP_LIVE_PROP, STOREOP_ON_PROP, TARGET_PROP,
 ];
 
 pub(crate) const USAGE: &str = "用法: phonefarm gray-layer {status|off [pkg] [--json]} [--serial S]\n挂层使用: phonefarm gray-layer session --mode MODE --package PKG --serial S --out DIR --max-seconds N\n旧 probe/loadop/passdump/frameaudit/frameaudit-ts/target 已退役；旧 --keep-prop 的仅安装不启动语义不再提供，新 session 始终启动目标。\ncopyprobe/upop 当前不支持执行（包括自定义 SO）；工件与历史证据仍可离线分析。\nnpuop 挂层同样退役 (尚未接入持久 Session)；旧 eval npuop 中断留下的挂载用: phonefarm gray-layer npuop-restore <run 目录> [pkg] [--serial S]";
