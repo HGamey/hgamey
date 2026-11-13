@@ -6,7 +6,7 @@ description: 在 HGamey 的真机上采游戏的连续序列帧：每帧同时�
 # 游戏序列帧采集
 
 以原神 7.2（红魔 NX809J）为例，整套流程已经跑通。换场景、换手机只改参数；换游戏要先做「找 pass」那一步。
-脚本都在 HGamey/experiments 的 `dataset/` 下，平台上用 `pf-node --experiment <完整提交号> experiment dataset/<脚本>` 跑，参数里写的本机文件会自动上传。
+脚本都在 HGamey/experiments main 的 `dataset/` 下，平台上用 `pf-node --experiment <experiments main 的完整提交号> experiment dataset/<脚本>` 跑，参数里写的本机文件会自动上传。
 
 ## 能拿到什么
 
@@ -26,7 +26,7 @@ description: 在 HGamey 的真机上采游戏的连续序列帧：每帧同时�
 4. 第一次启动会下约 500 MB 资源，要几分钟。先单独跑一次进门，确认能进到世界里，再开始采。
 5. 进世界用标准的 `phonefarm onboard`（Linux 节点上用 RapidOCR，第一次运行会自动安装）。onboard 进不去时的备用办法见「已知的坑」。
 6. 采之前确认手机上没有别人留下的层、knobs 和 wm size 覆盖。`gi_capture.py` 发现这些会直接退出，不去动它们。
-7. 层：平台自带的灰层从 hgamey #136 起有 framedump_att，#138 修了 960x540 拷错 pass 和 summary.json 截断。中心部署了 #138 以后不用传 `--so`。要用还没合入的改动，就在 hgamey 里 `REFBENCH_NDK=<NDK 路径> bash phonefarm/knobs/gray/build/build_layer.sh` 编层，用 `--so phonefarm/knobs/gray/build/out/libVkLayer_refknobs.so` 传上去。
+7. 层：直接用平台自带的灰层（hgamey main，framedump_att 和 960x540、summary.json 的修复都在里面），不传 `--so`。只有要试还没合入 main 的灰层改动时，才在 hgamey 里 `REFBENCH_NDK=<NDK 路径> bash phonefarm/knobs/gray/build/build_layer.sh` 编层，用 `--so phonefarm/knobs/gray/build/out/libVkLayer_refknobs.so` 传上去。
 
 ## 找 pass（换游戏、换大版本时做一次）
 
@@ -77,11 +77,11 @@ noui=ac24d328:0,depth=fmt129:3,mv=fmt58:0
 
 ```
 pf-node --experiment <提交> --research <研究> --resource device:<串号> --detach --max-runtime-seconds 5400 \
-  experiment dataset/gi_capture.py <串号> --scene beach_day --so <层.so> \
+  experiment dataset/gi_capture.py <串号> --scene beach_day \
   --att noui=ac24d328:0,depth=fmt129:3,mv=fmt58:0 --tiers 1920x1080,1280x720,960x540 --frames 300 --motion run
 ```
 
-每档的做法：wm size → 设 framedump 属性 → `phonefarm gray-layer session --so` 冷启动游戏 → onboard 进世界 → 按 `--motion` 给输入（run 按住摇杆往 `--angle` 方向跑，每 3 秒左右摆 30°；turn 原地左右拖镜头；static 不动，每 2 秒点一下空白处保持 60 帧）→ `framedump_go` 开一段 → 停会话、停游戏 → 整段 tar 流到节点 → `fd_convert.py` 转 PNG 并逐帧检查 → 删掉手机上的段。
+每档的做法：wm size → 设 framedump 属性 → `phonefarm gray-layer session` 冷启动游戏（给了 `--so` 才换成自己的层）→ onboard 进世界 → 按 `--motion` 给输入（run 按住摇杆往 `--angle` 方向跑，每 3 秒左右摆 30°；turn 原地左右拖镜头；static 不动，每 2 秒点一下空白处保持 60 帧）→ `framedump_go` 开一段 → 停会话、停游戏 → 整段 tar 流到节点 → `fd_convert.py` 转 PNG 并逐帧检查 → 删掉手机上的段。
 换地方：`--walk-s 35 --angle 180` 在第一档开采前先往后跑 35 秒。位置存在服务器上，冷启动后还在新地方。从开场海滩往前跑会进海里游泳，往后跑回到陆地。
 昼夜不用调：游戏里一天约 24 分钟，三档依次冷启动，本身就会落在不同光照（实测一个场景的三档分别是白天、傍晚、日落）。
 `--pull meta` 只拉元数据和首、中、尾三帧，用来测很长的序列（见「每百帧耗时」）。

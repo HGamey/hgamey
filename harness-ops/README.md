@@ -1,6 +1,6 @@
 # harness-ops
 
-外部 Agent 使用远程真机的节点服务、客户端和网页；共享目标、方向、证据与异步协助独立于聊天工具，GOL 可选。参考 [研究 skill](skills/hgamey-research/SKILL.md) 接续研究，网页与 CLI/API 同等优先。
+外部 Agent 使用远程真机的节点服务、客户端和网页；共享目标、方向、证据与异步协助独立于聊天工具，GOL 可选。参考 [研究 skill](skills/hgamey-research/SKILL.md) 接续研究，[game-frame-capture](skills/game-frame-capture/SKILL.md) 采游戏连续序列帧（带/不带 UI、深度、速度图）并登记数据集，网页与 CLI/API 同等优先。
 
 | 路径 | 作用 |
 |---|---|
@@ -10,7 +10,6 @@
 | `../deploy.py`、`node/deploy_overlay.py` | 在节点上按一个提交构建、发布、重启并核对版本 |
 | `node/dash.py`、`node/dash_goals.py`、`node/dash_static/` | 网页任务、游戏、研究协助、节点目录与控制；查看和操作分别授权 |
 | `node/node_remote.py`、`skills/hgamey-remote/` | 远程调试：个人操作员令牌接管设备（HTTP `/remote`、MCP `/remote/mcp`、网页 `/dash/control`），用法见 skill |
-| `skills/game-frame-capture/` | 在真机上采游戏连续序列帧（带/不带 UI、深度、速度图，几档分辨率）并登记成数据集，用法见 skill |
 | `node/run_node.sh` | 在节点上前台运行节点服务和 cloudflared 隧道 |
 | `cloudflare/offline/` | Cloudflare Worker：节点连不上时返回离线提示页 |
 
