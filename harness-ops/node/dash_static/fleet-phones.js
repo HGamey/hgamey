@@ -22,10 +22,12 @@
   }
 
   // 在做: the task a phone is working for and how long its job has run, else 空闲. A phone that is not there: —.
+  // A cell with nothing known is — under its heading; on a phone, where rows have no headings, it is left out (CSS).
+  const unknown = cell => { cell.classList.add('phone-unknown'); return cell; };
   const ran = s => s < 3600 ? `${Math.max(1, Math.round(s / 60))} 分钟` : s < 172800 ? `${Math.round(s / 3600)} 小时` : `${Math.round(s / 86400)} 天`;
   function doing(holder, phone) {
     const cell = el('span', null, 'phone-work');
-    if (!phone.online) { cell.textContent = '—'; return cell; }
+    if (!phone.online) { cell.textContent = '—'; return unknown(cell); }
     if (!holder) { cell.textContent = '空闲'; cell.classList.add('is-idle'); return cell; }
     const what = holder.research_title || holder.label || (holder.kind === 'external' ? '别的程序' : '一个作业');
     cell.append(holder.research_id ? link(what, `/dash/research?kind=research&id=${encodeURIComponent(holder.research_id)}`) : el('span', what));
@@ -50,8 +52,8 @@
     const go = el('span', null, 'phone-links');
     if (phone.online && item.remote_actions?.length) go.append(link('远程控制', `/dash/control?device=${encodeURIComponent(item.ref)}`));
     if (phone.online) go.append(link('派作业', `/dash/jobs?phone=${encodeURIComponent(item.ref)}`));
-    li.append(name, el('span', node, 'phone-node'), state, doing(holder, phone), el('span', phone.os || '—', 'phone-os'),
-      el('span', phone.root == null ? '—' : phone.root ? 'root' : '无 root', 'phone-root'),
+    const os = el('span', phone.os || '—', 'phone-os'), root = el('span', phone.root == null ? '—' : phone.root ? 'root' : '无 root', 'phone-root');
+    li.append(name, el('span', node, 'phone-node'), state, doing(holder, phone), phone.os ? os : unknown(os), phone.root == null ? unknown(root) : root,
       el('span', actions.length ? actions.join(' · ') : '不可远程', 'phone-actions'), go);
     return li;
   }

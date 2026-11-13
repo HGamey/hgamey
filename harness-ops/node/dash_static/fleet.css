@@ -163,5 +163,6 @@ html:not(.show-tech) .lock-idle :is(#lock-state, #lock-message, #lock-info, .loc
   .phone-name { flex: 1 1 100%; }
   .phone-state { flex: 0 0 auto; }
   .phone-node, .phone-os, .phone-root, .phone-actions { font-size: 12px; }
+  .phone-row .phone-unknown { display: none; }
   .phone-links { flex: 1 1 100%; justify-content: flex-start; }
 }
