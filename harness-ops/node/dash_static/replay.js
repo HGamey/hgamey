@@ -107,21 +107,24 @@
     return card('请人协助：' + s.title, tags(tag(open ? '等人处理' : '已关闭', open ? 'warn' : 'off')),
                 text(s.need), link('打开请求', s.url));
   }
-  // What a job left: its first pictures and videos, looked for a few directories deep.
+  // What a job left: its first pictures and videos, looked for a few directories deep. A level's directories are read
+  // together, so the wait grows with the depth, not with the number of directories.
   async function firstMedia(job) {
-    const found = [];
+    const found = [], list = path => get(`/jobs/${encodeURIComponent(job)}/artifacts?${new URLSearchParams({path, limit: '200'})}`);
     let level = [''], reads = 0;
     while (level.length && found.length < 4 && reads < 12) {
+      level = level.slice(0, 12 - reads);
+      reads += level.length;
+      // The top must be readable; a directory below that cannot be read is passed over.
+      const pages = await Promise.all(level.map(path => path ? list(path).catch(() => ({items: []})) : list(path)));
       const next = [];
-      for (const path of level.slice(0, 12 - reads)) {
-        reads += 1;
-        const page = await get(`/jobs/${encodeURIComponent(job)}/artifacts?${new URLSearchParams({path, limit: '200'})}`);
+      pages.forEach((page, i) => {
         for (const item of page.items) {
-          if (path === '' && (item.name.startsWith('.') || item.name === 'lease-receipts')) continue;
+          if (level[i] === '' && (item.name.startsWith('.') || item.name === 'lease-receipts')) continue;
           if (item.kind === 'directory' && !/^gray-session-/.test(item.name)) next.push(item.path);
           else if (item.kind === 'file' && MEDIA.test(item.path) && found.length < 4) found.push({kind: 'job', job_id: job, path: item.path});
         }
-      }
+      });
       level = next;
     }
     return found;
