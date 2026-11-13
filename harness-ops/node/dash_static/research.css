@@ -316,6 +316,7 @@ html.show-tech .research-view .research-report .report-code-toggle { display: no
 .research-view #agents-list .agents-table { width: 100%; }
 .research-view #agents-list .agent-name { padding: 0; border: none; background: none; color: var(--acc); font: inherit; text-align: left; text-decoration: underline; cursor: pointer; }
 .research-view #agents-list .agent-sub { font-size: 12px; }
+.research-view #agents-list td.agent-owed { font-variant-numeric: tabular-nums; }
 /* On a phone each agent is a block: who it is; its zone, running jobs and last activity on one line; its status in two
    lines (a tap opens the rest). Check-in time and owed duties wait for a wider screen. */
 @media (max-width: 600px) {
