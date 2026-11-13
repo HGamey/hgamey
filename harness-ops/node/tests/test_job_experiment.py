@@ -289,5 +289,50 @@ class ExperimentJobTests(unittest.TestCase):
             self.assertEqual(self.call("GET", "/experiments/commits?" + bad)[0], 400, bad)
 
 
+    def test_a_commit_the_mirror_already_reaches_runs_without_asking_the_repository(self):
+        """The mirror is also filled from outside: a bundle of the repository's refs, laid out as the node lays them.
+        A commit one of its branches or tags reaches runs without asking the repository (a slow link would hold the
+        job for a timeout first). A commit the mirror lacks is still fetched; one that cannot be fetched fails as before."""
+        import job_experiment
+        mirror, bundle = self.jobs.experiment_mirror, self.tmp / "refs.bundle"
+        git("-C", str(self.remote), "bundle", "create", "-q", str(bundle), "--branches", "--tags")
+        os.makedirs(os.path.dirname(mirror))
+        git("init", "--bare", "-q", mirror)
+        git("-C", mirror, "fetch", "-q", "--prune", str(bundle), *job_experiment.REFSPECS)
+        source, fetched, real = self.tmp / "experiments", [], job_experiment.fetch_refs
+
+        def run(commit):
+            job = self.jobs.start({"bin": "experiment", "argv": ["probe/run.py"], "device_access": "none",
+                                   "experiment": {"commit": commit}}, b"")
+            return self.finished(job["job"]["id"] if "job" in job else job["id"])
+
+        def commit(text):
+            (source / "probe" / "step.txt").write_text(text)
+            git("add", ".", cwd=source)
+            git("commit", "-qm", text, cwd=source)
+            git("push", "-q", str(self.remote), "main", cwd=source)
+            return git("rev-parse", "HEAD", cwd=source)
+
+        def counted(mirror, url, **options):
+            fetched.append(url)
+            return real(mirror, url, **options)
+
+        with patch.object(job_experiment, "fetch_refs", counted):
+            self.assertEqual(run(self.commit)["exit"], 0)
+            self.assertEqual(fetched, [], "the mirror already reached it")
+
+            pushed = commit("pushed after the bundle\n")
+            status = run(pushed)
+            self.assertEqual((status["exit"], status["experiment"]), (0, {"commit": pushed}), status)
+            self.assertEqual(fetched, [str(self.remote)])
+
+            unreached = commit("not yet in the mirror\n")
+            with patch.object(self.jobs, "experiment_url", str(self.tmp / "unreachable.git")):
+                status = run(unreached)
+                self.assertEqual(status["outcome"], "failed", status)
+                self.assertIn(f"实验提交 {unreached} 不在实验仓库", json.dumps(status, ensure_ascii=False))
+                self.assertEqual(run(pushed)["exit"], 0, "what the mirror reaches still runs while the repository is away")
+            self.assertEqual(fetched, [str(self.remote), str(self.tmp / "unreachable.git")])
+
 if __name__ == "__main__":
     unittest.main()

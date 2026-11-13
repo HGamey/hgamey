@@ -72,17 +72,22 @@ def unreachable(url, commit):
 
 
 def materialize(mirror, url, commit, dest, timeout=300):
-    """Unpack `commit` of the experiments repository into `dest` after checking a branch or tag reaches it."""
+    """Unpack `commit` of the experiments repository into `dest` after checking a branch or tag reaches it.
+
+    A commit a branch or tag of the mirror already reaches is used as it is: the mirror is also kept current from
+    outside (a bundle of the repository's refs, laid out as fetch_refs lays them), and a slow link to the repository
+    would otherwise hold every job for a timeout first. Only a commit the mirror lacks is fetched."""
     os.makedirs(os.path.dirname(mirror), exist_ok=True)
     with open(mirror + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # two jobs preparing at once share one mirror
-        try:
-            fetch_refs(mirror, url, timeout=timeout)
-        except ValueError as error:  # offline: refs fetched earlier still decide, they came from the same URL
-            if not os.path.isdir(mirror) or not containing_refs(mirror, commit):
-                raise ValueError(f"{error}；{unreachable(url, commit)}") from None
-        if not containing_refs(mirror, commit):
-            raise ValueError(unreachable(url, commit))
+        if not (os.path.isdir(mirror) and containing_refs(mirror, commit)):
+            try:
+                fetch_refs(mirror, url, timeout=timeout)
+            except ValueError as error:  # offline: refs fetched earlier still decide, they came from the same URL
+                if not os.path.isdir(mirror) or not containing_refs(mirror, commit):
+                    raise ValueError(f"{error}；{unreachable(url, commit)}") from None
+            if not containing_refs(mirror, commit):
+                raise ValueError(unreachable(url, commit))
         os.makedirs(dest)
         archive = subprocess.Popen(["git", "-C", mirror, "archive", "--format=tar", commit],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
