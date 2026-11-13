@@ -20,8 +20,8 @@ class AgentTagTests(unittest.TestCase):
             shown = lambda name: [t for t in cell(name).locator(".tag").all() if t.is_visible()]   # noqa: E731
             self.assertEqual([t.inner_text() for t in shown("glm")], ["公网"])
             self.assertEqual([t.inner_text() for t in shown("blue")], ["蓝区"])
-            self.assertEqual((cell("bare").inner_text().strip(), shown("bare")), ("–", []))
-            self.assertEqual((cell("odd").inner_text().strip(), shown("odd")), ("–", []))
+            self.assertEqual((cell("bare").inner_text().strip(), shown("bare")), ("未分区", []))
+            self.assertEqual((cell("odd").inner_text().strip(), shown("odd")), ("未分区", []))
             self.assertNotIn("zone:", page.inner_text("#agents-list"))
             page.click(".shell-more-btn")
             page.click("#shell-tech")
