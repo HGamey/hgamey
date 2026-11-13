@@ -121,6 +121,7 @@ version 写采集日期，同一天第二版写 `20261113-2`。labels.device 只
 - onboard 进不去：用 `dataset/gi_enter.py` 的备用办法。它看屏幕底部血条（0.43–0.46, 0.918 处是绿的）判断是否已在世界里，只在游戏在前台时点屏幕中央，游戏被别的界面盖住就切回来，游戏死了就重开。
 - RenderDoc 用不了：挂 RenderDoc 层后原神登录完 20 多秒就自己退出，没有 tombstone。不要去绕。
 - 不要设全局 `debug.vulkan.layers`，红魔的 gameassist 会崩。层只通过 `gray-layer session` 挂到游戏上。
+- 红魔的游戏助手（`cn.nubia.gameassist`）每次会话开头会崩一次，属正常。会话启动游戏前要短暂设上全局 `debug.vulkan.layers`，游戏助手跟着游戏一起启动，它是系统应用，库目录里没有层，vkCreateInstance 失败后 hwui 断言（墓碑里是 `Assertion failed: err < 0`，maps 里没有 refknobs）。崩完它可能抢一下前台，所以进门和点击前先确认前台是游戏。不要停用它：它可能管着游戏性能模式，停用会改变性能实验的条件。
 - 红魔上 logcat 是空的，排查看层自己写的 summary.json 和 session 日志。
 - 采集期间屏幕显示只有约 27 fps（红魔的 SF waitframe 会跳帧），但游戏自己仍按 60 帧 present，序列是连续的。看 `index.csv` 的 `dt_ns`，不要看屏幕帧率。
 - 不碰屏幕时原神会降到 30 帧。static 段要隔几秒点一下空白处。
