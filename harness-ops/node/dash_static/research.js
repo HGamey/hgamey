@@ -126,6 +126,7 @@
     $('editor-close').textContent = $('edit-form').hidden ? '展开草稿' : '收起草稿';
     $('refresh-detail').disabled = !selection || !capable();
     $('edit-object').disabled = !capable() || !detailFresh || !!pending || writeBusy;
+    $('unlock-actions').hidden = !detail || writable() || !access?.steer_configured || !capable();
     for (const id of ['new-direction', 'new-request', 'reply-request', 'close-request']) $(id).disabled = !capable() || !detailFresh || !!pending || writeBusy || relatedBusy;
     $('operation-query').disabled = lookupBusy || !capable();
     $('pending-panel').hidden = !pending;
@@ -287,9 +288,12 @@
     $('object-state').className = 'task-state unknown';
     $('detail-version').textContent = `正在查看 v${record.revision} · 当前 v${record.current_revision} · 事件 #${record.sequence} · ${time(record.updated_at)}`;
     facts($('object-info'), [['对象', `${KINDS[record.kind]} / ${record.id}`], ['研究', record.research_id], ['作者标签', record.audit?.actor_label], ['授权通道', record.audit?.auth_channel], ['修改理由', record.audit?.reason]]);
-    $('edit-object').textContent = record.kind === 'feedback' ? '新建修正答复' : '编辑此版本';
-    $('new-direction').hidden = record.kind !== 'research'; $('new-request').hidden = !['research', 'direction'].includes(record.kind);
-    $('reply-request').hidden = record.kind !== 'request'; $('close-request').hidden = record.kind !== 'request';
+    // Changes are offered to whoever can make them; for someone who can only look, 解锁操作 stands in (renderControls).
+    // A change of access repaints the record, so these follow it.
+    const change = writable();
+    $('edit-object').textContent = record.kind === 'feedback' ? '新建修正答复' : '编辑此版本'; $('edit-object').hidden = !change;
+    $('new-direction').hidden = !change || record.kind !== 'research'; $('new-request').hidden = !change || !['research', 'direction'].includes(record.kind);
+    $('reply-request').hidden = !change || record.kind !== 'request'; $('close-request').hidden = !change || record.kind !== 'request';
     $('close-request').textContent = record.data.state === 'closed' ? '重新开放问题' : '关闭问题';
     $('related-directions').hidden = record.kind !== 'research'; $('related-requests').hidden = !['research', 'direction'].includes(record.kind);
     $('related-feedback').hidden = !['request', 'feedback'].includes(record.kind);
@@ -810,6 +814,7 @@
     if (detail.kind === 'feedback') openDraft('feedback', {...detail.data, supersedes: detail.id}); else openDraft(detail.kind, detail.data, detail);
     $('edit-form').hidden = false;
   });
+  $('unlock-actions').addEventListener('click', () => requireWrite());
   $('new-direction').addEventListener('click', () => relatedDraft('direction'));
   $('new-request').addEventListener('click', () => relatedDraft('request'));
   $('reply-request').addEventListener('click', () => relatedDraft('feedback'));
