@@ -1,6 +1,8 @@
 /* 回放: a task's steps on a time strip, one at a time in the three columns of 我来当一次 Agent (tour.css). */
-.replay-pick { font-size: var(--fs-sm); color: var(--ink2); margin-left: auto; }
-.replay-pick select { max-width: min(460px, 72vw); margin-left: var(--sp-2); }
+/* The task picker takes the rest of the title row, so a long task name shows whole. */
+.replay-pick { display: flex; flex: 1 1 0; min-width: 0; align-items: center; justify-content: flex-end; gap: var(--sp-2);
+  font-size: var(--fs-sm); color: var(--ink2); }
+.replay-pick select { field-sizing: content; min-width: 0; max-width: 100%; }
 .replay-page .tour-who { margin: calc(-1 * var(--sp-2)) 0 var(--sp-3); }
 .replay-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2); }
 .replay-where { min-width: 13em; text-align: center; font-size: var(--fs-sm); color: var(--ink2); font-variant-numeric: tabular-nums; }
@@ -44,8 +46,8 @@
 .replay-row:hover { background: var(--wash); }
 .replay-row[aria-current] { background: var(--acc-soft); }
 @media (max-width: 760px) {
-  .replay-pick { margin-left: 0; width: 100%; }
-  .replay-pick select { max-width: calc(100% - 3em); }
+  .replay-pick { flex-basis: 100%; justify-content: flex-start; }
+  .replay-pick select { flex: 1; }
   .replay-where { order: -1; width: 100%; min-width: 0; text-align: left; }
   .replay-bar .replay-filter:first-of-type { margin-left: 0; }
   .replay-row time { width: auto; }
