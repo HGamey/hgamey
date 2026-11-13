@@ -71,7 +71,7 @@ class ReplayPageTests(unittest.TestCase):
             page.wait_for_function(SAY + " === '认领这个任务'")
             self.assertEqual(page.evaluate(COLUMNS)[0], "Agent 发出的")
             self.assertIn("改了负责人", page.text_content("#replay-step .tour-col:nth-child(2)"))
-            self.assertIn("step=1", page.url)
+            self.assertIn("step=2", page.url)
 
             # The note with its picture, reached from the time strip.
             note = page.evaluate("() => [...document.querySelectorAll('#replay-list button')].find(b => b.textContent.includes('画面见图')).dataset.n")

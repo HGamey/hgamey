@@ -40,6 +40,7 @@
 .replay-list { list-style: none; margin: var(--sp-2) 0 0; padding: 0; max-height: 50vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
 .replay-row { display: flex; align-items: baseline; gap: var(--sp-2); width: 100%; padding: 6px var(--sp-3); border: 0; border-bottom: 1px solid var(--grid);
   background: none; color: var(--ink); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+.replay-row .replay-n { flex: none; width: 2.5em; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 .replay-row time { flex: none; width: 7.5em; font-variant-numeric: tabular-nums; }
 .replay-row > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .replay-row:hover { background: var(--wash); }

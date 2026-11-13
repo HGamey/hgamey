@@ -162,9 +162,12 @@
   }
 
   // ── moving through the steps ──
+  // A step's number is its place in the whole task, from 1: the same in the address, on the card and in the list,
+  // whatever is filtered out.
+  const number = step => step.n + 1;
   function go(step, focus) {
     current = step;
-    const url = new URL(location.href); url.searchParams.set('id', replay.task.id); url.searchParams.set('step', step.n);
+    const url = new URL(location.href); url.searchParams.set('id', replay.task.id); url.searchParams.set('step', number(step));
     history.replaceState(null, '', url);
     render();
     if (focus) $('replay-step').focus({preventScroll: true});
@@ -173,16 +176,19 @@
     const steps = visible(), i = steps.indexOf(current), next = steps[i + by];
     if (next) go(next);
   }
-  // After a filter changes, the step shown stays if it is still in, else the next one that is (or the last).
-  function refilter() {
+  // After a filter changes, the step shown stays if it is still in, else the next one that is (or the last). Taking an
+  // agent's view starts where it came in: its task handed to it, or the first thing it did.
+  function refilter(arrive) {
     const steps = replay.steps.filter(step => (!keyOnly || step.key) && mine(step));
-    if (!steps.includes(current)) current = steps.find(step => step.n > current.n) || steps[steps.length - 1] || current;
+    const came = arrive && as && steps.find(step => step.who.name === as || ['claim', 'assign'].includes(step.kind) && step.seen.owner === as);
+    if (came) current = came;
+    else if (!steps.includes(current)) current = steps.find(step => step.n > current.n) || steps[steps.length - 1] || current;
     go(current);
   }
 
   function render() {
     const steps = visible(), i = steps.indexOf(current);
-    $('replay-where').textContent = `第 ${i + 1} / ${steps.length} 步 · ${when(current.at)}`;
+    $('replay-where').textContent = `第 ${number(current)} / ${replay.steps.length} 步 · ${when(current.at)}`;
     $('replay-prev').disabled = i <= 0; $('replay-next').disabled = i >= steps.length - 1;
     let day = '';
     $('replay-strip').replaceChildren(...steps.map(step => {
@@ -190,12 +196,12 @@
       if (day && date !== day) li.classList.add('day');
       day = date;
       button.type = 'button'; button.dataset.n = step.n; button.title = `${when(step.at)} · ${who(step.who)} · ${step.summary}`;
-      button.setAttribute('aria-label', `第 ${step.n + 1} 步：${step.summary}`);
+      button.setAttribute('aria-label', `第 ${number(step)} 步：${step.summary}`);
       if (step === current) button.setAttribute('aria-current', 'step');
       li.append(button); return li;
     }));
     const box = $('replay-step'), head = el('div', null, 'tour-step-head');
-    head.append(el('span', i + 1, 'tour-num'), el('span', who(current.who), 'replay-who k-' + current.who.kind), el('time', when(current.at), 'muted'));
+    head.append(el('span', number(current), 'tour-num'), el('span', who(current.who), 'replay-who k-' + current.who.kind), el('time', when(current.at), 'muted'));
     if (!current.key) head.append(tag('细节', 'off'));
     const cols = el('div', null, 'tour-cols');
     for (const [name, parts] of [[SENT[current.who.kind] || '发出的', sentParts(current)], ['平台返回的', answerParts(current)], ['网页上看到的', [seen(current)]]]) {
@@ -204,12 +210,12 @@
     box.replaceChildren(head, cols);
     const strip = $('replay-strip'), tick = strip.querySelector('[aria-current]')?.parentNode;
     if (tick && (tick.offsetLeft < strip.scrollLeft || tick.offsetLeft + tick.offsetWidth > strip.scrollLeft + strip.clientWidth)) strip.scrollLeft = tick.offsetLeft - strip.clientWidth / 2;
-    $('replay-count').textContent = `全部 ${steps.length} 步`;
+    $('replay-count').textContent = steps.length === replay.steps.length ? `全部 ${steps.length} 步` : `列出的 ${steps.length} 步（共 ${replay.steps.length} 步）`;
     $('replay-list').replaceChildren(...steps.map(step => {
       const li = el('li'), button = el('button', null, 'replay-row');
       button.type = 'button'; button.dataset.n = step.n;
       if (step === current) button.setAttribute('aria-current', 'step');
-      button.append(el('time', when(step.at), 'muted'), el('span', who(step.who), 'replay-who k-' + step.who.kind), el('span', step.summary));
+      button.append(el('span', number(step), 'replay-n'), el('time', when(step.at), 'muted'), el('span', who(step.who), 'replay-who k-' + step.who.kind), el('span', step.summary));
       li.append(button); return li;
     }));
   }
@@ -229,7 +235,7 @@
     $('replay-as').replaceChildren(new Option('所有人', ''), ...replay.agents.map(name => new Option(name, name)));
     as = ''; keyOnly = true; $('replay-key').checked = true;
     if (!steps.length) { $('replay-body').hidden = true; message('这个任务没有记录'); return; }
-    const asked = steps.find(s => String(s.n) === step);
+    const asked = steps.find(s => String(number(s)) === step);
     if (asked && !asked.key) { keyOnly = false; $('replay-key').checked = false; }
     $('replay-body').hidden = false;
     go(asked || steps[0]);
@@ -238,7 +244,7 @@
   $('replay-prev').addEventListener('click', () => move(-1));
   $('replay-next').addEventListener('click', () => move(1));
   $('replay-key').addEventListener('change', event => { keyOnly = event.target.checked; refilter(); });
-  $('replay-as').addEventListener('change', event => { as = event.target.value; refilter(); });
+  $('replay-as').addEventListener('change', event => { as = event.target.value; refilter(true); });
   $('replay-task').addEventListener('change', event => open(event.target.value));
   for (const id of ['replay-strip', 'replay-list']) {
     $(id).addEventListener('click', event => {

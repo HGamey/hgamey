@@ -41,7 +41,7 @@ class ReplayMediaTests(unittest.TestCase):
         with self._browser_page() as page:
             page.on("request", lambda r: events.append("asked") if listing(r) else None)
             page.on("requestfinished", lambda r: events.append("answered") if listing(r) else None)
-            page.goto("http://%s:%d/dash/tour/replay?id=%s&step=2" % (*self.address, RID))
+            page.goto("http://%s:%d/dash/tour/replay?id=%s&step=3" % (*self.address, RID))
             page.wait_for_function("() => [...document.querySelectorAll('#replay-step .media-preview img')].filter(i => i.naturalWidth > 0).length === 2")
             self.assertEqual(events[:len(LEVEL)], ["asked"] * len(LEVEL), events)
             wide = page.evaluate("""() => { const image = document.querySelector('#replay-step .media-preview img[alt="wide.png"]');
