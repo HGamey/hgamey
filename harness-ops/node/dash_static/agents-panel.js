@@ -48,6 +48,15 @@
     return [...(zones.length ? spaced(zones) : ["–"]), ...list.filter(t => !t.startsWith(ZONE)).flatMap(t => [" ", el("span", { class: "tag tech" }, t)])];
   }
   const sub = (text, title) => el("div", { class: "agent-sub muted", title }, text);
+  // What an agent owes, in a person's words: each kind once, in the order its duties come (the most pressing first).
+  const OWED = { urgent_note: "回紧急留言", answer_note: "回留言", assigned_task: "看新指派的任务", research_reopened: "看重新打开的任务",
+    process_feedback: "处理反馈", reset_job: "核查作业", restore_device: "恢复设备", post_status: "更新状态", plan_directions: "写方向",
+    deliver: "交付", conclude_direction: "给方向下结论" };
+  function owedKinds(duties) {
+    const by = new Map();
+    for (const duty of duties) { const word = OWED[duty.kind] || duty.kind; by.set(word, (by.get(word) || 0) + 1); }
+    return [...by].map(([word, n]) => n > 1 ? `${word} ×${n}` : word);
+  }
   let agents = [], foldOpen = false;
 
   // ── The table: one row per agent ──
@@ -58,7 +67,7 @@
                    act("disable", "停用", true), act("token", "重新获取标识")].filter(Boolean));
   }
   function row(a, runningByAgent, owed) {
-    const checkin = a.checkin?.at, activity = a.activity?.at;
+    const checkin = a.checkin?.at, activity = a.activity?.at, duties = owed[a.name], kinds = duties?.length ? owedKinds(duties) : [];
     return el("tr", { data: { agentRow: a.name } },
       el("td", { class: "mono agent-who" }, el("button", { class: "agent-name", type: "button", data: { agent: a.name } }, a.name), role(a.note),
         a.archived ? sub(ARCHIVED[a.archived] || a.archived) : null),
@@ -66,7 +75,7 @@
       el("td", { class: "num agent-running" }, String(runningByAgent[a.name] || 0)),
       el("td", { class: "agent-checkin", title: checkin ? stamp(checkin) : "" }, checkin ? ago(checkin) : "从未"),
       el("td", { class: "agent-activity", title: activity ? stamp(activity) : "" }, ago(activity), a.activity?.source ? sub(SOURCE[a.activity.source] || a.activity.source) : null),
-      el("td", { class: "num agent-owed" }, String(owed[a.name] ?? "–")),
+      el("td", { class: "agent-owed", title: kinds.join("\n") || null }, duties ? String(duties.length) : "–", kinds.length ? sub(kinds.join(" · ")) : null),
       el("td", { class: "agent-status" }, a.status ? a.status.text : "–", a.status ? sub(ago(a.status.at), stamp(a.status.at)) : null),
       el("td", { class: "agent-actions" }, actions(a)));
   }
@@ -105,7 +114,7 @@
     }
     agents = registry.agents || [];
     const owed = Object.fromEntries(await Promise.all(agents.filter(a => a.enabled !== false).map(a =>
-      api(`/dash/api/agents/${encodeURIComponent(a.name)}/duties`).then(d => [a.name, d.duties.length]).catch(() => [a.name, null]))));
+      api(`/dash/api/agents/${encodeURIComponent(a.name)}/duties`).then(d => [a.name, d.duties]).catch(() => [a.name, null]))));
     const shown = agents.filter(a => !a.archived), folded = agents.filter(a => a.archived);
     foldOpen = document.getElementById("agents-archived")?.open ?? foldOpen;
     document.getElementById("agents-count").textContent = shown.length ? shown.length + " 个" : "";
