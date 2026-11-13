@@ -41,11 +41,12 @@
   }
   // Who it is, the same line as its card on the home page: the first clause of its note, the whole note on hover.
   const role = note => note ? el("div", { class: "agent-role", title: note }, note.split(/[；;。\n]/)[0]) : null;
-  // Its zone (a `zone:<name>` tag) by name alone; other tags (the model's maker, how it runs) are technical details.
+  // Its zone (a `zone:<name>` tag) by name alone, 未分区 without one as on the 结构 page; other tags (the model's maker,
+  // how it runs) are technical details.
   const ZONE = "zone:";
   function tags(list) {
     const zones = list.filter(t => t.startsWith(ZONE)).map(t => el("span", { class: "tag" }, t.slice(ZONE.length)));
-    return [...(zones.length ? spaced(zones) : ["–"]), ...list.filter(t => !t.startsWith(ZONE)).flatMap(t => [" ", el("span", { class: "tag tech" }, t)])];
+    return [...(zones.length ? spaced(zones) : [el("span", { class: "muted" }, "未分区")]), ...list.filter(t => !t.startsWith(ZONE)).flatMap(t => [" ", el("span", { class: "tag tech" }, t)])];
   }
   const sub = (text, title) => el("div", { class: "agent-sub muted", title }, text);
   let agents = [], foldOpen = false;
