@@ -175,9 +175,10 @@
     const total = on.length + usable.reduce((n, c) => n + c.phones.length, 0);
     const local = on.map(s => {
       const job = s.holder?.kind === "job" ? s.holder : null, global = s.global_holder;
+      // A phone asleep says so on its picture: a black one is a screen off, not a picture that failed.
       const thumb = s.shot_at && HGTarget.canWrite()
-        ? `<img alt="${esc(model(s))} 的画面" width="56" height="120" loading="lazy" src="${esc(HGTarget.url(`/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}`))}">`
-        : `<span class="ph">${s.busy ? "占用中" : "无画面"}</span>`;
+        ? `<img alt="${esc(model(s))} 的画面" width="56" height="120" loading="lazy" src="${esc(HGTarget.url(`/dash/api/shot?serial=${encodeURIComponent(s.serial)}&t=${s.shot_at}`))}">${s.screen_on === false ? `<span class="asleep">息屏</span>` : ""}`
+        : `<span class="ph">${s.screen_on === false ? "息屏" : s.busy ? "占用中" : "无画面"}</span>`;
       const doing = (job ? holderLine(job.reserved ? "预留" : "任务", job) : "")
         + (global ? holderLine(global.reserved ? "全局预留" : "全局锁", global) : "")
         + (s.holder?.kind === "external" ? `<div class="doing"><span class="doing-k">外部</span><span class="doing-what">${esc(s.holder.label)}</span></div>`
