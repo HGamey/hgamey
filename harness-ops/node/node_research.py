@@ -1080,6 +1080,19 @@ class NodeResearch:
         return {"kind": row["kind"], "id": row["id"], "revision": row["revision"], "title": row["title"], "state": row["state"],
                 "text": data.get("text") if row["kind"] == "note" else None, "at": row["at"]}
 
+    def replay(self, research_id):
+        """Every write to `research_id`, oldest first: the version it made as the dashboard shows it (blind) with
+        the operation ID it was sent under and the receipt the platform answered it with. One read."""
+        identifier(research_id)
+        with self._db() as db:
+            rows = db.execute("SELECT r.*, e.operation_id, o.receipt FROM events e JOIN revisions r ON r.sequence=e.sequence "
+                              "LEFT JOIN operations o ON o.id=e.operation_id WHERE e.research_id=? ORDER BY e.sequence",
+                              (research_id,)).fetchall()
+            if not rows:
+                raise ResearchError(404, "research_not_found", "research object was not found")
+            return [{**self._show(db, row, blind=True), "operation_id": row["operation_id"],
+                     "receipt": json.loads(row["receipt"]) if row["receipt"] else None} for row in rows]
+
     def assessment(self, oid, revision):
         record = self.get("research", oid, positive(revision))
         criteria = record["data"].get("criteria")

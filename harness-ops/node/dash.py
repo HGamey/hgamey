@@ -47,6 +47,7 @@ from job_queue import RequestConflict
 from job_capacity import CapacityExceeded
 from job_events import public_fields
 import dash_command
+import dash_replay
 import dash_tour
 import dataset_samples
 from node_session import SessionError, MAX_REQUEST
@@ -305,6 +306,8 @@ class Dash:
             return self._static(h, "command.html")
         if sub == ["api", "command"]:
             return self._command(h)
+        if sub == ["api", "replay"]:
+            return self._replay(h, parse_qs(query))
         if sub == ["api", "tasks"]:
             return self._task_list(h, parse_qs(query))
         if sub == ["api", "datasets", "samples"]:
@@ -519,6 +522,20 @@ class Dash:
             return self._send(h, 200, self._model())
         except Exception as error:  # the page shows this and keeps its last good model
             return self._send(h, 503, {"error": f"指挥中心数据暂不可用：{type(error).__name__}: {error}"[:300]})
+
+    def _replay(self, h, q):
+        """A task played back step by step from what the platform kept of it (dash_replay); reads only."""
+        research = getattr(self.job_service, "research", None) if self.job_service else None
+        if research is None:
+            return self._send(h, 503, {"error": "作业服务不可用"})
+        if set(q) - {"id", "expected_node_id"} or len(q.get("id", [])) != 1:
+            return self._send(h, 400, {"error": "replay takes one id"})
+        try:
+            return self._send(h, 200, dash_replay.build(self.job_service, q["id"][0], self._model()["jobs"]))
+        except ValueError as error:   # a ResearchError carries its own status: 404 for a task that is not there
+            return self._send(h, getattr(error, "status", 400), getattr(error, "payload", None) or {"error": str(error)})
+        except (OSError, sqlite3.Error) as error:
+            return self._send(h, 503, {"error": f"回放暂不可用：{type(error).__name__}"})
 
     def _tours(self):
         tours = getattr(self, "_tour_store", None)
