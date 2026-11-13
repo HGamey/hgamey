@@ -259,6 +259,9 @@ static bool g_npuop = false;
 // pass 之外的拷贝/清屏/blit/resolve/dispatch、draw 数、描述符引用了哪些图), 隐含 passdump 溯源。
 // 不改任何渲染; 带 debug.knobs.frameaudit_ts=1 时另在 pass 前后插 GPU 时间戳 (只多写查询, 不碰画面)。
 static bool g_frameaudit = false;
+// debug.knobs.framedump_att (framedump=1 时才看): 在指定 render pass 结束时拷出附件 (framedump.cpp)。
+// 关着时下面所有带 g_fd_att 的条件都和原来一样, 不多挂钩子, 不多记账。
+static bool g_fd_att = false;
 static bool g_frameaudit_ts = false;
 static std::atomic<uint64_t> g_rp_created{0};   // 第几个被创建的 render pass (自报里的 pass 序号)
 
@@ -601,7 +604,7 @@ static int32_t fa_ts(VkCommandBuffer cb, const DevDisp& d) {
     return (int32_t)q;
 }
 static void fa_record_rp(VkRenderPass rp, const VkRenderPassCreateInfo* ci) {
-    if (!g_frameaudit || !ci) return;
+    if ((!g_frameaudit && !g_fd_att) || !ci) return;
     FaRp f; f.nsub = ci->subpassCount ? ci->subpassCount : 1;
     for (uint32_t i = 0; i < ci->attachmentCount; i++) {
         const auto& a = ci->pAttachments[i];
@@ -627,7 +630,7 @@ static void fa_record_rp(VkRenderPass rp, const VkRenderPassCreateInfo* ci) {
     g_rp_fa[rp] = std::move(f);
 }
 static void fa_record_rp2(VkRenderPass rp, const VkRenderPassCreateInfo2* ci) {
-    if (!g_frameaudit || !ci) return;
+    if ((!g_frameaudit && !g_fd_att) || !ci) return;
     FaRp f; f.nsub = ci->subpassCount ? ci->subpassCount : 1;
     for (uint32_t i = 0; i < ci->attachmentCount; i++) {
         const auto& a = ci->pAttachments[i];
@@ -887,6 +890,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateInstance(
     if (g_npuop) g_upop = true;   // npuop 建立在 upop 的定位与 dst 上, 失败时就退回 upop 的双线性
     if (g_copyprobe || g_upop || g_frameaudit) g_dump_passes = true;   // 探针/算子/步骤清单全部建立在溯源表上
     if (fd_init_from_props()) RK_LOG("framedump=1: present 处逐帧读回 (framedump.cpp)");
+    g_fd_att = fd_att_on();
+    if (g_fd_att) RK_LOG("framedump_att: 指定 pass 结束时拷附件 (framedump.cpp)");
     if (ip_init_from_props()) RK_LOG("interp=1: 层内多 present, 两帧之间插一张合成帧 (interp.cpp)");
     if (sr_init_from_props()) RK_LOG("selfsr: 送显前超分 (selfsr.cpp)");
     RK_LOG("rk_CreateInstance entered (pkg=%s) rewrite_loadop=%d passdump=%d copyprobe=%d upop=%d frameaudit=%d ts=%d",
@@ -1469,7 +1474,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateImage(
     DevDisp d;
     if (!dev_of(key(dev), &d) || !d.CreateImage) { RK_LOG_ONCE("CreateImage: 无下层"); return VK_ERROR_INITIALIZATION_FAILED; }
     VkResult r = d.CreateImage(dev, ci, a, out);
-    if (r == VK_SUCCESS && ci && g_dump_passes) {
+    if (r == VK_SUCCESS && ci && (g_dump_passes || g_fd_att)) {
         std::lock_guard<std::mutex> lk(g_mtx);
         rk_lifetime::created_image(dev, *out, *ci);
         ImgInfo ii{ci->extent.width, ci->extent.height, (uint32_t)ci->format, (uint32_t)ci->usage};
@@ -1485,10 +1490,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateImageView(
     DevDisp d;
     if (!dev_of(key(dev), &d) || !d.CreateImageView) { RK_LOG_ONCE("CreateImageView: 无下层"); return VK_ERROR_INITIALIZATION_FAILED; }
     VkResult r = d.CreateImageView(dev, ci, a, out);
-    if (r == VK_SUCCESS && ci && g_dump_passes) {
+    if (r == VK_SUCCESS && ci && (g_dump_passes || g_fd_att)) {
         std::lock_guard<std::mutex> lk(g_mtx);
         g_view[*out] = ci->image;
-        if (g_frameaudit) g_view_sub[*out] = ViewSub{ci->subresourceRange.baseMipLevel, ci->subresourceRange.levelCount,
+        if (g_frameaudit || g_fd_att) g_view_sub[*out] = ViewSub{ci->subresourceRange.baseMipLevel, ci->subresourceRange.levelCount,
                                                    ci->subresourceRange.baseArrayLayer, ci->subresourceRange.layerCount};
         rk_lifetime::created_view(dev, *out, *ci);
     }
@@ -1648,7 +1653,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_CreateFramebuffer(
         RK_LOG_ONCE("CreateFramebuffer: 查不到下层函数"); return VK_ERROR_INITIALIZATION_FAILED;
     }
     VkResult r = d.CreateFramebuffer(dev, ci, a, out);
-    if (r == VK_SUCCESS && ci && g_dump_passes) {
+    if (r == VK_SUCCESS && ci && (g_dump_passes || g_fd_att)) {
         std::lock_guard<std::mutex> lk(g_mtx);
         auto live_rp = rk_lifetime::render_passes.find({dev, ci->renderPass});
         rk_lifetime::remember(rk_lifetime::framebuffers, std::make_pair(dev, *out),
@@ -2730,6 +2735,56 @@ static void note_pass(VkCommandBuffer cb, const VkRenderPassBeginInfo *bi, const
     }
 }
 
+// framedump_att: pass 开始时如果 sig 对上规则, 记下它每个附件的图、格式、usage、尺寸、finalLayout 和 storeOp,
+// 等 EndRenderPass 转发之后交给 framedump 录拷贝。用的都是已有的表 (g_rp_sig / g_rp_fa / g_fb_att / g_view / g_img)。
+static std::map<VkCommandBuffer, std::pair<uint64_t, std::vector<FdAttInfo>>> g_fdatt_cb;
+static void fdatt_begin(VkCommandBuffer cb, const VkRenderPassBeginInfo* bi) {
+    if (!bi) return;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    g_fdatt_cb.erase(cb);
+    auto gi = g_rp_sig.find(bi->renderPass);
+    if (gi == g_rp_sig.end()) return;
+    auto ri = g_rp_fa.find(bi->renderPass);
+    uint32_t fmts[8] = {}, nf = 0;
+    if (ri != g_rp_fa.end())
+        for (auto& x : ri->second.att) { if (nf < 8) fmts[nf++] = (uint32_t)x.fmt; }
+    if (!fd_att_wants(gi->second, bi->renderArea.extent.width, bi->renderArea.extent.height, nf, fmts)) return;
+    std::vector<VkImageView> views;
+    auto ai = g_fb_att.find(bi->framebuffer);
+    if (ai != g_fb_att.end()) views = ai->second;
+    for (auto* p = reinterpret_cast<const VkBaseInStructure*>(bi->pNext); p; p = p->pNext)
+        if (p->sType == VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO) {   // imageless framebuffer
+            auto* ab = reinterpret_cast<const VkRenderPassAttachmentBeginInfo*>(p);
+            views.assign(ab->pAttachments, ab->pAttachments + ab->attachmentCount);
+        }
+    std::vector<FdAttInfo> att(ri != g_rp_fa.end() ? ri->second.att.size() : views.size());
+    for (size_t i = 0; i < att.size(); i++) {
+        FdAttInfo& a = att[i];
+        if (i >= views.size() || ri == g_rp_fa.end()) continue;
+        auto vi = g_view.find(views[i]);
+        if (vi == g_view.end()) continue;
+        auto ii = g_img.find(vi->second);
+        if (ii == g_img.end()) continue;
+        auto si = g_view_sub.find(views[i]);
+        a.img = vi->second; a.fmt = ii->second.fmt; a.usage = ii->second.usage; a.w = ii->second.w; a.h = ii->second.h;
+        if (si != g_view_sub.end()) { a.mip = si->second.mip; a.layer = si->second.layer; }
+        a.final_layout = ri->second.att[i].fin; a.store = ri->second.att[i].store; a.stencil_store = ri->second.att[i].sstore;
+        a.known = true;
+    }
+    g_fdatt_cb[cb] = {gi->second, std::move(att)};
+}
+static void fdatt_end(VkCommandBuffer cb) {
+    std::pair<uint64_t, std::vector<FdAttInfo>> p;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto it = g_fdatt_cb.find(cb);
+        if (it == g_fdatt_cb.end()) return;
+        p = std::move(it->second);
+        g_fdatt_cb.erase(it);
+    }
+    fd_att_record(cb, p.first, (uint32_t)p.second.size(), p.second.data());   // 不持 g_mtx: framedump 用自己的锁
+}
+
 static VKAPI_ATTR void VKAPI_CALL rk_CmdBeginRenderPass(
     VkCommandBuffer cb, const VkRenderPassBeginInfo* bi, VkSubpassContents c) {
     DevDisp d;
@@ -2742,6 +2797,7 @@ static VKAPI_ATTR void VKAPI_CALL rk_CmdBeginRenderPass(
     g_rp++;
     note_begin(bi ? bi->renderPass : VK_NULL_HANDLE);
     note_pass(cb, bi, d, c == VK_SUBPASS_CONTENTS_INLINE);
+    if (g_fd_att) fdatt_begin(cb, bi);
     d.CmdBeginRenderPass(cb, bi, c);
 }
 static VKAPI_ATTR void VKAPI_CALL rk_CmdBeginRenderPass2(
@@ -2761,6 +2817,7 @@ static VKAPI_ATTR void VKAPI_CALL rk_CmdBeginRenderPass2(
               si &&
                   si->contents == VK_SUBPASS_CONTENTS_INLINE); // 与 CmdBeginRenderPass 一致, 漏了它
                                                                // RenderPass2 开的 pass 就不进表
+    if (g_fd_att) fdatt_begin(cb, bi);
     d.CmdBeginRenderPass2(cb, bi, si);
 }
 static void clear_cb_observer(VkCommandBuffer cb) {
@@ -2793,6 +2850,10 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_BeginCommandBuffer(VkCommandBuffer cb,
         if (g_copyprobe || g_upop)
             rk_lifetime::reject("begin_command_buffer_failed");
         return result;
+    }
+    if (g_fd_att) {
+        { std::lock_guard<std::mutex> lk(g_mtx); g_fdatt_cb.erase(cb); }
+        fd_att_on_begin_cb(cb);
     }
     if (g_dump_passes) {
         std::lock_guard<std::mutex> lk(g_mtx);
@@ -3454,6 +3515,22 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_QueueSubmit2(VkQueue q, uint32_t n, con
                 fa_capture_submit(key(q), (uint32_t)cbs.size(), cbs.data());
             }
     }
+    if (g_fd_att) {
+        VkResult r = d.QueueSubmit2(q, n, si, fence);
+        if (r == VK_SUCCESS && si)
+            for (uint32_t i = 0; i < n; i++)
+                for (uint32_t j = 0; j < si[i].commandBufferInfoCount; j++) {
+                    VkCommandBuffer c = si[i].pCommandBufferInfos[j].commandBuffer;
+                    fd_att_on_submit(q, 1, &c);
+                }
+        if (g_npuop && r == VK_SUCCESS && si) {
+            std::vector<VkCommandBuffer> cbs;
+            for (uint32_t i = 0; i < n; i++)
+                for (uint32_t j = 0; j < si[i].commandBufferInfoCount; j++) cbs.push_back(si[i].pCommandBufferInfos[j].commandBuffer);
+            npuop_after_submit(q, d, cbs, 2);
+        }
+        return r;
+    }
     if (g_npuop) {
         VkResult r = d.QueueSubmit2(q, n, si, fence);
         if (r == VK_SUCCESS && si) {
@@ -3515,6 +3592,8 @@ static VKAPI_ATTR VkResult VKAPI_CALL rk_QueueSubmit(VkQueue q, uint32_t n, cons
         submitted = g_artifact_stats.submitted_count(cbs);
     }
     VkResult result = d.QueueSubmit(q, n, si, fence);
+    if (g_fd_att && result == VK_SUCCESS && si)
+        for (uint32_t i = 0; i < n; i++) fd_att_on_submit(q, si[i].commandBufferCount, si[i].pCommandBuffers);
     if (g_upop) {
         std::lock_guard<std::mutex> lk(g_mtx);
         g_artifact_stats.submit_result(submitted, result == VK_SUCCESS);
@@ -3773,6 +3852,7 @@ static VKAPI_ATTR void VKAPI_CALL rk_CmdEndRenderPass(VkCommandBuffer cb) {
     d.CmdEndRenderPass(cb);
     end_target_pass(cb, false);
     fa_end_pass(cb, d);
+    if (g_fd_att) fdatt_end(cb);
 }
 static VKAPI_ATTR void VKAPI_CALL rk_CmdNextSubpass(VkCommandBuffer cb,
                                                     VkSubpassContents contents) {
@@ -3791,6 +3871,7 @@ static VKAPI_ATTR void VKAPI_CALL rk_CmdEndRenderPass2(VkCommandBuffer cb,
     d.CmdEndRenderPass2(cb, info);
     end_target_pass(cb, false);
     fa_end_pass(cb, d);
+    if (g_fd_att) fdatt_end(cb);
 }
 static VKAPI_ATTR void VKAPI_CALL rk_CmdNextSubpass2(VkCommandBuffer cb,
                                                      const VkSubpassBeginInfo *begin,
@@ -4078,6 +4159,21 @@ static PFN_vkVoidFunction dispatch_instance(VkInstance instance, const char* nam
         RK_HOOK("vkUpdateDescriptorSetWithTemplate", rk_UpdateDescriptorSetWithTemplate);
         RK_HOOK("vkUpdateDescriptorSetWithTemplateKHR", rk_UpdateDescriptorSetWithTemplate);
     }
+    if (g_fd_att) {   // framedump_att 只要这几个: 记图/视图/framebuffer, 看 pass 结束、提交和重录
+        RK_HOOK("vkCreateImage", rk_CreateImage);
+        RK_HOOK("vkCreateImageView", rk_CreateImageView);
+        RK_HOOK("vkCreateFramebuffer", rk_CreateFramebuffer);
+        RK_HOOK("vkDestroyFramebuffer", rk_DestroyFramebuffer);
+        RK_HOOK("vkDestroyImage", rk_DestroyImage);
+        RK_HOOK("vkDestroyImageView", rk_DestroyImageView);
+        RK_HOOK("vkBeginCommandBuffer", rk_BeginCommandBuffer);
+        RK_HOOK("vkQueueSubmit", rk_QueueSubmit);
+        RK_HOOK("vkCmdEndRenderPass", rk_CmdEndRenderPass);
+        if(lower_optional_instance(instance,name)) RK_HOOK("vkCmdEndRenderPass2", rk_CmdEndRenderPass2);
+        if(lower_optional_instance(instance,name)) RK_HOOK("vkCmdEndRenderPass2KHR", rk_CmdEndRenderPass2);
+        if(lower_optional_instance(instance,name)) RK_HOOK("vkQueueSubmit2", rk_QueueSubmit2);
+        if(lower_optional_instance(instance,name)) RK_HOOK("vkQueueSubmit2KHR", rk_QueueSubmit2);
+    }
     RK_HOOK("vkCreateRenderPass2", rk_CreateRenderPass2);
     RK_HOOK("vkCreateRenderPass2KHR", rk_CreateRenderPass2);
     RK_HOOK("vkQueuePresentKHR", rk_QueuePresentKHR);
@@ -4186,6 +4282,23 @@ static PFN_vkVoidFunction dispatch_device(VkDevice dev, const char* name) {
     if (!strcmp(name, "vkCreateRenderPass2") || !strcmp(name, "vkCreateRenderPass2KHR"))
         return d.CreateRenderPass2 ? reinterpret_cast<PFN_vkVoidFunction>(rk_CreateRenderPass2)
                                    : (d.gdpa ? d.gdpa(dev, name) : nullptr);
+    if (g_fd_att) {   // framedump_att 只要这几个 (同 dispatch_instance)
+        RK_HOOK("vkCreateImage", rk_CreateImage);
+        RK_HOOK("vkCreateImageView", rk_CreateImageView);
+        RK_HOOK("vkCreateFramebuffer", rk_CreateFramebuffer);
+        RK_HOOK("vkDestroyFramebuffer", rk_DestroyFramebuffer);
+        RK_HOOK("vkDestroyImage", rk_DestroyImage);
+        RK_HOOK("vkDestroyImageView", rk_DestroyImageView);
+        RK_HOOK("vkBeginCommandBuffer", rk_BeginCommandBuffer);
+        RK_HOOK("vkQueueSubmit", rk_QueueSubmit);
+        RK_HOOK("vkCmdEndRenderPass", rk_CmdEndRenderPass);
+#define RK_OPT(n, field, fn) if (!strcmp(name, n)) return d.field ? reinterpret_cast<PFN_vkVoidFunction>(fn) : (d.gdpa ? d.gdpa(dev, name) : nullptr)
+        RK_OPT("vkCmdEndRenderPass2", CmdEndRenderPass2, rk_CmdEndRenderPass2);
+        RK_OPT("vkCmdEndRenderPass2KHR", CmdEndRenderPass2, rk_CmdEndRenderPass2);
+        RK_OPT("vkQueueSubmit2", QueueSubmit2, rk_QueueSubmit2);
+        RK_OPT("vkQueueSubmit2KHR", QueueSubmit2, rk_QueueSubmit2);
+#undef RK_OPT
+    }
     if (g_frameaudit) {
         // 可选 (1.2/1.3/扩展) 命令: 底层有才挂, 没有就原样转发 (多半是空指针, 应用自己会判)
 #define RK_OPT(n, field, fn) if (!strcmp(name, n)) return d.field ? reinterpret_cast<PFN_vkVoidFunction>(fn) : (d.gdpa ? d.gdpa(dev, name) : nullptr)
