@@ -43,7 +43,7 @@ class TechDetailsTests(unittest.TestCase):
             page.wait_for_selector(job, state="attached")
             self.assertTrue(page.is_hidden(job))
 
-    def test_home_cards_leave_out_unknown_readings_and_internal_codes(self):
+    def test_home_cards_dim_unknown_readings_and_leave_out_internal_codes(self):
         now = time.time()
         home = {"now": now, "steer": False, "questions": [], "reviews": [], "tasks": [], "slots": [], "fleet_age_s": 0,
                 "elsewhere": [{"name": "mini3", "connected": True, "stale": False, "sampled_at": now,
@@ -60,7 +60,7 @@ class TechDetailsTests(unittest.TestCase):
             self.assertEqual(page.eval_on_selector_all('#agents li[data-agent="agent-a"] .tag', "e => e.map(x => x.textContent)"),
                              ["接手新任务", "报状态", "待办"])
             self.assertEqual(page.eval_on_selector_all('.phone-card[data-ref="mini3/emu"] .pstat', "e => e.map(x => x.textContent)"),
-                             ["25°电池", "100%电量"])
+                             ["—芯片", "25°电池", "100%电量"], "an unknown reading is a dim dash, with why on hover")
             # Who each agent is (its registration note, first clause), and how long one has been silent.
             self.assertEqual(page.text_content('#agents li[data-agent="agent-a"] .agent-role'), "GLM 5.3（DSH 会话），外部研究员")
             self.assertEqual(page.locator('#agents li[data-agent="agent-b"] .agent-role').count(), 0)

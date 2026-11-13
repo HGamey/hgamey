@@ -4,6 +4,13 @@
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   const num = (v, d = 1) => v == null || Number.isNaN(+v) ? "—" : (+v).toFixed(d);
+  // A phone's readings, 芯片 · 电池 · 电量: an online phone shows all three so the cards line up, one it does not give
+  // as — with why on hover; a phone offline shows none.
+  const MISSING = {芯片: "芯片温度", 电池: "电池温度", 电量: "电量"};
+  const stat = (v, unit, label, hot) => v == null ? `<div class="pstat none" title="这台手机没有给出${MISSING[label]}"><b>—</b><span>${label}</span></div>`
+    : `<div class="pstat${hot ? " hot" : ""}"><b>${v + unit}</b><span>${label}</span></div>`;
+  const stats = (p, online) => !online ? "" : stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)
+    + stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40) + stat(p.battery_pct, "%", "电量", false);
   const toDate = t => typeof t === "number" ? new Date(t * 1000) : new Date(t);
   const HM = new Intl.DateTimeFormat("zh-CN", {hour: "2-digit", minute: "2-digit", hour12: false});
   const MD = new Intl.DateTimeFormat("zh-CN", {month: "numeric", day: "numeric"});
@@ -149,7 +156,6 @@
   // Phones on other joined computers, from their last report: no live view, and 空闲 only means last seen idle.
   const PHONE_OUTLINE = `<svg viewBox="0 0 24 24" width="22" height="22"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 18.5h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
   function remotePhone(computer, p) {
-    const stat = (v, unit, label, hot) => v == null ? "" : `<div class="pstat${hot ? " hot" : ""}"><b>${v + unit}</b><span>${label}</span></div>`;   // an unknown reading is left out
     const job = p.holder;
     const status = !computer.connected ? `<span class="tag bad">已断开</span>` : job ? `<span class="tag acc">使用中</span>` : computer.stale ? `<span class="tag warn">读数过期</span>`
       : p.idle ? `<span class="tag ok" title="最近看到空闲，用时由那台电脑加锁">空闲</span>`
@@ -157,7 +163,7 @@
     // Another computer's phones are not screenshotted here: a phone's outline stands in for the picture.
     return `<div class="phone-card" data-ref="${esc(p.ref)}"><span class="thumb remote" aria-hidden="true">${PHONE_OUTLINE}</span><div class="meta">
       <div class="phone-head"><span class="name" title="${esc(p.serial)}">${esc(model(p) || "未知型号")}</span>${status}${warned(p, computer.connected)}</div>
-      <div class="stats">${stat(p.soc_c == null ? null : num(p.soc_c, 0), "°", "芯片", p.soc_c >= 45)}${stat(p.battery_c == null ? null : num(p.battery_c, 0), "°", "电池", p.battery_c >= 40)}${stat(p.battery_pct, "%", "电量", false)}</div>
+      <div class="stats">${stats(p, computer.connected)}</div>
       ${job ? holderLine("任务", job) : ""}${cleanedLine(p)}</div></div>`;
   }
   // A phone a person should look at (battery under 10%, a SoC at 45 °C or more), as on the 设备 page: amber tags beside
@@ -185,10 +191,9 @@
           : !job && s.goal ? `<div class="doing"><span class="doing-k">目标</span><span class="doing-what">${esc(s.goal.summary)}</span></div>`
           : !job && s.waiting_goal ? `<div class="doing"><span class="doing-k">目标记录</span><span class="doing-what">${esc(s.waiting_goal.summary)} · 设备归属未确认</span></div>`
           : !job && !global && s.busy ? `<div class="doing muted">已占用，未记录占用者</div>` : "");
-      const stat = (v, unit, label, hot) => v == null ? "" : `<div class="pstat${hot ? " hot" : ""}"><b>${v + unit}</b><span>${label}</span></div>`;   // an unknown reading is left out
       return `<div class="phone-card"><a class="thumb" href="${esc(HGTarget.url(`/dash/live?serial=${encodeURIComponent(s.serial)}`))}" aria-label="看 ${esc(model(s))} 的实时画面">${thumb}</a><div class="meta">
         <div class="phone-head"><span class="name" title="${esc(s.serial)}">${esc(model(s) || "未知型号")}</span>${phoneStatus(s, job, global)}${warned(s, s.online)}</div>
-        <div class="stats">${stat(s.soc_c == null ? null : num(s.soc_c, 0), "°", "芯片", s.soc_c >= 45)}${stat(s.battery_c == null ? null : num(s.battery_c, 0), "°", "电池", s.battery_c >= 40)}${stat(s.battery_pct, "%", "电量", false)}</div>
+        <div class="stats">${stats(s, s.online !== false)}</div>
         ${doing}${cleanedLine(s, h.now)}</div></div>`;
     }).join("");
     const empty = `<p class="empty-row">${h.fleet_age_s == null ? (h.fleet_err ? "读不到手机：" + esc(h.fleet_err) : "正在读手机状态…") : "现在没有手机接入"}</p>`;
