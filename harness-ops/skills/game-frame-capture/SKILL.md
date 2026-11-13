@@ -20,13 +20,13 @@ description: 在 HGamey 的真机上采游戏的连续序列帧：每帧同时�
 
 ## 准备
 
-1. 手机只通过 `pf-node` 用，每次提交都带 `--resource device:<串号>`。`pf-node phones` 看有哪几台、装没装游戏。
-2. 游戏版本：`adb shell dumpsys package <包名> | grep versionName`。需要更新时在节点上下载官方 APK，`pm install -r`。不用私服、不用改过的 APK。
+1. 手机只通过 `pf-node` 用，每次提交都带 `--resource device:<串号>`。`pf-node phones` 看有哪几台、在不在线、有没有 root、前台是什么；它不列已装的应用，游戏装没装看第 2 步。
+2. 游戏版本：`pf-node --resource device:<串号> adb -s <串号> shell "dumpsys package <包名> | grep versionName"`。整条命令加引号，管道才在手机上执行；没装就没有输出。`gi_capture.py` 也会把版本记进 report.json。需要更新时在节点上下载官方 APK，`pm install -r`。不用私服、不用改过的 APK。
 3. 账号要已经登录。登录、验证码、实名、维护公告都要人来处理：用 `research note --ask` 提出来，同时 ping lead，然后去做别的事。账号密码不写进留言、脚本和日志。
 4. 第一次启动会下约 500 MB 资源，要几分钟。先单独跑一次进门，确认能进到世界里，再开始采。
 5. 进世界用标准的 `phonefarm onboard`（Linux 节点上用 RapidOCR，第一次运行会自动安装）。onboard 进不去时的备用办法见「已知的坑」。
-6. 采之前确认手机上没有别人留下的层、knobs 和 wm size 覆盖。`gi_capture.py` 发现这些会直接退出，不去动它们。
-7. 层：直接用平台自带的灰层（hgamey main，framedump_att 和 960x540、summary.json 的修复都在里面），不传 `--so`。只有要试还没合入 main 的灰层改动时，才在 hgamey 里 `REFBENCH_NDK=<NDK 路径> bash phonefarm/knobs/gray/build/build_layer.sh` 编层，用 `--so phonefarm/knobs/gray/build/out/libVkLayer_refknobs.so` 传上去。
+6. 采之前确认手机上没有别人留下的层、knobs 和 wm size 覆盖。`gi_capture.py` 发现这些会直接退出，不去动它们。`debug.knobs.*` 必须全部为空：值为 `0` 也算残留（`phonefarm gray-layer off` 会把它们设成 `0`），这时先用 `dataset/phone_state.py <串号> --restore` 清空。
+7. 层：直接用平台自带的灰层（hgamey main，中心部署时用 NDK 编好；framedump_att 和 960x540、summary.json 的修复都在里面），不传 `--so`。层只在进程名和 `debug.knobs.target` 完全相同的进程里工作，别的进程（包括游戏自己的 `:子进程`）加载到它也是原样转发。会话按 `--pkg` 设这个属性、结束时恢复原值，所以 `--pkg` 要写游戏主进程的名字。只有要试还没合入 main 的灰层改动时，才在 hgamey 里 `REFBENCH_NDK=<NDK 路径> bash phonefarm/knobs/gray/build/build_layer.sh` 编层，用 `--so phonefarm/knobs/gray/build/out/libVkLayer_refknobs.so` 传上去。
 
 ## 找 pass（换游戏、换大版本时做一次）
 
@@ -88,6 +88,19 @@ pf-node --experiment <提交> --research <研究> --resource device:<串号> --d
 
 产物在 `gi_<场景>_<时间>/<档>/`：`ui/ noui/ depth16/ depth24/ mv/` 下的 PNG，`index.csv`（每帧时间戳和间隔），`checks.csv`，`summary.json`，开采前后的截图，`report.json`（尺寸、帧数、完整帧数、每个附件的格式和尺寸、耗时、温度、收尾回读）。
 
+## 会话前后核对
+
+验收或排查时，在采集前后各跑一次，对比：
+
+```
+pf-node --research <研究> --resource device:<串号> adb -s <串号> shell \
+  "su -c 'ls -l --full-time /data/tombstones'; echo TARGET=[\$(getprop debug.knobs.target)]; echo LAYERS=[\$(getprop debug.vulkan.layers)]"
+```
+
+- 输出别用 `tail` 截短：墓碑按 tombstone_00…31 循环编号，要按文件名加时间比，只看最后几行会把旧文件当成新的。
+- 每个新墓碑看是哪个进程：`su -c "grep -m1 ^Cmdline: /data/tombstones/tombstone_<号>"`，再 grep 一下 refknobs，看崩的时候层在不在 maps 里。游戏进程不能有新墓碑；gameassist 和 gamefloat 各一个，属于上一节说的已知现象。
+- `debug.knobs.target` 和 `debug.vulkan.layers` 要回到会话前的值（红魔上原值都是空）。
+
 ## 逐帧检查
 
 `checks.csv` 每帧一行：
@@ -120,8 +133,8 @@ version 写采集日期，同一天第二版写 `20261113-2`。labels.device 只
 
 - onboard 进不去：用 `dataset/gi_enter.py` 的备用办法。它看屏幕底部血条（0.43–0.46, 0.918 处是绿的）判断是否已在世界里，只在游戏在前台时点屏幕中央，游戏被别的界面盖住就切回来，游戏死了就重开。
 - RenderDoc 用不了：挂 RenderDoc 层后原神登录完 20 多秒就自己退出，没有 tombstone。不要去绕。
-- 不要设全局 `debug.vulkan.layers`，红魔的 gameassist 会崩。层只通过 `gray-layer session` 挂到游戏上。
-- 红魔的游戏助手（`cn.nubia.gameassist`）每次会话开头会崩一次，属正常。会话启动游戏前要短暂设上全局 `debug.vulkan.layers`，游戏助手跟着游戏一起启动，它是系统应用，库目录里没有层，vkCreateInstance 失败后 hwui 断言（墓碑里是 `Assertion failed: err < 0`，maps 里没有 refknobs）。崩完它可能抢一下前台，所以进门和点击前先确认前台是游戏。不要停用它：它可能管着游戏性能模式，停用会改变性能实验的条件。
+- 不要自己设全局 `debug.vulkan.layers`，层只通过 `gray-layer session` 挂到游戏上。会话启动游戏前会短暂设上这个全局属性，游戏加载后收窄，结束时恢复原值（下一条的崩溃就来自这段时间）。
+- 红魔的游戏助手（`cn.nubia.gameassist`）和游戏悬浮窗（`cn.zte.gamefloat`）每次会话开头各崩一次（同一秒两个墓碑），属正常。会话启动游戏前要短暂设上全局 `debug.vulkan.layers`，游戏助手跟着游戏一起启动，它是系统应用，库目录里没有层，vkCreateInstance 失败后 hwui 断言（墓碑里是 `Assertion failed: err < 0`，maps 里没有 refknobs）。崩完它可能抢一下前台，所以进门和点击前先确认前台是游戏。不要停用它：它可能管着游戏性能模式，停用会改变性能实验的条件。
 - 红魔上 logcat 是空的，排查看层自己写的 summary.json 和 session 日志。
 - 采集期间屏幕显示只有约 27 fps（红魔的 SF waitframe 会跳帧），但游戏自己仍按 60 帧 present，序列是连续的。看 `index.csv` 的 `dt_ns`，不要看屏幕帧率。
 - 不碰屏幕时原神会降到 30 帧。static 段要隔几秒点一下空白处。
