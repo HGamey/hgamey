@@ -1,0 +1,52 @@
+/* 回放: a task's steps on a time strip, one at a time in the three columns of 我来当一次 Agent (tour.css). */
+.replay-pick { font-size: var(--fs-sm); color: var(--ink2); margin-left: auto; }
+.replay-pick select { max-width: min(460px, 72vw); margin-left: var(--sp-2); }
+.replay-page .tour-who { margin: calc(-1 * var(--sp-2)) 0 var(--sp-3); }
+.replay-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2); }
+.replay-where { min-width: 13em; text-align: center; font-size: var(--fs-sm); color: var(--ink2); font-variant-numeric: tabular-nums; }
+.replay-filter { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--ink2); }
+.replay-bar .replay-filter:first-of-type { margin-left: auto; }
+/* One tick per step, colored by who did it; a gap where a day starts. Too many to fit, the strip scrolls sideways. */
+.replay-strip { position: relative; list-style: none; display: flex; align-items: stretch; gap: 1px; height: 36px; margin: 0 0 var(--sp-3);
+  padding: 4px 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+.replay-strip li { display: flex; flex: 1 0 3px; }
+.replay-strip li.day { margin-left: 5px; }
+.replay-strip button { flex: 1; min-width: 0; padding: 0; border: 0; border-radius: 2px; background: var(--grid); cursor: pointer; }
+.replay-strip .k-agent button { background: color-mix(in srgb, var(--ink2) 45%, var(--page)); }
+.replay-strip .k-human button { background: var(--warn); }
+.replay-strip .k-admin button { background: color-mix(in srgb, var(--warn) 55%, var(--page)); }
+.replay-strip button:hover { outline: 1px solid var(--ink2); }
+.replay-strip button[aria-current] { background: var(--acc); }
+.replay-strip li:has(button[aria-current]) { margin-block: -4px; flex-basis: 5px; }
+.replay-step:focus { outline: none; }
+.replay-who { flex: none; padding: 0 var(--sp-2); border-radius: 999px; background: var(--wash); color: var(--ink2); font-size: var(--fs-xs); line-height: 20px; }
+.replay-who.k-human, .replay-who.k-admin { background: var(--warn-soft); color: var(--warn); }
+.replay-step .tour-step-head time { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.replay-step .tour-step-head .tag { margin-left: auto; }
+.replay-say { font-weight: 600; }
+.replay-text { white-space: pre-line; max-height: 16em; overflow: auto; }
+.replay-tags { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin: 0; }
+.replay-quote { margin: 0; padding-left: var(--sp-2); border-left: 3px solid var(--grid); color: var(--muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.replay-media { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-2); }
+.replay-media .media-preview img { max-width: min(160px, 100%); max-height: 120px; }
+.replay-slots { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.replay-slot { display: grid; gap: 2px; margin: 0; justify-items: center; }
+.replay-slot img, .replay-slot video { display: block; max-width: 150px; max-height: 110px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--wash); }
+.replay-slot img:not([src]) { width: 120px; height: 80px; }
+.replay-slot figcaption { font-size: var(--fs-xs); font-weight: 650; color: var(--ink2); }
+.replay-all { margin-top: var(--sp-4); }
+.replay-all > summary { cursor: pointer; color: var(--ink2); font-size: var(--fs-sm); }
+.replay-list { list-style: none; margin: var(--sp-2) 0 0; padding: 0; max-height: 50vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); }
+.replay-row { display: flex; align-items: baseline; gap: var(--sp-2); width: 100%; padding: 6px var(--sp-3); border: 0; border-bottom: 1px solid var(--grid);
+  background: none; color: var(--ink); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
+.replay-row time { flex: none; width: 7.5em; font-variant-numeric: tabular-nums; }
+.replay-row > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.replay-row:hover { background: var(--wash); }
+.replay-row[aria-current] { background: var(--acc-soft); }
+@media (max-width: 760px) {
+  .replay-pick { margin-left: 0; width: 100%; }
+  .replay-pick select { max-width: calc(100% - 3em); }
+  .replay-where { order: -1; width: 100%; min-width: 0; text-align: left; }
+  .replay-bar .replay-filter:first-of-type { margin-left: 0; }
+  .replay-row time { width: auto; }
+}

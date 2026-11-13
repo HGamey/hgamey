@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark">
+<title>回放 · 我来当一次 Agent · HGamey</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/dash/static/app.css"><link rel="stylesheet" href="/dash/static/tour.css"><link rel="stylesheet" href="/dash/static/replay.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+</head>
+<body class="tour-view">
+<a class="skip-link" href="#replay-title">跳到回放</a>
+<header class="top"><div class="top-right"></div></header><script src="/dash/static/shell.js"></script>
+<main class="tour-page replay-page">
+  <div class="tour-head">
+    <h1 id="replay-title" tabindex="-1">回放</h1>
+    <label class="replay-pick">任务 <select id="replay-task"></select></label>
+  </div>
+  <p id="replay-about" class="tour-who" hidden></p>
+  <p id="replay-msg" class="msg" role="status"></p>
+  <div id="replay-body" hidden>
+    <div class="replay-bar">
+      <button id="replay-prev" class="btn sm" type="button" aria-keyshortcuts="ArrowLeft">← 上一步</button>
+      <span id="replay-where" class="replay-where" aria-live="polite"></span>
+      <button id="replay-next" class="btn sm" type="button" aria-keyshortcuts="ArrowRight">下一步 →</button>
+      <label class="replay-filter"><input id="replay-key" type="checkbox" checked> 只看关键步骤</label>
+      <label class="replay-filter">当 <select id="replay-as"></select></label>
+    </div>
+    <ol id="replay-strip" class="replay-strip" aria-label="时间轴"></ol>
+    <article id="replay-step" class="tour-step replay-step"></article>
+    <details class="replay-all">
+      <summary id="replay-count">全部步骤</summary>
+      <ol id="replay-list" class="replay-list"></ol>
+    </details>
+  </div>
+</main>
+<script src="/dash/static/target.js"></script><script src="/dash/static/media-preview.js"></script><script src="/dash/static/replay.js"></script>
+</body>
+</html>
