@@ -852,12 +852,14 @@
   // running or queued for it (read from the same list as 作业); with neither, when its owner last did something in it.
   const lasted = s => { const m = Math.max(1, Math.round(s / 60)); return m < 60 ? `${m} 分钟` : m < 2880 ? `${Math.round(m / 60)} 小时` : `${Math.round(m / 1440)} 天`; };
   const before = at => Date.now() / 1000 - at < 60 ? '刚刚' : lasted(Date.now() / 1000 - at) + '前';
-  function deed(last, job) {
-    if (job && (!last || job.started > last.at)) return [job.started, `启动作业「${clip(job.label || [job.bin, ...(job.argv || [])].join(' '), 30)}」`];
+  // `whole`: the action in full, for the hover of a line that cuts it short.
+  function deed(last, job, whole = false) {
+    const cut = (value, n) => whole ? value || '' : clip(value, n);
+    if (job && (!last || job.started > last.at)) return [job.started, `启动作业「${cut(job.label || [job.bin, ...(job.argv || [])].join(' '), 30)}」`];
     if (!last) return null;
-    const what = last.kind === 'note' ? `留言「${clip(firstSentence(last.text || '')[0], 40)}」`
-      : last.kind === 'direction' ? `${last.revision > 1 ? '更新' : '提出'}方向「${clip(last.title, 30)}」`
-      : last.kind === 'request' ? `发起「${clip(last.title, 30)}」`
+    const what = last.kind === 'note' ? `留言「${whole ? last.text || '' : clip(firstSentence(last.text || '')[0], 40)}」`
+      : last.kind === 'direction' ? `${last.revision > 1 ? '更新' : '提出'}方向「${cut(last.title, 30)}」`
+      : last.kind === 'request' ? `发起「${cut(last.title, 30)}」`
       : last.kind === 'feedback' ? '回复了评价'
       : last.state === 'delivered' ? '交付了报告' : last.revision > 1 ? '更新了任务' : '建了这个任务';
     return [last.at, what];
@@ -888,7 +890,8 @@
       }
       if (!parts.length) {
         const mine = items.filter(job => now.owner && job.actor_id === now.owner && job.started).sort((a, b) => b.started - a.started)[0];
-        const done = now.owner && deed(now.last, mine);
+        const done = now.owner && deed(now.last, mine), full = done && deed(now.last, mine, true);
+        if (full && full[1] !== done[1]) text.title = `最后一次动作：${full[1]}`;
         parts.push([!now.owner ? '还没人负责' : done ? `负责人 ${now.owner}，${before(done[0])}最后一次动作：${done[1]}` : `负责人 ${now.owner}，还没有动作`]);
       }
       text.append(...parts.flatMap((part, i) => i ? ['；', ...part] : part));
