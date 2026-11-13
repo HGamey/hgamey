@@ -55,6 +55,7 @@ phonefarm.toml         Config: thresholds, prompts, provider chain (keys via sec
 docs/                  Architecture contract + one SPEC per upper path
 round.sh               Legacy single-round script (still works; new flows use benchmark directly)
 ocr.swift / ocr        OCR text fallback (macOS Vision, auto-compiled on first use)
+ocr.py                 Same output via RapidOCR, for onboard on Linux nodes (installs itself for the user on first use)
 tasks/<task>/
   lessons.jsonl        Experience base (win/lose counters, atomic rewrite)
   tree.json            Page state-transition graph (recomputed at session end)
