@@ -100,7 +100,7 @@ SHOWCASE_STATIC = frozenset((
     "three-luminosity-high-pass-shader.js", "three-output-shader.js", "three-rounded-box-geometry.js", "three-css2d-renderer.js"))
 TARGET_PAGES = {"/dash", "/dash/gol", "/dash/jobs", "/dash/games", "/dash/fleet", "/dash/control", "/dash/live", "/dash/maint", "/dash/results", "/dash/datasets", "/dash/research", "/dash/doctor", "/dash/structure", "/dash/research/report", "/dash/research/flow", "/dash/research/open"}
 # Where a login may return to: a dashboard page, with its query and fragment, on this site only.
-LOGIN_PAGES = TARGET_PAGES | {"/dash/command", "/dash/showcase", "/dash/showcase/command"}
+LOGIN_PAGES = TARGET_PAGES | {"/dash/command", "/dash/showcase", "/dash/showcase/command", "/dash/tour", "/dash/tour/replay"}
 
 
 def _login_next(value):
@@ -300,6 +300,8 @@ class Dash:
             return self._static(h, "showcase.html")
         if sub == ["tour"]:
             return self._static(h, "tour.html")
+        if sub == ["tour", "replay"]:
+            return self._static(h, "replay.html")
         if sub[:2] == ["api", "tour"] and len(sub) <= 3:
             return self._tour_read(h, sub[2] if len(sub) == 3 else None)
         if sub in (["command"], ["showcase", "command"]):
