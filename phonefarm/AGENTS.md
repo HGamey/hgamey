@@ -364,7 +364,8 @@ skills/                给 AI Agent 直接阅读的英文说明书（phonefarm /
 examples/              示例脚本与 CTS profile 样例
 tools/decision-sidecar/  决策侧车（Swift + Core ML）：把真模型接进 decide --sidecar
 round.sh               单轮调度外壳脚本（保留兼容，生产建议用 benchmark）
-ocr.swift / ocr        OCR 辅助识别模块
+ocr.swift / ocr        OCR 辅助识别模块（macOS Vision，首次使用时编译）
+ocr.py                 同一输出的 OCR（RapidOCR，Linux 节点 onboard 用；首次使用时 pip 装进本用户目录）
 tasks/<任务名>/        任务数据目录（lessons.jsonl、tree.json、campaign.tsv、runs/<局ID>/）
 ```
 

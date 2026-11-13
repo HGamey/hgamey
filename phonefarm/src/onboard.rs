@@ -58,7 +58,7 @@ pub const TEMP_CAP_C: f64 = 70.0;
 
 // ══════════════ OCR 条目与匹配 ══════════════
 
-/// ocr.swift 的一行输出: 文字 + 像素框 [x1,y1,x2,y2] (左上原点, 与 input tap 同坐标系)。
+/// ocr.swift / ocr.py 的一行输出: 文字 + 像素框 [x1,y1,x2,y2] (左上原点, 与 input tap 同坐标系)。
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct OcrItem {
     pub t: String,
@@ -777,29 +777,65 @@ fn save_jpg(img: &image::RgbImage, path: &Path, width: u32) {
     let _ = out.save_with_format(path, image::ImageFormat::Jpeg);
 }
 
-/// 找 / 编 OCR 工具 (仓库根的 ./ocr, 源码 ocr.swift)。
-fn ocr_bin() -> Result<PathBuf, String> {
+/// 认字工具: 一条命令, 后面接图片路径, 每行吐一个 [`OcrItem`] 的 JSON。
+struct OcrTool {
+    program: PathBuf,
+    args: Vec<PathBuf>,
+}
+
+/// 找 / 备 OCR 工具。顺序: `--ocr` 给的可执行; 仓库根已编好的 ./ocr; macOS 上用 swiftc 编 ocr.swift
+/// (系统自带 Vision); 其余 (Linux 节点, 或 macOS 编不了) 用 ocr.py (RapidOCR), 这台机器第一次用时
+/// 它自己装进本用户目录 (pip --target, 不要 root)。
+fn ocr_tool() -> Result<OcrTool, String> {
     // --ocr 给的现成可执行 (手机节点上用 pf-node 跑本机构建时, 连同它一起上传)
     if let Some(p) = std::env::var_os("PF_OCR_BIN").map(PathBuf::from) {
         if p.is_file() {
-            return Ok(p);
+            return Ok(OcrTool { program: p, args: vec![] });
         }
     }
     let root = repo_root();
     let bin = root.join("ocr");
     if bin.is_file() {
-        return Ok(bin);
+        return Ok(OcrTool { program: bin, args: vec![] });
     }
-    let src = root.join("ocr.swift");
-    let st = Command::new("swiftc")
-        .args(["-O", &src.to_string_lossy(), "-o", &bin.to_string_lossy()])
-        .status()
-        .map_err(|e| format!("编不了 OCR 工具 (swiftc): {e}"))?;
-    if st.success() && bin.is_file() {
-        Ok(bin)
-    } else {
-        Err(format!("编不了 OCR 工具: swiftc 退出 {st}"))
+    let mut swift = None;
+    if cfg!(target_os = "macos") {
+        let src = root.join("ocr.swift");
+        match Command::new("swiftc").args(["-O", &src.to_string_lossy(), "-o", &bin.to_string_lossy()]).status() {
+            Ok(st) if st.success() && bin.is_file() => return Ok(OcrTool { program: bin, args: vec![] }),
+            Ok(st) => swift = Some(format!("swiftc 退出 {st}")),
+            Err(e) => swift = Some(format!("swiftc: {e}")),
+        }
     }
+    python_ocr(&root).map_err(|e| match swift {
+        Some(s) => format!("编不了 ocr.swift ({s}), {e}"),
+        None => e,
+    })
+}
+
+/// ocr.py 跑得起来就用它; 跑不起来先让它把引擎装上, 装完再试一次。
+fn python_ocr(root: &Path) -> Result<OcrTool, String> {
+    let python = PathBuf::from(std::env::var_os("PF_OCR_PYTHON").unwrap_or_else(|| "python3".into()));
+    let script = root.join("ocr.py");
+    let run = |flag: &str| Command::new(&python).arg(&script).arg(flag).output();
+    let tail = |o: &std::io::Result<std::process::Output>| match o {
+        Ok(o) => String::from_utf8_lossy(&o.stderr).trim().lines().last().unwrap_or("").to_string(),
+        Err(e) => e.to_string(),
+    };
+    let ok = |o: &std::io::Result<std::process::Output>| o.as_ref().map(|o| o.status.success()).unwrap_or(false);
+    let manual = format!("可以手动装: {} {} --install", python.display(), script.display());
+    if !ok(&run("--check")) {
+        println!("  OCR: 这台机器第一次用, 装认字引擎 RapidOCR (pip 装进本用户目录, 不要 root)...");
+        let installed = run("--install");
+        if !ok(&installed) {
+            return Err(format!("装不上 OCR 引擎 RapidOCR: {}; {manual}", tail(&installed)));
+        }
+        let checked = run("--check");
+        if !ok(&checked) {
+            return Err(format!("OCR 引擎装了但用不了: {}; {manual}", tail(&checked)));
+        }
+    }
+    Ok(OcrTool { program: python, args: vec![script] })
 }
 
 /// 像一句话的 OCR 条目 (对话框正文): 英文 ≥ 4 个词, 或中文 ≥ 8 个字。
@@ -840,7 +876,7 @@ pub fn zoom_regions(items: &[OcrItem], w: u32, h: u32) -> Vec<[i32; 4]> {
 
 /// 对 `zoom_regions` 的每块裁图放大 1.5 倍再认一遍, 坐标换回整屏; 和第一遍重复的 (中心落在
 /// 已有框里) 不要。
-fn zoom_ocr(bin: &Path, img: &image::RgbImage, items: &[OcrItem], tmp: &Path) -> Vec<OcrItem> {
+fn zoom_ocr(tool: &OcrTool, img: &image::RgbImage, items: &[OcrItem], tmp: &Path) -> Vec<OcrItem> {
     let (w, h) = img.dimensions();
     let mut out = Vec::new();
     for r in zoom_regions(items, w, h) {
@@ -853,7 +889,7 @@ fn zoom_ocr(bin: &Path, img: &image::RgbImage, items: &[OcrItem], tmp: &Path) ->
         if big.save_with_format(tmp, image::ImageFormat::Jpeg).is_err() {
             continue;
         }
-        for mut it in run_ocr(bin, tmp) {
+        for mut it in run_ocr(tool, tmp) {
             for k in 0..4 {
                 let off = if k % 2 == 0 { r[0] } else { r[1] };
                 it.b[k] = it.b[k] * 2 / 3 + off;
@@ -869,8 +905,8 @@ fn zoom_ocr(bin: &Path, img: &image::RgbImage, items: &[OcrItem], tmp: &Path) ->
     out
 }
 
-fn run_ocr(bin: &Path, img: &Path) -> Vec<OcrItem> {
-    let Ok(o) = Command::new(bin).arg(img).output() else { return vec![] };
+fn run_ocr(tool: &OcrTool, img: &Path) -> Vec<OcrItem> {
+    let Ok(o) = Command::new(&tool.program).args(&tool.args).arg(img).output() else { return vec![] };
     String::from_utf8_lossy(&o.stdout)
         .lines()
         .filter_map(|l| serde_json::from_str::<OcrItem>(l).ok())
@@ -1037,7 +1073,7 @@ fn enter(dev: &Dev, cfg: &EnterCfg) -> EnterResult {
         vlm_calls: 0,
         needs_human_shot: None,
     };
-    let ocr = match ocr_bin() {
+    let ocr = match ocr_tool() {
         Ok(b) => b,
         Err(e) => {
             res.reason = Some(e);
@@ -2223,5 +2259,149 @@ CHARGE_STATE status=Charging current_now=-632000 capacity=100 on_battery=no";
                                 "--serial".into(), "hdc:fake-device".into(), "--out".into(), out.to_string_lossy().into()]);
         assert_eq!(code, 2);
         assert!(!out.exists());
+    }
+
+    // 没有 swiftc 的节点 (Linux 中心) 进门照样认字: 真的 enter() 调真的 ocr.py, 认出「点击进入游戏」
+    // 就点在它中间; 分低于 0.3 的条目不要。认字引擎换成一个假的 rapidocr 模块 (不联网、不装包),
+    // 手机是假 adb。子进程独占 ADB_BIN / PF_OCR_DEPS, 不改本进程的环境。
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn enter_reads_the_screen_without_swiftc() {
+        use std::os::unix::fs::PermissionsExt;
+        const CHILD: &str = "PF_ONBOARD_OCR_FIXTURE";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let cfg = EnterCfg {
+                pkg: "com.fake.game".into(),
+                component: "com.fake.game/.Main".into(),
+                cold: false,
+                policy: Policy::default(),
+                max_steps: 1,
+                timeout_s: 60,
+                out: root.join("out"),
+                vlm_calls: 0,
+            };
+            let res = enter(&Dev { serial: "fake-1".into() }, &cfg);
+            std::fs::write(root.join("enter.json"), serde_json::to_string(&res).unwrap()).unwrap();
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("pf-onboard-ocr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("deps/rapidocr")).unwrap();
+        let (w, h) = (640u32, 360u32);
+        let mut screen = Vec::new();
+        for i in 0..w * h {
+            screen.extend_from_slice(&[(i % 251) as u8, (i % 7 * 30) as u8, 90, 255]);
+        }
+        std::fs::write(root.join("screen.rgba"), &screen).unwrap();
+        std::fs::write(
+            root.join("adb"),
+            format!(
+                r##"#!/usr/bin/env python3
+import os, struct, sys
+root = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+open(os.path.join(root, "adb.log"), "a").write(" ".join(args) + "\n")
+if args[:2] == ["-s", "fake-1"]:
+    args = args[2:]
+if args[:1] == ["exec-out"]:
+    sys.stdout.buffer.write(struct.pack("<IIII", {w}, {h}, 1, 0) + open(os.path.join(root, "screen.rgba"), "rb").read())
+elif "dumpsys window" in " ".join(args):
+    print("  mCurrentFocus=Window{{1a2b u0 com.fake.game/com.fake.game.Main}}")
+"##
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(root.join("adb"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            root.join("deps/rapidocr/__init__.py"),
+            r#"class _Out:
+    boxes = [[[200.4, 160], [300, 160.2], [300, 200], [200, 199.6]], [[10, 10], [50, 10], [50, 30], [10, 30]]]
+    txts = ("点击进入游戏", "噪点")
+    scores = (0.98, 0.1)
+
+class RapidOCR:
+    def __call__(self, path):
+        assert open(path, "rb").read(2) == b"\xff\xd8", "onboard 存下的截图"
+        return _Out()
+"#,
+        )
+        .unwrap();
+        let phonefarm = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "onboard::tests::enter_reads_the_screen_without_swiftc", "--nocapture"])
+            .env(CHILD, &root)
+            .env("ADB_BIN", root.join("adb"))
+            .env("PF_OCR_DEPS", root.join("deps"))
+            .env("PF_REPO_ROOT", phonefarm)
+            .env_remove("PF_OCR_BIN")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let res: Value = serde_json::from_str(&std::fs::read_to_string(root.join("enter.json")).unwrap()).unwrap();
+        assert_eq!(res["steps"][0]["ocr"], json!(["点击进入游戏"]), "{res}");
+        assert_eq!(res["taps"], json!(1), "{res}");
+        let log = std::fs::read_to_string(root.join("adb.log")).unwrap();
+        assert!(log.contains("-s fake-1 shell input tap 250 180"), "{log}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // 引擎没装时 ocr.py 自己装 (pip --target 到旁边的目录, 装完再挪进来), 只装一次; 装好就不再装。
+    // pip 换成一个假的: 往 --target 里放一个假 rapidocr, 记下每次调用。
+    #[test]
+    fn ocr_engine_is_installed_once_for_the_user() {
+        const CHILD: &str = "PF_ONBOARD_OCR_INSTALL_FIXTURE";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let phonefarm = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+            for _ in 0..2 {
+                let tool = python_ocr(phonefarm).unwrap();
+                assert_eq!(tool.args, vec![phonefarm.join("ocr.py")]);
+            }
+            std::fs::write(root.join("done"), "").unwrap();
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("pf-onboard-ocr-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("fake/pip")).unwrap();
+        std::fs::write(root.join("fake/pip/__init__.py"), "").unwrap();
+        std::fs::write(
+            root.join("fake/pip/__main__.py"),
+            r#"import os, sys
+args = sys.argv[1:]
+open(os.environ["PF_FAKE_PIP_LOG"], "a").write(" ".join(args) + "\n")
+target = args[args.index("--target") + 1]
+os.makedirs(os.path.join(target, "rapidocr"))
+open(os.path.join(target, "rapidocr", "__init__.py"), "w").write("class RapidOCR:\n    pass\n")
+"#,
+        )
+        .unwrap();
+        let deps = root.join("deps");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "onboard::tests::ocr_engine_is_installed_once_for_the_user", "--nocapture"])
+            .env(CHILD, &root)
+            .env("PYTHONPATH", root.join("fake"))
+            .env("PF_FAKE_PIP_LOG", root.join("pip.log"))
+            .env("PF_OCR_DEPS", &deps)
+            .env_remove("PF_OCR_PYTHON")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success() && root.join("done").is_file(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let log = std::fs::read_to_string(root.join("pip.log")).unwrap();
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(log.contains(&format!("--target {}.partial", deps.display())) && log.contains("rapidocr==3.10.0"), "{log}");
+        assert!(deps.join("rapidocr/__init__.py").is_file());
+        assert!(!Path::new(&format!("{}.partial", deps.display())).exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
