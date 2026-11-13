@@ -319,17 +319,19 @@ std::string att_json_locked() {
 // 段结束: 队列清空、没有在途槽之后写 summary.json。调用方持 g_m。
 void maybe_finalize_locked() {
     if (!g_finalizing || !g_jobs.empty() || g_inflight) return;
-    char b[4096];
+    char b[1024];
     double secs = g_t_last && g_t0 ? (double)(g_t_last - g_t0) / 1e9 : 0;
     snprintf(b, sizeof b,
              "{\"label\":\"%s\",\"planned_presents\":%u,\"captured\":%llu,\"dropped_slot_busy\":%llu,"
              "\"skipped_other\":%llu,\"first_frame\":%llu,\"last_frame\":%llu,\"span_s\":%.3f,"
-             "\"bytes\":%llu,\"write_us_max\":%llu,\"err\":\"%s\",\"att\":%s}\n",
+             "\"bytes\":%llu,\"write_us_max\":%llu,\"err\":\"%s\"",
              g_label.c_str(), g_plan, (unsigned long long)g_cap, (unsigned long long)g_drop,
              (unsigned long long)g_skip, (unsigned long long)g_first_frame, (unsigned long long)g_last_frame, secs,
-             (unsigned long long)g_bytes, (unsigned long long)g_write_us_max, g_err.c_str(), att_json_locked().c_str());
+             (unsigned long long)g_bytes, (unsigned long long)g_write_us_max, g_err.c_str());
+    // 附件一节可能很长 (sigs_seen 最多 96 个带形状), 不进定长缓冲; 没开 framedump_att 时不写这个键, 和原来逐字节一样
+    std::string sum = std::string(b) + (g_att_on ? ",\"att\":" + att_json_locked() : std::string()) + "}\n";
     if (g_index) { fflush(g_index); fsync(fileno(g_index)); fclose(g_index); g_index = nullptr; }
-    if (!write_new(g_dir + "/summary.json", b)) FD_LOG("summary.json 写不进 %s", g_dir.c_str());
+    if (!write_new(g_dir + "/summary.json", sum.c_str())) FD_LOG("summary.json 写不进 %s", g_dir.c_str());
     FD_LOG("段结束 %s", b);
     g_finalizing = false;
 }
