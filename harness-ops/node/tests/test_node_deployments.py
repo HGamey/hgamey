@@ -194,7 +194,7 @@ sys.exit(0 if done else 2)
         env = self.env
         helper = env.root / "fixture-phonefarm"
         helper.write_text("#!" + sys.executable + "\n" + '''
-import json, pathlib, sys
+import json, os, pathlib, sys
 a=sys.argv[1:]
 if a[:2]==['game-deploy','capabilities']:
     print(json.dumps({'schema':'phonefarm/game-deploy-capabilities@1','resources_v1':True})); sys.exit()
@@ -220,6 +220,7 @@ if attempt==1:
     report['session_path']=None
     report['recovery'].update(source_session=str(old.resolve()),context_moved=False)
 (out/'deployment.json').write_text(json.dumps(report))
+(pathlib.Path(__file__).parent/('ended-'+os.environ['PF_JOB_ID'])).touch()
 sys.exit(0 if attempt==2 else 1)
 ''')
         helper.chmod(0o700)
@@ -250,13 +251,21 @@ sys.exit(0 if attempt==2 else 1)
         original = submitted["id"]
 
         def finished(jid):
-            deadline = time.monotonic() + 12
-            while time.monotonic() < deadline:
+            """The deployment as the node reads it after the fixture has run to its end: first the fixture's own last
+            mark, then the node's record of the job as finished. Each wait is bounded and says where it stopped."""
+            ended, deadline = env.root / ("ended-" + jid), time.monotonic() + 60
+            while not ended.exists():
+                if time.monotonic() > deadline:
+                    self.fail("deployment fixture never ran to its end: " + json.dumps(env.jobs.status(jid), default=str))
+                time.sleep(0.025)
+            deadline = time.monotonic() + 30
+            while True:
                 status, record = env.call("GET", "/jobs/" + jid + "/deployment")
                 if status == 200 and record["job"].get("state") == "finished":
                     return record
+                if time.monotonic() > deadline:
+                    self.fail("deployment fixture ended but its job is not finished: " + json.dumps(record, default=str))
                 time.sleep(0.025)
-            self.fail("deployment fixture did not finish")
 
         first = finished(original)
         self.assertTrue(first["recovery"]["eligible"], first)
