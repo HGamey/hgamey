@@ -212,6 +212,7 @@ details.gm pre { font-size: 14px; }
 .home-view .pstat b { display: block; font-size: var(--fs-md); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.3; color: var(--ink); }
 .home-view .pstat span { font-size: var(--fs-xs); color: var(--muted); }
 .home-view .pstat.hot b { color: var(--warn); }
+.home-view .pstat.none b { color: var(--faint); font-weight: 400; }
 .home-view .phone-card .doing { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-2); margin: 0; padding: 0; background: none; font-size: var(--fs-sm); font-weight: 400; color: var(--ink2); }
 .home-view .doing-k { color: var(--muted); }
 .home-view .doing-what { flex: 1 1 100%; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
