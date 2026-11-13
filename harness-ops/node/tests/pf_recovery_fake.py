@@ -169,6 +169,8 @@ elif words[:2]==['input','swipe']:
     finish(0)
 elif words[:2]==['dumpsys','package'] and len(words)==3:
     entry['kind']='package-read'
+    if words[2] in state.get('other_packages',{}):
+        finish(0,'Packages:\n  legacyNativeLibraryDir='+state['other_packages'][words[2]]+'\n')
     if words[2]!=pkg:
         fail('unexpected target package')
     finish(0,'Packages:\n  legacyNativeLibraryDir='+str(PurePosixPath(state['target_dir']).parent)+'\n')

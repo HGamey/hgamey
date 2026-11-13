@@ -20,6 +20,8 @@ import traceback
 
 from pf_recovery_fake import compose, FAKE_ADB, PKG, NATIVE, png_bytes
 
+ASSIST='/data/app/~~synthetic/cn.nubia.gameassist/lib'
+
 NODE = Path(__file__).resolve().parents[1]
 
 def save(path, value):
@@ -96,7 +98,7 @@ if operation=='prepare':
           'device_binding':binding}
     body=io.BytesIO()
     with tarfile.open(fileobj=body,mode='w:gz') as archive:
-        payload=b'explicit synthetic SO fixture'
+        payload=b'explicit synthetic SO fixture; checks debug.knobs.target'
         member=tarfile.TarInfo('synthetic.so'); member.size=len(payload); member.mode=0o600
         archive.addfile(member,io.BytesIO(payload))
     data=body.getvalue()
@@ -387,16 +389,17 @@ class RecoveryFixture:
         for n,name in enumerate(('loadop','passdump','copyprobe','upop','frameaudit','frameaudit_ts',
                                  'frameaudit_go','storeop','storeop_live','storeop_on','target'),2):
             props['debug.knobs.'+name]=str(n)
-        props.update({'debug.knobs.storeop':'deadbeef:1','debug.knobs.npuprobe':'3'})
+        props.update({'debug.knobs.storeop':'deadbeef:1','debug.knobs.npuprobe':'3','ro.product.brand':'nubia'})
         marker='/storage/emulated/0/Android/data/'+PKG+'/files/knobs_layer_out.json'
         audit='/data/local/tmp/knobs_frameaudit.'+PKG+'.json'
         files={marker:'{"historical_marker":"preserve"}\n',audit:'{"historical_audit":"preserve"}\n',
                NATIVE+'/libgame.so':'unrelated native library',
                '/data/local/tmp/libVkLayer_refknobs.so':'shared staging file, unknown owner'}
-        dirs={'/','/data/local/tmp',NATIVE,'/data/data/'+PKG,
+        dirs={'/','/data/local/tmp',NATIVE,ASSIST+'/arm64','/data/data/'+PKG,
               '/storage/emulated/0/Android/data/'+PKG+'/files'}
         for path in [*files,*dirs]: dirs.update(str(p) for p in Path(path).parents)
         state={'target_pkg':PKG,'target_dir':NATIVE,'properties':props,'files':files,'dirs':sorted(dirs),
+               'other_packages':{'cn.nubia.gameassist':ASSIST},
                'processes':['init',PKG,PKG+':render','org.example.other'],
                'legacy_settings':{'gpu_debug_app':'untouched'},'marker_frames':0}
         state['files'][CHARGE_NODE]='0\n'
@@ -488,6 +491,11 @@ class RecoveryFixture:
         # The layer works only in the process named by debug.knobs.target; it is set before the global layer list.
         writes=[(c['property'],c['value']) for c in calls if c['kind']=='property-write']
         assert ('debug.knobs.target',PKG) in writes[:writes.index(('debug.vulkan.layers','VK_LAYER_refknobs_readonly'))]
+        # The brand's companion app gets the layer before the global layer list is set; recovery removes it.
+        lent=ASSIST+'/arm64/libVkLayer_refknobs.so'
+        layered=next(i for i,c in enumerate(calls) if c['kind']=='property-write' and c['property']=='debug.vulkan.layers' and c['value'])
+        assert any(c['kind']=='copy-file' and c['words'][-1]==lent for c in calls[:layered])
+        assert any(c['kind']=='remove-file' and c['words'][-1]==lent for c in recovery) and lent not in after['files']
         assert all(after['files'].get(path)==value for path,value in before['files'].items())
         assert after['processes']==['init','org.example.other']
         assert len(after['sampling_rounds'])==1 and after['sampling_closed']

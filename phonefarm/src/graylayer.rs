@@ -12,7 +12,8 @@
 //! ⚠ debug.vulkan.layers 是**全局**属性, 会误伤别的应用: 属性置上之后启动的、
 //! 自己 lib 目录里没有这个 .so 的 Vulkan 应用 vkCreateInstance 直接失败
 //! (实测 cn.nubia.gameassist RenderThread SIGABRT 每 ~2 秒崩溃重启一次)。
-//! 持续会话在目标加载后收窄全局属性，并由同一 owner 恢复原值。
+//! 持续会话在目标加载后收窄全局属性，并由同一 owner 恢复原值。收窄之前跟游戏一起起的应用
+//! (见 companion_packages) 由会话把同一个 .so 放进它们的库目录, 层在那里只透明转发。
 //! 旧的挂层后退出入口已退役；`off` 仅处理已登记的历史遗留，不等于恢复会话。
 
 use crate::eval::{adb, adb_ok, adb_path, resolve_path};
@@ -51,6 +52,14 @@ pub(crate) const NPUOP_TUNING_PROPS: [&str; 7] = [
 ];
 /// 层 .so 里有这个字符串 = 这个层带 npuop (R2F 之后的 n1-pipeline 构建)。
 pub(crate) const NPUOP_SO_SIGNATURE: &[u8] = b"debug.knobs.npuop_wait_ms";
+/// 会跟游戏一起启动 Vulkan 的应用, 按 ro.product.brand 逐个列出。会话期间它们的库目录里也放一份层,
+/// 否则全局属性在时它们 vkCreateInstance 找不到层而失败 (红魔游戏助手 hwui 断言崩溃)。
+pub(crate) fn companion_packages(brand: &str) -> &'static [&'static str] {
+    match brand {
+        "nubia" => &["cn.nubia.gameassist"],
+        _ => &[],
+    }
+}
 pub(crate) const SO: &str = "libVkLayer_refknobs.so";
 pub(crate) const STATE: &str = "/data/local/tmp/knobs_layer_state"; // "把 .so 推进了哪个包"
 pub(crate) const LAYER_PROPERTIES: [&str; 13] = [
@@ -267,6 +276,11 @@ fn fmt_num(x: f64) -> String {
 /// 层 .so 带不带 npuop (按二进制里的属性名字符串判)。
 pub(crate) fn so_supports_npuop(bytes: &[u8]) -> bool {
     bytes.windows(NPUOP_SO_SIGNATURE.len()).any(|w| w == NPUOP_SO_SIGNATURE)
+}
+
+/// 层 .so 会不会在非目标进程里只透明转发 (按二进制里的目标属性名判)。旧层不能借给伴随应用。
+pub(crate) fn so_checks_target(bytes: &[u8]) -> bool {
+    bytes.windows(TARGET_PROP.len()).any(|w| w == TARGET_PROP.as_bytes())
 }
 
 /// 失败标记: npuop_device 的还原回包里表示「这一步确实失败了」的唯一标记。

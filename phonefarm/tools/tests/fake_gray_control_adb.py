@@ -25,7 +25,9 @@ elif args[0] == "shell":
     op = command[0]
     path = command[-1]
     if command[:2] == ["dumpsys", "package"]:
-        print("legacyNativeLibraryDir=/data/app/fixture/lib")
+        packages = state.get("packages", {"com.example.fixture": "/data/app/fixture/lib"})
+        if path in packages:
+            print("legacyNativeLibraryDir=" + packages[path])
     elif command[:3] == ["cmd", "package", "resolve-activity"]:
         print("com.example.fixture/.Main")
     elif op == "cat":
@@ -41,6 +43,10 @@ elif args[0] == "shell":
     elif op == "getprop":
         print(props.get(path, ""))
     elif op == "setprop":
+        if command[1] == "debug.vulkan.layers" and command[2]:
+            # Apps that start with the game must already find the layer in their own library directory.
+            for directory in state.get("companion_dirs", []):
+                assert directory + "/libVkLayer_refknobs.so" in files, directory
         props[command[1]] = command[2]
     elif op == "mkdir":
         directories.append(path)

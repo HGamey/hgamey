@@ -205,6 +205,106 @@ class DevlockBridgeTests(unittest.TestCase):
                 self.assertFalse(any(android["properties"].values()))
                 self.assertEqual(json.loads(pf("lease", "status", "--json").stdout)["status"], "clear")
 
+    def test_gray_session_lends_the_layer_to_brand_companions(self):
+        self.env.update(DEVLOCK_BIN=str(DEVLOCK), PHONEFARM_LEASE_TIMEOUT_MS="100",
+                        DEVLOCK_WAIT_SECONDS="1")
+
+        def pf(*args, env=None):
+            return subprocess.run([str(BINARY), *args], env=env or self.env, cwd=self.root,
+                                  capture_output=True, text=True, timeout=10)
+
+        request = self.root / "a.json"
+        request.write_text(json.dumps({"expected_revision": 0, "device": {
+            "device_id": "a", "label": "a", "aliases": ["fake-a"], "enabled": True}}))
+        result = pf("lease", "devices-set", "--request", str(request), "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        binding = json.loads(pf("lease", "resolve", "--serial", "fake-a", "--json").stdout)
+        adb = self.root / "fake-adb"
+        shutil.copyfile(Path(__file__).with_name("fake_gray_control_adb.py"), adb)
+        adb.chmod(0o755)
+        so = self.root / "fixture.so"
+        so.write_text("host fixture layer that checks debug.knobs.target; never loaded by a real device")
+        old = self.root / "old.so"
+        old.write_text("host fixture layer from before the target check")
+        assist = "/data/app/~~x==/cn.nubia.gameassist-y==/lib"
+        system = "/system/priv-app/GameAssist/lib"
+        # name, ro.product.brand, gameassist's legacyNativeLibraryDir, existing dirs, lent dir, skip reason
+        cases = [("lent", "nubia", assist, [assist + "/arm64"], assist + "/arm64", None),
+                 ("old_layer", "nubia", assist, [assist + "/arm64"], None, "layer_without_target_check"),
+                 ("not_installed", "nubia", None, [], None, "not_installed"),
+                 ("no_library_directory", "nubia", assist, [assist], None, "no_arm64_library_directory"),
+                 ("system_image", "nubia", system, [system + "/arm64"], None, "not_under_data_app"),
+                 ("other_brand", "OnePlus", assist, [assist + "/arm64"], None, None)]
+        for n, (name, brand, listed, dirs, lent, skipped) in enumerate(cases, 3):
+            with self.subTest(name):
+                case = self.root / name
+                out = case / "out"
+                receipts = out / "lease-receipts"
+                receipts.mkdir(parents=True)
+                directories = {"/"}
+                for leaf in ("/data/local/tmp", "/data/app/fixture/lib/arm64",
+                             "/sdcard/Android/data/com.example.fixture/files", *dirs):
+                    directories.update(str(p) for p in [Path(leaf), *Path(leaf).parents])
+                packages = {"com.example.fixture": "/data/app/fixture/lib"}
+                if listed:
+                    packages["cn.nubia.gameassist"] = listed
+                (case / "android.json").write_text(json.dumps({
+                    "files": {}, "directories": sorted(directories), "properties": {"ro.product.brand": brand},
+                    "running": False, "packages": packages, "companion_dirs": [lent] if lent else []}))
+                jid = str(n) * 12
+                env = dict(self.env, ADB_BIN=str(adb), FAKE_GRAY_ROOT=str(case), PF_JOB_ID=jid,
+                           PF_JOB_OUT=str(out), PF_JOB_LEASE_DIR=str(receipts),
+                           PF_JOB_DEVICE_BINDING=json.dumps(binding))
+                process = subprocess.Popen(["zsh", str(DEVLOCK), "run", "job-" + jid, "--", str(BINARY),
+                    "gray-layer", "session", "--serial", "fake-a", "--package", "com.example.fixture",
+                    "--mode", "probe", "--so", str(old if name == "old_layer" else so), "--out", str(out), "--keep-prop",
+                    "--max-seconds", "30", "--evidence-origin", "synthetic", "--json"],
+                    env=env, cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    start_new_session=True)
+                try:
+                    deadline = time.monotonic() + 15
+                    descriptor = out / "session-control.json"
+                    while time.monotonic() < deadline and process.poll() is None:
+                        if descriptor.exists() and json.loads(descriptor.read_text()).get("phase") == "ready":
+                            break
+                        time.sleep(.02)
+                    actual = json.loads(descriptor.read_text()) if descriptor.exists() else {}
+                    request = case / "stop.json"
+                    request.write_text(json.dumps({"schema": "phonefarm/gray-control-action@1",
+                        "request_id": "stop", "session_id": actual.get("session_id"), "actor_id": "agent",
+                        "control_epoch": 1, "action": "stop", "params": {}}))
+                    stop = pf("gray-layer", "session-action", "--out", str(out),
+                              "--request", str(request), "--json", env=env)
+                    self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+                    stdout, stderr = process.communicate(timeout=20)
+                finally:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGINT)
+                    stdout, stderr = process.communicate(timeout=20)
+                self.assertEqual(actual.get("phase"), "ready", stdout + stderr)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+                self.assertTrue((case / "attached").exists(), stdout + stderr)
+                commands = [json.loads(line) for line in (case / "adb.jsonl").read_text().splitlines()]
+                shells = [shlex.split(c[1]) for c in commands if c[0] == "shell"]
+                shells = [shlex.split(c[2]) if c[:2] == ["su", "-c"] else c for c in shells]
+                copies = [c[-1] for c in shells if c[0] == "cp"]
+                removals = [c[-1] for c in shells if c[0] == "rm"]
+                expected = ["/data/app/fixture/lib/arm64/libVkLayer_refknobs.so"]
+                if lent:
+                    expected.append(lent + "/libVkLayer_refknobs.so")
+                self.assertEqual(copies, expected)
+                self.assertTrue(set(expected) <= set(removals), removals)
+                events = [json.loads(line) for path in out.rglob("journal.jsonl")
+                          for line in path.read_text().splitlines()]
+                skips = [e["reason"] for e in events if e.get("event") == "companion_skipped"]
+                self.assertEqual(skips, [skipped] if skipped else [])
+                final = json.loads(descriptor.read_text())
+                self.assertEqual(final["recovery"]["status"], "reported_complete", final)
+                android = json.loads((case / "android.json").read_text())
+                self.assertFalse(android["running"])
+                self.assertFalse(android["files"])
+                self.assertEqual({k: v for k, v in android["properties"].items() if v}, {"ro.product.brand": brand})
+
     def test_status_follows_selected_phonefarm_without_creating_storage(self):
         self.env.pop("DEVLOCK_DIR")
         target = self.root / "selected persistent locks"

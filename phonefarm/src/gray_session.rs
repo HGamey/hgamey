@@ -100,7 +100,7 @@ impl Session {
         }
         let mut state = json!({"schema":SCHEMA,"serial":lease.serial,"token":token,"package":pkg,
             "completion_owner":owner,"launch_marker":marker,"generation":0,"round_label":null,"base_recovery":null,
-            "stage":"new","boot_id":null,"native_dir":null,"properties":{},"files":[],
+            "stage":"new","boot_id":null,"native_dir":null,"properties":{},"files":[],"companions":[],
             "remote":format!("/data/local/tmp/phonefarm-gray-{token}"),
             "staging_created":false,"installation_owned":false,"state_owned":false,
             "write_pending":null,"transport_uncertain":false,"evidence_origin":origin,
@@ -331,14 +331,47 @@ impl Session {
         Ok(())
     }
     fn native_dir(&self) -> Result<String, String> {
-        let dump = self.read("native_directory", &format!("dumpsys package {}", q(&self.package())))?;
-        let paths: Vec<_> = dump.lines().filter_map(|l| l.trim().strip_prefix("legacyNativeLibraryDir=")).collect();
-        if paths.len() != 1 || !graylayer::valid_install_dir(paths[0]) {
+        let Some(dir) = self.listed_native_dir(&self.package())? else {
             return self.stop("unrecognized current native library directory".into());
-        }
-        let dir = format!("{}/arm64", paths[0]);
+        };
         if self.entries(&dir)?.is_none() { return self.stop("target has no readable arm64 native library directory".into()); }
         Ok(dir)
+    }
+    /// The arm64 directory under a package's legacyNativeLibraryDir; None when dumpsys lists no such package.
+    fn listed_native_dir(&self, package: &str) -> Result<Option<String>, String> {
+        let dump = self.read("native_directory", &format!("dumpsys package {}", q(package)))?;
+        let paths: Vec<_> = dump.lines().filter_map(|l| l.trim().strip_prefix("legacyNativeLibraryDir=")).collect();
+        match paths.as_slice() {
+            [] => Ok(None),
+            [path] if graylayer::valid_install_dir(path) => Ok(Some(format!("{path}/arm64"))),
+            _ => self.stop(format!("unrecognized native library directory: {package}")),
+        }
+    }
+    /// Apps that start Vulkan alongside the game on this brand get the layer in their own library
+    /// directory while the global property may be set; only installed apps with an arm64 library
+    /// directory under /data/app (a system image directory is read-only) qualify.
+    fn companions(&self) -> Result<Vec<Value>, String> {
+        let brand = self.property("ro.product.brand")?;
+        let mut companions = Vec::new();
+        for &package in graylayer::companion_packages(&brand) {
+            if package == self.package() { continue; }
+            let listed = self.listed_native_dir(package)?;
+            let skipped = match &listed {
+                None => Some("not_installed"),
+                Some(dir) if !dir.starts_with("/data/app/") => Some("not_under_data_app"),
+                Some(dir) if self.entries(dir)?.is_none() => Some("no_arm64_library_directory"),
+                Some(_) => None,
+            };
+            if let Some(reason) = skipped {
+                journal(&self.dir, json!({"event":"companion_skipped","brand":brand,"package":package,"native_dir":listed,"reason":reason}))?;
+                continue;
+            }
+            let dir = listed.unwrap();
+            let path = format!("{dir}/{SO}");
+            if self.present(&path)? { return self.stop(format!("pre-existing installation/session path; refusing overwrite: {path}")); }
+            companions.push(json!({"package":package,"native_dir":dir,"installed":false}));
+        }
+        Ok(companions)
     }
     fn property(&self, property: &str) -> Result<String, String> {
         let value = self.read("property_readback", &format!("getprop {}", q(property)))?;
@@ -390,6 +423,7 @@ impl Session {
         for path in [STATE.to_string(), format!("{native}/{SO}"), self.remote()] {
             if self.present(&path)? { return self.stop(format!("pre-existing installation/session path; refusing overwrite: {path}")); }
         }
+        let companions = self.companions()?;
         let mut properties = Map::new();
         for property in LAYER_PROPERTIES {
             properties.insert(property.into(), json!(self.property(property)?));
@@ -410,6 +444,7 @@ impl Session {
         let mut state = self.state.borrow_mut();
         state["boot_id"] = json!(boot); state["native_dir"] = json!(native);
         state["properties"] = Value::Object(properties); state["files"] = json!(files);
+        state["companions"] = json!(companions);
         state["stage"] = json!("prepared");
         drop(state);
         self.save()
@@ -499,6 +534,21 @@ impl Session {
         Ok(())
     }
 
+    // Copy the staged layer to `installed`; `owned` records ownership once the copy exists.
+    fn place_layer(&self, operation: &str, installed: &str, owned: impl FnOnce(&mut Value)) -> Result<(), String> {
+        self.root_update(operation, &format!("cp -- {} {}", q(&format!("{}/{SO}", self.remote())), q(installed)), owned)?;
+        self.root_write("layer_mode", &format!("chmod 755 {}", q(installed)))?;
+        self.root_write("layer_owner", &format!("chown system:system {}", q(installed)))?;
+        self.root_write("layer_context", &format!("chcon u:object_r:apk_data_file:s0 {}", q(installed)))?;
+        self.expect_presence(installed, true)?;
+        let mode = self.root_read("layer_metadata", &format!("stat -c '%a %u %g' {}", q(installed)))?;
+        let context = self.root_read("layer_context_readback", &format!("ls -Zd -- {}", q(installed)))?;
+        if mode.trim() != "755 1000 1000" || !context.split_whitespace().any(|s| s == "u:object_r:apk_data_file:s0") {
+            return self.stop("installed layer mode/owner/context readback differs".into());
+        }
+        Ok(())
+    }
+
     fn install_owned_layer(&self, local: &Path) -> Result<(), String> {
         self.ready()?;
         let state = self.state.borrow();
@@ -512,15 +562,19 @@ impl Session {
         self.write_update("create_staging", &["shell".into(), format!("mkdir -- {}", q(&remote))], |s| s["staging_created"] = json!(true))?;
         self.write_update("push_layer", &["push".into(), local.to_string_lossy().into(), format!("{remote}/{SO}")], |_| {})?;
         let installed = format!("{}/{SO}", self.state.borrow()["native_dir"].as_str().unwrap());
-        self.root_update("install_layer", &format!("cp -- {} {}", q(&format!("{remote}/{SO}")), q(&installed)), |s| s["installation_owned"] = json!(true))?;
-        self.root_write("layer_mode", &format!("chmod 755 {}", q(&installed)))?;
-        self.root_write("layer_owner", &format!("chown system:system {}", q(&installed)))?;
-        self.root_write("layer_context", &format!("chcon u:object_r:apk_data_file:s0 {}", q(&installed)))?;
-        self.expect_presence(&installed, true)?;
-        let mode = self.root_read("layer_metadata", &format!("stat -c '%a %u %g' {}", q(&installed)))?;
-        let context = self.root_read("layer_context_readback", &format!("ls -Zd -- {}", q(&installed)))?;
-        if mode.trim() != "755 1000 1000" || !context.split_whitespace().any(|s| s == "u:object_r:apk_data_file:s0") {
-            return self.stop("installed layer mode/owner/context readback differs".into());
+        self.place_layer("install_layer", &installed, |s| s["installation_owned"] = json!(true))?;
+        let lent = companions(&self.state.borrow());
+        // A layer that predates the target check would hook and write inside the companion app.
+        let transparent = lent.is_empty() || graylayer::so_checks_target(&fs::read(local).map_err(|e| e.to_string())?);
+        for (index, companion) in lent.into_iter().enumerate() {
+            if !transparent {
+                journal(&self.dir, json!({"event":"companion_skipped","package":companion["package"],
+                    "native_dir":companion["native_dir"],"reason":"layer_without_target_check"}))?;
+                continue;
+            }
+            let path = format!("{}/{SO}", companion["native_dir"].as_str().unwrap());
+            self.expect_presence(&path, false)?;
+            self.place_layer("install_companion_layer", &path, |s| s["companions"][index]["installed"] = json!(true))?;
         }
         let registration = format!("{}|{}", self.package(), self.state.borrow()["native_dir"].as_str().unwrap());
         self.root_update("register_layer", &format!("printf '%s\\n' {} > {}", q(&registration), q(STATE)), |s| s["state_owned"] = json!(true))?;
@@ -820,6 +874,12 @@ impl Session {
             self.root_write("remove_layer", &format!("rm -f -- {}", q(&installed)))?;
             self.expect_presence(&installed, false)?;
         }
+        let lent = companions(&self.state.borrow());
+        for companion in lent.into_iter().filter(|c| c["installed"] == true) {
+            let path = format!("{}/{SO}", companion["native_dir"].as_str().unwrap());
+            self.root_write("remove_companion_layer", &format!("rm -f -- {}", q(&path)))?;
+            self.expect_presence(&path, false)?;
+        }
         if state_owned && self.present(STATE)? {
             self.check_registration()?;
             self.root_write("remove_registration", &format!("rm -f -- {}", q(STATE)))?;
@@ -1062,6 +1122,11 @@ fn valid_session_directory(dir: &Path, owner: &str, token: &str) -> bool {
     })
 }
 
+// Sessions saved before companion installations existed have none.
+fn companions(state: &Value) -> Vec<Value> {
+    state["companions"].as_array().cloned().unwrap_or_default()
+}
+
 // Sessions saved before debug.knobs.target joined LAYER_PROPERTIES never set it; it had no other writer.
 fn with_target_original(state: &mut Value) {
     if let Some(properties) = state.get_mut("properties").and_then(Value::as_object_mut).filter(|m| !m.is_empty()) {
@@ -1161,7 +1226,17 @@ fn validate(state: &Value, dir: &Path, serial: &str) -> Result<(), String> {
     if state["stage"] != "active" && ["staging_created", "installation_owned", "state_owned"].iter().any(|key| state[*key] == true) {
         return Err("nonactive gray session contains device mutations".into());
     }
+    let listed = state.get("companions").map(|v| v.as_array().ok_or("invalid gray session companions")).transpose()?;
+    for companion in listed.into_iter().flatten() {
+        if companion["package"].as_str().is_none_or(|p| !graylayer::valid_package(p) || p == package)
+            || companion["native_dir"].as_str().is_none_or(|d| !d.starts_with("/data/app/") || !graylayer::valid_install_dir(d))
+            || !companion["installed"].is_boolean()
+            || (companion["installed"] == true && state["stage"] != "active") {
+            return Err("invalid gray session companion installation".into());
+        }
+    }
     if state["stage"] == "new" && (!state["boot_id"].is_null() || !state["native_dir"].is_null()
+        || listed.is_some_and(|c| !c.is_empty())
         || state["files"].as_array().is_none_or(|files| !files.is_empty())
         || state["properties"].as_object().is_none_or(|properties| !properties.is_empty())) {
         return Err("unprepared gray session contains partial baseline state".into());
