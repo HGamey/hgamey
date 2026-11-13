@@ -1088,6 +1088,7 @@ class Dash:
                           "battery_pct": b.get("level_pct"), "battery_status": b.get("status"), "on_battery": b.get("on_battery"),
                           "soc_c": t.get("soc_max_c"), "gpu_c": t.get("gpu_c"), "battery_c": b.get("temp_c") or t.get("battery_c"),
                           "busy": self._device_busy(serial, lock, registry), "light": d.get("probe_depth") == "light",
+                          "screen_on": d.get("screen_on"),
                           "holder": holder, "global_holder": global_holder, "cleanups": d.get("cleanups") or [],
                           "shot_at": int(_mtime(shot)) if os.path.exists(shot) else None,
                           "goal": goal and {"run_id": goal["run_id"], "summary": goal["state"].get("goal_summary") or goal["intent"],
