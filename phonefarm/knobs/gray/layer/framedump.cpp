@@ -39,7 +39,7 @@
 // 附件拷贝 (framedump_att): 段进行中, 命中规则的 render pass 在 vkCmdEndRenderPass 转发之后, 在游戏同一条命令缓冲里录
 //   屏障 (finalLayout -> TRANSFER_SRC) -> vkCmdCopyImageToBuffer (深度只拷 DEPTH 面) -> 屏障回 finalLayout。
 //   只拷 usage 已带 TRANSFER_SRC、storeOp 为 STORE 的附件; 否则不拷并把原因记进 summary.json, 不改游戏的图和 pass。
-//   同一 present 间隔里同一规则只取第一次命中, 且图宽不小于送显宽的一半 (同 sig 的小 pass 不算)。
+//   同一 present 间隔里同一规则只取第一次命中, 且图宽不小于送显宽的一半、宽高比和送显相差不到 10% (同 sig 的小 pass 不算)。
 //   提交成功后这些拷贝挂到「下一次 present」; present 时若这一帧送显图也抓了, 写盘线程等同一个栅栏
 //   (栅栏覆盖此前提交到同一队列的全部工作) 后写 f<帧号>_<名字>.raw, index.csv 每条规则一列 (文件名或 MISSING);
 //   这一帧没抓 (段外、槽满、跳过), 就补一个 0 批次带栅栏的提交, 栅栏到了再收回槽。
@@ -319,17 +319,19 @@ std::string att_json_locked() {
 // 段结束: 队列清空、没有在途槽之后写 summary.json。调用方持 g_m。
 void maybe_finalize_locked() {
     if (!g_finalizing || !g_jobs.empty() || g_inflight) return;
-    char b[4096];
+    char b[1024];
     double secs = g_t_last && g_t0 ? (double)(g_t_last - g_t0) / 1e9 : 0;
     snprintf(b, sizeof b,
              "{\"label\":\"%s\",\"planned_presents\":%u,\"captured\":%llu,\"dropped_slot_busy\":%llu,"
              "\"skipped_other\":%llu,\"first_frame\":%llu,\"last_frame\":%llu,\"span_s\":%.3f,"
-             "\"bytes\":%llu,\"write_us_max\":%llu,\"err\":\"%s\",\"att\":%s}\n",
+             "\"bytes\":%llu,\"write_us_max\":%llu,\"err\":\"%s\"",
              g_label.c_str(), g_plan, (unsigned long long)g_cap, (unsigned long long)g_drop,
              (unsigned long long)g_skip, (unsigned long long)g_first_frame, (unsigned long long)g_last_frame, secs,
-             (unsigned long long)g_bytes, (unsigned long long)g_write_us_max, g_err.c_str(), att_json_locked().c_str());
+             (unsigned long long)g_bytes, (unsigned long long)g_write_us_max, g_err.c_str());
+    // 附件一节可能很长 (sigs_seen 最多 96 个带形状), 不进定长缓冲; 没开 framedump_att 时不写这个键, 和原来逐字节一样
+    std::string sum = std::string(b) + (g_att_on ? ",\"att\":" + att_json_locked() : std::string()) + "}\n";
     if (g_index) { fflush(g_index); fsync(fileno(g_index)); fclose(g_index); g_index = nullptr; }
-    if (!write_new(g_dir + "/summary.json", b)) FD_LOG("summary.json 写不进 %s", g_dir.c_str());
+    if (!write_new(g_dir + "/summary.json", sum.c_str())) FD_LOG("summary.json 写不进 %s", g_dir.c_str());
     FD_LOG("段结束 %s", b);
     g_finalizing = false;
 }
@@ -1028,8 +1030,9 @@ void fd_att_record(VkCommandBuffer cb, uint64_t sig, uint32_t n, const FdAttInfo
     }
     Dev* D = dev_of_key(fkey(cb));
     if (!D || !D->CmdPipelineBarrier || !D->CmdCopyImageToBuffer) return;
-    uint32_t swap_w = 0;
-    for (auto& kv : D->swaps) swap_w = kv.second.w > swap_w ? kv.second.w : swap_w;
+    uint32_t swap_w = 0, swap_h = 0;
+    for (auto& kv : D->swaps)
+        if (kv.second.w > swap_w) { swap_w = kv.second.w; swap_h = kv.second.h; }
     std::string hex = sig_hex16(sig);
     std::vector<uint32_t> fm(n);
     for (uint32_t i = 0; i < n; i++) fm[i] = att[i].fmt;
@@ -1041,7 +1044,11 @@ void fd_att_record(VkCommandBuffer cb, uint64_t sig, uint32_t n, const FdAttInfo
         const FdAttInfo& a = att[R.att];
         if (!a.known) { att_note(R, "attachment_unknown"); continue; }
         uint32_t w = a.w >> a.mip ? a.w >> a.mip : 1, h = a.h >> a.mip ? a.h >> a.mip : 1;
-        if (swap_w && w * 2 < swap_w) { R.small++; continue; }   // 同 sig 的小 pass
+        // 同 sig 的小 pass 或形状不同的 pass (如 960x540 送显时同 sig 的 512x512): 长边不到送显长边一半, 或宽高比差 10% 以上。
+        // 按长边/短边比, 交换链预旋转 (竖着建) 时也成立。
+        uint64_t sl = swap_w > swap_h ? swap_w : swap_h, ss = swap_w > swap_h ? swap_h : swap_w;
+        uint64_t al = w > h ? w : h, as = w > h ? h : w;
+        if (sl && ss && (al * 2 < sl || al * ss * 10 > sl * as * 11 || al * ss * 11 < sl * as * 10)) { R.small++; continue; }
         if (g_att_taken & (1u << r)) { R.dup++; continue; }   // 同一 present 间隔只取第一次
         g_att_taken |= 1u << r;
         if (!(a.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) { att_note(R, "no_transfer_src_usage"); continue; }
