@@ -29,7 +29,8 @@ class TaskReadonlyActionTests(unittest.TestCase):
             name, value = self.steer_cookie.split("=", 1)
             page.context.add_cookies([{"name": name, "value": value, "url": base}])
             page.reload()
-            page.wait_for_function(SHOWN + ".includes('编辑此版本')")
+            # 编辑此版本 is in the page before the record is: wait for one only the record's repaint shows.
+            page.wait_for_function(SHOWN + ".includes('新增方向')")
             self.assertEqual(page.evaluate(SHOWN), ["刷新", "编辑此版本", "新增方向", "发出协助请求", "查看研究方向", "查看研究请求"])
 
 
