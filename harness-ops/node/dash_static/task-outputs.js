@@ -14,8 +14,11 @@ window.HGTaskOutputs = (() => {
   const STATUS = {A: '新增', M: '修改', D: '删除', R: '重命名', C: '复制', T: '类型变化'};
   // The platform's records in a job's output (lease receipts, its device record and runtime report), not the agent's work.
   const platform = name => name === 'lease-receipts' || name.startsWith('.');
-  // A remote control session's own records, at any depth: each command it ran and that command's output.
+  // A remote control session's own records, at any depth: each command it ran and that command's output
+  // (gray-session-<pid>-<time>/), its descriptor and its mailbox. What its actions made (gray-control/artifacts, quality) stays.
   const SESSION = /^gray-session-\d+-\d+$/;
+  const MAILBOX = /(^|\/)gray-control\/(requests|started|results|owner\.lock|publisher\.lock|publisher\.json)$/;
+  const sessionRecord = item => SESSION.test(item.name) && item.kind === 'directory' || item.name === 'session-control.json' || MAILBOX.test(item.path);
   const FILES_PER_JOB = 300, DIRECTORIES_PER_JOB = 30;
   const GITHUB = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:commit|tree|blob)\/([0-9a-f]{7,40})(?:[/?#]|$)/;
   const HEX = /\b[0-9a-f]{7,40}\b/g;
@@ -29,7 +32,7 @@ window.HGTaskOutputs = (() => {
 
   // A job's output tree, breadth first, without the platform's records; bounded so a job of thousands of frames
   // stays a short read. The directories of one level are read together, so a tree costs its depth in round trips.
-  // `skip` leaves out entries at the top, `drop` directories at any depth.
+  // `skip` leaves out entries at the top, `drop` entries at any depth.
   async function tree(job, listing = 'artifacts', skip = () => false, drop = () => false) {
     const files = [];
     let level = [''], reads = 0, more = false;
@@ -44,7 +47,8 @@ window.HGTaskOutputs = (() => {
           const page = await U().api(`/jobs/${encodeURIComponent(job)}/${listing}?${new URLSearchParams({path, limit: '200', ...(cursor ? {cursor} : {})})}`);
           for (const item of page.items) {
             if (path === '' && (listing === 'artifacts' ? platform(item.name) : skip(item.name))) continue;
-            if (item.kind === 'directory') { if (!drop(item.name)) directories.push(item.path); }
+            if (drop(item)) continue;
+            if (item.kind === 'directory') directories.push(item.path);
             else if (item.kind === 'file') found.push({job, path: item.path, size: item.size, kind: kindOf(item.path)});
           }
           cursor = page.next_cursor;
@@ -103,7 +107,7 @@ window.HGTaskOutputs = (() => {
     const jobIds = new Set([...(jobs || []).map(job => job.id), ...delivered]);
     for (const [hex] of String(deliverable.summary || '').matchAll(HEX)) if (!jobIds.has(hex) && wanted.size < 50) want(hex, '报告里提到');
     const [trees, found] = await Promise.all([
-      pool(whole, 4, job => tree(job, 'artifacts', undefined, name => SESSION.test(name))), wanted.size ? lookup([...wanted.keys()]) : null]);
+      pool(whole, 4, job => tree(job, 'artifacts', undefined, sessionRecord)), wanted.size ? lookup([...wanted.keys()]) : null]);
     const partial = new Set();   // jobs with more files than are read: their counts are lower bounds
     trees.forEach((value, i) => { if (value.error) unread.push(whole[i]); else { files.push(...value.files); if (value.more) { unread.push(whole[i] + '（只列出一部分）'); partial.add(whole[i]); } } });
     // Every commit a job ran is shown, known to the mirror or not; a hex string from the report only when it is a commit.
