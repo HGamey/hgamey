@@ -45,6 +45,24 @@ class OutputOtherTests(unittest.TestCase):
             self.assertEqual(page.eval_on_selector_all(f"{BRIEF} .output-group.k-other li", "e => e.map(x => x.textContent)"),
                              [".tar · 1 个 · 3.0 MB", ".raw · 5 个 · 5 KB", ".json · 1 个 · 100 字节"])
 
+    def test_a_control_sessions_mailbox_is_not_an_output_but_what_its_actions_made_is(self):
+        control = "fd_native/session/gray-control"
+        files = {"fd_native/session/session-control.json": 300, f"{control}/owner.lock": 1,
+                 f"{control}/publisher.lock": 1, f"{control}/publisher.json": 50,
+                 f"{control}/artifacts/marker-0.json": 60, f"{control}/artifacts/capture-1.png": 50,
+                 f"{control}/quality/q1/quality.json": 70, "fd_native/index.csv": 20}
+        files.update({f"{control}/{box}/marker-{i}.json": 40 for box in ("requests", "started", "results") for i in range(3)})
+        self.job("d3d3d3d3d3d3", "sr-control", files)
+        self.deliver("sr-control", "d3d3d3d3d3d3")
+        with self._browser_page() as page:
+            page.goto("http://%s:%d/dash/research/report?id=sr-control" % self.address)
+            page.wait_for_selector("#outputs h3")
+            self.assertEqual(page.eval_on_selector_all("#outputs .output-count", "e => e.map(x => x.textContent)"),
+                             ["图片 1", "其他文件 3"])
+            listed = page.eval_on_selector_all("#outputs .output-files a[href*='/out?']", "e => e.map(x => new URL(x.href).searchParams.get('path'))")
+            self.assertEqual(sorted(set(listed)), sorted([f"{control}/artifacts/capture-1.png", f"{control}/artifacts/marker-0.json",
+                                                     f"{control}/quality/q1/quality.json", "fd_native/index.csv"]))
+
     def test_a_job_with_more_files_than_are_read_counts_at_least(self):
         self.job("c2c2c2c2c2c2", "sr-many", {f"frames/f{i:04d}.raw": 10 for i in range(320)})
         self.deliver("sr-many", "c2c2c2c2c2c2")
