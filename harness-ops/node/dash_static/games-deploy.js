@@ -107,6 +107,8 @@
       const list=el('dl',null,'deploy-facts');
       const initialization=report?.schema===OPERATIONS.initialize.schema, scene=report?.schema===OPERATIONS.scene.schema;
       for(const [key,label] of [...(initialization?[['storage_initialization','存储目录初始化']]:[]),...(scene?[['runtime_seed','运行种子'],['launcher_configuration','启动配置'],['scene_observation','场景观察']]:[]),...((initialization||scene)?[['launch','启动尝试'],['stop','本次停止']]:[]),['installed','设备包状态'],['resources_deployed','设备资源'],['login','登录'],['scene_ready','场景']]) { const fact=report?.[key];list.append(el('dt',label),el('dd',key==='launch'&&fact?.status==='not_attempted'?'未尝试启动':FACT[fact?.status]||text(fact?.status))); }
+      const method={package_installer:'包管理器',package_installer_root:'包管理器（root）',magisk_module:'Magisk 模块'}[report?.installed?.method];
+      if(method)list.append(el('dt','安装方式'),el('dd',method));
       if(initialization||scene)list.append(el('dt','目标全部进程退出'),el('dd',report.stop?.all_target_processes_gone==='unknown'?'未知（unknown）':text(report.stop?.all_target_processes_gone)));
       if(scene)list.append(el('dt','限定恢复'),el('dd',({verified:'限定范围已结算',reported_complete:'调用者报告限定恢复完成',required:'仍需恢复',not_reported:'未报告'})[report.recovery?.status]||text(report.recovery?.status)));
       return list;
