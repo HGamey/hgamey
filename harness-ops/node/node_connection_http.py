@@ -143,7 +143,12 @@ def handle(handler, method, parts, directory, board, upload_limit, center):
         elif len(route) == 4 and route[:2] == ['node-connect', 'calls']:
             call_id = route[2]
             if route[3] == 'body' and method == 'GET':
-                handler._send(200, directory.link.body(node_id, call_id), 'application/octet-stream')
+                query = parse_qs(urlparse(handler.path).query)
+                payload = directory.link.body(node_id, call_id)
+                if 'offset' in query:   # a piece, so a dropped connection costs only that piece
+                    start = int(query['offset'][0])
+                    payload = payload[start:start + int(query['length'][0])]
+                handler._send(200, payload, 'application/octet-stream')
             elif route[3] == 'reply' and method == 'POST':
                 response = json.loads(handler.headers['X-Node-Response'])
                 payload = body(upload_limit)

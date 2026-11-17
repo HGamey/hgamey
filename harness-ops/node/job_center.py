@@ -1,4 +1,5 @@
 """Business intake and job sources; execution owns the only resource queue."""
+from collections import Counter
 import os
 import re
 import secrets
@@ -14,6 +15,12 @@ from job_queue import RequestConflict
 from node_directory import DirectoryError, DEADLINE_S
 import job_selection
 
+# An upload sent with a job to another computer is fetched by it from the center, through Cloudflare at about 180 KB/s
+# measured. The center waits for it at this rate on top of DEADLINE_S, and refuses uploads it could not deliver in about
+# nine minutes, within pf-node's 600-second submission timeout.
+DELIVERY_RATE = 128 << 10
+REMOTE_UPLOAD = 64 << 20
+
 
 class JobCenter:
     def __init__(self, local):
@@ -22,6 +29,7 @@ class JobCenter:
         self.targets = JobTargets(local.dispatch.queue)
         self._guard = threading.Lock()
         self._stopping = {}
+        self._delivering = Counter()   # jobs whose transfer is still waiting for the node
         self._closed = False
 
     def prepare_request(self, spec):
@@ -110,7 +118,7 @@ class JobCenter:
     def rpc(self, record, method, path, body=b'', headers=None, *, max_bytes=2 << 20, deliver=None):
         return self.local.directory.link.call(record['execution_node_id'], {
             'method': method, 'path': path, 'headers': headers or {}, 'max_bytes': max_bytes}, body,
-            deadline=time.monotonic() + DEADLINE_S, deliver=deliver)
+            deadline=time.monotonic() + DEADLINE_S + len(body) / DELIVERY_RATE, deliver=deliver)
 
     def observe(self, record, observation):
         record = self.targets.update(record['id'], observation=observation, observed_at=time.time())
@@ -160,6 +168,8 @@ class JobCenter:
                     admit=lambda: check_fit(record['request']['spec'], self.local.dispatch.queue.capacity()))
                 self.observe(record, job)
             return self.status(record['id'])
+        with self._guard:
+            self._delivering[record['id']] += 1
         try:
             response = self.rpc(record, 'POST', '/node/executions/' + record['id'], body,
                 {'X-Execution': json.dumps({**record['request'], 'center_id': self.local.node_id}),
@@ -167,9 +177,14 @@ class JobCenter:
                 deliver=lambda: self.targets.mark_sent(record['id']))
         except ConnectionError:
             return self.status(record['id'])
+        finally:
+            with self._guard:
+                self._delivering[record['id']] -= 1
+                if not self._delivering[record['id']]:
+                    del self._delivering[record['id']]
         value = json.loads(response['body'])
         if response['status'] != 200:
-            raise DirectoryError(response['status'], value.get('error', 'execution request failed'))
+            raise DirectoryError(response['status'], value.get('error', 'execution request failed'), value.get('code'))
         self.observe(record, value)
         return self.status(record['id'])
 
@@ -250,8 +265,26 @@ class JobCenter:
 
     def stop(self, jid, action, body):
         record = self.targets.update(jid, stop={'at': time.time(), 'action': action, **body})
-        if (record['observation'] is not None
-                and self.connection(record['execution_node_id'])['status'] not in ('disconnected', 'unregistered')):
+        if self.connection(record['execution_node_id'])['status'] in ('disconnected', 'unregistered'):
+            return
+        if record['observation'] is None and record['sent_at'] is not None:
+            # Handed to the node but never reported, as when its upload did not arrive. While the transfer still waits,
+            # the job is reported and stopped once it arrives. After that, a node without the job never received it, so
+            # the stop finishes it undelivered; one that still arrives late is reported and stopped then.
+            with self._guard:
+                if self._delivering[jid]:
+                    return
+            try:
+                response = self.rpc(record, 'GET', '/jobs/' + jid)
+            except ConnectionError:
+                return
+            if response['status'] == 404:
+                self.targets.update(jid, sent_at=None)
+                return
+            if response['status'] == 200:
+                self.observe(record, json.loads(response['body']))
+            record = self.targets.get(jid)
+        if record['observation'] is not None:
             thread = self._send_stop_in_background(record, explicit=True)
             if thread is not None:
                 thread.join()

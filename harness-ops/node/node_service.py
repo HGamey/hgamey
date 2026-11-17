@@ -35,7 +35,7 @@ import argparse, errno, hashlib, hmac, io, ipaddress, itertools, json, os, re, s
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlencode
 from node_read import NodeRead, artifact_page, image_inventory
-from job_center import JobCenter
+from job_center import JobCenter, REMOTE_UPLOAD
 from node_identity import load_identity
 from node_history import JobHistory, HistoryError, load_history_config
 from job_export_cache import ExportCache, validate_root as validate_export_cache_root
@@ -97,6 +97,12 @@ MCP_ALLOW = {
 CALL_TIMEOUT = 300
 OUT_CHUNK_MAX = 16 << 20   # 分块下载单块上限
 MAX_UPLOAD = 512 << 20
+
+
+class UploadError(ValueError):
+    def __init__(self, status, code, message):
+        super().__init__(message)
+        self.status, self.code = status, code
 
 
 def log(s):
@@ -1241,8 +1247,13 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
         def _body(self):
             n = int(self.headers.get("Content-Length", 0))
             if not 0 <= n <= MAX_UPLOAD:
-                raise ValueError("上传太大")
-            return self.rfile.read(n) if n else b""
+                self.close_connection = True
+                raise UploadError(413, "upload_too_large", f"上传最多 {MAX_UPLOAD >> 20} MiB，这次声明 {n} 字节")
+            data = self.rfile.read(n) if n else b""
+            if len(data) != n:   # the connection closed partway; a short upload is never used
+                self.close_connection = True
+                raise UploadError(400, "upload_incomplete", f"上传没收全：收到 {len(data)} / 声明 {n} 字节")
+            return data
 
         def _remote(self, method):
             u = urlparse(self.path)
@@ -2514,6 +2525,11 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                             if selection[0] == jobs.node_id:
                                 check_fit(selection[1]["spec"], jobs.dispatch.queue.capacity())
                                 jobs.programs.require_session(selection[1]["spec"])
+                        target = selection[0] if selection else (jobs.center.targets.by_request(key) or {}).get("execution_node_id")
+                        size = int(self.headers.get("Content-Length", 0))
+                        if target not in (None, jobs.node_id) and size > REMOTE_UPLOAD:
+                            raise UploadError(413, "input_too_large", f"发往其他电脑的作业，随作业上传的输入最多 "
+                                              f"{REMOTE_UPLOAD >> 20} MiB，这次 {size / (1 << 20):.1f} MiB；拆成几个作业分批传")
                     except (ValueError, CapacityExceeded):
                         self.close_connection = True
                         raise
@@ -2594,7 +2610,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             except RegistryError as e:
                 return self._send(e.status, e.payload)
             except (DirectoryError, GameError) as e:
-                return self._send(e.status, {"error": str(e)})
+                return self._send(e.status, {"error": str(e), **({"code": e.code} if getattr(e, "code", None) else {})})
             except sqlite3.Error as e:
                 jobs.dispatch.last_error = f"{type(e).__name__}: {e}"
                 return self._send(503, {"code": "storage_commit_unconfirmed", "error": "job storage commit could not be confirmed; query job and queue before retrying"})
@@ -2604,6 +2620,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(404, {"code": "job_not_found", "error": "no such job"})
             except RequestConflict as e:
                 return self._send(409, {"code": "conflict", "error": str(e)})
+            except UploadError as e:
+                return self._send(e.status, {"code": e.code, "error": str(e)})
             except (CapacityExceeded, ProgramCompatibilityError) as e:
                 return self._send(e.status, e.payload)
             except (ValueError, tarfile.TarError) as e:

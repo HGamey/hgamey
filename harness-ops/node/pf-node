@@ -117,6 +117,7 @@ Agent 每轮从这里开始（最短完整路径）：
   pf-node out <id> <相对路径>          # 只下输出目录里的一个文件（或子目录）
 
 - 参数里，本机存在的文件会自动上传，路径改写成 @in/N/文件名；目录也自动打包上传（含 --flag=路径 的写法）。
+  打包后最多 512 MiB；发往其他电脑的作业最多 64 MiB，超了在提交时就拒绝。
 - @out 是本次任务在节点上的输出目录；任务结束后它的内容下载到 -o 指定的目录（缺省 ./pf-node-out/<id>）。
   下载分块进行（PF_NODE_CHUNK 字节一块，缺省 2MB），断了自动续，最后校验 sha256；中途中断的进度存在
   <目标目录的上级>/.pf-node-<id>-*.part，再跑一次 `pf-node out <id>` 接着下。
@@ -569,10 +570,14 @@ def submit_job(spec, body, request_id):
     gray_session = is_gray_session(spec)
     try:
         meta = json.loads(call("POST", "/jobs", body, headers, timeout=600, raise_4xx=True,
+                               stop_error_codes=("input_transfer_failed",),
                                **({"attempts": 1, "raise_errors": True} if gray_session else {})))
         meta["id"]  # A malformed response cannot confirm which job was accepted.
         return meta
     except ClientError as e:
+        if response_error_code(e.body) == "input_transfer_failed":
+            sys.exit(f"pf-node: 输入没有传到执行节点，任务没有开始，request_id={request_id}：{response_error_text(e.body)}；"
+                     f"加 --request-id {request_id} 再提交一次会重新传")
         if gray_session and response_error_code(e.body) in {"program_protocol_unsupported", "program_identity_unavailable", "program_override_unsupported", "program_configuration_changed"}:
             payload = json.loads(e.body)
             sys.exit(f"pf-node: 新灰层会话准入被拒绝，request_id={request_id}；保留原 ID 核对，不自动刷新或重试：" + json.dumps(payload, ensure_ascii=False))
