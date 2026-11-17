@@ -43,6 +43,8 @@ asset_size_exceeded / asset_space_insufficient / asset_write_space_failed / asse
 prefix_bytes / written_bytes 不证明同步完成，先查询原上传 offset，再显式接续。
 deploy 仅部署配方选中的资源到已安装引擎的新目录；--check 只读取设备前提，仍经任务排队。
 install 仅对明确缺席的包新装单个 APK；--check 核元数据和设备前提，不升级、不启动应用。
+已 root 的手机用 root 执行安装（不弹 ColorOS 的确认页和验证码）；系统拒装或久等无回应时，有 Magisk 的手机改装成
+Magisk 模块（/data/adb/modules/pf_game_<包名>）并重启。报告的 installed.method 写明方式；模块装的，删模块再重启即卸载。
 initialize 显式有界尝试 Launcher 初始化并停止本次目标；目录已就绪时不启动，首次配置保留，场景仍需核验。
 scene 冻结两份原部署 input-reference 的 source，放入独立运行目录并有界启动/观察/停止；不代表冷启同状态或性能资格。
 新建 deploy/install/initialize/scene（含 --check）的 --serial 接受平台手机引用（pf-node phones 的 ref），
