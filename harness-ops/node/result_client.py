@@ -19,12 +19,15 @@ HELP = """用法:
   pf-node results compare FILE
   pf-node results show ID
   pf-node results register FILE
+  pf-node results supersede ID OLD_ID [OLD_ID…]
   pf-node results import FILE --adapter doom-lr4-026-v1|gol-optimize-v1 [--import-id ID]
       [--game-id ID] [--game-version VERSION] [--device TEXT] [--research-id ID] [--direction-id ID]
   pf-node results import-status ID
 
 输出节点原始 JSON。登记只读至多 256 KiB 的清单；导入保留至多 1 MiB 的原 UTF-8 JSON。
 register 使用文件内固定 result_id；import 在读文件前打印指定或生成的 import_id。
+新结果取代旧结果时，清单的 supersedes 写一个旧 result_id 或一组（最多 16 个）；旧的不删，数据集页把它标为已被取代。
+登记后才发现要取代的，用 supersede ID 旧ID… 补上：只能添加取代关系，清单其他内容不变。
 写入核对显式目标与能力，只提交一次。回执未知时，用 show 或 import-status 查询原 ID，
 不换 ID、不自动重发。登记不表示测量、收益、设备恢复或同状态资格已经验证。
 采到数据集时，在 register 清单写 dataset 对象；pairing 必填 simulated|real|unpaired|mixed，其余字段可 null，用 list --datasets 筛选。
@@ -330,6 +333,13 @@ def main(args, *, target):
                     print(f"pf-node: 提醒：labels.device 里有 {'、'.join(codes)}，像串号或提交号；设备只写型号。",
                           file=sys.stderr, flush=True)
             return _submit(client, "/results", content.encode("utf-8"), identity, importing=False)
+        elif command == "supersede" and len(args) >= 2:
+            identity, old = identifier(args[0]), [identifier(arg) for arg in args[1:]]
+            client.require_capability(write=True)
+            value = client.request("POST", f"/results/{identity}/supersedes",
+                                   json.dumps({"supersedes": old}).encode())
+            if value.get("result_id") != identity or not set(old) <= set(value.get("supersedes") or []):
+                raise RequestError("回执未绑定原 result_id 与取代关系；结果未确认")
         elif command == "import" and args:
             path = args.pop(0)
             options = _options(args, set(LABELS) | {"adapter", "import_id"})

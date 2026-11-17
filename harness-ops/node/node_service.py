@@ -2071,7 +2071,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if not self._upload_write_auth(dashboard):
                 return
             try:
-                if parts not in (["results"], ["result-imports"]):
+                adding = len(parts) == 3 and parts[0] == "results" and parts[2] == "supersedes"
+                if parts not in (["results"], ["result-imports"]) and not adding:
                     raise ResultError(404, "result_operation_not_found", "no such result operation")
                 if not (self.headers.get("X-Expected-Node-ID") or
                         parse_qs(urlparse(self.path).query).get("expected_node_id")):
@@ -2085,6 +2086,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if len(raw) != length:
                     raise ValueError("result request body was interrupted; query the original ID")
                 payload = json.loads(raw)
+                if adding:
+                    return self._send(200, results.supersede(unquote(parts[1]), payload))
                 value = results.import_report(payload) if parts == ["result-imports"] else results.register(payload)
                 return self._send(201, value)
             except ResultError as e:

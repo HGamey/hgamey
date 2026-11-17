@@ -38,6 +38,17 @@ def identifier(value, maximum=64):
     return value
 
 
+def superseded_ids(value, own=None):
+    """The results a result replaces: one ID, or a list of 1 to 16 distinct IDs other than its own."""
+    ids = [value] if isinstance(value, str) else value
+    if not isinstance(ids, list) or not 1 <= len(ids) <= 16:
+        raise ValueError("supersedes must be one result ID or a list of 1 to 16")
+    ids = [identifier(item) for item in ids]
+    if len(set(ids)) != len(ids) or own in ids:
+        raise ValueError("supersedes must name distinct results other than this one")
+    return ids
+
+
 def text(value, maximum=1024, required=False):
     if value is None and not required:
         return None
@@ -183,7 +194,10 @@ def manifest(value, internal=False):
     if value["outcome"] not in OUTCOMES:
         raise ValueError("unsupported reported outcome")
     value["source_outcome"] = text(value.get("source_outcome"), 512)
-    value["supersedes"] = identifier(value["supersedes"]) if value.get("supersedes") is not None else None
+    if value.get("supersedes") is not None:
+        superseded_ids(value["supersedes"], value["result_id"])
+    else:
+        value["supersedes"] = None
     for key in ("claims", "limitations"):
         items = value.setdefault(key, [])
         if not isinstance(items, list) or len(items) > 64:
@@ -283,6 +297,13 @@ class NodeResults:
             db.execute("""CREATE TABLE IF NOT EXISTS imports (
                 import_id TEXT PRIMARY KEY, request TEXT NOT NULL, content BLOB NOT NULL,
                 receipt TEXT NOT NULL)""")
+            # Which results replace which: those a manifest names, and those added after registration.
+            db.execute("""CREATE TABLE IF NOT EXISTS supersessions (
+                result_id TEXT NOT NULL, superseded_id TEXT NOT NULL, added_at REAL NOT NULL,
+                PRIMARY KEY (result_id, superseded_id))""")
+            db.execute("""INSERT OR IGNORE INTO supersessions SELECT result_id, replaced.value, registered_at
+                FROM results, json_each(manifest, '$.supersedes') AS replaced
+                WHERE json_extract(manifest, '$.supersedes') IS NOT NULL""")
 
     @contextmanager
     def _db(self, write=False):
@@ -387,12 +408,37 @@ class NodeResults:
             if old["manifest"] != encoded(value) or old["provenance"] != encoded(provenance):
                 raise ResultError(409, "result_conflict", "result ID already has different immutable content")
             return
-        if value["supersedes"] and not self._find(db, value["supersedes"]):
-            raise ResultError(404, "result_not_found", "superseded result is absent on this node")
+        replaced = superseded_ids(value["supersedes"]) if value["supersedes"] is not None else []
+        self._require(db, replaced)
+        db.executemany("INSERT INTO supersessions VALUES (?,?,?)", [(value["result_id"], old, now) for old in replaced])
         db.execute("""INSERT INTO results (result_id,registered_at,title,job_id,game_id,game_version,device,research_id,
             direction_id,outcome,manifest,provenance,observations,metric_evidence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (value["result_id"], now, value["title"], value["job_id"], *(value["labels"][k] for k in LABELS), value["outcome"],
              encoded(value), encoded(provenance), encoded(observations), encoded(evidence)))
+
+    def _require(self, db, ids):
+        missing = [rid for rid in ids if not self._find(db, rid)]
+        if missing:
+            raise ResultError(404, "result_not_found", "superseded result is absent on this node: " + ", ".join(missing))
+
+    @staticmethod
+    def _supersessions(db, rid):
+        return {"supersedes": [row[0] for row in db.execute(
+                    "SELECT superseded_id FROM supersessions WHERE result_id=? ORDER BY added_at, superseded_id", (rid,))],
+                "superseded_by": [row[0] for row in db.execute(
+                    "SELECT result_id FROM supersessions WHERE superseded_id=? ORDER BY added_at, result_id", (rid,))]}
+
+    def supersede(self, rid, payload):
+        """Add results this one replaces, after registration. Nothing else about either result changes."""
+        object_fields(payload, {"supersedes"})
+        rid = identifier(rid)
+        ids = superseded_ids(payload.get("supersedes"), rid)
+        with self._db(True) as db:
+            if not self._find(db, rid):
+                raise ResultError(404, "result_not_found", "no registered result with this ID")
+            self._require(db, ids)
+            db.executemany("INSERT OR IGNORE INTO supersessions VALUES (?,?,?)", [(rid, old, time.time()) for old in ids])
+            return {"schema_version": 1, "node_id": self.node_id, "result_id": rid, **self._supersessions(db, rid)}
 
     def register(self, payload):
         value = manifest(payload)
@@ -446,11 +492,10 @@ class NodeResults:
                     params.append(val)
             rows = db.execute("SELECT * FROM results WHERE " + " AND ".join(terms) + " ORDER BY sequence DESC LIMIT ?",
                               (*params, limit + 1)).fetchall()
-            superseded_by = {}
-            replacements = db.execute("""SELECT result_id, json_extract(manifest, '$.supersedes') FROM results
-                WHERE json_extract(manifest, '$.supersedes') IS NOT NULL ORDER BY sequence""").fetchall()
-            for replacement in replacements:
-                superseded_by[replacement[1]] = replacement[0]
+            superseded_by, supersedes = {}, {}
+            for new, old in db.execute("SELECT result_id, superseded_id FROM supersessions ORDER BY added_at, result_id"):
+                superseded_by[old] = new   # the latest replacement
+                supersedes.setdefault(new, []).append(old)
         items = []
         for row in rows[:limit]:
             value = json.loads(row["manifest"])
@@ -458,6 +503,7 @@ class NodeResults:
                           "labels": value["labels"], "outcome": row["outcome"], "registered_at": row["registered_at"],
                           "provenance": json.loads(row["provenance"]), "metric_count": len(value["metrics"]),
                           "source_count": len(value["sources"]), "dataset": value.get("dataset"),
+                          "supersedes": supersedes.get(row["result_id"], []),
                           "superseded_by": superseded_by.get(row["result_id"])})
         cursor = encode_cursor([self.node_id, filters, upper, rows[limit - 1]["sequence"]]) if len(rows) > limit else None
         return {"schema_version": 1, "node_id": self.node_id, "items": items, "next_cursor": cursor}
@@ -488,6 +534,8 @@ class NodeResults:
 
     def get(self, rid):
         row = self._row(rid)
+        with self._db() as db:
+            supersessions = self._supersessions(db, rid)
         value, observations = json.loads(row["manifest"]), json.loads(row["observations"])
         current_job = None
         if value["job_id"]:
@@ -498,7 +546,8 @@ class NodeResults:
                 current_job["reason"] = "job metadata is currently unavailable; the immutable result remains registered"
         sources = [self._current_source(rid, source, observation) for source, observation in zip(value["sources"], observations)]
         return {"schema_version": 1, "node_id": self.node_id, "result_id": rid, "sequence": row["sequence"],
-                "registered_at": row["registered_at"], "manifest": value, "provenance": json.loads(row["provenance"]),
+                "registered_at": row["registered_at"], "manifest": value, **supersessions,
+                "provenance": json.loads(row["provenance"]),
                 "source_observations": [{k: v for k, v in item.items() if k != "stamp"} for item in observations],
                 "metric_evidence": json.loads(row["metric_evidence"]), "current": {"job": current_job, "sources": sources}}
 
