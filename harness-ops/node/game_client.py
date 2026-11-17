@@ -135,8 +135,11 @@ class Client:
                 message = "入口或记录不存在；不能据此推断设备或资源状态"
             else:
                 message = "节点请求失败"
-            # The bounded code is for protocol decisions only; never echo an error body.
-            raise RequestError(f"{message}（HTTP {status}）", status, code) from None
+            # The node's reason for a refusal, on one bounded line, so it can be fixed without the node's log.
+            # A redirect is not a refusal: its body is not shown.
+            reason = value.get("error") if status >= 400 and isinstance(value, dict) else None
+            reason = "：" + " ".join(reason.split())[:500] if isinstance(reason, str) and reason.strip() else ""
+            raise RequestError(f"{message}（HTTP {status}{'，' + code if code else ''}）{reason}", status, code) from None
         except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
             raise RequestError("网络请求未确认；未自动重试") from None
         except (ValueError, UnicodeError):
@@ -162,8 +165,8 @@ def manifest_bytes(path):
     try:
         with open(path, "rb") as source:
             body = source.read(MAX_MANIFEST + 1)
-    except OSError:
-        raise ValueError("无法读取清单文件") from None
+    except OSError as error:
+        raise ValueError(f"无法读取清单文件 {path}：{error.strerror or error}") from None
     if len(body) > MAX_MANIFEST:
         raise ValueError("清单不能超过 64 KiB；未上传")
     try:

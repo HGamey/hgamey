@@ -23,7 +23,8 @@ def validate_recipe(value, assets):
         raise ValueError("deployment apk_sha256 must be 64 lowercase hexadecimal characters")
     files = value["files"]
     if not isinstance(files, list) or not 1 <= len(files) <= 64:
-        raise ValueError("deployment files must contain 1–64 entries")
+        raise ValueError("deployment files must contain 1–64 entries; a game installed from its APK alone omits "
+                         "deployment and keeps installation")
     if not isinstance(assets, list):
         raise ValueError("deployment requires the manifest asset list")
     names = [a.get("name") for a in assets if isinstance(a, dict)]
