@@ -67,12 +67,13 @@ class JobOwnershipTests(unittest.TestCase):
             with self.subTest(bin=name):
                 argv = ["argument with spaces"] if name == "adb" else ["fixture.apk", "7", "fixture-serial", "a" * 64]
                 cache = [] if name == "adb" else ["--cache-root", os.path.join(self.jobs.data_root, "_games", "cache")]
+                lane = [] if name == "adb" else ["--serial", "fixture-serial"]
                 # An adb job's call goes through the device recorder, which runs the node's adb unchanged.
                 program = (["/usr/bin/env", "PF_REAL_ADB=" + self.bins["adb"][0], os.path.join(ADB_RECORDER, "adb")]
                            if name == "adb" else [self.bins[name][0]])
                 meta = self.jobs.start({"bin": name, "argv": argv}, b"")
                 self.assertEqual(self.jobs._read_root.read_json(meta["id"] + "/prepared.json")["command"],
-                                 [self.bins["devlock"][0], "run", meta["lock_label"], "--",
+                                 [self.bins["devlock"][0], "run", meta["lock_label"], *lane, "--",
                                   *program, *cache, *argv])
                 self.assertEqual(meta["lock_mode"], "devlock_run")
                 with self.assertRaisesRegex(ValueError, "lease helper"):
