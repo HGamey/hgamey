@@ -22,9 +22,9 @@ MAX_RESPONSE = 2 << 20
 
 
 class DirectoryError(ValueError):
-    def __init__(self, status, message):
+    def __init__(self, status, message, code=None):
         super().__init__(message)
-        self.status = status
+        self.status, self.code = status, code
 
 
 class _ProbeError(Exception):

@@ -13,6 +13,9 @@ from artifact_io import SafeRoot
 from node_directory import REFRESH_S
 from node_identity import load_identity
 
+BODY_PIECE = 4 << 20   # a call's upload is fetched in pieces; a dropped connection is retried from the piece it cut
+BODY_ATTEMPTS = 5
+
 
 def exchange(url, method, path, body=b'', headers=None, *, timeout=35, connections=None, guard=None,
              stop=None, max_bytes=2 << 20):
@@ -142,6 +145,10 @@ class LocalHTTP:
         close_sockets(self._connections, self._guard)
 
 
+class InputTransferFailed(Exception):
+    pass
+
+
 class NodeConnector:
     def __init__(self, config, backend):
         self.config, self.backend = config, backend
@@ -202,15 +209,43 @@ class NodeConnector:
                     logging.warning('node observation upload failed: %s', error)
             self._stop.wait(REFRESH_S)
 
+    def _fetch_body(self, path, size):
+        """The call's upload, None once the caller has left. Raises once a piece fails BODY_ATTEMPTS times running."""
+        body, failures = bytearray(), 0
+        while len(body) < size:
+            length = min(BODY_PIECE, size - len(body))
+            try:
+                response = self._send('GET', path + '/body?' + urlencode({'offset': len(body), 'length': length}),
+                                      max_bytes=length)
+                if 400 <= response['status'] < 500:
+                    return None
+                if response['status'] != 200 or len(response['body']) != length:
+                    raise OSError('center returned HTTP ' + str(response['status']))
+            except (OSError, http.client.HTTPException) as error:
+                failures += 1
+                if failures == BODY_ATTEMPTS or self._stop.is_set():
+                    raise InputTransferFailed(f'执行节点只收到随作业上传的输入的 {len(body)} / {size} 字节：{error}') from error
+                self._stop.wait(2 ** failures)
+                continue
+            body += response['body']
+            failures = 0
+        return bytes(body)
+
     def _execute(self, command):
         try:
             path = '/node-connect/calls/' + command['id']
             body = b''
             if command['body_size']:
-                response = self._send('GET', path + '/body', max_bytes=command['body_size'])
-                if response['status'] != 200:
+                try:
+                    body = self._fetch_body(path, command['body_size'])
+                except InputTransferFailed as error:
+                    logging.warning('%s', error)
+                    failure = json.dumps({'code': 'input_transfer_failed', 'error': str(error)}, ensure_ascii=False).encode()
+                    self._send('POST', path + '/reply', failure, {'X-Node-Response': json.dumps({
+                        'status': 502, 'headers': {'Content-Type': 'application/json'}})})
+                    return
+                if body is None:
                     return  # The caller left before execution started.
-                body = response['body']
             response = self.backend.request(command['method'], command['path'], body, command['headers'],
                                             max_bytes=command['max_bytes'])
             self._send('POST', path + '/reply', response['body'], {'X-Node-Response': json.dumps({
