@@ -13,7 +13,7 @@ import time
 import uuid
 
 from job_queue import JobQueue, RequestConflict, blocking_owners, job_priority
-from device_scope import scope, lease_problem, same_binding, canonical_resources
+from device_scope import scope, lease_problem, lease_holders, same_binding, canonical_resources
 from job_policy import require_policy, request_facts
 from node_lease import device_access, prepare_receipt_directory
 from node_session import recovery_source_out, SessionError
@@ -482,7 +482,7 @@ class JobDispatch:
                     "reason": "device scope overlaps an active reservation"}
         problem = lease_problem(row["spec"], lease)
         if problem:
-            return {"kind": "device_lease", "blocking_jobs": [], "lease_status": lease["status"],
+            return {"kind": "device_lease", "blocking_jobs": lease_holders(row["spec"], lease), "lease_status": lease["status"],
                     "scope": declared, "reason": problem}
         running = [r for r in owners if r["state"] == "claimed"]
         if len(running) >= self.max_running:

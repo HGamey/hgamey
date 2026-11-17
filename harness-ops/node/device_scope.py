@@ -208,10 +208,23 @@ def lease_problem(spec, snapshot, mode=None):
             return None
         return None if snapshot.get("status") == "clear" else "global device lease is " + str(snapshot.get("status", "unknown"))
     if declared["binding"].get("legacy_serial"):
-        # Raw serials have no registry schema to validate; preserve the old
-        # global lease gate while using the serial only for queue conflicts.
+        # A raw serial waits for the farm lease and its own phone's lane, not
+        # for other phones; without PF scopes only the farm status is known.
         allowed = {"clear", "blocked"} if mode == "recovery" else {"clear"}
-        return None if snapshot.get("status") in allowed else "device " + declared["binding"]["device_id"] + " lease is " + str(snapshot.get("status", "unknown"))
+        serial = declared["binding"]["serial"]
+        try:
+            current = scopes(snapshot)
+        except ValueError:
+            status = snapshot.get("status", "unknown")
+        else:
+            if current["global"]["status"] not in allowed:
+                return current["global"]["error"] or "global device lease is " + current["global"]["status"]
+            entry = next((item for item in current["devices"]
+                          if serial == item["device_id"] or serial in item.get("aliases", [])), None)
+            held = any(item.get("scope") == "device" and serial in (item.get("device_id"), item.get("serial"))
+                       for item in snapshot.get("entries") or [])
+            status = entry["status"] if entry is not None else "held" if held else "clear"
+        return None if status in allowed else "device " + serial + " lease is " + str(status)
     try:
         current = scopes(snapshot)
     except ValueError as error:
@@ -226,6 +239,26 @@ def lease_problem(spec, snapshot, mode=None):
     if entry["status"] not in allowed:
         return entry["error"] or "device " + target["device_id"] + " lease is " + entry["status"]
     return None
+
+
+def lease_holders(spec, snapshot):
+    """Jobs holding a lock this job's scope waits for, as PF's lease entries name them."""
+    declared = scope(spec, snapshot)
+    if declared["scope"] == "none":
+        return []
+    target = declared.get("binding") or {}
+    names = {target.get("device_id"), target.get("serial")} - {None}
+    for item in (snapshot.get("device_scopes") or {}).get("devices") or []:
+        aliases = {item.get("device_id"), *(item.get("aliases") or [])}
+        if names & aliases:
+            names |= aliases
+    holders = []
+    for entry in snapshot.get("entries") or []:
+        if ((declared["scope"] == "global" or entry.get("scope") == "global"
+             or names & {entry.get("device_id"), entry.get("serial")})
+                and isinstance(entry.get("job_id"), str) and entry["job_id"] not in holders):
+            holders.append(entry["job_id"])
+    return holders
 
 
 class DeviceScope:

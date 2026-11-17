@@ -25,7 +25,8 @@
   /remote 远程操作设备（个人操作员令牌，MCP 在 /remote/mcp），网页控制台 /dash/control，逻辑在 node_remote.py。
 
 phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自己的仓库目录下执行。
-执行任务使用独立的锁 owner，label 只供展示；phonefarm/GOL/helper 保留内部锁路线，raw adb/fetch_apk 由 devlock run 包裹。
+执行任务使用独立的锁 owner，label 只供展示；phonefarm/GOL/helper 保留内部锁路线，raw adb/fetch_apk 由 devlock run 包裹，
+指定了串号（adb -s、fetch_apk 的 serial）只占那台手机，没指定才占整台电脑。
 显式 devlock 管理命令的 acquire/renew/release 等身份仍可跨请求，不改写其位置参数。
 """
 import sqlite3
@@ -271,6 +272,19 @@ def _job_lock_args(argv, owner):
     return result
 
 
+def _adb_call(argv):
+    """adb's own options before its command: the serial it names with -s, and the command."""
+    serial, args = None, iter(argv)
+    for arg in args:
+        if arg == "-s":
+            serial = next(args, None)
+        elif arg in ("-t", "-H", "-P", "-L", "--one-device"):
+            next(args, None)
+        elif not arg.startswith("-"):
+            return serial, arg
+    return serial, None
+
+
 def _job_time_budget(spec):
     if "time_budget" not in spec:
         return None
@@ -507,18 +521,12 @@ class Jobs:
             return re.sub(r"@in/", jin + "/", a)
 
         exe, cwd = self.bins[binname]
-        adb_args = iter(argv)
+        # A call naming one phone holds that phone's lane only; the whole farm is for calls naming none.
         if binname == "adb":
-            for arg in adb_args:
-                if arg in ("-s", "-t", "-H", "-P", "-L", "--one-device"):
-                    next(adb_args, None)
-                elif not arg.startswith("-"):
-                    break
-            else:
-                arg = None
-            pulling = arg == "pull"
+            lock_serial, adb_command = _adb_call(argv)
+            pulling = adb_command == "pull"
         else:
-            pulling = False
+            lock_serial, pulling = argv[2] if binname == "fetch_apk" else None, False
         if pulling or spec.get("inputs", {}).get("cwd") == "input":
             # Preserve a configured relative executable when changing its cwd.
             if not os.path.isabs(exe) and os.sep in exe:
@@ -548,7 +556,8 @@ class Jobs:
             # runs this same adb with the same arguments, input and output, and returns its exit status.
             command = ["/usr/bin/env", "PF_REAL_ADB=" + command[0], os.path.join(ADB_RECORDER, "adb"), *command[1:]]
         if external_lock:
-            command = [self.bins["devlock"][0], "run", owner, "--"] + command
+            command = [self.bins["devlock"][0], "run", owner, *(["--serial", lock_serial] if lock_serial else []),
+                       "--"] + command
         self._read_root.write_json(jid + "/prepared.json", {"command": command, "cwd": cwd})
         meta = self._read_meta(jid)
         meta["phase"] = "queued"
