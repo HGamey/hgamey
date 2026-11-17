@@ -8,7 +8,7 @@
   const COLUMNS = [['版本'], ['配对'], ['游戏'], ['设备', 'ds-dev'], ['采集方法', 'tech ds-method'], ['帧数', 'num'], ['场景', 'num'], ['训练 / 验证 / 测试', 'num'], ['大小', 'num']];
   const PREVIEW = /\.(png|jpe?g|webp|gif|avif)$/i, MIME = {png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif'};
   const REPORTS = ['qa_report.json', 'manifest.json', 'split.json'], FIRST_PREVIEWS = 8, TEXT_LIMIT = 1 << 20;
-  const opened = new Set();   // result IDs open across a refresh
+  const opened = new Set(), unfolded = new Set();   // result IDs and replaced dataset names open across a refresh
   let computers = new Map(), models = new Map(), games = new Map();   // node ID → name; phone serial or alias → model; package → game
 
   // The device a person reads: phone serials and commits are technical details, folded with the separator before them;
@@ -79,12 +79,14 @@
     }
   }
 
-  // Each name once, the one with the newest registration first; current versions before superseded ones.
+  // Each name once, the one with the newest registration first and a name whose every version was replaced last;
+  // current versions before superseded ones.
+  const nameOf = item => item.dataset.name || item.title || item.result_id, replaced = list => list.every(item => item.superseded_by);
   function grouped(items) {
     const names = new Map();
-    for (const item of items) { const name = item.dataset.name || item.title || item.result_id; if (!names.has(name)) names.set(name, []); names.get(name).push(item); }
+    for (const item of items) { const name = nameOf(item); if (!names.has(name)) names.set(name, []); names.get(name).push(item); }
     const newest = list => Math.max(...list.map(item => item.registered_at)), obsolete = item => item.superseded_by ? 1 : 0;
-    return [...names].sort(([, a], [, b]) => newest(b) - newest(a)).map(([name, list]) => [name, list.sort((a, b) =>
+    return [...names].sort(([, a], [, b]) => replaced(a) - replaced(b) || newest(b) - newest(a)).map(([name, list]) => [name, list.sort((a, b) =>
       obsolete(a) - obsolete(b) || (a.dataset.version == null) - (b.dataset.version == null) || String(b.dataset.version).localeCompare(String(a.dataset.version), undefined, {numeric: true}) || b.registered_at - a.registered_at)]);
   }
 
@@ -93,6 +95,7 @@
     const panel = el('tr', null, 'ds-detail'), cell = el('td'); cell.colSpan = COLUMNS.length; panel.append(cell); panel.hidden = true;
     open.type = 'button'; open.setAttribute('aria-expanded', 'false');
     tr.dataset.result = item.result_id; tr.dataset.pairing = d.pairing;
+    if (item.superseded_by) tr.classList.add('ds-superseded');
     const cells = [open, el('span', word, `tag ${tone} ds-pairing`), game(item.labels), device(item.labels?.device),
       d.capture_method || DASH, count(d.frames), count(d.scenes), splits(d.splits), size(d.size_bytes)];
     cells.forEach((value, i) => { const td = el('td', value instanceof Node ? null : value, COLUMNS[i][1]); if (value instanceof Node) td.append(value); tr.append(td); });
@@ -113,13 +116,23 @@
     const table = el('table', null, 'ds-table'), head = el('tr');
     head.append(...COLUMNS.map(([label, kind]) => el('th', label, kind)));
     const thead = el('thead'); thead.append(head); table.append(thead);
+    const byId = new Map(items.map(item => [item.result_id, item]));
     for (const [name, list] of grouped(items)) {
       const body = el('tbody', null, 'ds-group'), title = el('tr', null, 'ds-name'), th = el('th'); th.colSpan = COLUMNS.length; th.scope = 'rowgroup';
-      th.append(el('span', name), el('small', `${list.length} 个版本`));
+      const gone = replaced(list);
+      if (gone) {   // folded and grey, named by what replaced it
+        const fold = el('button', name, 'ds-fold'), by = [...new Set(list.map(item => byId.has(item.superseded_by) ? nameOf(byId.get(item.superseded_by)) : item.superseded_by))];
+        const show = open => { body.classList.toggle('open', open); fold.setAttribute('aria-expanded', String(open)); if (open) unfolded.add(name); else unfolded.delete(name); };
+        fold.type = 'button'; fold.addEventListener('click', () => show(!body.classList.contains('open')));
+        body.classList.add('ds-replaced'); show(unfolded.has(name));
+        th.append(fold, el('small', `${list.length} 个版本`), el('small', `已被 ${by.join('、')} 取代`, 'ds-replaced-by'));
+      } else th.append(el('span', name), el('small', `${list.length} 个版本`));
       const purpose = list.find(item => item.dataset.purpose)?.dataset.purpose || about(list[0]);   // the newest version that says it
       if (purpose) th.append(el('span', purpose, 'ds-purpose'));
-      const samples = el('span', null, 'ds-samples'); samples.hidden = true; samples.dataset.results = list.map(item => item.result_id).join(' ');
-      th.append(samples);
+      if (!gone) {
+        const samples = el('span', null, 'ds-samples'); samples.hidden = true; samples.dataset.results = list.map(item => item.result_id).join(' ');
+        th.append(samples);
+      }
       title.append(th); body.append(title);
       for (const item of list) body.append(...row(item));
       table.append(body);

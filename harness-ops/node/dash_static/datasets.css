@@ -25,6 +25,12 @@
 .ds-sample img { display: block; height: 96px; max-width: 220px; object-fit: contain; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--wash); cursor: zoom-in; }
 .ds-sample figcaption { font-size: var(--fs-xs); font-weight: 400; color: var(--muted); }
 .ds-version { cursor: pointer; border-top: 1px solid var(--grid); }
+.ds-version.ds-superseded { opacity: .55; }
+.ds-replaced .ds-name th, .ds-replaced .ds-name .ds-purpose { color: var(--muted); }
+.ds-replaced:not(.open) > tr:not(.ds-name) { display: none; }
+.ds-fold { padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+.ds-fold::before { content: '▸'; display: inline-block; width: 14px; }
+.ds-fold[aria-expanded="true"]::before { content: '▾'; }
 .ds-version:hover { background: var(--wash); }
 .ds-open { padding: 0; border: 0; background: none; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; }
 .ds-open::before { content: '▸'; display: inline-block; width: 14px; color: var(--muted); }

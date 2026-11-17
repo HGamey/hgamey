@@ -159,7 +159,7 @@ pf-node --research <研究> --resource device:<串号> adb -s <串号> shell \
 
 ## 登记数据集
 
-每个场景登记一条。`dataset/gi_manifest.py <任务> <report.json> "<场景名>" "<场景说明>" ["<另外的局限>"…] [--prefix gi-route] [--supersedes <旧 result_id>…] > m.json` 生成清单（每段的帧数、完整帧数、漏掉的 present、每百帧耗时、运动量都作为指标指回 report.json，中心登记时逐项核对），再 `pf-node results register m.json`。分段采的只收运动达标的段，没收的段和原因写进 claims；新数据取代旧数据时给 `--supersedes`，旧的不删。清单的样子：
+每个场景登记一条。`dataset/gi_manifest.py <任务> <report.json> "<场景名>" "<场景说明>" ["<另外的局限>"…] [--prefix gi-route] [--supersedes <旧 result_id>…] > m.json` 生成清单（每段的帧数、完整帧数、漏掉的 present、每百帧耗时、运动量都作为指标指回 report.json，中心登记时逐项核对），再 `pf-node results register m.json`。分段采的只收运动达标的段，没收的段和原因写进 claims；新数据取代旧数据时给 `--supersedes`，可以给多个，旧的不删。登记后才发现要取代的，用 `pf-node results supersede <新 result_id> <旧 result_id>…` 补上。清单的样子：
 
 ```json
 {"schema": "phonefarm/result@1", "result_id": "gi-seq-beach-day-20261113", "title": "原神海滩白天连续序列帧（3 档分辨率，带/不带 UI、深度、速度图）",
