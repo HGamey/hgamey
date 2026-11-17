@@ -863,6 +863,10 @@ class NodeResearch:
         actor = text(envelope.get("actor_label"), 128)
         reason = text(envelope.get("reason"), 16384, base is not None)
         patch = envelope.get("data")
+        # An agent creating a research task with its own token owns it unless the data names the owner
+        # (null leaves it for anyone to claim). A task created on the web stays unowned until claimed.
+        if kind == "research" and agent is not None and base is None and isinstance(patch, dict) and "owner" not in patch:
+            patch = {**patch, "owner": agent}
         patch_fields = set(patch) if isinstance(patch, dict) else set()
         base_value = None
         if base is not None and isinstance(patch, dict):

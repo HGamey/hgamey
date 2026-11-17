@@ -5,7 +5,7 @@ import unittest
 import test_core_flow_web_cli as core   # puts the node directory on sys.path
 import agent_duties
 
-RULE = "新建任务（create research，接续任务也一样）时，标题写成人能看懂的话，如「原神超分：画质不降时帧率能提高多少」，不用「A 轨」「B 轨」这类只有自己懂的代号。"
+RULE = "新建任务（create research，接续任务也一样）时，标题写成人能看懂的话，如「原神超分：画质不降时帧率能提高多少」，不用「A 轨」「B 轨」这类只有自己懂的代号。data 里不写 owner，任务就由你负责；要留给别人认领，写 \"owner\": null。"
 
 
 class TaskTitleTests(unittest.TestCase):
