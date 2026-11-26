@@ -5,6 +5,7 @@
 //!       边界差异(刚过背景一点)经仲裁裁定,每局限5次。
 //! 程序只写 tasks/<任务>/ 之下: runs/<局>/log.jsonl、runs/<局>/step*.jpg、lessons.jsonl、params.toml。
 use crate::brain::Brain;
+use crate::platform::Receipt;
 use crate::device::{frames_diff_pct, mode_gray, patch_stats, thumb_gray, Device, FullNode, Node};
 use crate::tree::Tree;
 use crate::Config;
@@ -1240,7 +1241,21 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
 }
 
 /// ⑤ 执行(图片像素 → 设备像素)
-fn exec(phone: &Device, a: &ActN, cap: &Cap, realw: i32, realh: i32, apps: &[(String, String)]) {
+/// 回执不是 Sent 时给模型的话。结果不明的动作绝不让它「再来一次」了事。
+fn receipt_note(aline: &str, r: &Receipt, sensitive: bool) -> String {
+    match r {
+        Receipt::Sent => String::new(),
+        Receipt::NotSent(why) => format!("上一动作[{aline}]没有发到手机({why}), 屏幕不会因它变化。{}",
+            if sensitive { "它涉及敏感操作, 要做仍需重新获批。" } else { "确认还要做就照原样再发一次。" }),
+        Receipt::Unknown(why) => format!("上一动作[{aline}]发出后没收到确认({why}), 可能已经生效也可能没有。以当前屏幕为准判断; {}",
+            if sensitive { "这是敏感操作(付款/删除/发送等), 先确认是否已经完成, 绝不能直接再做一次。" }
+            else { "屏幕显示没生效再重做。" }),
+    }
+}
+
+/// 执行一个动作, 返回设备回执(见 platform::Receipt)。先清掉之前别处(弹窗引擎等)留下的回执。
+fn exec(phone: &Device, a: &ActN, cap: &Cap, realw: i32, realh: i32, apps: &[(String, String)]) -> Receipt {
+    let _ = phone.take_receipt();
     let sx = |v: Option<i64>| (v.unwrap_or(0) * realw as i64 / cap.w.max(1) as i64) as i32;
     let sy = |v: Option<i64>| (v.unwrap_or(0) * realh as i64 / cap.h.max(1) as i64) as i32;
     match a.a.as_str() {
@@ -1255,13 +1270,14 @@ fn exec(phone: &Device, a: &ActN, cap: &Cap, realw: i32, realh: i32, apps: &[(St
             let pkg = a.text.as_deref().unwrap_or("");
             let comp = apps.iter().find(|(p, _)| p == pkg)
                 .map(|(_, c)| c.as_str()).unwrap_or("");
-            let _ = phone.launch(pkg, comp); // 局中启动的冷启动毫秒不单独记账(orient 才是规范冷启动)
+            phone.launch_with_receipt(pkg, comp); // 局中启动的冷启动毫秒不单独记账(orient 才是规范冷启动)
         }
         "type" => phone.type_text(a.text.as_deref().unwrap_or("")),
         "clear" => phone.clear_field(),
         "wait" => std::thread::sleep(std::time::Duration::from_millis(2500)),
         _ => {}
     }
+    phone.take_receipt()
 }
 
 /// 仲裁: 前后两张截图给模型,问"有没有真实变化"。返回 (changed, desc, 由谁判)。
@@ -2469,7 +2485,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                         escapes_left -= 1;
                         println!("      🚧 画面被内容过滤拒绝,盲移离开(余{escapes_left}次)");
                         let esc = ActN { a: "scroll_down".into(), ..Default::default() };
-                        exec(&phone, &esc, &cap, realw, realh, &apps);
+                        let _ = exec(&phone, &esc, &cap, realw, realh, &apps); // 盲移: 回执不影响后续(反正要重读屏)
                         if osc_note(&mut act_sigs, act_sig(&esc), &mut osc_fire_at) {
                             alert = OSCILL_WARN.to_string();
                             log.put(json!({"r":"hook","kind":"oscill","at":"escape"}));
@@ -2730,7 +2746,28 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                     }
                     cap = nc;
                 }
-                exec(&phone, &hact, &cap, realw, realh, &apps);
+                let receipt_h = exec(&phone, &hact, &cap, realw, realh, &apps);
+                if receipt_h != Receipt::Sent {
+                    // 熟路不重放: 没发出或不确定都打住, 交还模型看屏幕
+                    if sens_h { approval_grants.clear(); }
+                    let d = format!("树✗(回执{}: {})", receipt_h.id(), receipt_h.why());
+                    log_act(&mut log, n, &hact, "(树)", ms_h);
+                    log.put(json!({"r":"receipt","n":n,"state":receipt_h.id(),"why":receipt_h.why()}));
+                    log.put(json!({"r":"diff","n":n,"d":d}));
+                    println!("[{n}] ·熟路 | {aline_h} ⚠ {d}");
+                    run_push(&mut runs, aline_h.clone(), d.clone());
+                    stream.push(format!("{aline_h} → {d}"));
+                    note = receipt_note(&aline_h, &receipt_h, sens_h);
+                    last_tap_pt = None;
+                    walked_all = false;
+                    // 以当前屏幕为准: 不重读的话模型和审批截图看到的还是动作前那一屏
+                    capseq += 1;
+                    match capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, 1200, realw, realh, app.as_deref(), &mut revived) {
+                        Some(nc) => cap = nc,
+                        None => stop_reason = Some("capture_fail"),
+                    }
+                    break;
+                }
                 if osc_note(&mut act_sigs, act_sig(&hact), &mut osc_fire_at) {
                     alert = OSCILL_WARN.to_string();
                     log.put(json!({"r":"hook","kind":"oscill","at":"goto"}));
@@ -2926,13 +2963,47 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
         // ⑤ 执行(定格并入第⑥步: 采集时等画面安静)
         // WebView返回死锁破解: 上一记back在网页页无效(前端JS拦截单次back),本次back升级为快速连按两次
+        let mut pre_receipt = Receipt::Sent;
         if act.a == "back" && back_eaten {
             println!("      🕸 WebView页back曾被吞,升级为快速连按两次");
             log.put(json!({"r":"hook","kind":"webview_back2","n":n}));
+            let _ = phone.take_receipt();
             phone.back();
+            pre_receipt = phone.take_receipt(); // exec 开头会清回执, 先把第一下的收起来
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
-        exec(&phone, &act, &cap, realw, realh, &apps);
+        let receipt = pre_receipt.merge(exec(&phone, &act, &cap, realw, realh, &apps));
+        if receipt != Receipt::Sent {
+            log.put(json!({"r":"receipt","n":n,"state":receipt.id(),"why":receipt.why()}));
+            if !queue.is_empty() { println!("      ⏸ 回执{},剩余{}步计划作废", receipt.id(), queue.len()); queue.clear(); }
+            // 敏感动作没落实(没发出或结果不明): 收回所有沿用额度, 下一次同类动作必须重新问人
+            // (防止重复付款/重复发送; 没发出时刚批下的后续确认额度也不能留着给别的动作用)
+            if suppress_popup_once { approval_grants.clear(); }
+        }
+        if let Receipt::NotSent(why) = &receipt {
+            // 没发到手机: 屏幕不会因它变化, 不能当「空击」去记 ban/失败签名
+            let d = format!("not_sent({why})");
+            log_act(&mut log, n, &act, &plan_by, ms_field);
+            log.put(json!({"r":"diff","n":n,"d":d}));
+            println!("[{n}] {ms_disp} {plan_by} | {aline} ⚠ {d}");
+            run_push(&mut runs, aline.clone(), d.clone());
+            stream.push(format!("{aline} → {d}"));
+            note = receipt_note(&aline, &receipt, suppress_popup_once);
+            suppress_popup_once = false; // 动作没落地, 不会有它引出的确认框
+            last_tap_pt = None;
+            stall += 1;
+            if stall == 1 { stall_anchor = Some(cap.img.clone()); }
+            if stall >= cfg.stall_limit { stop_reason = Some("watchdog"); break; }
+            // 重新读屏(读不到会走复活流程), 下一轮按新画面决策
+            capseq += 1;
+            let Some(nc) = capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, 800, realw, realh, app.as_deref(), &mut revived) else {
+                stop_reason = Some("capture_fail");
+                break;
+            };
+            cap = nc;
+            continue;
+        }
+        let receipt_unknown = matches!(receipt, Receipt::Unknown(_));
         match act.a.as_str() {
             "tap" => last_tap_pt = Some((act.x.unwrap_or(-1) as i32, act.y.unwrap_or(-1) as i32)),
             "back" | "home" | "launch" | "goto" | "swipe" | "scroll_up" | "scroll_down" => last_tap_pt = None,
@@ -3006,6 +3077,10 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             log.put(json!({"r":"note","t":t}));
             note = t;
         }
+        if receipt_unknown {
+            let r = receipt_note(&aline, &receipt, suppress_popup_once);
+            note = if note.is_empty() { r } else { format!("{note}\n{r}") };
+        }
         run_push(&mut runs, aline.clone(), d.clone());
         diffs_all.push(d.clone());
         stream.push(format!("{aline} → {d}"));
@@ -3028,7 +3103,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             if stall == 1 { stall_anchor = Some(cap.img.clone()); } // 无进展段起点画面
             if !queue.is_empty() { println!("      ⏸ 动作无变化,剩余{}步计划作废", queue.len()); queue.clear(); }
             // 持续进化: 同一目标第2次实测无变化 → 武装T1(检验动作自身不计)
-            if test_link.is_none() && cfg.evolution.enabled && hypo_trigger.is_none() && act.a != "wait" {
+            if test_link.is_none() && cfg.evolution.enabled && hypo_trigger.is_none() && act.a != "wait" && !receipt_unknown {
                 let sig = fail_sig(&act);
                 let c = { let e = fail_sigs.entry(sig).or_insert(0); *e += 1; *e };
                 if c >= 2 {
@@ -3042,7 +3117,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
         }
 
         // 空击计数 → 预ban仲裁 → ban
-        if act.a == "tap" && is_null {
+        if act.a == "tap" && is_null && !receipt_unknown {
             let (xi, yi) = (act.x.unwrap_or(0) as i32, act.y.unwrap_or(0) as i32);
             let hit = clusters.iter_mut()
                 .find(|(cx, cy, _)| (*cx - xi).abs() < cfg.ban_radius && (*cy - yi).abs() < cfg.ban_radius);

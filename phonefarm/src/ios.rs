@@ -33,7 +33,7 @@
 //! WDA 本体需要在手机上先装好并启动(见 iPhone-use 的 setup 流程), 本后端不负责装。
 
 use crate::device::{FullNode, Node, SysState};
-use crate::platform::{Backend, Layer, LayerSupport, Support};
+use crate::platform::{Backend, Layer, LayerSupport, Receipt, Support};
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,6 +60,7 @@ pub struct Ios {
     session: Mutex<Option<String>>,
     size: Mutex<Option<(i32, i32)>>,
     tunnel: Mutex<Option<Child>>,
+    receipt: crate::platform::ReceiptCell,
 }
 
 impl Ios {
@@ -78,6 +79,7 @@ impl Ios {
             session: Mutex::new(None),
             size: Mutex::new(None),
             tunnel: Mutex::new(None),
+            receipt: Default::default(),
         }
     }
 
@@ -132,11 +134,26 @@ impl Ios {
         self.session_id().map(|s| format!("/session/{s}{tail}"))
     }
 
-    fn post_session(&self, tail: &str, body: &Value) -> bool {
-        match self.sess_path(tail) {
-            Some(p) => self.json("POST", &p, Some(body), HTTP_TIMEOUT_S).is_some(),
-            None => false,
-        }
+    /// 写动作: 冻结/无会话/连不上 = 没发出; curl 超时或半路断 = 未知; WDA 回错误 = 没执行。
+    fn act(&self, tail: &str, body: &Value) {
+        let r = if self.frozen() {
+            Receipt::NotSent("设备已冻结(freeze-on-done)".into())
+        } else {
+            self.ensure_tunnel();
+            match self.sess_path(tail) {
+                None => Receipt::NotSent("没有 WDA 会话".into()),
+                Some(p) => {
+                    let url = format!("{}{}", self.base, p);
+                    let argv = curl_argv("POST", &url, Some(body), HTTP_TIMEOUT_S);
+                    match Command::new(&argv[0]).args(&argv[1..]).output() {
+                        Err(e) => Receipt::NotSent(format!("起不了 curl: {e}")),
+                        Ok(o) => receipt_of_curl(o.status.code(), &o.stdout),
+                    }
+                }
+            }
+        };
+        if r != Receipt::Sent { eprintln!("      ⚠ 写命令回执 {}: {}", r.id(), r.why()); }
+        self.receipt.note(r);
     }
 
     // ── 隧道 ──
@@ -189,6 +206,29 @@ impl Drop for Ios {
 }
 
 /// curl 命令行(纯函数, 单测钉契约)。与 `brain.rs` 同取舍: HTTP 走 curl 子进程。
+/// curl 退出码 → 回执。6/7 = 解析不了/连不上(请求没出去); 28 = 超时、52/55/56 = 半路断(可能已执行);
+/// 正常返回但 WDA 的 value 里带 error = WDA 拒绝执行。
+fn receipt_of_curl(code: Option<i32>, body: &[u8]) -> Receipt {
+    match code {
+        Some(0) => {
+            let Ok(v) = serde_json::from_slice::<Value>(body) else {
+                return Receipt::Unknown("WDA 回了非 JSON".into());
+            };
+            match v.pointer("/value/error").and_then(|e| e.as_str()) {
+                // 动手之前就会报的错: 会话失效、参数不对、命令不认识 —— 确定没执行
+                Some(e) if ["invalid session id", "invalid argument", "unknown command", "unknown method"].contains(&e) =>
+                    Receipt::NotSent(format!("WDA 拒绝: {e}")),
+                // 其余错误可能在手势做到一半或做完之后才报(等界面稳定超时、意外弹窗)
+                Some(e) => Receipt::Unknown(format!("WDA 报错: {e}")),
+                None => Receipt::Sent,
+            }
+        }
+        Some(6) | Some(7) => Receipt::NotSent(format!("连不上 WDA(curl {})", code.unwrap_or(-1))),
+        Some(c) => Receipt::Unknown(format!("curl 退出码 {c}")),
+        None => Receipt::Unknown("curl 被信号终止".into()),
+    }
+}
+
 fn curl_argv(method: &str, url: &str, body: Option<&Value>, timeout_s: u64) -> Vec<String> {
     let mut v = vec![
         "curl".to_string(),
@@ -775,6 +815,12 @@ pub const IOS_LAYERS: [LayerSupport; 4] = [
 ];
 
 impl Backend for Ios {
+    fn take_receipt(&self) -> Receipt {
+        self.receipt.take()
+    }
+    fn note_receipt(&self, r: Receipt) {
+        self.receipt.note(r)
+    }
     // ── 身份 ──
     fn transport(&self) -> &'static str {
         "wda"
@@ -908,38 +954,17 @@ impl Backend for Ios {
 
     // ── 动 ──
     fn tap(&self, x: i32, y: i32) {
-        if self.frozen() {
-            return;
-        }
-        self.ensure_tunnel();
-        if self.session_id().is_none() {
-            return;
-        }
-        let _ = self.post_session("/actions", &tap_payload(x, y));
+        self.act("/actions", &tap_payload(x, y));
     }
 
     fn long_press(&self, x: i32, y: i32, ms: u64) {
-        if self.frozen() {
-            return;
-        }
-        self.ensure_tunnel();
-        if self.session_id().is_none() {
-            return;
-        }
         // 原地「滑动」: 按下后指针在同一点停留 ms 毫秒再抬起
-        let _ = self.post_session("/actions", &swipe_payload(x, y, x, y, ms.clamp(500, 5000)));
+        self.act("/actions", &swipe_payload(x, y, x, y, ms.clamp(500, 5000)));
     }
 
     fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32) {
-        if self.frozen() {
-            return;
-        }
-        self.ensure_tunnel();
-        if self.session_id().is_none() {
-            return;
-        }
         // 350ms 与安卓侧 `input swipe` 的默认节拍对齐
-        let _ = self.post_session("/actions", &swipe_payload(x, y, x2, y2, 350));
+        self.act("/actions", &swipe_payload(x, y, x2, y2, 350));
     }
 
     fn scroll_down(&self) {
@@ -953,14 +978,7 @@ impl Backend for Ios {
     }
 
     fn type_text(&self, text: &str) {
-        if self.frozen() {
-            return;
-        }
-        self.ensure_tunnel();
-        if self.session_id().is_none() {
-            return;
-        }
-        let _ = self.post_session("/wda/keys", &keys_payload(text));
+        self.act("/wda/keys", &keys_payload(text));
     }
 
     /// 清空焦点输入框。
@@ -970,14 +988,7 @@ impl Backend for Ios {
     /// 局限写在明面上: **不知道当前框有多长**, 所以按固定次数退格(和安卓侧
     /// `clear_field` 的连发 DEL 同一思路); 预填很长的框可能清不干净。
     fn clear_field(&self) {
-        if self.frozen() {
-            return;
-        }
-        self.ensure_tunnel();
-        if self.session_id().is_none() {
-            return;
-        }
-        let _ = self.post_session("/wda/keys", &keys_payload(&"\u{8}".repeat(CLEAR_BACKSPACES)));
+        self.act("/wda/keys", &keys_payload(&"\u{8}".repeat(CLEAR_BACKSPACES)));
     }
 
     /// iOS 没有系统返回键。用**左边缘交互式返回手势**代替 ——
@@ -992,14 +1003,7 @@ impl Backend for Ios {
     }
 
     fn home(&self) {
-        if self.frozen() {
-            return;
-        }
-        self.ensure_tunnel();
-        if self.session_id().is_none() {
-            return;
-        }
-        let _ = self.post_session("/wda/homescreen", &json!({}));
+        self.act("/wda/homescreen", &json!({}));
     }
 
     // ── 应用 ──
