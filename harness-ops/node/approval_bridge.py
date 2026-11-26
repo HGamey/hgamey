@@ -18,6 +18,7 @@ import base64
 import json
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -91,6 +92,7 @@ class Bridge:
         self.own_messages = set()
         self.last_msg_id = None
         self.auth_failures = 0
+        self.lock = threading.Lock()   # sent is shared by the poll loop and the reply waiter
 
     # center
     def _c(self, method, path, body=None, raw=False):
@@ -123,8 +125,9 @@ class Bridge:
             return
         self.auth_failures = 0
         for item in body.get("items", []):
-            if item["id"] in self.sent:
-                continue
+            with self.lock:
+                if item["id"] in self.sent:
+                    continue
             text = caption(item)
             shot = None
             if item.get("has_screenshot"):
@@ -136,33 +139,39 @@ class Bridge:
             else:
                 s, r = self._g("POST", "/api/send", {"chat": self.chat, "text": text})
             if s == 200 and isinstance(r, dict) and r.get("status") == "sent":
-                self.sent[item["id"]] = item
+                with self.lock:
+                    self.sent[item["id"]] = item
                 if r.get("message_id") is not None:
                     self.own_messages.add(r["message_id"])
                 self.log(f"sent {item['id']} ({code_of(item['id'])})")
             else:
                 self.log(f"gateway send failed {s}: {r}")
 
-    def read_replies(self):
-        s, msgs = self._g("GET", f"/api/messages?chat={self.chat}&limit=30")
-        if s != 200 or not isinstance(msgs, list):
-            return
+    def read_replies(self, wait_s=5):
+        """Wait up to wait_s for new replies (brief /api/wait keeps a live Telegram connection,
+        replies arrive in about a second). The cursor starts at the newest message seen at start-up."""
         if self.last_msg_id is None:
-            # first read: only messages newer than the bridge start count
+            s, msgs = self._g("GET", f"/api/messages?chat={self.chat}&limit=1")
+            if s != 200 or not isinstance(msgs, list):
+                return
             self.last_msg_id = max([m.get("id", 0) for m in msgs] or [0])
+        s, msgs = self._g("GET", f"/api/wait?chat={self.chat}&after_id={self.last_msg_id}&timeout={int(wait_s)}")
+        if s != 200 or not isinstance(msgs, list):
+            time.sleep(wait_s)  # gateway trouble: don't spin
             return
         for m in msgs:
             mid = m.get("id", 0)
             if mid <= self.last_msg_id:
                 continue
             self.last_msg_id = max(self.last_msg_id, mid)
-            if m.get("message_id") in self.own_messages or mid in self.own_messages:
+            if m.get("sender") not in (None, "我"):
                 continue
             parsed = parse_reply(m.get("text", ""))
             if not parsed:
                 continue
             decision, code = parsed
-            matches = [i for i in self.sent.values() if code_of(i["id"]) == code]
+            with self.lock:
+                matches = [i for i in self.sent.values() if code_of(i["id"]) == code]
             if len(matches) != 1:
                 self._g("POST", "/api/send", {"chat": self.chat, "text": f"没找到唯一对应 {code} 的待审批（{len(matches)} 条）"})
                 continue
@@ -174,16 +183,18 @@ class Bridge:
             self._g("POST", "/api/send", {"chat": self.chat, "text": msg})
             self.log(f"{code} {decision} -> {st}")
             if st in (200, 409):
-                self.sent.pop(item["id"], None)
+                with self.lock:
+                    self.sent.pop(item["id"], None)
 
     def forget_expired(self):
         now = time.time()
-        for k in [k for k, v in self.sent.items() if float(v.get("expires_at") or 0) + 30 < now]:
-            self.sent.pop(k)
+        with self.lock:
+            for k in [k for k, v in self.sent.items() if float(v.get("expires_at") or 0) + 30 < now]:
+                self.sent.pop(k)
 
-    def tick(self):
+    def tick(self, wait_s=5):
         self.notify_pending()
-        self.read_replies()
+        self.read_replies(wait_s)
         self.forget_expired()
 
 
@@ -208,15 +219,27 @@ def main(argv=None):
         return 2
     b = Bridge(a.center, token, a.gateway, gkey, a.chat,
                log=lambda s: print(time.strftime("%H:%M:%S"), s, flush=True))
+    if a.once:
+        b.tick(0)
+        return 0
+
+    # brief keeps its Telegram connection only while a wait is pending: keep one long wait
+    # open on its own thread so replies land in about a second; the main loop polls the center.
+    def waiter():
+        while True:
+            try:
+                b.read_replies(50)
+            except (OSError, ValueError) as e:
+                b.log(f"reply wait error: {e!r}")
+                time.sleep(5)
+    threading.Thread(target=waiter, daemon=True).start()
     while True:
         try:
-            b.tick()
+            b.notify_pending()
+            b.forget_expired()
         except (OSError, ValueError) as e:  # network blips: keep going
-            b.log(f"tick error: {e!r}")
-        if a.once:
-            return 0
+            b.log(f"poll error: {e!r}")
         time.sleep(a.interval)
-
 
 if __name__ == "__main__":
     sys.exit(main())
