@@ -230,7 +230,7 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
                 if app.is_empty() && !s.pkg.is_empty() { app = s.pkg.clone(); }
                 if let Some((mut st, true)) = pending.take() {
                     if let Some(prev) = &cur {
-                        if matches!(st.a.as_str(), "tap" | "launch" | "back" | "swipe" | "scroll_up" | "scroll_down") {
+                        if matches!(st.a.as_str(), "tap" | "long_press" | "launch" | "back" | "swipe" | "scroll_up" | "scroll_down") {
                             st.expect = pick_expect(prev, &s);
                         }
                     }
@@ -248,7 +248,7 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
                 let s = cur.as_ref();
                 let nrm = |v: &Value, span: i32| v.as_i64().map(|x| (x * NORM / span.max(1) as i64).clamp(0, NORM));
                 match a.as_str() {
-                    "tap" => {
+                    "tap" | "long_press" => {
                         let (w, h) = s.map(|s| (s.w, s.h)).unwrap_or((1, 1));
                         if let (Some(x), Some(y)) = (nrm(&r["x"], w), nrm(&r["y"], h)) { st.at = Some([x, y]); }
                         st.what = r["what"].as_str().map(|w| w.trim().trim_start_matches("icon:").trim().to_string())
@@ -289,7 +289,7 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
                     let d = r["d"].as_str().unwrap_or("");
                     let dead = d.starts_with("rejected") || d.starts_with("escape") || d.starts_with("树✗");
                     // 画面没动的点击不收(没起作用); type/clear/back 等无画面变化也可能是有效的, 照收
-                    let no_change = d == "none" && matches!(st.a.as_str(), "tap" | "swipe" | "scroll_up" | "scroll_down");
+                    let no_change = d == "none" && matches!(st.a.as_str(), "tap" | "long_press" | "swipe" | "scroll_up" | "scroll_down");
                     if dead || no_change { pending = None; } else { *ok = true; }
                 }
             }
@@ -492,7 +492,7 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
         }
         // 解析落点
         let mut tap_at: Option<(i32, i32)> = None;
-        if st.a == "tap" {
+        if st.a == "tap" || st.a == "long_press" {
             let hint = st.at.map(px);
             match st.what.as_deref() {
                 Some(w) => match locate(&els, w, hint) {
@@ -520,7 +520,7 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
         let text_filled = st.text.as_deref().map(|t| fill(t, &ctx.params));
         let pkg = ctx.device.foreground_pkg();
         let target_texts: Vec<String> = match (st.a.as_str(), tap_at) {
-            ("tap", Some((x, y))) => {
+            ("tap" | "long_press", Some((x, y))) => {
                 let mut v: Vec<&Node> = els.iter().filter(|e| e.b[0] <= x && x <= e.b[2] && e.b[1] <= y && y <= e.b[3]).collect();
                 v.sort_by_key(|e| ((e.b[2] - e.b[0]) as i64) * ((e.b[3] - e.b[1]) as i64));
                 v.iter().take(2).map(|e| e.t.clone()).collect()
@@ -574,6 +574,7 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
         // 执行
         match st.a.as_str() {
             "tap" => { let (x, y) = tap_at.unwrap(); ctx.device.tap(x, y); last_tap = Some((x, y)); }
+            "long_press" => { let (x, y) = tap_at.unwrap(); ctx.device.long_press(x, y, 700); }
             "swipe" => if let (Some(a), Some(b)) = (st.at, st.to) { let (x, y) = px(a); let (x2, y2) = px(b); ctx.device.swipe(x, y, x2, y2); },
             "scroll_up" => ctx.device.scroll_up(),
             "scroll_down" => ctx.device.scroll_down(),

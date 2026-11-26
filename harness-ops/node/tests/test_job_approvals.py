@@ -12,6 +12,7 @@ import job_approvals  # noqa: E402
 class Jobs:
     def __init__(self, root):
         self.root = root
+        self.dir = root
 
     def path(self, jid, *parts):
         return os.path.join(self.root, jid, *parts)
@@ -61,6 +62,19 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-missing", b'{"decision":"allow"}', "a")[0], 404)
         with self.assertRaises(KeyError):
             job_approvals.screenshot_path(self.jobs, "abcdef012345", "ap-r-1-0001")
+
+    def test_pending_all_across_jobs(self):
+        self.write("ap-r-1-0001", created_at=time.time() - 10)
+        other = self.jobs.path("0123456789ab", "out", "approvals")
+        os.makedirs(other)
+        with open(os.path.join(other, "ap-x-1-0002.json"), "w") as f:
+            json.dump(request("ap-x-1-0002"), f)
+        os.makedirs(os.path.join(self.tmp.name, "not-a-job", "out", "approvals"))
+        items = job_approvals.pending_all(self.jobs)
+        self.assertEqual([(i["job_id"], i["id"]) for i in items],
+                         [("0123456789ab", "ap-x-1-0002"), ("abcdef012345", "ap-r-1-0001")])
+        job_approvals.decide(self.jobs, "0123456789ab", "ap-x-1-0002", b'{"decision":"deny"}', "dash")
+        self.assertEqual([i["id"] for i in job_approvals.pending_all(self.jobs)], ["ap-r-1-0001"])
 
     def test_no_dir(self):
         self.assertEqual(job_approvals.list_requests(self.jobs, "000000000000"), [])

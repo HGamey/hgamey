@@ -90,3 +90,23 @@ def decide(jobs, jid, approval_id, body, who):
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(record, f)
     return 200, {"id": approval_id, **record}
+
+
+JOB_ID = re.compile(r"[0-9a-f]{12}")
+
+
+def pending_all(jobs, limit=50):
+    """Pending approvals across this node's jobs, newest first (dashboard / Telegram bridge)."""
+    items = []
+    try:
+        names = os.listdir(jobs.dir)
+    except FileNotFoundError:
+        return []
+    for jid in names:
+        if not JOB_ID.fullmatch(jid) or not os.path.isdir(os.path.join(jobs.dir, jid, "out", "approvals")):
+            continue
+        for item in list_requests(jobs, jid, pending_only=True):
+            item["job_id"] = jid
+            items.append(item)
+    items.sort(key=lambda r: -float(r.get("created_at") or 0))
+    return items[:limit]

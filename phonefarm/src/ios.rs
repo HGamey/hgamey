@@ -918,6 +918,18 @@ impl Backend for Ios {
         let _ = self.post_session("/actions", &tap_payload(x, y));
     }
 
+    fn long_press(&self, x: i32, y: i32, ms: u64) {
+        if self.frozen() {
+            return;
+        }
+        self.ensure_tunnel();
+        if self.session_id().is_none() {
+            return;
+        }
+        // 原地「滑动」: 按下后指针在同一点停留 ms 毫秒再抬起
+        let _ = self.post_session("/actions", &swipe_payload(x, y, x, y, ms.clamp(500, 5000)));
+    }
+
     fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32) {
         if self.frozen() {
             return;

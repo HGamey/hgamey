@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>待审批 · HGamey</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/dash/static/app.css">
+<link rel="stylesheet" href="/dash/static/jobs.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+<style>
+.ap-list{display:grid;gap:1rem;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));padding:0;list-style:none}
+.ap-card{border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:12px;padding:1rem;display:flex;flex-direction:column;gap:.5rem}
+.ap-card.critical{border-color:#d33}
+.ap-card img{width:100%;max-height:420px;object-fit:contain;border-radius:8px;background:#000}
+.ap-tag{font-weight:600}.ap-card.critical .ap-tag{color:#d33}
+.ap-actions{display:flex;gap:.5rem}.ap-actions button{flex:1;padding:.6rem;font-size:1rem}
+.ap-meta{font-size:.85rem;opacity:.75;word-break:break-all}
+</style>
+</head>
+<body class="jobs-view">
+<a class="skip-link" href="#ap-heading">跳到待审批</a>
+<header class="top">
+  <div class="brand-row">
+    <a class="logo" href="/dash" aria-label="HGamey 首页">HG</a><span class="brand-name">HGamey</span>
+    <nav class="nav" aria-label="主导航"><a href="/dash">概览</a><a href="/dash/fleet">节点与设备</a><a href="/dash/games">游戏与资源</a><a href="/dash/jobs">任务与结果</a><a href="/dash/approvals" aria-current="page">待审批</a><a href="/dash/research">研究与协助</a><a href="/dash/results">研究结果</a><a href="/dash/doctor">环境诊断</a><a href="/dash/maint">维护</a></nav>
+  </div>
+  <div class="top-right"><form method="post" action="/dash/logout"><button class="ghost" type="submit">退出</button></form></div>
+</header><script src="/dash/static/shell.js"></script>
+<main class="jobs-page">
+  <div class="page-heading">
+    <div><h1 id="ap-heading" tabindex="-1">待审批</h1><p class="page-description">手机上的任务准备付款、删除、动钱包、对外发送或输入密码时会停在这里等你决定。无人决定时按超时拒绝。</p></div>
+  </div>
+  <p id="ap-status" role="status" aria-live="polite">正在读取…</p>
+  <p id="ap-steer" class="note" hidden>审批需要操控密码：请在<a href="/dash/control">控制页</a>输入后回来。</p>
+  <ul id="ap-list" class="ap-list"></ul>
+</main>
+<script src="/dash/static/approvals.js"></script>
+</body>
+</html>

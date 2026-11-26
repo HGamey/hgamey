@@ -1350,6 +1350,19 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query), dashboard=True)
+            if board and parts[:3] == ["dash", "api", "approvals"]:
+                if not board.authed(self):
+                    return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
+                try:
+                    if len(parts) == 3:
+                        return self._send(200, {"node_id": jobs.node_id, "steer": board.steered(self),
+                                                "items": job_approvals.pending_all(jobs)})
+                    if len(parts) == 6 and parts[5] == "screenshot":
+                        with open(job_approvals.screenshot_path(jobs, parts[3], parts[4]), "rb") as f:
+                            return self._send(200, f.read(), "image/jpeg")
+                except KeyError:
+                    pass
+                return self._send(404, {"code": "approval_not_found", "error": "no such approval"})
             if board and parts[:1] == ["dash"]:  # 实时看板自己管认证（查看密码，不是管理 token）
                 try:
                     return board.handle_get(self, parts, u.query)
@@ -1656,6 +1669,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._out(parts[1], q)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "images":
                     return self._send(200, image_inventory(jobs._read_root, parts[1]))
+                if parts == ["approvals"]:
+                    return self._send(200, {"node_id": jobs.node_id, "items": job_approvals.pending_all(jobs)})
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "approvals":
                     return self._send(200, {"job_id": parts[1], "items": job_approvals.list_requests(
                         jobs, parts[1], pending_only=q.get("pending") == ["1"])})
@@ -2517,6 +2532,18 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(400, {"error": str(error)})
                 except sqlite3.Error as error:
                     return self._send(503, {"code": "storage_commit_unconfirmed", "error": str(error)})
+            if board and len(parts) == 5 and parts[:3] == ["dash", "api", "approvals"]:
+                if not board.steered(self):
+                    return self._send(403, {"code": "steer_required", "error": "需要操控密码才能审批"})
+                try:
+                    jobs.path(parts[3])
+                except KeyError:
+                    return self._send(404, {"code": "approval_not_found", "error": "no such approval"})
+                n = int(self.headers.get("Content-Length", 0))
+                if n > 4096:
+                    return self._send(413, {"code": "request_too_large", "error": "太大"})
+                code, result = job_approvals.decide(jobs, parts[3], parts[4], self.rfile.read(n) if n else b"", "dash")
+                return self._send(code, result)
             if board and parts[:1] == ["dash"]:
                 n = int(self.headers.get("Content-Length", 0))
                 if n > (256 << 10):

@@ -67,13 +67,14 @@ step = """
    (如连续滑动、同页多次滚动);拿不准就只给一行。done 只能单独一行给出,且前提是当前画面已是终局画面;
    不要把 done 拼在其他动作后面——程序会截掉它,先执行完动作、看过新画面再说。
 3. act 格式: {"r":"act","a":"<动作>","x":..,"y":..,"x2":..,"y2":..,"text":"..","what":".."}
-   动作取值: tap | swipe | scroll_up | scroll_down | type | clear | back | home | launch | goto | wait | done
+   动作取值: tap | long_press | swipe | scroll_up | scroll_down | type | clear | back | home | launch | goto | wait | done
              | inspect | find | get_state | history(只读探针)
    tap 需要 x,y,建议附 what=按钮文字(screen清单里的): 程序吸附到该元素准确中心;
    what不在清单时程序改按你的坐标直点(落点在某元素框内则吸附其中心)——所以坐标必须认真给;
    纯图标按钮(无文字,如×/齿轮/返回箭头)用 what:"icon:<描述>"(如icon:close):
    程序不吸附,按你的视觉坐标直点,坐标合法性/空白/前科检查照常;
-   swipe 需要 x,y,x2,y2(起点到终点,距离要足够大);type 需要 text;
+   long_press 与 tap 同参数(x,y,what), 按住约0.7秒: 用于长按出菜单(删除/置顶/多选等);
+   swipe 需要 x,y,x2,y2(起点到终点,距离要足够大);type 需要 text(中文和符号也可以);
    clear 无参数: 清空当前焦点输入框——type 是追加写入,输入框里已有预填文字(如保存框的默认名)时,
    先 tap 输入框聚焦→clear→再 type,否则新旧文字拼接;
    home 回到桌面(系统按键,任何画面下都有效);launch 需要 text=apps清单中的包名,直接启动该应用;
