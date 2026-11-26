@@ -23,8 +23,11 @@ import time
 import urllib.error
 import urllib.request
 
-ALLOW = {"允许", "同意", "批准", "完成", "好了", "做完了", "allow", "approve", "yes", "y", "ok", "done"}
-DENY = {"拒绝", "不允许", "否", "放弃", "不处理", "deny", "reject", "no", "n", "skip"}
+# 审批和接手各用各的词: 「完成 xxxx」只能结束接手, 不能批准付款; 「允许 xxxx」只能批准审批
+ALLOW = {"允许", "同意", "批准", "allow", "approve", "yes", "y"}
+DENY = {"拒绝", "不允许", "否", "deny", "reject", "no", "n"}
+DONE = {"完成", "好了", "做完了", "done", "ok"}
+GIVE_UP = {"放弃", "不处理", "skip"}
 REPLY = re.compile(r"^\s*(\S+?)\s*[:：]?\s*([0-9a-f]{4})\s*$", re.I)
 UA = "hgamey-approval-bridge/1"
 
@@ -53,11 +56,17 @@ def parse_reply(text):
     if not m or len(text) > 40:
         return None
     verb = m.group(1).lower()
-    if verb in ALLOW:
-        return "allow", m.group(2).lower()
-    if verb in DENY:
-        return "deny", m.group(2).lower()
+    for words, kind in ((ALLOW, "allow"), (DENY, "deny"), (DONE, "done"), (GIVE_UP, "give_up")):
+        if verb in words:
+            return kind, m.group(2).lower()
     return None
+
+
+def decision_for(kind, category):
+    """Map a reply verb to allow/deny for this kind of request, or None if the verb doesn't fit it."""
+    if category == "handoff":
+        return {"done": "allow", "give_up": "deny"}.get(kind)
+    return {"allow": "allow", "deny": "deny"}.get(kind)
 
 
 def caption(item):
@@ -89,7 +98,6 @@ class Bridge:
         self.gateway, self.gkey, self.chat = gateway.rstrip("/"), gateway_key, chat
         self.log = log
         self.sent = {}          # approval id -> item
-        self.own_messages = set()
         self.last_msg_id = None
         self.auth_failures = 0
         self.lock = threading.Lock()   # sent is shared by the poll loop and the reply waiter
@@ -141,8 +149,6 @@ class Bridge:
             if s == 200 and isinstance(r, dict) and r.get("status") == "sent":
                 with self.lock:
                     self.sent[item["id"]] = item
-                if r.get("message_id") is not None:
-                    self.own_messages.add(r["message_id"])
                 self.log(f"sent {item['id']} ({code_of(item['id'])})")
             else:
                 self.log(f"gateway send failed {s}: {r}")
@@ -164,18 +170,23 @@ class Bridge:
             if mid <= self.last_msg_id:
                 continue
             self.last_msg_id = max(self.last_msg_id, mid)
-            if m.get("sender") not in (None, "我"):
+            if m.get("sender") != "我":  # 只认主人本人发的
                 continue
             parsed = parse_reply(m.get("text", ""))
             if not parsed:
                 continue
-            decision, code = parsed
+            kind, code = parsed
             with self.lock:
                 matches = [i for i in self.sent.values() if code_of(i["id"]) == code]
             if len(matches) != 1:
                 self._g("POST", "/api/send", {"chat": self.chat, "text": f"没找到唯一对应 {code} 的待审批（{len(matches)} 条）"})
                 continue
             item = matches[0]
+            decision = decision_for(kind, item.get("category"))
+            if decision is None:
+                want = "完成/放弃" if item.get("category") == "handoff" else "允许/拒绝"
+                self._g("POST", "/api/send", {"chat": self.chat, "text": f"{code} 这条要回复「{want} {code}」"})
+                continue
             st, r = self._c("POST", f"/jobs/{item['job_id']}/approvals/{item['id']}", {"decision": decision, "note": "telegram"})
             h = item.get("category") == "handoff"
             done = ("已告知完成" if h else "已允许") if decision == "allow" else ("已放弃" if h else "已拒绝")

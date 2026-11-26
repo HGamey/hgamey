@@ -435,6 +435,26 @@ impl Stop {
     }
 }
 
+/// type 落在哪个输入框: 上次点击落点所在的框; 认不出时, 只有一个框就是它, 多个框里有密码类的就按密码框算。
+/// 返回 (框里的文字, 框的 id/类名标记)。
+fn type_targets(full: &[FullNode], last_tap: Option<(i32, i32)>) -> (Vec<String>, Vec<String>) {
+    let edits: Vec<&FullNode> = full.iter().filter(|f| {
+        let c = f.class.to_lowercase();
+        c.contains("edittext") || c.contains("textfield") || c.contains("securetext") || c.contains("textinput")
+    }).collect();
+    let mut chosen: Vec<&FullNode> = edits.iter().copied()
+        .filter(|f| last_tap.is_some_and(|(x, y)| f.b[0] <= x && x <= f.b[2] && f.b[1] <= y && y <= f.b[3])).collect();
+    if chosen.is_empty() {
+        chosen = if edits.len() == 1 { edits } else {
+            edits.into_iter().filter(|f| crate::runtime::password_like(&f.class, f.id.as_deref(), &f.t)).collect()
+        };
+    }
+    let texts = chosen.iter().filter(|f| !f.t.is_empty()).map(|f| f.t.clone()).collect();
+    let mut ids: Vec<String> = chosen.iter().filter_map(|f| f.id.clone()).collect();
+    if chosen.iter().any(|f| f.class.to_lowercase().contains("secure")) { ids.push("secure-password".into()); }
+    (texts, ids)
+}
+
 pub fn fill(t: &str, params: &std::collections::BTreeMap<String, String>) -> String {
     let mut s = t.to_string();
     for (k, v) in params {
@@ -560,29 +580,33 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
                 v.sort_by_key(|e| ((e.b[2] - e.b[0]) as i64) * ((e.b[3] - e.b[1]) as i64));
                 v.iter().take(2).map(|e| e.t.clone()).collect()
             }
-            ("type", _) => full.iter().filter(|f| {
-                let c = f.class.to_lowercase();
-                (c.contains("edittext") || c.contains("textfield")) && last_tap.is_some_and(|(x, y)| f.b[0] <= x && x <= f.b[2] && f.b[1] <= y && y <= f.b[3])
-            }).map(|f| f.t.clone()).collect(),
+            ("type", _) => type_targets(&full, last_tap).0,
+            ("swipe", _) => match st.at.map(px) {
+                Some((x, y)) => {
+                    let mut v: Vec<&Node> = els.iter().filter(|e| e.b[0] <= x && x <= e.b[2] && e.b[1] <= y && y <= e.b[3]).collect();
+                    v.sort_by_key(|e| ((e.b[2] - e.b[0]) as i64) * ((e.b[3] - e.b[1]) as i64));
+                    v.iter().take(2).map(|e| e.t.clone()).collect()
+                }
+                None => Vec::new(),
+            },
             _ => Vec::new(),
         };
-        let ids: Vec<String> = if st.a == "type" {
-            full.iter().filter(|f| last_tap.is_some_and(|(x, y)| f.b[0] <= x && x <= f.b[2] && f.b[1] <= y && y <= f.b[3]))
-                .filter_map(|f| f.id.clone()).collect()
-        } else { Vec::new() };
+        let ids: Vec<String> = if st.a == "type" { type_targets(&full, last_tap).1 } else { Vec::new() };
         let screen: Vec<&str> = els.iter().map(|e| e.t.as_str()).collect();
         let facts = approval::Facts {
             action: &st.a, what: st.what.as_deref(), text: text_filled.as_deref(),
             target_texts: target_texts.iter().map(String::as_str).collect(), screen_texts: screen, pkg: &pkg,
             target_ids: ids.iter().map(String::as_str).collect(),
         };
+        let mut asked_human = false;
         if let Some(hit) = approval::classify(&facts, ctx.policy) {
-            let key = st.what.clone().or_else(|| target_texts.first().cloned()).unwrap_or_default();
+            let base = target_texts.iter().find(|t| !t.trim().is_empty()).cloned().or_else(|| st.what.clone()).unwrap_or_default();
+            let ctx_texts: Vec<&str> = els.iter().map(|e| e.t.as_str()).collect();
+            let key = format!("{base}#{}", approval::context_sig(&ctx_texts));
             let allow = match ctx.policy.mode_for(hit.category) {
                 approval::Mode::Auto => true,
                 approval::Mode::Deny => false,
-                approval::Mode::Ask if grants.covers(&pkg, hit.category, &key, ctx.policy.grant_s)
-                    || (hit.follow_up && grants.covers_category(&pkg, hit.category, ctx.policy.grant_s)) => true,
+                approval::Mode::Ask if grants.covers(&pkg, hit.category, &key, ctx.policy.grant_s, hit.follow_up) => true,
                 approval::Mode::Ask => {
                     let dir = approval::approval_dir(&ctx.out_dir.to_string_lossy());
                     let id = approval::new_id(&format!("skill-{}", skill.name), i as u32 + 1);
@@ -596,7 +620,7 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
                         step: i as u32 + 1, serial: ctx.serial.clone(), pkg: pkg.clone(), screenshot,
                     };
                     let d = approval::request_and_wait(&dir, &req, ctx.policy.timeout_s);
-                    if d.allow { grants.add(&pkg, hit.category, &key); }
+                    if d.allow { grants.add(&pkg, hit.category, &key); asked_human = true; }
                     d.allow
                 }
             };
@@ -606,6 +630,31 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
                 return Stop::Denied { step: i, reason: hit.reason };
             }
         }
+        // 等过人: 画面可能已经变了, 重新读屏, 起点路标、前台应用、目标都要对得上, 否则停
+        if asked_human {
+            if ctx.device.foreground_pkg() != pkg {
+                put(json!({"r":"stop","code":"step_precondition_failed","step":i,"why":"批准后前台应用变了"}));
+                return Stop::Precondition { step: i, missing: vec![format!("前台应用 {pkg}")] };
+            }
+            let Some((els2, _)) = read(ctx) else { return Stop::Capture { step: i }; };
+            let have = present(&els2, &st.when);
+            // 按坐标点(没有点名)的步骤要求路标全在, 其余过半
+            let need_all = st.what.is_none() && tap_at.is_some();
+            if !st.when.is_empty() && (if need_all { have.len() < st.when.len() } else { have.len() * 2 < st.when.len() }) {
+                let missing: Vec<String> = st.when.iter().filter(|w| !have.contains(w)).cloned().collect();
+                put(json!({"r":"stop","code":"step_precondition_failed","step":i,"missing":missing,"why":"批准后画面变了"}));
+                return Stop::Precondition { step: i, missing };
+            }
+            if let (Some(w), true) = (st.what.as_deref(), tap_at.is_some()) {
+                match locate(&els2, w, st.at.map(px)) {
+                    Ok(p) => tap_at = Some(p),
+                    Err(why) => {
+                        put(json!({"r":"stop","code":"target_not_found","step":i,"what":w,"why":why}));
+                        return Stop::Target { step: i, what: w.to_string(), why: format!("批准后{why}") };
+                    }
+                }
+            }
+        }
         // 执行
         match st.a.as_str() {
             "tap" => { let (x, y) = tap_at.unwrap(); ctx.device.tap(x, y); last_tap = Some((x, y)); }
@@ -613,8 +662,8 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             "swipe" => if let (Some(a), Some(b)) = (st.at, st.to) { let (x, y) = px(a); let (x2, y2) = px(b); ctx.device.swipe(x, y, x2, y2); },
             "scroll_up" => ctx.device.scroll_up(),
             "scroll_down" => ctx.device.scroll_down(),
-            "back" => ctx.device.back(),
-            "home" => ctx.device.home(),
+            "back" => { ctx.device.back(); last_tap = None; }
+            "home" => { ctx.device.home(); last_tap = None; }
             "clear" => ctx.device.clear_field(),
             "type" => ctx.device.type_text(text_filled.as_deref().unwrap_or("")),
             "launch" => { let _ = ctx.device.launch(st.text.as_deref().unwrap_or(""), ""); }

@@ -31,7 +31,7 @@
     li.append(el('div', `${item.category === 'handoff' ? '说明' : '理由'}：${item.reason}`));
     if (item.goal) li.append(el('div', `任务目标：${item.goal}`, 'ap-meta'));
     li.append(el('div', `设备 ${item.serial || '?'} · 应用 ${item.pkg || '?'} · 作业 ${item.job_id} · 剩 ${left(item)}`, 'ap-meta'));
-    if (item.has_screenshot) {
+    if (item.has_screenshot && steer) {
       const img = el('img'); img.alt = '请求时的屏幕截图'; img.loading = 'lazy';
       img.src = `/dash/api/approvals/${item.job_id}/${encodeURIComponent(item.id)}/screenshot`;
       li.append(img);

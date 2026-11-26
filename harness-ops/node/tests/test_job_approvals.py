@@ -30,7 +30,7 @@ class ApprovalTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.jobs = Jobs(self.tmp.name)
-        self.dir = self.jobs.path("abcdef012345", "out", "approvals")
+        self.dir = self.jobs.path("abcdef012345", "approvals")
         os.makedirs(self.dir)
 
     def tearDown(self):
@@ -55,6 +55,12 @@ class ApprovalTests(unittest.TestCase):
             self.assertEqual(json.load(f)["decision"], "allow")
         self.assertEqual(job_approvals.list_requests(self.jobs, "abcdef012345")[0]["state"], "allowed")
 
+    def test_expired_or_decided_requests_refuse_new_decisions(self):
+        self.write("ap-r-9-0009", expires_at=time.time() - 1)
+        self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-r-9-0009", b'{"decision":"allow"}', "a")[0], 409)
+        self.write("ap-r-8-0008", state="denied")
+        self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-r-8-0008", b'{"decision":"allow"}', "a")[0], 409)
+
     def test_rejects_bad_input(self):
         self.write("ap-r-1-0001")
         self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-r-1-0001", b'{"decision":"maybe"}', "a")[0], 400)
@@ -65,11 +71,11 @@ class ApprovalTests(unittest.TestCase):
 
     def test_pending_all_across_jobs(self):
         self.write("ap-r-1-0001", created_at=time.time() - 10)
-        other = self.jobs.path("0123456789ab", "out", "approvals")
+        other = self.jobs.path("0123456789ab", "approvals")
         os.makedirs(other)
         with open(os.path.join(other, "ap-x-1-0002.json"), "w") as f:
             json.dump(request("ap-x-1-0002"), f)
-        os.makedirs(os.path.join(self.tmp.name, "not-a-job", "out", "approvals"))
+        os.makedirs(os.path.join(self.tmp.name, "not-a-job", "approvals"))
         items = job_approvals.pending_all(self.jobs)
         self.assertEqual([(i["job_id"], i["id"]) for i in items],
                          [("0123456789ab", "ap-x-1-0002"), ("abcdef012345", "ap-r-1-0001")])
