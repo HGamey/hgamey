@@ -187,9 +187,9 @@ const OSCILL_WARN: &str = "【系统警告:打摆干预】你已连续2次进入
 /// 未点名的tap按50px粗桶近似(有what时坐标只是线索,吸附后由what定身份)。
 fn act_sig(a: &ActN) -> String {
     match a.a.as_str() {
-        "tap" => match a.what.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
-            Some(w) => format!("tap[{}]", tcut(w, 12)),
-            None => format!("tap({},{})", a.x.unwrap_or(-1) / 50, a.y.unwrap_or(-1) / 50),
+        "tap" | "long_press" => match a.what.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
+            Some(w) => format!("{}[{}]", a.a, tcut(w, 12)),
+            None => format!("{}({},{})", a.a, a.x.unwrap_or(-1) / 50, a.y.unwrap_or(-1) / 50),
         },
         // 探针认"问了什么": 同一问题反复问与反复点同一按钮同罪,进打摆账
         "inspect" | "find" | "history" => match a.text.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -702,8 +702,8 @@ fn act_from_edge(e: &crate::tree::Edge, cap: &Cap, realw: i32, realh: i32) -> Op
 
 fn act_line(n: u32, a: &ActN) -> String {
     match a.a.as_str() {
-        "tap" => format!(
-            "act#{n} tap({},{}){}",
+        "tap" | "long_press" => format!(
+            "act#{n} {}({},{}){}", a.a,
             a.x.unwrap_or(-1), a.y.unwrap_or(-1),
             a.what.as_deref().map(|w| format!("[{}]", tcut(w, 10))).unwrap_or_default()
         ),
@@ -1071,7 +1071,7 @@ fn plan_call(brain: &mut Brain, cfg: &Config, user: &str, img: &str, log: &mut L
 /// 未点名但落点在某元素框内 → 也吸附中心(修手偏,零成本)。清单不可信(假树)时不吸附。
 fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String)>, cfg: &Config, tmp: &str,
         apps: &[(String, String)], realw: i32, realh: i32) -> Option<String> {
-    let known = ["tap", "swipe", "scroll_up", "scroll_down", "type", "clear", "back", "home", "launch", "goto", "wait", "done",
+    let known = ["tap", "long_press", "swipe", "scroll_up", "scroll_down", "type", "clear", "back", "home", "launch", "goto", "wait", "done",
                  "inspect", "find", "get_state", "history"];
     if !known.contains(&a.a.as_str()) {
         return Some(format!("未知动作:{}", tcut(&a.a, 12)));
@@ -1084,7 +1084,7 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
         }
     };
     match a.a.as_str() {
-        "tap" => {
+        "tap" | "long_press" => {
             let (x, y) = match (chk(a.x, "x"), chk(a.y, "y")) {
                 (Ok(x), Ok(y)) => (x, y),
                 (Err(e), _) | (_, Err(e)) => return Some(e),
@@ -1223,7 +1223,7 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
     }
     // 字段归位: 与动作无关的字段不入日志(模型偶尔多填,空间口径会混)
     match a.a.as_str() {
-        "tap" => { a.x2 = None; a.y2 = None; }
+        "tap" | "long_press" => { a.x2 = None; a.y2 = None; }
         "swipe" => {}
         "inspect" => { a.x2 = None; a.y2 = None; } // 坐标寻址时保留(0~999)
         _ => { a.x = None; a.y = None; a.x2 = None; a.y2 = None; }
@@ -1237,6 +1237,7 @@ fn exec(phone: &Device, a: &ActN, cap: &Cap, realw: i32, realh: i32, apps: &[(St
     let sy = |v: Option<i64>| (v.unwrap_or(0) * realh as i64 / cap.h.max(1) as i64) as i32;
     match a.a.as_str() {
         "tap" => phone.tap(sx(a.x), sy(a.y)),
+        "long_press" => phone.long_press(sx(a.x), sy(a.y), 700),
         "swipe" => phone.swipe(sx(a.x), sy(a.y), sx(a.x2), sy(a.y2)),
         "scroll_up" => phone.scroll_up(),
         "scroll_down" => phone.scroll_down(),

@@ -221,6 +221,28 @@ pub fn locate_adb() -> Option<String> {
     }).clone()
 }
 
+/// 剪贴板助手(源码与构建脚本在 tools/pfclip/), 安卓 Unicode 输入用。
+const PFCLIP_DEX: &[u8] = include_bytes!("../tools/pfclip/pfclip.dex");
+
+/// `input text` 能原样打出来的文字: ASCII 字母数字、空格和不会被设备 shell 吃掉的标点。
+pub fn input_text_safe(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || " .,_-@:/+=?!".contains(c))
+}
+
+/// 退路: 把会被 shell 解释的字符转义(非 ASCII 字符 input text 本来就打不出)。
+fn shell_quote_input(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.chars() {
+        match c {
+            ' ' => out.push_str("%s"),
+            c if c.is_ascii_alphanumeric() => out.push(c),
+            c if c.is_ascii() => { out.push('\\'); out.push(c); }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub struct Adb {
     bin: String, // 定位到的 adb 路径(构造时解析,见 locate_adb)
     serial: Option<String>,
@@ -495,6 +517,11 @@ impl Adb {
     pub fn tap(&self, x: i32, y: i32) {
         self.input(&["tap", &x.to_string(), &y.to_string()]);
     }
+    /// 长按: 原地 swipe, 时长即按住时间
+    pub fn long_press(&self, x: i32, y: i32, ms: u64) {
+        let (x, y) = (x.to_string(), y.to_string());
+        self.input(&["swipe", &x, &y, &x, &y, &ms.clamp(500, 5000).to_string()]);
+    }
     pub fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32) {
         self.input(&["swipe", &x.to_string(), &y.to_string(),
                      &x2.to_string(), &y2.to_string(), "350"]);
@@ -505,8 +532,50 @@ impl Adb {
     pub fn scroll_up(&self) {
         self.input(&["swipe", "540", "700", "540", "1800", "350"]);
     }
+    /// 输入文字。`input text` 只认 ASCII 且怕 shell 元字符; 其余文字走剪贴板粘贴
+    /// (tools/pfclip: 先读出用户原剪贴板, 写入→粘贴→还原; 读不出来就不还原, 照实打日志)。
     pub fn type_text(&self, text: &str) {
-        self.input(&["text", &text.replace(' ', "%s")]);
+        if self.frozen() { return; }
+        if input_text_safe(text) {
+            self.input(&["text", &text.replace(' ', "%s")]);
+            return;
+        }
+        if let Err(e) = self.paste_text(text) {
+            eprintln!("      ⚠ 剪贴板粘贴失败({e}), 退回 input text(非 ASCII 字符会丢)");
+            self.input(&["text", &shell_quote_input(text)]);
+        }
+    }
+
+    fn pfclip(&self, args: &[&str]) -> String {
+        let mut v = vec!["shell", "CLASSPATH=/data/local/tmp/pfclip.dex", "app_process", "/", "PfClip"];
+        v.extend_from_slice(args);
+        String::from_utf8_lossy(&self.run_timeout(&v, 8000)).trim().to_string()
+    }
+
+    fn ensure_pfclip(&self) -> Result<(), String> {
+        let remote = "/data/local/tmp/pfclip.dex";
+        let have = String::from_utf8_lossy(&self.run_timeout(&["shell", "stat", "-c", "%s", remote], 5000)).trim().parse::<usize>().ok();
+        if have == Some(PFCLIP_DEX.len()) { return Ok(()); }
+        let local = format!("{}/pfclip.dex", self.tmp);
+        std::fs::write(&local, PFCLIP_DEX).map_err(|e| format!("写不了 {local}: {e}"))?;
+        self.run_timeout(&["push", &local, remote], 20_000);
+        let have = String::from_utf8_lossy(&self.run_timeout(&["shell", "stat", "-c", "%s", remote], 5000)).trim().parse::<usize>().ok();
+        if have == Some(PFCLIP_DEX.len()) { Ok(()) } else { Err("pfclip.dex 推不上设备".into()) }
+    }
+
+    fn paste_text(&self, text: &str) -> Result<(), String> {
+        self.ensure_pfclip()?;
+        let old = self.pfclip(&["get"]);
+        let r = self.pfclip(&["set", &crate::brain::b64(text.as_bytes())]);
+        if r != "ok" { return Err(format!("写剪贴板: {r}")); }
+        self.input(&["keyevent", "279"]); // KEYCODE_PASTE
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        match old.strip_prefix("text:") {
+            Some(prev) => { let _ = self.pfclip(&["set", prev]); }
+            None if old == "none" => {}
+            None => eprintln!("      (原剪贴板读不出来: {old}; 未还原)"),
+        }
+        Ok(())
     }
     /// 清空当前焦点输入框: 光标移到末尾(KEYCODE_MOVE_END)后连发 DEL(KEYCODE_DEL)。
     /// input text 是纯追加——预填默认文本的输入框(如保存框预填名)不先清空就物理上改不掉,
@@ -987,6 +1056,12 @@ impl Hdc {
         self.last_tap.1.store(y, Ordering::Relaxed);
         self.ui_input(&["click", &x.to_string(), &y.to_string()]);
     }
+    /// 长按: uitest 的 longClick(时长由系统定, 约 1.5 s; ms 参数不生效)
+    pub fn long_press(&self, x: i32, y: i32, _ms: u64) {
+        self.last_tap.0.store(x, Ordering::Relaxed);
+        self.last_tap.1.store(y, Ordering::Relaxed);
+        self.ui_input(&["longClick", &x.to_string(), &y.to_string()]);
+    }
 
     /// uiInput swipe 用速度(px/s)而非时长: 按 Android 350ms 手势的手感换算,夹在合法区间
     pub fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32) {
@@ -1177,6 +1252,7 @@ impl Device {
     pub fn quick_thumb(&self, tag: &str) -> Option<Vec<u8>> { self.b.quick_thumb(tag) }
     pub fn size(&self) -> (i32, i32) { self.b.size() }
     pub fn tap(&self, x: i32, y: i32) { self.b.tap(x, y) }
+    pub fn long_press(&self, x: i32, y: i32, ms: u64) { self.b.long_press(x, y, ms) }
     pub fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32) { self.b.swipe(x, y, x2, y2) }
     pub fn scroll_down(&self) { self.b.scroll_down() }
     pub fn scroll_up(&self) { self.b.scroll_up() }
@@ -1569,6 +1645,20 @@ pub fn parse_main_ability(s: &str) -> String {
         from += i + 6;
     }
     String::new()
+}
+
+#[cfg(test)]
+mod pfclip_tests {
+    #[test]
+    fn plain_ascii_goes_through_input_text() {
+        assert!(super::input_text_safe("pftest milk eggs"));
+        assert!(super::input_text_safe("a@b.com"));
+        assert!(!super::input_text_safe("牛奶"));
+        assert!(!super::input_text_safe("rm -rf; echo"));
+        assert!(!super::input_text_safe("it's"));
+        assert!(!super::input_text_safe(""));
+        assert!(super::PFCLIP_DEX.starts_with(b"dex\n"));
+    }
 }
 
 #[cfg(test)]

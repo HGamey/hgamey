@@ -117,6 +117,8 @@ pub trait Backend: Send + Sync {
 
     // ── 动 ──
     fn tap(&self, x: i32, y: i32);
+    /// 原地按住 ms 毫秒(长按出菜单)。
+    fn long_press(&self, x: i32, y: i32, ms: u64);
     fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32);
     fn scroll_down(&self);
     fn scroll_up(&self);
@@ -275,6 +277,7 @@ macro_rules! forward_required {
         fn quick_thumb(&self, tag: &str) -> Option<Vec<u8>> { Self::quick_thumb(self, tag) }
         fn size(&self) -> (i32, i32) { Self::size(self) }
         fn tap(&self, x: i32, y: i32) { Self::tap(self, x, y) }
+        fn long_press(&self, x: i32, y: i32, ms: u64) { Self::long_press(self, x, y, ms) }
         fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32) { Self::swipe(self, x, y, x2, y2) }
         fn scroll_down(&self) { Self::scroll_down(self) }
         fn scroll_up(&self) { Self::scroll_up(self) }
