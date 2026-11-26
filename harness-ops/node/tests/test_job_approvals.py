@@ -55,6 +55,12 @@ class ApprovalTests(unittest.TestCase):
             self.assertEqual(json.load(f)["decision"], "allow")
         self.assertEqual(job_approvals.list_requests(self.jobs, "abcdef012345")[0]["state"], "allowed")
 
+    def test_expired_or_decided_requests_refuse_new_decisions(self):
+        self.write("ap-r-9-0009", expires_at=time.time() - 1)
+        self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-r-9-0009", b'{"decision":"allow"}', "a")[0], 409)
+        self.write("ap-r-8-0008", state="denied")
+        self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-r-8-0008", b'{"decision":"allow"}', "a")[0], 409)
+
     def test_rejects_bad_input(self):
         self.write("ap-r-1-0001")
         self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-r-1-0001", b'{"decision":"maybe"}', "a")[0], 400)

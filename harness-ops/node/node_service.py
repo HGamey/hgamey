@@ -1358,6 +1358,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                         return self._send(200, {"node_id": jobs.node_id, "steer": board.steered(self),
                                                 "items": job_approvals.pending_all(jobs)})
                     if len(parts) == 6 and parts[5] == "screenshot":
+                        if not board.steered(self):  # 截图可能含验证码/余额: 只给能做决定的人看
+                            return self._send(403, {"code": "steer_required", "error": "需要操控密码"})
                         with open(job_approvals.screenshot_path(jobs, parts[3], parts[4]), "rb") as f:
                             return self._send(200, f.read(), "image/jpeg")
                 except KeyError:
@@ -1669,6 +1671,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._out(parts[1], q)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "images":
                     return self._send(200, image_inventory(jobs._read_root, parts[1]))
+                if (parts == ["approvals"] or len(parts) >= 3 and parts[0] == "jobs" and parts[2] == "approvals") and self.agent:
+                    # 截图里可能有验证码、余额、密码页: agent token 不给看
+                    return self._send(403, {"code": "forbidden", "error": "approvals are for people, not agent tokens"})
                 if parts == ["approvals"]:
                     return self._send(200, {"node_id": jobs.node_id, "items": job_approvals.pending_all(jobs)})
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "approvals":
@@ -2665,7 +2670,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     if self.ro or self.agent:
                         return self._send(403, {"code": "forbidden", "error": "approvals are decided by people: admin token or dashboard steer only"})
                     jobs.path(parts[1])  # validates the job id
-                    who = (self.headers.get("X-Approval-Via") or "admin")[:40]
+                    via = self.headers.get("X-Approval-Via") or ""
+                    who = via if via in ("telegram", "cli") else "admin"
                     code, result = job_approvals.decide(jobs, parts[1], parts[3], body, who)
                     return self._send(code, result)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:

@@ -236,6 +236,9 @@ const WALLET_PKGS: &[&str] = &[
     "com.mipay.wallet", "com.coloros.wallet", "com.vivo.wallet", "com.samsung.android.spay",
 ];
 
+/// 目标文字长度上限(字符), 超过视为说明段落而不是按钮。
+const LABEL_MAX_CHARS: usize = 40;
+
 fn norm(s: &str) -> String {
     s.trim().to_lowercase().chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -243,17 +246,20 @@ fn norm(s: &str) -> String {
 /// 词命中: 短语出现在标签里, 且标签不长(长段落里出现「支付」多半是说明文字, 不是按钮)。
 fn label_hits<'a>(label: &str, words: &[&'a str]) -> Option<&'a str> {
     let l = norm(label);
-    if l.is_empty() || l.chars().count() > 16 {
+    // 上限放宽到 40 字: 「立即支付 ¥128.00 (已优惠¥20.00)」这类真实按钮常超过 16 字;
+    // 再长的多半是说明段落(只有落点正好在段落上才会进 target_texts)
+    if l.is_empty() || l.chars().count() > LABEL_MAX_CHARS {
         return None;
     }
+    // 英文按「词序列」比: 先按非字母数字切词(不能先去空白, 否则 "Delete account" 会粘成一个词)
+    let toks: Vec<String> = label.to_lowercase().split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty()).map(str::to_string).collect();
     words.iter().copied().find(|w| {
-        let w2 = norm(w);
-        if w2.is_ascii() {
-            // 英文按词边界: "pay" 不该命中 "display"/"paypal设置"之外的误伤, 用分词比对
-            l == w2 || l.split(|c: char| !c.is_ascii_alphanumeric()).any(|tok| tok == w2)
-                || (w2.contains(' ') && label.to_lowercase().contains(*w))
+        if w.is_ascii() {
+            let wt: Vec<&str> = w.split_whitespace().collect();
+            !wt.is_empty() && toks.windows(wt.len()).any(|win| win.iter().zip(&wt).all(|(a, b)| a == b))
         } else {
-            l.contains(&w2)
+            l.contains(&norm(w))
         }
     })
 }
@@ -291,7 +297,19 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
             }
             None
         }
-        "tap" => {
+        "swipe" => {
+            // 滑动解锁付款、左滑删除: 只看起点元素上的删除/付款词
+            let labels: Vec<&str> = f.target_texts.iter().copied().collect();
+            if let Some((l, w)) = labels.iter().find_map(|l| label_hits(l, DELETE_WORDS).map(|w| (l, w))) {
+                return Some(Hit { follow_up: false, category: Category::Delete, reason: format!("滑动起点「{l}」含「{w}」") });
+            }
+            if let Some((l, w)) = labels.iter().find_map(|l| label_hits(l, PAY_WORDS).map(|w| (l, w))) {
+                return Some(Hit { follow_up: false, category: Category::Payment, reason: format!("滑动起点「{l}」含「{w}」") });
+            }
+            None
+        }
+        // 长按在没有长按监听的控件上会落成一次点击, 必须和 tap 同样判
+        "tap" | "long_press" => {
             if wallet {
                 return Some(Hit { follow_up: false, category: Category::Wallet, reason: format!("钱包应用 {} 内的点击", f.pkg) });
             }
@@ -393,15 +411,40 @@ fn now_s() -> f64 {
 }
 
 pub fn new_id(run_id: &str, step: u32) -> String {
-    let ns = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
     let safe: String = run_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
-    format!("ap-{safe}-{step}-{:04x}", ns & 0xffff)
+    // 64 位随机(RandomState 每次取系统随机种子), 末 4 位兼作 Telegram 回复码
+    let r = {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        h.write_u32(std::process::id());
+        h.finish()
+    };
+    format!("ap-{safe}-{step}-{r:016x}")
 }
 
 fn write_atomic(path: &Path, v: &Value) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_vec_pretty(v).unwrap_or_default())?;
     fs::rename(tmp, path)
+}
+
+/// 交互终端下的 stdin 行通道(全进程一个读线程)。非终端或 PF_APPROVAL_NO_TTY 时为 None。
+fn tty_lines() -> Option<&'static std::sync::Mutex<std::sync::mpsc::Receiver<String>>> {
+    static RX: std::sync::OnceLock<Option<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>> = std::sync::OnceLock::new();
+    RX.get_or_init(|| {
+        if !std::io::stdin().is_terminal() || std::env::var("PF_APPROVAL_NO_TTY").is_ok() {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() { break; }
+            }
+        });
+        Some(std::sync::Mutex::new(rx))
+    }).as_ref()
 }
 
 /// 只在决定文件还不存在时写入(先到先得; 节点服务那边同样用 O_EXCL)。
@@ -448,6 +491,8 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
     let _ = fs::create_dir_all(dir);
     let req_path = dir.join(format!("{}.json", r.id));
     let dec_path = dir.join(format!("{}.decision.json", r.id));
+    // 同名旧决定(理论上 64 位 id 不会撞)一律作废, 决不沿用
+    let _ = fs::remove_file(&dec_path);
     let mut req = request_json(r, timeout_s);
     if let Err(e) = write_atomic(&req_path, &req) {
         // 请求都写不出去 = 没人能看到 = 拒绝
@@ -456,18 +501,16 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
     println!("      🛑 审批[{}] {}: {} — 等待决定(≤{}s) 请求 {}", r.category.zh(), r.action_line, r.reason, timeout_s,
              req_path.display());
 
-    // 终端问答: 单独线程读一行, 读到就写决定文件, 主循环统一从文件取。
-    if std::io::stdin().is_terminal() && std::env::var("PF_APPROVAL_NO_TTY").is_err() {
-        let dp = dec_path.clone();
-        std::thread::spawn(move || {
+    // 终端问答: 全局只有一个读 stdin 的线程, 行经通道送来; 每个请求开始前先丢掉积压的行(防误触回车)。
+    let tty = tty_lines();
+    if let Some(rx) = tty {
+        if let Ok(rx) = rx.lock() { while rx.try_recv().is_ok() {} }
+        if r.category == Category::Handoff {
+            print!("      在手机上做完后输入 y 回车(放弃输入 n): ");
+        } else {
             print!("      允许执行? [y/N] ");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-            let mut line = String::new();
-            if std::io::stdin().lock().read_line(&mut line).is_ok() && !dp.exists() {
-                let allow = matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes" | "允许");
-                let _ = write_first(&dp, &json!({"decision": if allow {"allow"} else {"deny"}, "by": "tty"}));
-            }
-        });
+        }
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
     let deadline = Instant::now() + Duration::from_secs(timeout_s);
@@ -475,6 +518,14 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
         if let Ok(t) = fs::read_to_string(&dec_path) {
             if let Some(d) = parse_decision(&t) {
                 break d;
+            }
+        }
+        if let Some(rx) = tty {
+            let line = rx.lock().ok().and_then(|rx| rx.try_recv().ok());
+            if let Some(line) = line {
+                let allow = matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes" | "允许" | "完成");
+                let _ = write_first(&dec_path, &json!({"decision": if allow {"allow"} else {"deny"}, "by": "tty"}));
+                continue;
             }
         }
         if Instant::now() >= deadline {
@@ -499,27 +550,45 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
 /// 目标文字一变(金额、收款人、条数)就重新问——不做模糊匹配。
 #[derive(Default)]
 pub struct Grants {
+    /// 非关键类: 同应用同类同目标文字, grant_s 内可复用
     items: Vec<(String, Instant)>,
+    /// 后续确认额度: 每次人批准后给同应用同类别一次, FOLLOW_UP_S 内用掉一次即失效
+    follow: Vec<(String, Instant)>,
 }
+
+/// 批准后的后续确认(如删除确认框上的「确定」)要在多少秒内发生才算同一件事。
+pub const FOLLOW_UP_S: u64 = 20;
 
 impl Grants {
     fn key(pkg: &str, c: Category, target: &str) -> String {
         format!("{pkg}\u{1f}{}\u{1f}{}", c.id(), norm(target))
     }
-    pub fn covers(&mut self, pkg: &str, c: Category, target: &str, grant_s: u64) -> bool {
-        let now = Instant::now();
-        self.items.retain(|(_, t)| now.duration_since(*t).as_secs() < grant_s.max(1));
-        grant_s > 0 && self.items.iter().any(|(k, _)| *k == Self::key(pkg, c, target))
+    fn fkey(pkg: &str, c: Category) -> String {
+        format!("{pkg}\u{1f}{}", c.id())
     }
-    /// 同应用同类别在有效期内批过任意一次(给 follow_up 用)。
-    pub fn covers_category(&mut self, pkg: &str, c: Category, grant_s: u64) -> bool {
+    /// 这次动作是否已被先前的批准覆盖。关键类(付款/删除/钱包)本身每次都要问, 只有紧跟其后的
+    /// 后续确认能用掉一次额度; 非关键类按「观察到的目标文字」在 grant_s 内复用。
+    pub fn covers(&mut self, pkg: &str, c: Category, target: &str, grant_s: u64, follow_up: bool) -> bool {
         let now = Instant::now();
         self.items.retain(|(_, t)| now.duration_since(*t).as_secs() < grant_s.max(1));
-        let prefix = format!("{pkg}\u{1f}{}\u{1f}", c.id());
-        grant_s > 0 && self.items.iter().any(|(k, _)| k.starts_with(&prefix))
+        self.follow.retain(|(_, t)| now.duration_since(*t).as_secs() < FOLLOW_UP_S);
+        if follow_up {
+            if let Some(i) = self.follow.iter().position(|(k, _)| *k == Self::fkey(pkg, c)) {
+                self.follow.remove(i);
+                return true;
+            }
+            return false;
+        }
+        if c.critical() || grant_s == 0 {
+            return false;
+        }
+        self.items.iter().any(|(k, _)| *k == Self::key(pkg, c, target))
     }
     pub fn add(&mut self, pkg: &str, c: Category, target: &str) {
-        self.items.push((Self::key(pkg, c, target), Instant::now()));
+        if !c.critical() {
+            self.items.push((Self::key(pkg, c, target), Instant::now()));
+        }
+        self.follow.push((Self::fkey(pkg, c), Instant::now()));
     }
 }
 
@@ -540,8 +609,40 @@ mod tests {
 
     #[test]
     fn long_paragraph_mentioning_pay_is_not_a_button() {
-        let p = "本服务支持多种支付方式, 详情请阅读用户协议与隐私政策";
+        let p = "本服务支持多种支付方式, 详情请阅读用户协议与隐私政策, 如有疑问请联系客服或在帮助中心查看更多说明";
         assert!(classify(&facts("tap", None, vec![p], vec![p]), &Policy::default()).is_none());
+    }
+
+    #[test]
+    fn english_multi_word_and_long_buttons() {
+        let p = Policy::default();
+        for (w, c) in [("Delete account", Category::Delete), ("Remove friend", Category::Delete),
+                       ("Buy for $4.99", Category::Payment), ("Place order now", Category::Payment),
+                       ("Pay with card", Category::Payment), ("Sign out", Category::Account)] {
+            assert_eq!(classify(&facts("tap", Some(w), vec![], vec![]), &p).map(|h| h.category), Some(c), "{w}");
+        }
+        assert!(classify(&facts("tap", Some("Order history"), vec![], vec![]), &p).is_none());
+        // 真实的长按钮(超过旧的 16 字上限)
+        let h = classify(&facts("tap", None, vec!["立即支付 ¥128.00 (已优惠¥20.00)"], vec![]), &p).unwrap();
+        assert_eq!(h.category, Category::Payment);
+        assert_eq!(classify(&facts("tap", None, vec!["删除所选的 12 张照片和视频"], vec![]), &p).unwrap().category, Category::Delete);
+    }
+
+    #[test]
+    fn long_press_and_swipe_are_classified() {
+        let p = Policy::default();
+        assert_eq!(classify(&facts("long_press", Some("确认支付"), vec![], vec![]), &p).unwrap().category, Category::Payment);
+        assert_eq!(classify(&facts("swipe", None, vec!["滑动删除"], vec![]), &p).unwrap().category, Category::Delete);
+        assert_eq!(classify(&facts("swipe", None, vec!["右滑付款"], vec![]), &p).unwrap().category, Category::Payment);
+        assert!(classify(&facts("swipe", None, vec!["推荐"], vec![]), &p).is_none());
+    }
+
+    #[test]
+    fn ids_are_long_and_unique() {
+        let a = new_id("run-1", 3);
+        let b = new_id("run-1", 3);
+        assert_ne!(a, b);
+        assert_eq!(a.rsplit('-').next().unwrap().len(), 16);
     }
 
     #[test]
@@ -567,8 +668,12 @@ mod tests {
         assert!(classify(&facts("tap", Some("确定"), vec![], vec!["删除", "分享"]), &Policy::default()).is_none());
         let mut g = Grants::default();
         g.add("p", Category::Delete, "删除");
-        assert!(g.covers_category("p", Category::Delete, 45));
-        assert!(!g.covers_category("p", Category::Payment, 45));
+        // 关键类本身不复用: 再点一次「删除」还得问
+        assert!(!g.covers("p", Category::Delete, "删除", 45, false));
+        // 紧跟的确认框可用掉一次额度, 只一次
+        assert!(!g.covers("p", Category::Payment, "确定", 45, true));
+        assert!(g.covers("p", Category::Delete, "确定", 45, true));
+        assert!(!g.covers("p", Category::Delete, "确定", 45, true));
     }
 
     #[test]
@@ -626,10 +731,10 @@ mod tests {
     fn grants_scope_to_same_target() {
         let mut g = Grants::default();
         g.add("com.tencent.mm", Category::Send, "发送");
-        assert!(g.covers("com.tencent.mm", Category::Send, " 发送 ", 45));
-        assert!(!g.covers("com.tencent.mm", Category::Send, "发送(2)", 45));
-        assert!(!g.covers("com.tencent.mobileqq", Category::Send, "发送", 45));
-        assert!(!g.covers("com.tencent.mm", Category::Send, "发送", 0));
+        assert!(g.covers("com.tencent.mm", Category::Send, " 发送 ", 45, false));
+        assert!(!g.covers("com.tencent.mm", Category::Send, "发送(2)", 45, false));
+        assert!(!g.covers("com.tencent.mobileqq", Category::Send, "发送", 45, false));
+        assert!(!g.covers("com.tencent.mm", Category::Send, "发送", 0, false));
     }
 
     #[test]
@@ -647,10 +752,17 @@ mod tests {
         std::env::set_var("PF_APPROVAL_NO_TTY", "1");
         let r = Request { id: "ap-t-1".into(), category: Category::Send, reason: "r".into(), action_line: "tap".into(),
             goal: "g".into(), task: "t".into(), run_id: "x".into(), step: 1, serial: "s".into(), pkg: "p".into(), screenshot: None };
-        // 先放决定文件: 立即放行
+        // 请求之前就存在的同名决定必须作废(不沿用旧答复)
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("ap-t-1.decision.json"), r#"{"decision":"allow","by":"web"}"#).unwrap();
+        fs::write(dir.join("ap-t-1.decision.json"), r#"{"decision":"allow","by":"stale"}"#).unwrap();
+        // 请求发出后才写的决定才算数
+        let dp = dir.join("ap-t-1.decision.json");
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1200));
+            fs::write(dp, r#"{"decision":"allow","by":"web"}"#).unwrap();
+        });
         let d = request_and_wait(&dir, &r, 5);
+        writer.join().unwrap();
         assert_eq!(d, Decision { allow: true, by: "web".into(), note: String::new() });
         let req: Value = serde_json::from_str(&fs::read_to_string(dir.join("ap-t-1.json")).unwrap()).unwrap();
         assert_eq!(req["state"], "allowed");

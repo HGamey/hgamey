@@ -78,17 +78,24 @@ def decide(jobs, jid, approval_id, body, who):
     request = _load(os.path.join(root, approval_id + ".json"))
     if request is None:
         return 404, {"code": "approval_not_found", "error": "no such approval"}
+    # 只接受仍在等待、还没过期的请求: 进程已经超时走人的请求不能再报「已允许」
+    if request.get("state") != "pending" or time.time() > float(request.get("expires_at") or 0):
+        return 409, {"code": "not_pending", "error": "this approval is no longer waiting for a decision",
+                     "state": request.get("state")}
     target = os.path.join(root, approval_id + ".decision.json")
     note = str((data or {}).get("note", ""))[:500]
     record = {"decision": decision, "by": who, "note": note, "at": time.time()}
+    # 先写临时文件再 link 过去: 读方永远看不到写了一半的决定; 目标已存在时 link 失败 = 先写者胜
+    tmp = f"{target}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(record, f)
     try:
-        # O_EXCL: a late second answer (or phonefarm's own timeout) never overwrites the first.
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.link(tmp, target)
     except FileExistsError:
         return 409, {"code": "already_decided", "error": "this approval already has a decision",
                      "decision": _load(target)}
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(record, f)
+    finally:
+        os.unlink(tmp)
     return 200, {"id": approval_id, **record}
 
 

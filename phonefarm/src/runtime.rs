@@ -1385,7 +1385,7 @@ fn diff_of(before: &Cap, after: &Cap, channel: &str, realw: i32, realh: i32)
 fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::approval::Policy,
                  grants: &mut crate::approval::Grants, run_dir: &str, run_id: &str, n: u32, task: &str, goal: &str,
                  serial: Option<&str>, aline: &str, last_tap: Option<(i32, i32)>, sensitive_allowed: &mut bool,
-                 log: &mut Log) -> Option<String> {
+                 asked_human: &mut bool, log: &mut Log) -> Option<String> {
     use crate::approval::{self, Mode};
     let (targets, ids) = approval_targets(a, cap, realw, realh, last_tap);
     let screen: Vec<&str> = if cap.full.is_empty() { cap.els.iter().map(|e| e.t.as_str()).collect() }
@@ -1398,7 +1398,8 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
     let hit = approval::classify(&facts, policy)?;
     // 只要不是被拒, 下面每条放行路径都会走到 return None; 先置位, 被拒时再清掉
     *sensitive_allowed = true;
-    let target_key = a.what.clone().or_else(|| targets.first().cloned()).or_else(|| a.text.clone()).unwrap_or_default();
+    // 授权键用程序观察到的目标文字, 不用模型自报的 what(否则换个订单、同名按钮也能沿用)
+    let target_key = targets.first().cloned().or_else(|| a.what.clone()).or_else(|| a.text.clone()).unwrap_or_default();
     let mode = policy.mode_for(hit.category);
     let base = json!({"r":"approval","n":n,"category":hit.category.id(),"reason":hit.reason,"mode":format!("{mode:?}").to_lowercase()});
     match mode {
@@ -1410,10 +1411,10 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
         }
         Mode::Ask => {}
     }
-    if grants.covers(&cap.pkg, hit.category, &target_key, policy.grant_s)
-        || (hit.follow_up && grants.covers_category(&cap.pkg, hit.category, policy.grant_s)) {
+    if grants.covers(&cap.pkg, hit.category, &target_key, policy.grant_s, hit.follow_up) {
         let mut v = base; v["decision"] = json!("allow"); v["by"] = json!("grant"); log.put(v);
-        println!("      ✅ 审批[{}] 沿用 {}s 内的同目标允许", hit.category.zh(), policy.grant_s);
+        println!("      ✅ 审批[{}] 沿用刚才的允许({})", hit.category.zh(),
+                 if hit.follow_up { "后续确认, 一次性" } else { "同目标" });
         return None;
     }
     let dir = approval::approval_dir(run_dir);
@@ -1433,6 +1434,7 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
     log.put(v);
     if d.allow {
         grants.add(&cap.pkg, hit.category, &target_key);
+        *asked_human = true;
         println!("      ✅ 审批[{}] 已允许(by {})", hit.category.zh(), d.by);
         None
     } else {
@@ -1447,7 +1449,7 @@ fn approval_targets(a: &ActN, cap: &Cap, realw: i32, realh: i32, last_tap: Optio
     let mut texts = Vec::new();
     let mut ids = Vec::new();
     match a.a.as_str() {
-        "tap" => {
+        "tap" | "long_press" | "swipe" => {
             let (x, y) = (a.x.unwrap_or(-1) as i32, a.y.unwrap_or(-1) as i32);
             let inside = |b: [i32; 4]| { let bi = b_img_space(b, cap, realw, realh); bi[0] <= x && x <= bi[2] && bi[1] <= y && y <= bi[3] };
             let area = |b: [i32; 4]| ((b[2] - b[0]).max(0) as i64) * ((b[3] - b[1]).max(0) as i64);
@@ -1477,7 +1479,14 @@ fn approval_targets(a: &ActN, cap: &Cap, realw: i32, realh: i32, last_tap: Optio
                 }).collect(),
                 None => Vec::new(),
             };
-            let chosen = if chosen.is_empty() && edits.len() == 1 { edits } else { chosen };
+            let pw_like = |f: &&crate::device::FullNode| {
+                let blob = format!("{} {} {}", f.class, f.id.as_deref().unwrap_or(""), f.t).to_lowercase();
+                ["password", "passwd", "pwd", "secure", "pin", "密码", "验证码"].iter().any(|k| blob.contains(k))
+            };
+            // 认不出落在哪个框: 只有一个框就是它; 多个框里有密码类的, 宁可按密码框问
+            let chosen = if !chosen.is_empty() { chosen }
+                         else if edits.len() == 1 { edits }
+                         else { edits.iter().copied().filter(pw_like).collect() };
             for f in chosen {
                 if !f.t.is_empty() { texts.push(f.t.clone()); }
                 if let Some(i) = &f.id { ids.push(i.clone()); }
@@ -1911,6 +1920,8 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
     let mut suppress_popup_once = false;
     // 一局最多请人接手几次(防模型反复打扰人)
     let mut handoffs_used = 0u32;
+    // 最近一次点击的落点(图片像素): 判断 type 落在哪个框; clear/type/wait 不清, 换页类动作才清
+    let mut last_tap_pt: Option<(i32, i32)> = None;
     // 专用场景一律插件化: 核心只调用登记入口, 不认识任何具体应用
     crate::plugins::register_builtin(&mut universal_engine);
     let (realw, realh) = phone.size();
@@ -2630,6 +2641,25 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 };
                 let aline_h = act_line(n, &hact);
                 let ms_h = ms_left.take();
+                // 熟路每一跳同样过审批门(熟路上可能就是「去结算」「删除」)
+                let mut asked_h = false;
+                let mut sens_h = false;
+                if let Some(reason) = approval_gate(&hact, &cap, realw, realh, &approval_policy, &mut approval_grants,
+                                                    &run_dir, &run_id, n, task, goal, serial.as_deref(), &aline_h,
+                                                    None, &mut sens_h, &mut asked_h, &mut log) {
+                    let d = format!("树✗(审批未通过: {reason})");
+                    log.put(json!({"r":"diff","n":n,"d":d}));
+                    println!("[{n}] ·熟路 | {aline_h} ⛔ {d}");
+                    run_push(&mut runs, aline_h.clone(), d.clone());
+                    stream.push(format!("{aline_h} → {d}"));
+                    walked_all = false;
+                    break;
+                }
+                if asked_h {
+                    // 等过人: 熟路就此打住, 交还模型看新画面再走(不在旧画面上盲点)
+                    walked_all = false;
+                    break;
+                }
                 exec(&phone, &hact, &cap, realw, realh, &apps);
                 if osc_note(&mut act_sigs, act_sig(&hact), &mut osc_fire_at) {
                     alert = OSCILL_WARN.to_string();
@@ -2725,8 +2755,15 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 format!("你请人做的「{}」人已经处理完了{}。先看当前画面确认结果, 再继续; 不要重复请人做同一件事。",
                         tcut(&ask, 60), if d.note.is_empty() { String::new() } else { format!("(留言: {})", tcut(&d.note, 80)) })
             } else {
-                format!("你请人做的「{}」没人接手({})。不要再请一次; 能绕开就绕开, 绕不开就 done 并写明卡在这一步需要人。", tcut(&ask, 60), d.by)
+                format!("你请人做的「{}」没人接手({}{})。不要再请一次; 能绕开就绕开, 绕不开就 done 并写明卡在这一步需要人。",
+                        tcut(&ask, 60), d.by, if d.note.is_empty() { String::new() } else { format!(", 留言: {}", tcut(&d.note, 80)) })
             };
+            if d.by == "timeout" {
+                // 人可能还拿着手机在操作: 超时就收工, 不在人手底下继续点
+                println!("      🙋 handoff 超时, 本局结束(防止在人操作时动手机)");
+                stop_reason = Some("handoff_timeout");
+                break;
+            }
             if !queue.is_empty() { queue.clear(); }
             capseq += 1;
             match capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, settle_ms, realw, realh, app.as_deref(), &mut revived) {
@@ -2773,9 +2810,10 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
         }
 
         // 🛑 审批: 付款/删除/钱包必问, 发送/密码按 [approval] 配置。被拒/超时 = 本动作作废, 交还模型。
+        let mut asked_human = false;
         if let Some(reason) = approval_gate(&act, &cap, realw, realh, &approval_policy, &mut approval_grants,
                                             &run_dir, &run_id, n, task, goal, serial.as_deref(), &aline,
-                                            taps_hist.back().map(|t| (t.0, t.1)), &mut suppress_popup_once, &mut log) {
+                                            last_tap_pt, &mut suppress_popup_once, &mut asked_human, &mut log) {
             let d = format!("rejected({reason})");
             log_act(&mut log, n, &act, &plan_by, ms_field);
             log.put(json!({"r":"diff","n":n,"d":d}));
@@ -2790,6 +2828,32 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             continue;
         }
 
+        // 等人批准可能过了几分钟: 重新读屏, 确认还是同一应用、落点上还是那个目标, 否则作废重来
+        if asked_human {
+            let (before, _) = approval_targets(&act, &cap, realw, realh, last_tap_pt);
+            capseq += 1;
+            let Some(nc) = capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, 800, realw, realh, app.as_deref(), &mut revived) else {
+                stop_reason = Some("capture_fail");
+                break;
+            };
+            let (after, _) = approval_targets(&act, &nc, realw, realh, last_tap_pt);
+            let same_pkg = nc.pkg == cap.pkg || nc.pkg.is_empty() || cap.pkg.is_empty();
+            let same_target = before.is_empty() || before.iter().any(|t| after.contains(t));
+            if !(same_pkg && same_target) {
+                let d = format!("rejected(批准后画面变了: 前台 {}→{}, 目标 {:?}→{:?}; 作废, 重新看画面)",
+                                cap.pkg, nc.pkg, before.first(), after.first());
+                log_act(&mut log, n, &act, &plan_by, ms_field);
+                log.put(json!({"r":"diff","n":n,"d":d}));
+                println!("[{n}] {ms_disp} {plan_by} | {aline} ⛔ {d}");
+                run_push(&mut runs, aline.clone(), d.clone());
+                stream.push(format!("{aline} → {d}"));
+                queue.clear();
+                cap = nc;
+                continue;
+            }
+            cap = nc;
+        }
+
         // ⑤ 执行(定格并入第⑥步: 采集时等画面安静)
         // WebView返回死锁破解: 上一记back在网页页无效(前端JS拦截单次back),本次back升级为快速连按两次
         if act.a == "back" && back_eaten {
@@ -2799,6 +2863,11 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
         exec(&phone, &act, &cap, realw, realh, &apps);
+        match act.a.as_str() {
+            "tap" => last_tap_pt = Some((act.x.unwrap_or(-1) as i32, act.y.unwrap_or(-1) as i32)),
+            "back" | "home" | "launch" | "goto" | "swipe" | "scroll_up" | "scroll_down" => last_tap_pt = None,
+            _ => {}
+        }
         probe_streak = 0; // 物理动作落地,探针连击清零
         if act.a == "tap" {
             // #20 立案: 稳定页上的文字入口外出,交推进度守卫观察(icon无稳定名不立案)
