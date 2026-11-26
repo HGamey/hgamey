@@ -183,6 +183,8 @@ pub trait Backend: Send + Sync {
     /// 取走并清空自上次取以来所有写命令的合并回执(见 [`Receipt`])。
     /// 没有实现回执的后端一律报 `Sent`(与引入回执前的假设一致)。
     fn take_receipt(&self) -> Receipt { Receipt::Sent }
+    /// 从后端外面补记一条回执(如启动后的心跳检查)。没实现回执的后端忽略。
+    fn note_receipt(&self, _r: Receipt) {}
 
     // ── 应用 ──
     fn force_stop(&self, pkg: &str);
@@ -351,6 +353,7 @@ macro_rules! forward_required {
 
 impl Backend for Adb {
     fn take_receipt(&self) -> Receipt { self.receipt.take() }
+    fn note_receipt(&self, r: Receipt) { self.receipt.note(r) }
     fn transport(&self) -> &'static str { "adb" }
     fn platform(&self) -> &'static str { "android" }
     fn layers(&self) -> Vec<LayerSupport> { ANDROID_LAYERS.to_vec() }
@@ -371,6 +374,7 @@ impl Backend for Adb {
 
 impl Backend for Hdc {
     fn take_receipt(&self) -> Receipt { self.receipt.take() }
+    fn note_receipt(&self, r: Receipt) { self.receipt.note(r) }
     fn transport(&self) -> &'static str { "hdc" }
     fn platform(&self) -> &'static str { "openharmony" }
     fn layers(&self) -> Vec<LayerSupport> { OPENHARMONY_LAYERS.to_vec() }

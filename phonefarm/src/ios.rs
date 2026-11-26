@@ -211,9 +211,15 @@ impl Drop for Ios {
 fn receipt_of_curl(code: Option<i32>, body: &[u8]) -> Receipt {
     match code {
         Some(0) => {
-            let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+            let Ok(v) = serde_json::from_slice::<Value>(body) else {
+                return Receipt::Unknown("WDA 回了非 JSON".into());
+            };
             match v.pointer("/value/error").and_then(|e| e.as_str()) {
-                Some(e) => Receipt::NotSent(format!("WDA 拒绝: {e}")),
+                // 动手之前就会报的错: 会话失效、参数不对、命令不认识 —— 确定没执行
+                Some(e) if ["invalid session id", "invalid argument", "unknown command", "unknown method"].contains(&e) =>
+                    Receipt::NotSent(format!("WDA 拒绝: {e}")),
+                // 其余错误可能在手势做到一半或做完之后才报(等界面稳定超时、意外弹窗)
+                Some(e) => Receipt::Unknown(format!("WDA 报错: {e}")),
                 None => Receipt::Sent,
             }
         }
@@ -812,6 +818,9 @@ impl Backend for Ios {
     fn take_receipt(&self) -> Receipt {
         self.receipt.take()
     }
+    fn note_receipt(&self, r: Receipt) {
+        self.receipt.note(r)
+    }
     // ── 身份 ──
     fn transport(&self) -> &'static str {
         "wda"
@@ -945,24 +954,15 @@ impl Backend for Ios {
 
     // ── 动 ──
     fn tap(&self, x: i32, y: i32) {
-        if self.frozen() {
-            return;
-        }
         self.act("/actions", &tap_payload(x, y));
     }
 
     fn long_press(&self, x: i32, y: i32, ms: u64) {
-        if self.frozen() {
-            return;
-        }
         // 原地「滑动」: 按下后指针在同一点停留 ms 毫秒再抬起
         self.act("/actions", &swipe_payload(x, y, x, y, ms.clamp(500, 5000)));
     }
 
     fn swipe(&self, x: i32, y: i32, x2: i32, y2: i32) {
-        if self.frozen() {
-            return;
-        }
         // 350ms 与安卓侧 `input swipe` 的默认节拍对齐
         self.act("/actions", &swipe_payload(x, y, x2, y2, 350));
     }
@@ -978,9 +978,6 @@ impl Backend for Ios {
     }
 
     fn type_text(&self, text: &str) {
-        if self.frozen() {
-            return;
-        }
         self.act("/wda/keys", &keys_payload(text));
     }
 
@@ -991,9 +988,6 @@ impl Backend for Ios {
     /// 局限写在明面上: **不知道当前框有多长**, 所以按固定次数退格(和安卓侧
     /// `clear_field` 的连发 DEL 同一思路); 预填很长的框可能清不干净。
     fn clear_field(&self) {
-        if self.frozen() {
-            return;
-        }
         self.act("/wda/keys", &keys_payload(&"\u{8}".repeat(CLEAR_BACKSPACES)));
     }
 
@@ -1009,9 +1003,6 @@ impl Backend for Ios {
     }
 
     fn home(&self) {
-        if self.frozen() {
-            return;
-        }
         self.act("/wda/homescreen", &json!({}));
     }
 

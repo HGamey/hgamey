@@ -1270,7 +1270,7 @@ fn exec(phone: &Device, a: &ActN, cap: &Cap, realw: i32, realh: i32, apps: &[(St
             let pkg = a.text.as_deref().unwrap_or("");
             let comp = apps.iter().find(|(p, _)| p == pkg)
                 .map(|(_, c)| c.as_str()).unwrap_or("");
-            let _ = phone.launch(pkg, comp); // 局中启动的冷启动毫秒不单独记账(orient 才是规范冷启动)
+            phone.launch_with_receipt(pkg, comp); // 局中启动的冷启动毫秒不单独记账(orient 才是规范冷启动)
         }
         "type" => phone.type_text(a.text.as_deref().unwrap_or("")),
         "clear" => phone.clear_field(),
@@ -2749,7 +2749,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 let receipt_h = exec(&phone, &hact, &cap, realw, realh, &apps);
                 if receipt_h != Receipt::Sent {
                     // 熟路不重放: 没发出或不确定都打住, 交还模型看屏幕
-                    if matches!(receipt_h, Receipt::Unknown(_)) && sens_h { approval_grants.clear(); }
+                    if sens_h { approval_grants.clear(); }
                     let d = format!("树✗(回执{}: {})", receipt_h.id(), receipt_h.why());
                     log_act(&mut log, n, &hact, "(树)", ms_h);
                     log.put(json!({"r":"receipt","n":n,"state":receipt_h.id(),"why":receipt_h.why()}));
@@ -2760,6 +2760,12 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                     note = receipt_note(&aline_h, &receipt_h, sens_h);
                     last_tap_pt = None;
                     walked_all = false;
+                    // 以当前屏幕为准: 不重读的话模型和审批截图看到的还是动作前那一屏
+                    capseq += 1;
+                    match capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, 1200, realw, realh, app.as_deref(), &mut revived) {
+                        Some(nc) => cap = nc,
+                        None => stop_reason = Some("capture_fail"),
+                    }
                     break;
                 }
                 if osc_note(&mut act_sigs, act_sig(&hact), &mut osc_fire_at) {
@@ -2957,18 +2963,22 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
         // ⑤ 执行(定格并入第⑥步: 采集时等画面安静)
         // WebView返回死锁破解: 上一记back在网页页无效(前端JS拦截单次back),本次back升级为快速连按两次
+        let mut pre_receipt = Receipt::Sent;
         if act.a == "back" && back_eaten {
             println!("      🕸 WebView页back曾被吞,升级为快速连按两次");
             log.put(json!({"r":"hook","kind":"webview_back2","n":n}));
+            let _ = phone.take_receipt();
             phone.back();
+            pre_receipt = phone.take_receipt(); // exec 开头会清回执, 先把第一下的收起来
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
-        let receipt = exec(&phone, &act, &cap, realw, realh, &apps);
+        let receipt = pre_receipt.merge(exec(&phone, &act, &cap, realw, realh, &apps));
         if receipt != Receipt::Sent {
             log.put(json!({"r":"receipt","n":n,"state":receipt.id(),"why":receipt.why()}));
             if !queue.is_empty() { println!("      ⏸ 回执{},剩余{}步计划作废", receipt.id(), queue.len()); queue.clear(); }
-            // 敏感动作结果不明: 收回所有沿用额度, 下一次同类动作必须重新问人(防止重复付款/重复发送)
-            if matches!(receipt, Receipt::Unknown(_)) && suppress_popup_once { approval_grants.clear(); }
+            // 敏感动作没落实(没发出或结果不明): 收回所有沿用额度, 下一次同类动作必须重新问人
+            // (防止重复付款/重复发送; 没发出时刚批下的后续确认额度也不能留着给别的动作用)
+            if suppress_popup_once { approval_grants.clear(); }
         }
         if let Receipt::NotSent(why) = &receipt {
             // 没发到手机: 屏幕不会因它变化, 不能当「空击」去记 ban/失败签名
@@ -2982,7 +2992,15 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             suppress_popup_once = false; // 动作没落地, 不会有它引出的确认框
             last_tap_pt = None;
             stall += 1;
+            if stall == 1 { stall_anchor = Some(cap.img.clone()); }
             if stall >= cfg.stall_limit { stop_reason = Some("watchdog"); break; }
+            // 重新读屏(读不到会走复活流程), 下一轮按新画面决策
+            capseq += 1;
+            let Some(nc) = capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, 800, realw, realh, app.as_deref(), &mut revived) else {
+                stop_reason = Some("capture_fail");
+                break;
+            };
+            cap = nc;
             continue;
         }
         let receipt_unknown = matches!(receipt, Receipt::Unknown(_));

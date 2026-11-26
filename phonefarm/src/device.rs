@@ -49,30 +49,33 @@ fn send_cmd(mut cmd: Command, ms: u64, stem: &str, classify: fn(bool, &str) -> R
     classify(status.success(), text.trim())
 }
 
-/// 传输层明说「没连上设备」的几种措辞: 这类失败命令确定没到设备。
+/// 传输层明说「没连上设备」的几种措辞: 这类失败命令确定没到设备。只在命令已判失败时看。
 fn transport_refused(lower: &str) -> bool {
-    ["device not found", "no devices", "device offline", "device unauthorized", "unauthorized",
-     "cannot connect", "failed to connect", "connection refused", "not connected", "connect-key", "connect key"]
-        .iter().any(|k| lower.contains(k))
+    // 新版 adb 带 -s 时报 `adb: device 'SERIAL' not found`
+    (lower.contains("device '") && lower.contains("not found"))
+        || ["device not found", "no devices", "device offline", "device unauthorized",
+            "cannot connect", "failed to connect", "connection refused", "connect-key", "connect key"]
+            .iter().any(|k| lower.contains(k))
 }
 
-/// adb shell input …: 退出码 0 = 已送达; 传输层拒绝 = 没发出; 其他非零(input 本身报错)按未知。
+/// adb shell input …: 退出码 0 = 已送达; 失败且是传输层拒绝 = 没发出; 其他失败(input 本身报错)按未知。
 fn classify_adb(ok: bool, text: &str) -> Receipt {
-    let lower = text.to_lowercase();
-    if transport_refused(&lower) {
-        return Receipt::NotSent(text.chars().take(160).collect());
+    if ok {
+        return Receipt::Sent;
     }
-    if ok { Receipt::Sent } else { Receipt::Unknown(format!("adb 非零退出: {}", text.chars().take(160).collect::<String>())) }
+    let short: String = text.chars().take(160).collect();
+    if transport_refused(&text.to_lowercase()) { Receipt::NotSent(short) } else { Receipt::Unknown(format!("adb 非零退出: {short}")) }
 }
 
 /// hdc 失败时退出码常仍为 0, 只能看输出: 「[Fail]」+ 连接类措辞 = 没发出, 其余 [Fail]/error 按未知。
 fn classify_hdc(ok: bool, text: &str) -> Receipt {
     let lower = text.to_lowercase();
     let short = || text.chars().take(160).collect::<String>();
-    if transport_refused(&lower) {
+    let failed = !ok || lower.contains("[fail]") || lower.contains("error:");
+    if failed && transport_refused(&lower) {
         return Receipt::NotSent(short());
     }
-    if !ok || lower.contains("[fail]") || lower.contains("error:") {
+    if failed {
         return Receipt::Unknown(format!("hdc 报错: {}", short()));
     }
     Receipt::Sent
@@ -613,7 +616,10 @@ impl Adb {
     /// 输入文字。`input text` 只认 ASCII 且怕 shell 元字符; 其余文字走剪贴板粘贴
     /// (tools/pfclip: 先读出用户原剪贴板, 写入→粘贴→还原; 读不出来就不还原, 照实打日志)。
     pub fn type_text(&self, text: &str) {
-        if self.frozen() { return; }
+        if self.frozen() {
+            self.receipt.note(Receipt::NotSent("设备已冻结(freeze-on-done)".into()));
+            return;
+        }
         if input_text_safe(text) {
             self.input(&["text", &text.replace(' ', "%s")]);
             return;
@@ -648,6 +654,14 @@ impl Adb {
         if r != "ok" { return Err(format!("写剪贴板: {r}")); }
         self.input(&["keyevent", "279"]); // KEYCODE_PASTE
         std::thread::sleep(std::time::Duration::from_millis(400));
+        // 粘贴键结果不明时不还原: 迟到的粘贴会把用户原来的剪贴板内容贴进去
+        let r = self.receipt.take();
+        let unknown = matches!(r, Receipt::Unknown(_));
+        self.receipt.note(r);
+        if unknown {
+            eprintln!("      (粘贴结果不明, 剪贴板暂不还原)");
+            return Ok(());
+        }
         match old.strip_prefix("text:") {
             Some(prev) => { let _ = self.pfclip(&["set", prev]); }
             None if old == "none" => {}
@@ -1348,6 +1362,13 @@ impl Device {
     pub fn force_stop(&self, pkg: &str) { self.b.force_stop(pkg) }
     /// 返回冷启动毫秒(Android am start -W 的 WaitTime;OH/monkey 路线采不到为 None)
     pub fn launch(&self, pkg: &str, comp: &str) -> Option<i64> { self.b.launch(pkg, comp) }
+    /// 启动应用并给回执。各后端的启动命令不报送达状态, 用心跳补: 启动后设备没心跳 = 没发出。
+    pub fn launch_with_receipt(&self, pkg: &str, comp: &str) {
+        let _ = self.b.launch(pkg, comp);
+        if !self.b.health_check(3000) {
+            self.b.note_receipt(Receipt::NotSent("启动后设备没有心跳".into()));
+        }
+    }
     pub fn telemetry_setup(&self, pkg: &str) -> bool { self.b.telemetry_setup(pkg) }
     pub fn telemetry(&self, heavy: bool, pkg: &str) -> crate::telemetry::Telemetry { self.b.telemetry(heavy, pkg) }
     pub fn shell(&self, cmd: &str, ms: u64) -> String { self.b.shell(cmd, ms) }
@@ -1770,6 +1791,8 @@ mod tests {
         assert_eq!(r.id(), "unknown", "超时 = 可能已执行");
         let r = send_cmd(Command::new(dir.join("missing")), 5000, &stem, classify_adb);
         assert_eq!(r.id(), "not_sent", "起不来 = 没发出");
+        assert_eq!(classify_adb(false, "adb: device '91253241019A' not found").id(), "not_sent");
+        assert_eq!(classify_adb(true, "unauthorized words in output"), Receipt::Sent, "成功退出不看输出");
         assert_eq!(classify_hdc(true, "[Fail]ExecuteCommand need connect-key").id(), "not_sent");
         assert_eq!(classify_hdc(true, "[Fail] inject failed").id(), "unknown");
         assert_eq!(classify_hdc(true, "No Error"), Receipt::Sent);
