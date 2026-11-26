@@ -307,8 +307,15 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
             tmpl = tmpl.replacen(v.as_str(), &format!("{{{{{k}}}}}"), 1);
         }
     }
+    // 终态词里出现的输入文字同样换成占位符, 否则换参数回放时终态永远对不上
     let success: Vec<String> = recs.iter().rev().find(|r| r["r"] == "hook" && r["kind"] == "asserts")
-        .and_then(|r| r["words"].as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .and_then(|r| r["words"].as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|w| {
+            let mut w = w.to_string();
+            for (k, v) in &params {
+                if !v.is_empty() && w.contains(v.as_str()) { w = w.replace(v.as_str(), &format!("{{{{{k}}}}}")); }
+            }
+            w
+        })).collect())
         .unwrap_or_default();
     Ok(Skill {
         schema: schema_id(),
@@ -539,7 +546,8 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             let allow = match ctx.policy.mode_for(hit.category) {
                 approval::Mode::Auto => true,
                 approval::Mode::Deny => false,
-                approval::Mode::Ask if grants.covers(&pkg, hit.category, &key, ctx.policy.grant_s) => true,
+                approval::Mode::Ask if grants.covers(&pkg, hit.category, &key, ctx.policy.grant_s)
+                    || (hit.follow_up && grants.covers_category(&pkg, hit.category, ctx.policy.grant_s)) => true,
                 approval::Mode::Ask => {
                     let dir = approval::approval_dir(&ctx.out_dir.to_string_lossy());
                     let id = approval::new_id(&format!("skill-{}", skill.name), i as u32 + 1);
@@ -682,6 +690,7 @@ mod tests {
         let lines = [
             json!({"v":1}),
             json!({"r":"goal","t":"在设置里搜索蓝牙"}),
+            json!({"r":"hook","kind":"asserts","words":["蓝牙"]}),
             json!({"r":"screen","n":1,"pkg":"com.android.settings","img":"step1.jpg","els":[{"t":"设置","b":[0,0,500,100]},{"t":"搜索","b":[0,100,1000,200]},{"t":"WLAN","b":[0,300,500,400]},{"t":"12:30","b":[900,0,1000,50]}]}),
             json!({"r":"act","n":1,"a":"tap","x":500,"y":150,"what":"搜索","by":"m"}),
             json!({"r":"diff","n":1,"d":"新页"}),
@@ -700,6 +709,7 @@ mod tests {
         assert_eq!(s.app, "com.android.settings");
         assert_eq!(s.goal, "在设置里搜索{{text_1}}");
         assert_eq!(s.params["text_1"], "蓝牙");
+        assert_eq!(s.success, vec!["{{text_1}}".to_string()], "终态词参数化");
         assert_eq!(s.steps.len(), 2, "画面没动的点击不收: {:?}", s.steps);
         assert_eq!(s.steps[0].what.as_deref(), Some("搜索"));
         assert_eq!(s.steps[0].at, Some([499, 149]));

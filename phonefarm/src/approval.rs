@@ -183,6 +183,8 @@ pub struct Facts<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hit {
     pub category: Category,
+    /// 确认框上的「确定」这类后续确认: 同应用同类别在有效期内批过一次就算数, 不必再问。
+    pub follow_up: bool,
     /// 命中的词或规则, 写进请求让人知道为什么被拦。
     pub reason: String,
 }
@@ -259,6 +261,15 @@ fn screen_has(texts: &[&str], words: &[&str]) -> Option<String> {
     None
 }
 
+/// 屏上有一句带删除词的问句(「要删除此记事吗?」「Delete this photo?」), 视为删除确认框。
+fn delete_dialog(texts: &[&str]) -> Option<String> {
+    texts.iter().find(|t| {
+        let n = t.trim();
+        let ask = n.ends_with('?') || n.ends_with('？') || n.ends_with('吗') || n.contains("确定要") || n.contains("是否");
+        ask && n.chars().count() <= 40 && DELETE_WORDS.iter().any(|w| n.to_lowercase().contains(&w.to_lowercase()))
+    }).map(|t| t.trim().to_string())
+}
+
 /// 判定一个即将执行的动作。返回 None 表示放行。
 /// 只拦会改变外部状态的动作: tap / type / launch(钱包) / swipe 不拦(滑动不提交东西)。
 pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
@@ -267,44 +278,49 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
         "launch" => {
             let t = f.text.unwrap_or("");
             if WALLET_PKGS.contains(&t) || policy.wallet_pkgs.iter().any(|p| p == t) {
-                return Some(Hit { category: Category::Wallet, reason: format!("打开钱包应用 {t}") });
+                return Some(Hit { follow_up: false, category: Category::Wallet, reason: format!("打开钱包应用 {t}") });
             }
             None
         }
         "tap" => {
             if wallet {
-                return Some(Hit { category: Category::Wallet, reason: format!("钱包应用 {} 内的点击", f.pkg) });
+                return Some(Hit { follow_up: false, category: Category::Wallet, reason: format!("钱包应用 {} 内的点击", f.pkg) });
             }
             let labels: Vec<&str> = f.what.into_iter().chain(f.target_texts.iter().copied()).collect();
             let first = |words: &[&'static str]| labels.iter().find_map(|l| label_hits(l, words).map(|w| (l.to_string(), w)));
             if let Some((l, w)) = first(DELETE_WORDS) {
-                return Some(Hit { category: Category::Delete, reason: format!("目标「{l}」含「{w}」") });
+                return Some(Hit { follow_up: false, category: Category::Delete, reason: format!("目标「{l}」含「{w}」") });
             }
             if let Some((l, w)) = first(PAY_WORDS) {
-                return Some(Hit { category: Category::Payment, reason: format!("目标「{l}」含「{w}」") });
+                return Some(Hit { follow_up: false, category: Category::Payment, reason: format!("目标「{l}」含「{w}」") });
             }
             if let Some(cw) = screen_has(&f.screen_texts, CASHIER_WORDS) {
                 if let Some((l, _)) = first(CONFIRM_WORDS) {
-                    return Some(Hit { category: Category::Payment, reason: format!("收银台页面(「{cw}」)上点「{l}」") });
+                    return Some(Hit { follow_up: false, category: Category::Payment, reason: format!("收银台页面(「{cw}」)上点「{l}」") });
+                }
+            }
+            if let Some(q) = delete_dialog(&f.screen_texts) {
+                if let Some((l, _)) = first(CONFIRM_WORDS) {
+                    return Some(Hit { follow_up: true, category: Category::Delete, reason: format!("删除确认框(「{q}」)上点「{l}」") });
                 }
             }
             if let Some((l, w)) = first(ACCOUNT_WORDS) {
-                return Some(Hit { category: Category::Account, reason: format!("目标「{l}」含「{w}」") });
+                return Some(Hit { follow_up: false, category: Category::Account, reason: format!("目标「{l}」含「{w}」") });
             }
             if let Some((l, w)) = first(CALL_WORDS) {
-                return Some(Hit { category: Category::Send, reason: format!("目标「{l}」含「{w}」(通话)") });
+                return Some(Hit { follow_up: false, category: Category::Send, reason: format!("目标「{l}」含「{w}」(通话)") });
             }
             let messaging = MESSAGING_PKGS.contains(&f.pkg) || policy.messaging_pkgs.iter().any(|p| p == f.pkg);
             if messaging {
                 if let Some((l, w)) = first(SEND_WORDS) {
-                    return Some(Hit { category: Category::Send, reason: format!("{} 里的「{l}」含「{w}」", f.pkg) });
+                    return Some(Hit { follow_up: false, category: Category::Send, reason: format!("{} 里的「{l}」含「{w}」", f.pkg) });
                 }
             }
             None
         }
         "type" => {
             if wallet {
-                return Some(Hit { category: Category::Wallet, reason: format!("钱包应用 {} 内输入", f.pkg) });
+                return Some(Hit { follow_up: false, category: Category::Wallet, reason: format!("钱包应用 {} 内输入", f.pkg) });
             }
             let id_hit = f.target_ids.iter().any(|i| {
                 let i = i.to_lowercase();
@@ -316,9 +332,9 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
                 let why = label_hit.map(|w| format!("输入框标注「{w}」")).unwrap_or_else(|| "输入框是密码类控件".into());
                 // 收银台上的密码 = 支付密码, 升级为付款
                 if let Some(cw) = screen_has(&f.screen_texts, CASHIER_WORDS) {
-                    return Some(Hit { category: Category::Payment, reason: format!("收银台(「{cw}」)上输入密码") });
+                    return Some(Hit { follow_up: false, category: Category::Payment, reason: format!("收银台(「{cw}」)上输入密码") });
                 }
-                return Some(Hit { category: Category::Password, reason: why });
+                return Some(Hit { follow_up: false, category: Category::Password, reason: why });
             }
             None
         }
@@ -486,6 +502,13 @@ impl Grants {
         self.items.retain(|(_, t)| now.duration_since(*t).as_secs() < grant_s.max(1));
         grant_s > 0 && self.items.iter().any(|(k, _)| *k == Self::key(pkg, c, target))
     }
+    /// 同应用同类别在有效期内批过任意一次(给 follow_up 用)。
+    pub fn covers_category(&mut self, pkg: &str, c: Category, grant_s: u64) -> bool {
+        let now = Instant::now();
+        self.items.retain(|(_, t)| now.duration_since(*t).as_secs() < grant_s.max(1));
+        let prefix = format!("{pkg}\u{1f}{}\u{1f}", c.id());
+        grant_s > 0 && self.items.iter().any(|(k, _)| k.starts_with(&prefix))
+    }
     pub fn add(&mut self, pkg: &str, c: Category, target: &str) {
         self.items.push((Self::key(pkg, c, target), Instant::now()));
     }
@@ -525,6 +548,18 @@ mod tests {
         let h = classify(&facts("tap", Some("确认"), vec![], vec!["收银台", "¥12.00"]), &Policy::default()).unwrap();
         assert_eq!(h.category, Category::Payment);
         assert!(classify(&facts("tap", Some("确认"), vec![], vec!["设置"]), &Policy::default()).is_none());
+    }
+
+    #[test]
+    fn confirm_in_delete_dialog() {
+        let h = classify(&facts("tap", Some("确定"), vec![], vec!["要删除此记事吗?", "取消", "确定"]), &Policy::default()).unwrap();
+        assert_eq!((h.category, h.follow_up), (Category::Delete, true));
+        // 编辑页上有个「删除」按钮, 但没有问句: 点「确定」不算
+        assert!(classify(&facts("tap", Some("确定"), vec![], vec!["删除", "分享"]), &Policy::default()).is_none());
+        let mut g = Grants::default();
+        g.add("p", Category::Delete, "删除");
+        assert!(g.covers_category("p", Category::Delete, 45));
+        assert!(!g.covers_category("p", Category::Payment, 45));
     }
 
     #[test]

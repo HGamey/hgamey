@@ -1375,7 +1375,8 @@ fn diff_of(before: &Cap, after: &Cap, channel: &str, realw: i32, realh: i32)
 #[allow(clippy::too_many_arguments)]
 fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::approval::Policy,
                  grants: &mut crate::approval::Grants, run_dir: &str, run_id: &str, n: u32, task: &str, goal: &str,
-                 serial: Option<&str>, aline: &str, last_tap: Option<(i32, i32)>, log: &mut Log) -> Option<String> {
+                 serial: Option<&str>, aline: &str, last_tap: Option<(i32, i32)>, sensitive_allowed: &mut bool,
+                 log: &mut Log) -> Option<String> {
     use crate::approval::{self, Mode};
     let (targets, ids) = approval_targets(a, cap, realw, realh, last_tap);
     let screen: Vec<&str> = if cap.full.is_empty() { cap.els.iter().map(|e| e.t.as_str()).collect() }
@@ -1386,18 +1387,22 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
         pkg: &cap.pkg, target_ids: ids.iter().map(String::as_str).collect(),
     };
     let hit = approval::classify(&facts, policy)?;
+    // 只要不是被拒, 下面每条放行路径都会走到 return None; 先置位, 被拒时再清掉
+    *sensitive_allowed = true;
     let target_key = a.what.clone().or_else(|| targets.first().cloned()).or_else(|| a.text.clone()).unwrap_or_default();
     let mode = policy.mode_for(hit.category);
     let base = json!({"r":"approval","n":n,"category":hit.category.id(),"reason":hit.reason,"mode":format!("{mode:?}").to_lowercase()});
     match mode {
         Mode::Auto => { let mut v = base; v["decision"] = json!("auto"); log.put(v); return None; }
         Mode::Deny => {
+            *sensitive_allowed = false;
             let mut v = base; v["decision"] = json!("deny"); v["by"] = json!("policy"); log.put(v);
             return Some(format!("{}被策略禁止: {}", hit.category.zh(), hit.reason));
         }
         Mode::Ask => {}
     }
-    if grants.covers(&cap.pkg, hit.category, &target_key, policy.grant_s) {
+    if grants.covers(&cap.pkg, hit.category, &target_key, policy.grant_s)
+        || (hit.follow_up && grants.covers_category(&cap.pkg, hit.category, policy.grant_s)) {
         let mut v = base; v["decision"] = json!("allow"); v["by"] = json!("grant"); log.put(v);
         println!("      ✅ 审批[{}] 沿用 {}s 内的同目标允许", hit.category.zh(), policy.grant_s);
         return None;
@@ -1422,6 +1427,7 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
         println!("      ✅ 审批[{}] 已允许(by {})", hit.category.zh(), d.by);
         None
     } else {
+        *sensitive_allowed = false;
         println!("      ⛔ 审批[{}] 未允许(by {})", hit.category.zh(), d.by);
         Some(format!("{}未获批准(by {}): {}", hit.category.zh(), d.by, hit.reason))
     }
@@ -1892,6 +1898,8 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
     let phone = Device::new(serial.clone(), tmp.clone());
     let mut brain = Brain::new(cfg.providers.clone(), tmp.clone());
     let mut universal_engine = crate::universal::UniversalEngine::new(false);
+    // 上一步刚放行了敏感动作(删除/付款…)时, 紧接着弹出的确认框是模型自己要的, 不交给弹窗规则(它会点「取消」)
+    let mut suppress_popup_once = false;
     // 专用场景一律插件化: 核心只调用登记入口, 不认识任何具体应用
     crate::plugins::register_builtin(&mut universal_engine);
     let (realw, realh) = phone.size();
@@ -2303,7 +2311,12 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 step: n,
                 last_rejected: reject_streak > 0,
             };
-            let u_decision = universal_engine.evaluate_frame(&u_ctx);
+            let u_decision = if std::mem::take(&mut suppress_popup_once) {
+                println!("      [UniversalEngine] 上一步是已批准的敏感动作, 本帧确认框交给模型");
+                crate::universal::EngineDecision::YieldToTask
+            } else {
+                universal_engine.evaluate_frame(&u_ctx)
+            };
             let handled_by_engine = match u_decision {
                 crate::universal::EngineDecision::HandledByPopup { action } => {
                     let act = match action {
@@ -2700,7 +2713,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
         // 🛑 审批: 付款/删除/钱包必问, 发送/密码按 [approval] 配置。被拒/超时 = 本动作作废, 交还模型。
         if let Some(reason) = approval_gate(&act, &cap, realw, realh, &approval_policy, &mut approval_grants,
                                             &run_dir, &run_id, n, task, goal, serial.as_deref(), &aline,
-                                            taps_hist.back().map(|t| (t.0, t.1)), &mut log) {
+                                            taps_hist.back().map(|t| (t.0, t.1)), &mut suppress_popup_once, &mut log) {
             let d = format!("rejected({reason})");
             log_act(&mut log, n, &act, &plan_by, ms_field);
             log.put(json!({"r":"diff","n":n,"d":d}));
