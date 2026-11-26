@@ -3,6 +3,7 @@
 //!       phonefarm devices
 //! --app: 任务的目标应用包名;开局若前台不是它(也不是桌面),先按HOME归位再进循环
 //! --serial 带 "hdc:<connect key>" 前缀走 OpenHarmony/hdc 后端,不带前缀=Android/adb(devices 子命令两族并列)
+mod approval;
 mod autoloop;
 mod app_snapshot;
 mod bench;
@@ -103,6 +104,7 @@ mod plugins;
 mod runtime;
 mod screen;
 mod script;
+mod skill;
 mod selftest;
 mod serve;
 mod telemetry;
@@ -203,6 +205,9 @@ pub struct Config {
     /// 持续进化(假设—检验—证据闭环, SPEC_EVOLUTION §10)
     #[serde(default)]
     pub evolution: EvoCfg,
+    /// 敏感动作审批(付款/删除/钱包/对外发送/密码), 见 approval.rs。缺省全部 ask。
+    #[serde(default)]
+    pub approval: Option<toml::Value>,
 }
 fn d_data_dir() -> String { ".".into() }
 fn d_max_steps() -> u32 { 12 }
@@ -234,7 +239,8 @@ impl Config {
 const USAGE: &str = "phonefarm v0.2 — 记录契约 v1 运行时
 帮助:  help [命令...]                             (只打印用法，不查询设备)
 身份:  runtime-info --json                        (本程序构建声明；纯宿主，不查询设备)
-跑局:  run --task <T> [--serial S] [--endless] [--budget-calls N] [--max-steps N] [--app P] [--assert \"词1,词2\"] [--perceive ocr] \"<目标>\"
+跑局:  run --task <T> [--serial S] [--endless] [--budget-calls N] [--max-steps N] [--app P] [--assert \"词1,词2\"] [--perceive ocr] [--skill auto|名字] [--save-skill 名字] \"<目标>\"
+技能:  skill list|show|save|match|run                 (见 help skill; 敏感动作审批见 phonefarm.toml [approval])
 评测:  benchmark --task <T> [--rounds N] [--app P] [--assert ..] [--json] \"<目标>\"
 并行:  parallel --job \"任务|目标|serial[|app[|assert]]\" [--job ...] [--budget-calls N] [--endless]
 脚本:  script [--task T] [--serial S] [--app P] [--repeat N] [--settle-ms M] [--no-screen] [--detach] <脚本文件或局ID>
@@ -598,7 +604,13 @@ fn main() {
                 Err(_) => eprintln!("(未找到 idevice_id, 不列 iOS; 装 libimobiledevice 或设 WDA_URL 直连已有隧道)"),
             }
         }
+        Some("skill") => {
+            // 技能库: 验证过的轨迹 → 命名技能 → 零模型回放(断了交还模型)
+            std::process::exit(skill::cli(&args[1..]));
+        }
         Some("run") => {
+            let mut save_skill: Option<String> = None;
+            let mut use_skill: Option<String> = None;
             let mut serial: Option<String> = None;
             let mut goal = String::new();
             let mut task = String::new();
@@ -620,6 +632,8 @@ fn main() {
                     "--endless" => endless = true,
                     "--detach" => detach = true,
                     "--freeze-on-done" => freeze_on_done = true,
+                    "--save-skill" => save_skill = it.next().cloned(),
+                    "--skill" => use_skill = it.next().cloned(),
                     "--resume" => resume_prefix = it.next().cloned(),
                     "--budget-calls" => budget = it.next().and_then(|v| v.parse().ok()).unwrap_or(40),
                     "--max-steps" => max_steps_override = it.next().and_then(|v| v.parse().ok()),
@@ -693,10 +707,39 @@ fn main() {
             if goal.is_empty() {
                 if let Some(r) = &resume { goal = r.goal.clone(); }
             }
+            let skill_dir = skill::skills_dir(&tasks_root(&cfg.data_dir));
+            if let Some(want) = use_skill.as_deref() {
+                // --skill auto: 按目标模板挑; --skill <名字>: 指定。挑不到就照常让模型跑。
+                let picked = if want == "auto" {
+                    skill::best_match(&skill_dir, &goal)
+                } else {
+                    skill::load(&skill_dir, want).ok().map(|s| {
+                        let m = skill::match_goal(&s.goal, &goal).unwrap_or_else(|| s.params.clone());
+                        (s, m)
+                    })
+                };
+                match picked {
+                    Some((mut sk, params)) => {
+                        println!("⚡ 用技能 {} (参数 {:?}) 零模型回放", sk.name, params);
+                        std::process::exit(skill::run_with_fallback(&cfg, &skill_dir, &mut sk, params, serial, Some(task.clone()), asserts));
+                    }
+                    None => println!("(没有可用技能匹配该目标, 交给模型)"),
+                }
+            }
             let res = runtime::episode(&cfg, &task, &goal, serial, None, endless, budget, app, asserts, freeze_on_done, resume);
             println!("summary: run={} stop={} steps={} calls={} tokens={} wall={:.1}s achieved={}",
                 res.run_id, res.stop, res.steps, res.calls, res.tokens,
                 res.wall_ms as f64 / 1000.0, res.achieved);
+            if let (Some(name), true) = (save_skill.as_deref(), res.achieved) {
+                let rd = std::path::Path::new(&tasks_root(&cfg.data_dir)).join(&task).join("runs").join(&res.run_id);
+                match skill::compile(&rd, name, true).and_then(|mut s| {
+                    s.source["task"] = serde_json::json!(task);
+                    skill::save(&skill_dir, &s).map(|p| (s, p))
+                }) {
+                    Ok((s, p)) => println!("📚 技能 {} 已保存({}步, 模板「{}」) → {}", s.name, s.steps.len(), s.goal, p.display()),
+                    Err(e) => println!("📚 技能未保存: {e}"),
+                }
+            }
             std::process::exit(if res.achieved { 0 } else { 1 });
         }
         Some("benchmark") => {
