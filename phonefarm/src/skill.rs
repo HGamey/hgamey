@@ -300,6 +300,19 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
     if steps.is_empty() {
         return Err("这一局没有可回放的有效动作".into());
     }
+    // 目标里引号括起来的文字若是某步的点名目标(如「长按 X 那条」), 也变成参数, 换个 X 就能复用
+    for q in quoted(&goal) {
+        if params.values().any(|v| *v == q) { continue; }
+        let hit = steps.iter().any(|st| st.what.as_deref() == Some(q.as_str()));
+        if !hit { continue; }
+        let key = format!("text_{}", params.len() + 1);
+        let ph = format!("{{{{{key}}}}}");
+        for st in steps.iter_mut() {
+            if st.what.as_deref() == Some(q.as_str()) { st.what = Some(ph.clone()); }
+            for w in st.when.iter_mut().chain(st.expect.iter_mut()) { if *w == q { *w = ph.clone(); } }
+        }
+        params.insert(key, q);
+    }
     // 目标模板: 输入过的文字在目标里出现就换成占位符
     let mut tmpl = goal.clone();
     for (k, v) in &params {
@@ -328,6 +341,22 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
         source: json!({"run": run_dir.file_name().and_then(|s| s.to_str()), "achieved": achieved}),
         stats: Stats::default(),
     })
+}
+
+/// 目标句里成对引号(「」“”"")括起来的片段。
+fn quoted(goal: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (open, close) in [('「', '」'), ('“', '”'), ('"', '"')] {
+        let mut rest = goal;
+        while let Some(i) = rest.find(open) {
+            let after = &rest[i + open.len_utf8()..];
+            let Some(j) = after.find(close) else { break };
+            let q = after[..j].trim();
+            if !q.is_empty() && q.chars().count() <= 40 { out.push(q.to_string()); }
+            rest = &after[j + close.len_utf8()..];
+        }
+    }
+    out
 }
 
 /// 用目标模板匹配一句新目标, 取出参数。模板里没有占位符时要求全文相同(去空白)。
@@ -482,6 +511,12 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
     let mut last_tap: Option<(i32, i32)> = None;
     for (i, st) in skill.steps.iter().enumerate() {
         let Some((els, full)) = read(ctx) else { put(json!({"r":"stop","code":"capture_failed","step":i})); return Stop::Capture { step: i }; };
+        let st = &Step {
+            what: st.what.as_deref().map(|w| fill(w, &ctx.params)),
+            when: st.when.iter().map(|w| fill(w, &ctx.params)).collect(),
+            expect: st.expect.iter().map(|w| fill(w, &ctx.params)).collect(),
+            ..st.clone()
+        };
         if !st.when.is_empty() {
             let have = present(&els, &st.when);
             if have.len() * 2 < st.when.len() {
@@ -660,6 +695,12 @@ mod tests {
         assert!(match_goal("打开计算器", "打开计算器算1+1").is_none());
         let m2 = match_goal("给{{text_1}}发{{text_2}}", "给张三发「晚上好」").unwrap();
         assert_eq!((m2["text_1"].as_str(), m2["text_2"].as_str()), ("张三", "晚上好"));
+    }
+
+    #[test]
+    fn quoted_segments() {
+        assert_eq!(quoted("长按「pftest 买牛奶！」那条，再点“删除”"), vec!["pftest 买牛奶！".to_string(), "删除".to_string()]);
+        assert!(quoted("没有引号").is_empty());
     }
 
     #[test]
