@@ -139,6 +139,11 @@ def decide(jobs, jid, approval_id, body, who):
         try:
             os.link(tmp, target)
         except FileExistsError:
+            # 签发模式下, 已有的决定文件验不过签名(作业或别的进程塞进来的假决定)就不算数: 用真决定替换,
+            # 不让它占住位置把人的决定挡在外面
+            if SIGNER is not None and _decision(jobs, jid, approval_id) is None:
+                os.replace(tmp, target)
+                return 200, {"id": approval_id, **record, "replaced_unsigned": True}
             return 409, {**already, "decision": _load(target)}
         except OSError:
             # 不支持硬链接的文件系统: 退回独占创建(内容可能短暂不完整, 读方会重读)
@@ -149,7 +154,10 @@ def decide(jobs, jid, approval_id, body, who):
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(record, f)
     finally:
-        os.unlink(tmp)
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:  # 替换假决定时已经挪走了
+            pass
     return 200, {"id": approval_id, **record}
 
 
