@@ -29,6 +29,12 @@ import job_events
 ADB_RECORDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "adb-record")
 
 
+def contained_job(jobs, spec):
+    """phonefarm 作业是否交给固定 worker 跑在独立作业用户下: 节点开了 --contained-phonefarm 且装了 worker。"""
+    return bool(getattr(jobs, "contained_phonefarm", False) and getattr(jobs, "worker_entry", None)
+                and spec.get("bin") == "phonefarm")
+
+
 def record_adb(env, adb, path):
     """A job's `adb` is first found in tools/adb-record: each call is written to `path` (its device record), then the
     node's real adb runs unchanged. Without a real adb on the job's PATH nothing changes."""
@@ -380,6 +386,10 @@ class JobDispatch:
         except ValueError as error:
             self.finish_unstarted(row, "failed", f"execution policy unavailable: {error}")
             return
+        if contained_job(self.jobs, row["spec"]):
+            # 节点决定: phonefarm 作业跑在独立作业用户下(见 node_service --contained-phonefarm)。
+            # 要在准备输出目录之前定: contained 要求 out/ 是空的
+            policy = "contained"
         spec = row["spec"]
         observation = (self.jobs.leases.snapshot(refresh=True) if
                        device_access(spec) == "write" or "device_binding" in spec else {})
@@ -400,6 +410,8 @@ class JobDispatch:
             return
         try:
             meta = self.jobs._read_meta(jid)
+            if policy == "contained":
+                meta["execution_policy"] = "contained"
             meta.update(phase="starting", state="running", recovery={"status": "not_reported", "reason": "execution has not reported recovery"})
             meta["execution"].update(launch_deadline=time.time() + 30)
             self.jobs._write_meta(jid, meta)
@@ -457,6 +469,7 @@ class JobDispatch:
         try:
             proc = job_runtime.launch(self.jobs._read_root, jid, self.jobs.path(jid), prepared["command"], prepared["cwd"],
                                       env=env, execution_policy=policy, **app_snapshot,
+                                      **({"privileged_entry": self.jobs.worker_entry} if policy == "contained" else {}),
                                       **({"time_budget": spec["time_budget"]} if "time_budget" in spec else {}),
                                       **({"disk_guard": spec["disk_guard"]} if "disk_guard" in spec else {}),
                                       service_at_launch=getattr(self.jobs, "service_at_launch", None))

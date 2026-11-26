@@ -358,6 +358,7 @@ class Jobs:
         if not isinstance(max_running, int) or not 1 <= max_running <= 64:
             raise ValueError("max_running must be between 1 and 64")
         self.pf_env, self.worker_entry = None, None
+        self.contained_phonefarm = False  # main() 按 --contained-phonefarm 打开
         if worker_prefix is not None:
             from worker_config import node_configuration
             config = node_configuration(worker_prefix, self.dir)
@@ -2829,6 +2830,9 @@ def argument_parser():
     ap.add_argument("--max-running", type=bounded_int(1, 64), default=2, help="宿主队列并发上限（含待核查的资源保留），默认2")
     ap.add_argument("--host-capacity", help="管理员宿主调度容量 JSON 文件（最多4KiB）；省略沿用SQL配置，首次按max-running初始化CPU slots")
     ap.add_argument("--worker-prefix", help="管理员安装的固定worker目录；共用PF环境，不启用contained准入")
+    ap.add_argument("--contained-phonefarm", action="store_true",
+                    help="phonefarm 作业一律经 --worker-prefix 的固定 worker 跑在独立作业用户下(contained); "
+                         "作业用户读不到本服务的密钥文件、碰不到本进程内存, 也就要不到审批签名")
     ap.add_argument("--history-roots", type=history_path, help="旧作业只读来源的绝对配置路径（hgamey/job-history@1，最多64KiB）")
     ap.add_argument("--export-cache-root", help="当前作业目录导出的独立绝对缓存根；省略保留旧布局，不迁移原件或游戏资源")
     ap.add_argument("--require-device-binding", action="store_true", help="拒绝缺少 device_binding 的设备访问任务（多设备纪律）")
@@ -2865,10 +2869,16 @@ def main():
             "fetch_apk": (os.path.join(os.path.dirname(os.path.abspath(__file__)), "fetch_apk.sh"), os.path.dirname(root)),
             # 实验仓库里的脚本；解释器和工作目录在准备时按固定的提交确定
             "experiment": (sys.executable, root)}
+    if a.contained_phonefarm and not a.worker_prefix:
+        ap.error("--contained-phonefarm 需要 --worker-prefix(管理员安装的固定 worker)")
     jobs = Jobs(root, bins, data_dir=a.data_dir, max_running=a.max_running, worker_prefix=a.worker_prefix,
                 host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root,
                 require_device_binding=a.require_device_binding,
                 experiment_url=a.experiments_url)
+    if a.contained_phonefarm:
+        if jobs.worker_entry is None:
+            ap.error("--worker-prefix 的 worker 不支持 jobs.execution-reconcile-v1, 不能跑 contained")
+        jobs.contained_phonefarm = True
     job_approvals.SIGNER = approval_sign.make(log)  # 审批决定由本服务签名(私钥只在内存)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases,
                        cleanup_log=os.path.join(jobs.data_root, "_fleet", "cleanups.jsonl"))

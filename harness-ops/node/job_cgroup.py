@@ -21,6 +21,8 @@ from artifact_io import SafeRoot, open_child
 CGROUP2_SUPER_MAGIC = 0x63677270
 GATE = 'IFS= read -r gate && [ "$gate" = GO ] || exit 125; unset PWD OLDPWD SHLVL _; exec "$@" </dev/null'
 CONTAINMENT_SCHEMA = "phonefarm/job-containment@1"
+# 作业目录里交给作业用户、和节点共用的子目录(审批请求、人工留言)
+SHARED_DIRS = ("approvals", "steer")
 
 
 def _boot_id():
@@ -336,7 +338,7 @@ class Domain:
         try:
             node_owned(fd, "job directory")
             for name in os.listdir(fd):
-                if name in ("in", "out"):
+                if name in ("in", "out", *SHARED_DIRS):
                     continue
                 child = open_child(fd, name, directory=False)
                 try:
@@ -362,6 +364,31 @@ class Domain:
                 os.fchmod(out, 0o700)
             finally:
                 os.close(out)
+            for name in SHARED_DIRS:
+                # 作业写审批请求、读人工留言(并写回执)的目录: 归作业用户, 组(节点用户在其中)可读写,
+                # setgid 让新文件跟着组走。节点可能已经先建了 steer/(留言比作业启动早), 那就接管过来。
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = open_child(fd, name, directory=True)
+                try:
+                    st = os.fstat(child)
+                    if st.st_uid not in (self.node_uid, self.uid) or st.st_nlink < 2:
+                        raise ValueError(f"{name}/ is not a plain node- or job-owned directory")
+                    for entry in os.listdir(child):
+                        f = open_child(child, entry, directory=False)
+                        try:
+                            if os.fstat(f).st_nlink != 1:
+                                raise ValueError(f"{name}/{entry} cannot be a hard link")
+                            os.fchown(f, self.uid, self.gid)
+                            os.fchmod(f, 0o660)
+                        finally:
+                            os.close(f)
+                    os.fchown(child, self.uid, self.gid)
+                    os.fchmod(child, 0o2770)
+                finally:
+                    os.close(child)
             os.fchmod(fd, 0o711)
             self.protected.append(job_dir)
             # A writable non-sticky parent would let the job rename the whole
@@ -388,21 +415,25 @@ class Domain:
         if not os.access(".", os.X_OK, effective_ids=True):
             raise ValueError("job working directory is not accessible to its identity")
 
-    def start_gate(self, command, cwd, job_dir, jid, log_fd, approval_env=None):
+    def start_gate(self, command, cwd, job_dir, jid, log_fd, shared_env=None):
         env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": os.path.join(job_dir, "out"),
                "TMPDIR": os.path.join(job_dir, "out"), "PF_JOB_ID": jid,
                "PF_NODE_ID": (Path(job_dir).parents[1] / "_node/id").read_text().strip(),
                "PF_RUNTIME_REPORT": os.path.join(job_dir, "out", ".program-runtime.json"),
                "PF_JOB_IN": os.path.join(job_dir, "in"), "PF_JOB_OUT": os.path.join(job_dir, "out")}
-        # 只放行审批签发这三项(见 job_runtime.APPROVAL_ENV), 其余一律不带
-        for key in ("PF_APPROVAL_PUBKEY", "PF_APPROVAL_DECISION_DIR", "PF_APPROVAL_POLICY"):
-            if isinstance((approval_env or {}).get(key), str):
-                env[key] = approval_env[key]
+        # 只放行 job_runtime.SHARED_ENV 这几项, 其余一律不带
+        from job_runtime import SHARED_ENV
+        for key in SHARED_ENV:
+            if isinstance((shared_env or {}).get(key), str):
+                env[key] = shared_env[key]
         child = subprocess.Popen(["/bin/sh", "-c", GATE, "phonefarm-gate", *command],
                                  cwd=cwd, env=env, stdin=subprocess.PIPE, bufsize=0,
                                  stdout=log_fd, stderr=subprocess.STDOUT, close_fds=True,
                                  start_new_session=True, user=self.uid, group=self.gid,
-                                 extra_groups=[], preexec_fn=self._restrict, umask=0o077)
+                                 extra_groups=[], preexec_fn=self._restrict,
+                                 # 组可读写: 共享目录(设备锁、审批请求、留言回执)里的文件要让节点用户读写,
+                                 # 节点用户在作业主组里; 其他人一律没有权限
+                                 umask=0o007)
         self.unconfirmed_gate = True
         try:
             # Do not reap before attachment: even a gate that exited unexpectedly
@@ -473,6 +504,16 @@ class Domain:
         if self.output_fd is not None:
             hand_back(self.output_fd)
         if self.job_fd is not None:
+            # 共用子目录(审批请求、留言)同样交还节点: 作业结束后只归节点
+            for name in SHARED_DIRS:
+                try:
+                    child = open_child(self.job_fd, name, directory=True)
+                except FileNotFoundError:
+                    continue
+                try:
+                    hand_back(child)
+                finally:
+                    os.close(child)
             os.fsync(self.job_fd)
         if self.binding is not None and self.store is not None:
             self.binding["handoff"] = {"status": "returned", "at": time.time()}
@@ -584,7 +625,7 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget,
             try:
                 disk.prepare(log_fd)
                 child = domain.start_gate(spec["command"], spec["cwd"], job_dir, jid, log_fd,
-                                          approval_env=spec.get("approval_env"))
+                                          shared_env=spec.get("shared_env"))
             finally:
                 os.close(log_fd)
         except subprocess.TimeoutExpired:
