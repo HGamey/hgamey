@@ -25,15 +25,34 @@ def _dir(jobs, jid):
 def decision_dir(jobs, jid):
     """Where decisions go. Signed: a center-owned directory beside the jobs root, not inside the job's
     own directory (same OS user, so this is convention; the signature is what jobs cannot forge)."""
-    if SIGNER is None:
-        return _dir(jobs, jid)
     return os.path.join(os.path.dirname(os.path.normpath(jobs.dir)), "_approval_decisions", jid)
+
+
+def _content(jobs, jid, approval_id):
+    """content_hash of the request and screenshot exactly as they are on disk now (what the person sees)."""
+    import approval_sign
+    root = _dir(jobs, jid)
+    with open(os.path.join(root, approval_id + ".json"), "rb") as f:
+        req = f.read()
+    try:
+        with open(os.path.join(root, approval_id + ".jpg"), "rb") as f:
+            shot = f.read()
+    except FileNotFoundError:
+        shot = b""
+    return approval_sign.content_hash(req, shot)
 
 
 def _decision(jobs, jid, approval_id):
     d = _load(os.path.join(decision_dir(jobs, jid), approval_id + ".decision.json"))
-    if d and SIGNER is not None and not SIGNER.valid(jid, approval_id, d.get("decision"), d.get("sig")):
-        return None  # 没签名或签名不对的「决定」不算(phonefarm 那边同样不认)
+    if d and SIGNER is not None:
+        # 签名对不上(没签名、伪造, 或请求在决定后被改过)的「决定」不算; phonefarm 那边同样不认
+        try:
+            # 按此刻磁盘上的请求重算, 不信决定文件里记的哈希
+            ok = SIGNER.valid(jid, approval_id, d.get("decision"), _content(jobs, jid, approval_id), d.get("sig"))
+        except (OSError, TypeError):
+            ok = False
+        if not ok:
+            return None
     return d
 
 
@@ -101,15 +120,19 @@ def decide(jobs, jid, approval_id, body, who):
         return 409, {"code": "not_pending", "error": "this approval is no longer waiting for a decision",
                      "state": request.get("state")}
     ddir = decision_dir(jobs, jid)
-    os.makedirs(ddir, mode=0o700, exist_ok=True)
+    # 决定不是秘密(有签名): 独立用户跑的作业(contained)要读得到
+    os.makedirs(ddir, mode=0o755, exist_ok=True)
     target = os.path.join(ddir, approval_id + ".decision.json")
     note = str((data or {}).get("note", ""))[:500]
     record = {"decision": decision, "by": who, "note": note, "at": time.time()}
     if SIGNER is not None:
-        record["sig"] = SIGNER.sign(jid, approval_id, decision)
+        # 签的是此刻磁盘上的请求和截图(人看到的就是它们); 被改过的话 phonefarm 那边对不上, 按拒绝
+        content = _content(jobs, jid, approval_id)
+        record["content"] = content
+        record["sig"] = SIGNER.sign(jid, approval_id, decision, content)
     # 先写临时文件再 link 过去: 读方永远看不到写了一半的决定; 目标已存在时 link 失败 = 先写者胜
     tmp = f"{target}.{os.getpid()}.{time.monotonic_ns()}.tmp"
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "w", encoding="utf-8") as f:
         json.dump(record, f)
     already = {"code": "already_decided", "error": "this approval already has a decision"}
     try:
@@ -120,7 +143,7 @@ def decide(jobs, jid, approval_id, body, who):
         except OSError:
             # 不支持硬链接的文件系统: 退回独占创建(内容可能短暂不完整, 读方会重读)
             try:
-                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             except FileExistsError:
                 return 409, {**already, "decision": _load(target)}
             with os.fdopen(fd, "w", encoding="utf-8") as f:

@@ -8,15 +8,26 @@ key; approvals still pending in jobs started before it can no longer be signed f
 (deny) inside phonefarm, which is the safe direction.
 """
 
+import ctypes
+import hashlib
 import json
 import os
+import sys
 
-MESSAGE = "phonefarm-approval@1\n{job}\n{id}\n{decision}"
+MESSAGE = "phonefarm-approval@2\n{job}\n{id}\n{decision}\n{content}"
+# 签不了名时下发给作业的「公钥」: phonefarm 认不出就什么决定都不认(失败关闭), 不会退回不签名的旧模式
+UNAVAILABLE = "unavailable"
 
 
-def message(job, approval_id, decision):
-    """Exactly what phonefarm verifies (`Signed::message`)."""
-    return MESSAGE.format(job=job, id=approval_id, decision=decision).encode()
+def message(job, approval_id, decision, content):
+    """Exactly what phonefarm verifies (`Signed::message`). `content` = content_hash of what the person was shown."""
+    return MESSAGE.format(job=job, id=approval_id, decision=decision, content=content).encode()
+
+
+def content_hash(request_bytes, screenshot_bytes):
+    """sha256(request file bytes + NUL + screenshot bytes), hex — phonefarm `content_hash`. phonefarm keeps
+    its own copy in memory, so a request or screenshot rewritten after it was written no longer verifies."""
+    return hashlib.sha256(request_bytes + b"\0" + screenshot_bytes).hexdigest()
 
 
 class Signer:
@@ -29,24 +40,43 @@ class Signer:
     def public_hex(self):
         return self._pub.hex()
 
-    def sign(self, job, approval_id, decision):
-        return self._key.sign(message(job, approval_id, decision)).hex()
+    def sign(self, job, approval_id, decision, content):
+        return self._key.sign(message(job, approval_id, decision, content)).hex()
 
-    def valid(self, job, approval_id, decision, sig_hex):
+    def valid(self, job, approval_id, decision, content, sig_hex):
         from cryptography.exceptions import InvalidSignature
         try:
-            self._key.public_key().verify(bytes.fromhex(sig_hex or ""), message(job, approval_id, decision))
+            self._key.public_key().verify(bytes.fromhex(sig_hex or ""), message(job, approval_id, decision, content))
             return True
         except (InvalidSignature, ValueError):
             return False
 
 
-def make(log=print):
+def _not_dumpable():
+    """Linux: same-user processes may not ptrace us or read /proc/<pid>/mem (the key lives in memory)."""
+    if not sys.platform.startswith("linux"):
+        return True
     try:
-        return Signer()
+        return ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) == 0  # PR_SET_DUMPABLE, 0
+    except (OSError, AttributeError):
+        return False
+
+
+_POLICY = None
+
+
+def make(log=print):
+    """Signer, or None when this node cannot sign. Callers must then fail closed (see UNAVAILABLE)."""
+    global _POLICY
+    _POLICY = _read_policy()  # 启动时读一次: 之后作业改文件不影响本次运行
+    try:
+        signer = Signer()
     except ImportError:
-        log("⚠ python cryptography 不可用: 审批决定不签名(作业能伪造自己的审批), 请安装 python3-cryptography")
+        log("⚠ python cryptography 不可用: 审批一律拒绝(不会退回不签名), 请安装 python3-cryptography")
         return None
+    if not _not_dumpable():
+        log("⚠ 设不了 PR_SET_DUMPABLE=0: 同用户进程可能读到审批签名私钥")
+    return signer
 
 
 def policy_file():
@@ -54,9 +84,12 @@ def policy_file():
 
 
 def center_policy_json():
-    """The node's approval policy, handed to each job; the job's own [approval] can only tighten it.
-    Missing file = phonefarm defaults (ask for everything sensitive). A broken file = the strictest
-    reading phonefarm offers for unknown values, i.e. the defaults again."""
+    """The node's approval policy as read at service start, handed to each job; the job's own [approval]
+    can only tighten it. Missing or broken file = phonefarm defaults (ask for everything sensitive)."""
+    return _POLICY if _POLICY is not None else _read_policy()
+
+
+def _read_policy():
     try:
         with open(policy_file(), encoding="utf-8") as f:
             value = json.load(f)

@@ -51,7 +51,7 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual((code, out["decision"]), (200, "allow"))
         code, _ = job_approvals.decide(self.jobs, "abcdef012345", "ap-r-1-0001", b'{"decision":"deny"}', "admin")
         self.assertEqual(code, 409)
-        with open(os.path.join(self.dir, "ap-r-1-0001.decision.json")) as f:
+        with open(os.path.join(job_approvals.decision_dir(self.jobs, "abcdef012345"), "ap-r-1-0001.decision.json")) as f:
             self.assertEqual(json.load(f)["decision"], "allow")
         self.assertEqual(job_approvals.list_requests(self.jobs, "abcdef012345")[0]["state"], "allowed")
 
@@ -101,9 +101,16 @@ class ApprovalTests(unittest.TestCase):
             os.remove(os.path.join(ddir, "ap-r-1-0001.decision.json"))
             code, out = job_approvals.decide(self.jobs, "abcdef012345", "ap-r-1-0001", b'{"decision":"allow"}', "dash")
             self.assertEqual(code, 200)
-            self.assertTrue(signer.valid("abcdef012345", "ap-r-1-0001", "allow", out["sig"]))
-            self.assertFalse(signer.valid("abcdef012345", "ap-r-1-0001", "deny", out["sig"]))
+            self.assertTrue(signer.valid("abcdef012345", "ap-r-1-0001", "allow", out["content"], out["sig"]))
+            self.assertFalse(signer.valid("abcdef012345", "ap-r-1-0001", "deny", out["content"], out["sig"]))
             self.assertEqual(job_approvals.list_requests(self.jobs, "abcdef012345")[0]["state"], "allowed")
+            # 决定之后有人改了请求(人看到的内容): 签名对不上, 这条决定不再算数
+            with open(os.path.join(self.dir, "ap-r-1-0001.json")) as f:
+                req = json.load(f)
+            req["reason"] = "看起来无害"
+            with open(os.path.join(self.dir, "ap-r-1-0001.json"), "w") as f:
+                json.dump(req, f)
+            self.assertEqual(job_approvals.list_requests(self.jobs, "abcdef012345")[0]["state"], "pending")
         finally:
             job_approvals.SIGNER = None
 
@@ -114,9 +121,11 @@ class ApprovalTests(unittest.TestCase):
         except ImportError:
             self.skipTest("cryptography not installed")
         k = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
-        sig = k.sign(approval_sign.message("abcdef012345", "ap-skill-x-2-dbf2554a16c65c35", "allow")).hex()
+        c = approval_sign.content_hash(b'{"x":1}', b"jpg")
+        self.assertEqual(c, "ae7125ed5d039139cb21bd22403f2acd55e51023afa478bb36bc06b6323b45b7")
+        sig = k.sign(approval_sign.message("abcdef012345", "ap-skill-x-2-dbf2554a16c65c35", "allow", c)).hex()
         # 与 phonefarm/src/approval.rs a_signature_made_by_the_center_python_code_verifies 同一组数
-        self.assertEqual(sig, "b65764dfd37ea832e23f11459de3fcb9c07495a15e6dddc17e244f886c326eb9b376825629f0e66c5498a3938065f260ab7716918b17e956b48ee3fff0d9110f")
+        self.assertEqual(sig, "3e558ca3ca8f4c3bbd932978e705439eb8d4ba53bed33a07da6ddc499c2373a7c8357de7205b3a58897dffbc5482239be95312ecb98824870623c653b356ea08")
 
     def test_no_dir(self):
         self.assertEqual(job_approvals.list_requests(self.jobs, "000000000000"), [])

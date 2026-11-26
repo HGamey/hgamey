@@ -498,20 +498,30 @@ fn ocr_els(img: &str, capw: i32, caph: i32, realw: i32, realh: i32) -> Vec<Node>
 fn ocr_cmd() -> Option<&'static (String, Vec<String>)> {
     static T: std::sync::OnceLock<Option<(String, Vec<String>)>> = std::sync::OnceLock::new();
     T.get_or_init(|| {
-        if std::path::Path::new("./ocr").is_file() {
-            return Some(("./ocr".into(), vec![]));
+        // 从 phonefarm 可执行文件所在目录找, 不从工作目录找: 作业的工作目录可能是它自己上传的目录
+        let root = std::env::current_exe().ok()?.canonicalize().ok()?.parent()?.to_path_buf();
+        let bin = root.join("ocr");
+        if bin.is_file() {
+            return Some((bin.to_string_lossy().to_string(), vec![]));
         }
-        let py = std::env::var("PF_OCR_PYTHON").unwrap_or_else(|_| "python3".into());
-        let ok = std::path::Path::new("ocr.py").is_file()
-            && std::process::Command::new(&py).args(["ocr.py", "--check"]).output().map(|o| o.status.success()).unwrap_or(false);
-        ok.then(|| (py, vec!["ocr.py".to_string()]))
+        let script = root.join("ocr.py");
+        let ok = script.is_file()
+            && std::process::Command::new("python3").arg(&script).arg("--check").output().map(|o| o.status.success()).unwrap_or(false);
+        ok.then(|| ("python3".to_string(), vec![script.to_string_lossy().to_string()]))
     }).as_ref()
 }
 
-/// 纯画面页审批的第二道判断: 截取落点所在的一条横带(全宽、高 16%)认字, 返回离落点最近的至多 3 段文字。
+struct CropText {
+    /// 框盖住落点的字(落点就在这段字上)
+    under: Vec<String>,
+    /// 不盖住落点、但离得不远(图宽 6% 以内)的字, 近的在前
+    near: Vec<String>,
+}
+
+/// 纯画面页审批的第二道判断: 截取落点所在的一条横带(全宽、高 16%)认字。
 /// 用整条横带而不是落点周围一小块: 实测 Vision 对孤零零一个词的小块常常认不出(深底红字「删除」), 带上下文就认得出。
 /// None = 认字工具不可用或失败 —— 调用方按「拿不准」处理。
-fn crop_ocr(img: &str, x: i32, y: i32) -> Option<Vec<String>> {
+fn crop_ocr(img: &str, x: i32, y: i32) -> Option<CropText> {
     let (prog, args) = ocr_cmd()?;
     let im = image::open(img).ok()?.to_rgb8();
     let (w, h) = (im.width() as i32, im.height() as i32);
@@ -519,7 +529,8 @@ fn crop_ocr(img: &str, x: i32, y: i32) -> Option<Vec<String>> {
     let ch = (h * 16 / 100).max(60).min(h);
     let y0 = (y - ch / 2).clamp(0, h - ch);
     let big = image::imageops::crop_imm(&im, 0, y0 as u32, w as u32, ch as u32).to_image();
-    let path = std::env::temp_dir().join(format!("pf-approval-crop-{}.png", std::process::id()));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("pf-approval-crop-{}-{nonce}.png", std::process::id()));
     big.save(&path).ok()?;
     let out = std::process::Command::new(prog).args(args).arg(&path).output().ok()?;
     let _ = fs::remove_file(&path);
@@ -538,7 +549,11 @@ fn crop_ocr(img: &str, x: i32, y: i32) -> Option<Vec<String>> {
         (d <= near).then_some((d, t))
     }).collect();
     items.sort_by_key(|(d, _)| *d);
-    Some(items.into_iter().take(3).map(|(_, t)| t).collect())
+    // 盖住落点: 框外扩图宽 1% 以内也算(字框比按钮小)
+    let tol = (w / 100).max(2);
+    let under = items.iter().filter(|(d, _)| *d <= tol).map(|(_, t)| t.clone()).take(2).collect();
+    let near = items.iter().filter(|(d, _)| *d > tol).map(|(_, t)| t.clone()).take(3).collect();
+    Some(CropText { under, near })
 }
 
 /// 坐标框: 设备像素 → 图片像素
@@ -1456,17 +1471,30 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
     // 在落点附近截图认字做第二道独立判断; 认不出来 = 拿不准
     let tree_texts = if cap.full.is_empty() { cap.els.iter().filter(|e| !e.t.trim().is_empty()).count() }
                      else { cap.full.iter().filter(|f| !f.t.trim().is_empty()).count() };
-    let visual = matches!(a.a.as_str(), "tap" | "long_press") && (cap.ocr || tree_texts < 3);
+    // 纯画面页: 截图认字的帧、网页(H5 收银台的按钮常不在控件树里)、控件树几乎没字(游戏/画布)
+    let visual_page = cap.ocr || cap.webview || tree_texts < 3;
+    let tap = matches!(a.a.as_str(), "tap" | "long_press");
+    let (tx, ty) = (a.x.unwrap_or(-1) as i32, a.y.unwrap_or(-1) as i32);
+    // 落点上有没有「小的、带字的」控件(按钮本身); 只被大容器的字盖住不算看清了
+    let screen_area = (realw.max(1) as i64) * (realh.max(1) as i64);
+    let labelled = cap.full.iter().any(|f| {
+        let bi = b_img_space(f.b, cap, realw, realh);
+        let area = ((f.b[2] - f.b[0]).max(0) as i64) * ((f.b[3] - f.b[1]).max(0) as i64);
+        !f.t.trim().is_empty() && area * 100 < screen_area * 15 && bi[0] <= tx && tx <= bi[2] && bi[1] <= ty && ty <= bi[3]
+    });
     let mut unclear = false;
-    if visual && targets.is_empty() {
-        let skip = !policy.sensitive_task && policy.visual_auto_pkgs.iter().any(|p| *p == cap.pkg);
-        if !skip {
-            match crop_ocr(&cap.img, a.x.unwrap_or(-1) as i32, a.y.unwrap_or(-1) as i32) {
-                Some(t) if !t.is_empty() => targets = t,
-                _ => unclear = true,
+    if tap && !labelled {
+        match crop_ocr(&cap.img, tx, ty) {
+            Some(o) if !o.under.is_empty() => { for t in o.under { if !targets.contains(&t) { targets.push(t); } } }
+            Some(o) => {
+                // 只有旁边的字(如图标按钮旁的价格): 字照样参与判定, 但落点本身仍算没认出
+                for t in o.near { if !targets.contains(&t) { targets.push(t); } }
+                unclear = visual_page;
             }
+            None => unclear = visual_page,
         }
     }
+    let visual = visual_page && (tap || matches!(a.a.as_str(), "swipe" | "type"));
     let screen: Vec<&str> = if cap.full.is_empty() { cap.els.iter().map(|e| e.t.as_str()).collect() }
                             else { cap.full.iter().map(|f| f.t.as_str()).filter(|t| !t.is_empty()).collect() };
     let facts = approval::Facts {
@@ -1478,8 +1506,13 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
     // 只要不是被拒, 下面每条放行路径都会走到 return None; 先置位, 被拒时再清掉
     *sensitive_allowed = true;
     // 授权键用程序观察到的目标文字, 不用模型自报的 what(否则换个订单、同名按钮也能沿用)
-    let base_key = targets.iter().find(|t| !t.trim().is_empty()).cloned()
-        .or_else(|| a.what.clone()).or_else(|| a.text.clone()).unwrap_or_default();
+    let base_key = if hit.category == crate::approval::Category::Visual {
+        // 拿不准的点击: 按落点位置(5% 网格)沿用, 不按模型自报的 what —— 同一 what 换个位置不算同一个
+        format!("@{},{}", tx * 20 / cap.w.max(1), ty * 20 / cap.h.max(1))
+    } else {
+        targets.iter().find(|t| !t.trim().is_empty()).cloned()
+            .or_else(|| a.what.clone()).or_else(|| a.text.clone()).unwrap_or_default()
+    };
     // 加上页面上下文: 聊天 A 的「发送」不能沿用到聊天 B
     let ctx_texts: Vec<&str> = cap.els.iter().map(|e| e.t.as_str()).collect();
     let target_key = format!("{base_key}#{}", approval::context_sig(&ctx_texts));
@@ -3566,9 +3599,9 @@ mod tests {
     fn crop_ocr_reads_the_text_under_the_tap() {
         let spec = std::env::var("PF_TEST_CROP").expect("PF_TEST_CROP");
         let v: Vec<&str> = spec.split_whitespace().collect();
-        let got = crop_ocr(v[0], v[1].parse().unwrap(), v[2].parse().unwrap());
-        println!("crop_ocr => {got:?}");
-        assert!(got.is_some_and(|t| !t.is_empty()));
+        let got = crop_ocr(v[0], v[1].parse().unwrap(), v[2].parse().unwrap()).expect("认字工具");
+        println!("crop_ocr => under {:?} near {:?}", got.under, got.near);
+        assert!(!got.under.is_empty());
     }
     #[test]
     fn password_fields_by_token_not_substring() {

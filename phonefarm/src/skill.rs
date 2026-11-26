@@ -790,8 +790,9 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             action: &st.a, what: st.what.as_deref(), text: text_filled.as_deref(),
             target_texts: target_texts.iter().map(String::as_str).collect(), screen_texts: screen, pkg: &pkg,
             target_ids: ids.iter().map(String::as_str).collect(),
-            // 技能按控件树文字定位, 不在纯画面页上判(纯画面页的步骤回放时对不上路标就停, 交还模型走 run 的审批)
-            visual: false, unclear: false,
+            // 技能按控件树文字定位; 但没点名的步骤(按坐标点图标)在敏感任务里一律当拿不准, 要人确认
+            visual: ctx.policy.sensitive_task && st.what.is_none() && st.a != "launch",
+            unclear: ctx.policy.sensitive_task && st.what.is_none() && st.a != "launch",
         };
         let mut asked_human = false;
         let mut sensitive = false;

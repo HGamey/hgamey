@@ -388,12 +388,16 @@ class Domain:
         if not os.access(".", os.X_OK, effective_ids=True):
             raise ValueError("job working directory is not accessible to its identity")
 
-    def start_gate(self, command, cwd, job_dir, jid, log_fd):
+    def start_gate(self, command, cwd, job_dir, jid, log_fd, approval_env=None):
         env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": os.path.join(job_dir, "out"),
                "TMPDIR": os.path.join(job_dir, "out"), "PF_JOB_ID": jid,
                "PF_NODE_ID": (Path(job_dir).parents[1] / "_node/id").read_text().strip(),
                "PF_RUNTIME_REPORT": os.path.join(job_dir, "out", ".program-runtime.json"),
                "PF_JOB_IN": os.path.join(job_dir, "in"), "PF_JOB_OUT": os.path.join(job_dir, "out")}
+        # 只放行审批签发这三项(见 job_runtime.APPROVAL_ENV), 其余一律不带
+        for key in ("PF_APPROVAL_PUBKEY", "PF_APPROVAL_DECISION_DIR", "PF_APPROVAL_POLICY"):
+            if isinstance((approval_env or {}).get(key), str):
+                env[key] = approval_env[key]
         child = subprocess.Popen(["/bin/sh", "-c", GATE, "phonefarm-gate", *command],
                                  cwd=cwd, env=env, stdin=subprocess.PIPE, bufsize=0,
                                  stdout=log_fd, stderr=subprocess.STDOUT, close_fds=True,
@@ -579,7 +583,8 @@ def run(store, jid, job_dir, meta, spec, config_path, escalation_delays, budget,
             log_fd = _open_file(store, jid + "/log", os.O_WRONLY | os.O_APPEND)
             try:
                 disk.prepare(log_fd)
-                child = domain.start_gate(spec["command"], spec["cwd"], job_dir, jid, log_fd)
+                child = domain.start_gate(spec["command"], spec["cwd"], job_dir, jid, log_fd,
+                                          approval_env=spec.get("approval_env"))
             finally:
                 os.close(log_fd)
         except subprocess.TimeoutExpired:
