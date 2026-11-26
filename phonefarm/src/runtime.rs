@@ -1039,6 +1039,9 @@ fn parse_plan(text: &str, plan_max: usize) -> (Vec<ActN>, Option<String>) {
     (acts, note)
 }
 
+/// 一局里 handoff(请人接手)的上限。
+const HANDOFF_MAX: u32 = 3;
+
 /// 探针动作集(v0.6 Step 3): 只读查询,不动屏幕,不重采画面
 const PROBES: [&str; 4] = ["inspect", "find", "get_state", "history"];
 
@@ -1906,6 +1909,8 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
     let mut universal_engine = crate::universal::UniversalEngine::new(false);
     // 上一步刚放行了敏感动作(删除/付款…)时, 紧接着弹出的确认框是模型自己要的, 不交给弹窗规则(它会点「取消」)
     let mut suppress_popup_once = false;
+    // 一局最多请人接手几次(防模型反复打扰人)
+    let mut handoffs_used = 0u32;
     // 专用场景一律插件化: 核心只调用登记入口, 不认识任何具体应用
     crate::plugins::register_builtin(&mut universal_engine);
     let (realw, realh) = phone.size();
@@ -2681,7 +2686,19 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
         }
 
         // 🙋 handoff: 请人接手一步(验证码/密码/付款确认…)。等待期间不发任何写动作; 人点「做完了」后重新读屏继续。
+        if act.a == "handoff" && handoffs_used >= HANDOFF_MAX {
+            log_act(&mut log, n, &act, &plan_by, ms_field);
+            let d = format!("rejected(本局已请人接手{HANDOFF_MAX}次, 不再打扰; 绕不开就 done 写明卡点)");
+            log.put(json!({"r":"diff","n":n,"d":d}));
+            println!("[{n}] {ms_disp} {plan_by} | {aline} ⛔ {d}");
+            run_push(&mut runs, aline.clone(), d.clone());
+            stream.push(format!("{aline} → {d}"));
+            stall += 1;
+            if stall >= cfg.stall_limit { stop_reason = Some("watchdog"); break; }
+            continue;
+        }
         if act.a == "handoff" {
+            handoffs_used += 1;
             let ask = act.text.clone().unwrap_or_default();
             let kind = act.what.clone().unwrap_or_else(|| "other".into());
             log_act(&mut log, n, &act, &plan_by, ms_field);
