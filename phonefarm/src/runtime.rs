@@ -1933,6 +1933,9 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
     let approval_policy = crate::approval::Policy::from_toml(cfg.approval.as_ref());
     let mut approval_grants = crate::approval::Grants::default();
+    // 中途纠偏: 人工留言目录(与 approvals 并列), 读到的留言一直带在上下文里(最近几条)
+    let steer_dir = crate::steer::steer_dir(&run_dir);
+    let mut steers: Vec<crate::steer::Msg> = Vec::new();
     let lessons = load_lessons(&format!("{task_dir}/lessons.jsonl"));
     // 全局经验: 跨任务共享(tasks/_global/),"游戏里用home逃生"这类学费只交一次
     let global_dir = format!("{}/_global", crate::tasks_root(&cfg.data_dir));
@@ -2138,6 +2141,16 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
         // ① 本轮画面记录(采集在上一动作末尾或开局完成)
         log_screen(&mut log, &cap, n, realw, realh, &mut logged_seq);
+        let fresh = crate::steer::take_new(&steer_dir, n);
+        if !fresh.is_empty() {
+            for m in &fresh {
+                log.put(json!({"r":"steer","n":n,"id":m.id,"by":m.by,"t":m.text}));
+                println!("      🧑 人工留言({}): {}", m.by, m.text);
+            }
+            steers.extend(fresh);
+            // 旧计划是留言之前想的: 作废, 下一步按留言重新决策
+            if !queue.is_empty() { println!("      ⏸ 有人工留言,剩余{}步计划作废", queue.len()); queue.clear(); }
+        }
         // ── 遥测: 每个新帧采一次(帧号判重),r=telemetry 入账;差值事件出 r=app_event。
         // 不进模型上下文;失败/超时产出全 None 的紧凑空记录,不 panic 不拖循环。 ──
         if tele_on && cap.seq != tele_seq {
@@ -2383,7 +2396,13 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             } else {
                 String::new()
             };
-            let user = render_ctx(goal, &glessons, &lessons, last_verdict_line, &apps_line, &budget_line, &map_line, &assert_line, &alert, &probe_ans, &hypo_line, &runs, &bans, &note, &cap, realw, realh);
+            let steer_txt = crate::steer::render(&steers);
+            let alert_all = match (steer_txt.is_empty(), alert.is_empty()) {
+                (true, _) => alert.clone(),
+                (false, true) => steer_txt,
+                (false, false) => format!("{steer_txt}\n⚠ {alert}"),
+            };
+            let user = render_ctx(goal, &glessons, &lessons, last_verdict_line, &apps_line, &budget_line, &map_line, &assert_line, &alert_all, &probe_ans, &hypo_line, &runs, &bans, &note, &cap, realw, realh);
             ctx_bytes += user.len() as u64;
             ctx_calls += 1;
             // 模型视角存档: 这次决策发给模型的完整上下文(含警报/沙盘/清单/便签)
