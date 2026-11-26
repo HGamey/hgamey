@@ -84,6 +84,60 @@ pub struct LayerSupport {
 }
 
 /// 一种设备后端。方法语义与 `device::Adb` 上的同名方法一致 (那是第一个实现, 也是参照)。
+/// 一个写动作(点/滑/输入/按键)发给设备后的回执。
+///
+/// - `Sent`: 命令确认送达并正常结束。
+/// - `NotSent`: 命令确定没到设备(连不上、设备掉线、已冻结、WDA 拒收)。屏幕不会因它而变, 可以重来。
+/// - `Unknown`: 发出去了但不知道有没有生效(超时、半路断开、多条命令只成了一部分)。
+///   **不得自动重放**: 付款/发送这类动作再按一次可能就是两次。先重新看屏幕再决定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Receipt {
+    Sent,
+    NotSent(String),
+    Unknown(String),
+}
+
+impl Receipt {
+    pub fn id(&self) -> &'static str {
+        match self {
+            Receipt::Sent => "sent",
+            Receipt::NotSent(_) => "not_sent",
+            Receipt::Unknown(_) => "unknown",
+        }
+    }
+    pub fn why(&self) -> &str {
+        match self {
+            Receipt::Sent => "",
+            Receipt::NotSent(w) | Receipt::Unknown(w) => w,
+        }
+    }
+    /// 一个动作拆成几条命令时合并: 任一未知 = 未知; 有的发出有的没发出 = 未知(做了一半); 全没发出 = 没发出。
+    pub fn merge(self, next: Receipt) -> Receipt {
+        use Receipt::*;
+        match (self, next) {
+            (Sent, Sent) => Sent,
+            (Unknown(w), _) | (_, Unknown(w)) => Unknown(w),
+            (NotSent(a), NotSent(_)) => NotSent(a),
+            (Sent, NotSent(w)) | (NotSent(w), Sent) => Unknown(format!("只发出了一部分: {w}")),
+        }
+    }
+}
+
+/// 后端记回执用: 每条写命令 `note` 一次, 动作执行完由调用方 `take`。
+/// 什么都没记(如 wait)按 `Sent` 算。
+#[derive(Default)]
+pub struct ReceiptCell(std::sync::Mutex<Option<Receipt>>);
+
+impl ReceiptCell {
+    pub fn note(&self, r: Receipt) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *g = Some(match g.take() { Some(prev) => prev.merge(r), None => r });
+    }
+    pub fn take(&self) -> Receipt {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or(Receipt::Sent)
+    }
+}
+
 pub trait Backend: Send + Sync {
     // ── 身份 ──
     /// 传输名: "adb" / "hdc" / ...  (CTS 日志通道等按它选路)。
@@ -126,6 +180,9 @@ pub trait Backend: Send + Sync {
     fn clear_field(&self);
     fn back(&self);
     fn home(&self);
+    /// 取走并清空自上次取以来所有写命令的合并回执(见 [`Receipt`])。
+    /// 没有实现回执的后端一律报 `Sent`(与引入回执前的假设一致)。
+    fn take_receipt(&self) -> Receipt { Receipt::Sent }
 
     // ── 应用 ──
     fn force_stop(&self, pkg: &str);
@@ -293,6 +350,7 @@ macro_rules! forward_required {
 }
 
 impl Backend for Adb {
+    fn take_receipt(&self) -> Receipt { self.receipt.take() }
     fn transport(&self) -> &'static str { "adb" }
     fn platform(&self) -> &'static str { "android" }
     fn layers(&self) -> Vec<LayerSupport> { ANDROID_LAYERS.to_vec() }
@@ -312,6 +370,7 @@ impl Backend for Adb {
 }
 
 impl Backend for Hdc {
+    fn take_receipt(&self) -> Receipt { self.receipt.take() }
     fn transport(&self) -> &'static str { "hdc" }
     fn platform(&self) -> &'static str { "openharmony" }
     fn layers(&self) -> Vec<LayerSupport> { OPENHARMONY_LAYERS.to_vec() }
@@ -320,6 +379,22 @@ impl Backend for Hdc {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn receipts_merge_to_the_least_certain() {
+        use super::Receipt::*;
+        let n = |w: &str| NotSent(w.to_string());
+        let u = |w: &str| Unknown(w.to_string());
+        assert_eq!(Sent.merge(Sent), Sent);
+        assert_eq!(n("a").merge(n("b")).id(), "not_sent");
+        assert_eq!(Sent.merge(n("b")).id(), "unknown", "一半发出 = 不确定");
+        assert_eq!(n("a").merge(u("x")).id(), "unknown");
+        let c = super::ReceiptCell::default();
+        assert_eq!(c.take(), Sent, "什么都没发 = Sent");
+        c.note(Sent); c.note(u("t"));
+        assert_eq!(c.take().id(), "unknown");
+        assert_eq!(c.take(), Sent, "take 后清空");
+    }
     use super::*;
 
     #[test]

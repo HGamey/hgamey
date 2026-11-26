@@ -18,6 +18,66 @@ fn observation_transport_uncertain(reason: &str) {
     }
 }
 
+use crate::platform::Receipt;
+
+/// 跑一条写命令, 给出回执。起不来 = 没发出; 超时 = 未知(命令可能已经到了设备, 只是没回来);
+/// 正常结束后由 `classify(退出码是否为0, stdout+stderr)` 判。
+fn send_cmd(mut cmd: Command, ms: u64, stem: &str, classify: fn(bool, &str) -> Receipt) -> Receipt {
+    let (out, err) = (format!("{stem}.out"), format!("{stem}.err"));
+    let (Ok(fo), Ok(fe)) = (std::fs::File::create(&out), std::fs::File::create(&err)) else {
+        return Receipt::NotSent(format!("建不了临时文件 {stem}"));
+    };
+    let mut child = match cmd.stdin(Stdio::null()).stdout(fo).stderr(fe).spawn() {
+        Ok(c) => c,
+        Err(e) => return Receipt::NotSent(format!("起不了传输命令: {e}")),
+    };
+    let t0 = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if t0.elapsed() > Duration::from_millis(ms) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Receipt::Unknown(format!("{} ms 内没返回", ms));
+            }
+            Ok(None) => sleep(Duration::from_millis(20)),
+            Err(e) => return Receipt::Unknown(format!("等不到命令结束: {e}")),
+        }
+    };
+    let text = format!("{}{}", String::from_utf8_lossy(&std::fs::read(&out).unwrap_or_default()),
+                       String::from_utf8_lossy(&std::fs::read(&err).unwrap_or_default()));
+    classify(status.success(), text.trim())
+}
+
+/// 传输层明说「没连上设备」的几种措辞: 这类失败命令确定没到设备。
+fn transport_refused(lower: &str) -> bool {
+    ["device not found", "no devices", "device offline", "device unauthorized", "unauthorized",
+     "cannot connect", "failed to connect", "connection refused", "not connected", "connect-key", "connect key"]
+        .iter().any(|k| lower.contains(k))
+}
+
+/// adb shell input …: 退出码 0 = 已送达; 传输层拒绝 = 没发出; 其他非零(input 本身报错)按未知。
+fn classify_adb(ok: bool, text: &str) -> Receipt {
+    let lower = text.to_lowercase();
+    if transport_refused(&lower) {
+        return Receipt::NotSent(text.chars().take(160).collect());
+    }
+    if ok { Receipt::Sent } else { Receipt::Unknown(format!("adb 非零退出: {}", text.chars().take(160).collect::<String>())) }
+}
+
+/// hdc 失败时退出码常仍为 0, 只能看输出: 「[Fail]」+ 连接类措辞 = 没发出, 其余 [Fail]/error 按未知。
+fn classify_hdc(ok: bool, text: &str) -> Receipt {
+    let lower = text.to_lowercase();
+    let short = || text.chars().take(160).collect::<String>();
+    if transport_refused(&lower) {
+        return Receipt::NotSent(short());
+    }
+    if !ok || lower.contains("[fail]") || lower.contains("error:") {
+        return Receipt::Unknown(format!("hdc 报错: {}", short()));
+    }
+    Receipt::Sent
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Node {
     pub t: String,
@@ -250,6 +310,7 @@ pub struct Adb {
     frozen: AtomicBool, // --freeze-on-done: 置位后不再发"写"动作,只放行观测
     gamepad: std::sync::Mutex<Option<crate::gamepad::Gamepad>>,
     is_root: AtomicBool, // 标记设备是否具备 root 特权 (su -c 或 direct uid=0)
+    pub(crate) receipt: crate::platform::ReceiptCell, // 写命令回执, 见 platform::Receipt
 }
 
 impl Adb {
@@ -266,6 +327,7 @@ impl Adb {
                     frozen: AtomicBool::new(false),
                     gamepad: std::sync::Mutex::new(None),
                     is_root: AtomicBool::new(false),
+                    receipt: Default::default(),
                 };
             }
             std::process::exit(2);
@@ -277,6 +339,7 @@ impl Adb {
             frozen: AtomicBool::new(false),
             gamepad: std::sync::Mutex::new(None),
             is_root: AtomicBool::new(false),
+            receipt: Default::default(),
         }
     }
 
@@ -328,10 +391,25 @@ impl Adb {
     }
 
     fn input(&self, args: &[&str]) {
-        if self.frozen() { return; }
         let mut v = vec!["shell", "input"];
         v.extend_from_slice(args);
-        self.run(&v);
+        self.send(&v);
+    }
+
+    /// 发一条写命令并记回执(见 platform::Receipt)。限时 30 s: 以前不限时, adb 卡死会拖住整局。
+    fn send(&self, args: &[&str]) {
+        if self.frozen() {
+            self.receipt.note(Receipt::NotSent("设备已冻结(freeze-on-done)".into()));
+            return;
+        }
+        let mut cmd = crate::fd_lock::transport_command(&self.bin);
+        if let Some(s) = &self.serial {
+            cmd.arg("-s").arg(s);
+        }
+        cmd.args(args);
+        let r = send_cmd(cmd, 30_000, &format!("{}/_send", self.tmp), classify_adb);
+        if r != Receipt::Sent { eprintln!("      ⚠ 写命令回执 {}: {}", r.id(), r.why()); }
+        self.receipt.note(r);
     }
 
     /// 设备心跳(限时,防 adb 卡死拖垮全局): echo ok 能回来即活
@@ -581,10 +659,7 @@ impl Adb {
     /// input text 是纯追加——预填默认文本的输入框(如保存框预填名)不先清空就物理上改不掉,
     /// 给模型一个通用的"先聚焦→clear→type"原语,而非让它对着追加语义空转
     pub fn clear_field(&self) {
-        self.run_timeout(
-            &["shell", "input keyevent 123; for i in $(seq 64); do input keyevent 67; done"],
-            10000,
-        );
+        self.send(&["shell", "input keyevent 123; for i in $(seq 64); do input keyevent 67; done"]);
     }
     pub fn back(&self) {
         self.input(&["keyevent", "4"]);
@@ -849,6 +924,7 @@ pub struct Hdc {
     /// 对质在 OH 因此自然失效,这是设计而非疏漏。
     fg_cache: std::sync::Mutex<Option<String>>,
     frozen: AtomicBool, // --freeze-on-done(与 Adb 对称)
+    pub(crate) receipt: crate::platform::ReceiptCell,
 }
 
 impl Hdc {
@@ -856,7 +932,7 @@ impl Hdc {
         Hdc { key, tmp, is_root: AtomicBool::new(false), size_cache: OnceLock::new(),
               last_tap: (AtomicI32::new(-1), AtomicI32::new(-1)),
               fg_cache: std::sync::Mutex::new(None),
-              frozen: AtomicBool::new(false) }
+              frozen: AtomicBool::new(false), receipt: Default::default() }
     }
 
     pub fn set_frozen(&self) { self.frozen.store(true, Ordering::Relaxed); }
@@ -906,10 +982,17 @@ impl Hdc {
     }
 
     fn ui_input(&self, args: &[&str]) {
-        if self.frozen() { return; }
+        if self.frozen() {
+            self.receipt.note(Receipt::NotSent("设备已冻结(freeze-on-done)".into()));
+            return;
+        }
         let mut v = vec!["shell", "uitest", "uiInput"];
         v.extend_from_slice(args);
-        self.run_timeout(&v, 8000, "input");
+        let mut cmd = self.base();
+        cmd.args(&v);
+        let r = send_cmd(cmd, 8000, &format!("{}/_hdc_send", self.tmp), classify_hdc);
+        if r != Receipt::Sent { eprintln!("      ⚠ 写命令回执 {}: {}", r.id(), r.why()); }
+        self.receipt.note(r);
     }
 
     /// 拉回设备文件(file recv 是 hdc 顶层命令,非 shell);先删本地旧文件,防陈旧内容冒充
@@ -1260,6 +1343,8 @@ impl Device {
     pub fn clear_field(&self) { self.b.clear_field() }
     pub fn back(&self) { self.b.back() }
     pub fn home(&self) { self.b.home() }
+    /// 取走自上次取以来写命令的合并回执(见 platform::Receipt)
+    pub fn take_receipt(&self) -> Receipt { self.b.take_receipt() }
     pub fn force_stop(&self, pkg: &str) { self.b.force_stop(pkg) }
     /// 返回冷启动毫秒(Android am start -W 的 WaitTime;OH/monkey 路线采不到为 None)
     pub fn launch(&self, pkg: &str, comp: &str) -> Option<i64> { self.b.launch(pkg, comp) }
@@ -1665,6 +1750,33 @@ mod pfclip_tests {
 mod tests {
 
     #[test]
+    fn write_receipts_tell_sent_not_sent_and_unknown_apart() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pf-receipt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Command::new(p)
+        };
+        let stem = dir.join("s").to_string_lossy().into_owned();
+        assert_eq!(send_cmd(script("ok.sh", "exit 0"), 5000, &stem, classify_adb), Receipt::Sent);
+        let r = send_cmd(script("off.sh", "echo 'error: device offline' >&2; exit 1"), 5000, &stem, classify_adb);
+        assert_eq!(r.id(), "not_sent", "{r:?}");
+        let r = send_cmd(script("bad.sh", "echo 'Error: Unknown command' >&2; exit 1"), 5000, &stem, classify_adb);
+        assert_eq!(r.id(), "unknown", "input 自己报错: 不确定有没有做");
+        let r = send_cmd(script("slow.sh", "sleep 5"), 300, &stem, classify_adb);
+        assert_eq!(r.id(), "unknown", "超时 = 可能已执行");
+        let r = send_cmd(Command::new(dir.join("missing")), 5000, &stem, classify_adb);
+        assert_eq!(r.id(), "not_sent", "起不来 = 没发出");
+        assert_eq!(classify_hdc(true, "[Fail]ExecuteCommand need connect-key").id(), "not_sent");
+        assert_eq!(classify_hdc(true, "[Fail] inject failed").id(), "unknown");
+        assert_eq!(classify_hdc(true, "No Error"), Receipt::Sent);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn single_online_adb_needs_exactly_one_connectable_device() {
         let one = "List of devices attached\n91253241019A\tdevice\n";
         assert_eq!(single_online_adb(one).as_deref(), Some("91253241019A"));
@@ -1934,6 +2046,7 @@ mod tests {
             frozen: AtomicBool::new(false),
             gamepad: std::sync::Mutex::new(None),
             is_root: AtomicBool::new(false),
+            receipt: Default::default(),
         };
         assert!(!d.frozen(), "新建默认不冻结");
         d.set_frozen();

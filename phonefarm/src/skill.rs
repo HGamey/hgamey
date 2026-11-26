@@ -408,6 +408,8 @@ pub enum Stop {
     Denied { step: usize, reason: String },
     Success { missing: Vec<String> },
     Capture { step: usize },
+    /// 动作没发到手机(not_sent)或发出后不确定是否生效(unknown)。不是技能的错, 也绝不重放这一步。
+    Receipt { step: usize, state: &'static str, why: String, sensitive: bool },
 }
 
 impl Stop {
@@ -420,6 +422,8 @@ impl Stop {
             Stop::Denied { .. } => "approval_denied",
             Stop::Success { .. } => "final_condition_failed",
             Stop::Capture { .. } => "capture_failed",
+            Stop::Receipt { state: "not_sent", .. } => "action_not_sent",
+            Stop::Receipt { .. } => "action_unconfirmed",
         }
     }
     pub fn describe(&self) -> String {
@@ -431,6 +435,11 @@ impl Stop {
             Stop::Denied { step, reason } => format!("第{}步审批未通过: {reason}", step + 1),
             Stop::Success { missing } => format!("终态缺 {:?}", missing),
             Stop::Capture { step } => format!("第{}步读不到画面", step + 1),
+            Stop::Receipt { step, state, why, sensitive } => match *state {
+                "not_sent" => format!("第{}步动作没发到手机({why}), 屏幕没变", step + 1),
+                _ => format!("第{}步动作发出后没收到确认({why}), 可能已经生效也可能没有; 以当前屏幕为准{}", step + 1,
+                             if *sensitive { ", 这是敏感操作, 先确认是否已完成, 绝不能直接再做一次" } else { "" }),
+            },
         }
     }
 }
@@ -599,7 +608,9 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             target_ids: ids.iter().map(String::as_str).collect(),
         };
         let mut asked_human = false;
+        let mut sensitive = false;
         if let Some(hit) = approval::classify(&facts, ctx.policy) {
+            sensitive = true;
             let base = target_texts.iter().find(|t| !t.trim().is_empty()).cloned().or_else(|| st.what.clone()).unwrap_or_default();
             let ctx_texts: Vec<&str> = els.iter().map(|e| e.t.as_str()).collect();
             let key = format!("{base}#{}", approval::context_sig(&ctx_texts));
@@ -656,6 +667,7 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             }
         }
         // 执行
+        let _ = ctx.device.take_receipt();
         match st.a.as_str() {
             "tap" => { let (x, y) = tap_at.unwrap(); ctx.device.tap(x, y); last_tap = Some((x, y)); }
             "long_press" => { let (x, y) = tap_at.unwrap(); ctx.device.long_press(x, y, 700); }
@@ -669,7 +681,14 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             "launch" => { let _ = ctx.device.launch(st.text.as_deref().unwrap_or(""), ""); }
             _ => {}
         }
-        put(json!({"r":"act","step":i,"a":st.a,"what":st.what,"at":tap_at,"text":text_filled}));
+        let receipt = ctx.device.take_receipt();
+        put(json!({"r":"act","step":i,"a":st.a,"what":st.what,"at":tap_at,"text":text_filled,"receipt":receipt.id()}));
+        if receipt != crate::platform::Receipt::Sent {
+            // 回放不重试: 没发出就停在这里交还; 不确定更不能再按一次
+            if matches!(receipt, crate::platform::Receipt::Unknown(_)) && sensitive { grants.clear(); }
+            put(json!({"r":"stop","code":"receipt","step":i,"state":receipt.id(),"why":receipt.why()}));
+            return Stop::Receipt { step: i, state: receipt.id(), why: receipt.why().to_string(), sensitive };
+        }
         std::thread::sleep(Duration::from_millis(ctx.settle_ms));
         if !st.expect.is_empty() {
             let t0 = Instant::now();
@@ -708,8 +727,8 @@ pub fn record(skill: &mut Skill, stop: &Stop) {
         skill.stats.fail_streak = 0;
         skill.stats.stale = false;
         skill.stats.last_stop = None;
-    } else if !matches!(stop, Stop::Denied { .. }) {
-        // 审批被拒不是技能的错
+    } else if !matches!(stop, Stop::Denied { .. } | Stop::Receipt { .. }) {
+        // 审批被拒、传输出错都不是技能的错
         skill.stats.fail_streak += 1;
         skill.stats.last_stop = Some(stop.describe());
         if skill.stats.fail_streak >= STALE_AFTER { skill.stats.stale = true; }

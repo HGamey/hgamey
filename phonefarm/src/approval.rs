@@ -604,6 +604,11 @@ impl Grants {
     }
     /// 这次动作是否已被先前的批准覆盖。关键类(付款/删除/钱包)本身每次都要问, 只有紧跟其后的
     /// 后续确认能用掉一次额度; 非关键类按「观察到的目标文字」在 grant_s 内复用。
+    /// 收回全部额度: 敏感动作发出后结果不明时用, 之后同类动作一律重新问人。
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.follow.clear();
+    }
     pub fn covers(&mut self, pkg: &str, c: Category, target: &str, grant_s: u64, follow_up: bool) -> bool {
         let now = Instant::now();
         self.items.retain(|(_, t)| now.duration_since(*t).as_secs() < grant_s.max(1));
