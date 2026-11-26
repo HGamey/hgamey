@@ -278,6 +278,10 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
                     }
                     _ => {}
                 }
+                // 除 launch 外每步都核对起点画面: 输入、返回、滑动做在错的页面上同样有害
+                if st.when.is_empty() && st.a != "launch" {
+                    st.when = s.map(pick_when).unwrap_or_default();
+                }
                 pending = Some((st, false));
             }
             "diff" => {
@@ -702,6 +706,7 @@ mod tests {
         assert!(s.steps[0].when.contains(&"WLAN".to_string()) && !s.steps[0].when.contains(&"12:30".to_string()));
         assert_eq!(s.steps[0].expect, vec!["搜索设置".to_string(), "取消".to_string()]);
         assert_eq!(s.steps[1].text.as_deref(), Some("{{text_1}}"));
+        assert!(s.steps[1].when.contains(&"搜索设置".to_string()), "输入步也带起点路标: {:?}", s.steps[1].when);
         // 未通过复核的局默认不收
         let t = fs::read_to_string(dir.join("log.jsonl")).unwrap().replace("\"achieved\":true", "\"achieved\":false");
         fs::write(dir.join("log.jsonl"), t).unwrap();

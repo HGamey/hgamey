@@ -1091,6 +1091,9 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
             };
             let mut xi = (x * cap.w as i64 / NORM) as i32;
             let mut yi = (y * cap.h as i64 / NORM) as i32;
+            // 点名命中清单元素: 落点由 UI 树担保, 不再用截图像素判空白
+            // (安全窗口/FLAG_SECURE 页截图全黑, 像素检查会把树里真实存在的输入框当空白拒掉)
+            let mut snapped_named = false;
             if cap.suspect {
                 // 假树: 清单不可信,不吸附不点名,按原坐标走(空白/前科检查照常)
             } else if a.what.as_deref().map(str::trim).is_some_and(|w| w.starts_with("icon:")) {
@@ -1108,6 +1111,7 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
                     Some((_, bi)) => {
                         xi = (bi[0] + bi[2]) / 2;
                         yi = (bi[1] + bi[3]) / 2;
+                        snapped_named = true;
                     }
                     None => {
                         a.what = None;
@@ -1138,7 +1142,9 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
                     return Some("同一目标同点连点3次:换个目标,或用back/scroll_down离开当前位置".into());
                 }
             }
-            if let (Some((sd, mean)), Some(bg)) =
+            if snapped_named {
+                // 跳过空白检查(见上)
+            } else if let (Some((sd, mean)), Some(bg)) =
                 (patch_stats(&cap.img, xi, yi, tmp), cap.thumb.as_ref().map(|t| mode_gray(t) as f32))
             {
                 if sd < 6.0 && (mean - bg).abs() < 22.0 {
