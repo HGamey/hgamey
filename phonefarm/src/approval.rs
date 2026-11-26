@@ -236,6 +236,12 @@ const WALLET_PKGS: &[&str] = &[
     "com.mipay.wallet", "com.coloros.wallet", "com.vivo.wallet", "com.samsung.android.spay",
 ];
 
+/// 滑动类控件的字样(「滑动付款」「右滑删除」「slide to pay」)。
+const SWIPE_HINTS: &[&str] = &["滑动", "右滑", "左滑", "上滑", "滑块", "slide", "swipe"];
+
+/// 模型点名(what)的长度上限: 超过这个长度、又不是落点控件上的文字, 多半是在点标题/段落。
+const WHAT_MAX_CHARS: usize = 16;
+
 /// 目标文字长度上限(字符), 超过视为说明段落而不是按钮。
 const LABEL_MAX_CHARS: usize = 40;
 
@@ -298,8 +304,9 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
             None
         }
         "swipe" => {
-            // 滑动解锁付款、左滑删除: 只看起点元素上的删除/付款词
-            let labels: Vec<&str> = f.target_texts.iter().copied().collect();
+            // 滑动付款、左滑删除: 起点元素上同时有「滑」类词和删除/付款词才算(普通滚动从「待支付」上起手不算)
+            let labels: Vec<&str> = f.target_texts.iter().copied()
+                .filter(|l| { let n = norm(l); SWIPE_HINTS.iter().any(|h| n.contains(&norm(h))) }).collect();
             if let Some((l, w)) = labels.iter().find_map(|l| label_hits(l, DELETE_WORDS).map(|w| (l, w))) {
                 return Some(Hit { follow_up: false, category: Category::Delete, reason: format!("滑动起点「{l}」含「{w}」") });
             }
@@ -313,7 +320,9 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
             if wallet {
                 return Some(Hit { follow_up: false, category: Category::Wallet, reason: format!("钱包应用 {} 内的点击", f.pkg) });
             }
-            let labels: Vec<&str> = f.what.into_iter().chain(f.target_texts.iter().copied()).collect();
+            // what 是模型自报的: 长的 what 只有和落点控件文字一致时才当按钮看(防「如何删除…」这类标题误判)
+            let what = f.what.filter(|w| w.chars().count() <= WHAT_MAX_CHARS || f.target_texts.iter().any(|t| norm(t) == norm(w)));
+            let labels: Vec<&str> = what.into_iter().chain(f.target_texts.iter().copied()).collect();
             let first = |words: &[&'static str]| labels.iter().find_map(|l| label_hits(l, words).map(|w| (l.to_string(), w)));
             if let Some((l, w)) = first(DELETE_WORDS) {
                 return Some(Hit { follow_up: false, category: Category::Delete, reason: format!("目标「{l}」含「{w}」") });
@@ -400,7 +409,9 @@ pub fn approval_dir(run_dir: &str) -> PathBuf {
     }
     if let Ok(o) = std::env::var("PF_JOB_OUT") {
         if !o.trim().is_empty() {
-            return Path::new(&o).join("approvals");
+            // 放在作业目录下、out/ 之外: 作业产物下载接口(out/images/artifacts)不会把截图和请求带出去
+            let out = Path::new(&o);
+            return out.parent().unwrap_or(out).join("approvals");
         }
     }
     Path::new(run_dir).join("approvals")
@@ -430,8 +441,8 @@ fn write_atomic(path: &Path, v: &Value) -> std::io::Result<()> {
 }
 
 /// 交互终端下的 stdin 行通道(全进程一个读线程)。非终端或 PF_APPROVAL_NO_TTY 时为 None。
-fn tty_lines() -> Option<&'static std::sync::Mutex<std::sync::mpsc::Receiver<String>>> {
-    static RX: std::sync::OnceLock<Option<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>> = std::sync::OnceLock::new();
+fn tty_lines() -> Option<&'static std::sync::Mutex<std::sync::mpsc::Receiver<(Instant, String)>>> {
+    static RX: std::sync::OnceLock<Option<std::sync::Mutex<std::sync::mpsc::Receiver<(Instant, String)>>>> = std::sync::OnceLock::new();
     RX.get_or_init(|| {
         if !std::io::stdin().is_terminal() || std::env::var("PF_APPROVAL_NO_TTY").is_ok() {
             return None;
@@ -440,7 +451,7 @@ fn tty_lines() -> Option<&'static std::sync::Mutex<std::sync::mpsc::Receiver<Str
         std::thread::spawn(move || {
             for line in std::io::stdin().lock().lines() {
                 let Ok(line) = line else { break };
-                if tx.send(line).is_err() { break; }
+                if tx.send((Instant::now(), line)).is_err() { break; }
             }
         });
         Some(std::sync::Mutex::new(rx))
@@ -449,11 +460,21 @@ fn tty_lines() -> Option<&'static std::sync::Mutex<std::sync::mpsc::Receiver<Str
 
 /// 只在决定文件还不存在时写入(先到先得; 节点服务那边同样用 O_EXCL)。
 fn write_first(path: &Path, v: &Value) -> bool {
-    use std::io::Write;
-    match fs::OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(mut f) => f.write_all(&serde_json::to_vec(v).unwrap_or_default()).is_ok(),
-        Err(_) => false,
-    }
+    // 先写临时文件再硬链接过去: 读方看不到半截内容; 目标已存在时 link 失败 = 先写者胜
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    if fs::write(&tmp, serde_json::to_vec(v).unwrap_or_default()).is_err() { return false; }
+    let ok = match fs::hard_link(&tmp, path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        // 不支持硬链接的文件系统: 退回独占创建
+        Err(_) => {
+            use std::io::Write;
+            fs::OpenOptions::new().write(true).create_new(true).open(path)
+                .and_then(|mut f| f.write_all(&serde_json::to_vec(v).unwrap_or_default())).is_ok()
+        }
+    };
+    let _ = fs::remove_file(&tmp);
+    ok
 }
 
 pub fn request_json(r: &Request, timeout_s: u64) -> Value {
@@ -503,6 +524,8 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
 
     // 终端问答: 全局只有一个读 stdin 的线程, 行经通道送来; 每个请求开始前先丢掉积压的行(防误触回车)。
     let tty = tty_lines();
+    // 提示出现之后(再留 300 ms)才敲的行才算答复; 之前积压或刚好在路上的回车一律丢弃
+    let asked_at = Instant::now() + Duration::from_millis(300);
     if let Some(rx) = tty {
         if let Ok(rx) = rx.lock() { while rx.try_recv().is_ok() {} }
         if r.category == Category::Handoff {
@@ -522,8 +545,11 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
         }
         if let Some(rx) = tty {
             let line = rx.lock().ok().and_then(|rx| rx.try_recv().ok());
-            if let Some(line) = line {
-                let allow = matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes" | "允许" | "完成");
+            if let Some((at, line)) = line {
+                if at < asked_at { continue; }
+                let l = line.trim().to_ascii_lowercase();
+                let allow = matches!(l.as_str(), "y" | "yes") || (r.category == Category::Handoff && l == "完成")
+                    || (r.category != Category::Handoff && l == "允许");
                 let _ = write_first(&dec_path, &json!({"decision": if allow {"allow"} else {"deny"}, "by": "tty"}));
                 continue;
             }
@@ -557,7 +583,17 @@ pub struct Grants {
 }
 
 /// 批准后的后续确认(如删除确认框上的「确定」)要在多少秒内发生才算同一件事。
-pub const FOLLOW_UP_S: u64 = 20;
+pub const FOLLOW_UP_S: u64 = 60;
+
+/// 页面上下文签名: 当屏最靠上的几个稳定短文字(不含数字), 用来区分「同名按钮、不同对象」
+/// (聊天 A 和聊天 B 的「发送」、两个订单页的「确认」)。
+pub fn context_sig(screen: &[&str]) -> String {
+    let mut v: Vec<String> = screen.iter().map(|t| norm(t))
+        .filter(|t| !t.is_empty() && t.chars().count() <= 20 && !t.chars().any(|c| c.is_ascii_digit()))
+        .take(6).collect();
+    v.dedup();
+    v.join("|")
+}
 
 impl Grants {
     fn key(pkg: &str, c: Category, target: &str) -> String {
@@ -635,6 +671,24 @@ mod tests {
         assert_eq!(classify(&facts("swipe", None, vec!["滑动删除"], vec![]), &p).unwrap().category, Category::Delete);
         assert_eq!(classify(&facts("swipe", None, vec!["右滑付款"], vec![]), &p).unwrap().category, Category::Payment);
         assert!(classify(&facts("swipe", None, vec!["推荐"], vec![]), &p).is_none());
+        // 普通滚动从「待支付」「清除数据」上起手不算
+        assert!(classify(&facts("swipe", None, vec!["待支付"], vec![]), &p).is_none());
+        assert!(classify(&facts("swipe", None, vec!["清除数据"], vec![]), &p).is_none());
+    }
+
+    #[test]
+    fn long_what_needs_to_be_the_tapped_control() {
+        let p = Policy::default();
+        let title = "如何删除微信聊天记录而不被对方发现";
+        assert!(classify(&facts("tap", Some(title), vec![], vec![]), &p).is_none());
+        let btn = "删除所选的 12 张照片和视频";
+        assert_eq!(classify(&facts("tap", Some(btn), vec![btn], vec![]), &p).unwrap().category, Category::Delete);
+    }
+
+    #[test]
+    fn context_sig_tells_chats_apart() {
+        assert_ne!(context_sig(&["张三", "发送"]), context_sig(&["李四", "发送"]));
+        assert_eq!(context_sig(&["张三", "12:30", "发送"]), context_sig(&["张三", "12:31", "发送"]));
     }
 
     #[test]

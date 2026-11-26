@@ -446,10 +446,7 @@ fn type_targets(full: &[FullNode], last_tap: Option<(i32, i32)>) -> (Vec<String>
         .filter(|f| last_tap.is_some_and(|(x, y)| f.b[0] <= x && x <= f.b[2] && f.b[1] <= y && y <= f.b[3])).collect();
     if chosen.is_empty() {
         chosen = if edits.len() == 1 { edits } else {
-            edits.into_iter().filter(|f| {
-                let blob = format!("{} {} {}", f.class, f.id.as_deref().unwrap_or(""), f.t).to_lowercase();
-                ["password", "passwd", "pwd", "secure", "pin", "密码", "验证码"].iter().any(|k| blob.contains(k))
-            }).collect()
+            edits.into_iter().filter(|f| crate::runtime::password_like(&f.class, f.id.as_deref(), &f.t)).collect()
         };
     }
     let texts = chosen.iter().filter(|f| !f.t.is_empty()).map(|f| f.t.clone()).collect();
@@ -603,7 +600,9 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
         };
         let mut asked_human = false;
         if let Some(hit) = approval::classify(&facts, ctx.policy) {
-            let key = target_texts.first().cloned().or_else(|| st.what.clone()).unwrap_or_default();
+            let base = target_texts.iter().find(|t| !t.trim().is_empty()).cloned().or_else(|| st.what.clone()).unwrap_or_default();
+            let ctx_texts: Vec<&str> = els.iter().map(|e| e.t.as_str()).collect();
+            let key = format!("{base}#{}", approval::context_sig(&ctx_texts));
             let allow = match ctx.policy.mode_for(hit.category) {
                 approval::Mode::Auto => true,
                 approval::Mode::Deny => false,
@@ -631,14 +630,22 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
                 return Stop::Denied { step: i, reason: hit.reason };
             }
         }
-        // 等过人: 画面可能已经变了, 重新读屏、重新定位, 对不上就停
+        // 等过人: 画面可能已经变了, 重新读屏, 起点路标、前台应用、目标都要对得上, 否则停
         if asked_human {
             if ctx.device.foreground_pkg() != pkg {
                 put(json!({"r":"stop","code":"step_precondition_failed","step":i,"why":"批准后前台应用变了"}));
                 return Stop::Precondition { step: i, missing: vec![format!("前台应用 {pkg}")] };
             }
+            let Some((els2, _)) = read(ctx) else { return Stop::Capture { step: i }; };
+            let have = present(&els2, &st.when);
+            // 按坐标点(没有点名)的步骤要求路标全在, 其余过半
+            let need_all = st.what.is_none() && tap_at.is_some();
+            if !st.when.is_empty() && (if need_all { have.len() < st.when.len() } else { have.len() * 2 < st.when.len() }) {
+                let missing: Vec<String> = st.when.iter().filter(|w| !have.contains(w)).cloned().collect();
+                put(json!({"r":"stop","code":"step_precondition_failed","step":i,"missing":missing,"why":"批准后画面变了"}));
+                return Stop::Precondition { step: i, missing };
+            }
             if let (Some(w), true) = (st.what.as_deref(), tap_at.is_some()) {
-                let Some((els2, _)) = read(ctx) else { return Stop::Capture { step: i }; };
                 match locate(&els2, w, st.at.map(px)) {
                     Ok(p) => tap_at = Some(p),
                     Err(why) => {
@@ -655,8 +662,8 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             "swipe" => if let (Some(a), Some(b)) = (st.at, st.to) { let (x, y) = px(a); let (x2, y2) = px(b); ctx.device.swipe(x, y, x2, y2); },
             "scroll_up" => ctx.device.scroll_up(),
             "scroll_down" => ctx.device.scroll_down(),
-            "back" => ctx.device.back(),
-            "home" => ctx.device.home(),
+            "back" => { ctx.device.back(); last_tap = None; }
+            "home" => { ctx.device.home(); last_tap = None; }
             "clear" => ctx.device.clear_field(),
             "type" => ctx.device.type_text(text_filled.as_deref().unwrap_or("")),
             "launch" => { let _ = ctx.device.launch(st.text.as_deref().unwrap_or(""), ""); }

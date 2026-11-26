@@ -1399,7 +1399,11 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
     // 只要不是被拒, 下面每条放行路径都会走到 return None; 先置位, 被拒时再清掉
     *sensitive_allowed = true;
     // 授权键用程序观察到的目标文字, 不用模型自报的 what(否则换个订单、同名按钮也能沿用)
-    let target_key = targets.first().cloned().or_else(|| a.what.clone()).or_else(|| a.text.clone()).unwrap_or_default();
+    let base_key = targets.iter().find(|t| !t.trim().is_empty()).cloned()
+        .or_else(|| a.what.clone()).or_else(|| a.text.clone()).unwrap_or_default();
+    // 加上页面上下文: 聊天 A 的「发送」不能沿用到聊天 B
+    let ctx_texts: Vec<&str> = cap.els.iter().map(|e| e.t.as_str()).collect();
+    let target_key = format!("{base_key}#{}", approval::context_sig(&ctx_texts));
     let mode = policy.mode_for(hit.category);
     let base = json!({"r":"approval","n":n,"category":hit.category.id(),"reason":hit.reason,"mode":format!("{mode:?}").to_lowercase()});
     match mode {
@@ -1444,6 +1448,59 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
     }
 }
 
+/// 密码类输入框: id/类名按词边界(含驼峰)认 password/passwd/pwd/pin/securetextfield, 文字认「密码」「验证码」。
+/// 不做子串匹配: shipping_address、spinner、pinyin 都不该算。
+pub(crate) fn password_like(class: &str, id: Option<&str>, text: &str) -> bool {
+    let mut toks: Vec<String> = Vec::new();
+    for part in [class, id.unwrap_or("")] {
+        let mut cur = String::new();
+        let mut prev_lower = false;
+        for ch in part.chars() {
+            if !ch.is_ascii_alphanumeric() {
+                if !cur.is_empty() { toks.push(std::mem::take(&mut cur)); }
+                prev_lower = false;
+                continue;
+            }
+            if ch.is_ascii_uppercase() && prev_lower && !cur.is_empty() { toks.push(std::mem::take(&mut cur)); }
+            prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+            cur.push(ch.to_ascii_lowercase());
+        }
+        if !cur.is_empty() { toks.push(cur); }
+    }
+    toks.iter().any(|t| matches!(t.as_str(), "password" | "passwd" | "pwd" | "pin" | "passcode" | "securetextfield"))
+        || class.to_lowercase().contains("securetextfield")
+        || text.contains("密码") || text.contains("验证码")
+}
+
+/// 两帧画面的稳定文字(去掉含数字的: 时间、倒计时、角标)重合度, 0~1。
+fn screen_similarity(a: &Cap, b: &Cap) -> f64 {
+    let set = |c: &Cap| -> std::collections::HashSet<String> {
+        c.els.iter().map(|e| e.t.trim().to_string())
+            .filter(|t| !t.is_empty() && !t.chars().any(|ch| ch.is_ascii_digit())).collect()
+    };
+    let (x, y) = (set(a), set(b));
+    if x.is_empty() && y.is_empty() { return 1.0; }
+    x.intersection(&y).count() as f64 / x.union(&y).count().max(1) as f64
+}
+
+/// 等人批准之后画面还是不是那一屏: 同一应用、整屏稳定文字重合 ≥ 0.7、落点目标文字(有的话)还在。
+fn same_screen_after_wait(a: &ActN, before: &Cap, after: &Cap, realw: i32, realh: i32, last_tap: Option<(i32, i32)>)
+    -> Result<(), String> {
+    if !(before.pkg == after.pkg || before.pkg.is_empty() || after.pkg.is_empty()) {
+        return Err(format!("前台 {}→{}", before.pkg, after.pkg));
+    }
+    let sim = screen_similarity(before, after);
+    if sim < 0.7 {
+        return Err(format!("画面重合度 {:.0}%", sim * 100.0));
+    }
+    let (t0, _) = approval_targets(a, before, realw, realh, last_tap);
+    let (t1, _) = approval_targets(a, after, realw, realh, last_tap);
+    if !t0.is_empty() && !t0.iter().any(|t| t1.contains(t)) {
+        return Err(format!("落点目标 {:?}→{:?}", t0.first(), t1.first()));
+    }
+    Ok(())
+}
+
 /// 动作落点上的元素文字与 id: tap 取包含落点的最小元素(及其上下一层文字), type 取输入框类元素。
 fn approval_targets(a: &ActN, cap: &Cap, realw: i32, realh: i32, last_tap: Option<(i32, i32)>) -> (Vec<String>, Vec<String>) {
     let mut texts = Vec::new();
@@ -1455,12 +1512,13 @@ fn approval_targets(a: &ActN, cap: &Cap, realw: i32, realh: i32, last_tap: Optio
             let area = |b: [i32; 4]| ((b[2] - b[0]).max(0) as i64) * ((b[3] - b[1]).max(0) as i64);
             let mut hits: Vec<&crate::device::FullNode> = cap.full.iter().filter(|f| inside(f.b)).collect();
             hits.sort_by_key(|f| area(f.b));
+            // 超过 16 字的文字只有在可点控件上才当按钮看(标题、段落、商品名不算)
             for f in hits.iter().take(3) {
-                if !f.t.is_empty() { texts.push(f.t.clone()); }
+                if !f.t.is_empty() && (f.t.chars().count() <= 16 || f.clickable) { texts.push(f.t.clone()); }
                 if let Some(i) = &f.id { ids.push(i.clone()); }
             }
-            if texts.is_empty() {
-                let mut els: Vec<&Node> = cap.els.iter().filter(|e| inside(e.b)).collect();
+            if texts.is_empty() && cap.full.is_empty() {
+                let mut els: Vec<&Node> = cap.els.iter().filter(|e| inside(e.b) && !e.t.trim().is_empty()).collect();
                 els.sort_by_key(|e| area(e.b));
                 texts.extend(els.iter().take(2).map(|e| e.t.clone()));
             }
@@ -1479,10 +1537,7 @@ fn approval_targets(a: &ActN, cap: &Cap, realw: i32, realh: i32, last_tap: Optio
                 }).collect(),
                 None => Vec::new(),
             };
-            let pw_like = |f: &&crate::device::FullNode| {
-                let blob = format!("{} {} {}", f.class, f.id.as_deref().unwrap_or(""), f.t).to_lowercase();
-                ["password", "passwd", "pwd", "secure", "pin", "密码", "验证码"].iter().any(|k| blob.contains(k))
-            };
+            let pw_like = |f: &&crate::device::FullNode| password_like(&f.class, f.id.as_deref(), &f.t);
             // 认不出落在哪个框: 只有一个框就是它; 多个框里有密码类的, 宁可按密码框问
             let chosen = if !chosen.is_empty() { chosen }
                          else if edits.len() == 1 { edits }
@@ -2656,9 +2711,24 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                     break;
                 }
                 if asked_h {
-                    // 等过人: 熟路就此打住, 交还模型看新画面再走(不在旧画面上盲点)
-                    walked_all = false;
-                    break;
+                    // 等过人: 重新读屏核对, 还是那一屏就执行这一跳, 否则打住交还模型
+                    capseq += 1;
+                    let Some(nc) = capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, 800, realw, realh, app.as_deref(), &mut revived) else {
+                        stop_reason = Some("capture_fail");
+                        break;
+                    };
+                    if let Err(why) = same_screen_after_wait(&hact, &cap, &nc, realw, realh, None) {
+                        let d = format!("树✗(批准后画面变了: {why})");
+                        log.put(json!({"r":"diff","n":n,"d":d}));
+                        println!("[{n}] ·熟路 | {aline_h} ⛔ {d}");
+                        run_push(&mut runs, aline_h.clone(), d.clone());
+                        stream.push(format!("{aline_h} → {d}"));
+                        note = format!("熟路这一跳[{aline_h}]已获人批准, 但画面变了({why}), 没有执行。看新画面再决定。");
+                        cap = nc;
+                        walked_all = false;
+                        break;
+                    }
+                    cap = nc;
                 }
                 exec(&phone, &hact, &cap, realw, realh, &apps);
                 if osc_note(&mut act_sigs, act_sig(&hact), &mut osc_fire_at) {
@@ -2765,6 +2835,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 break;
             }
             if !queue.is_empty() { queue.clear(); }
+            last_tap_pt = None; // 人动过手机, 焦点不再可信
             capseq += 1;
             match capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, settle_ms, realw, realh, app.as_deref(), &mut revived) {
                 Some(c) => cap = c,
@@ -2830,25 +2901,24 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
         // 等人批准可能过了几分钟: 重新读屏, 确认还是同一应用、落点上还是那个目标, 否则作废重来
         if asked_human {
-            let (before, _) = approval_targets(&act, &cap, realw, realh, last_tap_pt);
             capseq += 1;
             let Some(nc) = capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, 800, realw, realh, app.as_deref(), &mut revived) else {
                 stop_reason = Some("capture_fail");
                 break;
             };
-            let (after, _) = approval_targets(&act, &nc, realw, realh, last_tap_pt);
-            let same_pkg = nc.pkg == cap.pkg || nc.pkg.is_empty() || cap.pkg.is_empty();
-            let same_target = before.is_empty() || before.iter().any(|t| after.contains(t));
-            if !(same_pkg && same_target) {
-                let d = format!("rejected(批准后画面变了: 前台 {}→{}, 目标 {:?}→{:?}; 作废, 重新看画面)",
-                                cap.pkg, nc.pkg, before.first(), after.first());
+            if let Err(why) = same_screen_after_wait(&act, &cap, &nc, realw, realh, last_tap_pt) {
+                let d = format!("rejected(批准后画面变了: {why}; 作废)");
                 log_act(&mut log, n, &act, &plan_by, ms_field);
                 log.put(json!({"r":"diff","n":n,"d":d}));
                 println!("[{n}] {ms_disp} {plan_by} | {aline} ⛔ {d}");
                 run_push(&mut runs, aline.clone(), d.clone());
                 stream.push(format!("{aline} → {d}"));
+                note = format!("[{aline}]已获人批准, 但等批准期间画面变了({why}), 没有执行。先看新画面, 确认还要做再重新发起。");
                 queue.clear();
                 cap = nc;
+                last_tap_pt = None;
+                stall += 1;
+                if stall >= cfg.stall_limit { stop_reason = Some("watchdog"); break; }
                 continue;
             }
             cap = nc;
@@ -3062,6 +3132,9 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 cap = newcap;
                 break;
             }
+        }
+        if newcap.pkg != cap.pkg || newcap.activity != cap.activity {
+            last_tap_pt = None; // 换页了: 上次点的框已不在
         }
         cap = newcap; // 本帧复用为下一动作第①步
     }
@@ -3320,6 +3393,18 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn password_fields_by_token_not_substring() {
+        assert!(password_like("android.widget.EditText", Some("id/et_pwd"), ""));
+        assert!(password_like("android.widget.EditText", Some("id/loginPassword"), ""));
+        assert!(password_like("XCUIElementTypeSecureTextField", None, ""));
+        assert!(password_like("android.widget.EditText", Some("id/pin_input"), ""));
+        assert!(password_like("android.widget.EditText", None, "请输入支付密码"));
+        for id in ["id/shipping_address", "id/spinner", "id/pinyin_box", "id/shopping_search", "id/secureCheckout"] {
+            assert!(!password_like("android.widget.EditText", Some(id), "收货人"), "{id}");
+        }
+    }
+
     #[test]
     fn ocr_gating_20() {
         assert!(super::want_ocr(false, true));
