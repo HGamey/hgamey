@@ -50,6 +50,7 @@ from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
 from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE, ATTACHMENT_MAX, ATTACHMENT_LIMITS
 import job_experiment
+import job_approvals
 from node_media import MediaError
 from node_fleet import FleetState
 from node_agents import AgentError, NodeAgents, ACTIVE_WITHIN_S, activity as agent_activity, annotate as agent_annotate
@@ -1655,6 +1656,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._out(parts[1], q)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "images":
                     return self._send(200, image_inventory(jobs._read_root, parts[1]))
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "approvals":
+                    return self._send(200, {"job_id": parts[1], "items": job_approvals.list_requests(
+                        jobs, parts[1], pending_only=q.get("pending") == ["1"])})
+                if len(parts) == 5 and parts[0] == "jobs" and parts[2] == "approvals" and parts[4] == "screenshot":
+                    with open(job_approvals.screenshot_path(jobs, parts[1], parts[3]), "rb") as f:
+                        return self._send(200, f.read(), "image/jpeg")
             except (ResearchError, MediaError, RegistryError, JobEventError, HistoryError) as e:
                 return self._send(e.status, e.payload)
             except ResultError as e:
@@ -2623,6 +2630,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     self._send(200, {"restarting": True})
                     self._restart()
                     return
+                if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "approvals":
+                    # 审批只由人做: 只读 token 和 agent token(外部 agent 不能批自己作业里的付款)一律拒绝
+                    if self.ro or self.agent:
+                        return self._send(403, {"code": "forbidden", "error": "approvals are decided by people: admin token or dashboard steer only"})
+                    jobs.path(parts[1])  # validates the job id
+                    who = (self.headers.get("X-Approval-Via") or "admin")[:40]
+                    code, result = job_approvals.decide(jobs, parts[1], parts[3], body, who)
+                    return self._send(code, result)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:
                     data = json.loads(body or b"{}")
                     if not isinstance(data, dict):

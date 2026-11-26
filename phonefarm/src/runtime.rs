@@ -1091,6 +1091,9 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
             };
             let mut xi = (x * cap.w as i64 / NORM) as i32;
             let mut yi = (y * cap.h as i64 / NORM) as i32;
+            // 点名命中清单元素: 落点由 UI 树担保, 不再用截图像素判空白
+            // (安全窗口/FLAG_SECURE 页截图全黑, 像素检查会把树里真实存在的输入框当空白拒掉)
+            let mut snapped_named = false;
             if cap.suspect {
                 // 假树: 清单不可信,不吸附不点名,按原坐标走(空白/前科检查照常)
             } else if a.what.as_deref().map(str::trim).is_some_and(|w| w.starts_with("icon:")) {
@@ -1108,6 +1111,7 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
                     Some((_, bi)) => {
                         xi = (bi[0] + bi[2]) / 2;
                         yi = (bi[1] + bi[3]) / 2;
+                        snapped_named = true;
                     }
                     None => {
                         a.what = None;
@@ -1138,7 +1142,9 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
                     return Some("同一目标同点连点3次:换个目标,或用back/scroll_down离开当前位置".into());
                 }
             }
-            if let (Some((sd, mean)), Some(bg)) =
+            if snapped_named {
+                // 跳过空白检查(见上)
+            } else if let (Some((sd, mean)), Some(bg)) =
                 (patch_stats(&cap.img, xi, yi, tmp), cap.thumb.as_ref().map(|t| mode_gray(t) as f32))
             {
                 if sd < 6.0 && (mean - bg).abs() < 22.0 {
@@ -1365,6 +1371,115 @@ fn diff_of(before: &Cap, after: &Cap, channel: &str, realw: i32, realh: i32)
 }
 
 /// ms 仅在计划首个动作上出现(那是模型调用的真实耗时);队列内后续动作无模型开销,不写 ms
+/// 审批门: 返回 Some(理由) 表示动作不得执行。动作坐标此时已是图片像素(过门后)。
+#[allow(clippy::too_many_arguments)]
+fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::approval::Policy,
+                 grants: &mut crate::approval::Grants, run_dir: &str, run_id: &str, n: u32, task: &str, goal: &str,
+                 serial: Option<&str>, aline: &str, last_tap: Option<(i32, i32)>, sensitive_allowed: &mut bool,
+                 log: &mut Log) -> Option<String> {
+    use crate::approval::{self, Mode};
+    let (targets, ids) = approval_targets(a, cap, realw, realh, last_tap);
+    let screen: Vec<&str> = if cap.full.is_empty() { cap.els.iter().map(|e| e.t.as_str()).collect() }
+                            else { cap.full.iter().map(|f| f.t.as_str()).filter(|t| !t.is_empty()).collect() };
+    let facts = approval::Facts {
+        action: &a.a, what: a.what.as_deref(), text: a.text.as_deref(),
+        target_texts: targets.iter().map(String::as_str).collect(), screen_texts: screen,
+        pkg: &cap.pkg, target_ids: ids.iter().map(String::as_str).collect(),
+    };
+    let hit = approval::classify(&facts, policy)?;
+    // 只要不是被拒, 下面每条放行路径都会走到 return None; 先置位, 被拒时再清掉
+    *sensitive_allowed = true;
+    let target_key = a.what.clone().or_else(|| targets.first().cloned()).or_else(|| a.text.clone()).unwrap_or_default();
+    let mode = policy.mode_for(hit.category);
+    let base = json!({"r":"approval","n":n,"category":hit.category.id(),"reason":hit.reason,"mode":format!("{mode:?}").to_lowercase()});
+    match mode {
+        Mode::Auto => { let mut v = base; v["decision"] = json!("auto"); log.put(v); return None; }
+        Mode::Deny => {
+            *sensitive_allowed = false;
+            let mut v = base; v["decision"] = json!("deny"); v["by"] = json!("policy"); log.put(v);
+            return Some(format!("{}被策略禁止: {}", hit.category.zh(), hit.reason));
+        }
+        Mode::Ask => {}
+    }
+    if grants.covers(&cap.pkg, hit.category, &target_key, policy.grant_s)
+        || (hit.follow_up && grants.covers_category(&cap.pkg, hit.category, policy.grant_s)) {
+        let mut v = base; v["decision"] = json!("allow"); v["by"] = json!("grant"); log.put(v);
+        println!("      ✅ 审批[{}] 沿用 {}s 内的同目标允许", hit.category.zh(), policy.grant_s);
+        return None;
+    }
+    let dir = approval::approval_dir(run_dir);
+    let id = approval::new_id(run_id, n);
+    let _ = fs::create_dir_all(&dir);
+    let shot = dir.join(format!("{id}.jpg"));
+    let screenshot = fs::copy(&cap.img, &shot).ok().map(|_| shot.to_string_lossy().to_string());
+    let req = approval::Request {
+        id: id.clone(), category: hit.category, reason: hit.reason.clone(), action_line: aline.to_string(),
+        goal: goal.to_string(), task: task.to_string(), run_id: run_id.to_string(), step: n,
+        serial: crate::device::resolve_serial(serial).unwrap_or_default(), pkg: cap.pkg.clone(), screenshot,
+    };
+    let d = approval::request_and_wait(&dir, &req, policy.timeout_s);
+    let mut v = base;
+    v["id"] = json!(id); v["decision"] = json!(if d.allow { "allow" } else { "deny" }); v["by"] = json!(d.by);
+    if !d.note.is_empty() { v["note"] = json!(d.note); }
+    log.put(v);
+    if d.allow {
+        grants.add(&cap.pkg, hit.category, &target_key);
+        println!("      ✅ 审批[{}] 已允许(by {})", hit.category.zh(), d.by);
+        None
+    } else {
+        *sensitive_allowed = false;
+        println!("      ⛔ 审批[{}] 未允许(by {})", hit.category.zh(), d.by);
+        Some(format!("{}未获批准(by {}): {}", hit.category.zh(), d.by, hit.reason))
+    }
+}
+
+/// 动作落点上的元素文字与 id: tap 取包含落点的最小元素(及其上下一层文字), type 取输入框类元素。
+fn approval_targets(a: &ActN, cap: &Cap, realw: i32, realh: i32, last_tap: Option<(i32, i32)>) -> (Vec<String>, Vec<String>) {
+    let mut texts = Vec::new();
+    let mut ids = Vec::new();
+    match a.a.as_str() {
+        "tap" => {
+            let (x, y) = (a.x.unwrap_or(-1) as i32, a.y.unwrap_or(-1) as i32);
+            let inside = |b: [i32; 4]| { let bi = b_img_space(b, cap, realw, realh); bi[0] <= x && x <= bi[2] && bi[1] <= y && y <= bi[3] };
+            let area = |b: [i32; 4]| ((b[2] - b[0]).max(0) as i64) * ((b[3] - b[1]).max(0) as i64);
+            let mut hits: Vec<&crate::device::FullNode> = cap.full.iter().filter(|f| inside(f.b)).collect();
+            hits.sort_by_key(|f| area(f.b));
+            for f in hits.iter().take(3) {
+                if !f.t.is_empty() { texts.push(f.t.clone()); }
+                if let Some(i) = &f.id { ids.push(i.clone()); }
+            }
+            if texts.is_empty() {
+                let mut els: Vec<&Node> = cap.els.iter().filter(|e| inside(e.b)).collect();
+                els.sort_by_key(|e| area(e.b));
+                texts.extend(els.iter().take(2).map(|e| e.t.clone()));
+            }
+        }
+        "type" => {
+            // 输入落在哪个框: 上一次点击落点所在的输入框; 没有点过则只在全屏恰好一个输入框时认它。
+            let is_edit = |f: &&crate::device::FullNode| {
+                let c = f.class.to_lowercase();
+                c.contains("edittext") || c.contains("textfield") || c.contains("securetext") || c.contains("textinput")
+            };
+            let edits: Vec<&crate::device::FullNode> = cap.full.iter().filter(is_edit).collect();
+            let chosen: Vec<&crate::device::FullNode> = match last_tap {
+                Some((x, y)) => edits.iter().copied().filter(|f| {
+                    let bi = b_img_space(f.b, cap, realw, realh);
+                    bi[0] <= x && x <= bi[2] && bi[1] <= y && y <= bi[3]
+                }).collect(),
+                None => Vec::new(),
+            };
+            let chosen = if chosen.is_empty() && edits.len() == 1 { edits } else { chosen };
+            for f in chosen {
+                if !f.t.is_empty() { texts.push(f.t.clone()); }
+                if let Some(i) = &f.id { ids.push(i.clone()); }
+                if f.class.to_lowercase().contains("secure") { ids.push("secure-password".into()); }
+            }
+        }
+        _ => {}
+    }
+    (texts, ids)
+}
+
 fn log_act(log: &mut Log, n: u32, a: &ActN, by: &str, ms: Option<u64>) {
     let mut m = serde_json::Map::new();
     m.insert("r".into(), json!("act"));
@@ -1703,6 +1818,9 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
         "ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64).unwrap_or(0)}));
     log.put(json!({"r": "goal", "t": goal}));
+    if !asserts.is_empty() {
+        log.put(json!({"r":"hook","kind":"asserts","words":asserts}));
+    }
     if let Some(rs) = &resume {
         log.put(json!({"r":"hook","kind":"resume","from":rs.old_run_id}));
     }
@@ -1724,6 +1842,8 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             cfg.settle_ms, cfg.plan_max, cfg.els_timeout_ms, cfg.ban_radius, cfg.ban_strikes, cfg.stall_limit);
     }
 
+    let approval_policy = crate::approval::Policy::from_toml(cfg.approval.as_ref());
+    let mut approval_grants = crate::approval::Grants::default();
     let lessons = load_lessons(&format!("{task_dir}/lessons.jsonl"));
     // 全局经验: 跨任务共享(tasks/_global/),"游戏里用home逃生"这类学费只交一次
     let global_dir = format!("{}/_global", crate::tasks_root(&cfg.data_dir));
@@ -1775,9 +1895,11 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
         }
     }
 
-    let phone = Device::new(serial, tmp.clone());
+    let phone = Device::new(serial.clone(), tmp.clone());
     let mut brain = Brain::new(cfg.providers.clone(), tmp.clone());
     let mut universal_engine = crate::universal::UniversalEngine::new(false);
+    // 上一步刚放行了敏感动作(删除/付款…)时, 紧接着弹出的确认框是模型自己要的, 不交给弹窗规则(它会点「取消」)
+    let mut suppress_popup_once = false;
     // 专用场景一律插件化: 核心只调用登记入口, 不认识任何具体应用
     crate::plugins::register_builtin(&mut universal_engine);
     let (realw, realh) = phone.size();
@@ -2189,7 +2311,12 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 step: n,
                 last_rejected: reject_streak > 0,
             };
-            let u_decision = universal_engine.evaluate_frame(&u_ctx);
+            let u_decision = if std::mem::take(&mut suppress_popup_once) {
+                println!("      [UniversalEngine] 上一步是已批准的敏感动作, 本帧确认框交给模型");
+                crate::universal::EngineDecision::YieldToTask
+            } else {
+                universal_engine.evaluate_frame(&u_ctx)
+            };
             let handled_by_engine = match u_decision {
                 crate::universal::EngineDecision::HandledByPopup { action } => {
                     let act = match action {
@@ -2581,6 +2708,24 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 println!("      ❄ freeze-on-done: 定局,冻结设备写动作(终局画面保持至退出)");
             }
             break;
+        }
+
+        // 🛑 审批: 付款/删除/钱包必问, 发送/密码按 [approval] 配置。被拒/超时 = 本动作作废, 交还模型。
+        if let Some(reason) = approval_gate(&act, &cap, realw, realh, &approval_policy, &mut approval_grants,
+                                            &run_dir, &run_id, n, task, goal, serial.as_deref(), &aline,
+                                            taps_hist.back().map(|t| (t.0, t.1)), &mut suppress_popup_once, &mut log) {
+            let d = format!("rejected({reason})");
+            log_act(&mut log, n, &act, &plan_by, ms_field);
+            log.put(json!({"r":"diff","n":n,"d":d}));
+            println!("[{n}] {ms_disp} {plan_by} | {aline} ⛔ {d}");
+            run_push(&mut runs, aline.clone(), d.clone());
+            diffs_all.push(d.clone());
+            stream.push(format!("{aline} → {d}"));
+            note = format!("上一动作[{aline}]需要人工批准但未获准({reason})。不要换个说法重试同一动作;改用不涉及该操作的路径,做不到就 done 并写明卡在需要人批准。");
+            if !queue.is_empty() { println!("      ⏸ 剩余{}步计划作废", queue.len()); queue.clear(); }
+            stall += 1;
+            if stall >= cfg.stall_limit { stop_reason = Some("watchdog"); break; }
+            continue;
         }
 
         // ⑤ 执行(定格并入第⑥步: 采集时等画面安静)
