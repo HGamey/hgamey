@@ -67,7 +67,7 @@ step = """
    (如连续滑动、同页多次滚动);拿不准就只给一行。done 只能单独一行给出,且前提是当前画面已是终局画面;
    不要把 done 拼在其他动作后面——程序会截掉它,先执行完动作、看过新画面再说。
 3. act 格式: {"r":"act","a":"<动作>","x":..,"y":..,"x2":..,"y2":..,"text":"..","what":".."}
-   动作取值: tap | long_press | swipe | scroll_up | scroll_down | type | clear | back | home | launch | goto | wait | done
+   动作取值: tap | long_press | swipe | scroll_up | scroll_down | type | clear | back | home | launch | goto | handoff | wait | done
              | inspect | find | get_state | history(只读探针)
    tap 需要 x,y,建议附 what=按钮文字(screen清单里的): 程序吸附到该元素准确中心;
    what不在清单时程序改按你的坐标直点(落点在某元素框内则吸附其中心)——所以坐标必须认真给;
@@ -80,6 +80,9 @@ step = """
    home 回到桌面(系统按键,任何画面下都有效);launch 需要 text=apps清单中的包名,直接启动该应用;
    goto 需要 text=map行中的页号(如P5): 程序沿熟路零调用直达;必须单发一行(其后计划作废),
    无可达熟路会被驳回,届时自行导航;
+   handoff 请人接手一步: 需要短信/邮箱验证码、输入密码或支付密码、人脸/指纹、或任务本身要求人确认时用;
+   text 写清要人做什么(如「输入短信验证码并点登录」), what 写类型 verification|password|payment|other;
+   程序会停下等人做完再给你新画面, 不要自己猜验证码或密码;
    wait 用于画面加载中或未轮到你操作;任务达成或到达终局画面(如 Game Over)时用 done,并在 text 里写依据。
    探针(只读查询,不执行屏幕动作,答案在下一轮以probe应答返回): 想看清折叠内容/找东西时优先用探针,别乱点乱翻:
    inspect 需要 text=折叠卡片头行文字或元素id(或x,y坐标): 展开该卡片/容器内被折叠的全部文字;
@@ -287,6 +290,9 @@ name = "kimi-k27"
 url = "https://api.kimi.com/coding/v1/chat/completions"
 model = "kimi-k2.7-code"
 key_env = "KIMI_KEY"
+# 推理模型: 开思考时 max_tokens=500 拿不到 content; 关思考后接口只接受 temperature=0.6 (2026-11-25 实测)
+thinking_disable = true
+extra = { temperature = 0.6 }
 direct = true
 vision = true
 timeout_s = 60

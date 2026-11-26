@@ -22,8 +22,8 @@ import time
 import urllib.error
 import urllib.request
 
-ALLOW = {"允许", "同意", "批准", "allow", "approve", "yes", "y", "ok"}
-DENY = {"拒绝", "不允许", "否", "deny", "reject", "no", "n"}
+ALLOW = {"允许", "同意", "批准", "完成", "好了", "做完了", "allow", "approve", "yes", "y", "ok", "done"}
+DENY = {"拒绝", "不允许", "否", "放弃", "不处理", "deny", "reject", "no", "n", "skip"}
 REPLY = re.compile(r"^\s*(\S+?)\s*[:：]?\s*([0-9a-f]{4})\s*$", re.I)
 UA = "hgamey-approval-bridge/1"
 
@@ -61,6 +61,15 @@ def parse_reply(text):
 
 def caption(item):
     code = code_of(item["id"])
+    if item.get("category") == "handoff":
+        return "\n".join([
+            "🙋 phonefarm 需要你接手",
+            f"{item.get('action', '')}",
+            f"说明：{item.get('reason', '')}",
+            f"目标：{item.get('goal', '')}"[:300],
+            f"设备 {item.get('serial') or '?'} · {item.get('pkg') or '?'} · 作业 {item.get('job_id')}",
+            f"在手机上做完后回复「完成 {code}」；不处理回复「放弃 {code}」。约 {max(0, int(float(item.get('expires_at') or 0) - time.time()))} 秒后按放弃处理。",
+        ])
     lines = [
         f"🛑 phonefarm 待审批 · {item.get('category_zh', item.get('category'))}" + ("（必须人工确认）" if item.get("critical") else ""),
         f"动作：{item.get('action', '')}",
@@ -159,7 +168,8 @@ class Bridge:
                 continue
             item = matches[0]
             st, r = self._c("POST", f"/jobs/{item['job_id']}/approvals/{item['id']}", {"decision": decision, "note": "telegram"})
-            done = "已允许" if decision == "allow" else "已拒绝"
+            h = item.get("category") == "handoff"
+            done = ("已告知完成" if h else "已允许") if decision == "allow" else ("已放弃" if h else "已拒绝")
             msg = f"{done}：{item.get('action')}" if st == 200 else f"提交失败（{st}）：{r.get('error') or r}"
             self._g("POST", "/api/send", {"chat": self.chat, "text": msg})
             self.log(f"{code} {decision} -> {st}")

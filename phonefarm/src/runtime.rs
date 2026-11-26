@@ -1026,8 +1026,8 @@ fn parse_plan(text: &str, plan_max: usize) -> (Vec<ActN>, Option<String>) {
         if let Some(di) = acts.iter().position(|a| a.a == "done") {
             acts.truncate(if di == 0 { 1 } else { di });
         }
-        // goto 只能是最后一步: 它会连跳几屏,排在后面的动作全成马后炮
-        if let Some(gi) = acts.iter().position(|a| a.a == "goto") {
+        // goto/handoff 只能是最后一步: goto 会连跳几屏, handoff 之后的画面要等人做完才知道
+        if let Some(gi) = acts.iter().position(|a| a.a == "goto" || a.a == "handoff") {
             acts.truncate(gi + 1);
         }
         // 探针同理只能收尾: 结果到下一轮决策才可见,排在其后的动作全是盲动
@@ -1071,7 +1071,7 @@ fn plan_call(brain: &mut Brain, cfg: &Config, user: &str, img: &str, log: &mut L
 /// 未点名但落点在某元素框内 → 也吸附中心(修手偏,零成本)。清单不可信(假树)时不吸附。
 fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String)>, cfg: &Config, tmp: &str,
         apps: &[(String, String)], realw: i32, realh: i32) -> Option<String> {
-    let known = ["tap", "long_press", "swipe", "scroll_up", "scroll_down", "type", "clear", "back", "home", "launch", "goto", "wait", "done",
+    let known = ["handoff", "tap", "long_press", "swipe", "scroll_up", "scroll_down", "type", "clear", "back", "home", "launch", "goto", "wait", "done",
                  "inspect", "find", "get_state", "history"];
     if !known.contains(&a.a.as_str()) {
         return Some(format!("未知动作:{}", tcut(&a.a, 12)));
@@ -1175,6 +1175,11 @@ fn gate(a: &mut ActN, cap: &Cap, bans: &[Ban], taps: &VecDeque<(i32, i32, String
         "type" => {
             if a.text.as_deref().unwrap_or("").is_empty() {
                 return Some("type缺text".into());
+            }
+        }
+        "handoff" => {
+            if a.text.as_deref().unwrap_or("").trim().is_empty() {
+                return Some("handoff缺text(写清要人做什么, 如: 输入短信验证码并点登录)".into());
             }
         }
         "goto" => {
@@ -2675,6 +2680,45 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             continue;
         }
 
+        // 🙋 handoff: 请人接手一步(验证码/密码/付款确认…)。等待期间不发任何写动作; 人点「做完了」后重新读屏继续。
+        if act.a == "handoff" {
+            let ask = act.text.clone().unwrap_or_default();
+            let kind = act.what.clone().unwrap_or_else(|| "other".into());
+            log_act(&mut log, n, &act, &plan_by, ms_field);
+            let dir = crate::approval::approval_dir(&run_dir);
+            let id = crate::approval::new_id(&run_id, n);
+            let _ = fs::create_dir_all(&dir);
+            let shot = dir.join(format!("{id}.jpg"));
+            let screenshot = fs::copy(&cap.img, &shot).ok().map(|_| shot.to_string_lossy().to_string());
+            let req = crate::approval::Request {
+                id: id.clone(), category: crate::approval::Category::Handoff,
+                reason: format!("[{}] {}", tcut(&kind, 16), tcut(&ask, 200)), action_line: format!("请你在手机上: {}", tcut(&ask, 200)),
+                goal: goal.to_string(), task: task.to_string(), run_id: run_id.clone(), step: n,
+                serial: crate::device::resolve_serial(serial.as_deref()).unwrap_or_default(), pkg: cap.pkg.clone(), screenshot,
+            };
+            println!("[{n}] {ms_disp} {plan_by} | 🙋 handoff[{kind}]: {ask}");
+            let d = crate::approval::request_and_wait(&dir, &req, approval_policy.handoff_timeout_s);
+            log.put(json!({"r":"handoff","n":n,"id":id,"kind":kind,"ask":ask,"done":d.allow,"by":d.by,"note":d.note}));
+            let dline = if d.allow { format!("handoff✓(人已完成, by {})", d.by) } else { format!("handoff✗(人未接手, by {})", d.by) };
+            log.put(json!({"r":"diff","n":n,"d":dline}));
+            run_push(&mut runs, aline.clone(), dline.clone());
+            diffs_all.push(dline.clone());
+            stream.push(format!("{aline} → {dline}"));
+            note = if d.allow {
+                format!("你请人做的「{}」人已经处理完了{}。先看当前画面确认结果, 再继续; 不要重复请人做同一件事。",
+                        tcut(&ask, 60), if d.note.is_empty() { String::new() } else { format!("(留言: {})", tcut(&d.note, 80)) })
+            } else {
+                format!("你请人做的「{}」没人接手({})。不要再请一次; 能绕开就绕开, 绕不开就 done 并写明卡在这一步需要人。", tcut(&ask, 60), d.by)
+            };
+            if !queue.is_empty() { queue.clear(); }
+            capseq += 1;
+            match capture_or_revive(&phone, &run_dir, capseq, cfg, &tmp, settle_ms, realw, realh, app.as_deref(), &mut revived) {
+                Some(c) => cap = c,
+                None => { stop_reason = Some("capture_fail"); break; }
+            }
+            continue;
+        }
+
         // done: 记录后离开循环, 复核在局末
         // #21 done预检(实录:抖音局4覆盖历轮最广却停在首页feed被复核驳回——模型"走得够远
         // 就算完成"的收官习惯): 第一次done不定局,注入事实给一次终态自查机会。只喂事实
@@ -3350,6 +3394,9 @@ mod tests {
     #[test]
     fn plan_tolerates_contract_violating_done() {
         // #19(局35原文实录): 裸"done"与 {"r":"done"} 是模型判断正确但违约格式的两种真实形态
+        let (h, _) = parse_plan(r#"{"r":"act","a":"handoff","text":"输入短信验证码","what":"verification"}
+{"r":"act","a":"tap","x":1,"y":1}"#, 4);
+        assert_eq!((h.len(), h[0].a.as_str()), (1, "handoff"), "handoff 后的计划作废");
         let (a1, _) = parse_plan("done", 4);
         assert_eq!((a1.len(), a1[0].a.as_str()), (1, "done"), "裸done收编");
         let (a2, _) = parse_plan(r#"{"r":"done","text":"验收词已实测命中"}"#, 4);

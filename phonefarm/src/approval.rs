@@ -33,6 +33,9 @@ pub enum Category {
     Send,
     Password,
     Account,
+    /// 不是审批而是「请人接手」: 验证码、密码、付款确认等 agent 不该或不能做的一步。
+    /// allow = 人做完了, 继续; deny = 人不处理。
+    Handoff,
 }
 
 impl Category {
@@ -44,6 +47,7 @@ impl Category {
             Category::Send => "send",
             Category::Password => "password",
             Category::Account => "account",
+            Category::Handoff => "handoff",
         }
     }
     pub fn zh(self) -> &'static str {
@@ -54,6 +58,7 @@ impl Category {
             Category::Send => "对外发送",
             Category::Password => "输入密码",
             Category::Account => "账号变更",
+            Category::Handoff => "需要你接手",
         }
     }
     /// 关键类: 不允许免审。
@@ -89,6 +94,8 @@ pub struct Policy {
     /// 关键类 ask 还是直接 deny(无人值守批跑时设 deny)。
     pub critical: Mode,
     pub timeout_s: u64,
+    /// 接手(handoff)等人的上限, 缺省 600 s(人要拿起手机操作, 比点允许慢)。
+    pub handoff_timeout_s: u64,
     /// 额外按包名视为「钱包」的应用。
     pub wallet_pkgs: Vec<String>,
     /// 额外按包名视为「通讯」的应用(发送类词只在这些应用里拦)。
@@ -107,6 +114,7 @@ impl Default for Policy {
             account: Mode::Ask,
             critical: Mode::Ask,
             timeout_s: 300,
+            handoff_timeout_s: 600,
             wallet_pkgs: Vec::new(),
             messaging_pkgs: Vec::new(),
             grant_s: 45,
@@ -126,6 +134,7 @@ impl Policy {
             if let Some(x) = m("account") { p.account = x; }
             if let Some(x) = m("critical") { p.critical = x; }
             if let Some(x) = t.get("timeout_s").and_then(|x| x.as_integer()) { p.timeout_s = x.clamp(5, 86_400) as u64; }
+            if let Some(x) = t.get("handoff_timeout_s").and_then(|x| x.as_integer()) { p.handoff_timeout_s = x.clamp(5, 86_400) as u64; }
             if let Some(x) = t.get("enabled").and_then(|x| x.as_bool()) { p.enabled = x; }
             let list = |k: &str| t.get(k).and_then(|x| x.as_array())
                 .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect::<Vec<_>>());
