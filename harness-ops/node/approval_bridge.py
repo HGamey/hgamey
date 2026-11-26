@@ -81,6 +81,7 @@ class Bridge:
         self.sent = {}          # approval id -> item
         self.own_messages = set()
         self.last_msg_id = None
+        self.auth_failures = 0
 
     # center
     def _c(self, method, path, body=None, raw=False):
@@ -103,9 +104,15 @@ class Bridge:
 
     def notify_pending(self):
         status, body = self._c("GET", "/approvals")
+        if status in (401, 403):
+            # token 失效: 退出让外层(launchd 包装)重新取 token, 不带着坏 token 空转
+            self.auth_failures += 1
+            if self.auth_failures >= 3:
+                raise SystemExit(f"center rejected the token {self.auth_failures} times ({status})")
         if status != 200:
             self.log(f"center /approvals -> {status}")
             return
+        self.auth_failures = 0
         for item in body.get("items", []):
             if item["id"] in self.sent:
                 continue
@@ -182,6 +189,9 @@ def main(argv=None):
     ap.add_argument("--once", action="store_true")
     a = ap.parse_args(argv)
     token = sys.stdin.readline().strip() if a.token_stdin else open(a.token_file).read().strip()
+    if not token:
+        print("empty center token", file=sys.stderr)
+        return 2
     gkey = open(a.gateway_key_file).read().strip()
     b = Bridge(a.center, token, a.gateway, gkey, a.chat,
                log=lambda s: print(time.strftime("%H:%M:%S"), s, flush=True))
