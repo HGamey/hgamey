@@ -154,6 +154,34 @@ impl Policy {
         p
     }
 
+    /// 实际生效的策略。由 center 签发决定时(见 [`Signed`]), 以 center 下发的策略(`PF_APPROVAL_POLICY`, JSON)为准,
+    /// 作业自带的 `[approval]` 只能收紧不能放宽; 否则就是作业自带的。
+    pub fn load(job: Option<&toml::Value>) -> Policy {
+        let own = Policy::from_toml(job);
+        if Signed::from_env().is_none() {
+            return own;
+        }
+        let center = std::env::var("PF_APPROVAL_POLICY").ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| toml::Value::try_from(v).ok());
+        Policy::from_toml(center.as_ref()).tightened_by(&own)
+    }
+
+    /// 取两份策略里更严的: 每类取更严的模式, 总开关任一开着就开, 额度取短, 名单取并集。
+    pub fn tightened_by(mut self, other: &Policy) -> Policy {
+        let rank = |m: Mode| match m { Mode::Auto => 0, Mode::Ask => 1, Mode::Deny => 2 };
+        for (a, b) in [(&mut self.send, other.send), (&mut self.password, other.password),
+                       (&mut self.account, other.account), (&mut self.critical, other.critical)] {
+            if rank(b) > rank(*a) { *a = b; }
+        }
+        self.enabled |= other.enabled;
+        self.grant_s = self.grant_s.min(other.grant_s);
+        for (a, b) in [(&mut self.wallet_pkgs, &other.wallet_pkgs), (&mut self.messaging_pkgs, &other.messaging_pkgs)] {
+            for p in b { if !a.contains(p) { a.push(p.clone()); } }
+        }
+        self
+    }
+
     pub fn mode_for(&self, c: Category) -> Mode {
         if c.critical() {
             // 关键类永远不免审: auto 视同 ask; enabled=false 也不放过。
@@ -492,6 +520,57 @@ pub fn request_json(r: &Request, timeout_s: u64) -> Value {
     })
 }
 
+/// center 签发决定的模式: 环境里有 center 的公钥(PF_APPROVAL_PUBKEY, ed25519, 64 位十六进制)时开启。
+/// 此时只认带有效签名的决定(签名覆盖 作业 id + 审批 id + 决定), 签名不对或没签名一律当没有决定;
+/// 决定从 center 自己的目录(PF_APPROVAL_DECISION_DIR)读, 不在作业目录里; 终端问答关闭。
+/// 私钥只在 center 进程内存里, 作业进程拿不到, 所以作业往哪写文件都伪造不出「允许」。
+#[derive(Clone, Debug)]
+pub struct Signed {
+    pub pubkey: Vec<u8>,
+    pub job: String,
+    pub decision_dir: Option<PathBuf>,
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 { return None; }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+}
+
+impl Signed {
+    pub fn from_env() -> Option<Signed> {
+        let pubkey = unhex(&std::env::var("PF_APPROVAL_PUBKEY").ok()?).filter(|k| k.len() == 32)?;
+        Some(Signed {
+            pubkey,
+            job: std::env::var("PF_JOB_ID").unwrap_or_default(),
+            decision_dir: std::env::var("PF_APPROVAL_DECISION_DIR").ok().filter(|d| !d.trim().is_empty()).map(PathBuf::from),
+        })
+    }
+
+    /// 被签的内容。center 侧(harness-ops/node/approval_sign.py)逐字相同。
+    pub fn message(job: &str, id: &str, decision: &str) -> String {
+        format!("phonefarm-approval@1\n{job}\n{id}\n{decision}")
+    }
+
+    /// 决定文件 → 决定; 签名不对返回 Err(原因)。
+    pub fn verify(&self, id: &str, text: &str) -> Result<Decision, String> {
+        let v: Value = serde_json::from_str(text).map_err(|_| "不是 JSON".to_string())?;
+        let d = v.get("decision").and_then(|x| x.as_str()).unwrap_or("");
+        if d != "allow" && d != "deny" {
+            return Err(format!("决定值不对: {d:?}"));
+        }
+        let sig = v.get("sig").and_then(|x| x.as_str()).and_then(unhex).ok_or("没有签名")?;
+        let msg = Signed::message(&self.job, id, d);
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &self.pubkey)
+            .verify(msg.as_bytes(), &sig).map_err(|_| "签名不对".to_string())?;
+        Ok(Decision {
+            allow: d == "allow",
+            by: v.get("by").and_then(|x| x.as_str()).unwrap_or("?").to_string(),
+            note: v.get("note").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        })
+    }
+}
+
 pub fn parse_decision(text: &str) -> Option<Decision> {
     let v: Value = serde_json::from_str(text).ok()?;
     let d = v.get("decision")?.as_str()?.trim().to_ascii_lowercase();
@@ -512,9 +591,13 @@ pub fn parse_decision(text: &str) -> Option<Decision> {
 pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
     let _ = fs::create_dir_all(dir);
     let req_path = dir.join(format!("{}.json", r.id));
-    let dec_path = dir.join(format!("{}.decision.json", r.id));
-    // 同名旧决定(理论上 64 位 id 不会撞)一律作废, 决不沿用
-    let _ = fs::remove_file(&dec_path);
+    let signed = Signed::from_env();
+    let dec_path = signed.as_ref().and_then(|s| s.decision_dir.clone()).unwrap_or_else(|| dir.to_path_buf())
+        .join(format!("{}.decision.json", r.id));
+    if signed.is_none() {
+        // 同名旧决定(理论上 64 位 id 不会撞)一律作废, 决不沿用
+        let _ = fs::remove_file(&dec_path);
+    }
     let mut req = request_json(r, timeout_s);
     if let Err(e) = write_atomic(&req_path, &req) {
         // 请求都写不出去 = 没人能看到 = 拒绝
@@ -524,7 +607,8 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
              req_path.display());
 
     // 终端问答: 全局只有一个读 stdin 的线程, 行经通道送来; 每个请求开始前先丢掉积压的行(防误触回车)。
-    let tty = tty_lines();
+    // center 签发模式下没有终端问答: 只有 center 签过名的决定算数
+    let tty = if signed.is_some() { None } else { tty_lines() };
     // 提示出现之后(再留 300 ms)才敲的行才算答复; 之前积压或刚好在路上的回车一律丢弃
     let asked_at = Instant::now() + Duration::from_millis(300);
     if let Some(rx) = tty {
@@ -541,11 +625,26 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
     // 留言目录与审批目录并列(同一作业目录下)
     let steer_dir = dir.parent().map(|p| p.join("steer")).unwrap_or_else(|| dir.join("steer"));
     let asked_epoch = now_s();
+    let mut bad_sig_logged = false;
+    let read_decision = |bad_sig_logged: &mut bool| -> Option<Decision> {
+        let t = fs::read_to_string(&dec_path).ok()?;
+        match &signed {
+            None => parse_decision(&t),
+            Some(s) => match s.verify(&r.id, &t) {
+                Ok(d) => Some(d),
+                Err(why) => {
+                    if !*bad_sig_logged {
+                        *bad_sig_logged = true;
+                        eprintln!("      ⚠ 审批决定 {} 不认: {why}(只认 center 签名)", dec_path.display());
+                    }
+                    None
+                }
+            },
+        }
+    };
     let decision = loop {
-        if let Ok(t) = fs::read_to_string(&dec_path) {
-            if let Some(d) = parse_decision(&t) {
-                break d;
-            }
+        if let Some(d) = read_decision(&mut bad_sig_logged) {
+            break d;
         }
         if let Some(rx) = tty {
             let line = rx.lock().ok().and_then(|rx| rx.try_recv().ok());
@@ -561,6 +660,10 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
         // 等待期间来了人工留言: 人改了主意, 这一步作废(拒绝), 交还模型按留言重新决策
         if crate::steer::arrived_since(&steer_dir, asked_epoch) {
             let note = "等待期间收到人工留言, 本步作废".to_string();
+            // 签发模式下决定目录归 center, 作业不往里写; 拒绝只在本地生效(请求文件里记 denied)
+            if signed.is_some() {
+                break Decision { allow: false, by: "steer".into(), note };
+            }
             if write_first(&dec_path, &json!({"decision":"deny","by":"steer","note":note})) {
                 break Decision { allow: false, by: "steer".into(), note };
             }
@@ -568,6 +671,10 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
         }
         if Instant::now() >= deadline {
             let d = Decision { allow: false, by: "timeout".into(), note: format!("{timeout_s}s 内无人决定, 按拒绝处理") };
+            if signed.is_some() {
+                // 最后再看一眼: 刚好在截止前签下的决定以它为准
+                break read_decision(&mut bad_sig_logged).unwrap_or(d);
+            }
             if !write_first(&dec_path, &json!({"decision":"deny","by":"timeout","note":d.note})) {
                 // 最后一刻有人答了: 以先落盘的为准
                 std::thread::sleep(Duration::from_millis(200));
@@ -647,6 +754,47 @@ impl Grants {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_signature_made_by_the_center_python_code_verifies() {
+        // harness-ops/node/approval_sign.py 用固定私钥 bytes(range(32)) 签的(见 tests/test_job_approvals.py 同一组数)
+        let s = Signed { pubkey: unhex("03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8").unwrap(),
+                         job: "abcdef012345".into(), decision_dir: None };
+        let f = json!({"decision": "allow", "by": "dash", "sig": "b65764dfd37ea832e23f11459de3fcb9c07495a15e6dddc17e244f886c326eb9b376825629f0e66c5498a3938065f260ab7716918b17e956b48ee3fff0d9110f"});
+        assert!(s.verify("ap-skill-x-2-dbf2554a16c65c35", &f.to_string()).unwrap().allow);
+    }
+
+    #[test]
+    fn only_decisions_signed_by_the_center_count() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let rng = ring::rand::SystemRandom::new();
+        let key = Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()).unwrap();
+        let other = Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()).unwrap();
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let s = Signed { pubkey: key.public_key().as_ref().to_vec(), job: "abcdef012345".into(), decision_dir: None };
+        let file = |k: &Ed25519KeyPair, job: &str, id: &str, d: &str| json!({"decision": d, "by": "dash",
+            "sig": hex(k.sign(Signed::message(job, id, d).as_bytes()).as_ref())}).to_string();
+        assert!(s.verify("ap-1", &file(&key, "abcdef012345", "ap-1", "allow")).unwrap().allow);
+        assert!(!s.verify("ap-1", &file(&key, "abcdef012345", "ap-1", "deny")).unwrap().allow);
+        assert!(s.verify("ap-1", &file(&other, "abcdef012345", "ap-1", "allow")).is_err(), "别的钥匙签的");
+        assert!(s.verify("ap-2", &file(&key, "abcdef012345", "ap-1", "allow")).is_err(), "挪用别的请求的签名");
+        assert!(s.verify("ap-1", &file(&key, "0123456789ab", "ap-1", "allow")).is_err(), "挪用别的作业的签名");
+        // 把 deny 的签名改成 allow
+        let mut v: Value = serde_json::from_str(&file(&key, "abcdef012345", "ap-1", "deny")).unwrap();
+        v["decision"] = json!("allow");
+        assert!(s.verify("ap-1", &v.to_string()).is_err());
+        assert!(s.verify("ap-1", &json!({"decision": "allow", "by": "job"}).to_string()).is_err(), "没签名");
+    }
+
+    #[test]
+    fn job_policy_can_only_tighten_the_center_policy() {
+        let center = Policy { send: Mode::Ask, password: Mode::Auto, grant_s: 45, ..Policy::default() };
+        let job = Policy { send: Mode::Auto, password: Mode::Deny, enabled: false, grant_s: 0,
+                           wallet_pkgs: vec!["x.pay".into()], ..Policy::default() };
+        let p = center.tightened_by(&job);
+        assert_eq!((p.send, p.password, p.enabled, p.grant_s), (Mode::Ask, Mode::Deny, true, 0));
+        assert_eq!(p.wallet_pkgs, vec!["x.pay".to_string()]);
+    }
 
     #[test]
     fn a_steering_message_during_the_wait_cancels_the_request() {

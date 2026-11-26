@@ -12,12 +12,29 @@ import re
 import time
 
 ID = re.compile(r"ap-[A-Za-z0-9_-]{1,120}")
+# approval_sign.Signer when the node signs decisions (set at service start); None = legacy unsigned files
+SIGNER = None
 DECISIONS = {"allow", "deny"}
 
 
 def _dir(jobs, jid):
     # 作业目录下、out/ 之外: 产物下载接口不会把审批截图带出去
     return jobs.path(jid, "approvals")
+
+
+def decision_dir(jobs, jid):
+    """Where decisions go. Signed: a center-owned directory beside the jobs root, not inside the job's
+    own directory (same OS user, so this is convention; the signature is what jobs cannot forge)."""
+    if SIGNER is None:
+        return _dir(jobs, jid)
+    return os.path.join(os.path.dirname(os.path.normpath(jobs.dir)), "_approval_decisions", jid)
+
+
+def _decision(jobs, jid, approval_id):
+    d = _load(os.path.join(decision_dir(jobs, jid), approval_id + ".decision.json"))
+    if d and SIGNER is not None and not SIGNER.valid(jid, approval_id, d.get("decision"), d.get("sig")):
+        return None  # 没签名或签名不对的「决定」不算(phonefarm 那边同样不认)
+    return d
 
 
 def _load(path):
@@ -42,7 +59,7 @@ def list_requests(jobs, jid, pending_only=False):
         request = _load(os.path.join(root, name))
         if request is None or request.get("schema") != "phonefarm/approval@1":
             continue
-        decision = _load(os.path.join(root, name[:-5] + ".decision.json"))
+        decision = _decision(jobs, jid, name[:-5])
         if decision and request.get("state") == "pending":
             request["state"] = "allowed" if decision.get("decision") == "allow" else "denied"
             request["decided_by"] = decision.get("by")
@@ -83,9 +100,13 @@ def decide(jobs, jid, approval_id, body, who):
     if request.get("state") != "pending" or time.time() > float(request.get("expires_at") or 0):
         return 409, {"code": "not_pending", "error": "this approval is no longer waiting for a decision",
                      "state": request.get("state")}
-    target = os.path.join(root, approval_id + ".decision.json")
+    ddir = decision_dir(jobs, jid)
+    os.makedirs(ddir, mode=0o700, exist_ok=True)
+    target = os.path.join(ddir, approval_id + ".decision.json")
     note = str((data or {}).get("note", ""))[:500]
     record = {"decision": decision, "by": who, "note": note, "at": time.time()}
+    if SIGNER is not None:
+        record["sig"] = SIGNER.sign(jid, approval_id, decision)
     # 先写临时文件再 link 过去: 读方永远看不到写了一半的决定; 目标已存在时 link 失败 = 先写者胜
     tmp = f"{target}.{os.getpid()}.{time.monotonic_ns()}.tmp"
     with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:

@@ -1218,7 +1218,7 @@ pub fn run_with_fallback(cfg: &crate::Config, dir: &Path, skill: &mut Skill,
     let tmp = std::env::temp_dir().join(format!("phonefarm-skill-{}", std::process::id())).to_string_lossy().to_string();
     let _ = fs::create_dir_all(&tmp);
     let device = Device::new(serial.clone(), tmp);
-    let policy = approval::Policy::from_toml(cfg.approval.as_ref());
+    let policy = approval::Policy::load(cfg.approval.as_ref());
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let out_dir = std::env::var("PF_JOB_OUT").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
         .unwrap_or_else(|| dir.join("runs").join(format!("{}-{stamp}", skill.name)));

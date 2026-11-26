@@ -1931,7 +1931,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             cfg.settle_ms, cfg.plan_max, cfg.els_timeout_ms, cfg.ban_radius, cfg.ban_strikes, cfg.stall_limit);
     }
 
-    let approval_policy = crate::approval::Policy::from_toml(cfg.approval.as_ref());
+    let approval_policy = crate::approval::Policy::load(cfg.approval.as_ref());
     let mut approval_grants = crate::approval::Grants::default();
     // 中途纠偏: 人工留言目录(与 approvals 并列), 读到的留言一直带在上下文里(最近几条)
     let steer_dir = crate::steer::steer_dir(&run_dir);
