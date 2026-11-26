@@ -6,6 +6,12 @@ service starts and lives only in this process's memory: job processes run as the
 key file would be readable by them, but they cannot read the parent's memory. A restart makes a new
 key; approvals still pending in jobs started before it can no longer be signed for and time out
 (deny) inside phonefarm, which is the safe direction.
+
+What signing does not cover. While jobs run as the same OS user as this service, a job can read the
+dashboard steer password or an admin token from disk and ask for a genuine signature through the normal
+routes, or edit this service's files and wait for a restart; a job that brings its own executable never
+goes through phonefarm at all. The fix for those is running jobs under their own OS user (the contained
+execution policy, which also receives the approval environment).
 """
 
 import ctypes
