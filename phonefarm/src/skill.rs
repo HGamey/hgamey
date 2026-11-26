@@ -78,6 +78,9 @@ pub struct Skill {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub success: Vec<String>,
+    /// 做完后零模型读出的字段(余额、订单号、列表…), 见 [`ReadSpec`]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<ReadSpec>,
     #[serde(default)]
     pub source: Value,
     #[serde(default)]
@@ -338,6 +341,7 @@ pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Ski
         params,
         steps,
         success,
+        read: Vec::new(),
         source: json!({"run": run_dir.file_name().and_then(|s| s.to_str()), "achieved": achieved}),
         stats: Stats::default(),
     })
@@ -397,6 +401,152 @@ pub fn match_goal(tmpl: &str, goal: &str) -> Option<std::collections::BTreeMap<S
     if g[pos..].trim().is_empty() { Some(out) } else { None }
 }
 
+// ───────────────────────── 读字段 ─────────────────────────
+//
+// 技能走完后, 在终态画面上按学到的选择器读字段, 不调模型。选择器两种, 都要在学习时那一屏上唯一:
+// - `id`: 控件 resource-id。`list: true` 时读出这个 id 的全部节点(列表), 按从上到下。
+// - `label` + `dir`: 固定标签文字, 读它右边(right)或下面(below)紧挨着的那个文字。
+// 学习: `skill save … --read 字段=示例值`, 在该局最后一屏上找到示例值所在的节点, 先试 id, 再试标签,
+// 选出来的选择器必须在同一屏上读回示例值才收。
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ReadSpec {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub list: bool,
+}
+
+/// 读字段用的最小节点视图(设备上的 FullNode 和日志里的 nodes 都能转成它)。
+#[derive(Clone, Debug)]
+pub struct RNode {
+    pub t: String,
+    pub b: [i32; 4],
+    pub id: Option<String>,
+}
+
+impl From<&FullNode> for RNode {
+    fn from(f: &FullNode) -> Self { RNode { t: f.t.trim().to_string(), b: f.b, id: f.id.clone() } }
+}
+
+fn rnodes_of(rec: &Value) -> Vec<RNode> {
+    rec.get("nodes").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|e| {
+        let t = e.get("t")?.as_str()?.trim().to_string();
+        let a = e.get("b")?.as_array()?;
+        let g = |i: usize| a.get(i).and_then(|x| x.as_i64()).unwrap_or(0) as i32;
+        Some(RNode { t, b: [g(0), g(1), g(2), g(3)], id: e.get("id").and_then(|v| v.as_str()).map(str::to_string) })
+    }).filter(|n| !n.t.is_empty()).collect()
+}
+
+/// 标签旁边的值: right = 同一行(纵向重叠过半)、在标签右边最近的; below = 横向有重叠、在标签下面最近的。
+fn beside<'a>(nodes: &'a [RNode], label: &RNode, dir: &str) -> Option<&'a RNode> {
+    let overlap = |a0: i32, a1: i32, b0: i32, b1: i32| (a1.min(b1) - a0.max(b0)).max(0);
+    let (lh, lw) = ((label.b[3] - label.b[1]).max(1), (label.b[2] - label.b[0]).max(1));
+    nodes.iter().filter(|n| n.t != label.t && n.b != label.b).filter_map(|n| match dir {
+        "right" if n.b[0] >= label.b[2] - lw / 10 && overlap(n.b[1], n.b[3], label.b[1], label.b[3]) * 2 >= lh.min(n.b[3] - n.b[1]).max(1)
+            => Some((n.b[0] - label.b[2], n)),
+        "below" if n.b[1] >= label.b[3] - lh / 10 && overlap(n.b[0], n.b[2], label.b[0], label.b[2]) > 0
+            => Some((n.b[1] - label.b[3], n)),
+        _ => None,
+    }).min_by_key(|(gap, _)| *gap).map(|(_, n)| n)
+}
+
+/// 按选择器读一个字段。读不到或不唯一返回 Err(原因)。
+pub fn read_field(spec: &ReadSpec, nodes: &[RNode]) -> Result<Value, String> {
+    if let Some(id) = &spec.id {
+        let mut hits: Vec<&RNode> = nodes.iter().filter(|n| n.id.as_deref() == Some(id.as_str())).collect();
+        hits.sort_by_key(|n| (n.b[1], n.b[0]));
+        if spec.list {
+            return Ok(json!(hits.iter().map(|n| n.t.clone()).collect::<Vec<_>>()));
+        }
+        return match hits.len() {
+            1 => Ok(json!(hits[0].t)),
+            0 => Err(format!("画面上没有 id={id}")),
+            k => Err(format!("id={id} 有 {k} 个, 不唯一")),
+        };
+    }
+    let Some(label) = &spec.label else { return Err("选择器既没有 id 也没有 label".into()) };
+    let ls: Vec<&RNode> = nodes.iter().filter(|n| norm(&n.t) == norm(label)).collect();
+    let l = match ls.len() {
+        1 => ls[0],
+        0 => return Err(format!("画面上没有标签「{label}」")),
+        k => return Err(format!("标签「{label}」有 {k} 个, 不唯一")),
+    };
+    let dir = spec.dir.as_deref().unwrap_or("right");
+    beside(nodes, l, dir).map(|n| json!(n.t)).ok_or_else(|| format!("标签「{label}」{}没有文字", if dir == "below" { "下面" } else { "右边" }))
+}
+
+pub fn read_all(specs: &[ReadSpec], nodes: &[RNode]) -> (serde_json::Map<String, Value>, Vec<String>) {
+    let mut out = serde_json::Map::new();
+    let mut errs = Vec::new();
+    for sp in specs {
+        match read_field(sp, nodes) {
+            Ok(v) => { out.insert(sp.name.clone(), v); }
+            Err(e) => { out.insert(sp.name.clone(), Value::Null); errs.push(format!("{}: {e}", sp.name)); }
+        }
+    }
+    (out, errs)
+}
+
+/// 在学习用的那一屏上, 为「字段=示例值」找一个能读回示例值的选择器。
+pub fn learn_read(name: &str, example: &str, list: bool, nodes: &[RNode]) -> Result<ReadSpec, String> {
+    let ex = norm(example);
+    let mut hits: Vec<&RNode> = nodes.iter().filter(|n| norm(&n.t) == ex).collect();
+    if hits.is_empty() { hits = nodes.iter().filter(|n| !ex.is_empty() && norm(&n.t).contains(&ex)).collect(); }
+    let node = match hits.len() {
+        1 => hits[0],
+        0 => return Err(format!("最后一屏上找不到「{example}」")),
+        k => return Err(format!("「{example}」在最后一屏上出现 {k} 次, 换一个只出现一次的示例值")),
+    };
+    let check = |sp: ReadSpec| -> Option<ReadSpec> {
+        let v = read_field(&sp, nodes).ok()?;
+        let ok = if list { v.as_array().is_some_and(|a| a.iter().any(|x| x.as_str() == Some(node.t.as_str()))) }
+                 else { v.as_str() == Some(node.t.as_str()) };
+        ok.then_some(sp)
+    };
+    if let Some(id) = &node.id {
+        if let Some(sp) = check(ReadSpec { name: name.into(), id: Some(id.clone()), list, ..Default::default() }) { return Ok(sp); }
+    }
+    if list { return Err(format!("「{example}」所在控件没有可用的 id, 读不了列表")); }
+    // 标签: 左边同一行或上面、短而不含数字的固定文字; 先近后远
+    let mut labels: Vec<(i32, &RNode, &str)> = nodes.iter().filter(|n| stable_label(&n.t) && n.b != node.b).filter_map(|n| {
+        let vgap = node.b[1] - n.b[3];
+        let hgap = node.b[0] - n.b[2];
+        let same_row = (node.b[3].min(n.b[3]) - node.b[1].max(n.b[1])) * 2 >= (node.b[3] - node.b[1]).min(n.b[3] - n.b[1]).max(1);
+        if same_row && hgap >= -((n.b[2] - n.b[0]) / 10) { Some((hgap.max(0), n, "right")) }
+        else if vgap >= -((n.b[3] - n.b[1]) / 10) && (node.b[2].min(n.b[2]) - node.b[0].max(n.b[0])) > 0 { Some((vgap.max(0), n, "below")) }
+        else { None }
+    }).collect();
+    labels.sort_by_key(|(g, _, _)| *g);
+    for (_, l, dir) in labels.into_iter().take(4) {
+        if let Some(sp) = check(ReadSpec { name: name.into(), label: Some(l.t.clone()), dir: Some(dir.into()), ..Default::default() }) {
+            return Ok(sp);
+        }
+    }
+    Err(format!("「{example}」既没有唯一 id, 旁边也没有能唯一定位它的固定标签"))
+}
+
+/// `--read 字段=示例值` / `--read 字段[]=示例值`(列表), 在该局最后一屏上学选择器。
+pub fn learn_reads(run_dir: &Path, asks: &[String]) -> Result<Vec<ReadSpec>, String> {
+    if asks.is_empty() { return Ok(Vec::new()); }
+    let text = fs::read_to_string(run_dir.join("log.jsonl")).map_err(|e| format!("读不到 log.jsonl: {e}"))?;
+    let last = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["r"] == "screen").filter(|r| r.get("nodes").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()))
+        .last().ok_or("这一局没有带控件树的画面记录, 学不了读字段")?;
+    let nodes = rnodes_of(&last);
+    asks.iter().map(|a| {
+        let (k, v) = a.split_once('=').ok_or_else(|| format!("--read 要写成 字段=示例值: {a}"))?;
+        let (k, list) = match k.trim().strip_suffix("[]") { Some(k) => (k.trim(), true), None => (k.trim(), false) };
+        if k.is_empty() { return Err(format!("--read 字段名为空: {a}")); }
+        learn_read(k, v.trim(), list, &nodes)
+    }).collect()
+}
+
 // ───────────────────────── 回放 ─────────────────────────
 
 #[derive(Debug, PartialEq)]
@@ -410,6 +560,8 @@ pub enum Stop {
     Capture { step: usize },
     /// 动作没发到手机(not_sent)或发出后不确定是否生效(unknown)。不是技能的错, 也绝不重放这一步。
     Receipt { step: usize, state: &'static str, why: String, sensitive: bool },
+    /// 走完了, 但读字段有读不到的(选择器在新画面上失效或不唯一)
+    Read { errors: Vec<String> },
 }
 
 impl Stop {
@@ -424,6 +576,7 @@ impl Stop {
             Stop::Capture { .. } => "capture_failed",
             Stop::Receipt { state: "not_sent", .. } => "action_not_sent",
             Stop::Receipt { .. } => "action_unconfirmed",
+            Stop::Read { .. } => "read_failed",
         }
     }
     pub fn describe(&self) -> String {
@@ -435,6 +588,7 @@ impl Stop {
             Stop::Denied { step, reason } => format!("第{}步审批未通过: {reason}", step + 1),
             Stop::Success { missing } => format!("终态缺 {:?}", missing),
             Stop::Capture { step } => format!("第{}步读不到画面", step + 1),
+            Stop::Read { errors } => format!("步骤都做完了, 但字段没读出来: {}", errors.join("; ")),
             Stop::Receipt { step, state, why, sensitive } => match *state {
                 "not_sent" => format!("第{}步动作没发到手机({why}), 屏幕没变", step + 1),
                 _ => format!("第{}步动作发出后没收到确认({why}), 可能已经生效也可能没有; 以当前屏幕为准{}", step + 1,
@@ -678,7 +832,7 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             "home" => { ctx.device.home(); last_tap = None; }
             "clear" => ctx.device.clear_field(),
             "type" => ctx.device.type_text(text_filled.as_deref().unwrap_or("")),
-            "launch" => { let _ = ctx.device.launch(st.text.as_deref().unwrap_or(""), ""); }
+            "launch" => ctx.device.launch_with_receipt(st.text.as_deref().unwrap_or(""), ""),
             _ => {}
         }
         let receipt = ctx.device.take_receipt();
@@ -715,8 +869,29 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             return Stop::Success { missing };
         }
     }
+    if !skill.read.is_empty() {
+        let (vals, errs) = read_now(ctx.device, &skill.read, ctx.els_timeout_ms);
+        put(json!({"r":"read","fields":vals,"errors":errs}));
+        let _ = fs::write(ctx.out_dir.join("result.json"), serde_json::to_string_pretty(
+            &json!({"skill": skill.name, "fields": vals, "errors": errs})).unwrap_or_default());
+        if !errs.is_empty() {
+            put(json!({"r":"stop","code":"read_failed","errors":errs}));
+            return Stop::Read { errors: errs };
+        }
+    }
     put(json!({"r":"stop","code":"done"}));
     Stop::Done
+}
+
+/// 在当前画面上按选择器读字段(不动手机)。
+pub fn read_now(device: &Device, specs: &[ReadSpec], els_timeout_ms: u64) -> (serde_json::Map<String, Value>, Vec<String>) {
+    let (_, full, _, _) = device.els_full(els_timeout_ms);
+    let nodes: Vec<RNode> = full.iter().map(RNode::from).filter(|n| !n.t.is_empty()).collect();
+    if nodes.is_empty() {
+        let errs = specs.iter().map(|s| format!("{}: 读不到控件树", s.name)).collect();
+        return (specs.iter().map(|s| (s.name.clone(), Value::Null)).collect(), errs);
+    }
+    read_all(specs, &nodes)
 }
 
 /// 记账: 成功清零连败; 连败达到阈值标过期(列表里标出, `run --skill auto` 不再选它)。
@@ -737,6 +912,49 @@ pub fn record(skill: &mut Skill, stop: &Stop) {
 
 #[cfg(test)]
 mod tests {
+
+    fn rn(t: &str, b: [i32; 4], id: Option<&str>) -> RNode { RNode { t: t.into(), b, id: id.map(str::to_string) } }
+
+    #[test]
+    fn read_selectors_are_learned_on_the_last_screen_and_read_back() {
+        let screen = vec![
+            rn("我的钱包", [0, 0, 400, 80], None),
+            rn("余额", [40, 200, 160, 260], None),
+            rn("¥1,234.50", [600, 205, 900, 255], None),
+            rn("订单号", [40, 400, 200, 440], None),
+            rn("A20261126", [40, 450, 400, 500], None),
+            rn("苹果", [40, 600, 300, 650], Some("id/title")),
+            rn("香蕉", [40, 700, 300, 750], Some("id/title")),
+            rn("待付款", [600, 800, 900, 850], Some("id/status")),
+        ];
+        let bal = learn_read("余额", "¥1,234.50", false, &screen).unwrap();
+        assert_eq!((bal.label.as_deref(), bal.dir.as_deref()), (Some("余额"), Some("right")));
+        let ord = learn_read("订单", "A20261126", false, &screen).unwrap();
+        assert_eq!((ord.label.as_deref(), ord.dir.as_deref()), (Some("订单号"), Some("below")));
+        let st = learn_read("状态", "待付款", false, &screen).unwrap();
+        assert_eq!(st.id.as_deref(), Some("id/status"));
+        let items = learn_read("商品", "香蕉", true, &screen).unwrap();
+        assert!(items.list && items.id.as_deref() == Some("id/title"));
+        assert!(learn_read("x", "苹果", false, &screen).is_err() || learn_read("x", "苹果", false, &screen).unwrap().id.is_none(),
+                "非列表时 id/title 不唯一, 不能用 id");
+        assert!(learn_read("x", "不存在", false, &screen).is_err());
+
+        // 换一屏(值变了、位置略移)照样读得出; 标签缺失时报错而不是瞎读
+        let later = vec![
+            rn("余额", [40, 210, 160, 270], None), rn("¥88.00", [620, 215, 900, 265], None),
+            rn("订单号", [40, 400, 200, 440], None), rn("B1", [40, 452, 200, 500], None),
+            rn("梨", [40, 600, 300, 650], Some("id/title")), rn("桃", [40, 700, 300, 750], Some("id/title")),
+            rn("西瓜", [40, 800, 300, 850], Some("id/title")), rn("已发货", [600, 800, 900, 850], Some("id/status")),
+        ];
+        let (v, errs) = read_all(&[bal.clone(), ord, st, items], &later);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(v["余额"], json!("¥88.00"));
+        assert_eq!(v["订单"], json!("B1"));
+        assert_eq!(v["状态"], json!("已发货"));
+        assert_eq!(v["商品"], json!(["梨", "桃", "西瓜"]));
+        let (v, errs) = read_all(&[bal], &later[2..]);
+        assert_eq!((v["余额"].clone(), errs.len()), (Value::Null, 1));
+    }
     use super::*;
 
     fn nd(t: &str, b: [i32; 4]) -> Node { Node { t: t.into(), b } }
@@ -781,7 +999,7 @@ mod tests {
     #[test]
     fn stale_after_two_failures_but_not_on_denial() {
         let mut s = Skill { schema: schema_id(), name: "x".into(), goal: "g".into(), app: String::new(),
-            params: Default::default(), steps: vec![], success: vec![], source: Value::Null, stats: Stats::default() };
+            params: Default::default(), steps: vec![], success: vec![], read: vec![], source: Value::Null, stats: Stats::default() };
         record(&mut s, &Stop::Denied { step: 0, reason: "r".into() });
         assert_eq!(s.stats.fail_streak, 0);
         record(&mut s, &Stop::NotArrived { step: 1, expect: vec![] });
@@ -840,7 +1058,9 @@ mod tests {
 
 pub const USAGE: &str = "技能:  skill list
        skill show <名字>
-       skill save --task <T> --run <局ID> --name <名字> [--force]     (把复核通过的一局编成技能)
+       skill save --task <T> --run <局ID> --name <名字> [--force] [--read 字段=示例值 | --read 字段[]=示例值 ...]
+                                                                       (把复核通过的一局编成技能; --read 在最后一屏学读字段, []=列表)
+       skill read <名字> [--serial S]                                   (不动手机, 在当前画面读技能的字段)
        skill match \"<目标>\"                                          (按目标模板找技能并取参数)
        skill run <名字> [--serial S] [--set k=v ...] [--fallback --task <T>]  (零模型回放; 断了可交还模型续跑)";
 
@@ -887,13 +1107,30 @@ pub fn cli(args: &[String]) -> i32 {
             let (Some(task), Some(run), Some(name)) = (opt("--task"), opt("--run"), opt("--name")) else { eprintln!("{USAGE}"); return 2; };
             let task_dir = format!("{root}/{task}");
             let Some(rd) = find_run_dir(&task_dir, &run) else { eprintln!("任务 {task} 下找不到唯一的局 {run}"); return 1; };
+            let asks: Vec<String> = args.windows(2).filter(|w| w[0] == "--read").map(|w| w[1].clone()).collect();
             match compile(&rd, &name, !flag("--force")).and_then(|mut s| {
+                s.read = learn_reads(&rd, &asks)?;
                 s.source["task"] = json!(task);
                 save(&dir, &s).map(|p| (s, p))
             }) {
-                Ok((s, p)) => { println!("技能 {} 已保存: {}步, 参数 {:?}, 目标模板「{}」 → {}", s.name, s.steps.len(), s.params, s.goal, p.display()); 0 }
+                Ok((s, p)) => {
+                    println!("技能 {} 已保存: {}步, 参数 {:?}, 目标模板「{}」 → {}", s.name, s.steps.len(), s.params, s.goal, p.display());
+                    for r in &s.read { println!("  读字段 {}", serde_json::to_string(r).unwrap_or_default()); }
+                    0
+                }
                 Err(e) => { eprintln!("✗ {e}"); 1 }
             }
+        }
+        Some("read") => {
+            // 不动手机, 只在当前画面上按技能的读字段选择器读一遍(调试选择器/单独取数)
+            let Some(Ok(s)) = args.get(1).map(|n| load(&dir, n)) else { eprintln!("{USAGE}"); return 2; };
+            if s.read.is_empty() { eprintln!("技能 {} 没有读字段", s.name); return 1; }
+            let tmp = std::env::temp_dir().join(format!("phonefarm-skill-{}", std::process::id())).to_string_lossy().to_string();
+            let _ = fs::create_dir_all(&tmp);
+            let device = Device::new(opt("--serial"), tmp);
+            let (vals, errs) = read_now(&device, &s.read, cfg.els_timeout_ms);
+            println!("{}", json!({"fields": vals, "errors": errs}));
+            if errs.is_empty() { 0 } else { 1 }
         }
         Some("match") => {
             let goal = args.get(1).cloned().unwrap_or_default();
@@ -943,6 +1180,9 @@ pub fn run_with_fallback(cfg: &crate::Config, dir: &Path, skill: &mut Skill,
     let _ = save(dir, skill);
     println!("skill: name={} stop={} ({}) wall={:.1}s model_calls=0 log={}", skill.name, stop.code(), stop.describe(),
              t0.elapsed().as_secs_f64(), out_dir.join("skill-run.jsonl").display());
+    if let Ok(r) = fs::read_to_string(out_dir.join("result.json")) {
+        if let Ok(v) = serde_json::from_str::<Value>(&r) { println!("result: {}", v["fields"]); }
+    }
     if stop == Stop::Done { return 0; }
     if matches!(stop, Stop::Denied { .. }) { return 1; }
     let Some(task) = fallback_task else { return 1; };
