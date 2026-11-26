@@ -183,7 +183,7 @@ def main(argv=None):
     ap.add_argument("--token-file")
     ap.add_argument("--token-stdin", action="store_true", help="read the admin token from the first stdin line")
     ap.add_argument("--gateway", required=True)
-    ap.add_argument("--gateway-key-file", required=True)
+    ap.add_argument("--gateway-key-file", help="file with the gateway key; omit with --token-stdin to read it from the second stdin line")
     ap.add_argument("--chat", default="tg:me")
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--once", action="store_true")
@@ -192,7 +192,10 @@ def main(argv=None):
     if not token:
         print("empty center token", file=sys.stderr)
         return 2
-    gkey = open(a.gateway_key_file).read().strip()
+    gkey = open(a.gateway_key_file).read().strip() if a.gateway_key_file else sys.stdin.readline().strip()
+    if not gkey:
+        print("empty gateway key", file=sys.stderr)
+        return 2
     b = Bridge(a.center, token, a.gateway, gkey, a.chat,
                log=lambda s: print(time.strftime("%H:%M:%S"), s, flush=True))
     while True:

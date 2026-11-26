@@ -14,7 +14,7 @@
     card.querySelectorAll('button').forEach(b => { b.disabled = true; });
     try {
       const r = await fetch(`/dash/api/approvals/${item.job_id}/${encodeURIComponent(item.id)}`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({decision})});
+        method: 'POST', headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify({decision})});
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
       card.replaceChildren(el('p', decision === 'allow' ? `已允许：${item.action}` : `已拒绝：${item.action}`));

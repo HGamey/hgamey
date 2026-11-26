@@ -2535,6 +2535,9 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
             if board and len(parts) == 5 and parts[:3] == ["dash", "api", "approvals"]:
                 if not board.steered(self):
                     return self._send(403, {"code": "steer_required", "error": "需要操控密码才能审批"})
+                # 与 dash 其他写操作同一防跨站口径: 自定义头 + JSON(跨站表单发不出这两样)
+                if self.headers.get("X-HG") != "1" or "application/json" not in self.headers.get("Content-Type", ""):
+                    return self._send(400, {"code": "invalid_request", "error": "请求格式不对"})
                 try:
                     jobs.path(parts[3])
                 except KeyError:
