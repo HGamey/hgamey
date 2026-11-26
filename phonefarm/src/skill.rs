@@ -420,6 +420,9 @@ pub struct ReadSpec {
     pub dir: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub list: bool,
+    /// 示例值里有数字: 读到的值也必须带数字(防止值没加载出来时读成旁边的「充值」「--」)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub digits: bool,
 }
 
 /// 读字段用的最小节点视图(设备上的 FullNode 和日志里的 nodes 都能转成它)。
@@ -447,13 +450,28 @@ fn rnodes_of(rec: &Value) -> Vec<RNode> {
 fn beside<'a>(nodes: &'a [RNode], label: &RNode, dir: &str) -> Option<&'a RNode> {
     let overlap = |a0: i32, a1: i32, b0: i32, b1: i32| (a1.min(b1) - a0.max(b0)).max(0);
     let (lh, lw) = ((label.b[3] - label.b[1]).max(1), (label.b[2] - label.b[0]).max(1));
-    nodes.iter().filter(|n| n.t != label.t && n.b != label.b).filter_map(|n| match dir {
+    let mut c: Vec<(i32, &RNode)> = nodes.iter().filter(|n| n.t != label.t && n.b != label.b).filter_map(|n| match dir {
+        // 同一行: 纵向重叠过半; 下面: 横向重叠过半(按较窄的一方算), 只看紧挨着的几行
         "right" if n.b[0] >= label.b[2] - lw / 10 && overlap(n.b[1], n.b[3], label.b[1], label.b[3]) * 2 >= lh.min(n.b[3] - n.b[1]).max(1)
             => Some((n.b[0] - label.b[2], n)),
-        "below" if n.b[1] >= label.b[3] - lh / 10 && overlap(n.b[0], n.b[2], label.b[0], label.b[2]) > 0
+        "below" if n.b[1] >= label.b[3] - lh / 10 && n.b[1] - label.b[3] <= lh * 3
+            && overlap(n.b[0], n.b[2], label.b[0], label.b[2]) * 2 >= lw.min(n.b[2] - n.b[0]).max(1)
             => Some((n.b[1] - label.b[3], n)),
         _ => None,
-    }).min_by_key(|(gap, _)| *gap).map(|(_, n)| n)
+    }).collect();
+    c.sort_by_key(|(gap, _)| *gap);
+    // 两个候选离得差不多近: 说不清是哪个, 宁可读不出也不读错
+    if c.len() >= 2 && (c[1].0 - c[0].0).abs() <= lh / 4 && c[1].1.t != c[0].1.t {
+        return None;
+    }
+    c.first().map(|(_, n)| *n)
+}
+
+/// 读出来的值像不像值: 占位符不算; 学习时示例带数字的, 读到的也要带数字。
+fn plausible(spec: &ReadSpec, v: &str) -> bool {
+    let t = v.trim();
+    !t.is_empty() && !["--", "-", "—", "加载中", "...", "…", "loading"].contains(&t.to_lowercase().as_str())
+        && (!spec.digits || t.chars().any(|c| c.is_ascii_digit() || ('０'..='９').contains(&c)))
 }
 
 /// 按选择器读一个字段。读不到或不唯一返回 Err(原因)。
@@ -462,10 +480,13 @@ pub fn read_field(spec: &ReadSpec, nodes: &[RNode]) -> Result<Value, String> {
         let mut hits: Vec<&RNode> = nodes.iter().filter(|n| n.id.as_deref() == Some(id.as_str())).collect();
         hits.sort_by_key(|n| (n.b[1], n.b[0]));
         if spec.list {
-            return Ok(json!(hits.iter().map(|n| n.t.clone()).collect::<Vec<_>>()));
+            let v: Vec<String> = hits.iter().map(|n| n.t.clone()).filter(|t| plausible(spec, t)).collect();
+            if v.is_empty() { return Err(format!("画面上没有 id={id} 的列表项")); }
+            return Ok(json!(v));
         }
         return match hits.len() {
-            1 => Ok(json!(hits[0].t)),
+            1 if plausible(spec, &hits[0].t) => Ok(json!(hits[0].t)),
+            1 => Err(format!("id={id} 的值「{}」不像值(没加载完?)", hits[0].t)),
             0 => Err(format!("画面上没有 id={id}")),
             k => Err(format!("id={id} 有 {k} 个, 不唯一")),
         };
@@ -478,7 +499,12 @@ pub fn read_field(spec: &ReadSpec, nodes: &[RNode]) -> Result<Value, String> {
         k => return Err(format!("标签「{label}」有 {k} 个, 不唯一")),
     };
     let dir = spec.dir.as_deref().unwrap_or("right");
-    beside(nodes, l, dir).map(|n| json!(n.t)).ok_or_else(|| format!("标签「{label}」{}没有文字", if dir == "below" { "下面" } else { "右边" }))
+    let side = if dir == "below" { "下面" } else { "右边" };
+    match beside(nodes, l, dir) {
+        Some(n) if plausible(spec, &n.t) => Ok(json!(n.t)),
+        Some(n) => Err(format!("标签「{label}」{side}是「{}」, 不像值(没加载完?)", n.t)),
+        None => Err(format!("标签「{label}」{side}没有能唯一确定的文字")),
+    }
 }
 
 pub fn read_all(specs: &[ReadSpec], nodes: &[RNode]) -> (serde_json::Map<String, Value>, Vec<String>) {
@@ -496,14 +522,16 @@ pub fn read_all(specs: &[ReadSpec], nodes: &[RNode]) -> (serde_json::Map<String,
 /// 在学习用的那一屏上, 为「字段=示例值」找一个能读回示例值的选择器。
 pub fn learn_read(name: &str, example: &str, list: bool, nodes: &[RNode]) -> Result<ReadSpec, String> {
     let ex = norm(example);
-    let mut hits: Vec<&RNode> = nodes.iter().filter(|n| norm(&n.t) == ex).collect();
-    if hits.is_empty() { hits = nodes.iter().filter(|n| !ex.is_empty() && norm(&n.t).contains(&ex)).collect(); }
+    // 只认整段相等: 用「包含」会让示例「50」认到「¥1,234.50」上
+    let hits: Vec<&RNode> = nodes.iter().filter(|n| norm(&n.t) == ex).collect();
     let node = match hits.len() {
         1 => hits[0],
-        0 => return Err(format!("最后一屏上找不到「{example}」")),
+        0 => return Err(format!("最后一屏上没有正好是「{example}」的文字(要写控件上的完整文字)")),
         k => return Err(format!("「{example}」在最后一屏上出现 {k} 次, 换一个只出现一次的示例值")),
     };
-    let check = |sp: ReadSpec| -> Option<ReadSpec> {
+    let digits = example.chars().any(|c| c.is_ascii_digit());
+    let check = |mut sp: ReadSpec| -> Option<ReadSpec> {
+        sp.digits = digits;
         let v = read_field(&sp, nodes).ok()?;
         let ok = if list { v.as_array().is_some_and(|a| a.iter().any(|x| x.as_str() == Some(node.t.as_str()))) }
                  else { v.as_str() == Some(node.t.as_str()) };
@@ -536,8 +564,10 @@ pub fn learn_reads(run_dir: &Path, asks: &[String]) -> Result<Vec<ReadSpec>, Str
     if asks.is_empty() { return Ok(Vec::new()); }
     let text = fs::read_to_string(run_dir.join("log.jsonl")).map_err(|e| format!("读不到 log.jsonl: {e}"))?;
     let last = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|r| r["r"] == "screen").filter(|r| r.get("nodes").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()))
-        .last().ok_or("这一局没有带控件树的画面记录, 学不了读字段")?;
+        .filter(|r| r["r"] == "screen").last().ok_or("这一局没有画面记录, 学不了读字段")?;
+    if !last.get("nodes").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
+        return Err("这一局最后一屏没有控件树(纯画面页), 学不了读字段".into());
+    }
     let nodes = rnodes_of(&last);
     asks.iter().map(|a| {
         let (k, v) = a.split_once('=').ok_or_else(|| format!("--read 要写成 字段=示例值: {a}"))?;
@@ -870,10 +900,22 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
         }
     }
     if !skill.read.is_empty() {
-        let (vals, errs) = read_now(ctx.device, &skill.read, ctx.els_timeout_ms);
+        // 值可能还在加载: 读不全就再等一会儿, 最多 EXPECT_WAIT_MS; 前台必须还是技能的应用
+        let t0 = Instant::now();
+        let (vals, errs) = loop {
+            let (mut v, mut e) = read_now(ctx.device, &skill.read, ctx.els_timeout_ms);
+            if !skill.app.is_empty() && ctx.device.foreground_pkg() != skill.app {
+                e.push(format!("前台不是 {}", skill.app));
+                v.values_mut().for_each(|x| *x = Value::Null);
+            }
+            if e.is_empty() || t0.elapsed() > Duration::from_millis(EXPECT_WAIT_MS) { break (v, e); }
+            std::thread::sleep(Duration::from_millis(500));
+        };
         put(json!({"r":"read","fields":vals,"errors":errs}));
-        let _ = fs::write(ctx.out_dir.join("result.json"), serde_json::to_string_pretty(
-            &json!({"skill": skill.name, "fields": vals, "errors": errs})).unwrap_or_default());
+        if let Err(e) = fs::write(ctx.out_dir.join("result.json"), serde_json::to_string_pretty(
+            &json!({"skill": skill.name, "fields": vals, "errors": errs})).unwrap_or_default()) {
+            eprintln!("⚠ 写不了 result.json: {e}");
+        }
         if !errs.is_empty() {
             put(json!({"r":"stop","code":"read_failed","errors":errs}));
             return Stop::Read { errors: errs };
@@ -952,8 +994,19 @@ mod tests {
         assert_eq!(v["订单"], json!("B1"));
         assert_eq!(v["状态"], json!("已发货"));
         assert_eq!(v["商品"], json!(["梨", "桃", "西瓜"]));
-        let (v, errs) = read_all(&[bal], &later[2..]);
+        let (v, errs) = read_all(&[bal.clone()], &later[2..]);
         assert_eq!((v["余额"].clone(), errs.len()), (Value::Null, 1));
+
+        // 值还没加载出来: 旁边是「充值」按钮或占位符, 要报读不出, 不能读成按钮文字
+        let loading = vec![rn("余额", [40, 210, 160, 270], None), rn("充值", [700, 215, 900, 265], None)];
+        assert!(read_field(&bal, &loading).is_err());
+        let dash = vec![rn("余额", [40, 210, 160, 270], None), rn("--", [700, 215, 900, 265], None)];
+        assert!(read_field(&bal, &dash).is_err());
+        // 列表 id 不在了: 报错而不是空列表
+        let items = learn_read("商品", "香蕉", true, &screen).unwrap();
+        assert!(read_field(&items, &loading).is_err());
+        // 示例只是某段文字的一部分: 不学
+        assert!(learn_read("x", "50", false, &screen).is_err(), "「50」不能认到「¥1,234.50」上");
     }
     use super::*;
 
