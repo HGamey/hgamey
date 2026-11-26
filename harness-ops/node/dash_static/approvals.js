@@ -17,7 +17,8 @@
         method: 'POST', headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify({decision})});
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-      card.replaceChildren(el('p', decision === 'allow' ? `已允许：${item.action}` : `已拒绝：${item.action}`));
+      const h = item.category === 'handoff';
+      card.replaceChildren(el('p', decision === 'allow' ? `${h ? '已告知完成' : '已允许'}：${item.action}` : `${h ? '已放弃' : '已拒绝'}：${item.action}`));
     } catch (e) {
       card.append(el('p', `提交失败：${e.message}`, 'doctor-error'));
       card.querySelectorAll('button').forEach(b => { b.disabled = false; });
@@ -27,7 +28,7 @@
     const li = el('li', null, 'ap-card' + (item.critical ? ' critical' : ''));
     li.append(el('div', `${item.category_zh}${item.critical ? '（必须人工确认）' : ''}`, 'ap-tag'));
     li.append(el('div', item.action));
-    li.append(el('div', `理由：${item.reason}`));
+    li.append(el('div', `${item.category === 'handoff' ? '说明' : '理由'}：${item.reason}`));
     if (item.goal) li.append(el('div', `任务目标：${item.goal}`, 'ap-meta'));
     li.append(el('div', `设备 ${item.serial || '?'} · 应用 ${item.pkg || '?'} · 作业 ${item.job_id} · 剩 ${left(item)}`, 'ap-meta'));
     if (item.has_screenshot) {
@@ -36,7 +37,8 @@
       li.append(img);
     }
     const row = el('div', null, 'ap-actions');
-    const yes = el('button', '允许', 'primary'), no = el('button', '拒绝', 'ghost');
+    const handoff = item.category === 'handoff';
+    const yes = el('button', handoff ? '我做完了' : '允许', 'primary'), no = el('button', handoff ? '不处理' : '拒绝', 'ghost');
     yes.type = no.type = 'button';
     yes.disabled = no.disabled = !steer;
     yes.onclick = () => decide(item, 'allow', li);

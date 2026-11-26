@@ -43,6 +43,9 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(ab.parse_reply("回复「允许 c75f」或「拒绝 c75f」"))
         self.assertIsNone(ab.parse_reply("已允许：tap 删除"))
         self.assertIsNone(ab.parse_reply("maybe c75f"))
+        self.assertEqual(ab.parse_reply("完成 ab12"), ("allow", "ab12"))
+        self.assertEqual(ab.parse_reply("放弃 ab12"), ("deny", "ab12"))
+        self.assertIsNone(ab.parse_reply(ab.caption({"id": "ap-x-1-ab12", "job_id": "j", "category": "handoff"})))
         self.assertIsNone(ab.parse_reply(ab.caption({"id": "ap-x-1-c75f", "job_id": "j"})))
 
     def test_round_trip(self):

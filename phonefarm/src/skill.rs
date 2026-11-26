@@ -205,7 +205,7 @@ fn smallest_text_at(s: &Screen, x: i32, y: i32) -> Option<String> {
         .map(|(t, _)| t.clone())
 }
 
-const SKIP_ACTS: &[&str] = &["done", "inspect", "find", "get_state", "history", "goto", "wait"];
+const SKIP_ACTS: &[&str] = &["done", "handoff", "inspect", "find", "get_state", "history", "goto", "wait"];
 
 /// 从一局的 log.jsonl 编译技能。`require_achieved`: 只收复核通过的局。
 pub fn compile(run_dir: &Path, name: &str, require_achieved: bool) -> Result<Skill, String> {
