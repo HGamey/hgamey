@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light dark">
+<title>数据导入 · HGamey</title><link rel="icon" href="data:,"><link rel="stylesheet" href="/dash/static/app.css"><link rel="stylesheet" href="/dash/static/jobs.css"><link rel="stylesheet" href="/dash/static/import.css">
+<link rel="stylesheet" href="/dash/static/shell.css">
+</head>
+<body class="jobs-view import-view">
+<a class="skip-link" href="#import-heading">跳到数据导入</a>
+<header class="top"><div class="top-right"><button id="refresh" class="ghost" type="button">刷新</button></div></header><script src="/dash/static/shell.js"></script>
+<main class="jobs-page import-page">
+  <div class="page-heading"><div><h1 id="import-heading" tabindex="-1">数据导入</h1>
+    <p class="page-description">把数据带进这台中心有两种方式，区别在于要不要停机。</p></div></div>
+  <p id="message" class="note" role="status">正在读取…</p>
+  <form id="unlock" class="im-unlock" hidden>
+    <label for="unlock-pw">操作口令</label>
+    <input id="unlock-pw" type="password" placeholder="向管理员要" autocomplete="current-password">
+    <button class="btn primary" type="submit">解锁</button>
+    <p id="unlock-msg" class="note" role="status"></p>
+  </form>
+  <div id="content" hidden>
+    <div class="im-tabs" role="tablist" aria-label="导入方式">
+      <button id="tab-results" class="im-tab is-active" role="tab" type="button" aria-selected="true" aria-controls="panel-results">结果 / 数据集（可直接导入）</button>
+      <button id="tab-package" class="im-tab" role="tab" type="button" aria-selected="false" aria-controls="panel-package">整条任务（导出包）</button>
+    </div>
+
+    <section id="panel-results" class="im-panel" role="tabpanel" aria-labelledby="tab-results">
+      <p class="note">结果清单与小报告在<strong>正在运行的中心</strong>直接登记，不用停机——和 agent 平时 <code>pf-node results register/import</code> 走的是同一个接口。登记是不可变的，重复同 ID 同内容不会再写。</p>
+      <div class="im-switch">
+        <button id="open-register" class="btn" type="button" aria-pressed="true">登记结果</button>
+        <button id="open-import" class="btn" type="button" aria-pressed="false">导入小报告</button>
+      </div>
+
+      <form id="register-form" class="im-form">
+        <div class="im-form-head"><label for="manifest-input">完整结果 JSON</label><button id="register-id" class="ghost sm" type="button">生成结果 ID</button></div>
+        <textarea id="manifest-input" rows="14" spellcheck="false" autocomplete="off" required aria-describedby="register-help"></textarea>
+        <p id="register-help" class="note">schema 为 <code>phonefarm/result@1</code>，需有效 result_id 和非空标题（≤240 字符）。整条登记 ≤256 KiB；大原件请保留为命名来源。数值、单位和来源由服务端核验。</p>
+        <div class="im-actions"><button id="register-submit" class="btn primary" type="submit">保存结果记录</button><span id="register-message" class="note" role="status"></span></div>
+        <div id="register-links" class="im-links"></div>
+      </form>
+
+      <form id="import-form" class="im-form" hidden>
+        <div class="im-grid">
+          <label>导入 ID<span class="id-input"><input id="import-id" maxlength="48" pattern="[A-Za-z0-9._\-]{1,48}" autocomplete="off" spellcheck="false" required><button id="import-generate" class="ghost sm" type="button">生成 ID</button></span></label>
+          <label>报告格式<select id="import-adapter"><option value="doom-lr4-026-v1">Doom LR4-026 · 原生 / 低清模型</option><option value="gol-optimize-v1">GOL optimize_report@1 · 全部 archive</option></select></label>
+        </div>
+        <label>选择小 JSON 文件<input id="import-file" type="file" accept=".json,application/json"></label>
+        <p class="note">最多 1 MiB UTF-8 文本。选择文件不会上传整包；只保存这一份报告文本，它引用的图片、轨迹、视频或游戏资源不会自动复制，原统计不重算。</p>
+        <label for="import-labels">标签 JSON（可留空）</label>
+        <textarea id="import-labels" rows="3" spellcheck="false" placeholder='{"game_id":"doom","device":null,"research_id":null,"direction_id":null}'></textarea>
+        <div class="im-actions"><button id="import-submit" class="btn primary" type="submit">导入并登记</button><span id="import-message" class="note" role="status"></span></div>
+        <div id="import-links" class="im-links"></div>
+      </form>
+    </section>
+
+    <section id="panel-package" class="im-panel" role="tabpanel" aria-labelledby="tab-package" hidden>
+      <p class="note">整条任务的导出包含<strong>作业、研究历史和附件</strong>。真正写入（apply）要备份并替换中心的三个数据库，<strong>必须先停掉接收方的中心</strong>才能做——一个任务和整个中心用的是同一段代码，这条不变。所以网页只做<strong>预演（dry-run）</strong>：上传导出 zip、核对计划，真正导入由下方给出的命令行在停机后手动执行。</p>
+      <dl id="target-info" class="im-facts"></dl>
+      <form id="preview-form" class="im-form">
+        <label>选择数据导出 zip<input id="zip-file" type="file" accept=".zip,application/zip"></label>
+        <p class="note">最多 512 MiB；更大的导出包请直接用命令行预演与导入。上传后只做校验和计划，<strong>不写入任何数据</strong>，用完即删。</p>
+        <div class="im-actions"><button id="preview-submit" class="btn primary" type="submit">预演（dry-run，不写入）</button><span id="preview-message" class="note" role="status"></span></div>
+      </form>
+      <ul id="preview-details" class="im-warn"></ul>
+      <div id="plan" class="im-plan"></div>
+    </section>
+  </div>
+</main>
+<script src="/dash/static/target.js"></script><script src="/dash/static/import.js"></script>
+</body>
+</html>

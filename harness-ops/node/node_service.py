@@ -32,7 +32,7 @@ phonefarm/adb/devlock 在 phonefarm 根目录下执行，game_opt_loop 在它自
 import sqlite3
 import shutil
 import node_doctor
-import argparse, errno, hashlib, hmac, io, ipaddress, itertools, json, os, re, signal, subprocess, sys, tarfile, threading, time, uuid
+import argparse, errno, hashlib, hmac, io, ipaddress, itertools, json, os, re, signal, subprocess, sys, tarfile, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote, quote, urlencode
 from node_read import NodeRead, artifact_page, image_inventory
@@ -44,6 +44,7 @@ from device_registry import DeviceRegistry, RegistryError, LIMIT as MAX_DEVICE_R
 from device_scope import (DeviceScope, validate_job as validate_device_job,
                           serial_from_argv, binding_argument, same_binding, canonical_resources)
 from center_export import CenterExports, CenterExportError
+import center_import
 from node_results import NodeResults, ResultError, MAX_RECORD, MAX_IMPORT_BODY
 from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
@@ -1335,6 +1336,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._send(200, b"ok", "text/plain")
             if board and parts[:3] == ["dash", "api", "center-export"]:
                 return self._center_export("GET", [unquote(p) for p in parts[3:]])
+            if board and parts[:3] == ["dash", "api", "center-import"]:
+                return self._center_import("GET", [unquote(p) for p in parts[3:]])
             if board and parts == ["dash", "api", "access"]:
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
@@ -2250,6 +2253,67 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     self.wfile.write(block)
                     left -= len(block)
 
+        # Previewing a center export before importing it (更多 → 数据导入). The whole dry-run reads this center's
+        # data; applying is never done from the web: center_import.py --apply needs the center stopped (it backs up
+        # and replaces the three databases), so the page only shows the plan and the exact command to run by hand.
+        # Everything here needs the steer password, exactly as 数据导出 does.
+        def _center_import(self, method, rest):
+            if method == "GET":
+                if not board.authed(self):
+                    return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
+                if not board.steered(self):
+                    return self._send(403, {"code": "steer_required", "error": "需要操作口令", "need_steer": True})
+            else:
+                self.close_connection = True
+                if not self._upload_write_auth(True):
+                    return
+            if exports is None:
+                return self._send(404, {"code": "not_found", "error": "只有中心能导入数据"})
+            try:
+                if method == "GET" and not rest:
+                    return self._send(200, {"data_root": jobs.data_root, "jobs_dir": jobs.dir, "node_id": jobs.node_id})
+                if method == "POST" and not rest:
+                    return self._center_import_preview()
+                return self._send(404, {"code": "not_found", "error": "route not found"})
+            except AssetUploadError as error:
+                return self._send(error.status, {"code": error.code, "error": str(error)})
+
+        def _center_import_preview(self):
+            # The uploaded zip goes to a temporary file, is planned without --apply (the dry-run writes nothing to
+            # the data root), its report is returned, and the temporary file is removed. Applying stays a hand-run
+            # command, printed by the page, that the operator runs after stopping the center.
+            length = self._upload_length(MAX_UPLOAD, 1)
+            self.connection.settimeout(120)
+            fd, path = tempfile.mkstemp(prefix="hgamey-center-import-", suffix=".zip")
+            try:
+                received = 0
+                with os.fdopen(fd, "wb") as out:
+                    while received < length:
+                        block = self.rfile.read(min(length - received, 1 << 20))
+                        if not block:
+                            break
+                        out.write(block)
+                        received += len(block)
+                if received != length:
+                    return self._send(400, {"code": "upload_incomplete",
+                                            "error": f"上传没收全：收到 {received} / 声明 {length} 字节"})
+                try:
+                    plan = center_import.Plan(path, jobs.data_root)
+                except center_import.Refused as refused:
+                    return self._send(400, {"code": "import_refused", "error": str(refused),
+                                            "refused_code": refused.code, "details": refused.details})
+                try:
+                    report = plan.report()
+                finally:
+                    plan.archive.close()
+                report["zip"] = None   # a deleted temporary path; the apply command names the operator's own zip
+                return self._send(200, report)
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
         def _history_read_only(self, parts):
             parts = [unquote(p) for p in parts]
             dashboard = parts[:3] == ["dash", "api", "job-sources"]
@@ -2395,6 +2459,8 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 return self._device_registry_post(True)
             if board and parts[:3] == ["dash", "api", "center-export"]:
                 return self._center_export("POST", [unquote(p) for p in parts[3:]])
+            if board and parts[:3] == ["dash", "api", "center-import"]:
+                return self._center_import("POST", [unquote(p) for p in parts[3:]])
             if parts == ["node", "runtime", "refresh"]:
                 return self._runtime_refresh(False)
             if board and parts == ["dash", "api", "node", "runtime", "refresh"]:
