@@ -290,6 +290,9 @@ name = "kimi-k27"
 url = "https://api.kimi.com/coding/v1/chat/completions"
 model = "kimi-k2.7-code"
 key_env = "KIMI_KEY"
+# 推理模型: 开思考时 max_tokens=500 拿不到 content; 关思考后接口只接受 temperature=0.6 (2026-11-25 实测)
+thinking_disable = true
+extra = { temperature = 0.6 }
 direct = true
 vision = true
 timeout_s = 60
