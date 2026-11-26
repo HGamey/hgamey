@@ -68,5 +68,15 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(fake.decisions), 1)
 
 
+class AuthTests(unittest.TestCase):
+    def test_exits_after_repeated_auth_failure(self):
+        ab.http = lambda *a, **k: (401, b"{}")
+        b = ab.Bridge("https://c", "bad", "https://g", "k", "tg:me", log=lambda s: None)
+        b.notify_pending()
+        b.notify_pending()
+        with self.assertRaises(SystemExit):
+            b.notify_pending()
+
+
 if __name__ == "__main__":
     unittest.main()
