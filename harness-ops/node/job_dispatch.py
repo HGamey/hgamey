@@ -1,5 +1,7 @@
 """Node-local durable admission and dispatch around independently owned workers."""
 from contextlib import contextmanager
+import approval_sign
+import job_approvals
 import fcntl
 import hashlib
 import json
@@ -409,6 +411,13 @@ class JobDispatch:
                    PF_JOB_IN=self.jobs.path(jid, "in"), PF_JOB_EXITF=self.jobs.path(jid, "exitcode"),
                    PF_JOB_ID=jid, PF_NODE_ID=self.jobs.node_id,
                    PF_JOB_LEASE_DIR=self.jobs.path(jid, "out", "lease-receipts"))
+        # 审批由 center 签发: 作业拿到公钥只能验签; 策略以 center 的为准(作业自带的只能收紧)。
+        # 本节点签不了名时下发 "unavailable": phonefarm 什么决定都不认(失败关闭), 不退回不签名
+        ddir = job_approvals.decision_dir(self.jobs, jid)
+        os.makedirs(ddir, mode=0o755, exist_ok=True)
+        env.update(PF_APPROVAL_PUBKEY=(job_approvals.SIGNER.public_hex() if job_approvals.SIGNER is not None
+                                       else approval_sign.UNAVAILABLE),
+                   PF_APPROVAL_DECISION_DIR=ddir, PF_APPROVAL_POLICY=approval_sign.center_policy_json())
         if spec.get("actor_id"):
             env["PF_JOB_ACTOR"] = spec["actor_id"]
         if spec.get("research_id"):

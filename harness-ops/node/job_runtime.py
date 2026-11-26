@@ -36,6 +36,9 @@ def _worker_command(job_dir, lock_fd):
             "--lock-fd", str(lock_fd)]
 
 
+
+APPROVAL_ENV = ("PF_APPROVAL_PUBKEY", "PF_APPROVAL_DECISION_DIR", "PF_APPROVAL_POLICY")
+
 def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None,
            privileged_entry=None, service_at_launch=None, time_budget=None, disk_guard=None, app_snapshot=None):
     """Hand an already-held flock to a detached worker; never unlock its shared fd."""
@@ -58,6 +61,10 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
         except BlockingIOError:
             raise ValueError("job already has a live worker") from None
         launch_spec = {"command": command, "cwd": os.fspath(cwd)}
+        # 审批签发的三项要原样带进独立用户(contained)的固定环境; 都不是秘密(公钥、目录、策略)
+        approval_env = {k: env[k] for k in APPROVAL_ENV if k in (env or {})}
+        if approval_env:
+            launch_spec["approval_env"] = approval_env
         if app_snapshot is not None:
             launch_spec['app_snapshot'] = app_snapshot
         if service_at_launch is not None:

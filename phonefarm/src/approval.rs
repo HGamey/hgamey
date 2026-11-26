@@ -36,6 +36,8 @@ pub enum Category {
     /// 不是审批而是「请人接手」: 验证码、密码、付款确认等 agent 不该或不能做的一步。
     /// allow = 人做完了, 继续; deny = 人不处理。
     Handoff,
+    /// 纯画面页(没有控件树文字)上的点击, 截图认字也认不出点的是什么; 或任务标了敏感时纯画面页上的任何点击。
+    Visual,
 }
 
 impl Category {
@@ -48,6 +50,7 @@ impl Category {
             Category::Password => "password",
             Category::Account => "account",
             Category::Handoff => "handoff",
+            Category::Visual => "visual",
         }
     }
     pub fn zh(self) -> &'static str {
@@ -59,6 +62,7 @@ impl Category {
             Category::Password => "输入密码",
             Category::Account => "账号变更",
             Category::Handoff => "需要你接手",
+            Category::Visual => "画面不明",
         }
     }
     /// 关键类: 不允许免审。
@@ -104,6 +108,12 @@ pub struct Policy {
     pub grant_s: u64,
     /// 整体关闭(只给离线回放/基准用; 关键类仍然拦, 见 [`Policy::mode_for`])。
     pub enabled: bool,
+    /// 任务标了敏感(`run --sensitive` / PF_TASK_SENSITIVE=1 / `sensitive_task = true`):
+    /// 纯画面页上的每次点击都要人确认, 且不沿用之前的允许。
+    pub sensitive_task: bool,
+    /// 这些应用(通常是游戏)的纯画面页上, 拿不准的点击直接放行、也不做截图认字(省时)。
+    /// 只能由 center 策略给; 作业自带的只能把它缩小。任务标了敏感时不起作用。
+    pub visual_auto_pkgs: Vec<String>,
 }
 
 impl Default for Policy {
@@ -119,6 +129,8 @@ impl Default for Policy {
             messaging_pkgs: Vec::new(),
             grant_s: 45,
             enabled: true,
+            sensitive_task: false,
+            visual_auto_pkgs: Vec::new(),
         }
     }
 }
@@ -126,6 +138,11 @@ impl Default for Policy {
 impl Policy {
     /// 从 TOML 表读; 未知值忽略并保留缺省(宁可多问)。环境变量 `PF_APPROVAL_<CAT>` 覆盖。
     pub fn from_toml(v: Option<&toml::Value>) -> Policy {
+        Policy::from_table(v).with_env()
+    }
+
+    /// 只读表, 不看环境变量(center 下发的策略用它: 环境变量不能放宽 center 的策略)。
+    fn from_table(v: Option<&toml::Value>) -> Policy {
         let mut p = Policy::default();
         if let Some(t) = v.and_then(|v| v.as_table()) {
             let m = |k: &str| t.get(k).and_then(|x| x.as_str()).and_then(Mode::parse);
@@ -141,6 +158,16 @@ impl Policy {
             if let Some(a) = list("wallet_pkgs") { p.wallet_pkgs = a; }
             if let Some(a) = list("messaging_pkgs") { p.messaging_pkgs = a; }
             if let Some(x) = t.get("grant_s").and_then(|x| x.as_integer()) { p.grant_s = x.clamp(0, 600) as u64; }
+            if let Some(x) = t.get("sensitive_task").and_then(|x| x.as_bool()) { p.sensitive_task = x; }
+            if let Some(a) = list("visual_auto_pkgs") { p.visual_auto_pkgs = a; }
+        }
+        p
+    }
+
+    fn with_env(mut self) -> Policy {
+        let p = &mut self;
+        if std::env::var("PF_TASK_SENSITIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
+            p.sensitive_task = true;
         }
         for (k, slot) in [("SEND", &mut p.send), ("PASSWORD", &mut p.password), ("ACCOUNT", &mut p.account),
                           ("CRITICAL", &mut p.critical)] {
@@ -151,13 +178,51 @@ impl Policy {
         if let Some(t) = std::env::var("PF_APPROVAL_TIMEOUT_S").ok().and_then(|v| v.parse::<u64>().ok()) {
             p.timeout_s = t.clamp(5, 86_400);
         }
-        p
+        self
+    }
+
+    /// 实际生效的策略。由 center 签发决定时(见 [`Signed`]), 以 center 下发的策略(`PF_APPROVAL_POLICY`, JSON)为准,
+    /// 作业自带的 `[approval]` 只能收紧不能放宽; 否则就是作业自带的。
+    pub fn load(job: Option<&toml::Value>) -> Policy {
+        let own = Policy::from_toml(job);
+        if Signed::from_env().is_none() {
+            return own;
+        }
+        // JSON 里的 null 转不成 TOML(整份会丢、退回缺省): 先去掉 null 字段
+        let center = std::env::var("PF_APPROVAL_POLICY").ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .map(|mut v| { if let Some(o) = v.as_object_mut() { o.retain(|_, x| !x.is_null()); } v })
+            .and_then(|v| toml::Value::try_from(v).ok());
+        Policy::from_table(center.as_ref()).tightened_by(&own)
+    }
+
+    /// 取两份策略里更严的: 每类取更严的模式, 总开关任一开着就开, 额度取短, 名单取并集。
+    pub fn tightened_by(mut self, other: &Policy) -> Policy {
+        let rank = |m: Mode| match m { Mode::Auto => 0, Mode::Ask => 1, Mode::Deny => 2 };
+        for (a, b) in [(&mut self.send, other.send), (&mut self.password, other.password),
+                       (&mut self.account, other.account), (&mut self.critical, other.critical)] {
+            if rank(b) > rank(*a) { *a = b; }
+        }
+        self.enabled |= other.enabled;
+        self.sensitive_task |= other.sensitive_task;
+        // 放行名单: 作业只能缩小(给了就取交集), 不能添
+        if !other.visual_auto_pkgs.is_empty() {
+            self.visual_auto_pkgs.retain(|p| other.visual_auto_pkgs.contains(p));
+        }
+        self.grant_s = self.grant_s.min(other.grant_s);
+        for (a, b) in [(&mut self.wallet_pkgs, &other.wallet_pkgs), (&mut self.messaging_pkgs, &other.messaging_pkgs)] {
+            for p in b { if !a.contains(p) { a.push(p.clone()); } }
+        }
+        self
     }
 
     pub fn mode_for(&self, c: Category) -> Mode {
         if c.critical() {
             // 关键类永远不免审: auto 视同 ask; enabled=false 也不放过。
             return if self.critical == Mode::Deny { Mode::Deny } else { Mode::Ask };
+        }
+        if c == Category::Visual && self.sensitive_task {
+            return Mode::Ask; // 敏感任务: 总开关关了也照问
         }
         if !self.enabled {
             return Mode::Auto;
@@ -187,6 +252,10 @@ pub struct Facts<'a> {
     pub pkg: &'a str,
     /// 落点元素的资源 id / 类名(判断密码框)。
     pub target_ids: Vec<&'a str>,
+    /// 纯画面页: 控件树里几乎没有文字(游戏、画布、只有截图认字的帧)。
+    pub visual: bool,
+    /// 纯画面页上落点附近的截图认字也没认出东西(或认字工具不可用): 拿不准点的是什么。
+    pub unclear: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -291,9 +360,26 @@ fn delete_dialog(texts: &[&str]) -> Option<String> {
     }).map(|t| t.trim().to_string())
 }
 
+fn seen_of(f: &Facts) -> String {
+    if f.target_texts.is_empty() { "认不出落点上的字".to_string() }
+    else { format!("落点附近认出「{}」", f.target_texts.join("」「")) }
+}
+
 /// 判定一个即将执行的动作。返回 None 表示放行。
-/// 只拦会改变外部状态的动作: tap / type / launch(钱包) / swipe 不拦(滑动不提交东西)。
+/// 任务标了敏感时, 纯画面页上的点击/长按/滑动/输入即使别的规则都没命中也要确认。
 pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
+    let hit = classify_rules(f, policy);
+    if hit.is_none() && f.visual && policy.sensitive_task
+        && matches!(f.action, "tap" | "long_press" | "swipe" | "type") {
+        return Some(Hit { follow_up: false, category: Category::Visual,
+                          reason: format!("敏感任务, 纯画面页上的{}({})", f.action, seen_of(f)) });
+    }
+    hit
+}
+
+/// 按观察到的事实逐条判。
+/// 只拦会改变外部状态的动作: tap / type / launch(钱包) / swipe 不拦(滑动不提交东西)。
+fn classify_rules(f: &Facts, policy: &Policy) -> Option<Hit> {
     let wallet = WALLET_PKGS.iter().any(|p| *p == f.pkg) || policy.wallet_pkgs.iter().any(|p| p == f.pkg);
     match f.action {
         "launch" => {
@@ -352,6 +438,10 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
                 if let Some((l, w)) = first(SEND_WORDS) {
                     return Some(Hit { follow_up: false, category: Category::Send, reason: format!("{} 里的「{l}」含「{w}」", f.pkg) });
                 }
+            }
+            // 纯画面页: 认字是第二道独立判断(不靠模型自报); 拿不准时当敏感(敏感任务的规则在 classify 外层)
+            if f.visual && f.unclear && !policy.visual_auto_pkgs.iter().any(|p| p == f.pkg) {
+                return Some(Hit { follow_up: false, category: Category::Visual, reason: format!("纯画面页, {}, 拿不准点的是什么", seen_of(f)) });
             }
             None
         }
@@ -492,6 +582,72 @@ pub fn request_json(r: &Request, timeout_s: u64) -> Value {
     })
 }
 
+/// center 签发决定的模式: 环境里有 center 的公钥(PF_APPROVAL_PUBKEY, ed25519, 64 位十六进制)时开启。
+/// 此时只认带有效签名的决定(签名覆盖 作业 id + 审批 id + 决定), 签名不对或没签名一律当没有决定;
+/// 决定从 center 自己的目录(PF_APPROVAL_DECISION_DIR)读, 不在作业目录里; 终端问答关闭。
+/// 私钥只在 center 进程内存里, 作业进程拿不到, 所以作业往哪写文件都伪造不出「允许」。
+#[derive(Clone, Debug)]
+pub struct Signed {
+    pub pubkey: Vec<u8>,
+    pub job: String,
+    pub decision_dir: Option<PathBuf>,
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 { return None; }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+}
+
+impl Signed {
+    /// 环境里给了 PF_APPROVAL_PUBKEY 就是签发模式; 值坏了(或 center 签不了名给的 "unavailable")
+    /// 也不退回旧模式, 而是用空钥匙 —— 什么决定都验不过, 一律按拒绝(失败关闭)。
+    pub fn from_env() -> Option<Signed> {
+        let raw = std::env::var("PF_APPROVAL_PUBKEY").ok()?;
+        let pubkey = unhex(&raw).filter(|k| k.len() == 32).unwrap_or_default();
+        Some(Signed {
+            pubkey,
+            job: std::env::var("PF_JOB_ID").unwrap_or_default(),
+            decision_dir: std::env::var("PF_APPROVAL_DECISION_DIR").ok().filter(|d| !d.trim().is_empty()).map(PathBuf::from),
+        })
+    }
+
+    /// 被签的内容。center 侧(harness-ops/node/approval_sign.py)逐字相同。
+    /// `content` = 请求文件(phonefarm 写下的原样字节)与截图的 sha256(见 [`content_hash`]):
+    /// 别的进程改了人看到的请求或截图, 签名就对不上。
+    pub fn message(job: &str, id: &str, decision: &str, content: &str) -> String {
+        format!("phonefarm-approval@2\n{job}\n{id}\n{decision}\n{content}")
+    }
+
+    /// 决定文件 → 决定; 签名不对返回 Err(原因)。`content` 是发请求时自己算下、留在内存里的内容哈希。
+    pub fn verify(&self, id: &str, content: &str, text: &str) -> Result<Decision, String> {
+        let v: Value = serde_json::from_str(text).map_err(|_| "不是 JSON".to_string())?;
+        let d = v.get("decision").and_then(|x| x.as_str()).unwrap_or("");
+        if d != "allow" && d != "deny" {
+            return Err(format!("决定值不对: {d:?}"));
+        }
+        let sig = v.get("sig").and_then(|x| x.as_str()).and_then(unhex).ok_or("没有签名")?;
+        let msg = Signed::message(&self.job, id, d, content);
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &self.pubkey)
+            .verify(msg.as_bytes(), &sig).map_err(|_| "签名不对".to_string())?;
+        Ok(Decision {
+            allow: d == "allow",
+            by: v.get("by").and_then(|x| x.as_str()).unwrap_or("?").to_string(),
+            note: v.get("note").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        })
+    }
+}
+
+/// 请求内容哈希: sha256(请求文件字节 + 0 + 截图字节), 十六进制。center 侧 approval_sign.content_hash 同算法。
+pub fn content_hash(request: &[u8], screenshot: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(request);
+    h.update([0u8]);
+    h.update(screenshot);
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn parse_decision(text: &str) -> Option<Decision> {
     let v: Value = serde_json::from_str(text).ok()?;
     let d = v.get("decision")?.as_str()?.trim().to_ascii_lowercase();
@@ -512,10 +668,18 @@ pub fn parse_decision(text: &str) -> Option<Decision> {
 pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
     let _ = fs::create_dir_all(dir);
     let req_path = dir.join(format!("{}.json", r.id));
-    let dec_path = dir.join(format!("{}.decision.json", r.id));
-    // 同名旧决定(理论上 64 位 id 不会撞)一律作废, 决不沿用
-    let _ = fs::remove_file(&dec_path);
+    let signed = Signed::from_env();
+    let dec_path = signed.as_ref().and_then(|s| s.decision_dir.clone()).unwrap_or_else(|| dir.to_path_buf())
+        .join(format!("{}.decision.json", r.id));
+    if signed.is_none() {
+        // 同名旧决定(理论上 64 位 id 不会撞)一律作废, 决不沿用
+        let _ = fs::remove_file(&dec_path);
+    }
     let mut req = request_json(r, timeout_s);
+    // 写下去的原样字节 + 截图, 算内容哈希留在内存里: center 签名要覆盖它
+    let req_bytes = serde_json::to_vec_pretty(&req).unwrap_or_default();
+    let shot_bytes = fs::read(dir.join(format!("{}.jpg", r.id))).unwrap_or_default();
+    let content = content_hash(&req_bytes, &shot_bytes);
     if let Err(e) = write_atomic(&req_path, &req) {
         // 请求都写不出去 = 没人能看到 = 拒绝
         return Decision { allow: false, by: "error".into(), note: format!("审批请求写入失败: {e}") };
@@ -524,7 +688,8 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
              req_path.display());
 
     // 终端问答: 全局只有一个读 stdin 的线程, 行经通道送来; 每个请求开始前先丢掉积压的行(防误触回车)。
-    let tty = tty_lines();
+    // center 签发模式下没有终端问答: 只有 center 签过名的决定算数
+    let tty = if signed.is_some() { None } else { tty_lines() };
     // 提示出现之后(再留 300 ms)才敲的行才算答复; 之前积压或刚好在路上的回车一律丢弃
     let asked_at = Instant::now() + Duration::from_millis(300);
     if let Some(rx) = tty {
@@ -541,11 +706,26 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
     // 留言目录与审批目录并列(同一作业目录下)
     let steer_dir = dir.parent().map(|p| p.join("steer")).unwrap_or_else(|| dir.join("steer"));
     let asked_epoch = now_s();
+    let mut bad_sig_logged = false;
+    let read_decision = |bad_sig_logged: &mut bool| -> Option<Decision> {
+        let t = fs::read_to_string(&dec_path).ok()?;
+        match &signed {
+            None => parse_decision(&t),
+            Some(s) => match s.verify(&r.id, &content, &t) {
+                Ok(d) => Some(d),
+                Err(why) => {
+                    if !*bad_sig_logged {
+                        *bad_sig_logged = true;
+                        eprintln!("      ⚠ 审批决定 {} 不认: {why}(只认 center 签名)", dec_path.display());
+                    }
+                    None
+                }
+            },
+        }
+    };
     let decision = loop {
-        if let Ok(t) = fs::read_to_string(&dec_path) {
-            if let Some(d) = parse_decision(&t) {
-                break d;
-            }
+        if let Some(d) = read_decision(&mut bad_sig_logged) {
+            break d;
         }
         if let Some(rx) = tty {
             let line = rx.lock().ok().and_then(|rx| rx.try_recv().ok());
@@ -561,6 +741,10 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
         // 等待期间来了人工留言: 人改了主意, 这一步作废(拒绝), 交还模型按留言重新决策
         if crate::steer::arrived_since(&steer_dir, asked_epoch) {
             let note = "等待期间收到人工留言, 本步作废".to_string();
+            // 签发模式下决定目录归 center, 作业不往里写; 拒绝只在本地生效(请求文件里记 denied)
+            if signed.is_some() {
+                break Decision { allow: false, by: "steer".into(), note };
+            }
             if write_first(&dec_path, &json!({"decision":"deny","by":"steer","note":note})) {
                 break Decision { allow: false, by: "steer".into(), note };
             }
@@ -568,6 +752,10 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
         }
         if Instant::now() >= deadline {
             let d = Decision { allow: false, by: "timeout".into(), note: format!("{timeout_s}s 内无人决定, 按拒绝处理") };
+            if signed.is_some() {
+                // 最后再看一眼: 刚好在截止前签下的决定以它为准
+                break read_decision(&mut bad_sig_logged).unwrap_or(d);
+            }
             if !write_first(&dec_path, &json!({"decision":"deny","by":"timeout","note":d.note})) {
                 // 最后一刻有人答了: 以先落盘的为准
                 std::thread::sleep(Duration::from_millis(200));
@@ -649,6 +837,87 @@ impl Grants {
 mod tests {
 
     #[test]
+    fn pure_visual_taps_are_judged_without_the_models_word() {
+        let p = Policy::default();
+        let vis = |what: Option<&'static str>, target: Vec<&'static str>, unclear: bool| Facts {
+            action: "tap", what, text: None, target_texts: target, screen_texts: vec![], pkg: "com.game",
+            target_ids: vec![], visual: true, unclear };
+        // 截图认字认出「立即支付」: 不管模型说点的是什么, 都按付款
+        assert_eq!(classify(&vis(Some("开始"), vec!["立即支付"], false), &p).unwrap().category, Category::Payment);
+        // 认出的字不敏感: 放行
+        assert!(classify(&vis(Some("开始"), vec!["开始游戏"], false), &p).is_none());
+        // 认不出: 拿不准 = 要问
+        let h = classify(&vis(Some("开始"), vec![], true), &p).unwrap();
+        assert_eq!(h.category, Category::Visual);
+        assert_eq!(p.mode_for(Category::Visual), Mode::Ask);
+        // center 放行名单里的游戏: 拿不准不问; 认出敏感字照样拦
+        let g = Policy { visual_auto_pkgs: vec!["com.game".into()], ..Policy::default() };
+        assert!(classify(&vis(None, vec![], true), &g).is_none());
+        assert_eq!(classify(&vis(None, vec!["删除存档"], false), &g).unwrap().category, Category::Delete);
+        // 敏感任务: 纯画面页每次点击都问, 放行名单和总开关都不管用
+        let s = Policy { sensitive_task: true, enabled: false, visual_auto_pkgs: vec!["com.game".into()], ..Policy::default() };
+        assert_eq!(classify(&vis(None, vec!["开始游戏"], false), &s).unwrap().category, Category::Visual);
+        assert_eq!(s.mode_for(Category::Visual), Mode::Ask);
+        // 不是纯画面页: 规则不变
+        let mut f = vis(None, vec![], true);
+        f.visual = false;
+        assert!(classify(&f, &s).is_none());
+        // 作业不能往放行名单里加
+        let center = Policy { visual_auto_pkgs: vec!["com.game".into()], ..Policy::default() };
+        let job = Policy { visual_auto_pkgs: vec!["com.bank".into()], ..Policy::default() };
+        assert!(center.tightened_by(&job).visual_auto_pkgs.is_empty());
+    }
+
+    #[test]
+    fn a_signature_made_by_the_center_python_code_verifies() {
+        // harness-ops/node/approval_sign.py 用固定私钥 bytes(range(32)) 签的(见 tests/test_job_approvals.py 同一组数)
+        let s = Signed { pubkey: unhex("03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8").unwrap(),
+                         job: "abcdef012345".into(), decision_dir: None };
+        let c = content_hash(br#"{"x":1}"#, b"jpg");
+        assert_eq!(c, "ae7125ed5d039139cb21bd22403f2acd55e51023afa478bb36bc06b6323b45b7", "两边内容哈希算法一致");
+        let f = json!({"decision": "allow", "by": "dash", "sig": "3e558ca3ca8f4c3bbd932978e705439eb8d4ba53bed33a07da6ddc499c2373a7c8357de7205b3a58897dffbc5482239be95312ecb98824870623c653b356ea08"});
+        assert!(s.verify("ap-skill-x-2-dbf2554a16c65c35", &c, &f.to_string()).unwrap().allow);
+    }
+
+    #[test]
+    fn only_decisions_signed_by_the_center_count() {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let rng = ring::rand::SystemRandom::new();
+        let key = Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()).unwrap();
+        let other = Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()).unwrap();
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let s = Signed { pubkey: key.public_key().as_ref().to_vec(), job: "abcdef012345".into(), decision_dir: None };
+        let c = content_hash(b"{request}", b"jpg");
+        let file = |k: &Ed25519KeyPair, job: &str, id: &str, d: &str, c: &str| json!({"decision": d, "by": "dash",
+            "sig": hex(k.sign(Signed::message(job, id, d, c).as_bytes()).as_ref())}).to_string();
+        assert!(s.verify("ap-1", &c, &file(&key, "abcdef012345", "ap-1", "allow", &c)).unwrap().allow);
+        assert!(!s.verify("ap-1", &c, &file(&key, "abcdef012345", "ap-1", "deny", &c)).unwrap().allow);
+        assert!(s.verify("ap-1", &c, &file(&other, "abcdef012345", "ap-1", "allow", &c)).is_err(), "别的钥匙签的");
+        assert!(s.verify("ap-2", &c, &file(&key, "abcdef012345", "ap-1", "allow", &c)).is_err(), "挪用别的请求的签名");
+        assert!(s.verify("ap-1", &c, &file(&key, "0123456789ab", "ap-1", "allow", &c)).is_err(), "挪用别的作业的签名");
+        let tampered = content_hash(b"{request, reason changed}", b"jpg");
+        assert!(s.verify("ap-1", &c, &file(&key, "abcdef012345", "ap-1", "allow", &tampered)).is_err(), "人看到的请求被改过");
+        // 把 deny 的签名改成 allow
+        let mut v: Value = serde_json::from_str(&file(&key, "abcdef012345", "ap-1", "deny", &c)).unwrap();
+        v["decision"] = json!("allow");
+        assert!(s.verify("ap-1", &c, &v.to_string()).is_err());
+        assert!(s.verify("ap-1", &c, &json!({"decision": "allow", "by": "job"}).to_string()).is_err(), "没签名");
+        // 钥匙坏了: 什么都验不过(失败关闭)
+        let broken = Signed { pubkey: vec![], job: "abcdef012345".into(), decision_dir: None };
+        assert!(broken.verify("ap-1", &c, &file(&key, "abcdef012345", "ap-1", "allow", &c)).is_err());
+    }
+
+    #[test]
+    fn job_policy_can_only_tighten_the_center_policy() {
+        let center = Policy { send: Mode::Ask, password: Mode::Auto, grant_s: 45, ..Policy::default() };
+        let job = Policy { send: Mode::Auto, password: Mode::Deny, enabled: false, grant_s: 0,
+                           wallet_pkgs: vec!["x.pay".into()], ..Policy::default() };
+        let p = center.tightened_by(&job);
+        assert_eq!((p.send, p.password, p.enabled, p.grant_s), (Mode::Ask, Mode::Deny, true, 0));
+        assert_eq!(p.wallet_pkgs, vec!["x.pay".to_string()]);
+    }
+
+    #[test]
     fn a_steering_message_during_the_wait_cancels_the_request() {
         let root = std::env::temp_dir().join(format!("pf-ap-steer-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -680,7 +949,7 @@ mod tests {
     use super::*;
 
     fn facts<'a>(action: &'a str, what: Option<&'a str>, target: Vec<&'a str>, screen: Vec<&'a str>) -> Facts<'a> {
-        Facts { action, what, text: None, target_texts: target, screen_texts: screen, pkg: "com.example", target_ids: vec![] }
+        Facts { action, what, text: None, target_texts: target, screen_texts: screen, pkg: "com.example", target_ids: vec![], visual: false, unclear: false }
     }
 
     #[test]

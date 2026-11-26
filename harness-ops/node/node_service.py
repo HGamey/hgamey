@@ -50,6 +50,7 @@ from node_result_compare import compare_query
 from node_result_cross_compare import cross_compare_query
 from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE, ATTACHMENT_MAX, ATTACHMENT_LIMITS
 import job_experiment
+import approval_sign
 import job_approvals
 import job_steer
 from node_media import MediaError
@@ -2868,6 +2869,7 @@ def main():
                 host_capacity=host_capacity, history_sources=history_sources, export_cache_root=a.export_cache_root,
                 require_device_binding=a.require_device_binding,
                 experiment_url=a.experiments_url)
+    job_approvals.SIGNER = approval_sign.make(log)  # 审批决定由本服务签名(私钥只在内存)
     fleet = FleetState(root, None, os.path.join(jobs.data_root, "_dash", "screens"), lease_state=jobs.leases,
                        cleanup_log=os.path.join(jobs.data_root, "_fleet", "cleanups.jsonl"))
     board = None

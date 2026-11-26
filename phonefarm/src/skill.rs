@@ -790,6 +790,9 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             action: &st.a, what: st.what.as_deref(), text: text_filled.as_deref(),
             target_texts: target_texts.iter().map(String::as_str).collect(), screen_texts: screen, pkg: &pkg,
             target_ids: ids.iter().map(String::as_str).collect(),
+            // 技能按控件树文字定位; 但没点名的步骤(按坐标点图标)在敏感任务里一律当拿不准, 要人确认
+            visual: ctx.policy.sensitive_task && st.what.is_none() && st.a != "launch",
+            unclear: ctx.policy.sensitive_task && st.what.is_none() && st.a != "launch",
         };
         let mut asked_human = false;
         let mut sensitive = false;
@@ -1218,7 +1221,7 @@ pub fn run_with_fallback(cfg: &crate::Config, dir: &Path, skill: &mut Skill,
     let tmp = std::env::temp_dir().join(format!("phonefarm-skill-{}", std::process::id())).to_string_lossy().to_string();
     let _ = fs::create_dir_all(&tmp);
     let device = Device::new(serial.clone(), tmp);
-    let policy = approval::Policy::from_toml(cfg.approval.as_ref());
+    let policy = approval::Policy::load(cfg.approval.as_ref());
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let out_dir = std::env::var("PF_JOB_OUT").ok().filter(|s| !s.is_empty()).map(PathBuf::from)
         .unwrap_or_else(|| dir.join("runs").join(format!("{}-{stamp}", skill.name)));
