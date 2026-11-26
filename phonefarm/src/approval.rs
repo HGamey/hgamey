@@ -324,6 +324,12 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
             let what = f.what.filter(|w| w.chars().count() <= WHAT_MAX_CHARS || f.target_texts.iter().any(|t| norm(t) == norm(w)));
             let labels: Vec<&str> = what.into_iter().chain(f.target_texts.iter().copied()).collect();
             let first = |words: &[&'static str]| labels.iter().find_map(|l| label_hits(l, words).map(|w| (l.to_string(), w)));
+            // 删除确认框要先认: 框上的按钮常常就叫「删除」, 先按普通删除判就用不上刚批下的后续确认额度
+            if let Some(q) = delete_dialog(&f.screen_texts) {
+                if let Some((l, _)) = first(CONFIRM_WORDS).or_else(|| first(DELETE_WORDS)) {
+                    return Some(Hit { follow_up: true, category: Category::Delete, reason: format!("删除确认框(「{q}」)上点「{l}」") });
+                }
+            }
             if let Some((l, w)) = first(DELETE_WORDS) {
                 return Some(Hit { follow_up: false, category: Category::Delete, reason: format!("目标「{l}」含「{w}」") });
             }
@@ -333,11 +339,6 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
             if let Some(cw) = screen_has(&f.screen_texts, CASHIER_WORDS) {
                 if let Some((l, _)) = first(CONFIRM_WORDS) {
                     return Some(Hit { follow_up: false, category: Category::Payment, reason: format!("收银台页面(「{cw}」)上点「{l}」") });
-                }
-            }
-            if let Some(q) = delete_dialog(&f.screen_texts) {
-                if let Some((l, _)) = first(CONFIRM_WORDS) {
-                    return Some(Hit { follow_up: true, category: Category::Delete, reason: format!("删除确认框(「{q}」)上点「{l}」") });
                 }
             }
             if let Some((l, w)) = first(ACCOUNT_WORDS) {
@@ -635,6 +636,15 @@ impl Grants {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn delete_dialog_button_named_delete_is_a_follow_up() {
+        let p = Policy::default();
+        let h = classify(&facts("tap", Some("删除"), vec!["删除"], vec!["要删除此记事吗?", "取消", "删除"]), &p).unwrap();
+        assert!(h.follow_up && h.category == Category::Delete, "{h:?}");
+        let h = classify(&facts("tap", Some("删除"), vec!["删除"], vec!["置顶", "移动", "删除"]), &p).unwrap();
+        assert!(!h.follow_up, "没有确认框时的删除按钮本身要问人");
+    }
     use super::*;
 
     fn facts<'a>(action: &'a str, what: Option<&'a str>, target: Vec<&'a str>, screen: Vec<&'a str>) -> Facts<'a> {
