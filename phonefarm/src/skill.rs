@@ -790,6 +790,8 @@ pub fn replay(skill: &Skill, ctx: &RunCtx) -> Stop {
             action: &st.a, what: st.what.as_deref(), text: text_filled.as_deref(),
             target_texts: target_texts.iter().map(String::as_str).collect(), screen_texts: screen, pkg: &pkg,
             target_ids: ids.iter().map(String::as_str).collect(),
+            // 技能按控件树文字定位, 不在纯画面页上判(纯画面页的步骤回放时对不上路标就停, 交还模型走 run 的审批)
+            visual: false, unclear: false,
         };
         let mut asked_human = false;
         let mut sensitive = false;

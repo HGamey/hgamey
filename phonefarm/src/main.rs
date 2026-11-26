@@ -633,6 +633,8 @@ fn main() {
                     "--endless" => endless = true,
                     "--detach" => detach = true,
                     "--freeze-on-done" => freeze_on_done = true,
+                    // 敏感任务: 纯画面页上的每次点击都要人确认(approval.rs Category::Visual)
+                    "--sensitive" => std::env::set_var("PF_TASK_SENSITIVE", "1"),
                     "--save-skill" => save_skill = it.next().cloned(),
                     "--skill" => use_skill = it.next().cloned(),
                     "--resume" => resume_prefix = it.next().cloned(),
@@ -653,7 +655,7 @@ fn main() {
                 }
             }
             if task.is_empty() || (goal.is_empty() && resume_prefix.is_none()) {
-                eprintln!("用法: phonefarm run --task <任务名> [--serial <设备>] [--endless] [--budget-calls N] [--max-steps N] [--app <包名>] [--assert \"词1,词2\"] [--freeze-on-done] [--perceive ocr] [--resume <局ID前缀>] \"<目标>\"");
+                eprintln!("用法: phonefarm run --task <任务名> [--serial <设备>] [--endless] [--budget-calls N] [--max-steps N] [--app <包名>] [--assert \"词1,词2\"] [--freeze-on-done] [--sensitive] [--perceive ocr] [--resume <局ID前缀>] \"<目标>\"");
                 eprintln!("      --resume: 恢复中断局(可省略目标,继承旧局goal;账末动作状态不明时先只读核对)");
                 std::process::exit(2);
             }

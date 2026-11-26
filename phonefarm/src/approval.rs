@@ -36,6 +36,8 @@ pub enum Category {
     /// 不是审批而是「请人接手」: 验证码、密码、付款确认等 agent 不该或不能做的一步。
     /// allow = 人做完了, 继续; deny = 人不处理。
     Handoff,
+    /// 纯画面页(没有控件树文字)上的点击, 截图认字也认不出点的是什么; 或任务标了敏感时纯画面页上的任何点击。
+    Visual,
 }
 
 impl Category {
@@ -48,6 +50,7 @@ impl Category {
             Category::Password => "password",
             Category::Account => "account",
             Category::Handoff => "handoff",
+            Category::Visual => "visual",
         }
     }
     pub fn zh(self) -> &'static str {
@@ -59,6 +62,7 @@ impl Category {
             Category::Password => "输入密码",
             Category::Account => "账号变更",
             Category::Handoff => "需要你接手",
+            Category::Visual => "画面不明",
         }
     }
     /// 关键类: 不允许免审。
@@ -104,6 +108,12 @@ pub struct Policy {
     pub grant_s: u64,
     /// 整体关闭(只给离线回放/基准用; 关键类仍然拦, 见 [`Policy::mode_for`])。
     pub enabled: bool,
+    /// 任务标了敏感(`run --sensitive` / PF_TASK_SENSITIVE=1 / `sensitive_task = true`):
+    /// 纯画面页上的每次点击都要人确认, 且不沿用之前的允许。
+    pub sensitive_task: bool,
+    /// 这些应用(通常是游戏)的纯画面页上, 拿不准的点击直接放行、也不做截图认字(省时)。
+    /// 只能由 center 策略给; 作业自带的只能把它缩小。任务标了敏感时不起作用。
+    pub visual_auto_pkgs: Vec<String>,
 }
 
 impl Default for Policy {
@@ -119,6 +129,8 @@ impl Default for Policy {
             messaging_pkgs: Vec::new(),
             grant_s: 45,
             enabled: true,
+            sensitive_task: false,
+            visual_auto_pkgs: Vec::new(),
         }
     }
 }
@@ -141,6 +153,11 @@ impl Policy {
             if let Some(a) = list("wallet_pkgs") { p.wallet_pkgs = a; }
             if let Some(a) = list("messaging_pkgs") { p.messaging_pkgs = a; }
             if let Some(x) = t.get("grant_s").and_then(|x| x.as_integer()) { p.grant_s = x.clamp(0, 600) as u64; }
+            if let Some(x) = t.get("sensitive_task").and_then(|x| x.as_bool()) { p.sensitive_task = x; }
+            if let Some(a) = list("visual_auto_pkgs") { p.visual_auto_pkgs = a; }
+        }
+        if std::env::var("PF_TASK_SENSITIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
+            p.sensitive_task = true;
         }
         for (k, slot) in [("SEND", &mut p.send), ("PASSWORD", &mut p.password), ("ACCOUNT", &mut p.account),
                           ("CRITICAL", &mut p.critical)] {
@@ -175,6 +192,11 @@ impl Policy {
             if rank(b) > rank(*a) { *a = b; }
         }
         self.enabled |= other.enabled;
+        self.sensitive_task |= other.sensitive_task;
+        // 放行名单: 作业只能缩小(给了就取交集), 不能添
+        if !other.visual_auto_pkgs.is_empty() {
+            self.visual_auto_pkgs.retain(|p| other.visual_auto_pkgs.contains(p));
+        }
         self.grant_s = self.grant_s.min(other.grant_s);
         for (a, b) in [(&mut self.wallet_pkgs, &other.wallet_pkgs), (&mut self.messaging_pkgs, &other.messaging_pkgs)] {
             for p in b { if !a.contains(p) { a.push(p.clone()); } }
@@ -186,6 +208,9 @@ impl Policy {
         if c.critical() {
             // 关键类永远不免审: auto 视同 ask; enabled=false 也不放过。
             return if self.critical == Mode::Deny { Mode::Deny } else { Mode::Ask };
+        }
+        if c == Category::Visual && self.sensitive_task {
+            return Mode::Ask; // 敏感任务: 总开关关了也照问
         }
         if !self.enabled {
             return Mode::Auto;
@@ -215,6 +240,10 @@ pub struct Facts<'a> {
     pub pkg: &'a str,
     /// 落点元素的资源 id / 类名(判断密码框)。
     pub target_ids: Vec<&'a str>,
+    /// 纯画面页: 控件树里几乎没有文字(游戏、画布、只有截图认字的帧)。
+    pub visual: bool,
+    /// 纯画面页上落点附近的截图认字也没认出东西(或认字工具不可用): 拿不准点的是什么。
+    pub unclear: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -379,6 +408,17 @@ pub fn classify(f: &Facts, policy: &Policy) -> Option<Hit> {
             if messaging {
                 if let Some((l, w)) = first(SEND_WORDS) {
                     return Some(Hit { follow_up: false, category: Category::Send, reason: format!("{} 里的「{l}」含「{w}」", f.pkg) });
+                }
+            }
+            // 纯画面页: 认字是第二道独立判断(不靠模型自报); 任务敏感时每次点击都确认, 拿不准时当敏感
+            if f.visual {
+                let seen = if f.target_texts.is_empty() { "认不出落点上的字".to_string() }
+                           else { format!("落点附近认出「{}」", f.target_texts.join("」「")) };
+                if policy.sensitive_task {
+                    return Some(Hit { follow_up: false, category: Category::Visual, reason: format!("敏感任务, 纯画面页上的点击({seen})") });
+                }
+                if f.unclear && !policy.visual_auto_pkgs.iter().any(|p| p == f.pkg) {
+                    return Some(Hit { follow_up: false, category: Category::Visual, reason: format!("纯画面页, {seen}, 拿不准点的是什么") });
                 }
             }
             None
@@ -756,6 +796,38 @@ impl Grants {
 mod tests {
 
     #[test]
+    fn pure_visual_taps_are_judged_without_the_models_word() {
+        let p = Policy::default();
+        let vis = |what: Option<&'static str>, target: Vec<&'static str>, unclear: bool| Facts {
+            action: "tap", what, text: None, target_texts: target, screen_texts: vec![], pkg: "com.game",
+            target_ids: vec![], visual: true, unclear };
+        // 截图认字认出「立即支付」: 不管模型说点的是什么, 都按付款
+        assert_eq!(classify(&vis(Some("开始"), vec!["立即支付"], false), &p).unwrap().category, Category::Payment);
+        // 认出的字不敏感: 放行
+        assert!(classify(&vis(Some("开始"), vec!["开始游戏"], false), &p).is_none());
+        // 认不出: 拿不准 = 要问
+        let h = classify(&vis(Some("开始"), vec![], true), &p).unwrap();
+        assert_eq!(h.category, Category::Visual);
+        assert_eq!(p.mode_for(Category::Visual), Mode::Ask);
+        // center 放行名单里的游戏: 拿不准不问; 认出敏感字照样拦
+        let g = Policy { visual_auto_pkgs: vec!["com.game".into()], ..Policy::default() };
+        assert!(classify(&vis(None, vec![], true), &g).is_none());
+        assert_eq!(classify(&vis(None, vec!["删除存档"], false), &g).unwrap().category, Category::Delete);
+        // 敏感任务: 纯画面页每次点击都问, 放行名单和总开关都不管用
+        let s = Policy { sensitive_task: true, enabled: false, visual_auto_pkgs: vec!["com.game".into()], ..Policy::default() };
+        assert_eq!(classify(&vis(None, vec!["开始游戏"], false), &s).unwrap().category, Category::Visual);
+        assert_eq!(s.mode_for(Category::Visual), Mode::Ask);
+        // 不是纯画面页: 规则不变
+        let mut f = vis(None, vec![], true);
+        f.visual = false;
+        assert!(classify(&f, &s).is_none());
+        // 作业不能往放行名单里加
+        let center = Policy { visual_auto_pkgs: vec!["com.game".into()], ..Policy::default() };
+        let job = Policy { visual_auto_pkgs: vec!["com.bank".into()], ..Policy::default() };
+        assert!(center.tightened_by(&job).visual_auto_pkgs.is_empty());
+    }
+
+    #[test]
     fn a_signature_made_by_the_center_python_code_verifies() {
         // harness-ops/node/approval_sign.py 用固定私钥 bytes(range(32)) 签的(见 tests/test_job_approvals.py 同一组数)
         let s = Signed { pubkey: unhex("03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8").unwrap(),
@@ -828,7 +900,7 @@ mod tests {
     use super::*;
 
     fn facts<'a>(action: &'a str, what: Option<&'a str>, target: Vec<&'a str>, screen: Vec<&'a str>) -> Facts<'a> {
-        Facts { action, what, text: None, target_texts: target, screen_texts: screen, pkg: "com.example", target_ids: vec![] }
+        Facts { action, what, text: None, target_texts: target, screen_texts: screen, pkg: "com.example", target_ids: vec![], visual: false, unclear: false }
     }
 
     #[test]

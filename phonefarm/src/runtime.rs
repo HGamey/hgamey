@@ -493,6 +493,54 @@ fn ocr_els(img: &str, capw: i32, caph: i32, realw: i32, realh: i32) -> Vec<Node>
     v
 }
 
+/// 认字工具: 仓库根下编好的 ./ocr(macOS Vision), 否则 ocr.py(RapidOCR, 引擎已装好才用; 运行中不装)。
+/// 进程内只探一次。
+fn ocr_cmd() -> Option<&'static (String, Vec<String>)> {
+    static T: std::sync::OnceLock<Option<(String, Vec<String>)>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        if std::path::Path::new("./ocr").is_file() {
+            return Some(("./ocr".into(), vec![]));
+        }
+        let py = std::env::var("PF_OCR_PYTHON").unwrap_or_else(|_| "python3".into());
+        let ok = std::path::Path::new("ocr.py").is_file()
+            && std::process::Command::new(&py).args(["ocr.py", "--check"]).output().map(|o| o.status.success()).unwrap_or(false);
+        ok.then(|| (py, vec!["ocr.py".to_string()]))
+    }).as_ref()
+}
+
+/// 纯画面页审批的第二道判断: 截取落点所在的一条横带(全宽、高 16%)认字, 返回离落点最近的至多 3 段文字。
+/// 用整条横带而不是落点周围一小块: 实测 Vision 对孤零零一个词的小块常常认不出(深底红字「删除」), 带上下文就认得出。
+/// None = 认字工具不可用或失败 —— 调用方按「拿不准」处理。
+fn crop_ocr(img: &str, x: i32, y: i32) -> Option<Vec<String>> {
+    let (prog, args) = ocr_cmd()?;
+    let im = image::open(img).ok()?.to_rgb8();
+    let (w, h) = (im.width() as i32, im.height() as i32);
+    if x < 0 || y < 0 || x >= w || y >= h { return None; }
+    let ch = (h * 16 / 100).max(60).min(h);
+    let y0 = (y - ch / 2).clamp(0, h - ch);
+    let big = image::imageops::crop_imm(&im, 0, y0 as u32, w as u32, ch as u32).to_image();
+    let path = std::env::temp_dir().join(format!("pf-approval-crop-{}.png", std::process::id()));
+    big.save(&path).ok()?;
+    let out = std::process::Command::new(prog).args(args).arg(&path).output().ok()?;
+    let _ = fs::remove_file(&path);
+    if !out.status.success() { return None; }
+    // 落点在横带里的位置; 只要框盖住落点或离落点不远(图宽 6% 以内)的字
+    let (px, py) = (x, y - y0);
+    let near = w * 6 / 100;
+    let mut items: Vec<(i32, String)> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| {
+        let j: Value = serde_json::from_str(l).ok()?;
+        let t = j["t"].as_str()?.trim().to_string();
+        let b: Vec<i32> = j["b"].as_array()?.iter().filter_map(|v| v.as_i64().map(|v| v as i32)).collect();
+        if t.is_empty() || b.len() != 4 { return None; }
+        let dx = (b[0] - px).max(px - b[2]).max(0);
+        let dy = (b[1] - py).max(py - b[3]).max(0);
+        let d = dx.max(dy);
+        (d <= near).then_some((d, t))
+    }).collect();
+    items.sort_by_key(|(d, _)| *d);
+    Some(items.into_iter().take(3).map(|(_, t)| t).collect())
+}
+
 /// 坐标框: 设备像素 → 图片像素
 fn b_img_space(b: [i32; 4], cap: &Cap, realw: i32, realh: i32) -> [i32; 4] {
     let sx = |v: i32| (v as i64 * cap.w as i64 / realw.max(1) as i64) as i32;
@@ -1403,13 +1451,28 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
                  serial: Option<&str>, aline: &str, last_tap: Option<(i32, i32)>, sensitive_allowed: &mut bool,
                  asked_human: &mut bool, log: &mut Log) -> Option<String> {
     use crate::approval::{self, Mode};
-    let (targets, ids) = approval_targets(a, cap, realw, realh, last_tap);
+    let (mut targets, ids) = approval_targets(a, cap, realw, realh, last_tap);
+    // 纯画面页(控件树几乎没字: 游戏/画布/只有截图认字的帧): 落点不能靠模型自报的 what,
+    // 在落点附近截图认字做第二道独立判断; 认不出来 = 拿不准
+    let tree_texts = if cap.full.is_empty() { cap.els.iter().filter(|e| !e.t.trim().is_empty()).count() }
+                     else { cap.full.iter().filter(|f| !f.t.trim().is_empty()).count() };
+    let visual = matches!(a.a.as_str(), "tap" | "long_press") && (cap.ocr || tree_texts < 3);
+    let mut unclear = false;
+    if visual && targets.is_empty() {
+        let skip = !policy.sensitive_task && policy.visual_auto_pkgs.iter().any(|p| *p == cap.pkg);
+        if !skip {
+            match crop_ocr(&cap.img, a.x.unwrap_or(-1) as i32, a.y.unwrap_or(-1) as i32) {
+                Some(t) if !t.is_empty() => targets = t,
+                _ => unclear = true,
+            }
+        }
+    }
     let screen: Vec<&str> = if cap.full.is_empty() { cap.els.iter().map(|e| e.t.as_str()).collect() }
                             else { cap.full.iter().map(|f| f.t.as_str()).filter(|t| !t.is_empty()).collect() };
     let facts = approval::Facts {
         action: &a.a, what: a.what.as_deref(), text: a.text.as_deref(),
         target_texts: targets.iter().map(String::as_str).collect(), screen_texts: screen,
-        pkg: &cap.pkg, target_ids: ids.iter().map(String::as_str).collect(),
+        pkg: &cap.pkg, target_ids: ids.iter().map(String::as_str).collect(), visual, unclear,
     };
     let hit = approval::classify(&facts, policy)?;
     // 只要不是被拒, 下面每条放行路径都会走到 return None; 先置位, 被拒时再清掉
@@ -1431,7 +1494,9 @@ fn approval_gate(a: &ActN, cap: &Cap, realw: i32, realh: i32, policy: &crate::ap
         }
         Mode::Ask => {}
     }
-    if grants.covers(&cap.pkg, hit.category, &target_key, policy.grant_s, hit.follow_up) {
+    // 敏感任务里纯画面页的点击: 每次都问, 不沿用
+    let grant_s = if policy.sensitive_task && hit.category == crate::approval::Category::Visual { 0 } else { policy.grant_s };
+    if grants.covers(&cap.pkg, hit.category, &target_key, grant_s, hit.follow_up) {
         let mut v = base; v["decision"] = json!("allow"); v["by"] = json!("grant"); log.put(v);
         println!("      ✅ 审批[{}] 沿用刚才的允许({})", hit.category.zh(),
                  if hit.follow_up { "后续确认, 一次性" } else { "同目标" });
@@ -3494,6 +3559,17 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
 #[cfg(test)]
 mod tests {
+
+    /// 手动: 在 phonefarm/src 下放好 ./ocr, PF_TEST_CROP="图 x y" cargo test crop_ocr_reads -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn crop_ocr_reads_the_text_under_the_tap() {
+        let spec = std::env::var("PF_TEST_CROP").expect("PF_TEST_CROP");
+        let v: Vec<&str> = spec.split_whitespace().collect();
+        let got = crop_ocr(v[0], v[1].parse().unwrap(), v[2].parse().unwrap());
+        println!("crop_ocr => {got:?}");
+        assert!(got.is_some_and(|t| !t.is_empty()));
+    }
     #[test]
     fn password_fields_by_token_not_substring() {
         assert!(password_like("android.widget.EditText", Some("id/et_pwd"), ""));
