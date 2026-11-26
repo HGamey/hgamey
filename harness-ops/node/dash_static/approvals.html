@@ -17,6 +17,7 @@
 .ap-tag{font-weight:600}.ap-card.critical .ap-tag{color:#d33}
 .ap-actions{display:flex;gap:.5rem}.ap-actions button{flex:1;padding:.6rem;font-size:1rem}
 .ap-meta{font-size:.85rem;opacity:.75;word-break:break-all}
+.st-msgs{margin:0;padding-left:1.2rem;font-size:.9rem}.st-form{display:flex;gap:.5rem}.st-form input{flex:1;padding:.5rem;font-size:1rem}
 </style>
 </head>
 <body class="jobs-view">
@@ -35,6 +36,10 @@
   <p id="ap-status" role="status" aria-live="polite">正在读取…</p>
   <p id="ap-steer" class="note" hidden>审批需要操控密码：请在<a href="/dash/control">控制页</a>输入后回来。</p>
   <ul id="ap-list" class="ap-list"></ul>
+  <h2 id="st-heading">运行中的任务 · 留言</h2>
+  <p class="page-description">给正在跑的手机任务留一句话（比如「别用搜索，从分类进」），它下一步决策前会读到并照此调整。留言不能代替审批。</p>
+  <p id="st-status" role="status" aria-live="polite"></p>
+  <ul id="st-list" class="ap-list"></ul>
 </main>
 <script src="/dash/static/approvals.js"></script>
 </body>

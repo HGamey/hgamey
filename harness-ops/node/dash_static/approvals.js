@@ -60,5 +60,59 @@
       if (sig !== shown) { shown = sig; $('ap-list').replaceChildren(...items.map(card)); }
     } catch (e) { $('ap-status').textContent = `读取失败：${e.message}`; }
   }
-  load(); setInterval(load, 3000);
+  // 运行中的任务: 卡片常驻(输入框里没发出的字不被刷新冲掉), 只更新留言列表
+  const jobsShown = new Map();
+  function msgLine(m) {
+    const read = m.read_at_step == null ? '待读取' : `第 ${m.read_at_step} 步已读`;
+    return el('li', `${m.text}（${m.by} · ${read}）`);
+  }
+  function jobCard(job) {
+    const li = el('li', null, 'ap-card');
+    li.append(el('div', job.label || job.job_id, 'ap-tag'));
+    li.append(el('div', job.argv, 'ap-meta'));
+    li.append(el('div', `作业 ${job.job_id}`, 'ap-meta'));
+    const msgs = el('ul', null, 'st-msgs');
+    const form = el('form', null, 'st-form');
+    const input = el('input'); input.maxLength = 500; input.placeholder = '留言…'; input.setAttribute('aria-label', `给 ${job.label || job.job_id} 留言`);
+    const send = el('button', '发送', 'primary'); send.type = 'submit';
+    const err = el('p', null, 'doctor-error'); err.hidden = true;
+    form.append(input, send);
+    form.onsubmit = async ev => {
+      ev.preventDefault();
+      const text = input.value.trim();
+      if (!text || !steer || c.busy) return;
+      c.busy = true; send.disabled = true; err.hidden = true;
+      try {
+        const r = await fetch(`/dash/api/job-steer/${job.job_id}`, {method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify({text})});
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+        input.value = ''; msgs.append(msgLine(body));
+      } catch (e) { err.textContent = `发送失败：${e.message}`; err.hidden = false; }
+      finally { c.busy = false; send.disabled = !steer; }
+    };
+    li.append(msgs, form, err);
+    const c = {li, msgs, input, send, sig: '', busy: false};
+    return c;
+  }
+  async function loadJobs() {
+    try {
+      const r = await fetch('/dash/api/job-steer', {cache: 'no-store'});
+      if (!r.ok) return;
+      const body = await r.json();
+      const items = Array.isArray(body.items) ? body.items : [];
+      $('st-status').textContent = items.length ? '' : '现在没有能留言的运行中任务（只有模型驱动的 run 任务会读留言）。';
+      const live = new Set(items.map(j => j.job_id));
+      for (const [id, c] of jobsShown) if (!live.has(id)) { c.li.remove(); jobsShown.delete(id); }
+      for (const job of items) {
+        let c = jobsShown.get(job.job_id);
+        if (!c) { c = jobCard(job); jobsShown.set(job.job_id, c); $('st-list').append(c.li); }
+        c.input.disabled = !body.steer;
+        if (!c.busy) c.send.disabled = !body.steer;  // 发送中不要被轮询重新点亮(防重复发)
+        const sig = (job.messages || []).map(m => `${m.id}:${m.read_at_step}`).join(',');
+        if (sig !== c.sig) { c.sig = sig; c.msgs.replaceChildren(...(job.messages || []).map(msgLine)); }
+      }
+    } catch (e) { $('st-status').textContent = `读取运行中任务失败：${e.message}`; }
+  }
+  load(); loadJobs(); setInterval(load, 3000); setInterval(loadJobs, 3000);
 })();

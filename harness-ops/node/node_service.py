@@ -51,6 +51,7 @@ from node_result_cross_compare import cross_compare_query
 from node_research import NodeResearch, ResearchError, MAX_WRITE as MAX_RESEARCH_WRITE, ATTACHMENT_MAX, ATTACHMENT_LIMITS
 import job_experiment
 import job_approvals
+import job_steer
 from node_media import MediaError
 from node_fleet import FleetState
 from node_agents import AgentError, NodeAgents, ACTIVE_WITHIN_S, activity as agent_activity, annotate as agent_annotate
@@ -1350,6 +1351,10 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query), dashboard=True)
+            if board and parts == ["dash", "api", "job-steer"]:
+                if not board.authed(self):
+                    return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
+                return self._send(200, {"steer": board.steered(self), "items": job_steer.running(jobs)})
             if board and parts[:3] == ["dash", "api", "approvals"]:
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
@@ -1671,11 +1676,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._out(parts[1], q)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "images":
                     return self._send(200, image_inventory(jobs._read_root, parts[1]))
-                if (parts == ["approvals"] or len(parts) >= 3 and parts[0] == "jobs" and parts[2] == "approvals") and self.agent:
+                if (parts == ["approvals"] or len(parts) >= 3 and parts[0] == "jobs" and parts[2] in ("approvals", "steer")) and self.agent:
                     # 截图里可能有验证码、余额、密码页: agent token 不给看
                     return self._send(403, {"code": "forbidden", "error": "approvals are for people, not agent tokens"})
                 if parts == ["approvals"]:
                     return self._send(200, {"node_id": jobs.node_id, "items": job_approvals.pending_all(jobs)})
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "steer":
+                    jobs.path(parts[1])  # validates the job id
+                    return self._send(200, {"job_id": parts[1], "items": job_steer.list_messages(jobs, parts[1])})
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "approvals":
                     return self._send(200, {"job_id": parts[1], "items": job_approvals.list_requests(
                         jobs, parts[1], pending_only=q.get("pending") == ["1"])})
@@ -2537,6 +2545,20 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(400, {"error": str(error)})
                 except sqlite3.Error as error:
                     return self._send(503, {"code": "storage_commit_unconfirmed", "error": str(error)})
+            if board and len(parts) == 4 and parts[:3] == ["dash", "api", "job-steer"]:
+                if not board.steered(self):
+                    return self._send(403, {"code": "steer_required", "error": "需要操控密码才能给作业留言"})
+                if self.headers.get("X-HG") != "1" or "application/json" not in self.headers.get("Content-Type", ""):
+                    return self._send(400, {"code": "invalid_request", "error": "请求格式不对"})
+                try:
+                    jobs.path(parts[3])
+                except KeyError:
+                    return self._send(404, {"code": "job_not_found", "error": "no such job"})
+                n = int(self.headers.get("Content-Length", 0))
+                if n > 4096:
+                    return self._send(413, {"code": "request_too_large", "error": "太大"})
+                code, result = job_steer.post(jobs, parts[3], self.rfile.read(n) if n else b"", "dash")
+                return self._send(code, result)
             if board and len(parts) == 5 and parts[:3] == ["dash", "api", "approvals"]:
                 if not board.steered(self):
                     return self._send(403, {"code": "steer_required", "error": "需要操控密码才能审批"})
@@ -2673,6 +2695,14 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     via = self.headers.get("X-Approval-Via") or ""
                     who = via if via in ("telegram", "cli") else "admin"
                     code, result = job_approvals.decide(jobs, parts[1], parts[3], body, who)
+                    return self._send(code, result)
+                if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "steer":
+                    # 人工留言: 和审批一样只由人发(只读 token、agent token 拒绝)
+                    if self.ro or self.agent:
+                        return self._send(403, {"code": "forbidden", "error": "steering messages come from people: admin token or dashboard steer only"})
+                    jobs.path(parts[1])
+                    via = self.headers.get("X-Approval-Via") or ""
+                    code, result = job_steer.post(jobs, parts[1], body, via if via in ("telegram", "cli") else "admin")
                     return self._send(code, result)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:
                     data = json.loads(body or b"{}")
