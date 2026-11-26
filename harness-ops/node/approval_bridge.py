@@ -143,20 +143,24 @@ class Bridge:
             else:
                 self.log(f"gateway send failed {s}: {r}")
 
-    def read_replies(self):
-        s, msgs = self._g("GET", f"/api/messages?chat={self.chat}&limit=30")
-        if s != 200 or not isinstance(msgs, list):
-            return
+    def read_replies(self, wait_s=5):
+        """Wait up to wait_s for new replies (brief /api/wait keeps a live Telegram connection,
+        replies arrive in about a second). The cursor starts at the newest message seen at start-up."""
         if self.last_msg_id is None:
-            # first read: only messages newer than the bridge start count
+            s, msgs = self._g("GET", f"/api/messages?chat={self.chat}&limit=1")
+            if s != 200 or not isinstance(msgs, list):
+                return
             self.last_msg_id = max([m.get("id", 0) for m in msgs] or [0])
+        s, msgs = self._g("GET", f"/api/wait?chat={self.chat}&after_id={self.last_msg_id}&timeout={int(wait_s)}")
+        if s != 200 or not isinstance(msgs, list):
+            time.sleep(wait_s)  # gateway trouble: don't spin
             return
         for m in msgs:
             mid = m.get("id", 0)
             if mid <= self.last_msg_id:
                 continue
             self.last_msg_id = max(self.last_msg_id, mid)
-            if m.get("message_id") in self.own_messages or mid in self.own_messages:
+            if m.get("sender") not in (None, "我"):
                 continue
             parsed = parse_reply(m.get("text", ""))
             if not parsed:
@@ -181,9 +185,9 @@ class Bridge:
         for k in [k for k, v in self.sent.items() if float(v.get("expires_at") or 0) + 30 < now]:
             self.sent.pop(k)
 
-    def tick(self):
+    def tick(self, wait_s=5):
         self.notify_pending()
-        self.read_replies()
+        self.read_replies(wait_s)
         self.forget_expired()
 
 
@@ -210,12 +214,12 @@ def main(argv=None):
                log=lambda s: print(time.strftime("%H:%M:%S"), s, flush=True))
     while True:
         try:
-            b.tick()
+            b.tick(0 if a.once else a.interval)  # the reply wait doubles as the poll interval
         except (OSError, ValueError) as e:  # network blips: keep going
             b.log(f"tick error: {e!r}")
+            time.sleep(a.interval)
         if a.once:
             return 0
-        time.sleep(a.interval)
 
 
 if __name__ == "__main__":

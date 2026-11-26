@@ -26,7 +26,10 @@ class Fake:
             self.sent.append(body)
             return 200, json.dumps({"status": "sent", "message_id": len(self.sent)}).encode()
         if "/api/messages" in url:
-            return 200, json.dumps(self.tg).encode()
+            return 200, json.dumps(self.tg[-1:]).encode()
+        if "/api/wait" in url:
+            after = int(url.split("after_id=")[1].split("&")[0])
+            return 200, json.dumps([m for m in self.tg if m["id"] > after]).encode()
         if method == "POST" and "/approvals/" in url:
             assert headers["X-Approval-Via"] == "telegram"
             self.decisions.append((url, body))
@@ -52,22 +55,25 @@ class BridgeTests(unittest.TestCase):
         fake = Fake()
         ab.http = fake
         b = ab.Bridge("https://c", "tok", "https://g", "k", "tg:me", log=lambda s: None)
-        b.tick()  # sends the approval, primes the reply cursor
+        b.tick(0)  # sends the approval, primes the reply cursor
         self.assertEqual(len(fake.sent), 1)
         self.assertEqual(fake.sent[0]["name"], "ap-run-4-c75f.jpg")
         self.assertIn("允许 c75f", fake.sent[0]["text"])
-        b.tick()  # nothing new: no duplicate send
+        b.tick(0)  # nothing new: no duplicate send
         self.assertEqual(len(fake.sent), 1)
         fake.tg.append({"id": 101, "text": fake.sent[0]["text"]})  # the bridge's own message echoed back
-        fake.tg.append({"id": 102, "text": "允许 c75f"})
-        b.tick()
+        fake.tg.append({"id": 102, "text": "允许 c75f", "sender": "别人"})  # not from the owner: ignored
+        b.tick(0)
+        self.assertEqual(len(fake.decisions), 0)
+        fake.tg.append({"id": 104, "text": "允许 c75f", "sender": "我"})
+        b.tick(0)
         self.assertEqual(len(fake.decisions), 1)
         url, body = fake.decisions[0]
         self.assertTrue(url.endswith("/jobs/abcdef012345/approvals/ap-run-4-c75f"))
         self.assertEqual(body["decision"], "allow")
         self.assertTrue(fake.sent[-1]["text"].startswith("已允许"))
-        fake.tg.append({"id": 103, "text": "允许 c75f"})  # repeated reply: nothing pending any more
-        b.tick()
+        fake.tg.append({"id": 105, "text": "允许 c75f", "sender": "我"})  # repeated reply: nothing pending any more
+        b.tick(0)
         self.assertEqual(len(fake.decisions), 1)
 
 
