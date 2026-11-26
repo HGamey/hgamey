@@ -54,6 +54,8 @@ class SteerTests(unittest.TestCase):
         self.assertEqual(job_steer.post(self.jobs, "111111111111", json.dumps({"text": "x" * 501}).encode(), "a")[0], 400)
         self.assertEqual(job_steer.post(self.jobs, "111111111111", b"not json", "a")[0], 400)
         self.assertEqual([j["job_id"] for j in job_steer.running(self.jobs)], ["111111111111"])
+        self.job("222222222222", argv=("skill", "run", "x", "--fallback", "--task", "t"))
+        self.assertEqual(job_steer.post(self.jobs, "222222222222", b'{"text":"x"}', "a")[0], 200)
 
 
 if __name__ == "__main__":

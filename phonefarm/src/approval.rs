@@ -538,6 +538,9 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
     }
 
     let deadline = Instant::now() + Duration::from_secs(timeout_s);
+    // 留言目录与审批目录并列(同一作业目录下)
+    let steer_dir = dir.parent().map(|p| p.join("steer")).unwrap_or_else(|| dir.join("steer"));
+    let asked_epoch = now_s();
     let decision = loop {
         if let Ok(t) = fs::read_to_string(&dec_path) {
             if let Some(d) = parse_decision(&t) {
@@ -554,6 +557,14 @@ pub fn request_and_wait(dir: &Path, r: &Request, timeout_s: u64) -> Decision {
                 let _ = write_first(&dec_path, &json!({"decision": if allow {"allow"} else {"deny"}, "by": "tty"}));
                 continue;
             }
+        }
+        // 等待期间来了人工留言: 人改了主意, 这一步作废(拒绝), 交还模型按留言重新决策
+        if crate::steer::arrived_since(&steer_dir, asked_epoch) {
+            let note = "等待期间收到人工留言, 本步作废".to_string();
+            if write_first(&dec_path, &json!({"decision":"deny","by":"steer","note":note})) {
+                break Decision { allow: false, by: "steer".into(), note };
+            }
+            continue; // 有人刚好先答了: 下一圈读他的
         }
         if Instant::now() >= deadline {
             let d = Decision { allow: false, by: "timeout".into(), note: format!("{timeout_s}s 内无人决定, 按拒绝处理") };
@@ -636,6 +647,27 @@ impl Grants {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_steering_message_during_the_wait_cancels_the_request() {
+        let root = std::env::temp_dir().join(format!("pf-ap-steer-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (dir, sdir) = (root.join("approvals"), root.join("steer"));
+        fs::create_dir_all(&sdir).unwrap();
+        // 等待开始前的旧留言不算
+        fs::write(sdir.join("st-1-old.json"), json!({"schema": crate::steer::SCHEMA, "id": "st-1-old", "text": "旧", "at": 1.0}).to_string()).unwrap();
+        let sd = sdir.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(700));
+            fs::write(sd.join("st-2-new.json"), json!({"schema": crate::steer::SCHEMA, "id": "st-2-new", "text": "换地址", "at": now_s()}).to_string()).unwrap();
+        });
+        let r = Request { id: "ap-t-1-steer".into(), category: Category::Payment, reason: "r".into(), action_line: "a".into(),
+                          goal: "g".into(), task: "t".into(), run_id: "r".into(), step: 1, serial: String::new(), pkg: "p".into(), screenshot: None };
+        let d = request_and_wait(&dir, &r, 10);
+        t.join().unwrap();
+        assert!(!d.allow && d.by == "steer", "{d:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn delete_dialog_button_named_delete_is_a_follow_up() {

@@ -80,8 +80,8 @@
     form.onsubmit = async ev => {
       ev.preventDefault();
       const text = input.value.trim();
-      if (!text || !steer) return;
-      send.disabled = true; err.hidden = true;
+      if (!text || !steer || c.busy) return;
+      c.busy = true; send.disabled = true; err.hidden = true;
       try {
         const r = await fetch(`/dash/api/steer/${job.job_id}`, {method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify({text})});
@@ -89,10 +89,11 @@
         if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
         input.value = ''; msgs.append(msgLine(body));
       } catch (e) { err.textContent = `发送失败：${e.message}`; err.hidden = false; }
-      finally { send.disabled = !steer; }
+      finally { c.busy = false; send.disabled = !steer; }
     };
     li.append(msgs, form, err);
-    return {li, msgs, input, send, sig: ''};
+    const c = {li, msgs, input, send, sig: '', busy: false};
+    return c;
   }
   async function loadJobs() {
     try {
@@ -106,7 +107,8 @@
       for (const job of items) {
         let c = jobsShown.get(job.job_id);
         if (!c) { c = jobCard(job); jobsShown.set(job.job_id, c); $('st-list').append(c.li); }
-        c.input.disabled = c.send.disabled = !body.steer;
+        c.input.disabled = !body.steer;
+        if (!c.busy) c.send.disabled = !body.steer;  // 发送中不要被轮询重新点亮(防重复发)
         const sig = (job.messages || []).map(m => `${m.id}:${m.read_at_step}`).join(',');
         if (sig !== c.sig) { c.sig = sig; c.msgs.replaceChildren(...(job.messages || []).map(msgLine)); }
       }

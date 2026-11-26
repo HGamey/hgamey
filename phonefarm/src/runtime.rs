@@ -1935,7 +1935,9 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
     let mut approval_grants = crate::approval::Grants::default();
     // 中途纠偏: 人工留言目录(与 approvals 并列), 读到的留言一直带在上下文里(最近几条)
     let steer_dir = crate::steer::steer_dir(&run_dir);
-    let mut steers: Vec<crate::steer::Msg> = Vec::new();
+    let mut steer_seen = std::collections::HashSet::new();
+    // 多轮循环里新一轮开局: 之前读到过的留言接着带上
+    let mut steers: Vec<crate::steer::Msg> = crate::steer::take_new(&steer_dir, &mut steer_seen, true);
     let lessons = load_lessons(&format!("{task_dir}/lessons.jsonl"));
     // 全局经验: 跨任务共享(tasks/_global/),"游戏里用home逃生"这类学费只交一次
     let global_dir = format!("{}/_global", crate::tasks_root(&cfg.data_dir));
@@ -2141,7 +2143,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
 
         // ① 本轮画面记录(采集在上一动作末尾或开局完成)
         log_screen(&mut log, &cap, n, realw, realh, &mut logged_seq);
-        let fresh = crate::steer::take_new(&steer_dir, n);
+        let fresh = crate::steer::take_new(&steer_dir, &mut steer_seen, false);
         if !fresh.is_empty() {
             for m in &fresh {
                 log.put(json!({"r":"steer","n":n,"id":m.id,"by":m.by,"t":m.text}));
@@ -2403,6 +2405,7 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
                 (false, false) => format!("{steer_txt}\n⚠ {alert}"),
             };
             let user = render_ctx(goal, &glessons, &lessons, last_verdict_line, &apps_line, &budget_line, &map_line, &assert_line, &alert_all, &probe_ans, &hypo_line, &runs, &bans, &note, &cap, realw, realh);
+            crate::steer::ack(&steer_dir, &mut steers, n); // 留言真正进了这次决策才写回执
             ctx_bytes += user.len() as u64;
             ctx_calls += 1;
             // 模型视角存档: 这次决策发给模型的完整上下文(含警报/沙盘/清单/便签)
@@ -2948,7 +2951,11 @@ pub fn episode(cfg: &Config, task: &str, goal: &str, serial: Option<String>,
             run_push(&mut runs, aline.clone(), d.clone());
             diffs_all.push(d.clone());
             stream.push(format!("{aline} → {d}"));
-            note = format!("上一动作[{aline}]需要人工批准但未获准({reason})。不要换个说法重试同一动作;改用不涉及该操作的路径,做不到就 done 并写明卡在需要人批准。");
+            note = if reason.contains("(by steer)") {
+                format!("上一动作[{aline}]在等人批准时收到了人工留言, 没有执行。按留言重新决定。")
+            } else {
+                format!("上一动作[{aline}]需要人工批准但未获准({reason})。不要换个说法重试同一动作;改用不涉及该操作的路径,做不到就 done 并写明卡在需要人批准。")
+            };
             if !queue.is_empty() { println!("      ⏸ 剩余{}步计划作废", queue.len()); queue.clear(); }
             stall += 1;
             if stall >= cfg.stall_limit { stop_reason = Some("watchdog"); break; }

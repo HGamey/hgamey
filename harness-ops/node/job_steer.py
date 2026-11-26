@@ -36,9 +36,12 @@ def _meta(jobs, jid):
 
 
 def steerable(meta):
-    """Only model-driven runs read messages: `phonefarm run …` (a zero-model skill replay has nobody to tell)."""
-    argv = meta.get("argv") or []
-    return meta.get("bin") == "phonefarm" and bool(argv) and argv[0] == "run"
+    """Only model-driven runs read messages: `phonefarm run …`, or a skill replay that hands over to
+    the model when it breaks (`skill run … --fallback`). A plain zero-model replay has nobody to tell."""
+    argv = [str(a) for a in (meta.get("argv") or [])]
+    if meta.get("bin") != "phonefarm" or not argv:
+        return False
+    return argv[0] == "run" or argv[:2] == ["skill", "run"] and "--fallback" in argv
 
 
 def list_messages(jobs, jid):
@@ -100,9 +103,12 @@ def running(jobs, limit=20):
     except FileNotFoundError:
         return []
     for jid in names:
-        if not JOB_ID.fullmatch(jid):
+        if not JOB_ID.fullmatch(jid) or not os.path.isfile(os.path.join(jobs.dir, jid, "meta.json")):
             continue
-        meta = _meta(jobs, jid)
+        try:
+            meta = _meta(jobs, jid)
+        except (KeyError, ValueError):  # 符号链接之类的怪目录: 跳过, 不让整张表 500
+            continue
         if meta.get("state") != "running" or not steerable(meta):
             continue
         argv = meta.get("argv") or []
