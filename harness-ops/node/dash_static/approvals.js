@@ -83,7 +83,7 @@
       if (!text || !steer || c.busy) return;
       c.busy = true; send.disabled = true; err.hidden = true;
       try {
-        const r = await fetch(`/dash/api/steer/${job.job_id}`, {method: 'POST',
+        const r = await fetch(`/dash/api/job-steer/${job.job_id}`, {method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-HG': '1'}, body: JSON.stringify({text})});
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
@@ -97,7 +97,7 @@
   }
   async function loadJobs() {
     try {
-      const r = await fetch('/dash/api/steer', {cache: 'no-store'});
+      const r = await fetch('/dash/api/job-steer', {cache: 'no-store'});
       if (!r.ok) return;
       const body = await r.json();
       const items = Array.isArray(body.items) ? body.items : [];

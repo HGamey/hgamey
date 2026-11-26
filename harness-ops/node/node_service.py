@@ -1351,7 +1351,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._read_get(parts[2:], parse_qs(u.query), dashboard=True)
-            if board and parts == ["dash", "api", "steer"]:
+            if board and parts == ["dash", "api", "job-steer"]:
                 if not board.authed(self):
                     return self._send(401, {"code": "unauthorized", "error": "需要查看密码"})
                 return self._send(200, {"steer": board.steered(self), "items": job_steer.running(jobs)})
@@ -2545,7 +2545,7 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     return self._send(400, {"error": str(error)})
                 except sqlite3.Error as error:
                     return self._send(503, {"code": "storage_commit_unconfirmed", "error": str(error)})
-            if board and len(parts) == 4 and parts[:3] == ["dash", "api", "steer"]:
+            if board and len(parts) == 4 and parts[:3] == ["dash", "api", "job-steer"]:
                 if not board.steered(self):
                     return self._send(403, {"code": "steer_required", "error": "需要操控密码才能给作业留言"})
                 if self.headers.get("X-HG") != "1" or "application/json" not in self.headers.get("Content-Type", ""):
