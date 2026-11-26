@@ -98,9 +98,12 @@ class ApprovalTests(unittest.TestCase):
             with open(os.path.join(ddir, "ap-r-1-0001.decision.json"), "w") as f:
                 json.dump({"decision": "allow", "by": "job", "sig": "00" * 64}, f)
             self.assertEqual(job_approvals.list_requests(self.jobs, "abcdef012345")[0]["state"], "pending")
-            os.remove(os.path.join(ddir, "ap-r-1-0001.decision.json"))
+            # 假决定占着位置: 人的决定照样写得进去(替换掉它)
             code, out = job_approvals.decide(self.jobs, "abcdef012345", "ap-r-1-0001", b'{"decision":"allow"}', "dash")
             self.assertEqual(code, 200)
+            self.assertTrue(out.get("replaced_unsigned"))
+            self.assertEqual(job_approvals.decide(self.jobs, "abcdef012345", "ap-r-1-0001", b'{"decision":"deny"}', "dash")[0], 409,
+                             "真决定之后先写者胜")
             self.assertTrue(signer.valid("abcdef012345", "ap-r-1-0001", "allow", out["content"], out["sig"]))
             self.assertFalse(signer.valid("abcdef012345", "ap-r-1-0001", "deny", out["content"], out["sig"]))
             self.assertEqual(job_approvals.list_requests(self.jobs, "abcdef012345")[0]["state"], "allowed")
