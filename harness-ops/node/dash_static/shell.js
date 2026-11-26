@@ -23,11 +23,11 @@ if (globalThis.crypto && typeof crypto.randomUUID !== "function") {
   ];
   // 「更多」按谁用分两组：看结果的在前，工程师的工具在后。
   const MORE = [
-    ["/dash/approvals", "待审批", "看结果"],
     ["/dash/results", "研究结果", "看结果"],
     ["/dash/datasets", "数据集", "看结果"],
     ["/dash/live", "实时画面", "看结果"],
     ["/dash/games", "游戏与资源", "看结果"],
+    ["/dash/approvals", "待审批", "看结果"],
     ["/dash/jobs", "作业", "工程师用"],
     ["/dash/gol", "GOL 目标", "工程师用"],
     ["/dash/control", "远程调试", "工程师用"],
