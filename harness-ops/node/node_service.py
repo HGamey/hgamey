@@ -2631,11 +2631,12 @@ def make_handler(mcp, jobs, token, board=None, node=None, fleet=None, remote=Non
                     self._restart()
                     return
                 if len(parts) == 4 and parts[0] == "jobs" and parts[2] == "approvals":
-                    if self.ro:
-                        return self._send(403, {"code": "forbidden", "error": "read-only token cannot decide approvals"})
+                    # 审批只由人做: 只读 token 和 agent token(外部 agent 不能批自己作业里的付款)一律拒绝
+                    if self.ro or self.agent:
+                        return self._send(403, {"code": "forbidden", "error": "approvals are decided by people: admin token or dashboard steer only"})
                     jobs.path(parts[1])  # validates the job id
-                    code, result = job_approvals.decide(jobs, parts[1], parts[3], body,
-                                                        "agent:" + self.agent if self.agent else "admin")
+                    who = (self.headers.get("X-Approval-Via") or "admin")[:40]
+                    code, result = job_approvals.decide(jobs, parts[1], parts[3], body, who)
                     return self._send(code, result)
                 if len(parts) == 3 and parts[0] == "jobs" and parts[2] in {"cancel", "kill"}:
                     data = json.loads(body or b"{}")
