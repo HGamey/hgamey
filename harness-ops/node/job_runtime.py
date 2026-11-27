@@ -37,7 +37,8 @@ def _worker_command(job_dir, lock_fd):
 
 
 
-APPROVAL_ENV = ("PF_APPROVAL_PUBKEY", "PF_APPROVAL_DECISION_DIR", "PF_APPROVAL_POLICY")
+SHARED_ENV = ("PF_APPROVAL_PUBKEY", "PF_APPROVAL_DECISION_DIR", "PF_APPROVAL_POLICY",
+              "DEVLOCK_DIR", "PHONEFARM_STATE_DIR", "PF_OCR_DEPS")
 
 def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contained_config=None,
            privileged_entry=None, service_at_launch=None, time_budget=None, disk_guard=None, app_snapshot=None):
@@ -61,10 +62,11 @@ def launch(store, jid, job_dir, command, cwd, env, execution_policy=None, contai
         except BlockingIOError:
             raise ValueError("job already has a live worker") from None
         launch_spec = {"command": command, "cwd": os.fspath(cwd)}
-        # 审批签发的三项要原样带进独立用户(contained)的固定环境; 都不是秘密(公钥、目录、策略)
-        approval_env = {k: env[k] for k in APPROVAL_ENV if k in (env or {})}
-        if approval_env:
-            launch_spec["approval_env"] = approval_env
+        # 独立用户(contained)的固定环境只放行这几项: 审批签发(公钥、决定目录、策略)、共享设备锁与状态目录、
+        # 认字引擎目录。都不是秘密。
+        shared_env = {k: env[k] for k in SHARED_ENV if k in (env or {})}
+        if shared_env:
+            launch_spec["shared_env"] = shared_env
         if app_snapshot is not None:
             launch_spec['app_snapshot'] = app_snapshot
         if service_at_launch is not None:

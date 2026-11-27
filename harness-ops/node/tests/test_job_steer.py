@@ -58,5 +58,34 @@ class SteerTests(unittest.TestCase):
         self.assertEqual(job_steer.post(self.jobs, "222222222222", b'{"text":"x"}', "a")[0], 200)
 
 
+class ContainedSelectionTests(unittest.TestCase):
+    def test_only_phonefarm_jobs_on_a_switched_node_with_a_worker(self):
+        import job_dispatch
+
+        class N:
+            contained_phonefarm, worker_entry = True, "/usr/local/libexec/phonefarm-worker/phonefarm-worker"
+        self.assertTrue(job_dispatch.contained_job(N(), {"bin": "phonefarm", "argv": ["run"]}))
+        self.assertFalse(job_dispatch.contained_job(N(), {"bin": "game_opt_loop", "argv": []}))
+        N.worker_entry = None
+        self.assertFalse(job_dispatch.contained_job(N(), {"bin": "phonefarm"}), "没装 worker 不切")
+        N.worker_entry, N.contained_phonefarm = "/x/phonefarm-worker", False
+        self.assertFalse(job_dispatch.contained_job(N(), {"bin": "phonefarm"}), "节点没开开关不切")
+
+    def test_message_files_are_group_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = Jobs(tmp)
+            os.makedirs(jobs.path("abcdef012345"))
+            with open(jobs.path("abcdef012345", "meta.json"), "w") as f:
+                json.dump({"bin": "phonefarm", "argv": ["run"], "state": "running"}, f)
+            old = os.umask(0o002)
+            try:
+                code, msg = job_steer.post(jobs, "abcdef012345", b'{"text":"x"}', "dash")
+            finally:
+                os.umask(old)
+            self.assertEqual(code, 200)
+            mode = os.stat(jobs.path("abcdef012345", "steer", msg["id"] + ".json")).st_mode & 0o777
+            self.assertEqual(mode, 0o660, "独立作业用户靠组读留言")
+
+
 if __name__ == "__main__":
     unittest.main()

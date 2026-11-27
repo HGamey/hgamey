@@ -89,7 +89,8 @@ def post(jobs, jid, body, who):
     record = {"schema": SCHEMA, "id": mid, "text": text, "by": who, "at": now}
     # 先写临时文件再改名: phonefarm 不会读到写了一半的留言
     tmp = os.path.join(root, f".{mid}.tmp")
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:
+    # 0660: 作业跑在独立用户下时靠组(节点用户在作业主组里)读到留言
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o660), "w", encoding="utf-8") as f:
         json.dump(record, f, ensure_ascii=False)
     os.replace(tmp, os.path.join(root, mid + ".json"))
     return 200, record

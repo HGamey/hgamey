@@ -330,7 +330,7 @@ class PrivilegedFixture(KernelFixture):
         assert not final['runner_alive'] and final['output']=='real-input-payload\n'
         for name,entry in final['ownership'].items():
             assert entry['uid']==self.node_uid and entry['gid']==self.node_gid, (name,entry)
-            assert entry['mode']==(0o700 if name=='out' else 0o600), (name,entry)
+            assert entry['mode']==(0o700 if name in ('out','approvals','steer') else 0o600), (name,entry)
         assert self.job.stat().st_uid==self.node_uid and stat.S_IMODE(self.job.stat().st_mode)==0o700
         denied = self.helper('job-read',job_identity=True)
         assert len(denied['denied'])==2
