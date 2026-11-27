@@ -10,13 +10,15 @@ use std::time::{Duration, Instant};
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "pf-observation-test-{}-{}",
+            "pf-observation-test-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::create_dir(root.join("locks")).unwrap();
